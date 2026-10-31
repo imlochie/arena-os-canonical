@@ -165,9 +165,19 @@ export const CreateLibraryConversionResponse = zod.object({
 /**
  * @summary Check Windows audio loopback capture availability
  */
+export const getLibraryAudioCaptureOptionsResponseStorageAvailableBytesMin = 0;
+
+export const getLibraryAudioCaptureOptionsResponseStorageReserveBytesMin = 0;
+
 export const getLibraryAudioCaptureOptionsResponseActiveSessionElapsedSecondsMin = 0;
 
 export const getLibraryAudioCaptureOptionsResponseActiveSessionDiscontinuityCountMin = 0;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionAvailableBytesMin = 0;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionReserveBytesMin = 0;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionEstimatedSecondsRemainingMin = 0;
 
 
 
@@ -183,6 +193,12 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
   "isDefault": zod.boolean()
 })),
   "reason": zod.string().optional(),
+  "storage": zod.object({
+  "availableBytes": zod.number().int().min(getLibraryAudioCaptureOptionsResponseStorageAvailableBytesMin),
+  "reserveBytes": zod.number().int().min(getLibraryAudioCaptureOptionsResponseStorageReserveBytesMin),
+  "canRecord": zod.boolean(),
+  "reason": zod.string().optional()
+}).optional(),
   "activeSession": zod.object({
   "sessionId": zod.string().uuid(),
   "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
@@ -190,6 +206,9 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
   "startedAt": zod.coerce.date().optional(),
   "elapsedSeconds": zod.number().min(getLibraryAudioCaptureOptionsResponseActiveSessionElapsedSecondsMin),
   "discontinuityCount": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionDiscontinuityCountMin),
+  "availableBytes": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionAvailableBytesMin).optional(),
+  "reserveBytes": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionReserveBytesMin).optional(),
+  "estimatedSecondsRemaining": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionEstimatedSecondsRemainingMin).optional(),
   "format": zod.object({
   "sampleRate": zod.number().int().min(1),
   "channels": zod.number().int().min(1),
@@ -327,6 +346,12 @@ export const getLibraryAudioCaptureStatusResponseElapsedSecondsMin = 0;
 
 export const getLibraryAudioCaptureStatusResponseDiscontinuityCountMin = 0;
 
+export const getLibraryAudioCaptureStatusResponseAvailableBytesMin = 0;
+
+export const getLibraryAudioCaptureStatusResponseReserveBytesMin = 0;
+
+export const getLibraryAudioCaptureStatusResponseEstimatedSecondsRemainingMin = 0;
+
 
 
 
@@ -340,6 +365,9 @@ export const GetLibraryAudioCaptureStatusResponse = zod.object({
   "startedAt": zod.coerce.date().optional(),
   "elapsedSeconds": zod.number().min(getLibraryAudioCaptureStatusResponseElapsedSecondsMin),
   "discontinuityCount": zod.number().int().min(getLibraryAudioCaptureStatusResponseDiscontinuityCountMin),
+  "availableBytes": zod.number().int().min(getLibraryAudioCaptureStatusResponseAvailableBytesMin).optional(),
+  "reserveBytes": zod.number().int().min(getLibraryAudioCaptureStatusResponseReserveBytesMin).optional(),
+  "estimatedSecondsRemaining": zod.number().int().min(getLibraryAudioCaptureStatusResponseEstimatedSecondsRemainingMin).optional(),
   "format": zod.object({
   "sampleRate": zod.number().int().min(1),
   "channels": zod.number().int().min(1),

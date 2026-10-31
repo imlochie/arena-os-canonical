@@ -494,11 +494,27 @@ components:
             $ref: "#/components/schemas/LibraryAudioCaptureDevice"
         reason:
           type: string
+        storage:
+          $ref: "#/components/schemas/LibraryAudioCaptureStorageBudget"
         activeSession:
           $ref: "#/components/schemas/LibraryAudioCaptureStatusResponse"
         recoveryError:
           type: string
       required: [available, devices]
+    LibraryAudioCaptureStorageBudget:
+      type: object
+      properties:
+        availableBytes:
+          type: integer
+          minimum: 0
+        reserveBytes:
+          type: integer
+          minimum: 0
+        canRecord:
+          type: boolean
+        reason:
+          type: string
+      required: [availableBytes, reserveBytes, canRecord]
     LibraryAudioCaptureRecovery:
       type: object
       properties:
@@ -603,6 +619,15 @@ components:
           type: number
           minimum: 0
         discontinuityCount:
+          type: integer
+          minimum: 0
+        availableBytes:
+          type: integer
+          minimum: 0
+        reserveBytes:
+          type: integer
+          minimum: 0
+        estimatedSecondsRemaining:
           type: integer
           minimum: 0
         format:

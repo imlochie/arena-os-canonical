@@ -15,6 +15,13 @@ type CaptureFormat = {
   blockAlign: number;
 };
 
+type CaptureStorageBudget = {
+  availableBytes: number;
+  reserveBytes: number;
+  canRecord: boolean;
+  reason?: string;
+};
+
 type CaptureSession = {
   sessionId: string;
   status: "starting" | "recording" | "stopping" | "completed" | "failed";
@@ -22,6 +29,9 @@ type CaptureSession = {
   startedAt?: string;
   elapsedSeconds: number;
   discontinuityCount: number;
+  availableBytes?: number;
+  reserveBytes?: number;
+  estimatedSecondsRemaining?: number;
   format?: CaptureFormat;
   message?: string;
 };
@@ -38,6 +48,7 @@ type CaptureOptions = {
   available: boolean;
   devices: CaptureDevice[];
   reason?: string;
+  storage?: CaptureStorageBudget;
   activeSession?: CaptureSession;
   recoveries?: Recovery[];
   recoveryError?: string;
@@ -60,6 +71,15 @@ function formatElapsed(seconds: number): string {
 function formatPcm(format?: CaptureFormat): string {
   if (!format) return "Native Windows output format";
   return `${format.sampleRate.toLocaleString()} Hz · ${format.channels} ch · ${format.bitsPerSample}-bit PCM`;
+}
+
+function formatBytes(bytes?: number): string {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes < 0) return "Unknown";
+  const gib = 1024 ** 3;
+  if (bytes < 1024 ** 2) return `${Math.floor(bytes / 1024)} KiB`;
+  return bytes >= gib
+    ? `${(bytes / gib).toFixed(1)} GiB`
+    : `${Math.round(bytes / (1024 ** 2))} MiB`;
 }
 
 export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }) {
@@ -111,9 +131,10 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
         const data = await readJson(response);
         if (!response.ok) throw new Error(data.error ?? "Could not update recording status.");
         if (cancelled) return;
-        setSession(data as CaptureSession);
-        if ((data as CaptureSession).status === "failed") {
-          setMessage((data as CaptureSession).message ?? "Recording stopped unexpectedly.");
+        const updated = data as CaptureSession;
+        setSession(updated);
+        if (updated.status === "failed" || updated.status === "completed") {
+          if (updated.message) setMessage(updated.message);
           void refreshOptions().catch(() => {});
           return;
         }
@@ -259,9 +280,16 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                 {session.discontinuityCount} audio interruption{session.discontinuityCount === 1 ? "" : "s"} detected.
               </span>
             )}
-            {session.status === "failed" && (
+            {session.availableBytes !== undefined && session.reserveBytes !== undefined && (
+              <span>
+                {formatBytes(session.availableBytes)} free · {session.estimatedSecondsRemaining === undefined
+                  ? "checking safe recording time"
+                  : `about ${formatElapsed(session.estimatedSecondsRemaining)} before the disk reserve`}
+              </span>
+            )}
+            {session.message && (
               <span className="library-audio-capture-warning">
-                {session.message || "The recording stopped unexpectedly. Check preserved recordings below."}
+                {session.message}
               </span>
             )}
           </div>
@@ -275,6 +303,13 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
 
       {!recording && (
         <div className="library-audio-capture-form">
+          {options?.storage && (
+            <p className="library-audio-capture-notice" role="status">
+              {formatBytes(options.storage.availableBytes)} free on Arena’s data drive. Waveyard keeps
+              {" "}{formatBytes(options.storage.reserveBytes)} available and stops a recording before using that reserve.
+              The estimate changes if other apps use the drive.
+            </p>
+          )}
           <label>
             Windows playback device
             <select

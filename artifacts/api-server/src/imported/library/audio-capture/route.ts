@@ -35,7 +35,12 @@ export async function POST(request: Request) {
 
     const options = await getAudioCaptureOptions();
     if (!options.available) {
-      return Response.json({ error: options.reason || "Windows audio capture is unavailable." }, { status: 503 });
+      const insufficientStorage = (options.storage && !options.storage.canRecord) ||
+        /free disk space/i.test(options.reason ?? "");
+      return Response.json(
+        { error: options.reason || "Windows audio capture is unavailable." },
+        { status: insufficientStorage ? 507 : 503 },
+      );
     }
     if (parsed.data.deviceId && !options.devices.some((device) => device.id === parsed.data.deviceId)) {
       return Response.json({ error: "The selected Windows playback endpoint is no longer available." }, { status: 409 });
@@ -51,7 +56,11 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "Could not start audio capture.";
-    const status = /not available|unavailable|capture host/i.test(message) ? 503 : 409;
+    const status = /free at least|disk space could not be checked/i.test(message)
+      ? 507
+      : /not available|unavailable|capture host/i.test(message)
+        ? 503
+        : 409;
     return Response.json({ error: message }, { status });
   }
 }

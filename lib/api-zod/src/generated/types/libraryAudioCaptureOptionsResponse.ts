@@ -7,11 +7,13 @@
  */
 import type { LibraryAudioCaptureDevice } from './libraryAudioCaptureDevice';
 import type { LibraryAudioCaptureStatusResponse } from './libraryAudioCaptureStatusResponse';
+import type { LibraryAudioCaptureStorageBudget } from './libraryAudioCaptureStorageBudget';
 
 export interface LibraryAudioCaptureOptionsResponse {
   available: boolean;
   devices: LibraryAudioCaptureDevice[];
   reason?: string;
+  storage?: LibraryAudioCaptureStorageBudget;
   activeSession?: LibraryAudioCaptureStatusResponse;
   recoveryError?: string;
 }

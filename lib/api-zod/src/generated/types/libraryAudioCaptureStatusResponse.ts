@@ -17,6 +17,12 @@ export interface LibraryAudioCaptureStatusResponse {
   elapsedSeconds: number;
   /** @minimum 0 */
   discontinuityCount: number;
+  /** @minimum 0 */
+  availableBytes?: number;
+  /** @minimum 0 */
+  reserveBytes?: number;
+  /** @minimum 0 */
+  estimatedSecondsRemaining?: number;
   format?: LibraryAudioCaptureFormat;
   message?: string;
 }

@@ -24,6 +24,7 @@ export * from './libraryAudioCaptureStartResponseStatus';
 export * from './libraryAudioCaptureStatusResponse';
 export * from './libraryAudioCaptureStatusResponseStatus';
 export * from './libraryAudioCaptureStopResponse';
+export * from './libraryAudioCaptureStorageBudget';
 export * from './libraryConversionFormat';
 export * from './libraryConversionFormatId';
 export * from './libraryConversionInput';

@@ -8,7 +8,10 @@ import { afterEach, test } from "node:test";
 import { Rf64Recorder } from "@workspace/arena/lib/waveyard/capture/rf64";
 import {
   clearRecoveredAudioCapture,
+  createCaptureStorageBudget,
+  estimateCaptureSecondsRemaining,
   getAudioCaptureOptions,
+  getAudioCaptureStatus,
   getRecoverableAudioCapture,
   listRecoverableAudioCaptures,
   shutdownAudioCaptures,
@@ -53,6 +56,42 @@ test("non-Windows preview reports capture unavailable and refuses to start", asy
   await assert.rejects(
     startAudioCapture("test-owner", { title: "Must not start" }),
     /not available in this runtime/,
+  );
+});
+
+test("capture budget preserves a disk reserve and estimates time from PCM rate", () => {
+  const reserveBytes = createCaptureStorageBudget(0).reserveBytes;
+  const format = { sampleRate: 48_000, channels: 2, bitsPerSample: 16, blockAlign: 4 };
+  assert.equal(createCaptureStorageBudget(reserveBytes).canRecord, false);
+  assert.equal(createCaptureStorageBudget(reserveBytes + 1).canRecord, true);
+  assert.equal(
+    estimateCaptureSecondsRemaining(reserveBytes + 90 * 48_000 * 4, reserveBytes, format),
+    90,
+  );
+  assert.equal(estimateCaptureSecondsRemaining(reserveBytes, reserveBytes, format), 0);
+});
+
+test("low free space blocks Windows capture before creating a session", {
+  skip: originalPlatform?.value === "win32",
+}, async () => {
+  const root = await makeTemporaryRoot();
+  const resources = path.join(root, "resources");
+  const hostDirectory = path.join(resources, "native");
+  await mkdir(hostDirectory, { recursive: true });
+  await writeFile(path.join(hostDirectory, "waveyard-capture-host.exe"), "test stub");
+  process.env.ARENA_DATA_DIR = "/proc";
+  process.env.ARENA_RESOURCES_DIR = resources;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+
+  const options = await getAudioCaptureOptions("low-space-owner");
+  assert.equal(options.available, false);
+  assert.equal(options.storage?.availableBytes, 0);
+  assert.equal(options.storage?.canRecord, false);
+  assert.match(options.reason ?? "", /Free at least 1 GiB/);
+  await assert.rejects(
+    startAudioCapture("low-space-owner", { title: "Must not use the last space" }),
+    /Free at least 1 GiB/,
   );
 });
 
@@ -174,4 +213,19 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   assert.equal(firstStop.result.sampleFrames, 12);
   assert.deepEqual(await shutdownAudioCaptures(), { stopped: 0, preserved: 0, forced: 0, unresponsive: 0 });
   clearRecoveredAudioCapture(ownerId, second.sessionId);
+
+  const lowSpace = await startAudioCapture(ownerId, { title: "Low-space safety stop test" });
+  process.env.ARENA_DATA_DIR = "/proc";
+  const deadline = Date.now() + 10_000;
+  let lowSpaceStatus = getAudioCaptureStatus(ownerId, lowSpace.sessionId);
+  while (lowSpaceStatus?.status !== "completed" && lowSpaceStatus?.status !== "failed" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    lowSpaceStatus = getAudioCaptureStatus(ownerId, lowSpace.sessionId);
+  }
+  assert.equal(lowSpaceStatus?.status, "completed", JSON.stringify(lowSpaceStatus));
+  assert.match(lowSpaceStatus?.message ?? "", /1 GiB safety reserve/);
+  process.env.ARENA_DATA_DIR = root;
+  const lowSpaceRecovery = await getRecoverableAudioCapture(ownerId, lowSpace.sessionId);
+  assert.ok(lowSpaceRecovery);
+  clearRecoveredAudioCapture(ownerId, lowSpace.sessionId);
 });

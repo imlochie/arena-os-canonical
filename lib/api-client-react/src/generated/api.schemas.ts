@@ -176,6 +176,15 @@ export interface LibraryAudioCaptureDevice {
   isDefault: boolean;
 }
 
+export interface LibraryAudioCaptureStorageBudget {
+  /** @minimum 0 */
+  availableBytes: number;
+  /** @minimum 0 */
+  reserveBytes: number;
+  canRecord: boolean;
+  reason?: string;
+}
+
 export type LibraryAudioCaptureStatusResponseStatus = typeof LibraryAudioCaptureStatusResponseStatus[keyof typeof LibraryAudioCaptureStatusResponseStatus];
 
 
@@ -207,6 +216,12 @@ export interface LibraryAudioCaptureStatusResponse {
   elapsedSeconds: number;
   /** @minimum 0 */
   discontinuityCount: number;
+  /** @minimum 0 */
+  availableBytes?: number;
+  /** @minimum 0 */
+  reserveBytes?: number;
+  /** @minimum 0 */
+  estimatedSecondsRemaining?: number;
   format?: LibraryAudioCaptureFormat;
   message?: string;
 }
@@ -215,6 +230,7 @@ export interface LibraryAudioCaptureOptionsResponse {
   available: boolean;
   devices: LibraryAudioCaptureDevice[];
   reason?: string;
+  storage?: LibraryAudioCaptureStorageBudget;
   activeSession?: LibraryAudioCaptureStatusResponse;
   recoveryError?: string;
 }

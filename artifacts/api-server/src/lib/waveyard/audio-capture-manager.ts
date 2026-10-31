@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, statfs, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
@@ -15,6 +15,8 @@ const START_TIMEOUT_MS = 20_000;
 const STOP_TIMEOUT_MS = 15_000;
 const SHUTDOWN_STOP_TIMEOUT_MS = 5_000;
 const SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS = 2_000;
+const CAPTURE_DISK_RESERVE_BYTES = 1024 * 1024 * 1024;
+const CAPTURE_DISK_CHECK_INTERVAL_MS = 5_000;
 const MAX_DEVICE_OUTPUT_BYTES = 1_000_000;
 
 export interface AudioCaptureDevice {
@@ -30,6 +32,13 @@ export interface AudioCaptureFormat {
   blockAlign: number;
 }
 
+export interface AudioCaptureStorageBudget {
+  availableBytes: number;
+  reserveBytes: number;
+  canRecord: boolean;
+  reason?: string;
+}
+
 export type AudioCaptureState = "starting" | "recording" | "stopping" | "completed" | "failed";
 
 export interface AudioCaptureSnapshot {
@@ -39,6 +48,9 @@ export interface AudioCaptureSnapshot {
   startedAt?: string;
   elapsedSeconds: number;
   discontinuityCount: number;
+  availableBytes?: number;
+  reserveBytes?: number;
+  estimatedSecondsRemaining?: number;
   format?: AudioCaptureFormat;
   message?: string;
 }
@@ -118,6 +130,9 @@ interface CaptureSession {
   startedAt?: string;
   endedAt?: string;
   discontinuityCount: number;
+  availableBytes?: number;
+  reserveBytes?: number;
+  estimatedSecondsRemaining?: number;
   failure?: string;
   final?: AudioCaptureFinalized;
   nativeStopped: boolean;
@@ -132,6 +147,8 @@ interface CaptureSession {
   closePromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   resolveClose: (result: { code: number | null; signal: NodeJS.Signals | null }) => void;
   stopPromise?: Promise<AudioCaptureFinalized | null>;
+  diskMonitor?: NodeJS.Timeout;
+  diskMonitorBusy?: boolean;
   importedResponse?: unknown;
 }
 
@@ -149,10 +166,47 @@ function captureRoot(): string {
   return join(dataRoot, "waveyard", "capture");
 }
 
+async function readCaptureStorageBudget(): Promise<AudioCaptureStorageBudget> {
+  const dataRoot = process.env.ARENA_DATA_DIR;
+  if (!dataRoot) throw new Error("The Windows desktop data directory is not configured.");
+  const filesystem = await statfs(dataRoot, { bigint: true });
+  const available = filesystem.bavail * filesystem.bsize;
+  const rawAvailableBytes = Number(
+    available > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : available,
+  );
+  return createCaptureStorageBudget(rawAvailableBytes);
+}
+
+export function createCaptureStorageBudget(availableBytes: number): AudioCaptureStorageBudget {
+  const safeAvailableBytes = Number.isFinite(availableBytes)
+    ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(availableBytes)))
+    : 0;
+  const canRecord = safeAvailableBytes > CAPTURE_DISK_RESERVE_BYTES;
+  return {
+    availableBytes: safeAvailableBytes,
+    reserveBytes: CAPTURE_DISK_RESERVE_BYTES,
+    canRecord,
+    ...(!canRecord
+      ? { reason: "Free at least 1 GiB on Arena’s data drive before recording." }
+      : {}),
+  };
+}
+
+export function estimateCaptureSecondsRemaining(
+  availableBytes: number,
+  reserveBytes: number,
+  format: AudioCaptureFormat,
+): number {
+  const bytesPerSecond = format.sampleRate * format.blockAlign;
+  if (!Number.isSafeInteger(bytesPerSecond) || bytesPerSecond <= 0) return 0;
+  return Math.max(0, Math.floor((availableBytes - reserveBytes) / bytesPerSecond));
+}
+
 export async function getAudioCaptureOptions(ownerId?: string): Promise<{
   available: boolean;
   devices: AudioCaptureDevice[];
   reason?: string;
+  storage?: AudioCaptureStorageBudget;
   activeSession?: AudioCaptureSnapshot;
   recoveries?: AudioCaptureRecovery[];
   recoveryError?: string;
@@ -183,6 +237,30 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
       ...(recoveryError ? { recoveryError } : {}),
     };
   }
+  let storage: AudioCaptureStorageBudget;
+  try {
+    storage = await readCaptureStorageBudget();
+  } catch {
+    return {
+      available: false,
+      devices: [],
+      reason: "Free disk space could not be checked; recording is disabled to protect your files.",
+      ...(activeSession ? { activeSession } : {}),
+      ...(recoveries?.length ? { recoveries } : {}),
+      ...(recoveryError ? { recoveryError } : {}),
+    };
+  }
+  if (!storage.canRecord) {
+    return {
+      available: false,
+      devices: [],
+      reason: storage.reason,
+      storage,
+      ...(activeSession ? { activeSession } : {}),
+      ...(recoveries?.length ? { recoveries } : {}),
+      ...(recoveryError ? { recoveryError } : {}),
+    };
+  }
   try {
     const { stdout } = await execFileAsync(host, ["devices"], {
       timeout: 10_000,
@@ -205,9 +283,10 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
       return device as AudioCaptureDevice;
     });
     return {
-      available: devices.length > 0,
+      available: devices.length > 0 && storage.canRecord,
       devices,
       ...(devices.length === 0 ? { reason: "Windows has no active playback endpoint to capture." } : {}),
+      storage,
       ...(activeSession ? { activeSession } : {}),
       ...(recoveries?.length ? { recoveries } : {}),
       ...(recoveryError ? { recoveryError } : {}),
@@ -217,6 +296,7 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
       available: false,
       devices: [],
       reason: error instanceof Error ? error.message : "The Windows capture host could not enumerate playback devices.",
+      storage,
       ...(activeSession ? { activeSession } : {}),
       ...(recoveries?.length ? { recoveries } : {}),
       ...(recoveryError ? { recoveryError } : {}),
@@ -234,6 +314,11 @@ function snapshot(session: CaptureSession): AudioCaptureSnapshot {
     ...(session.startedAt ? { startedAt: session.startedAt } : {}),
     elapsedSeconds: Math.max(0, (end - start) / 1000),
     discontinuityCount: session.discontinuityCount,
+    ...(session.availableBytes !== undefined ? { availableBytes: session.availableBytes } : {}),
+    ...(session.reserveBytes !== undefined ? { reserveBytes: session.reserveBytes } : {}),
+    ...(session.estimatedSecondsRemaining !== undefined
+      ? { estimatedSecondsRemaining: session.estimatedSecondsRemaining }
+      : {}),
     ...(session.format ? { format: session.format } : {}),
     ...(session.failure ? { message: session.failure } : {}),
   };
@@ -242,6 +327,10 @@ function snapshot(session: CaptureSession): AudioCaptureSnapshot {
 function sendStop(session: CaptureSession): void {
   if (session.stopSent || session.child.killed || session.child.exitCode !== null) return;
   session.stopSent = true;
+  if (session.diskMonitor) {
+    clearInterval(session.diskMonitor);
+    session.diskMonitor = undefined;
+  }
   if (session.status !== "failed") session.status = "stopping";
   session.child.stdin.write("stop\n", (error) => {
     if (error && !session.failure) session.failure = "Could not send the stop command to the Windows capture host.";
@@ -279,6 +368,13 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
       bitsPerSample: session.recorder.format.bitsPerSample,
       blockAlign: session.recorder.format.blockAlign,
     };
+    if (session.availableBytes !== undefined && session.reserveBytes !== undefined) {
+      session.estimatedSecondsRemaining = estimateCaptureSecondsRemaining(
+        session.availableBytes,
+        session.reserveBytes,
+        session.format,
+      );
+    }
     if (
       event.sampleRate !== session.format.sampleRate ||
       event.channels !== session.format.channels ||
@@ -295,9 +391,43 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
   }
   if (event.type === "started") {
     if (!session.recorder) throw new Error("Capture host started before its audio format was validated.");
+    if (session.status === "failed" || session.stopSent) return;
     session.status = "recording";
     session.startedAt = new Date().toISOString();
     session.resolveStarted();
+    session.diskMonitor = setInterval(() => {
+      if (session.diskMonitorBusy || session.status !== "recording") return;
+      session.diskMonitorBusy = true;
+      void readCaptureStorageBudget().then((budget) => {
+        session.availableBytes = budget.availableBytes;
+        session.reserveBytes = budget.reserveBytes;
+        if (session.format) {
+          session.estimatedSecondsRemaining = estimateCaptureSecondsRemaining(
+            budget.availableBytes,
+            budget.reserveBytes,
+            session.format,
+          );
+        }
+        if (!budget.canRecord && session.status === "recording") {
+          session.failure = "Stopped before the data drive’s 1 GiB safety reserve was used; the recording is preserved below.";
+          void stopAudioCapture(session.ownerId, session.id).catch((error: unknown) => {
+            session.failure = error instanceof Error ? error.message : session.failure;
+            session.status = "failed";
+          });
+        }
+      }).catch(() => {
+        if (session.status === "recording") {
+          session.failure = "Free disk space could not be checked; Waveyard stopped and preserved the recording.";
+          void stopAudioCapture(session.ownerId, session.id).catch((error: unknown) => {
+            session.failure = error instanceof Error ? error.message : session.failure;
+            session.status = "failed";
+          });
+        }
+      }).finally(() => {
+        session.diskMonitorBusy = false;
+      });
+    }, CAPTURE_DISK_CHECK_INTERVAL_MS);
+    session.diskMonitor.unref();
     return;
   }
   if (event.type === "discontinuity") {
@@ -338,6 +468,7 @@ function makeSession(input: {
   metadata: AudioCaptureStartInput;
   sessionDirectory: string;
   child: ChildProcessWithoutNullStreams;
+  storageBudget: AudioCaptureStorageBudget;
 }): CaptureSession {
   let resolveStarted!: () => void;
   let rejectStarted!: (error: Error) => void;
@@ -355,6 +486,8 @@ function makeSession(input: {
     partialPath: join(input.sessionDirectory, "recording.partial.wav"),
     finalPath: join(input.sessionDirectory, "recording.wav"),
     discontinuityCount: 0,
+    availableBytes: input.storageBudget.availableBytes,
+    reserveBytes: input.storageBudget.reserveBytes,
     nativeStopped: false,
     stopSent: false,
     stderrDecoder: new StringDecoder("utf8"),
@@ -383,6 +516,8 @@ export async function startAudioCapture(
   }
 
   const id = randomUUID();
+  const storageBudget = await readCaptureStorageBudget();
+  if (!storageBudget.canRecord) throw new Error(storageBudget.reason || "Not enough free disk space to record safely.");
   const sessionDirectory = join(captureRoot(), id);
   await mkdir(sessionDirectory, { recursive: true });
   const createdAt = new Date().toISOString();
@@ -406,7 +541,7 @@ export async function startAudioCapture(
       WINDIR: process.env.WINDIR,
     },
   });
-  const session = makeSession({ id, ownerId, metadata: input, sessionDirectory, child });
+  const session = makeSession({ id, ownerId, metadata: input, sessionDirectory, child, storageBudget });
   sessions.set(id, session);
 
   child.stdout.on("data", (chunk: Buffer) => {
@@ -423,6 +558,10 @@ export async function startAudioCapture(
   child.stderr.on("data", (chunk: Buffer) => queueNativeEvents(session, chunk));
   child.once("error", (error) => failSession(session, error));
   child.once("close", (code, signal) => {
+    if (session.diskMonitor) {
+      clearInterval(session.diskMonitor);
+      session.diskMonitor = undefined;
+    }
     const tail = session.stderrDecoder.end();
     if (tail) session.stderrBuffer += tail;
     if (session.stderrBuffer.trim()) {
