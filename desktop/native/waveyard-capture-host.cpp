@@ -496,12 +496,17 @@ std::wstring optionValue(int argc, wchar_t* argv[], const std::wstring& option) 
 
 int run(int argc, wchar_t* argv[]) {
   if (argc < 2) {
-    std::wcerr << L"Usage: waveyard-capture-host.exe devices | record [--device-id ID]\n";
+    std::wcerr << L"Usage: waveyard-capture-host.exe version | devices | record [--device-id ID]\n";
     return 2;
   }
   const std::wstring command = argv[1];
+  if (command == L"version") {
+    writeLine(GetStdHandle(STD_OUTPUT_HANDLE),
+        "{\"protocolVersion\":1,\"captureModes\":[\"system-loopback\"]}");
+    return 0;
+  }
   if (command != L"devices" && command != L"record") {
-    std::wcerr << L"Unknown command. Use devices or record.\n";
+    std::wcerr << L"Unknown command. Use version, devices, or record.\n";
     return 2;
   }
   const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);

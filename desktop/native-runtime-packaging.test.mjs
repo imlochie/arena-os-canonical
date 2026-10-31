@@ -1,16 +1,28 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { access, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { copyExternalPackage, pruneOnnxRuntimeForWindowsX64 } from "./build.mjs";
+import { buildWaveyardCaptureHost, copyExternalPackage, pruneOnnxRuntimeForWindowsX64 } from "./build.mjs";
 import { verifyOnnxRuntime } from "./onnx-runtime-probe.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
 const apiRequire = createRequire(path.join(root, "artifacts/api-server/package.json"));
+const builderConfig = createRequire(import.meta.url)("./electron-builder.cjs");
+
+test("native WASAPI host source is included in the Windows installer resources", async () => {
+  const source = await readFile(path.join(here, "native", "waveyard-capture-host.cpp"), "utf8");
+  const buildScript = await readFile(path.join(here, "build.mjs"), "utf8");
+  assert.match(source, /AUDCLNT_STREAMFLAGS_LOOPBACK/);
+  assert.match(source, /formatChunkBase64/);
+  assert.equal(typeof buildWaveyardCaptureHost, "function");
+  assert.match(buildScript, /\/std:c\+\+20/);
+  assert.ok(builderConfig.extraResources.some((resource) =>
+    resource.from === "stage/native" && resource.to === "native"));
+});
 
 test("stages ONNX Runtime with CPU inference and Windows DirectML dependencies", async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "arena-ort-stage-"));

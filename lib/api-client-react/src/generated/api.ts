@@ -25,6 +25,13 @@ import type {
   GetLibraryTracksParams,
   HealthStatus,
   LibraryAudioBackupPreflightResponse,
+  LibraryAudioCaptureOptionsResponse,
+  LibraryAudioCaptureRecoveriesResponse,
+  LibraryAudioCaptureRecoveryImportResponse,
+  LibraryAudioCaptureStartInput,
+  LibraryAudioCaptureStartResponse,
+  LibraryAudioCaptureStatusResponse,
+  LibraryAudioCaptureStopResponse,
   LibraryConversionInput,
   LibraryConversionOptionsResponse,
   LibraryConversionResponse,
@@ -307,6 +314,474 @@ export const useCreateLibraryConversion = <TError = ErrorType<ApiError>,
         TContext
       > => {
       return useMutation(getCreateLibraryConversionMutationOptions(options));
+    }
+
+export const getGetLibraryAudioCaptureOptionsUrl = () => {
+
+
+
+
+  return `/api/library/audio-capture`
+}
+
+/**
+ * @summary Check Windows audio loopback capture availability
+ */
+export const getLibraryAudioCaptureOptions = async ( options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureOptionsResponse> => {
+
+  return customFetch<LibraryAudioCaptureOptionsResponse>(getGetLibraryAudioCaptureOptionsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLibraryAudioCaptureOptionsQueryKey = () => {
+    return [
+    `/api/library/audio-capture`
+    ] as const;
+    }
+
+
+export const getGetLibraryAudioCaptureOptionsQueryOptions = <TData = Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLibraryAudioCaptureOptionsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>> = ({ signal }) => getLibraryAudioCaptureOptions({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLibraryAudioCaptureOptionsQueryResult = NonNullable<Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>>
+export type GetLibraryAudioCaptureOptionsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Check Windows audio loopback capture availability
+ */
+
+export function useGetLibraryAudioCaptureOptions<TData = Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLibraryAudioCaptureOptionsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getStartLibraryAudioCaptureUrl = () => {
+
+
+
+
+  return `/api/library/audio-capture`
+}
+
+/**
+ * Records the selected Windows playback endpoint mix in its native shared-mode PCM format. Protected or unavailable audio is not bypassed.
+ * @summary Start an authorized Windows system-loopback recording
+ */
+export const startLibraryAudioCapture = async (libraryAudioCaptureStartInput: LibraryAudioCaptureStartInput, options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureStartResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<LibraryAudioCaptureStartResponse>(getStartLibraryAudioCaptureUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(libraryAudioCaptureStartInput)
+  }
+);}
+
+
+
+
+
+export const getStartLibraryAudioCaptureMutationKey = () => ['startLibraryAudioCapture'] as const;
+
+export const getStartLibraryAudioCaptureMutationOptions = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startLibraryAudioCapture>>, TError,StartLibraryAudioCaptureMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof startLibraryAudioCapture>>, TError,StartLibraryAudioCaptureMutationVariables, TContext> => {
+
+const mutationKey = getStartLibraryAudioCaptureMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startLibraryAudioCapture>>, StartLibraryAudioCaptureMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  startLibraryAudioCapture(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StartLibraryAudioCaptureMutationResult = NonNullable<Awaited<ReturnType<typeof startLibraryAudioCapture>>>
+    export type StartLibraryAudioCaptureMutationBody = BodyType<LibraryAudioCaptureStartInput>
+    export type StartLibraryAudioCaptureMutationError = ErrorType<ApiError>
+    export type StartLibraryAudioCaptureMutationVariables = {data: BodyType<LibraryAudioCaptureStartInput>}
+
+    /**
+ * @summary Start an authorized Windows system-loopback recording
+ */
+export const useStartLibraryAudioCapture = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startLibraryAudioCapture>>, TError,StartLibraryAudioCaptureMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof startLibraryAudioCapture>>,
+        TError,
+        StartLibraryAudioCaptureMutationVariables,
+        TContext
+      > => {
+      return useMutation(getStartLibraryAudioCaptureMutationOptions(options));
+    }
+
+export const getGetLibraryAudioCaptureRecoveriesUrl = () => {
+
+
+
+
+  return `/api/library/audio-capture/recoveries`
+}
+
+/**
+ * @summary List recordings preserved after interruption
+ */
+export const getLibraryAudioCaptureRecoveries = async ( options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureRecoveriesResponse> => {
+
+  return customFetch<LibraryAudioCaptureRecoveriesResponse>(getGetLibraryAudioCaptureRecoveriesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLibraryAudioCaptureRecoveriesQueryKey = () => {
+    return [
+    `/api/library/audio-capture/recoveries`
+    ] as const;
+    }
+
+
+export const getGetLibraryAudioCaptureRecoveriesQueryOptions = <TData = Awaited<ReturnType<typeof getLibraryAudioCaptureRecoveries>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureRecoveries>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLibraryAudioCaptureRecoveriesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLibraryAudioCaptureRecoveries>>> = ({ signal }) => getLibraryAudioCaptureRecoveries({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureRecoveries>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLibraryAudioCaptureRecoveriesQueryResult = NonNullable<Awaited<ReturnType<typeof getLibraryAudioCaptureRecoveries>>>
+export type GetLibraryAudioCaptureRecoveriesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List recordings preserved after interruption
+ */
+
+export function useGetLibraryAudioCaptureRecoveries<TData = Awaited<ReturnType<typeof getLibraryAudioCaptureRecoveries>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureRecoveries>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLibraryAudioCaptureRecoveriesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getImportLibraryAudioCaptureRecoveryUrl = (id: string,) => {
+
+
+
+
+  return `/api/library/audio-capture/recoveries/${id}/import`
+}
+
+/**
+ * @summary Add a preserved recording to the Waveyard library
+ */
+export const importLibraryAudioCaptureRecovery = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureRecoveryImportResponse> => {
+
+  return customFetch<LibraryAudioCaptureRecoveryImportResponse>(getImportLibraryAudioCaptureRecoveryUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getImportLibraryAudioCaptureRecoveryMutationKey = () => ['importLibraryAudioCaptureRecovery'] as const;
+
+export const getImportLibraryAudioCaptureRecoveryMutationOptions = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof importLibraryAudioCaptureRecovery>>, TError,ImportLibraryAudioCaptureRecoveryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof importLibraryAudioCaptureRecovery>>, TError,ImportLibraryAudioCaptureRecoveryMutationVariables, TContext> => {
+
+const mutationKey = getImportLibraryAudioCaptureRecoveryMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof importLibraryAudioCaptureRecovery>>, ImportLibraryAudioCaptureRecoveryMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  importLibraryAudioCaptureRecovery(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ImportLibraryAudioCaptureRecoveryMutationResult = NonNullable<Awaited<ReturnType<typeof importLibraryAudioCaptureRecovery>>>
+
+    export type ImportLibraryAudioCaptureRecoveryMutationError = ErrorType<ApiError>
+    export type ImportLibraryAudioCaptureRecoveryMutationVariables = {id: string}
+
+    /**
+ * @summary Add a preserved recording to the Waveyard library
+ */
+export const useImportLibraryAudioCaptureRecovery = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof importLibraryAudioCaptureRecovery>>, TError,ImportLibraryAudioCaptureRecoveryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof importLibraryAudioCaptureRecovery>>,
+        TError,
+        ImportLibraryAudioCaptureRecoveryMutationVariables,
+        TContext
+      > => {
+      return useMutation(getImportLibraryAudioCaptureRecoveryMutationOptions(options));
+    }
+
+export const getGetLibraryAudioCaptureStatusUrl = (id: string,) => {
+
+
+
+
+  return `/api/library/audio-capture/${id}`
+}
+
+/**
+ * @summary Get the status of an active capture session
+ */
+export const getLibraryAudioCaptureStatus = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureStatusResponse> => {
+
+  return customFetch<LibraryAudioCaptureStatusResponse>(getGetLibraryAudioCaptureStatusUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLibraryAudioCaptureStatusQueryKey = (id: string,) => {
+    return [
+    `/api/library/audio-capture/${id}`
+    ] as const;
+    }
+
+
+export const getGetLibraryAudioCaptureStatusQueryOptions = <TData = Awaited<ReturnType<typeof getLibraryAudioCaptureStatus>>, TError = ErrorType<ApiError>>(id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLibraryAudioCaptureStatusQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLibraryAudioCaptureStatus>>> = ({ signal }) => getLibraryAudioCaptureStatus(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureStatus>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLibraryAudioCaptureStatusQueryResult = NonNullable<Awaited<ReturnType<typeof getLibraryAudioCaptureStatus>>>
+export type GetLibraryAudioCaptureStatusQueryError = ErrorType<ApiError>
+
+
+/**
+ * @summary Get the status of an active capture session
+ */
+
+export function useGetLibraryAudioCaptureStatus<TData = Awaited<ReturnType<typeof getLibraryAudioCaptureStatus>>, TError = ErrorType<ApiError>>(
+ id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioCaptureStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLibraryAudioCaptureStatusQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getStopLibraryAudioCaptureUrl = (id: string,) => {
+
+
+
+
+  return `/api/library/audio-capture/${id}/stop`
+}
+
+/**
+ * @summary Stop, verify, and add a recording to the Waveyard library
+ */
+export const stopLibraryAudioCapture = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureStopResponse> => {
+
+  return customFetch<LibraryAudioCaptureStopResponse>(getStopLibraryAudioCaptureUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getStopLibraryAudioCaptureMutationKey = () => ['stopLibraryAudioCapture'] as const;
+
+export const getStopLibraryAudioCaptureMutationOptions = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof stopLibraryAudioCapture>>, TError,StopLibraryAudioCaptureMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof stopLibraryAudioCapture>>, TError,StopLibraryAudioCaptureMutationVariables, TContext> => {
+
+const mutationKey = getStopLibraryAudioCaptureMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof stopLibraryAudioCapture>>, StopLibraryAudioCaptureMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  stopLibraryAudioCapture(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StopLibraryAudioCaptureMutationResult = NonNullable<Awaited<ReturnType<typeof stopLibraryAudioCapture>>>
+
+    export type StopLibraryAudioCaptureMutationError = ErrorType<ApiError>
+    export type StopLibraryAudioCaptureMutationVariables = {id: string}
+
+    /**
+ * @summary Stop, verify, and add a recording to the Waveyard library
+ */
+export const useStopLibraryAudioCapture = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof stopLibraryAudioCapture>>, TError,StopLibraryAudioCaptureMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof stopLibraryAudioCapture>>,
+        TError,
+        StopLibraryAudioCaptureMutationVariables,
+        TContext
+      > => {
+      return useMutation(getStopLibraryAudioCaptureMutationOptions(options));
     }
 
 export const getGetLibraryAudioBackupUrl = (params: GetLibraryAudioBackupParams,) => {

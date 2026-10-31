@@ -163,6 +163,272 @@ export const CreateLibraryConversionResponse = zod.object({
 
 
 /**
+ * @summary Check Windows audio loopback capture availability
+ */
+export const getLibraryAudioCaptureOptionsResponseActiveSessionElapsedSecondsMin = 0;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionDiscontinuityCountMin = 0;
+
+
+
+
+
+
+
+export const GetLibraryAudioCaptureOptionsResponse = zod.object({
+  "available": zod.boolean(),
+  "devices": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "isDefault": zod.boolean()
+})),
+  "reason": zod.string().optional(),
+  "activeSession": zod.object({
+  "sessionId": zod.string().uuid(),
+  "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
+  "title": zod.string(),
+  "startedAt": zod.coerce.date().optional(),
+  "elapsedSeconds": zod.number().min(getLibraryAudioCaptureOptionsResponseActiveSessionElapsedSecondsMin),
+  "discontinuityCount": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionDiscontinuityCountMin),
+  "format": zod.object({
+  "sampleRate": zod.number().int().min(1),
+  "channels": zod.number().int().min(1),
+  "bitsPerSample": zod.number().int().min(1),
+  "blockAlign": zod.number().int().min(1)
+}).optional(),
+  "message": zod.string().optional()
+}).optional(),
+  "recoveryError": zod.string().optional()
+})
+
+
+/**
+ * Records the selected Windows playback endpoint mix in its native shared-mode PCM format. Protected or unavailable audio is not bypassed.
+ * @summary Start an authorized Windows system-loopback recording
+ */
+export const startLibraryAudioCaptureBodyTitleMax = 200;
+
+export const startLibraryAudioCaptureBodyArtistMax = 200;
+
+export const startLibraryAudioCaptureBodyAlbumMax = 200;
+
+export const startLibraryAudioCaptureBodyDeviceIdMax = 4096;
+
+
+
+export const StartLibraryAudioCaptureBody = zod.object({
+  "title": zod.string().min(1).max(startLibraryAudioCaptureBodyTitleMax),
+  "artist": zod.string().max(startLibraryAudioCaptureBodyArtistMax).optional(),
+  "album": zod.string().max(startLibraryAudioCaptureBodyAlbumMax).optional(),
+  "deviceId": zod.string().max(startLibraryAudioCaptureBodyDeviceIdMax).optional(),
+  "rightsReviewed": zod.literal(true)
+})
+
+
+
+
+
+
+
+export const StartLibraryAudioCaptureResponse = zod.object({
+  "sessionId": zod.string().uuid(),
+  "status": zod.enum(['recording']),
+  "startedAt": zod.coerce.date(),
+  "format": zod.object({
+  "sampleRate": zod.number().int().min(1),
+  "channels": zod.number().int().min(1),
+  "bitsPerSample": zod.number().int().min(1),
+  "blockAlign": zod.number().int().min(1)
+})
+})
+
+
+/**
+ * @summary List recordings preserved after interruption
+ */
+export const GetLibraryAudioCaptureRecoveriesResponse = zod.object({
+  "recoveries": zod.array(zod.object({
+  "sessionId": zod.string().uuid(),
+  "title": zod.string(),
+  "artist": zod.string().optional(),
+  "album": zod.string().optional(),
+  "createdAt": zod.coerce.date()
+}))
+})
+
+
+/**
+ * @summary Add a preserved recording to the Waveyard library
+ */
+export const ImportLibraryAudioCaptureRecoveryParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const importLibraryAudioCaptureRecoveryResponseTrackRatingMin = 0;
+export const importLibraryAudioCaptureRecoveryResponseTrackRatingMax = 5;
+
+export const importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMin = 0;
+export const importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMax = 100;
+
+
+
+export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
+  "track": zod.object({
+  "id": zod.string().uuid(),
+  "title": zod.string(),
+  "artist": zod.string(),
+  "album": zod.string(),
+  "durationSeconds": zod.number(),
+  "playCount": zod.number().int(),
+  "rating": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseTrackRatingMin).max(importLibraryAudioCaptureRecoveryResponseTrackRatingMax),
+  "labels": zod.array(zod.string()),
+  "lastPlayedAt": zod.coerce.date().nullable(),
+  "addedAt": zod.coerce.date(),
+  "stemAvailability": zod.union([zod.object({
+  "status": zod.enum(['separated']),
+  "stemCount": zod.number().int(),
+  "stemTypes": zod.array(zod.string())
+}),zod.object({
+  "status": zod.enum(['source-only', 'not-started', 'unavailable']),
+  "reason": zod.string()
+}),zod.object({
+  "status": zod.enum(['processing']),
+  "reason": zod.string(),
+  "stage": zod.string().optional(),
+  "progress": zod.object({
+  "percent": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMin).max(importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMax),
+  "phase": zod.string().optional()
+}).optional()
+}),zod.object({
+  "status": zod.enum(['rejected', 'failed']),
+  "reason": zod.string(),
+  "retryJobId": zod.string().uuid()
+})]),
+  "analysis": zod.object({
+  "status": zod.string(),
+  "bpm": zod.number().nullable(),
+  "musicalKey": zod.string().nullable()
+}).nullish(),
+  "studioProjectId": zod.string().uuid()
+}),
+  "created": zod.boolean(),
+  "separationQueued": zod.boolean()
+})
+
+
+/**
+ * @summary Get the status of an active capture session
+ */
+export const GetLibraryAudioCaptureStatusParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const getLibraryAudioCaptureStatusResponseElapsedSecondsMin = 0;
+
+export const getLibraryAudioCaptureStatusResponseDiscontinuityCountMin = 0;
+
+
+
+
+
+
+
+export const GetLibraryAudioCaptureStatusResponse = zod.object({
+  "sessionId": zod.string().uuid(),
+  "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
+  "title": zod.string(),
+  "startedAt": zod.coerce.date().optional(),
+  "elapsedSeconds": zod.number().min(getLibraryAudioCaptureStatusResponseElapsedSecondsMin),
+  "discontinuityCount": zod.number().int().min(getLibraryAudioCaptureStatusResponseDiscontinuityCountMin),
+  "format": zod.object({
+  "sampleRate": zod.number().int().min(1),
+  "channels": zod.number().int().min(1),
+  "bitsPerSample": zod.number().int().min(1),
+  "blockAlign": zod.number().int().min(1)
+}).optional(),
+  "message": zod.string().optional()
+})
+
+
+/**
+ * @summary Stop, verify, and add a recording to the Waveyard library
+ */
+export const StopLibraryAudioCaptureParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const stopLibraryAudioCaptureResponseTrackRatingMin = 0;
+export const stopLibraryAudioCaptureResponseTrackRatingMax = 5;
+
+export const stopLibraryAudioCaptureResponseTrackStemAvailabilityThreeProgressPercentMin = 0;
+export const stopLibraryAudioCaptureResponseTrackStemAvailabilityThreeProgressPercentMax = 100;
+
+export const stopLibraryAudioCaptureResponseSampleFramesMin = 0;
+
+export const stopLibraryAudioCaptureResponseDurationSecondsMin = 0;
+
+
+
+
+
+export const stopLibraryAudioCaptureResponseDiscontinuityCountMin = 0;
+
+
+
+export const StopLibraryAudioCaptureResponse = zod.object({
+  "track": zod.object({
+  "id": zod.string().uuid(),
+  "title": zod.string(),
+  "artist": zod.string(),
+  "album": zod.string(),
+  "durationSeconds": zod.number(),
+  "playCount": zod.number().int(),
+  "rating": zod.number().int().min(stopLibraryAudioCaptureResponseTrackRatingMin).max(stopLibraryAudioCaptureResponseTrackRatingMax),
+  "labels": zod.array(zod.string()),
+  "lastPlayedAt": zod.coerce.date().nullable(),
+  "addedAt": zod.coerce.date(),
+  "stemAvailability": zod.union([zod.object({
+  "status": zod.enum(['separated']),
+  "stemCount": zod.number().int(),
+  "stemTypes": zod.array(zod.string())
+}),zod.object({
+  "status": zod.enum(['source-only', 'not-started', 'unavailable']),
+  "reason": zod.string()
+}),zod.object({
+  "status": zod.enum(['processing']),
+  "reason": zod.string(),
+  "stage": zod.string().optional(),
+  "progress": zod.object({
+  "percent": zod.number().int().min(stopLibraryAudioCaptureResponseTrackStemAvailabilityThreeProgressPercentMin).max(stopLibraryAudioCaptureResponseTrackStemAvailabilityThreeProgressPercentMax),
+  "phase": zod.string().optional()
+}).optional()
+}),zod.object({
+  "status": zod.enum(['rejected', 'failed']),
+  "reason": zod.string(),
+  "retryJobId": zod.string().uuid()
+})]),
+  "analysis": zod.object({
+  "status": zod.string(),
+  "bpm": zod.number().nullable(),
+  "musicalKey": zod.string().nullable()
+}).nullish(),
+  "studioProjectId": zod.string().uuid()
+}),
+  "created": zod.boolean(),
+  "separationQueued": zod.boolean(),
+  "sampleFrames": zod.number().int().min(stopLibraryAudioCaptureResponseSampleFramesMin),
+  "durationSeconds": zod.number().min(stopLibraryAudioCaptureResponseDurationSecondsMin),
+  "format": zod.object({
+  "sampleRate": zod.number().int().min(1),
+  "channels": zod.number().int().min(1),
+  "bitsPerSample": zod.number().int().min(1),
+  "blockAlign": zod.number().int().min(1)
+}),
+  "discontinuityCount": zod.number().int().min(stopLibraryAudioCaptureResponseDiscontinuityCountMin)
+})
+
+
+/**
  * Returns a ZIP archive when preflight is omitted. With preflight=1, returns the selected file count and total bytes. This does not retrieve Apple Music subscription audio.
  * @summary Download exact stored library originals as a ZIP with a CSV manifest
  */

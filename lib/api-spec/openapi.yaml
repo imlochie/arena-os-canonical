@@ -92,6 +92,141 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+  /library/audio-capture:
+    get:
+      operationId: getLibraryAudioCaptureOptions
+      tags: [waveyard]
+      summary: Check Windows audio loopback capture availability
+      responses:
+        "200":
+          description: Capture-host status and active Windows playback endpoints
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioCaptureOptionsResponse"
+    post:
+      operationId: startLibraryAudioCapture
+      tags: [waveyard]
+      summary: Start an authorized Windows system-loopback recording
+      description: Records the selected Windows playback endpoint mix in its native shared-mode PCM format. Protected or unavailable audio is not bypassed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LibraryAudioCaptureStartInput"
+      responses:
+        "201":
+          description: Recording started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioCaptureStartResponse"
+        "403":
+          description: User did not confirm recording authorization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          description: Windows capture host or playback endpoint is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /library/audio-capture/recoveries:
+    get:
+      operationId: getLibraryAudioCaptureRecoveries
+      tags: [waveyard]
+      summary: List recordings preserved after interruption
+      responses:
+        "200":
+          description: Recoverable recordings belonging to the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioCaptureRecoveriesResponse"
+  /library/audio-capture/recoveries/{id}/import:
+    post:
+      operationId: importLibraryAudioCaptureRecovery
+      tags: [waveyard]
+      summary: Add a preserved recording to the Waveyard library
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Recording added or matched in the library
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioCaptureRecoveryImportResponse"
+        "404":
+          description: Recoverable recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /library/audio-capture/{id}:
+    get:
+      operationId: getLibraryAudioCaptureStatus
+      tags: [waveyard]
+      summary: Get the status of an active capture session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Current recording state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioCaptureStatusResponse"
+        "404":
+          description: Capture session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /library/audio-capture/{id}/stop:
+    post:
+      operationId: stopLibraryAudioCapture
+      tags: [waveyard]
+      summary: Stop, verify, and add a recording to the Waveyard library
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Recording added or matched in the library
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioCaptureStopResponse"
+        "404":
+          description: Capture session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Recording could not be safely finalized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
         "415":
           description: Unsupported or unverified source audio
           content:
@@ -338,6 +473,164 @@ components:
         notice:
           type: string
       required: [track, created, originalTrackId, format, verification, notice]
+    LibraryAudioCaptureDevice:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        isDefault:
+          type: boolean
+      required: [id, name, isDefault]
+    LibraryAudioCaptureOptionsResponse:
+      type: object
+      properties:
+        available:
+          type: boolean
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryAudioCaptureDevice"
+        reason:
+          type: string
+        activeSession:
+          $ref: "#/components/schemas/LibraryAudioCaptureStatusResponse"
+        recoveryError:
+          type: string
+      required: [available, devices]
+    LibraryAudioCaptureRecovery:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        artist:
+          type: string
+        album:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [sessionId, title, createdAt]
+    LibraryAudioCaptureRecoveriesResponse:
+      type: object
+      properties:
+        recoveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryAudioCaptureRecovery"
+      required: [recoveries]
+    LibraryAudioCaptureRecoveryImportResponse:
+      type: object
+      properties:
+        track:
+          $ref: "#/components/schemas/LibraryTrackSummary"
+        created:
+          type: boolean
+        separationQueued:
+          type: boolean
+      required: [track, created, separationQueued]
+    LibraryAudioCaptureFormat:
+      type: object
+      properties:
+        sampleRate:
+          type: integer
+          minimum: 1
+        channels:
+          type: integer
+          minimum: 1
+        bitsPerSample:
+          type: integer
+          minimum: 1
+        blockAlign:
+          type: integer
+          minimum: 1
+      required: [sampleRate, channels, bitsPerSample, blockAlign]
+    LibraryAudioCaptureStartInput:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        artist:
+          type: string
+          maxLength: 200
+        album:
+          type: string
+          maxLength: 200
+        deviceId:
+          type: string
+          maxLength: 4096
+        rightsReviewed:
+          type: boolean
+          enum: [true]
+      required: [title, rightsReviewed]
+      additionalProperties: false
+    LibraryAudioCaptureStartResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [recording]
+        startedAt:
+          type: string
+          format: date-time
+        format:
+          $ref: "#/components/schemas/LibraryAudioCaptureFormat"
+      required: [sessionId, status, startedAt, format]
+    LibraryAudioCaptureStatusResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [starting, recording, stopping, completed, failed]
+        title:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        elapsedSeconds:
+          type: number
+          minimum: 0
+        discontinuityCount:
+          type: integer
+          minimum: 0
+        format:
+          $ref: "#/components/schemas/LibraryAudioCaptureFormat"
+        message:
+          type: string
+      required: [sessionId, status, title, elapsedSeconds, discontinuityCount]
+    LibraryAudioCaptureStopResponse:
+      type: object
+      properties:
+        track:
+          $ref: "#/components/schemas/LibraryTrackSummary"
+        created:
+          type: boolean
+        separationQueued:
+          type: boolean
+        sampleFrames:
+          type: integer
+          minimum: 0
+        durationSeconds:
+          type: number
+          minimum: 0
+        format:
+          $ref: "#/components/schemas/LibraryAudioCaptureFormat"
+        discontinuityCount:
+          type: integer
+          minimum: 0
+      required: [track, created, separationQueued, sampleFrames, durationSeconds, format, discontinuityCount]
     ApiError:
       type: object
       properties:

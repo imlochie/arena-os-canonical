@@ -170,6 +170,115 @@ export interface LibraryConversionResponse {
   notice: string;
 }
 
+export interface LibraryAudioCaptureDevice {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+export type LibraryAudioCaptureStatusResponseStatus = typeof LibraryAudioCaptureStatusResponseStatus[keyof typeof LibraryAudioCaptureStatusResponseStatus];
+
+
+export const LibraryAudioCaptureStatusResponseStatus = {
+  starting: 'starting',
+  recording: 'recording',
+  stopping: 'stopping',
+  completed: 'completed',
+  failed: 'failed',
+} as const;
+
+export interface LibraryAudioCaptureFormat {
+  /** @minimum 1 */
+  sampleRate: number;
+  /** @minimum 1 */
+  channels: number;
+  /** @minimum 1 */
+  bitsPerSample: number;
+  /** @minimum 1 */
+  blockAlign: number;
+}
+
+export interface LibraryAudioCaptureStatusResponse {
+  sessionId: string;
+  status: LibraryAudioCaptureStatusResponseStatus;
+  title: string;
+  startedAt?: string;
+  /** @minimum 0 */
+  elapsedSeconds: number;
+  /** @minimum 0 */
+  discontinuityCount: number;
+  format?: LibraryAudioCaptureFormat;
+  message?: string;
+}
+
+export interface LibraryAudioCaptureOptionsResponse {
+  available: boolean;
+  devices: LibraryAudioCaptureDevice[];
+  reason?: string;
+  activeSession?: LibraryAudioCaptureStatusResponse;
+  recoveryError?: string;
+}
+
+export interface LibraryAudioCaptureRecovery {
+  sessionId: string;
+  title: string;
+  artist?: string;
+  album?: string;
+  createdAt: string;
+}
+
+export interface LibraryAudioCaptureRecoveriesResponse {
+  recoveries: LibraryAudioCaptureRecovery[];
+}
+
+export interface LibraryAudioCaptureRecoveryImportResponse {
+  track: LibraryTrackSummary;
+  created: boolean;
+  separationQueued: boolean;
+}
+
+export interface LibraryAudioCaptureStartInput {
+  /**
+     * @minLength 1
+     * @maxLength 200
+     */
+  title: string;
+  /** @maxLength 200 */
+  artist?: string;
+  /** @maxLength 200 */
+  album?: string;
+  /** @maxLength 4096 */
+  deviceId?: string;
+  rightsReviewed: true;
+}
+
+export type LibraryAudioCaptureStartResponseStatus = typeof LibraryAudioCaptureStartResponseStatus[keyof typeof LibraryAudioCaptureStartResponseStatus];
+
+
+export const LibraryAudioCaptureStartResponseStatus = {
+  recording: 'recording',
+} as const;
+
+export interface LibraryAudioCaptureStartResponse {
+  sessionId: string;
+  status: LibraryAudioCaptureStartResponseStatus;
+  startedAt: string;
+  format: LibraryAudioCaptureFormat;
+}
+
+export interface LibraryAudioCaptureStopResponse {
+  track: LibraryTrackSummary;
+  created: boolean;
+  separationQueued: boolean;
+  /** @minimum 0 */
+  sampleFrames: number;
+  /** @minimum 0 */
+  durationSeconds: number;
+  format: LibraryAudioCaptureFormat;
+  /** @minimum 0 */
+  discontinuityCount: number;
+}
+
 export interface ApiError {
   error: string;
 }

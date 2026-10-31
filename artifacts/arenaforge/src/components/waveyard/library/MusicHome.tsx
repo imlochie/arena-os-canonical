@@ -14,6 +14,7 @@ import Link from "@/routing/Link";
 import { useListeningHost } from "@/components/waveyard/listening/ListeningHost";
 import { ConnectedLibraries } from "../studio/ConnectedLibraries";
 import StemEngineSetup from "./StemEngineSetup";
+import { AudioCaptureWorkbench } from "./AudioCaptureWorkbench";
 import { ConversionWorkbench } from "./ConversionWorkbench";
 import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges } from "./queue-sync";
 
@@ -1447,6 +1448,9 @@ export function MusicHome() {
           <small>Up to 100 tracks / 2 GiB per ZIP. This includes only original audio files stored in Waveyard—not Apple Music subscription streams.</small>
           {audioBackupMessage !== null && <p className="library-message" role="status" aria-live="polite">{audioBackupMessage}</p>}
         </section>
+        <AudioCaptureWorkbench
+          onCaptured={() => { void refresh(search); }}
+        />
         <ConversionWorkbench
           tracks={visibleAudioTracks}
           onConverted={() => { void refresh(search); }}

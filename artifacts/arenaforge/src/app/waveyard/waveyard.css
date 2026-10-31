@@ -526,6 +526,29 @@
 .library-streaming-backups[open]>summary{margin-bottom:8px}
 .track-backup-choice{display:inline-flex;gap:5px;align-items:center;color:var(--muted);font-size:11px}
 .track-backup-choice input{accent-color:var(--acid)}
+.library-audio-capture-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.library-audio-capture-refresh{min-height:32px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
+.library-audio-capture-refresh:disabled{opacity:.5;cursor:not-allowed}
+.library-audio-capture-notice{max-width:920px}
+.library-audio-capture-live{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;color:var(--acid);font-size:11px;font-weight:650}
+.library-audio-capture-live span{width:8px;height:8px;border-radius:50%;background:var(--acid);box-shadow:0 0 12px color-mix(in srgb,var(--acid),transparent 30%)}
+.library-audio-capture-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end}
+.library-audio-capture-form>label:not(.track-backup-choice){display:grid;gap:5px;color:var(--muted);font-size:11px}
+.library-audio-capture-form input:not([type=checkbox]),.library-audio-capture-form select{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit}
+.library-audio-capture-form .track-backup-choice{grid-column:1/-1}
+.library-audio-capture-form>button,.library-audio-capture-session button,.library-audio-capture-recovery button{min-height:36px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--acid);color:var(--ink);font-weight:700;cursor:pointer}
+.library-audio-capture-form>button:disabled,.library-audio-capture-session button:disabled,.library-audio-capture-recovery button:disabled{opacity:.5;cursor:not-allowed}
+.library-audio-capture-unavailable{grid-column:1/-1;color:var(--muted)}
+.library-audio-capture-session{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--panel),transparent 8%)}
+.library-audio-capture-session>div,.library-audio-capture-recovery>div{display:grid;gap:4px;min-width:0}
+.library-audio-capture-session>div span,.library-audio-capture-recovery>div span{color:var(--muted);font-size:11px}
+.library-audio-capture-session.is-failed{border-color:color-mix(in srgb,#ef8e67,var(--line) 45%)}
+.library-audio-capture-warning{color:#ef9b76!important;font-size:11px}
+.library-audio-capture-recoveries{display:grid;gap:8px;padding-top:10px;border-top:1px solid var(--line)}
+.library-audio-capture-recovery{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px;border-radius:9px;background:color-mix(in srgb,var(--panel),transparent 8%)}
+.library-audio-capture-recovery button{background:transparent;color:var(--text)}
+.optional-label{color:var(--muted);font-weight:400}
+@media(max-width:640px){.library-audio-capture-heading,.library-audio-capture-session,.library-audio-capture-recovery{align-items:stretch;flex-direction:column}.library-audio-capture-live{white-space:normal}.library-audio-capture-form{grid-template-columns:1fr}}
 .empty{color:var(--muted);font-size:13px;margin:8px 0}
 .track-list{display:grid}
 .track-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto auto auto;gap:16px;align-items:center;padding:12px 6px;border-bottom:1px solid var(--line);min-width:0}

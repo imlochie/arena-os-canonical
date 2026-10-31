@@ -6,6 +6,7 @@
  * packaging check.
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +26,7 @@ const checkIds = [
   "packaged_migrations_run",
   "bundled_ffmpeg_resolves",
   "bundled_ffprobe_resolves",
+  "waveyard_capture_host_loads",
 ];
 const report = {
   passed: false,
@@ -116,6 +118,20 @@ async function run() {
     );
     pass(id);
   }
+
+  begin("waveyard_capture_host_loads");
+  const captureHost = path.join(resources, "native", "waveyard-capture-host.exe");
+  const captureHostResult = spawnSync(captureHost, ["version"], {
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.equal(captureHostResult.error, undefined, captureHostResult.error?.message);
+  assert.equal(captureHostResult.status, 0, captureHostResult.stderr);
+  const captureProtocol = JSON.parse(captureHostResult.stdout.trim());
+  assert.equal(captureProtocol.protocolVersion, 1);
+  assert.deepEqual(captureProtocol.captureModes, ["system-loopback"]);
+  pass("waveyard_capture_host_loads");
 
   report.passed = true;
 }
