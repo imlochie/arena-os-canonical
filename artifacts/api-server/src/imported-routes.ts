@@ -136,6 +136,7 @@ export const importedRoutes = [
   { path: "/library/stream/:id", methods: ["GET","HEAD"], load: () => import("./imported/library/stream/[id]/route.ts") },
   { path: "/library/tracks/:id/separation", methods: ["POST"], load: () => import("./imported/library/tracks/[id]/separation/route.ts") },
   { path: "/library/audio-backup", methods: ["GET"], load: () => import("./imported/library/audio-backup/route.ts") },
+  { path: "/library/audio-backup/restore", methods: ["POST"], load: () => import("./imported/library/audio-backup/restore/route.ts") },
   { path: "/library/tracks/:id", methods: ["GET","PATCH"], load: () => import("./imported/library/tracks/[id]/route.ts") },
   { path: "/library/tracks", methods: ["GET","POST"], load: () => import("./imported/library/tracks/route.ts") },
   { path: "/model-hub/pull", methods: ["POST"], load: () => import("./imported/model-hub/pull/route.ts") },

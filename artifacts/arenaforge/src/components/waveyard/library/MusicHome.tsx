@@ -35,6 +35,7 @@ import {
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 const MAX_PARALLEL_LIBRARY_UPLOAD_BYTES = 64 * 1024 * 1024;
+const MAX_AUDIO_RESTORE_BYTES = 2 * 1024 ** 3;
 const APPLE_BACKUP_SERVICES = ["apple"] as const;
 
 interface TrackSummary {
@@ -346,6 +347,14 @@ export function MusicHome() {
   const [selectedAudioBackupIds, setSelectedAudioBackupIds] = useState<Set<string>>(() => new Set());
   const [audioBackupBusy, setAudioBackupBusy] = useState(false);
   const [audioBackupMessage, setAudioBackupMessage] = useState<string | null>(null);
+  const [restoreArchiveFile, setRestoreArchiveFile] = useState<File | null>(null);
+  const [restoreSpaceConfirmed, setRestoreSpaceConfirmed] = useState(false);
+  const [restoreAudioBusy, setRestoreAudioBusy] = useState(false);
+  const [restoreAudioProgress, setRestoreAudioProgress] = useState<number | null>(null);
+  const [restoreAudioMessage, setRestoreAudioMessage] = useState<string | null>(null);
+  const [restoreAudioNeedsRetry, setRestoreAudioNeedsRetry] = useState(false);
+  const restoreFileInputRef = useRef<HTMLInputElement | null>(null);
+  const restoreRequestRef = useRef<XMLHttpRequest | null>(null);
   const [streamingBackupsOpen, setStreamingBackupsOpen] = useState(false);
   const streamingBackupsRef = useRef<HTMLDetailsElement | null>(null);
   const dragDepth = useRef(0);
@@ -914,6 +923,82 @@ export function MusicHome() {
     }
   }, [selectedAudioBackupIds]);
 
+  const restoreAudioBackup = useCallback(() => {
+    if (restoreArchiveFile === null || !restoreSpaceConfirmed || restoreAudioBusy) return;
+    if (restoreArchiveFile.size <= 0 || restoreArchiveFile.size > MAX_AUDIO_RESTORE_BYTES) {
+      setRestoreAudioMessage("Choose a non-empty Waveyard ZIP no larger than 2 GiB.");
+      return;
+    }
+
+    setRestoreAudioBusy(true);
+    setRestoreAudioProgress(0);
+    setRestoreAudioMessage(null);
+    setRestoreAudioNeedsRetry(false);
+    const request = new XMLHttpRequest();
+    restoreRequestRef.current = request;
+    request.open("POST", "/api/library/audio-backup/restore");
+    request.setRequestHeader("Content-Type", "application/zip");
+    request.withCredentials = true;
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        setRestoreAudioProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+    request.upload.onload = () => setRestoreAudioProgress(100);
+    request.onload = () => {
+      restoreRequestRef.current = null;
+      setRestoreAudioBusy(false);
+      setRestoreAudioProgress(null);
+      let body: {
+        error?: unknown;
+        restored?: unknown;
+        duplicates?: unknown;
+        failed?: unknown;
+        results?: Array<{ status?: unknown; title?: unknown }>;
+      } = {};
+      try {
+        body = JSON.parse(request.responseText) as typeof body;
+      } catch {
+        setRestoreAudioMessage("The restore server returned an unreadable response. Retry the ZIP; already-restored audio will be skipped.");
+        return;
+      }
+      if (request.status < 200 || request.status >= 300) {
+        setRestoreAudioMessage(typeof body.error === "string" ? body.error : "Could not restore this Waveyard ZIP.");
+        return;
+      }
+      const restored = typeof body.restored === "number" ? body.restored : 0;
+      const duplicates = typeof body.duplicates === "number" ? body.duplicates : 0;
+      const failed = typeof body.failed === "number" ? body.failed : 0;
+      const firstFailure = body.results?.find((result) => result.status === "failed");
+      const failureTitle = typeof firstFailure?.title === "string" ? ` First problem: ${firstFailure.title}.` : "";
+      setRestoreAudioMessage(
+        `Restored ${restored} original${restored === 1 ? "" : "s"}; skipped ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${failed} failed.${failed > 0 ? `${failureTitle} Retry this ZIP; completed files will be skipped.` : ""}`,
+      );
+      setRestoreAudioNeedsRetry(failed > 0);
+      if (failed === 0) {
+        setRestoreArchiveFile(null);
+        setRestoreSpaceConfirmed(false);
+        if (restoreFileInputRef.current !== null) restoreFileInputRef.current.value = "";
+      }
+      void refresh(search);
+    };
+    request.onerror = () => {
+      restoreRequestRef.current = null;
+      setRestoreAudioBusy(false);
+      setRestoreAudioProgress(null);
+      setRestoreAudioMessage("The upload connection failed. Retry the ZIP; repeated files are detected and skipped.");
+      setRestoreAudioNeedsRetry(true);
+    };
+    request.onabort = () => {
+      restoreRequestRef.current = null;
+      setRestoreAudioBusy(false);
+      setRestoreAudioProgress(null);
+      setRestoreAudioMessage("Restore upload cancelled. Retry the ZIP; repeated files are detected and skipped.");
+      setRestoreAudioNeedsRetry(true);
+    };
+    request.send(restoreArchiveFile);
+  }, [refresh, restoreArchiveFile, restoreAudioBusy, restoreSpaceConfirmed, search]);
+
   const collectionCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const collection of collections) {
@@ -1447,6 +1532,66 @@ export function MusicHome() {
           </div>
           <small>Up to 100 tracks / 2 GiB per ZIP. This includes only original audio files stored in Waveyard—not Apple Music subscription streams.</small>
           {audioBackupMessage !== null && <p className="library-message" role="status" aria-live="polite">{audioBackupMessage}</p>}
+          <div className="library-audio-restore" aria-label="Restore Waveyard audio backup">
+            <strong>Restore a Waveyard ZIP</strong>
+            <div className="library-audio-backup-actions">
+              <label className="button secondary file-button">
+                Choose backup ZIP
+                <input
+                  ref={restoreFileInputRef}
+                  type="file"
+                  accept=".zip,application/zip"
+                  aria-label="Choose Waveyard audio backup ZIP"
+                  disabled={restoreAudioBusy}
+                  onChange={(event) => {
+                    setRestoreArchiveFile(event.target.files?.[0] ?? null);
+                    setRestoreSpaceConfirmed(false);
+                    setRestoreAudioMessage(null);
+                    setRestoreAudioNeedsRetry(false);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              {restoreArchiveFile !== null && (
+                <small>{restoreArchiveFile.name} · {formatAudioBackupBytes(restoreArchiveFile.size)}</small>
+              )}
+              <button
+                type="button"
+                className="button"
+                onClick={restoreAudioBackup}
+                disabled={restoreArchiveFile === null || !restoreSpaceConfirmed || restoreAudioBusy || restoreArchiveFile.size > MAX_AUDIO_RESTORE_BYTES}
+              >
+                {restoreAudioBusy
+                  ? restoreAudioProgress === 100 ? "Validating and restoring…" : `Uploading ${restoreAudioProgress ?? 0}%…`
+                  : restoreAudioNeedsRetry ? "Retry failed tracks" : "Restore originals"}
+              </button>
+              {restoreAudioBusy && (
+                <button type="button" className="button secondary" onClick={() => restoreRequestRef.current?.abort()}>
+                  Cancel restore
+                </button>
+              )}
+            </div>
+            {restoreArchiveFile !== null && restoreArchiveFile.size > MAX_AUDIO_RESTORE_BYTES && (
+              <small role="alert">This ZIP is larger than the 2 GiB restore limit.</small>
+            )}
+            {restoreAudioBusy && (
+              <div className="library-audio-restore-progress">
+                <progress aria-label="Audio backup upload progress" max={100} value={restoreAudioProgress ?? 0} />
+                <small>{restoreAudioProgress === 100 ? "Upload complete — validating checksums and restoring files…" : `Uploading ZIP: ${restoreAudioProgress ?? 0}%`}</small>
+              </div>
+            )}
+            <label className="library-audio-restore-confirm">
+              <input
+                type="checkbox"
+                checked={restoreSpaceConfirmed}
+                onChange={(event) => setRestoreSpaceConfirmed(event.target.checked)}
+                disabled={restoreAudioBusy || restoreArchiveFile === null}
+              />
+              <span>I have enough disk space for the restored originals in addition to this ZIP.</span>
+            </label>
+            <small>Only Waveyard audio ZIPs are accepted. Existing identical audio is skipped; restored tracks are not automatically queued for stem separation.</small>
+            {restoreAudioMessage !== null && <p className="library-message" role="status" aria-live="polite">{restoreAudioMessage}</p>}
+          </div>
         </section>
         <AudioCaptureWorkbench
           onCaptured={() => { void refresh(search); }}
