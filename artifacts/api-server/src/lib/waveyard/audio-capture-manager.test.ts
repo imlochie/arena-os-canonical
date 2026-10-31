@@ -231,14 +231,20 @@ printf '%s\\n' '{"type":"stopped"}' >&2
 
   let importCalls = 0;
   let releaseImport!: () => void;
+  let releaseCleanup!: () => void;
   let markImportStarted!: () => void;
+  let markImportPersisted!: () => void;
   const importGate = new Promise<void>((resolve) => { releaseImport = resolve; });
   const importStarted = new Promise<void>((resolve) => { markImportStarted = resolve; });
+  const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+  const importPersisted = new Promise<void>((resolve) => { markImportPersisted = resolve; });
   const importOperation = async () => {
     importCalls += 1;
     markImportStarted();
     await importGate;
     setAudioCaptureImportResult(ownerId, second.sessionId, importedResponse);
+    markImportPersisted();
+    await cleanupGate;
     return importedResponse;
   };
   const firstImport = runAudioCaptureImport(ownerId, second.sessionId, importOperation);
@@ -254,6 +260,14 @@ printf '%s\\n' '{"type":"stopped"}' >&2
     "a completed file is not offered for recovery while the stop request imports it",
   );
   releaseImport();
+  await importPersisted;
+  assert.deepEqual(getAudioCaptureImportResult(ownerId, second.sessionId), importedResponse);
+  assert.equal(
+    (await listRecoverableAudioCaptures(ownerId)).some((capture) => capture.sessionId === second.sessionId),
+    false,
+    "a successfully imported file is not exposed for recovery while cleanup is still running",
+  );
+  releaseCleanup();
   assert.deepEqual(await Promise.all([firstImport, duplicateImport]), [importedResponse, importedResponse]);
   assert.deepEqual(getAudioCaptureImportResult(ownerId, second.sessionId), importedResponse);
   assert.equal(getAudioCaptureSessionDirectory(ownerId, second.sessionId), captureDirectory);

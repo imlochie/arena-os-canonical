@@ -634,6 +634,7 @@ async function scanRecoverableAudioCaptures(ownerId: string): Promise<AudioCaptu
   const recoveries: AudioCaptureRecoveryFile[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^[0-9a-f-]{36}$/i.test(entry.name)) continue;
+    if (inFlightImports.get(entry.name)?.ownerId === ownerId) continue;
     const session = sessions.get(entry.name);
     if (session?.importing) continue;
     if (
