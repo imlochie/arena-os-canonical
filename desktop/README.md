@@ -18,9 +18,12 @@ The build script installs only the desktop app, API, web app and their workspace
 dependencies. This changes which packages are linked in `node_modules` for that
 checkout; run `pnpm install --frozen-lockfile` to restore every workspace, or
 pass `-FullWorkspace` when invoking the build script if you need them all now.
-The Windows x64 package keeps only its matching ONNX Runtime binaries. After a
-successful installer build, temporary `desktop/stage` and `desktop/dist` files
-are removed; the installer and reusable download caches remain.
+The Windows x64 package keeps only its matching ONNX Runtime binaries. A retry
+clears the previous generated `desktop/stage` before compiling. After a
+successful installer build, temporary `desktop/stage`, `desktop/dist`, and the
+duplicate `generated-artifacts/windows/win-unpacked` app tree are removed; the
+installer and reusable download caches remain. Failed builds retain their
+current staging files for diagnosis.
 The installer is currently unsigned; do not describe it as signed or production-verified.
 
 ## Free local model

@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { dataRoot } from "./data-paths.mjs";
 import { DesktopDatabase } from "./database.mjs";
+import { killProcessTree } from "./process-tree.mjs";
 import { stopBeforeQuit } from "./shutdown.mjs";
 
 app.setName("Arena");
@@ -50,9 +51,12 @@ async function stop() {
     if (child.connected) child.send("shutdown");
     await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 15_000))]);
     if (child.exitCode === null && child.signalCode === null) {
-      log("shutdown", "API did not stop gracefully; forcing termination");
-      child.kill();
+      log("shutdown", "API did not stop gracefully; terminating its process tree");
+      await killProcessTree(child);
       await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 3000))]);
+      if (child.exitCode === null && child.signalCode === null) {
+        throw new Error("The API process tree did not exit; the local database was left running.");
+      }
     }
   }
   await database?.stop();

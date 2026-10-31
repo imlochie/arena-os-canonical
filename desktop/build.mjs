@@ -106,13 +106,15 @@ async function main() {
   if (process.platform !== "win32" || process.arch !== "x64") {
     throw new Error("Build the Windows package on Windows x64. Linux builds cannot verify the shipped native dependencies.");
   }
+  // A retry may start with a large stage left by an earlier failed package.
+  // Clear only this regenerable tree before compilation needs additional disk.
+  const stage = path.join(here, "stage");
+  await rm(stage, { recursive: true, force: true });
   runPnpm(["--filter", "@workspace/arenaforge", "run", "build"], {
     NODE_ENV: "production", BASE_PATH: "/", PORT: "5173",
   });
   runPnpm(["--filter", "@workspace/api-server", "run", "build"]);
 
-  const stage = path.join(here, "stage");
-  await rm(stage, { recursive: true, force: true });
   await mkdir(path.join(stage, "server", "node_modules"), { recursive: true });
   await stageFfmpegBundle({
     cacheDir: path.join(root, "generated-artifacts", "windows-tool-cache"),

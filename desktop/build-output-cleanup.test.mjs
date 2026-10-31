@@ -14,21 +14,25 @@ test("successful packaging removes only regenerable staging and keeps the instal
   const stageDir = path.join(root, "stage");
   const distDir = path.join(root, "dist");
   const installerDir = path.join(root, "installers");
+  const unpackedDir = path.join(installerDir, "win-unpacked");
   try {
     await Promise.all([
       mkdir(stageDir),
       mkdir(distDir),
       mkdir(installerDir),
+      mkdir(unpackedDir),
     ]);
     const installer = path.join(installerDir, "ArenaForge Setup.exe");
     await Promise.all([
       writeFile(path.join(stageDir, "chromium.exe"), "staged"),
       writeFile(path.join(distDir, "main.cjs"), "bundle"),
       writeFile(installer, "installer"),
+      writeFile(path.join(unpackedDir, "ArenaForge.exe"), "unpacked app"),
     ]);
     await cleanupSuccessfulBuild({ stageDir, distDir, installerDir });
     assert.equal(await exists(stageDir), false);
     assert.equal(await exists(distDir), false);
+    assert.equal(await exists(unpackedDir), false);
     assert.equal(await exists(installer), true);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -40,15 +44,18 @@ test("failed packaging preserves staging files when no installer exists", async 
   const stageDir = path.join(root, "stage");
   const distDir = path.join(root, "dist");
   const installerDir = path.join(root, "installers");
+  const unpackedDir = path.join(installerDir, "win-unpacked");
   try {
     await Promise.all([
       mkdir(stageDir),
       mkdir(distDir),
       mkdir(installerDir),
+      mkdir(unpackedDir),
     ]);
     await Promise.all([
       writeFile(path.join(stageDir, "diagnostic.txt"), "keep for diagnosis"),
       writeFile(path.join(distDir, "main.cjs"), "keep for diagnosis"),
+      writeFile(path.join(unpackedDir, "ArenaForge.exe"), "previous build"),
     ]);
     await assert.rejects(
       cleanupSuccessfulBuild({ stageDir, distDir, installerDir }),
@@ -56,6 +63,7 @@ test("failed packaging preserves staging files when no installer exists", async 
     );
     assert.equal(await exists(path.join(stageDir, "diagnostic.txt")), true);
     assert.equal(await exists(path.join(distDir, "main.cjs")), true);
+    assert.equal(await exists(path.join(unpackedDir, "ArenaForge.exe")), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

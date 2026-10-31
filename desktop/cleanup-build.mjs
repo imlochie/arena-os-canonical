@@ -3,7 +3,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeDirWithRetry } from "./fs-cleanup.mjs";
 
-export async function cleanupSuccessfulBuild({ stageDir, distDir, installerDir, removeDir = removeDirWithRetry }) {
+export async function cleanupSuccessfulBuild({
+  stageDir,
+  distDir,
+  installerDir,
+  unpackedDir = path.join(installerDir, "win-unpacked"),
+  removeDir = removeDirWithRetry,
+}) {
   const entries = await readdir(installerDir, { withFileTypes: true });
   const installerExists = entries.some(
     (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"),
@@ -13,6 +19,7 @@ export async function cleanupSuccessfulBuild({ stageDir, distDir, installerDir, 
   }
   await removeDir(stageDir);
   await removeDir(distDir);
+  await removeDir(unpackedDir);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -23,5 +30,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     distDir: path.join(desktopDir, "dist"),
     installerDir: path.join(workspaceRoot, "generated-artifacts", "windows"),
   });
-  console.log("Removed temporary desktop staging files; the Windows installer and download caches remain.");
+  console.log("Removed temporary desktop staging and unpacked files; the Windows installer and download caches remain.");
 }
