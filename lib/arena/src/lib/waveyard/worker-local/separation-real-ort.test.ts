@@ -690,6 +690,7 @@ if (realAudioInputPath) {
     const inferenceStageTimings: { model: string; timings: MdxStageTimings }[] = [];
     try {
       await writeFile(excerptPath, processedWav);
+      const processedExcerptSha256 = await checksumFile(excerptPath);
       const excerptPreparationMs = Date.now() - excerptPreparationStartedAt;
       const f = await fixture({ model: "stems_4", sourceWavPath: excerptPath });
       fixtureState = f;
@@ -855,7 +856,7 @@ if (realAudioInputPath) {
         },
       );
       const report = {
-        schemaVersion: 6,
+        schemaVersion: 7,
         platform: process.platform,
         osType: osType(),
         osRelease: release(),
@@ -875,6 +876,7 @@ if (realAudioInputPath) {
           filename: basename(realAudioInputPath),
           bytes: sourceBytes,
           sha256: await checksumFile(sourcePath),
+          processedExcerptSha256,
           durationSeconds: sourceDurationSeconds,
           processedStartSeconds: startSeconds,
           processedDurationSeconds,
@@ -924,13 +926,16 @@ if (realAudioInputPath) {
           listeningReview?: string;
         };
         const referencePcm = {} as FourStemSamples;
+        const referenceSha256 = {} as Record<keyof FourStemSamples, string>;
         for (const stemType of ["vocals", "drums", "bass", "other"] as const) {
+          const referencePath = resolve(referenceManifest.referenceStems[stemType]);
           const decoded = await decodeSourceToStereoPcm(
-            resolve(referenceManifest.referenceStems[stemType]),
+            referencePath,
             {},
             {},
             { requireSampleRate: 44_100 },
           );
+          referenceSha256[stemType] = await checksumFile(referencePath);
           assert.equal(decoded.sampleRate, sourceDecoded.sampleRate);
           assert.equal(
             decoded.pcm.length,
@@ -961,6 +966,7 @@ if (realAudioInputPath) {
             track: referenceManifest.track,
             license: referenceManifest.license,
             attribution: referenceManifest.attribution,
+            referenceSha256,
             ...(auditionDirectory ? { auditionDirectory: resolve(auditionDirectory) } : {}),
             metrics: {
               method: "SI-SDR: stereo flattened with one least-squares gain; each estimate compared with its aligned reference and unseparated mixture. Recombined stem sum compared with the original mix using SI-SDR and unscaled residual SDR.",

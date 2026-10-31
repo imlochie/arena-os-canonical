@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { cpus, release, tmpdir, type as osType } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertQualityReport, summarizePairedQuality } from "./waveyard-quality-comparison.mjs";
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const testPath = join(
@@ -14,6 +15,7 @@ const tsxCli = join(workspaceRoot, "scripts/node_modules/tsx/dist/cli.mjs");
 const inputPath =
   process.env.WAVEYARD_REAL_AUDIO_INPUT?.trim() ||
   process.env.WAVEYARD_REAL_AUDIO_WAV?.trim();
+const referenceManifestPath = process.env.WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST?.trim();
 const reportPath = resolve(
   process.env.WAVEYARD_REAL_AUDIO_REPORT?.trim() ||
     "generated-artifacts/waveyard-real-audio-benchmark.json",
@@ -22,6 +24,10 @@ const repetitionText = process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS?.tr
 const repetitions = Number(repetitionText);
 
 assert.ok(inputPath, "Set WAVEYARD_REAL_AUDIO_INPUT to the audio file for the paired benchmark.");
+assert.ok(
+  referenceManifestPath,
+  "Set WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST to compare objective separation quality.",
+);
 assert.ok(
   Number.isInteger(repetitions) && repetitions >= 2 && repetitions <= 10,
   "WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS must be an integer from 2 to 10.",
@@ -150,26 +156,52 @@ try {
   const inputIdentity = {
     filename: basename(runs[0].input.filename),
     sha256: runs[0].input.sha256,
+    processedExcerptSha256: runs[0].input.processedExcerptSha256,
     processedStartSeconds: runs[0].input.processedStartSeconds,
     processedDurationSeconds: runs[0].input.processedDurationSeconds,
     sampleRate: runs[0].input.sampleRate,
     channels: runs[0].input.channels,
     models: runs[0].models,
+    referenceEvaluation: {
+      dataset: runs[0].result.referenceEvaluation.dataset,
+      datasetUrl: runs[0].result.referenceEvaluation.datasetUrl,
+      track: runs[0].result.referenceEvaluation.track,
+      license: runs[0].result.referenceEvaluation.license,
+      attribution: runs[0].result.referenceEvaluation.attribution,
+      referenceSha256: runs[0].result.referenceEvaluation.referenceSha256,
+    },
   };
+  assertQualityReport(runs[0]);
+  assert.match(
+    inputIdentity.processedExcerptSha256,
+    /^[a-f0-9]{64}$/i,
+    "Every paired comparison needs the checksum of the exact processed excerpt.",
+  );
   for (const run of runs) {
+    const referenceEvaluation = run.result.referenceEvaluation;
     assert.deepEqual(
       {
         filename: basename(run.input.filename),
         sha256: run.input.sha256,
+        processedExcerptSha256: run.input.processedExcerptSha256,
         processedStartSeconds: run.input.processedStartSeconds,
         processedDurationSeconds: run.input.processedDurationSeconds,
         sampleRate: run.input.sampleRate,
         channels: run.input.channels,
         models: run.models,
+        referenceEvaluation: {
+          dataset: referenceEvaluation?.dataset,
+          datasetUrl: referenceEvaluation?.datasetUrl,
+          track: referenceEvaluation?.track,
+          license: referenceEvaluation?.license,
+          attribution: referenceEvaluation?.attribution,
+          referenceSha256: referenceEvaluation?.referenceSha256,
+        },
       },
       inputIdentity,
       "Every paired run must use the same excerpt and pinned model checksums.",
     );
+    assertQualityReport(run);
   }
 
   const summary = Object.fromEntries(
@@ -208,6 +240,11 @@ try {
         : "Measured on this OS and CPU only; Linux results are not Windows performance evidence.",
     input: inputIdentity,
     pairedOrder: "Alternates which setting runs first on each repetition.",
+    qualityComparison: {
+      pairedMetricSummaries: summarizePairedQuality(runs),
+      interpretation:
+        "parallelMinusSequential values are paired by repetition. These observed objective scores do not prove equivalence and do not replace listening review; no score threshold is treated as perceptual equivalence.",
+    },
     summary,
     runs,
   };
