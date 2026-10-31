@@ -12,6 +12,7 @@ export function StudioTransport({
   timing,
   loopStartMs,
   loopEndMs,
+  hasArrangement,
   onMasterVolume,
   onLoopChange,
   arrangementPlaying,
@@ -24,6 +25,7 @@ export function StudioTransport({
   timing: MusicalTiming;
   loopStartMs: number;
   loopEndMs: number | null;
+  hasArrangement: boolean;
   onMasterVolume: (volume: number) => void;
   onLoopChange: (startMs: number, endMs: number | null) => void;
   arrangementPlaying: boolean;
@@ -48,11 +50,26 @@ export function StudioTransport({
         </button>
         <button
           className={`button ${arrangementPlaying ? "active" : "secondary"}`}
-          aria-label={arrangementPending ? "Cancel arrangement preview" : arrangementPlaying ? "Pause arrangement" : "Preview arrangement"}
+          aria-label={
+            arrangementPending
+              ? "Cancel arrangement preview"
+              : arrangementPlaying
+                ? "Pause arrangement"
+                : hasArrangement
+                  ? "Preview arrangement"
+                  : "Create arrangement to preview"
+          }
           aria-busy={arrangementPending}
+          disabled={!hasArrangement && !arrangementPending}
           onClick={onToggleArrangement}
         >
-          {arrangementPending ? "Loading arrangement… · Cancel" : arrangementPlaying ? "Pause arrangement" : "Preview arrangement"}
+          {arrangementPending
+            ? "Loading arrangement… · Cancel"
+            : arrangementPlaying
+              ? "Pause arrangement"
+              : hasArrangement
+                ? "Preview arrangement"
+                : "Create arrangement to preview"}
         </button>
         <button className="button secondary" aria-label="Stop" onClick={transport.stop}>
           Stop stems

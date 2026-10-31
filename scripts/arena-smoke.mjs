@@ -995,6 +995,13 @@ try {
       }),
     });
   });
+  await page.route(`**/api/waveyard/projects/${waveformRetryProjectId}/remixes`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ remixes: [] }),
+    });
+  });
   await page.route(`**/api/jobs/${separationRetryJobId}/retry`, async (route) => {
     assert.equal(route.request().method(), "POST", "project separation recovery uses the explicit retry action");
     separationRetryAttempts += 1;
@@ -1033,6 +1040,40 @@ try {
     });
   });
   await page.goto(`http://localhost:80/waveyard/projects/${waveformRetryProjectId}?view=studio`);
+  const studioTransport = page.getByRole("region", { name: "Transport controls" });
+  await studioTransport.waitFor({ state: "visible" });
+  const disabledArrangementPreview = page.getByRole("button", { name: "Create arrangement to preview" });
+  await disabledArrangementPreview.waitFor({ state: "visible" });
+  assert.equal(await disabledArrangementPreview.isDisabled(), true,
+    "an empty Studio must not present a working-looking arrangement preview that does nothing");
+  assert.equal(await page.evaluate(() => {
+    const transport = document.querySelector('[aria-label="Transport controls"]');
+    const sourcePool = document.querySelector('[aria-label="Project source pool"]');
+    return Boolean(transport && sourcePool && (transport.compareDocumentPosition(sourcePool) & Node.DOCUMENT_POSITION_FOLLOWING));
+  }), true, "the transport must sit directly after the timeline, before secondary source browsing");
+  await page.getByRole("tab", { name: "Analyze", exact: true }).click();
+  assert.equal(await studioTransport.isVisible(), true,
+    "Studio transport controls must remain available while the user switches to Analyze");
+  await page.getByRole("tab", { name: "Edit", exact: true }).click();
+  const desktopStudioViewport = page.viewportSize();
+  if (desktopStudioViewport) {
+    await page.setViewportSize({ width: 402, height: 874 });
+    const studioMobileLayout = await page.evaluate(() => {
+      const transport = document.querySelector('[aria-label="Transport controls"]')?.getBoundingClientRect();
+      return {
+        viewportWidth: document.documentElement.clientWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        transportLeft: transport?.left ?? -1,
+        transportRight: transport?.right ?? Number.POSITIVE_INFINITY,
+      };
+    });
+    assert.equal(studioMobileLayout.documentWidth, studioMobileLayout.viewportWidth,
+      "the Studio page and newly elevated transport must not create mobile horizontal overflow");
+    assert(studioMobileLayout.transportLeft >= 0 && studioMobileLayout.transportRight <= studioMobileLayout.viewportWidth,
+      "the Studio transport must remain completely reachable on a phone-width viewport");
+    await page.setViewportSize(desktopStudioViewport);
+  }
+  report.push("Studio playback controls now sit beside the timeline, remain visible in Analyze, cannot preview a missing arrangement, and fit a phone viewport.");
   const retryProjectSeparationButton = page.getByRole("button", { name: "Retry separation", exact: true });
   await retryProjectSeparationButton.waitFor();
   await retryProjectSeparationButton.click();

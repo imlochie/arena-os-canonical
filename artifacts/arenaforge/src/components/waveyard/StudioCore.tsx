@@ -969,6 +969,30 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>
+    <StudioTransport
+      transport={transport}
+      timing={timing}
+      loopStartMs={remix?.loopStartMs ?? 0}
+      loopEndMs={remix?.loopEndMs ?? null}
+      hasArrangement={remix !== null}
+      arrangementPlaying={arrangementPreview.playing}
+      arrangementPending={arrangementPreview.pending}
+      arrangementError={arrangementPreview.error}
+      onToggleStemPreview={toggleStemPreview}
+      onToggleArrangement={toggleArrangementPreview}
+      onMasterVolume={(volume) => {
+        transport.setMasterVolume(volume);
+        changeRemix((current) => ({ ...current, masterVolume: volume }));
+      }}
+      onLoopChange={(loopStartMs, loopEndMs) => {
+        transport.setLoop({
+          enabled: loopEndMs !== null,
+          start: loopStartMs / 1000,
+          end: (loopEndMs ?? 0) / 1000,
+        });
+        changeRemix((current) => ({ ...current, loopStartMs, loopEndMs }));
+      }}
+    />
     {/* Stem selection stays available across modes; optional source tools mount only when requested. */}
     <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={(stemId) => { setSelectedId(stemId); setSelectedSourceSectionId(null); }} />
     {studioTab === "edit" && <>
@@ -993,7 +1017,6 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         </StudioDisclosure>
       )}
       <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
-      <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementPending={arrangementPreview.pending} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
       <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
       <StudioDisclosure title="Sound design">
         <SoundDesignStudio projectId={projectId} />
