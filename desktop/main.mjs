@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { dataRoot } from "./data-paths.mjs";
 import { DesktopDatabase } from "./database.mjs";
+import { stopBeforeQuit } from "./shutdown.mjs";
 
 app.setName("Arena");
 app.setAppUserModelId("ai.arena.os");
@@ -65,10 +66,26 @@ else {
     if (stopping) return;
     event.preventDefault();
     stopping = true;
-    void stop().catch(error => {
-      log("shutdown", error.message);
-      dialog.showErrorBox("ArenaForge shutdown error", error.message);
-    }).finally(() => app.quit());
+    void stopBeforeQuit({
+      stop,
+      askBeforeForceQuit: error => dialog.showMessageBoxSync({
+        type: "error",
+        title: "Arena could not confirm safe shutdown",
+        message: "The local database may still be running.",
+        detail: `${error.message}\n\nRetry shutdown is recommended. Force quit may interrupt database writes and require recovery the next time Arena starts.`,
+        buttons: ["Retry shutdown", "Force quit anyway"],
+        defaultId: 0,
+        cancelId: 0,
+      }) === 1,
+      quit: () => app.quit(),
+      log: error => log("shutdown", error instanceof Error ? error.message : String(error)),
+    }).catch(error => {
+      log("shutdown", error instanceof Error ? error.message : String(error));
+      dialog.showErrorBox(
+        "Arena shutdown could not continue",
+        "Arena kept its process open because it could not confirm a safe shutdown. Check logs/desktop.log before forcing it closed.",
+      );
+    });
   });
   void start().catch(async error => {
     log("startup", error.message);

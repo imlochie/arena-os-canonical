@@ -10,17 +10,30 @@ import pg from "pg";
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export function run(binary, args, env, timeout = 60_000) {
+export function run(binary, args, env, timeout = 60_000, spawnImpl = spawn) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnImpl(binary, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
+    let timedOut = false;
+    let spawnError;
     child.stdout.on("data", chunk => { output = (output + chunk).slice(-6000); });
     child.stderr.on("data", chunk => { output = (output + chunk).slice(-6000); });
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`${path.basename(binary)} timed out`)); }, timeout);
-    child.once("error", error => { clearTimeout(timer); reject(error); });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill(); } catch (error) { spawnError = error; }
+    }, timeout);
+    child.once("error", error => { spawnError = error; });
     child.once("close", code => {
       clearTimeout(timer);
-      code === 0 ? resolve(output) : reject(new Error(`${path.basename(binary)} failed (${code}): ${output}`));
+      if (timedOut) {
+        reject(new Error(`${path.basename(binary)} timed out${output ? `: ${output}` : ""}`, { cause: spawnError }));
+      } else if (spawnError) {
+        reject(spawnError);
+      } else if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(`${path.basename(binary)} failed (${code}): ${output}`));
+      }
     });
   });
 }
