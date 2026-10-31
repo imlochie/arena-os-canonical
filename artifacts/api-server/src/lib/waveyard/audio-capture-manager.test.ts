@@ -216,6 +216,19 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   assert.equal(repeatedStop, firstStop);
   assert.equal(firstStop.result.sampleFrames, 12);
   const importedResponse = { trackId: "deduplicated-result", created: true };
+  const captureDirectory = firstStop.sessionDirectory;
+  await assert.rejects(
+    runAudioCaptureImport(ownerId, second.sessionId, async () => {
+      throw new Error("simulated library database interruption");
+    }),
+    /database interruption/,
+  );
+  assert.equal(
+    (await listRecoverableAudioCaptures(ownerId)).some((capture) => capture.sessionId === second.sessionId),
+    true,
+    "a failed import releases its guard so the completed recording can be recovered",
+  );
+
   let importCalls = 0;
   let releaseImport!: () => void;
   let markImportStarted!: () => void;
@@ -242,7 +255,6 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   );
   releaseImport();
   assert.deepEqual(await Promise.all([firstImport, duplicateImport]), [importedResponse, importedResponse]);
-  const captureDirectory = firstStop.sessionDirectory;
   assert.deepEqual(getAudioCaptureImportResult(ownerId, second.sessionId), importedResponse);
   assert.equal(getAudioCaptureSessionDirectory(ownerId, second.sessionId), captureDirectory);
   assert.equal(getAudioCaptureStatus(ownerId, second.sessionId)?.status, "completed");

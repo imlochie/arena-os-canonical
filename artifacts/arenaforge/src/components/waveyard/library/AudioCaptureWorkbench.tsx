@@ -102,7 +102,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     if (!response.ok) throw new Error(data.error ?? "Could not check Windows audio capture.");
     const next = data as CaptureOptions;
     setOptions(next);
-    setSession(next.activeSession ?? null);
+    if (next.activeSession) setSession(next.activeSession);
     const fallbackDeviceId = next.devices.find((device) => device.isDefault)?.id ?? next.devices[0]?.id ?? "";
     setDeviceId((current) =>
       next.devices.some((device) => device.id === current) ? current : fallbackDeviceId);
@@ -132,6 +132,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
         if (!response.ok && response.status === 404) {
           const latest = await refreshOptions();
           if (cancelled) return;
+          setSession(latest.activeSession ?? null);
           const preserved = latest.recoveries?.some((recovery) => recovery.sessionId === session.sessionId);
           setMessage(preserved
             ? "Recording stopped unexpectedly. Its preserved audio is ready to recover below."
