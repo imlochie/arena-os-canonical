@@ -91,6 +91,17 @@ if ($Action -eq "Build") {
         --filter "@workspace/desktop..."
     }
     Invoke-Pnpm --filter @workspace/desktop run dist:win
+  } catch {
+    Write-Warning "Build failed. Removing only generated stage, desktop bundle, and unpacked installer files; keeping installer files, download caches, app data, and source media."
+    try {
+      & node (Join-Path $PSScriptRoot "cleanup-build.mjs") "--failed-build"
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Generated build cleanup did not finish. Use desktop\cleanup-build.mjs --failed-build after reviewing the error."
+      }
+    } catch {
+      Write-Warning "Generated build cleanup failed: $($_.Exception.Message)"
+    }
+    throw
   } finally {
     if ($monitor) {
       Stop-Job $monitor -ErrorAction SilentlyContinue

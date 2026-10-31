@@ -27,6 +27,7 @@ const checkIds = [
   "bundled_ffmpeg_resolves",
   "bundled_ffprobe_resolves",
   "waveyard_capture_host_loads",
+  "waveyard_capture_runtime_wired",
 ];
 const report = {
   passed: false,
@@ -132,6 +133,20 @@ async function run() {
   assert.equal(captureProtocol.protocolVersion, 1);
   assert.deepEqual(captureProtocol.captureModes, ["system-loopback"]);
   pass("waveyard_capture_host_loads");
+
+  begin("waveyard_capture_runtime_wired");
+  const captureOptionsResponse = await page.request.get(
+    `${base}/api/library/audio-capture`,
+    { timeout: 15_000 },
+  );
+  assert(captureOptionsResponse.ok());
+  const captureOptions = await captureOptionsResponse.json();
+  assert.equal(typeof captureOptions.available, "boolean");
+  assert(captureOptions.storage);
+  assert(Number.isFinite(captureOptions.storage.availableBytes));
+  assert.equal(captureOptions.storage.reserveBytes, 1024 ** 3);
+  assert.equal(typeof captureOptions.storage.canRecord, "boolean");
+  pass("waveyard_capture_runtime_wired");
 
   report.passed = true;
 }

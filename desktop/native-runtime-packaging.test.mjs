@@ -16,12 +16,19 @@ const builderConfig = createRequire(import.meta.url)("./electron-builder.cjs");
 test("native WASAPI host source is included in the Windows installer resources", async () => {
   const source = await readFile(path.join(here, "native", "waveyard-capture-host.cpp"), "utf8");
   const buildScript = await readFile(path.join(here, "build.mjs"), "utf8");
+  const desktopMain = await readFile(path.join(here, "main.mjs"), "utf8");
+  const captureManager = await readFile(
+    path.join(root, "artifacts", "api-server", "src", "lib", "waveyard", "audio-capture-manager.ts"),
+    "utf8",
+  );
   assert.match(source, /AUDCLNT_STREAMFLAGS_LOOPBACK/);
   assert.match(source, /formatChunkBase64/);
   assert.equal(typeof buildWaveyardCaptureHost, "function");
   assert.match(buildScript, /\/std:c\+\+20/);
   assert.ok(builderConfig.extraResources.some((resource) =>
     resource.from === "stage/native" && resource.to === "native"));
+  assert.match(desktopMain, /ARENA_RESOURCES_DIR:\s*resources/);
+  assert.match(captureManager, /join\(resources,\s*"native",\s*"waveyard-capture-host\.exe"\)/);
 });
 
 test("stages ONNX Runtime with CPU inference and Windows DirectML dependencies", async () => {
