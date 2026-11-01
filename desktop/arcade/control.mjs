@@ -45,7 +45,7 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
   let workshop;
   ipcMain.handle("arena-native-mod-workshop", async (event, data) => {
     assertArcadeSender(event, window, origin, { action: "inspect" });
-    if (!data || typeof data !== "object" || JSON.stringify(data).length > 32 * 1024 * 1024 || !["list", "inspect", "assess-loader", "create", "review", "commit", "activate", "rollback", "export", "launch"].includes(data.op)) throw new Error("Invalid mod workshop request.");
+    if (!data || typeof data !== "object" || JSON.stringify(data).length > 32 * 1024 * 1024 || !["list", "inspect", "assess-loader", "loader-inspect", "loader-prepare", "loader-repair", "loader-rollback", "create", "review", "commit", "activate", "rollback", "export", "launch"].includes(data.op)) throw new Error("Invalid mod workshop request.");
     if (operation) throw new Error("Another native operation is active.");
     operation = true;
     try {
@@ -54,6 +54,17 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
       if (data.op !== "commit" && (typeof data.key !== "string" || data.key.length > 200)) throw new Error("Select a managed game.");
       if (data.op === "inspect") return await workshop.engine.inspect(data.key);
       if (data.op === "assess-loader") return await workshop.assessLoader(data.key);
+      if (data.op === "loader-inspect") return await workshop.loaders.inspect(data.key, data.profileId);
+      if (["loader-prepare", "loader-repair", "loader-rollback"].includes(data.op)) {
+        if (!await approve("Prepare this profile's BepInEx core?", "Only this isolated profile's loader core is prepared or repaired. Existing configuration, logs and saves are retained. This does not install plugins or enable a verified modded launch.")) throw new Error("Loader preparation cancelled.");
+        let archive;
+        if (data.op === "loader-prepare") {
+          const selection = await dialog.showOpenDialog(window, { title: "Select the pinned BepInEx 5.4.23.2 ZIP", properties: ["openFile"], filters: [{ name: "BepInEx ZIP", extensions: ["zip"] }] });
+          if (selection.canceled || !selection.filePaths[0]) throw new Error("Loader archive selection cancelled.");
+          archive = selection.filePaths[0]; // Main-process picker only, never a renderer-supplied path.
+        }
+        return await workshop.loaders.change(data.key, data.profileId, { archive, repair: data.op === "loader-repair", rollback: data.op === "loader-rollback" });
+      }
       if (data.op === "create") return await workshop.engine.create(data.key, data.name, data.shareSaves, data.revision);
       if (data.op === "review") return await workshop.engine.review(data.key, data.profileId, data.change, data.revision);
       if (data.op === "export") return await workshop.engine.export(data.key, data.profileId);

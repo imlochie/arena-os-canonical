@@ -15,12 +15,44 @@ Implemented so far:
 - `NativeModWorkshop.assessLoader` verifies the managed package and reads at
   most 64 KiB of its selected executable; it never loads game or plugin code.
 - The owner-window-checked Workshop IPC exposes the read-only `assess-loader`
-  operation. There is no install button or installed/working claim.
+  operation. It makes no installed/working claim.
 - `stageBepInExDistribution` verifies exact upstream archive bytes and safely
   prepares a fresh loader directory. It rejects preexisting destinations,
   links, unsafe paths, unexpected layout, oversized/encrypted entries and proxy
-  architecture mismatches. No installer script or DLL is executed. This helper
-  is not yet connected to profile review/activation or a user-facing installer.
+  architecture mismatches. No installer script or DLL is executed.
+
+## Profile preparation controls
+
+Native Workshop profiles now expose **BepInEx 5 · profile preparation**:
+inspection, owner-approved ZIP selection, repair, and prior-core restoration.
+The main-process file picker supplies the archive path; renderer requests
+cannot choose an arbitrary local source path.
+
+`BepInExProfiles` anchors companion state to an existing Workshop profile,
+its exact base version, and its pinned host distribution. It does not create
+a second set of game/save identities. Core runtime files go beneath that
+profile's existing native save root, while protected source generations and
+state remain outside the game's writable capability.
+
+- Profiles sharing base saves are deliberately not admitted yet.
+- Any active native game prevents mutations.
+- Hash and ordinary-file checks catch tampering; links/special files are
+  refused even during repair.
+- The disk reserve is checked before preparation.
+- Configuration, cache, logs, plugins and ordinary game saves are not restored
+  as part of core repair or rollback.
+- A bounded history retains at most four previous core preparations.
+- Failed preparation retains the previous authoritative state; completed
+  publication does not depend on successful cleanup of obsolete files.
+- A failed/interrupted preparation lock is reported rather than silently
+  removed while another process might own it.
+
+Preparation is **not activation**. Ordinary Workshop Play does not use this
+companion loader yet. The panel says so, and its responses always retain
+`canLaunch: false` and `gameplayVerified: false`. Plugin intake, permission and
+dependency review, native Doorstop launch wiring, and actual modded-game
+evidence remain within this unfinished task. Generic file overlays still do
+not gain executable-DLL/plugin permissions.
 - Architecture mismatch, absent Mono layout, another executable's data,
   IL2CPP/mixed layouts, and existing loader/proxy conflicts fail preflight.
   Unrecognized layouts are not universally unsupported; they need another

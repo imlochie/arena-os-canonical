@@ -6,6 +6,7 @@ import { ModWorkshopEngine } from "../../lib/arena/src/lib/games/mod-workshop-en
 import { modHash } from "../../lib/arena/src/lib/games/mod-workshop.ts";
 import { safePackagePath } from "./packages.mjs";
 import { assessUnityMonoLayout, identifyUnityVersion } from "./bepinex.mjs";
+import { BepInExProfiles } from "./bepinex-profiles.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const MiB = 1024 * 1024;
 async function fileHash(filename) { const hash = createHash("sha256"); for await (const chunk of createReadStream(filename)) hash.update(chunk); return hash.digest("hex"); }
@@ -17,6 +18,25 @@ async function ordinary(filename, directory = false) {
 export class NativeModWorkshop {
   constructor(packages, host) {
     this.packages = packages; this.host = host; this.root = path.join(packages.root, "workshop");
+    this.loaders = new BepInExProfiles(async (key, profileId) => {
+      const state = await this.read(key), profile = state?.profiles.find(profile => profile.id === profileId);
+      if (!profile) throw new Error("Choose an existing Workshop profile.");
+      const descriptor = this.packages.catalog.get(key), assessment = await this.assessLoader(key);
+      if (state.baseVersion !== `sha256:${descriptor.sha256}`) throw new Error("This Workshop profile belongs to a different base version.");
+      return {
+        shareSaves: profile.shareSaves, candidate: assessment.candidate, host: descriptor.host,
+        diagnostic: assessment.blockers.join(" "),
+        baseVersion: `sha256:${descriptor.sha256}`,
+        storage: path.join(this.folder(key), "loaders", profileId),
+        runtime: path.join(this.packages.root, "profiles", hash(descriptor.id), `mod-${profileId}`),
+        running: [...this.host.runs.values()].some(run => run.child),
+        checkSpace: async bytes => {
+          const storage = await this.packages.storage();
+          if (storage.freeBytes < storage.reserveBytes + bytes)
+            throw new Error("Not enough free space to prepare loader files while retaining the disk reserve.");
+        },
+      };
+    });
     this.engine = new ModWorkshopEngine({
       base: (key, paths) => this.base(key, paths),
       read: key => this.read(key),

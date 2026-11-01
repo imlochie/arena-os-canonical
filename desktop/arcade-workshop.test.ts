@@ -24,6 +24,10 @@ test("native profiles stage verified overlays, preserve the base, isolate saves,
     assert.equal(launches.length, 0, "Compatibility assessment must never execute game content");
     assert.equal(await readFile(path.join(install, "asset.txt"), "utf8"), "original");
     let state = await workshop.engine.create(key, "Modded", false, 0); const id = state.profiles[0].id;
+    const loader = await workshop.loaders.inspect(key, id);
+    assert.equal(loader.candidate, false, "Loader preparation must use the selected game's real compatibility assessment");
+    assert.equal(loader.canLaunch, false);
+    await assert.rejects(workshop.loaders.change(key, id, { archive: "not-used.zip" }), /compatibility assessment/);
     const output = Buffer.from("MODDED");
     const json = JSON.stringify({ manifest: {
       schema: "arena.arcade.mod", schemaVersion: 1, id: "asset-change", version: "1.0.0", name: "Asset fixture",

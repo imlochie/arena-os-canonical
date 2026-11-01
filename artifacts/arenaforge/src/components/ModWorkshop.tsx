@@ -16,6 +16,7 @@ import {
   rollbackWorkshopProfile,
 } from "../lib/modWorkshop";
 import type { WorkshopChange, WorkshopGame, WorkshopMod, WorkshopPlayback, WorkshopPreview, WorkshopProfile, WorkshopSnapshot } from "../lib/modWorkshopTypes";
+import BepInExProfileControls from "./BepInExProfileControls";
 
 type SettingValue = string | number | boolean;
 type Props = { onPlay(playback: WorkshopPlayback): void; activePlayback?: WorkshopPlayback | null };
@@ -318,6 +319,10 @@ export default function ModWorkshop({ onPlay, activePlayback = null }: Props) {
 
             {profile && draft && (
               <>
+                {snapshot.game.id.startsWith("native:") && (
+                  <BepInExProfileControls key={`${snapshot.game.id}:${profile.id}`} gameId={snapshot.game.id}
+                    profileId={profile.id} shareSaves={profile.shareSaves} locked={locked} />
+                )}
                 {/* Actions */}
                 <div className="glass flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 p-3">
                   <p className="min-w-0 flex-1 truncate text-sm font-extrabold text-white">{profile.name}<span className="ml-2 text-[10px] font-bold text-slate-500">{profile.history} checkpoint{profile.history === 1 ? "" : "s"}</span></p>
