@@ -38,3 +38,9 @@ Do not reuse per-document model media markers as comparison identities.
 **Why:** Position-based markers serve asset preservation during model edits, but independently masking two versions can give different images or audio the same marker and hide a real change.
 
 **How to apply:** Compare embedded data with a shared exact-value identity across both versions, keep raw-source equality separate from display normalization, and leave the model's asset-preservation contract unchanged.
+
+A stable iframe key does not prevent navigation when its `srcDoc` changes.
+
+**Why:** The save bootstrap embeds initial progress. Rebuilding it after a first-save or last-key-clear indicator update restarted live gameplay even though game identity and source were unchanged.
+
+**How to apply:** Treat initial progress as a bootstrap snapshot. Ordinary persistence/indicator updates must not rewrite the live document; changing game/source or explicitly reloading may initialize a fresh snapshot.

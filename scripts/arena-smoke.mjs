@@ -3,6 +3,11 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
+if (process.argv.includes("--progress-isolation-only")) {
+  await import("./arcade-progress-isolation.mjs");
+  process.exit(0);
+}
+
 if (process.argv.includes("--chip8-only")) {
   await import("./arcade-chip8-smoke.mjs");
   process.exit(0);

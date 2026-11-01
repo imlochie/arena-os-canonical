@@ -459,6 +459,12 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     htmlFrameRef,
     selected?.kind === "html" ? selected.id : null,
   );
+  // Save-indicator updates must not regenerate srcDoc with newly saved bytes:
+  // changing that attribute navigates the iframe and resets live gameplay.
+  const selectedHtmlDocument = useMemo(
+    () => selected?.kind === "html" ? createGameSandboxDocument(selected.source, selected.id) : "",
+    [selected?.kind, selected?.id, selected?.source, gameSaves.reloadKey],
+  );
 
   useEffect(() => () => revisionAbortRef.current?.abort(), []);
 
@@ -1219,7 +1225,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
                   ref={htmlFrameRef}
-                  srcDoc={createGameSandboxDocument(selected.source, selected.id)}
+                  srcDoc={selectedHtmlDocument}
                   className="h-[min(68vh,620px)] min-h-[320px] w-full rounded-lg border border-white/10 bg-black"
                 />
                 <div className="flex items-center justify-between gap-3 px-1 pt-2">
@@ -1501,7 +1507,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           </div>}
           <div className="mt-3 space-y-1.5">
             {games.map((game) => (
-              <button key={game.id} type="button" onClick={() => { setSelectedId(game.id); setError(""); setNotice(""); }} className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${selectedId === game.id ? "border-emerald-300/30 bg-emerald-300/[0.08]" : "border-transparent bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.05]"}`}>
+              <button key={game.id} data-testid={`button-select-imported-game-${game.id}`} type="button" onClick={() => { setSelectedId(game.id); setError(""); setNotice(""); }} className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${selectedId === game.id ? "border-emerald-300/30 bg-emerald-300/[0.08]" : "border-transparent bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.05]"}`}>
                 <span className="block truncate text-xs font-bold text-slate-200">{game.name}</span>
                 {unsavedIds.includes(game.id) && <span className="block text-[10px] font-bold text-amber-200">Not saved · this tab only</span>}
                 <span className="mt-1 block text-[9px] font-bold uppercase tracking-wider text-slate-500">
