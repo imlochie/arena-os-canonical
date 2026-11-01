@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Copy, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { createGameSandboxDocument, useArcadeGameSave } from "../lib/arcadeGameSave";
-import { loadImportedGames, saveImportedGameChanges } from "../lib/importedGameStorage";
+import { importedGameRecordsMatch, importedGameStorageChanges, ImportedGameStorageConflictError, loadImportedGameRecords, loadImportedGames, saveImportedGameChanges, subscribeImportedGamesChanged } from "../lib/importedGameStorage";
 import { deleteNesSaveState, readNesSaveState, writeNesSaveState } from "../lib/nesSaveStates";
 import {
   arcadeEmulatorSystemLabel,
@@ -378,8 +378,15 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
 
 export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt }: ImportedGameWorkspaceProps) {
   const [games, setGames] = useState<ImportedGame[]>([]);
+  const currentGames = useRef<ImportedGame[]>([]);
   const persistedGames = useRef<ImportedGame[]>([]);
   const shelfWrites = useRef<Promise<void>>(Promise.resolve());
+  const shelfMounted = useRef(false);
+  const shelfReadGeneration = useRef(0);
+  const [unsavedIds, setUnsavedIds] = useState<string[]>([]);
+  const [savingShelf, setSavingShelf] = useState(0);
+  const [externalShelfChange, setExternalShelfChange] = useState(false);
+  const [refreshingShelf, setRefreshingShelf] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [rightsAccepted, setRightsAccepted] = useState(false);
@@ -467,29 +474,76 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     }
   };
 
-  useEffect(() => {
-    let active = true;
-    const loadShelf = async () => {
-      try {
-        const stored = await loadImportedGames();
-        const valid = stored.filter(isStoredImportedGame).sort((a, b) => b.addedAt - a.addedAt).slice(0, 12);
-        if (active) {
-          persistedGames.current = valid;
-          setGames(valid);
-          setSelectedId(valid[0]?.id ?? "");
-        }
-      } catch {
-        if (active) setError("Your local game shelf could not be read. New imports can still be played in this session.");
-      } finally {
-        if (active) setLoaded(true);
-      }
-    };
-    void loadShelf();
-    return () => { active = false; };
+  const setShelfGames = useCallback((next: ImportedGame[]) => {
+    currentGames.current = next;
+    setGames(next);
   }, []);
 
+  const refreshSavedShelf = useCallback(async (discardLocal = false, changedIds?: string[]) => {
+    const generation = ++shelfReadGeneration.current;
+    const confirmedSnapshot = currentGames.current;
+    await shelfWrites.current;
+    const baseline = persistedGames.current;
+    const stored = changedIds ? await loadImportedGameRecords(changedIds) : await loadImportedGames();
+    if (!shelfMounted.current || generation !== shelfReadGeneration.current) return false;
+    // Never apply a read that raced a newer local commit or new work created
+    // after the user confirmed discarding a particular snapshot.
+    if (persistedGames.current !== baseline || (discardLocal && currentGames.current !== confirmedSnapshot)) {
+      setExternalShelfChange(true);
+      return false;
+    }
+    const dirty = importedGameStorageChanges(persistedGames.current, currentGames.current);
+    if (!discardLocal && (dirty.upsert.length || dirty.remove.length)) {
+      setExternalShelfChange(true);
+      return false;
+    }
+    const existing = new Map(currentGames.current.map((game) => [game.id, game]));
+    const changed = new Set(changedIds);
+    const candidates = changedIds ? [...baseline.filter((game) => !changed.has(game.id)), ...stored] : stored;
+    const valid = candidates.filter(isStoredImportedGame).map((game) => {
+      const current = existing.get(game.id);
+      // Keep unchanged player/ROM identities: another tab adding an unrelated
+      // game must not restart the currently running emulator.
+      return current && importedGameRecordsMatch(current, game) ? current : game;
+    }).sort((a, b) => b.addedAt - a.addedAt);
+    persistedGames.current = valid;
+    setShelfGames(valid);
+    setUnsavedIds([]);
+    setExternalShelfChange(false);
+    setSelectedId((current) => valid.some((game) => game.id === current) ? current : valid[0]?.id ?? "");
+    setLoaded(true);
+    return true;
+  }, [setShelfGames]);
+
+  useEffect(() => {
+    shelfMounted.current = true;
+    let active = true;
+    let refreshQueue = Promise.resolve();
+    const refresh = (ids?: string[]) => {
+      // Preserve every notification's changed IDs even when consecutive
+      // transactions arrive while an earlier partial read is still pending.
+      refreshQueue = refreshQueue.then(async () => {
+        if (active) await refreshSavedShelf(false, ids);
+      }).catch(() => {
+        if (!active || !shelfMounted.current) return;
+        setLoaded(true);
+        setExternalShelfChange(true);
+        setError("Your local game shelf could not be read. Existing saved games have not been removed.");
+      });
+    };
+    const unsubscribe = subscribeImportedGamesChanged(refresh);
+    refresh();
+    return () => {
+      active = false;
+      shelfMounted.current = false;
+      shelfReadGeneration.current++;
+      unsubscribe();
+    };
+  }, [refreshSavedShelf]);
+
   const saveGames = useCallback(async (next: ImportedGame[], optimistic = true) => {
-    if (optimistic) setGames(next);
+    if (optimistic) setShelfGames(next);
+    setSavingShelf((count) => count + 1);
     const operation = shelfWrites.current.then(async () => {
       await saveImportedGameChanges(persistedGames.current, next);
       persistedGames.current = next;
@@ -497,14 +551,50 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     shelfWrites.current = operation.catch(() => {});
     try {
       await operation;
-      if (!optimistic) setGames(next);
+      if (!optimistic) setShelfGames(next);
       return true;
     } catch (cause) {
+      if (cause instanceof ImportedGameStorageConflictError) {
+        setExternalShelfChange(true);
+        setError(cause.message);
+        return false;
+      }
       const quota = cause instanceof Error && cause.name === "QuotaExceededError";
       setError(`${optimistic ? "The game is available for this session, but it could not be saved." : "The game could not be removed. It remains on your shelf."} Previously saved records are unchanged.${quota ? " Browser storage is full; free space and retry." : ""}`);
       return false;
+    } finally {
+      if (shelfMounted.current) {
+        setSavingShelf((count) => count - 1);
+        setUnsavedIds(importedGameStorageChanges(persistedGames.current, currentGames.current).upsert.map((game) => game.id));
+      }
     }
-  }, []);
+  }, [setShelfGames]);
+
+  const retryShelfSave = async () => {
+    if (savingShelf || busy || removing || refreshingShelf) return;
+    setError("");
+    setNotice("");
+    if (await saveGames(currentGames.current)) {
+      setNotice("Your unsaved games are now saved on this device.");
+      await refreshSavedShelf().catch(() => setExternalShelfChange(true));
+    }
+  };
+
+  const reloadSavedShelf = async () => {
+    if (savingShelf || busy || removing || refreshingShelf) return;
+    const dirty = importedGameStorageChanges(persistedGames.current, currentGames.current);
+    if ((dirty.upsert.length || dirty.remove.length) &&
+      !window.confirm("Discard this tab’s unsaved game changes and load the saved shelf? Already saved games will not be deleted.")) return;
+    setRefreshingShelf(true);
+    try {
+      if (await refreshSavedShelf(true)) {
+        setError("");
+        setNotice("The latest saved shelf is loaded.");
+      }
+    } catch {
+      setError("Could not refresh the saved shelf. Your current games are still available.");
+    } finally { setRefreshingShelf(false); }
+  };
 
   useEffect(() => {
     if (!selected || selected.kind !== "nes" || !canvasRef.current) {
@@ -1239,10 +1329,23 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
             <h3 className="text-xs font-black uppercase tracking-[0.16em] text-slate-200">Local shelf</h3>
             <span className="font-mono text-[10px] text-slate-500">{games.length}/12</span>
           </div>
+          {unsavedIds.length > 0 && <div role="status" aria-label="Unsaved imported games" className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/10 p-3 text-xs text-amber-100">
+            <p>{unsavedIds.length} {unsavedIds.length === 1 ? "game has" : "games have"} unsaved changes. Keep this tab open until saved.</p>
+            <button type="button" onClick={() => void retryShelfSave()} disabled={savingShelf > 0 || busy || removing || refreshingShelf} className="mt-2 rounded border border-amber-300/30 px-3 py-2 font-bold disabled:opacity-50">
+              {savingShelf ? "Saving…" : "Retry save"}
+            </button>
+          </div>}
+          {externalShelfChange && <div role="status" aria-label="Shelf changed in another tab" className="mt-3 rounded-lg border border-cyan-300/25 bg-cyan-300/10 p-3 text-xs text-cyan-100">
+            <p>The saved shelf changed or could not be refreshed. Unsaved work in this tab has not been replaced.</p>
+            <button type="button" onClick={() => void reloadSavedShelf()} disabled={savingShelf > 0 || busy || removing || refreshingShelf} className="mt-2 rounded border border-cyan-300/30 px-3 py-2 font-bold disabled:opacity-50">
+              {refreshingShelf ? "Refreshing…" : "Refresh saved shelf"}
+            </button>
+          </div>}
           <div className="mt-3 space-y-1.5">
             {games.map((game) => (
               <button key={game.id} type="button" onClick={() => { setSelectedId(game.id); setError(""); setNotice(""); }} className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${selectedId === game.id ? "border-emerald-300/30 bg-emerald-300/[0.08]" : "border-transparent bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.05]"}`}>
                 <span className="block truncate text-xs font-bold text-slate-200">{game.name}</span>
+                {unsavedIds.includes(game.id) && <span className="block text-[10px] font-bold text-amber-200">Not saved · this tab only</span>}
                 <span className="mt-1 block text-[9px] font-bold uppercase tracking-wider text-slate-500">
                   {game.kind === "html"
                     ? "Offline HTML"

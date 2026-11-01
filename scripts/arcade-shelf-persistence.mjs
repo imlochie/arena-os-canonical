@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -21,20 +21,49 @@ function hooks() {
   window.__arcadeShelfHooksInstalled = true;
   window.__arcadeShelfOps = [];
   const proto = IDBObjectStore.prototype;
-  for (const method of ["put", "delete", "clear"]) {
+  for (const method of ["put", "delete", "clear", "get"]) {
     const original = proto[method];
     proto[method] = function (...args) {
       const value = args[0];
       const info = method === "put"
         ? { id: value?.id ?? null, kind: value?.kind ?? null, byteLength: value?.romData?.byteLength ?? 0 }
-        : { key: method === "delete" ? args[0] : null };
+        : { key: method === "delete" || method === "get" ? args[0] : null };
       window.__arcadeShelfOps.push({ method, ...info });
+      if (method === "put" && window.__failArcadeShelfPut) {
+        throw new DOMException("Injected deterministic shelf failure", "QuotaExceededError");
+      }
       if (method === "delete" && window.__failArcadeShelfDelete) {
         throw new DOMException("Injected deterministic shelf failure", "QuotaExceededError");
       }
       return original.apply(this, args);
     };
   }
+  const originalOpen = IDBFactory.prototype.open;
+  IDBFactory.prototype.open = function (...args) {
+    const request = originalOpen.apply(this, args);
+    if (!window.__holdNextShelfOpen) return request;
+    window.__holdNextShelfOpen = false;
+    let proto = request;
+    let descriptor;
+    while (proto && !descriptor) {
+      descriptor = Object.getOwnPropertyDescriptor(proto, "onsuccess");
+      proto = Object.getPrototypeOf(proto);
+    }
+    if (!descriptor?.set) return request;
+    let handler = null;
+    Object.defineProperty(request, "onsuccess", {
+      configurable: true,
+      get: () => handler,
+      set: next => {
+        handler = next;
+        descriptor.set.call(request, event => {
+          window.__heldShelfOpenReady = true;
+          window.__releaseHeldShelfOpen = () => next.call(request, event);
+        });
+      },
+    });
+    return request;
+  };
 }
 
 function makeNesRom() {
@@ -111,9 +140,18 @@ async function records() {
 
 async function ops() { return page.evaluate(() => [...window.__arcadeShelfOps]); }
 async function clearOps() { await page.evaluate(() => { window.__arcadeShelfOps = []; }); }
+async function opsOn(targetPage) { return targetPage.evaluate(() => [...window.__arcadeShelfOps]); }
+async function clearOpsOn(targetPage) { await targetPage.evaluate(() => { window.__arcadeShelfOps = []; }); }
 async function shelfTab() { await page.getByRole("tab", { name: "Import and emulate" }).click(); }
+async function shelfTabOn(targetPage) { await targetPage.getByRole("tab", { name: "Import and emulate" }).click(); }
+function shelfRow(targetPage, name) { return targetPage.locator("aside").getByRole("button", { name }); }
 async function importHtml(name, html) {
   await page.locator('input[accept=".html,.htm,.zip,text/html,application/zip"]').setInputFiles({
+    name, mimeType: "text/html", buffer: Buffer.from(html),
+  });
+}
+async function importHtmlOn(targetPage, name, html) {
+  await targetPage.locator('input[accept=".html,.htm,.zip,text/html,application/zip"]').setInputFiles({
     name, mimeType: "text/html", buffer: Buffer.from(html),
   });
 }
@@ -149,14 +187,14 @@ try {
   });
   const nesCanvas = page.locator('canvas[aria-label="NES game screen"]');
   await nesCanvas.waitFor();
-  await page.getByRole("button", { name: "Save progress" }).click();
-  await page.getByText("Progress saved on this browser.").waitFor();
-  const nesId = await getId("original-homebrew.nes");
   const idleColor = [0x3c, 0xab, 0xff];
   await page.waitForFunction(color => {
     const pixel = document.querySelector('canvas[aria-label="NES game screen"]')?.getContext("2d")?.getImageData(128,120,1,1).data;
     return pixel && pixel[0] === color[0] && pixel[1] === color[1] && pixel[2] === color[2];
   }, idleColor);
+  await page.getByRole("button", { name: "Save progress" }).click();
+  await page.getByText("Progress saved on this browser.").waitFor();
+  const nesId = await getId("original-homebrew.nes");
   await nesCanvas.click();
   await page.keyboard.down("z");
   await page.waitForFunction(() => {
@@ -205,6 +243,186 @@ try {
   assert.equal((await records()).find(record => record.id === gbaRecord.id).hash, gbaHash);
   report.push("Injected IDB delete QuotaExceededError showed a visible error and preserved selection/rows; restored method then removed only disposable ID (no clear or large-ROM put).");
 
+  // A failed import must remain a playable, retryable session draft with stable identity.
+  const retryHtml = `<!doctype html><html><body><p id="hud">Retry score 0</p><script>
+    let score=Number(localStorage.getItem("retry-score")||0);const hud=document.getElementById("hud");
+    hud.textContent="Retry score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){
+      score++;localStorage.setItem("retry-score",String(score));hud.textContent="Retry score "+score}});
+  </script></body></html>`;
+  const rowsBeforeRetryImport = await records();
+  await page.evaluate(() => { window.__failArcadeShelfPut = true; });
+  await importHtml("retryable-session-game.html", retryHtml);
+  const retryFrame = page.frameLocator('iframe[title="Playable game: retryable-session-game.html"]');
+  await retryFrame.getByText("Retry score 0", { exact: true }).waitFor();
+  await page.getByText("Not saved · this tab only", { exact: true }).waitFor();
+  await retryFrame.locator("body").evaluate(el =>
+    el.ownerDocument.defaultView.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+  await retryFrame.getByText("Retry score 1", { exact: true }).waitFor();
+  const retrySaveKey = await page.evaluate(() => Object.keys(localStorage).find(key =>
+    key.startsWith("arenaforge.game-save.v1:") && localStorage.getItem(key)?.includes('"retry-score":"1"')));
+  assert(retrySaveKey, "Session-only HTML game progress must save against its stable game identity");
+  const retryId = retrySaveKey.slice("arenaforge.game-save.v1:".length);
+  assert.deepEqual(await records(), rowsBeforeRetryImport, "failed new import leaves the previously persisted baseline unchanged");
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await page.getByText("Not saved · this tab only", { exact: true }).waitFor();
+  assert.deepEqual(await records(), rowsBeforeRetryImport, "retry under continued put failure leaves persisted rows unchanged");
+  await page.evaluate(() => { window.__failArcadeShelfPut = false; });
+  await clearOps();
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await page.getByText("Your unsaved games are now saved on this device.").waitFor();
+  await page.getByText("Not saved · this tab only", { exact: true }).waitFor({ state: "detached" });
+  const retryRecord = (await records()).find(row => row.name === "retryable-session-game.html");
+  assert.equal(retryRecord?.id, retryId, "retry must persist the original session-only UUID");
+  assert.equal(retryRecord?.source, retryHtml, "retry must persist the exact original source");
+  const retryPuts = await ops();
+  assert(retryPuts.some(op => op.method === "put" && op.id === retryId), "retry must put the draft");
+  assert(!retryPuts.some(op => op.method === "put" && op.id === gbaRecord.id), "retry must not rewrite the unrelated large ROM");
+  assert.equal(await page.evaluate(key => localStorage.getItem(key), retrySaveKey).then(value => value.includes('"retry-score":"1"')), true);
+  report.push("Put QuotaExceededError left a playable Not saved HTML draft; retry failed without changing persisted rows, then saved the same UUID/source/save identity and did not put the large ROM.");
+
+  // Open a second page in this same persistent profile for cross-tab reconciliation.
+  const pageB = await context.newPage();
+  pageB.setDefaultTimeout(10_000);
+  await pageB.route("**/loader.js", route => route.fulfill({
+    status: 200, contentType: "application/javascript", body: "window.__arcadeCoreLoaderIntercepted=true;",
+  }));
+  const origin = new URL(base).origin;
+  await pageB.route("**/*", route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/loader.js")) return route.fallback();
+    if (["http:", "https:"].includes(url.protocol) && url.origin !== origin) return route.abort();
+    return route.fallback();
+  });
+  await pageB.goto(`${base}/arcade`);
+  await shelfTabOn(pageB);
+  await shelfRow(pageB, /retryable-session-game\.html/).waitFor();
+
+  await importHtml("remote-added.html", "<!doctype html><html><body><p>Remote addition</p></body></html>");
+  await page.getByRole("heading", { name: "remote-added.html" }).waitFor();
+  await shelfRow(pageB, /remote-added\.html/).waitFor();
+  await importHtml("remote-removed.html", "<!doctype html><html><body><p>Remote removal</p></body></html>");
+  await page.getByRole("heading", { name: "remote-removed.html" }).waitFor();
+  await page.getByRole("button", { name: "Remove remote-removed.html" }).click();
+  await page.getByRole("heading", { name: "remote-added.html" }).waitFor();
+  await shelfRow(pageB, /remote-removed\.html/).waitFor({ state: "detached" });
+  report.push("Clean second tab auto-refreshed a committed addition and removal from the first tab.");
+
+  // A dirty tab must keep its session-only work when another tab changes the shelf.
+  await pageB.getByLabel(/I own this game or have permission to use and play it/).check();
+  await pageB.evaluate(() => { window.__failArcadeShelfPut = true; });
+  await importHtmlOn(pageB, "tab-session-draft.html", "<!doctype html><html><body><p id=\"draft\">Draft kept</p></body></html>");
+  await pageB.getByRole("heading", { name: "tab-session-draft.html" }).waitFor();
+  await pageB.getByText("Not saved · this tab only", { exact: true }).waitFor();
+  await importHtml("remote-live.html", "<!doctype html><html><body><p>Remote live</p></body></html>");
+  await page.getByRole("heading", { name: "remote-live.html" }).waitFor();
+  await importHtml("remote-remove-while-dirty.html", "<!doctype html><html><body><p>Remote remove</p></body></html>");
+  await page.getByRole("heading", { name: "remote-remove-while-dirty.html" }).waitFor();
+  await page.getByRole("button", { name: "Remove remote-remove-while-dirty.html" }).click();
+  await page.getByRole("heading", { name: "remote-live.html" }).waitFor();
+  await pageB.getByRole("status", { name: "Shelf changed in another tab" }).waitFor();
+  assert.equal(await pageB.getByRole("heading", { name: "tab-session-draft.html" }).count(), 1,
+    "remote change must not replace a dirty tab's selected draft");
+  let dismissedConfirmation = "";
+  pageB.once("dialog", async dialog => {
+    dismissedConfirmation = dialog.message();
+    await dialog.dismiss();
+  });
+  await pageB.getByRole("button", { name: "Refresh saved shelf" }).click();
+  assert.match(dismissedConfirmation, /Discard this tab’s unsaved game changes/);
+  await pageB.getByRole("heading", { name: "tab-session-draft.html" }).waitFor();
+  await pageB.getByText("Not saved · this tab only", { exact: true }).waitFor();
+  assert(!(await records()).some(row => row.name === "tab-session-draft.html"));
+  await pageB.evaluate(() => { window.__failArcadeShelfPut = false; });
+  await clearOpsOn(pageB);
+  await pageB.getByRole("button", { name: "Retry save" }).click();
+  await pageB.getByText("Your unsaved games are now saved on this device.").waitFor();
+  await pageB.getByText("Not saved · this tab only", { exact: true }).waitFor({ state: "detached" });
+  await shelfRow(pageB, /remote-live\.html/).waitFor();
+  await shelfRow(pageB, /remote-remove-while-dirty\.html/).waitFor({ state: "detached" });
+  assert(!(await opsOn(pageB)).some(op => op.method === "put" && op.id === gbaRecord.id),
+    "dirty-tab retry reconciles remote records without rewriting the large ROM");
+  report.push("Dirty second tab retained its failed-import draft through remote changes and dismissed refresh confirmation; successful retry saved it and reconciled remote addition/removal without a large-ROM put.");
+
+  const moduleImport = `/src/lib/importedGameStorage.ts?race=${Date.now()}`;
+  const staleTargetId = await pageB.evaluate(async moduleUrl => {
+    const storage = await import(moduleUrl);
+    const rows = await storage.loadImportedGames();
+    window.__staleRowsB = rows;
+    return rows.find(row => row.name === "persisted-score.html").id;
+  }, moduleImport);
+  const updatedSource = await page.evaluate(async ({ moduleUrl, id }) => {
+    const storage = await import(moduleUrl);
+    const previous = await storage.loadImportedGames();
+    const next = previous.map(row => row.id === id ? { ...row, source: `${row.source}\n<!-- committed-tab-A-edit -->` } : row);
+    await storage.saveImportedGameChanges(previous, next);
+    return next.find(row => row.id === id).source;
+  }, { moduleUrl: moduleImport, id: staleTargetId });
+  await clearOpsOn(pageB);
+  const staleUpdateName = await pageB.evaluate(async ({ moduleUrl, id }) => {
+    const storage = await import(moduleUrl);
+    const old = window.__staleRowsB.find(row => row.id === id);
+    try { await storage.saveImportedGameChanges([old], [{ ...old, source: `${old.source}\n<!-- stale-tab-B-edit -->` }]); return "no-conflict"; }
+    catch (error) { return error.name; }
+  }, { moduleUrl: moduleImport, id: staleTargetId });
+  assert.equal(staleUpdateName, "ImportedGameStorageConflictError", "stale update must be rejected");
+  assert.equal((await records()).find(row => row.id === staleTargetId).source, updatedSource,
+    "stale edit must preserve the exact newer source");
+  const conflictOps = await opsOn(pageB);
+  assert.deepEqual(conflictOps.filter(op => op.method === "get").map(op => op.key), [staleTargetId],
+    "stale conflict checks only the changed record");
+  assert(!conflictOps.some(op => ["put", "delete", "clear"].includes(op.method)),
+    "stale edit conflict must not write or clear records");
+  report.push("Two separately loaded real Vite-module snapshots: stale B update rejected ImportedGameStorageConflictError, preserved A's exact source, and touched only the changed ID.");
+
+  await importHtml("stale-delete-target.html", "<!doctype html><html><body><p>Deletion race</p></body></html>");
+  await page.getByRole("heading", { name: "stale-delete-target.html" }).waitFor();
+  await shelfRow(pageB, /stale-delete-target\.html/).waitFor();
+  const deleteRaceId = await pageB.evaluate(async moduleUrl => {
+    const storage = await import(moduleUrl);
+    const rows = await storage.loadImportedGames();
+    window.__deleteRaceSnapshotB = rows;
+    return rows.find(row => row.name === "stale-delete-target.html").id;
+  }, moduleImport);
+  await page.evaluate(async ({ moduleUrl, id }) => {
+    const storage = await import(moduleUrl), previous = await storage.loadImportedGames();
+    await storage.saveImportedGameChanges(previous, previous.filter(row => row.id !== id));
+  }, { moduleUrl: moduleImport, id: deleteRaceId });
+  await clearOpsOn(pageB);
+  const resurrectionName = await pageB.evaluate(async ({ moduleUrl, id }) => {
+    const storage = await import(moduleUrl);
+    const old = window.__deleteRaceSnapshotB.find(row => row.id === id);
+    try { await storage.saveImportedGameChanges([old], [{ ...old, source: `${old.source}\n<!-- stale resurrection -->` }]); return "no-conflict"; }
+    catch (error) { return error.name; }
+  }, { moduleUrl: moduleImport, id: deleteRaceId });
+  assert.equal(resurrectionName, "ImportedGameStorageConflictError", "stale update must not resurrect a remotely deleted item");
+  assert(!(await records()).some(row => row.id === deleteRaceId), "deleted record must remain absent");
+  assert.deepEqual((await opsOn(pageB)).filter(op => op.method === "get").map(op => op.key), [deleteRaceId]);
+  report.push("A stale B update after A's committed deletion conflicted instead of resurrecting the record; only the deleted ID was checked.");
+
+  // UI stale removal: pause B after open succeeds but before its helper begins the guarded transaction.
+  await importHtml("ui-conflict-target.html", "<!doctype html><html><body><p>Conflict UI target</p></body></html>");
+  await page.getByRole("heading", { name: "ui-conflict-target.html" }).waitFor();
+  await shelfRow(pageB, /ui-conflict-target\.html/).waitFor();
+  await shelfRow(pageB, /ui-conflict-target\.html/).click();
+  await pageB.getByRole("heading", { name: "ui-conflict-target.html" }).waitFor();
+  await pageB.evaluate(() => { window.__heldShelfOpenReady = false; window.__holdNextShelfOpen = true; });
+  await pageB.getByRole("button", { name: "Remove ui-conflict-target.html" }).click();
+  await pageB.waitForFunction(() => window.__heldShelfOpenReady === true);
+  const uiConflictSource = await page.evaluate(async ({ moduleUrl, name }) => {
+    const storage = await import(moduleUrl), previous = await storage.loadImportedGames();
+    const target = previous.find(row => row.name === name);
+    const source = `${target.source}\n<!-- winner from tab A -->`;
+    await storage.saveImportedGameChanges(previous, previous.map(row => row.id === target.id ? { ...row, source } : row));
+    return { id: target.id, source };
+  }, { moduleUrl: moduleImport, name: "ui-conflict-target.html" });
+  await pageB.evaluate(() => window.__releaseHeldShelfOpen?.());
+  await pageB.getByRole("alert").filter({ hasText: "This game changed or was removed in another tab" }).waitFor();
+  assert.equal(await pageB.getByRole("heading", { name: "ui-conflict-target.html" }).count(), 1,
+    "conflicted UI removal keeps the game visible");
+  assert.equal((await records()).find(row => row.id === uiConflictSource.id).source, uiConflictSource.source,
+    "conflicted UI removal preserves the newer committed source");
+  report.push("UI stale removal was held at IndexedDB open while A committed an edit; release produced a visible conflict, retained the selected item, and preserved A's exact saved source.");
+
   // Exercise real Vite-served storage module: synchronous clone error must abort clear+put transaction.
   const baseline = await records();
   await page.evaluate(async () => {
@@ -233,7 +451,7 @@ try {
   await launchPersistent(); // same user-data directory; prior Chromium process/context is fully closed
   await page.goto(`${base}/arcade`);
   await shelfTab();
-  await page.getByRole("button", { name: /persisted-score\.html/ }).click();
+  await shelfRow(page, /persisted-score\.html/).click();
   await page.getByRole("heading", { name: "persisted-score.html" }).waitFor();
   const reloadedHtml = page.frameLocator('iframe[title="Playable game: persisted-score.html"]');
   await reloadedHtml.getByText("Score 1", { exact: true }).waitFor();
