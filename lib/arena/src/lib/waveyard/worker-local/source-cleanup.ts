@@ -4,6 +4,7 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import { db } from "@workspace/db";
 import { sourceAssets } from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
+import { sourceObjectLockQuery } from "../source-object-lock";
 
 export const ORPHAN_SOURCE_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
 const GENERATED_SOURCE_KEY =
@@ -30,23 +31,30 @@ export async function cleanupOrphanedSourceObjects(
   }
 
   const cutoff = now.getTime() - gracePeriodMs;
-  const [objects, assets] = await Promise.all([
-    storage.listObjects("projects"),
-    database.select({ storageKey: sourceAssets.storageKey }).from(sourceAssets),
-  ]);
-  const referencedKeys = new Set(assets.map((asset) => asset.storageKey));
+  const objects = await storage.listObjects("projects");
   const removed: string[] = [];
   for (const object of objects) {
     if (
       !GENERATED_SOURCE_KEY.test(object.key) ||
       !Number.isFinite(object.lastModified.getTime()) ||
-      object.lastModified.getTime() > cutoff ||
-      referencedKeys.has(object.key)
+      object.lastModified.getTime() > cutoff
     ) {
       continue;
     }
-    await storage.delete(object.key);
-    removed.push(object.key);
+    const deleted = await database.transaction(async (tx) => {
+      // Ingestion takes this lock before writing its object. Rechecking the
+      // row and deleting under the lock closes the scan/delete race.
+      await tx.execute(sourceObjectLockQuery(object.key));
+      const [asset] = await tx
+        .select({ id: sourceAssets.id })
+        .from(sourceAssets)
+        .where(eq(sourceAssets.storageKey, object.key))
+        .limit(1);
+      if (asset) return false;
+      await storage.delete(object.key);
+      return true;
+    });
+    if (deleted) removed.push(object.key);
   }
   return removed;
 }

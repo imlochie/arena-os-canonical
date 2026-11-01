@@ -10,6 +10,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { enqueueSeparation, enqueueWaveform } from "./queue";
 import { getStorage, privateObjectKey } from "./storage";
+import { sourceObjectLockQuery } from "./source-object-lock";
 import type { AudioMetadata } from "./types";
 
 export type SourceAcquisitionProvenance = {
@@ -70,10 +71,13 @@ export async function ingestSourceFile(
   const storageKey = privateObjectKey(input.projectId, "source", extname(cleanName));
   let stored = false;
   try {
-    await getStorage().putFile(storageKey, input.filePath, input.mimeType || "application/octet-stream");
-    stored = true;
-    
     const { source, job, waveformJob } = await db.transaction(async (tx) => {
+      // Acquire the same lock as orphan cleanup before the final object is
+      // written. This keeps cleanup from deleting an upload between its
+      // storage write and source_assets commit.
+      await tx.execute(sourceObjectLockQuery(storageKey));
+      await getStorage().putFile(storageKey, input.filePath, input.mimeType || "application/octet-stream");
+      stored = true;
       const [createdSource] = await tx.insert(sourceAssets).values({
         projectId: input.projectId, originalFilename: cleanName, mimeType: input.mimeType || "application/octet-stream", storageKey, checksumSha256: checksum,
         durationSeconds: Math.round(metadata.durationSeconds), sampleRate: metadata.sampleRate, channels: metadata.channels,
@@ -111,7 +115,19 @@ export async function ingestSourceFile(
     }
     return { source, job, waveformJob, separationQueued, waveformQueued };
   } catch (error) {
-    if (stored) await getStorage().delete(storageKey).catch(() => undefined);
+    if (stored) {
+      // A failed transaction can have an ambiguous commit outcome. Recheck
+      // under the object lock before deleting so a committed upload survives.
+      await db.transaction(async (tx) => {
+        await tx.execute(sourceObjectLockQuery(storageKey));
+        const [asset] = await tx
+          .select({ id: sourceAssets.id })
+          .from(sourceAssets)
+          .where(eq(sourceAssets.storageKey, storageKey))
+          .limit(1);
+        if (!asset) await getStorage().delete(storageKey);
+      }).catch(() => undefined);
+    }
     throw error;
   }
 }
