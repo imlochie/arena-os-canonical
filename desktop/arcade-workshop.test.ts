@@ -12,12 +12,17 @@ test("native profiles stage verified overlays, preserve the base, isolate saves,
     await writeFile(path.join(install, "game.exe"), "ORIGINAL AUTHORIZED TEST MARKER, NOT AN EXECUTABLE");
     await writeFile(path.join(install, "asset.txt"), "original");
     const digest = await modHash("original");
-    const descriptor = { id: "authorized-fixture", version: "1", kind: "game", title: "Authorized test fixture", sha256: "a".repeat(64), unpackedBytes: 128,
+    const descriptor = { id: "authorized-fixture", version: "1", kind: "game", host: "windows-x64", entry: "game.exe", title: "Authorized test fixture", sha256: "a".repeat(64), unpackedBytes: 128,
       files: [{ path: "game.exe", bytes: 53, sha256: await modHash(await readFile(path.join(install, "game.exe"))) }, { path: "asset.txt", bytes: 8, sha256: digest }] };
     const key = "authorized-fixture@1", launches: any[] = [];
     const packages = { root, reserveBytes: 0, catalog: new Map([[key, descriptor]]), state: { packages: { [key]: { phase: "ready" } } }, filename: () => install, verify: async () => descriptor };
     const host = { runs: new Map(), launch: async (key: string, context: unknown) => { launches.push({ key, context }); return { phase: "starting", gameplayVerified: false }; } };
     const workshop = new NativeModWorkshop(packages, host); await workshop.initialize();
+    const assessment = await workshop.assessLoader(key);
+    assert.equal(assessment.candidate, false, "A marker file must not masquerade as a Unity game");
+    assert.equal(assessment.canInstall, false);
+    assert.equal(launches.length, 0, "Compatibility assessment must never execute game content");
+    assert.equal(await readFile(path.join(install, "asset.txt"), "utf8"), "original");
     let state = await workshop.engine.create(key, "Modded", false, 0); const id = state.profiles[0].id;
     const output = Buffer.from("MODDED");
     const json = JSON.stringify({ manifest: {

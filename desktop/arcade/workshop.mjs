@@ -5,6 +5,7 @@ import path from "node:path";
 import { ModWorkshopEngine } from "../../lib/arena/src/lib/games/mod-workshop-engine.ts";
 import { modHash } from "../../lib/arena/src/lib/games/mod-workshop.ts";
 import { safePackagePath } from "./packages.mjs";
+import { assessUnityMonoLayout } from "./bepinex.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const MiB = 1024 * 1024;
 async function fileHash(filename) { const hash = createHash("sha256"); for await (const chunk of createReadStream(filename)) hash.update(chunk); return hash.digest("hex"); }
@@ -29,6 +30,27 @@ export class NativeModWorkshop {
     await mkdir(path.join(this.root, "packages"), { recursive: true }); await ordinary(path.join(this.root, "packages"), true);
   }
   folder(key) { return path.join(this.root, hash(key)); }
+  async assessLoader(key) {
+    // Assess only immutable, hash-verified managed bytes. The preflight does
+    // not stage files, enable plugin permissions or launch a game.
+    const descriptor = await this.packages.verify(key);
+    if (descriptor.kind !== "game" || !descriptor.entry || descriptor.runtimeEntry)
+      throw new Error("Loader assessment requires a directly executable managed game.");
+    safePackagePath(descriptor.entry);
+    const filename = path.join(this.packages.filename(key), ...descriptor.entry.split("/"));
+    await ordinary(filename);
+    const file = await open(filename, "r");
+    let header;
+    try {
+      const buffer = Buffer.alloc(65536);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      header = buffer.subarray(0, bytesRead);
+    } finally { await file.close(); }
+    return assessUnityMonoLayout({
+      files: descriptor.files.map(file => file.path), entry: descriptor.entry,
+      header, host: descriptor.host,
+    });
+  }
   async read(key) {
     try {
       const filename = path.join(this.folder(key), "index.json"); await ordinary(this.folder(key), true);

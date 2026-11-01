@@ -45,7 +45,7 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
   let workshop;
   ipcMain.handle("arena-native-mod-workshop", async (event, data) => {
     assertArcadeSender(event, window, origin, { action: "inspect" });
-    if (!data || typeof data !== "object" || JSON.stringify(data).length > 32 * 1024 * 1024 || !["list", "inspect", "create", "review", "commit", "activate", "rollback", "export", "launch"].includes(data.op)) throw new Error("Invalid mod workshop request.");
+    if (!data || typeof data !== "object" || JSON.stringify(data).length > 32 * 1024 * 1024 || !["list", "inspect", "assess-loader", "create", "review", "commit", "activate", "rollback", "export", "launch"].includes(data.op)) throw new Error("Invalid mod workshop request.");
     if (operation) throw new Error("Another native operation is active.");
     operation = true;
     try {
@@ -53,6 +53,7 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
       if (data.op === "list") return Promise.all([...packages.catalog].filter(([key, item]) => item.kind === "game" && packages.state.packages[key]?.phase === "ready").map(async ([key]) => (await workshop.engine.inspect(key)).game));
       if (data.op !== "commit" && (typeof data.key !== "string" || data.key.length > 200)) throw new Error("Select a managed game.");
       if (data.op === "inspect") return await workshop.engine.inspect(data.key);
+      if (data.op === "assess-loader") return await workshop.assessLoader(data.key);
       if (data.op === "create") return await workshop.engine.create(data.key, data.name, data.shareSaves, data.revision);
       if (data.op === "review") return await workshop.engine.review(data.key, data.profileId, data.change, data.revision);
       if (data.op === "export") return await workshop.engine.export(data.key, data.profileId);

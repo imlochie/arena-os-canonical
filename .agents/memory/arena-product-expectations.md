@@ -14,3 +14,14 @@ Prioritize the already-approved main-chat Arcade roadmap over unrelated small fi
 **Why:** The user repeatedly pointed to the main chat's existing queue after the agent substituted side fixes and confused that queue with background task slots.
 
 **How to apply:** Inspect the live ownership and dependency records before explaining why queued work is waiting. Follow the existing roadmap; do not infer that main-chat tasks need approval again or that every blocked item is directly waiting for a concurrency slot.
+
+When the user directs moving on from blocked work to an already-approved task,
+proceed with the requested work rather than demanding that they repeat the
+instruction through a task button. Leave incomplete work honestly incomplete.
+
+**Why:** The user explicitly corrected repeated requests to start the next task
+after already directing that the blocked compatibility work be set aside.
+
+**How to apply:** Distinguish task bookkeeping from actual technical dependencies.
+Do not falsely complete a task to advance the queue or use its assignment as a
+reason to ignore the user's current work direction.
