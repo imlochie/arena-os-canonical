@@ -17,8 +17,8 @@ function fixture(
     },
   channelIds = ["vocals"],
 ) {
-  const sources: Array<{ offset: number; stopped: boolean; loop: boolean }> = [];
-  const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }> }> = [];
+  const sources: Array<{ offset: number; stopped: boolean; loop: boolean; buffer: AudioBuffer | null; connectedTo: unknown }> = [];
+  const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }>; connectedTo: unknown }> = [];
   let decodeCount = 0;
   const context = {
     currentTime: 5,
@@ -28,8 +28,8 @@ function fixture(
     },
     createBufferSource() {
       const source = {
-        offset: -1, stopped: false, loop: false, buffer: null,
-        connect() {}, disconnect() {},
+        offset: -1, stopped: false, loop: false, buffer: null, connectedTo: null as unknown,
+        connect(destination: unknown) { this.connectedTo = destination; }, disconnect() {},
         start(_when: number, offset: number) { this.offset = offset; },
         stop() { this.stopped = true; },
       };
@@ -39,7 +39,8 @@ function fixture(
     createGain() {
       const automation: Array<{ type: string; value?: number; time: number }> = [];
       const node = {
-        context, automation, connect() {}, disconnect() {},
+        context, automation, connectedTo: null as unknown,
+        connect(destination: unknown) { this.connectedTo = destination; }, disconnect() {},
         gain: {
           value: 1,
           cancelScheduledValues(time: number) { automation.push({ type: "cancel", time }); },
@@ -228,6 +229,67 @@ test("duplicate in-flight selections share the same download and playback", asyn
     f.layers.dispose();
   }
 });
+
+for (const [firstId, secondId] of [["vocals", "drums"], ["drums", "vocals"]] as const) {
+  test(`pending ${firstId} and ${secondId} donors finish independently in reverse selection order`, async () => {
+    const firstBuffer = { duration: 17, length: 816_000, numberOfChannels: 2 } as AudioBuffer;
+    const secondBuffer = { duration: 11, length: 528_000, numberOfChannels: 2 } as AudioBuffer;
+    // Decodes occur in completion order, not selection order.
+    const buffers = [secondBuffer, firstBuffer];
+    const f = fixture(undefined, undefined, () => buffers.shift()!, ["vocals", "drums"]);
+    const downloads = new Map<string, { resolve: (value: Response) => void; signal: AbortSignal | undefined }>();
+    globalThis.fetch = (url, init) => new Promise<Response>(resolve => {
+      downloads.set(String(url), { resolve, signal: init?.signal ?? undefined });
+    });
+    try {
+      const firstChannel = f.channels.get(firstId)!;
+      const secondChannel = f.channels.get(secondId)!;
+      firstChannel.source.mediaElement.currentTime = 8.75;
+      secondChannel.source.mediaElement.currentTime = 23.5;
+      const first = f.layers.replace(firstId, "/first-channel-donor");
+      const second = f.layers.replace(secondId, "/second-channel-donor");
+      assert.equal(downloads.size, 2, "both channels start their own pending download");
+      assert.equal(downloads.get("/first-channel-donor")!.signal?.aborted, false,
+        "selecting a donor for another channel does not cancel the earlier request");
+      assert.equal(firstChannel.inputGain.gain.value, 1);
+      assert.equal(secondChannel.inputGain.gain.value, 1);
+      assert.equal(f.sources.length, 0, "originals remain audible while both donors load");
+
+      downloads.get("/second-channel-donor")!.resolve(response());
+      await second;
+      assert.equal(f.sources.length, 1);
+      const secondSource = f.sources[0];
+      const secondInput = f.gains.at(-1)!;
+      assert.equal(secondSource.buffer, secondBuffer, "the later selection uses its own decoded donor");
+      assert.equal(secondSource.connectedTo, secondInput);
+      assert.equal(secondInput.connectedTo, secondChannel.gain, "the donor routes to its selected channel");
+      assert.equal(secondSource.offset, 1.5, "the donor aligns to its channel's unchanged clock");
+      assert.equal(secondChannel.inputGain.gain.value, 0);
+      assert.equal(firstChannel.inputGain.gain.value, 1, "the other original stays audible while waiting");
+      assert.equal(downloads.get("/first-channel-donor")!.signal?.aborted, false,
+        "finishing one channel does not cancel the other pending operation");
+
+      downloads.get("/first-channel-donor")!.resolve(response());
+      await first;
+      assert.equal(f.sources.length, 2, "both selected donors install exactly once");
+      const firstSource = f.sources[1];
+      const firstInput = f.gains.at(-1)!;
+      assert.equal(firstSource.buffer, firstBuffer, "the slow selection retains its own donor identity");
+      assert.equal(firstSource.connectedTo, firstInput);
+      assert.equal(firstInput.connectedTo, firstChannel.gain);
+      assert.equal(firstSource.offset, 8.75);
+      assert.equal(firstChannel.inputGain.gain.value, 0);
+      assert.equal(secondChannel.inputGain.gain.value, 0);
+      assert.equal(firstSource.stopped, false);
+      assert.equal(secondSource.stopped, false, "the slow completion does not retire the other donor");
+      assert.equal(firstChannel.source.mediaElement.currentTime, 8.75);
+      assert.equal(secondChannel.source.mediaElement.currentTime, 23.5);
+      assert.equal(firstChannel.source.mediaElement.paused, false);
+      assert.equal(secondChannel.source.mediaElement.paused, false);
+      assert.equal(f.decodeCount, 2);
+    } finally { f.layers.dispose(); }
+  });
+}
 
 test("tempo-matched donor audio is prepared before the original layer fades out", async () => {
   const ratios: number[] = [];

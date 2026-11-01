@@ -3447,27 +3447,37 @@ try {
     (await archiveAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
     "Local archive audio must be bundled as an offline WAV data URL",
   );
-  const assertAudioStarts = async audioElement => {
+  const assertAudioStarts = async (audioElement, playButton) => {
+    // A 200 ms fixture can finish before Playwright returns from click().
+    // Arm evidence before the trusted gesture instead of missing its event.
+    await audioElement.evaluate(audio => {
+      audio.dataset.smokePlaybackStarted = "false";
+      audio.addEventListener("playing", () => { audio.dataset.smokePlaybackStarted = "true"; }, { once: true });
+    });
+    await playButton.click();
     const started = await audioElement.evaluate(audio => new Promise(resolve => {
-      if (!audio.paused && audio.readyState >= 2) return resolve(true);
+      if (audio.dataset.smokePlaybackStarted === "true" || (!audio.paused && audio.readyState >= 2)) return resolve(true);
       const timer = setTimeout(() => resolve(false), 3000);
       audio.addEventListener("playing", () => {
         clearTimeout(timer);
         resolve(true);
       }, { once: true });
     }));
-    assert.equal(started, true, "The imported local audio must actually play in the restricted iframe");
+    assert.equal(started, true, `The imported local audio must actually play in the restricted iframe${
+      started ? "" : `: ${JSON.stringify(await audioElement.evaluate(audio => ({
+        paused: audio.paused, ended: audio.ended, readyState: audio.readyState,
+        currentTime: audio.currentTime, error: audio.error?.message ?? null,
+      })))}`
+    }`);
     await audioElement.evaluate(audio => audio.pause());
   };
-  await archiveFrame.getByRole("button", { name: "Play sound" }).click();
-  await assertAudioStarts(archiveAudioElement);
+  await assertAudioStarts(archiveAudioElement, archiveFrame.getByRole("button", { name: "Play sound" }));
   const dynamicAudioElement = archiveFrame.locator("#dynamic-sfx");
   assert(
     (await dynamicAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
     "Static new Audio() paths must be bundled as offline WAV data URLs",
   );
-  await archiveFrame.getByRole("button", { name: "Play dynamic sound" }).click();
-  await assertAudioStarts(dynamicAudioElement);
+  await assertAudioStarts(dynamicAudioElement, archiveFrame.getByRole("button", { name: "Play dynamic sound" }));
   await archiveFrame.locator("#tile").click();
   await archiveFrame.locator("#tile").evaluate(element =>
     element.ownerDocument.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
@@ -3507,15 +3517,13 @@ try {
     (await revisedAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
     "Original local audio must be restored after model revision",
   );
-  await revisedArchiveFrame.getByRole("button", { name: "Play sound" }).click();
-  await assertAudioStarts(revisedAudioElement);
+  await assertAudioStarts(revisedAudioElement, revisedArchiveFrame.getByRole("button", { name: "Play sound" }));
   const revisedDynamicAudioElement = revisedArchiveFrame.locator("#dynamic-sfx");
   assert(
     (await revisedDynamicAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
     "Original JavaScript audio references must be restored after model revision",
   );
-  await revisedArchiveFrame.getByRole("button", { name: "Play dynamic sound" }).click();
-  await assertAudioStarts(revisedDynamicAudioElement);
+  await assertAudioStarts(revisedDynamicAudioElement, revisedArchiveFrame.getByRole("button", { name: "Play dynamic sound" }));
   await revisedArchiveFrame.locator("#tile").evaluate(element => element.ownerDocument.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
   await page.waitForTimeout(50);
   assert.equal(await revisedArchiveFrame.locator("#hud").innerText(), "Score 3", "Prompt revision must change imported gameplay, not just theme");
