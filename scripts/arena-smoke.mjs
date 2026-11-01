@@ -3,6 +3,11 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
+if (process.argv.includes("--chip8-only")) {
+  await import("./arcade-chip8-smoke.mjs");
+  process.exit(0);
+}
+
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
 const arenaRequire = createRequire(new URL("../artifacts/arenaforge/package.json", import.meta.url));
@@ -3588,7 +3593,7 @@ try {
   }, { timeout: 10000 });
   await page.keyboard.up("1");
   assert((await page.locator("body").innerText()).includes("Prompt modification needs editable source"), "CHIP-8 ROMs must not be passed to prompt gameplay edits");
-  assert((await page.locator("body").innerText()).includes("CHIP-48, Super-CHIP, XO-CHIP"), "Arcade must show CHIP-8 dialect limitations");
+  assert((await page.locator("body").innerText()).includes("Original HP48 half-pixel"), "Arcade must show explicit remaining Super-CHIP limitations");
   await page.reload({ waitUntil: "networkidle" });
   await page.getByRole("tab", { name: "Import and emulate" }).click();
   await page.getByText("open-homebrew.ch8", { exact: true }).first().waitFor({ timeout: 10000 });

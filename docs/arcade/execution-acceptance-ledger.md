@@ -25,7 +25,8 @@ The governing directive is `attached_assets/Pasted-I-think-Arcade-needs-a-much-b
 | Prompt edits of imported HTML | Partial: current-source handoff and safety checks exist | `onReviseSource`, embedded-media masking/restoration and `applyHtmlRevision` in `ImportedGameWorkspace.tsx`; imported revise route | Attribution retention is unit-tested. A complete real-model edit/play/restart journey was not run here. |
 | Imported-game revision history | Partial | Existing `revisionUndoSource` supports a pending revision's undo/keep behavior | This does not establish arbitrary earlier-version restoration or a complete history. Pending revision-preview/history prerequisites must be reconciled before migration. |
 | NES through JSNES | Implemented pathway, compatibility-limited | `ImportedGameWorkspace.tsx`: iNES validation, 1 MB import limit, mapper checks, controls, battery RAM and save-state calls | Existing regression script coverage is source evidence only in this audit. Actual visible-progress restoration must be demonstrated separately. |
-| Classic CHIP-8 | Implemented pathway, format-limited | `ImportedGameWorkspace.tsx` routes to `Chip8Player`; classic program bound is `0x1000 - 0x200` bytes | No new CHIP-8 gameplay test performed here. Super-CHIP support is a separate pending prerequisite, not implied by classic CHIP-8 support. |
+| Classic CHIP-8 | Implemented pathway, format-limited | `ImportedGameWorkspace.tsx` routes to `Chip8Player`; classic program bound is `0x1000 - 0x200` bytes | Subsequent focused check: an original classic fixture responds to keyboard input, retains its version-1 progress through Super-CHIP use and reload, and returns to the same 64×32 pixels. Not a general claim for all classic titles. |
+| Super-CHIP (modern profile) | Implemented, explicitly separate dialect | `chip8Runtime.ts`, `Chip8Player.tsx`, `ImportedGameWorkspace.tsx`: .sc8/.sch8 or explicit .ch8/.c8 opt-in; 4 KB memory; high/low resolution, scrolling, 16×16 sprites, large hex font, eight RPL flags and normal exit | Subsequent focused implementation check: 12 runtime tests and `node scripts/arena-smoke.mjs --chip8-only` pass with original generated classic/Super-CHIP programs. Observed actual canvas output, on-screen/keyboard input, scrolling, mode changes, save/reload, exit/reload, confirmed restart retaining RPL flags, legacy saves and explicit ambiguous-file selection. No Windows or third-party-game compatibility claim. |
 | Browser EmulatorJS integrations | Implemented pathway, host/core/game-dependent | `arcadeEmulatorRuntime.ts`, `EmulatorJsPlayer.tsx`: version 4.2.3; GB/GBC, GBA, SNES, Mega Drive, Master System, Game Gear and N64 selectors | Registry entries are not per-game compatibility proof. Current data URL is the versioned EmulatorJS CDN; offline provisioning and target-host behavior require verification. |
 | Browser-local shelf persistence | Implemented, with explicit failure handling | `importedGameStorage.ts`: IndexedDB, transactional stale-write checks, storage revisions and change notifications; `ImportedGameWorkspace.tsx`: committed baseline and retry handling | Fixture source/provenance survive reload. Do not infer all save formats, storage-quota failures, cross-device portability or private browsing from that test. |
 | Versioned cross-runtime game manifest | Planned foundation work | Current imported records retain identity, source/ROM, kind, optional system, provenance and pending revision state | No common versioned manifest with the directive's installation, permissions, profiles and host-specific verification model was identified in the audited paths. |
@@ -58,6 +59,8 @@ Live task records inspected on 2026-11-01 show all eight roadmap tasks assigned 
 The imported-edit/restart and emulator input/unsupported-format prerequisites are already merged. The three remaining prerequisites are pending background tasks, reported as waiting for concurrency slots. The desktop-execution task depends on foundation; repository builds and Mod Workshop depend on foundation/desktop execution; the remaining runtime/mod tasks depend on those later layers.
 
 This audit does not remove those links, reassign jobs, or mark blocked work as running/completed. Re-read live task states before acting; this checkpoint can become stale.
+
+Subsequent implementation update: the Super-CHIP prerequisite was explicitly assigned and implemented, with the focused evidence above. Classic CHIP-8 version-1 save keys and behavior remain in place; Super-CHIP has separate version-2 snapshots. The modern profile intentionally does not emulate original HP48 half-pixel scrolling/collision quirks, share RPL flags across unrelated games, implement XO-CHIP, or produce sound. The two revision prerequisites remain separate work. Final task/queue status comes from the live task records, not this document.
 
 ## Migration and adapter constraints
 
@@ -93,6 +96,9 @@ Run from the workspace root:
 
 ```sh
 pnpm --filter @workspace/scripts exec tsx --test \
+  "$PWD/artifacts/arenaforge/src/lib/chip8Runtime.test.ts"
+node scripts/arena-smoke.mjs --chip8-only
+pnpm --filter @workspace/scripts exec tsx --test \
   "$PWD/artifacts/api-server/src/imported/arcade/repository-source.test.ts" \
   "$PWD/artifacts/arenaforge/src/lib/importedRepositoryAttribution.test.ts"
 pnpm --filter @workspace/scripts exec tsx "$PWD/scripts/arcade-repository-import.mjs"
@@ -100,4 +106,4 @@ pnpm --filter @workspace/arenaforge run typecheck
 pnpm --filter @workspace/api-server run typecheck
 ```
 
-The focused browser report is generated at `generated-artifacts/arcade-repository-import/report.json` and explicitly records `modelCallTested: false`. Existing broader scenarios live in `scripts/arena-smoke.mjs`; their presence is not evidence they were rerun for this audit. No new runtime or Windows checks were run for this documentation-only pass.
+Focused browser reports are generated at `generated-artifacts/arcade-repository-import/report.json` and `generated-artifacts/arcade-chip8/report.json`; both explicitly record `modelCallTested: false`. Existing broader scenarios live in `scripts/arena-smoke.mjs`; their presence is not evidence the full suite was rerun. The initial audit was documentation-only; subsequent Super-CHIP runtime/browser checks are recorded separately above. No Windows checks have been run for this work.

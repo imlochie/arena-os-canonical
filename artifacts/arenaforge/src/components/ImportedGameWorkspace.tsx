@@ -15,6 +15,7 @@ import {
 import { importedHtmlSafetyIssue } from "@workspace/arena/lib/games";
 import EmulatorJsPlayer from "./EmulatorJsPlayer";
 import Chip8Player from "./Chip8Player";
+import { CHIP8_MAX_ROM_BYTES, chip8DialectForFile, chip8DialectLabel, isChip8Dialect, type Chip8Dialect } from "../lib/chip8Runtime";
 import type { ButtonKey, NES } from "jsnes";
 import type { ArcadeRepositoryProvenance } from "@workspace/api-client-react";
 import RepositoryGameImport from "./RepositoryGameImport";
@@ -29,6 +30,7 @@ type ImportedGame = {
   addedAt: number;
   system?: ArcadeEmulatorSystemId;
   romData?: ArrayBuffer;
+  chip8Dialect?: Chip8Dialect;
   provenance?: ArcadeRepositoryProvenance;
 };
 
@@ -56,7 +58,7 @@ const MAX_ARCHIVE_CONTENT_BYTES = 6 * 1024 * 1024;
 const MAX_HTML_BYTES = MAX_ARCHIVE_CONTENT_BYTES;
 const MAX_ROM_BYTES = 1024 * 1024;
 const MAX_EMULATOR_ROM_BYTES = 64 * 1024 * 1024;
-const MAX_CHIP8_ROM_BYTES = 0x1000 - 0x200;
+const MAX_CHIP8_ROM_BYTES = CHIP8_MAX_ROM_BYTES;
 const MAX_ARCHIVE_BYTES = 3 * 1024 * 1024;
 const MAX_ARCHIVE_FILES = 128;
 const BUTTON = {
@@ -390,12 +392,12 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
       detectArcadeEmulatorSystem(game.name) === game.system;
   }
   if (game.kind === "chip8") {
-    const extension = game.name.slice(game.name.lastIndexOf(".")).toLowerCase();
-    return [".ch8", ".c8"].includes(extension) &&
+    const dialect = game.chip8Dialect ?? "chip8";
+    return isChip8Dialect(dialect) && chip8DialectForFile(game.name, dialect) === dialect &&
       game.romData instanceof ArrayBuffer &&
       game.romData.byteLength >= 2 &&
       game.romData.byteLength <= MAX_CHIP8_ROM_BYTES &&
-      game.romData.byteLength % 2 === 0;
+      (dialect === "schip" || game.romData.byteLength % 2 === 0);
   }
   return false;
 }
@@ -424,6 +426,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [chip8ImportDialect, setChip8ImportDialect] = useState<Chip8Dialect>("chip8");
   const [nesSaveAvailable, setNesSaveAvailable] = useState(false);
   const [nesSaveMessage, setNesSaveMessage] = useState("");
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -769,25 +772,26 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         return true;
       }
       if (kind === "chip8") {
-        const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
-        if (![".ch8", ".c8"].includes(extension)) {
-          throw new Error("Classic CHIP-8 imports use .ch8 or .c8 files.");
+        const dialect = chip8DialectForFile(file.name, chip8ImportDialect);
+        if (!dialect) {
+          throw new Error("CHIP-8 imports use .ch8/.c8; Super-CHIP also accepts .sc8/.sch8.");
         }
-        if (file.size < 2 || file.size > MAX_CHIP8_ROM_BYTES || file.size % 2 !== 0) {
-          throw new Error(`Classic CHIP-8 programs must be even-sized and between 2 bytes and ${MAX_CHIP8_ROM_BYTES} bytes.`);
+        if (file.size < 2 || file.size > MAX_CHIP8_ROM_BYTES || (dialect === "chip8" && file.size % 2 !== 0)) {
+          throw new Error(`${chip8DialectLabel(dialect)} programs must be ${dialect === "chip8" ? "even-sized and " : ""}between 2 bytes and ${MAX_CHIP8_ROM_BYTES} bytes.`);
         }
         const romData = await file.arrayBuffer();
         const game: ImportedGame = {
           id: crypto.randomUUID(),
           name: file.name,
           kind,
+          chip8Dialect: dialect,
           source: "",
           romData,
           addedAt: Date.now(),
         };
         await saveGames([game, ...currentGames.current].slice(0, 12));
         setSelectedId(game.id);
-        setNotice("Classic CHIP-8 program imported to this browser's local shelf.");
+        setNotice(`${chip8DialectLabel(dialect)} program imported to this browser's local shelf.`);
         return true;
       }
       if (file.size < 16 || file.size > MAX_ROM_BYTES) throw new Error("NES ROMs must be between 16 bytes and 1 MB.");
@@ -1036,7 +1040,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
               <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-300">Local import bay</p>
               <h2 className="mt-1 text-xl font-black tracking-tight text-white">Bring your own game.</h2>
                 <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-400">
-                Classic CHIP-8 homebrew, homebrew NES, supported multi-system ROMs, and authorized HTML5 games. Imported game files stay in this browser. HTML runs in a restricted sandbox; multi-system cores download once from EmulatorJS and are cached locally.
+                CHIP-8 / Super-CHIP homebrew, homebrew NES, supported multi-system ROMs, and authorized HTML5 games. Imported game files stay in this browser. HTML runs in a restricted sandbox; multi-system cores download once from EmulatorJS and are cached locally.
               </p>
             </div>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[10px] font-bold text-emerald-200">
@@ -1054,21 +1058,33 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
             <span>{RIGHTS_COPY}</span>
           </label>
 
-          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-white/10 bg-black/20 p-3">
               <div className="flex items-start gap-2">
                 <Gamepad2 className="mt-0.5 shrink-0 text-emerald-300" size={16} />
                 <div>
-                  <p className="text-xs font-extrabold text-slate-100">Classic CHIP-8 homebrew</p>
-                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">Raw .ch8 or .c8 programs, 2 bytes–3.5 KB. Built-in local runtime; no core download.</p>
+                  <p className="text-xs font-extrabold text-slate-100">CHIP-8 / Super-CHIP homebrew</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">2 bytes–3.5 KB; no core download. .sc8/.sch8 select Super-CHIP automatically. Choose the dialect for .ch8/.c8 files.</p>
                 </div>
               </div>
+              <label className="mt-3 block text-[11px] text-slate-300">
+                Program dialect
+                <select
+                  aria-label="CHIP-8 program dialect"
+                  value={chip8ImportDialect}
+                  onChange={event => { if (isChip8Dialect(event.target.value)) setChip8ImportDialect(event.target.value); }}
+                  className="mt-1 block w-full rounded-md border border-white/15 bg-slate-950 px-2 py-2 text-xs text-slate-100"
+                >
+                  <option value="chip8">Classic CHIP-8 · 64×32</option>
+                  <option value="schip">Super-CHIP (modern) · up to 128×64</option>
+                </select>
+              </label>
               <label className={`mt-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-extrabold transition ${rightsAccepted ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100 hover:bg-emerald-300/15" : "cursor-not-allowed border-white/5 bg-white/5 text-slate-500"}`}>
                 <Upload size={14} /> Import CHIP-8 program
                 <input
                   className="sr-only"
                   type="file"
-                  accept=".ch8,.c8,application/octet-stream"
+                  accept=".ch8,.c8,.sc8,.sch8,application/octet-stream"
                   disabled={!rightsAccepted}
                   data-testid="input-chip8-rom"
                   onChange={(event) => { void handleImport(event.target.files?.[0], "chip8"); event.currentTarget.value = ""; }}
@@ -1151,7 +1167,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   : selected.kind === "nes"
                     ? "NES homebrew"
                     : selected.kind === "chip8"
-                      ? "Classic CHIP-8"
+                      ? chip8DialectLabel(selected.chip8Dialect ?? "chip8")
                       : selected.system ? arcadeEmulatorSystemLabel(selected.system) : "Console ROM"}
               </span>
               <h3 className="min-w-0 flex-1 truncate text-sm font-extrabold text-white">{selected.name}</h3>
@@ -1199,6 +1215,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                 gameId={selected.id}
                 name={selected.name}
                 rom={selectedEmulatorRom}
+                dialect={selected.chip8Dialect ?? "chip8"}
               />
             ) : (
               <div className="p-3">
@@ -1420,7 +1437,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                     : game.kind === "nes"
                       ? "NES homebrew"
                       : game.kind === "chip8"
-                        ? "Classic CHIP-8"
+                        ? chip8DialectLabel(game.chip8Dialect ?? "chip8")
                         : game.system ? arcadeEmulatorSystemLabel(game.system) : "Console ROM"}
                 </span>
               </button>
@@ -1435,7 +1452,8 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
               <li>NES/NES 2.0: mapper IDs 0–5, 7, 9, 11, 34, 38, 66, 71, 79, 94, 118, 119, 140, 180, 240, 241; 1 MB maximum.</li>
               <li>NES save states and battery-backed saves stay on this browser; no external devices or netplay.</li>
               <li>NES ROMs are playable, not source-editable; prompt remakes create a new browser game.</li>
-              <li>Classic CHIP-8: raw .ch8/.c8 programs, 2 bytes–3.5 KB. The built-in interpreter supports the original 64×32 instruction set, keypad, and one-color display; CHIP-48, Super-CHIP, XO-CHIP, sound output, and other dialect extensions are not supported.</li>
+              <li>Classic CHIP-8: even-sized .ch8/.c8 programs, 2 bytes–3.5 KB. Existing 64×32 behavior and saves are preserved. CHIP-48, XO-CHIP, and other profiles are not selected automatically.</li>
+              <li>Super-CHIP (modern): .sc8/.sch8, or .ch8/.c8 with the dialect selected above; 2 bytes–3.5 KB in 4 KB memory. Includes 128×64/64×32 modes, 16×16 sprites, scrolling, large hex font, eight per-game saved RPL flags, and normal exit. It uses clipped sprites, Vx shifts, unchanged I on register transfers, and key-release waits. Original HP48 half-pixel scrolling/collision quirks, cross-game RPL sharing, XO-CHIP, and sound output are not supported.</li>
               <li>CHIP-8 programs are playable, not source-editable; prompt remakes create a separate original browser game.</li>
               <li>EmulatorJS cores: GB/GBC, GBA, SNES, Mega Drive, Master System, Game Gear, and N64; ROMs up to 64 MB. First launch needs internet; saves default to browser storage and auto-save every minute.</li>
               <li>Disc images, BIOS files, DOS games, PSP, 3DS, arcade ROM sets, and other unlisted formats are not enabled. No copyrighted ROMs or BIOS files are bundled.</li>

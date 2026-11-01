@@ -14,3 +14,9 @@ Repository acquisition and reproducible game builds are separate capabilities. A
 **Why:** This is a safety boundary, not a change to the user's broader create/import/mod vision. A constrained first importer must not become an excuse to abandon projects that need a real build pipeline.
 
 **How to apply:** Expand build-dependent game acquisition through a separately governed build/runtime path. Keep refusals specific, preserve pinned-source attribution through edits, and distinguish successful downloads from verified playable games.
+
+Do not silently reclassify existing classic CHIP-8 games when expanding dialect support. Ambiguous program files need explicit dialect selection; universal-manifest migrations must preserve the original interpreter semantics.
+
+**Why:** Classic CHIP-8 and Super-CHIP disagree on shifts, register transfers, jumps and drawing. A technically valid reinterpretation can change gameplay or invalidate old progress, contrary to the user's requirement not to regress working games.
+
+**How to apply:** Preserve legacy defaults and save identity when adding adapters or migrating records. Keep compatibility-profile limits explicit rather than advertising every historical implementation as equivalent.
