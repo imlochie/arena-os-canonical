@@ -8,7 +8,7 @@ if (process.argv.includes("--progress-isolation-only") || process.argv.includes(
   process.exit(0);
 }
 
-if (process.argv.includes("--chip8-only")) {
+if (process.argv.includes("--chip8-only") || process.argv.includes("--chip8-backup-only")) {
   await import("./arcade-chip8-smoke.mjs");
   process.exit(0);
 }

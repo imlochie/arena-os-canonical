@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { CHIP8_HEIGHT, CHIP8_KEYS, CHIP8_WIDTH, Chip8Runtime, chip8KeyFromKeyboard, chip8DialectLabel, type Chip8Dialect } from "../lib/chip8Runtime";
+import Chip8ProgressBackup from "./Chip8ProgressBackup";
+import { chip8StateKey as stateKey, validateChip8Progress, type Chip8ProgressState } from "../lib/chip8ProgressBackup";
 
 type Chip8PlayerProps = {
   gameId: string;
@@ -10,16 +12,20 @@ type Chip8PlayerProps = {
   dialect?: Chip8Dialect;
 };
 
-const stateKey = (id: string, dialect: Chip8Dialect) =>
-  dialect === "schip" ? `arenaforge.schip-state.v2:${id}` : `arenaforge.chip8-state.v1:${id}`;
-
 export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Chip8PlayerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const runtimeRef = useRef<Chip8Runtime | null>(null);
   const [status, setStatus] = useState("Starting classic CHIP-8.");
   const [resolution, setResolution] = useState("64×32");
   const [restartVersion, setRestartVersion] = useState(0);
+  const backupPausedRef = useRef(false);
+  const [backupPaused, setBackupPaused] = useState(false);
   const profile = chip8DialectLabel(dialect);
+  const pauseForBackup = useCallback((paused: boolean) => {
+    backupPausedRef.current = paused;
+    if (paused) runtimeRef.current?.keys.fill(0);
+    setBackupPaused(paused);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -76,7 +82,12 @@ export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Ch
         context.putImageData(frame, 0, 0);
       };
       const tick = (now: number) => {
-        if (!active) return;
+        if (!active || runtimeRef.current !== runtime) return;
+        if (backupPausedRef.current) {
+          lastFrame = now;
+          animation = window.requestAnimationFrame(tick);
+          return;
+        }
         if (lastFrame === 0) lastFrame = now;
         elapsed += Math.min(now - lastFrame, 100);
         lastFrame = now;
@@ -140,7 +151,16 @@ export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Ch
     }
   };
 
-  const changeKey = (index: number, pressed: boolean) => runtimeRef.current?.setKey(index, pressed);
+  const restoreSnapshot = (snapshot: Chip8ProgressState) => {
+    const checked = validateChip8Progress({ gameId, name, rom, dialect }, snapshot);
+    localStorage.setItem(stateKey(gameId, dialect), JSON.stringify(checked));
+    // Retire the old runtime before effect cleanup can auto-save over restore.
+    runtimeRef.current = null;
+    setRestartVersion(version => version + 1);
+  };
+  const changeKey = (index: number, pressed: boolean) => {
+    if (!pressed || !backupPausedRef.current) runtimeRef.current?.setKey(index, pressed);
+  };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const key = chip8KeyFromKeyboard(event.key);
     if (key === null) return;
@@ -186,7 +206,7 @@ export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Ch
          {resolution} · {status} · Click the screen, then use 1–4 / Q–R / A–F / Z–V, or touch the keypad.
       </p>
        <div className="text-center">
-         <button type="button" onClick={restartProgram} className="rounded-md border border-white/15 px-3 py-1.5 text-xs text-slate-200 hover:bg-white/10">
+         <button type="button" disabled={backupPaused} onClick={restartProgram} className="rounded-md border border-white/15 px-3 py-1.5 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-40">
            Restart program
          </button>
        </div>
@@ -205,6 +225,12 @@ export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Ch
             {label}
           </button>
         ))}
+      </div>
+      <div onFocusCapture={() => runtimeRef.current?.keys.fill(0)}>
+      <Chip8ProgressBackup target={{ gameId, name, rom, dialect }} onPause={pauseForBackup} onRestore={restoreSnapshot} getSnapshot={() => {
+        if (!runtimeRef.current) throw new Error("This program has no active runtime snapshot.");
+        return runtimeRef.current.snapshot();
+      }} />
       </div>
     </div>
   );
