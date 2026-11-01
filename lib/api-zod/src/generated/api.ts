@@ -9,6 +9,74 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary Preview a public GitHub offline game at a pinned commit
+ */
+export const inspectArcadeRepositoryBodyUrlMax = 1000;
+
+
+
+export const InspectArcadeRepositoryBody = zod.object({
+  "url": zod.string().max(inspectArcadeRepositoryBodyUrlMax),
+  "authorized": zod.boolean()
+})
+
+export const InspectArcadeRepositoryResponse = zod.object({
+  "repository": zod.string(),
+  "revision": zod.string(),
+  "sourceUrl": zod.string(),
+  "license": zod.object({
+  "spdx": zod.string(),
+  "path": zod.string(),
+  "text": zod.string()
+})
+}).and(zod.object({
+  "token": zod.string(),
+  "expiresAt": zod.number().int(),
+  "reference": zod.string(),
+  "entryPath": zod.string(),
+  "totalBytes": zod.number().int(),
+  "files": zod.array(zod.object({
+  "path": zod.string(),
+  "size": zod.number().int(),
+  "sha": zod.string()
+}))
+}))
+
+
+/**
+ * @summary Download and verify the source files from an approved preview
+ */
+export const acquireArcadeRepositoryBodyTokenMax = 100;
+
+
+
+export const AcquireArcadeRepositoryBody = zod.object({
+  "token": zod.string().max(acquireArcadeRepositoryBodyTokenMax),
+  "authorized": zod.boolean()
+})
+
+export const AcquireArcadeRepositoryResponse = zod.object({
+  "provenance": zod.object({
+  "repository": zod.string(),
+  "revision": zod.string(),
+  "sourceUrl": zod.string(),
+  "license": zod.object({
+  "spdx": zod.string(),
+  "path": zod.string(),
+  "text": zod.string()
+})
+}),
+  "files": zod.array(zod.object({
+  "path": zod.string(),
+  "size": zod.number().int(),
+  "sha": zod.string()
+}).and(zod.object({
+  "contentBase64": zod.string()
+})))
+})
+
+
+/**
  * @summary List library tracks with available stem types
  */
 export const getLibraryTracksQueryLimitMax = 500;

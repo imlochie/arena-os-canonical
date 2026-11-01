@@ -21,6 +21,11 @@ import type {
 
 import type {
   ApiError,
+  ArcadeRepositoryAcquisitionInput,
+  ArcadeRepositoryError,
+  ArcadeRepositoryLinkInput,
+  ArcadeRepositoryPreview,
+  ArcadeRepositorySnapshot,
   GetLibraryAudioBackupParams,
   GetLibraryAudioCaptureOptionsParams,
   GetLibraryTracksParams,
@@ -67,6 +72,182 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getInspectArcadeRepositoryUrl = () => {
+
+
+
+
+  return `/api/arcade/import/repository/inspect`
+}
+
+/**
+ * @summary Preview a public GitHub offline game at a pinned commit
+ */
+export const inspectArcadeRepository = async (arcadeRepositoryLinkInput: ArcadeRepositoryLinkInput, options?: Parameters<typeof customFetch>[1]): Promise<ArcadeRepositoryPreview> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<ArcadeRepositoryPreview>(getInspectArcadeRepositoryUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(arcadeRepositoryLinkInput)
+  }
+);}
+
+
+
+
+
+export const getInspectArcadeRepositoryMutationKey = () => ['inspectArcadeRepository'] as const;
+
+export const getInspectArcadeRepositoryMutationOptions = <TError = ErrorType<ArcadeRepositoryError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof inspectArcadeRepository>>, TError,InspectArcadeRepositoryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof inspectArcadeRepository>>, TError,InspectArcadeRepositoryMutationVariables, TContext> => {
+
+const mutationKey = getInspectArcadeRepositoryMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof inspectArcadeRepository>>, InspectArcadeRepositoryMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  inspectArcadeRepository(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type InspectArcadeRepositoryMutationResult = NonNullable<Awaited<ReturnType<typeof inspectArcadeRepository>>>
+    export type InspectArcadeRepositoryMutationBody = BodyType<ArcadeRepositoryLinkInput>
+    export type InspectArcadeRepositoryMutationError = ErrorType<ArcadeRepositoryError>
+    export type InspectArcadeRepositoryMutationVariables = {data: BodyType<ArcadeRepositoryLinkInput>}
+
+    /**
+ * @summary Preview a public GitHub offline game at a pinned commit
+ */
+export const useInspectArcadeRepository = <TError = ErrorType<ArcadeRepositoryError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof inspectArcadeRepository>>, TError,InspectArcadeRepositoryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof inspectArcadeRepository>>,
+        TError,
+        InspectArcadeRepositoryMutationVariables,
+        TContext
+      > => {
+      return useMutation(getInspectArcadeRepositoryMutationOptions(options));
+    }
+
+export const getAcquireArcadeRepositoryUrl = () => {
+
+
+
+
+  return `/api/arcade/import/repository/acquire`
+}
+
+/**
+ * @summary Download and verify the source files from an approved preview
+ */
+export const acquireArcadeRepository = async (arcadeRepositoryAcquisitionInput: ArcadeRepositoryAcquisitionInput, options?: Parameters<typeof customFetch>[1]): Promise<ArcadeRepositorySnapshot> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<ArcadeRepositorySnapshot>(getAcquireArcadeRepositoryUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(arcadeRepositoryAcquisitionInput)
+  }
+);}
+
+
+
+
+
+export const getAcquireArcadeRepositoryMutationKey = () => ['acquireArcadeRepository'] as const;
+
+export const getAcquireArcadeRepositoryMutationOptions = <TError = ErrorType<ArcadeRepositoryError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof acquireArcadeRepository>>, TError,AcquireArcadeRepositoryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof acquireArcadeRepository>>, TError,AcquireArcadeRepositoryMutationVariables, TContext> => {
+
+const mutationKey = getAcquireArcadeRepositoryMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof acquireArcadeRepository>>, AcquireArcadeRepositoryMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  acquireArcadeRepository(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AcquireArcadeRepositoryMutationResult = NonNullable<Awaited<ReturnType<typeof acquireArcadeRepository>>>
+    export type AcquireArcadeRepositoryMutationBody = BodyType<ArcadeRepositoryAcquisitionInput>
+    export type AcquireArcadeRepositoryMutationError = ErrorType<ArcadeRepositoryError>
+    export type AcquireArcadeRepositoryMutationVariables = {data: BodyType<ArcadeRepositoryAcquisitionInput>}
+
+    /**
+ * @summary Download and verify the source files from an approved preview
+ */
+export const useAcquireArcadeRepository = <TError = ErrorType<ArcadeRepositoryError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof acquireArcadeRepository>>, TError,AcquireArcadeRepositoryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof acquireArcadeRepository>>,
+        TError,
+        AcquireArcadeRepositoryMutationVariables,
+        TContext
+      > => {
+      return useMutation(getAcquireArcadeRepositoryMutationOptions(options));
+    }
 
 export const getGetLibraryTracksUrl = (params?: GetLibraryTracksParams,) => {
   const normalizedParams = new URLSearchParams();

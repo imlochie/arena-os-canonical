@@ -7,6 +7,15 @@
  */
 
 export * from './apiError';
+export * from './arcadeRepositoryAcquisitionInput';
+export * from './arcadeRepositoryDownloadFile';
+export * from './arcadeRepositoryError';
+export * from './arcadeRepositoryFile';
+export * from './arcadeRepositoryLicense';
+export * from './arcadeRepositoryLinkInput';
+export * from './arcadeRepositoryPreview';
+export * from './arcadeRepositoryProvenance';
+export * from './arcadeRepositorySnapshot';
 export * from './getLibraryAudioBackupParams';
 export * from './getLibraryAudioBackupPreflight';
 export * from './getLibraryAudioCaptureOptionsMediaMetadata';

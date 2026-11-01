@@ -5,6 +5,59 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface ArcadeRepositoryLinkInput {
+  /** @maxLength 1000 */
+  url: string;
+  authorized: boolean;
+}
+
+export interface ArcadeRepositoryAcquisitionInput {
+  /** @maxLength 100 */
+  token: string;
+  authorized: boolean;
+}
+
+export interface ArcadeRepositoryError {
+  error: string;
+}
+
+export interface ArcadeRepositoryLicense {
+  spdx: string;
+  path: string;
+  text: string;
+}
+
+export interface ArcadeRepositoryFile {
+  path: string;
+  size: number;
+  sha: string;
+}
+
+export interface ArcadeRepositoryProvenance {
+  repository: string;
+  revision: string;
+  sourceUrl: string;
+  license: ArcadeRepositoryLicense;
+}
+
+export type ArcadeRepositoryPreview = ArcadeRepositoryProvenance & {
+  token: string;
+  expiresAt: number;
+  reference: string;
+  entryPath: string;
+  totalBytes: number;
+  files: ArcadeRepositoryFile[];
+};
+
+export type ArcadeRepositoryDownloadFile = ArcadeRepositoryFile & {
+  contentBase64: string;
+};
+
+export interface ArcadeRepositorySnapshot {
+  provenance: ArcadeRepositoryProvenance;
+  files: ArcadeRepositoryDownloadFile[];
+}
+
 export interface HealthStatus {
   status: string;
 }

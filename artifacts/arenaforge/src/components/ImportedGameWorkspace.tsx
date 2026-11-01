@@ -16,6 +16,9 @@ import { importedHtmlSafetyIssue } from "@workspace/arena/lib/games";
 import EmulatorJsPlayer from "./EmulatorJsPlayer";
 import Chip8Player from "./Chip8Player";
 import type { ButtonKey, NES } from "jsnes";
+import type { ArcadeRepositoryProvenance } from "@workspace/api-client-react";
+import RepositoryGameImport from "./RepositoryGameImport";
+import { isRepositoryProvenance, withRepositoryAttribution, withoutRepositoryAttribution } from "../lib/importedRepositoryAttribution";
 
 type ImportedGame = {
   id: string;
@@ -26,6 +29,7 @@ type ImportedGame = {
   addedAt: number;
   system?: ArcadeEmulatorSystemId;
   romData?: ArrayBuffer;
+  provenance?: ArcadeRepositoryProvenance;
 };
 
 type ReaGameAnalysis = {
@@ -134,11 +138,18 @@ function mimeType(path: string) {
   return types[extension ?? ""] ?? "application/octet-stream";
 }
 
+type ArchiveByteBudget = { remaining: number };
+function reserveArchiveBytes(budget: ArchiveByteBudget, bytes: number) {
+  budget.remaining -= bytes;
+  if (budget.remaining < 0) throw new Error("Inlined game assets exceed 6 MB. Repeated asset references also count toward this limit.");
+}
+
 async function inlineArchiveCss(
   css: string,
   cssPath: string,
   files: Record<string, any>,
   seen = new Set<string>(),
+  budget: ArchiveByteBudget = { remaining: MAX_ARCHIVE_CONTENT_BYTES },
 ): Promise<string> {
   if (seen.has(cssPath)) throw new Error("The project contains a circular stylesheet import.");
   const nextSeen = new Set(seen);
@@ -150,8 +161,9 @@ async function inlineArchiveCss(
     const target = files[targetPath];
     if (!target) throw new Error(`The archive is missing stylesheet ${match[2]}.`);
     const nested = await target.async("string");
-    const rewritten = await inlineArchiveCss(nested, targetPath, files, nextSeen);
-    css = css.replace(match[0], rewritten);
+    reserveArchiveBytes(budget, new TextEncoder().encode(nested).byteLength);
+    const rewritten = await inlineArchiveCss(nested, targetPath, files, nextSeen, budget);
+    css = css.replace(match[0], () => rewritten);
   }
   const urls = [...css.matchAll(/url\(\s*(?:(['"])(.*?)\1|([^)'"\s][^)]*))\s*\)/gi)];
   for (const match of urls) {
@@ -161,6 +173,7 @@ async function inlineArchiveCss(
     const target = files[targetPath];
     if (!target) throw new Error(`The archive is missing style asset ${reference}.`);
     const bytes = await target.async("uint8array");
+    reserveArchiveBytes(budget, Math.ceil(bytes.byteLength * 4 / 3) + 64);
     const dataUrl = `data:${mimeType(targetPath)};base64,${toBase64(bytes)}`;
     css = css.replace(match[0], `url("${dataUrl}")`);
   }
@@ -171,6 +184,7 @@ async function inlineArchiveScriptMediaSources(
   source: string,
   htmlPath: string,
   files: Record<string, any>,
+  budget: ArchiveByteBudget = { remaining: MAX_ARCHIVE_CONTENT_BYTES },
 ): Promise<string> {
   const audioCalls = [...source.matchAll(/\bnew\s+Audio\s*\(\s*(["'])([^"'\\\r\n]+)\1\s*\)/gi)]
     .map((match) => ({ match, audio: true }));
@@ -190,6 +204,7 @@ async function inlineArchiveScriptMediaSources(
       throw new Error(`The game audio source ${reference} must use an audio file.`);
     }
     const bytes = await target.async("uint8array");
+    reserveArchiveBytes(budget, Math.ceil(bytes.byteLength * 4 / 3) + 64);
     const dataUrl = `data:${mimeType(path)};base64,${toBase64(bytes)}`;
     const quote = match[1];
     const oldLiteral = `${quote}${match[2]}${quote}`;
@@ -235,6 +250,8 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
 
   const entryFile = files[entryPath];
   let source = await entryFile.async("string");
+  const budget = { remaining: MAX_ARCHIVE_CONTENT_BYTES };
+  reserveArchiveBytes(budget, new TextEncoder().encode(source).byteLength);
   const document = new DOMParser().parseFromString(source, "text/html");
   for (const script of Array.from(document.querySelectorAll("script[src]")) as HTMLScriptElement[]) {
     const reference = script.getAttribute("src") ?? "";
@@ -243,6 +260,7 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
     const scriptFile = files[path];
     if (!scriptFile) throw new Error(`The archive is missing game script ${reference}.`);
     const scriptSource = await scriptFile.async("string");
+    reserveArchiveBytes(budget, new TextEncoder().encode(scriptSource).byteLength);
     if (script.type === "module" && /\b(?:import|export)\s*(?:\(|[{*A-Za-z_$])/m.test(scriptSource)) {
       throw new Error("This project uses JavaScript modules. Bundle modules into a single offline script before importing.");
     }
@@ -252,7 +270,7 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
     script.textContent = scriptSource.replace(/<\/script/gi, "<\\/script");
   }
   for (const script of Array.from(document.querySelectorAll("script"))) {
-    script.textContent = await inlineArchiveScriptMediaSources(script.textContent ?? "", entryPath, files);
+    script.textContent = await inlineArchiveScriptMediaSources(script.textContent ?? "", entryPath, files, budget);
   }
 
   for (const link of Array.from(document.querySelectorAll("link[href]"))) {
@@ -264,16 +282,19 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
     if (!target) throw new Error(`The archive is missing linked file ${reference}.`);
     if (rel.includes("stylesheet")) {
       const style = document.createElement("style");
-      style.textContent = await inlineArchiveCss(await target.async("string"), path, files);
+      const stylesheet = await target.async("string");
+      reserveArchiveBytes(budget, new TextEncoder().encode(stylesheet).byteLength);
+      style.textContent = await inlineArchiveCss(stylesheet, path, files, new Set(), budget);
       link.replaceWith(style);
     } else {
       const bytes = await target.async("uint8array");
+      reserveArchiveBytes(budget, Math.ceil(bytes.byteLength * 4 / 3) + 64);
       link.setAttribute("href", `data:${mimeType(path)};base64,${toBase64(bytes)}`);
     }
   }
 
   for (const style of Array.from(document.querySelectorAll("style"))) {
-    style.textContent = await inlineArchiveCss(style.textContent ?? "", entryPath, files);
+    style.textContent = await inlineArchiveCss(style.textContent ?? "", entryPath, files, new Set(), budget);
   }
   for (const element of Array.from(document.querySelectorAll("[src], [poster], [data]"))) {
     for (const attribute of ["src", "poster", "data"]) {
@@ -284,11 +305,12 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
       const target = files[path];
       if (!target) throw new Error(`The archive is missing game asset ${reference}.`);
       const bytes = await target.async("uint8array");
+      reserveArchiveBytes(budget, Math.ceil(bytes.byteLength * 4 / 3) + 64);
       element.setAttribute(attribute, `data:${mimeType(path)};base64,${toBase64(bytes)}`);
     }
   }
   for (const element of Array.from(document.querySelectorAll("[style]"))) {
-    element.setAttribute("style", await inlineArchiveCss(element.getAttribute("style") ?? "", entryPath, files));
+    element.setAttribute("style", await inlineArchiveCss(element.getAttribute("style") ?? "", entryPath, files, new Set(), budget));
   }
   for (const element of Array.from(document.querySelectorAll("[srcset]"))) {
     const srcset = element.getAttribute("srcset") ?? "";
@@ -304,6 +326,7 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
       const target = files[path];
       if (!target) throw new Error(`The archive is missing image ${reference}.`);
       const bytes = await target.async("uint8array");
+      reserveArchiveBytes(budget, Math.ceil(bytes.byteLength * 4 / 3) + 64);
       rewritten.push(`data:${mimeType(path)};base64,${toBase64(bytes)}${descriptor.length ? ` ${descriptor.join(" ")}` : ""}`);
     }
     element.setAttribute("srcset", rewritten.join(", "));
@@ -345,7 +368,8 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
   ) return false;
 
   if (game.kind === "html") {
-    return htmlSafetyIssue(game.source) === null &&
+    return (game.provenance === undefined || isRepositoryProvenance(game.provenance)) &&
+      htmlSafetyIssue(game.source) === null &&
       (game.revisionUndoSource === undefined ||
         (typeof game.revisionUndoSource === "string" && htmlSafetyIssue(game.revisionUndoSource) === null));
   }
@@ -415,7 +439,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     [selected],
   );
   const compactHtml = useMemo(
-    () => selected?.kind === "html" ? maskEmbeddedAssets(selected.source) : null,
+    () => selected?.kind === "html" ? maskEmbeddedAssets(withoutRepositoryAttribution(selected.source)) : null,
     [selected?.id, selected?.source],
   );
   const gameSaves = useArcadeGameSave(
@@ -694,29 +718,31 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     };
   }, [selected]);
 
-  const handleImport = async (file: File | undefined, kind: "html" | "nes" | "emulator" | "chip8") => {
-    if (!file) return;
+  const handleImport = async (file: File | undefined, kind: "html" | "nes" | "emulator" | "chip8", provenance?: ArcadeRepositoryProvenance): Promise<boolean> => {
+    if (!file) return false;
     setError("");
     setNotice("");
     if (!rightsAccepted) {
       setError("Accept the rights statement before importing a game.");
-      return;
+      return false;
     }
     try {
-      if (games.length >= 12) throw new Error("Your local shelf is full. Remove a game before importing another.");
+      if (currentGames.current.length >= 12) throw new Error("Your local shelf is full. Remove a game before importing another.");
       if (kind === "html") {
         const isArchive = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
         if (isArchive && file.size > MAX_ARCHIVE_BYTES) throw new Error("Game archives are limited to 3 MB compressed.");
         if (!isArchive && file.size > MAX_HTML_BYTES) throw new Error("HTML files are limited to 6 MB.");
-        const source = isArchive ? await bundleOfflineBrowserGame(file) : await file.text();
+        const rawSource = isArchive ? await bundleOfflineBrowserGame(file) : await file.text();
+        const source = withRepositoryAttribution(rawSource, provenance);
         const issue = htmlSafetyIssue(source);
         if (issue) throw new Error(issue);
-        const game: ImportedGame = { id: crypto.randomUUID(), name: file.name, kind, source, addedAt: Date.now() };
-        const next = [game, ...games].slice(0, 12);
+        const game: ImportedGame = { id: crypto.randomUUID(), name: file.name, kind, source, addedAt: Date.now(), ...(provenance ? { provenance } : {}) };
+        if (currentGames.current.length >= 12) throw new Error("Your local shelf filled while importing. Remove a game and retry.");
+        const next = [game, ...currentGames.current];
         await saveGames(next);
         setSelectedId(game.id);
         setNotice("Imported locally. The game stays in this browser only.");
-        return;
+        return true;
       }
       if (kind === "emulator") {
         const system = detectArcadeEmulatorSystem(file.name);
@@ -736,10 +762,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           romData,
           addedAt: Date.now(),
         };
-        await saveGames([game, ...games].slice(0, 12));
+        await saveGames([game, ...currentGames.current].slice(0, 12));
         setSelectedId(game.id);
         setNotice(`${arcadeEmulatorSystemLabel(system)} game imported to this browser's local shelf.`);
-        return;
+        return true;
       }
       if (kind === "chip8") {
         const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
@@ -758,10 +784,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           romData,
           addedAt: Date.now(),
         };
-        await saveGames([game, ...games].slice(0, 12));
+        await saveGames([game, ...currentGames.current].slice(0, 12));
         setSelectedId(game.id);
         setNotice("Classic CHIP-8 program imported to this browser's local shelf.");
-        return;
+        return true;
       }
       if (file.size < 16 || file.size > MAX_ROM_BYTES) throw new Error("NES ROMs must be between 16 bytes and 1 MB.");
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -770,19 +796,24 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       }
       const source = toBase64(bytes);
       const game: ImportedGame = { id: crypto.randomUUID(), name: file.name, kind, source, addedAt: Date.now() };
-      await saveGames([game, ...games].slice(0, 12));
+      await saveGames([game, ...currentGames.current].slice(0, 12));
       setSelectedId(game.id);
       setNotice("ROM imported to this browser's local shelf.");
+      return true;
     } catch (cause) {
       setError(errorMessage(cause));
+      return false;
     }
   };
 
   const applyHtmlRevision = async (id: string, source: string) => {
     const current = games.find((game) => game.id === id);
     if (!current || current.kind !== "html" || current.revisionUndoSource !== undefined) return false;
+    const attributed = withRepositoryAttribution(source, current.provenance);
+    const issue = htmlSafetyIssue(attributed);
+    if (issue) { setError(`Revision not applied: ${issue}`); return false; }
     const next = games.map((game) => game.id === id
-      ? { ...game, source, revisionUndoSource: game.source }
+      ? { ...game, source: attributed, revisionUndoSource: game.source }
       : game);
     const saved = await saveGames(next);
     gameSaves.reloadGame();
@@ -1078,6 +1109,14 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
 
         {error && <div role="alert" className="flex items-start gap-2 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2.5 text-xs leading-relaxed text-red-200"><AlertTriangle size={15} className="mt-0.5 shrink-0" />{error}</div>}
         {notice && !error && <div role="status" className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2.5 text-xs text-emerald-100">{notice}</div>}
+        <RepositoryGameImport disabled={!rightsAccepted || !loaded || busy || removing || games.length >= 12}
+          onImport={(file, provenance) => handleImport(file, "html", provenance)} />
+        {selected?.provenance && <details className="rounded-xl border border-emerald-300/20 bg-black/20 p-3 text-xs text-slate-300" data-testid="imported-repository-provenance">
+          <summary className="cursor-pointer font-bold text-emerald-100">Source and license · {selected.provenance.license.spdx}</summary>
+          <p className="mt-2 break-all">{selected.provenance.repository} · {selected.provenance.revision}</p>
+          <a className="underline" href={selected.provenance.sourceUrl} target="_blank" rel="noreferrer noopener" data-testid="link-pinned-repository">View pinned source</a>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap">{selected.provenance.license.text}</pre>
+        </details>}
 
         {selected ? (
           <div className="glass overflow-hidden rounded-2xl border border-white/10">

@@ -13,6 +13,52 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /arcade/import/repository/inspect:
+    post:
+      operationId: inspectArcadeRepository
+      summary: Preview a public GitHub offline game at a pinned commit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArcadeRepositoryLinkInput"
+      responses:
+        "200":
+          description: License and bounded file manifest; no game has been imported yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryPreview"
+        default:
+          description: Repository refused or unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryError"
+  /arcade/import/repository/acquire:
+    post:
+      operationId: acquireArcadeRepository
+      summary: Download and verify the source files from an approved preview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArcadeRepositoryAcquisitionInput"
+      responses:
+        "200":
+          description: Exact pinned files for the existing local sandbox importer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositorySnapshot"
+        default:
+          description: Expired preview, unsafe package, or acquisition failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryError"
   /library/tracks:
     get:
       operationId: getLibraryTracks
@@ -393,6 +439,78 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
 components:
   schemas:
+    ArcadeRepositoryLinkInput:
+      type: object
+      properties:
+        url: { type: string, maxLength: 1000 }
+        authorized: { type: boolean }
+      required: [url, authorized]
+    ArcadeRepositoryAcquisitionInput:
+      type: object
+      properties:
+        token: { type: string, maxLength: 100 }
+        authorized: { type: boolean }
+      required: [token, authorized]
+    ArcadeRepositoryError:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+    ArcadeRepositoryLicense:
+      type: object
+      properties:
+        spdx: { type: string }
+        path: { type: string }
+        text: { type: string }
+      required: [spdx, path, text]
+    ArcadeRepositoryFile:
+      type: object
+      properties:
+        path: { type: string }
+        size: { type: integer }
+        sha: { type: string }
+      required: [path, size, sha]
+    ArcadeRepositoryProvenance:
+      type: object
+      properties:
+        repository: { type: string }
+        revision: { type: string }
+        sourceUrl: { type: string }
+        license:
+          $ref: "#/components/schemas/ArcadeRepositoryLicense"
+      required: [repository, revision, sourceUrl, license]
+    ArcadeRepositoryPreview:
+      allOf:
+        - $ref: "#/components/schemas/ArcadeRepositoryProvenance"
+        - type: object
+          properties:
+            token: { type: string }
+            expiresAt: { type: integer }
+            reference: { type: string }
+            entryPath: { type: string }
+            totalBytes: { type: integer }
+            files:
+              type: array
+              items:
+                $ref: "#/components/schemas/ArcadeRepositoryFile"
+          required: [token, expiresAt, reference, entryPath, totalBytes, files]
+    ArcadeRepositoryDownloadFile:
+      allOf:
+        - $ref: "#/components/schemas/ArcadeRepositoryFile"
+        - type: object
+          properties:
+            contentBase64: { type: string }
+          required: [contentBase64]
+    ArcadeRepositorySnapshot:
+      type: object
+      properties:
+        provenance:
+          $ref: "#/components/schemas/ArcadeRepositoryProvenance"
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ArcadeRepositoryDownloadFile"
+      required: [provenance, files]
     HealthStatus:
       type: object
       properties:
