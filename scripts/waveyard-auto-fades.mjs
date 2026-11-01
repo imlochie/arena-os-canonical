@@ -3,11 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 
 const STEMS = ["vocals", "drums", "bass", "other"];
 const MIX = { vocals: 0.31, drums: 0.53, bass: 0.76, other: 0.94 };
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // The narrow analysers are attached to each deck's existing master node. They
-// sample the real rendered WebAudio PCM; 2048 samples at 22.05 kHz span 92.9ms.
-// A 40ms cadence therefore overlaps windows and smooths tone phase without
+// sample the real rendered WebAudio PCM at the AudioContext's sample rate.
+// A 40ms cadence overlaps typical windows and smooths tone phase without
 // adding graph instrumentation beyond the two deck-output taps.
 export async function runAutomaticFadeAcceptance({ page, session, tracks, sourceOnlyTrack, toggle, chooseLiveSource }) {
   const setPlaying = async wanted => {
@@ -21,7 +20,7 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
     thresholds: {
       pcmWindowSamples: 2048,
       sampleCadenceMs: 40,
-      fadeEnvelopeGainAbsoluteTolerance: 0.14,
+      fadeEnvelopeGainAbsoluteTolerance: 0.06,
       modeledCombinedRmsRelativeTolerance: 0.28,
       noUnexpectedSilenceFloorRelativeToLouderSteadyDeck: 0.20,
       noUnexpectedClippingPeak: 0.35,
@@ -50,9 +49,15 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
           let sum = 0, peak = 0;
           for (const x of pcm) { sum += x * x; peak = Math.max(peak, Math.abs(x)); }
           const master = window.audioProbe.masterGains[deck];
-          return { deck, rms: Math.sqrt(sum / pcm.length), peak, master: master?.gain.value ?? null };
+          const channels = Object.fromEntries(window.audioProbe.sources
+            .filter(source => source.mediaElement.closest(`[data-testid="session-deck-${deck === 0 ? "a" : "b"}"]`))
+            .map(source => [new URL(source.mediaElement.src).pathname.split("/").at(-1),
+              source.inputNode?.nextNode?.gain?.value ?? 0]));
+          return { deck, rms: Math.sqrt(sum / pcm.length), peak, master: master?.gain.value ?? null,
+            sampleRate: analyser.context.sampleRate, channels };
         });
-        window.audioProbe.autoFadeSamples.push({ t: performance.now(), rows });
+        const fading = [...document.querySelectorAll("button")].some(button => button.textContent.trim() === "Finish");
+        window.audioProbe.autoFadeSamples.push({ t: performance.now(), rows, fading });
       }, 40);
       window.audioProbe.autoFadeScenario = sampleName;
     }, name);
@@ -61,8 +66,6 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
     clearInterval(window.audioProbe.autoFadeSampler);
     return window.audioProbe.autoFadeSamples;
   });
-  const decks = () => page.evaluate(() => window.audioProbe.outputAnalyzers.map((_, i) => i));
-  const readSamples = async () => page.evaluate(() => window.audioProbe.autoFadeSamples);
   function stats(samples, deck, startT, endT) {
     const rows = samples.filter(s => s.t >= startT && s.t <= endT).map(s => s.rows.find(r => r.deck === deck)).filter(Boolean);
     assert.ok(rows.length >= 3, `at least three PCM windows for deck ${deck} in ${startT}-${endT}: got ${rows.length}`);
@@ -73,20 +76,35 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
       master: rows.reduce((n, r) => n + (r.master ?? 0), 0) / rows.length,
     };
   }
-  function assertFadeSamples(name, samples, fromDeck, toDeck, fadeStart, fadeEnd, outgoingBase, incomingBase, incomingSteady) {
-    const fade = samples.filter(s => s.t >= fadeStart && s.t <= fadeEnd);
+  function assertFadeSamples(name, samples, fromDeck, toDeck, outgoingBase, incomingBase, incomingSteady) {
+    const fade = samples.filter(s => s.fading && s.rows[toDeck]?.master > 0 && s.rows[toDeck]?.master < 0.6299);
     assert.ok(fade.length >= 18, `${name}: sampled full fade with >=18 output windows; got ${fade.length}`);
     let worstModelError = 0, worstModelRow = null, floorRatio = Infinity, maxPeak = 0, envelopeError = 0, worstEnvelopeRow = null;
     for (const sample of fade) {
       const from = sample.rows.find(r => r.deck === fromDeck);
       const to = sample.rows.find(r => r.deck === toDeck);
       assert.ok(from && to, `${name}: both deck output analysers remain available`);
-      const elapsed = (sample.t - fadeStart) / 1000;
-      const x = Math.max(0, Math.min(1, elapsed / 2));
-      const expectedFrom = 0.63 * Math.cos(x * Math.PI / 2);
-      const expectedTo = 0.63 * Math.sin(x * Math.PI / 2);
-      const rowError = Math.max(Math.abs(from.master - expectedFrom), Math.abs(to.master - expectedTo));
+      for (const stem of STEMS) {
+        assert.ok(Math.abs(to.channels[`b-${stem}`] - MIX[stem]) < 0.02,
+          `${name}: incoming ${stem} fader remains unchanged throughout the fade`);
+      }
+      // Use the live incoming envelope as the phase reference. A Playwright
+      // observation can arrive late; DOM timing is not the audio clock.
+      const expectedTo = to.master;
+      const expectedFrom = 0.63 * Math.sqrt(Math.max(0, 1 - (expectedTo / 0.63) ** 2));
+      const x = Math.asin(Math.min(1, expectedTo / 0.63)) * 2 / Math.PI;
+      // Outgoing stems fade at the shared per-channel fader (including live
+      // donors), not at their deck master. Source-only audio fades at master.
+      const fromEffective = name === "source-to-stems" ? from.master
+        : from.master * (from.channels["a-drums"] ?? 0) / MIX.drums;
+      const rowError = Math.max(Math.abs(fromEffective - expectedFrom), Math.abs(to.master - expectedTo));
       if (rowError > envelopeError) { envelopeError = rowError; worstEnvelopeRow = { sample, expectedFrom, expectedTo }; }
+      if (name === "stems-to-stems" && x < 0.95) {
+        for (const stem of STEMS) {
+          assert.ok(Math.abs(from.channels[`a-${stem}`] / MIX[stem] - from.channels["a-drums"] / MIX.drums) < 0.02,
+            `${name}: outgoing ${stem} retains its balance through the shared native/donor channel: ${JSON.stringify({ x, expectedFrom, channels: from.channels })}`);
+        }
+      }
       // Steady deck baselines were measured at master 0.63, so scale their
       // measured PCM by the relative (current/steady) envelope, not raw gain.
       const model = Math.sqrt(
@@ -97,7 +115,7 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
       const modelError = Math.abs(actual - model) / Math.max(model, 1e-6);
       if (modelError > worstModelError) { worstModelError = modelError; worstModelRow = { sample, actual, model, outgoingBase, incomingBase, expectedFrom, expectedTo }; }
       floorRatio = Math.min(floorRatio, actual / Math.max(outgoingBase.rms, incomingBase.rms));
-      maxPeak = Math.max(maxPeak, from.peak, to.peak);
+      maxPeak = Math.max(maxPeak, from.peak + to.peak);
     }
     assert.ok(envelopeError <= report.thresholds.fadeEnvelopeGainAbsoluteTolerance,
       `${name}: equal-power deck master envelope error ${envelopeError.toFixed(3)} exceeds tolerance (worst=${JSON.stringify(worstEnvelopeRow)})`);
@@ -106,26 +124,32 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
     assert.ok(floorRatio >= report.thresholds.noUnexpectedSilenceFloorRelativeToLouderSteadyDeck,
       `${name}: combined PCM fell to ${floorRatio.toFixed(3)} of louder steady deck`);
     assert.ok(maxPeak < report.thresholds.noUnexpectedClippingPeak,
-      `${name}: deck PCM peak ${maxPeak.toFixed(3)} exceeds synthetic fixture clipping threshold`);
+      `${name}: conservative summed PCM peak ${maxPeak.toFixed(3)} exceeds synthetic fixture clipping threshold`);
     assert.ok(incomingSteady.rms > 0.005, `${name}: incoming deck has audible steady PCM after handoff`);
     return { envelopeError, worstModelError, floorRatio, maxPeak };
   }
   async function swapAndVerify(deck, stem, label) {
-    const before = await page.evaluate(stemType => window.audioProbe.buffers.filter(b =>
-      b.buffer && b.inputNode && b.inputNode.gain?.value > 0,
-    ).length, stem);
+    const deckIndex = await deck.getAttribute("data-testid") === "session-deck-a" ? 0 : 1;
+    const before = await page.evaluate(() => window.audioProbe.buffers.length);
     await chooseLiveSource(stem, "c");
-    await page.waitForFunction(({ before }) => window.audioProbe.buffers.filter(b => b.buffer && b.inputNode).length > before,
-      { before }, { timeout: 7000 }).catch(() => {});
-    await page.waitForFunction(() => {
-      const donor = window.audioProbe.buffers.findLast(b => b.inputNode?.gain?.value > 0.05);
-      return Boolean(donor);
-    }, null, { timeout: 7000 }).catch(() => {});
-    const state = await page.evaluate(() => {
-      const donor = [...window.audioProbe.buffers].reverse().find(b => b.inputNode?.gain?.value > 0.05);
-      return { sources: window.audioProbe.buffers.length, donorGain: donor?.inputNode?.gain?.value ?? 0 };
-    });
+    await page.waitForFunction(({ before }) => window.audioProbe.buffers.slice(before)
+      .some(b => b.buffer && !b.stopCount && b.inputNode?.gain?.value > 0.05),
+      { before }, { timeout: 7000 });
+    const state = await page.evaluate(({ before, deckIndex }) => {
+      const donor = window.audioProbe.buffers.slice(before).find(b => !b.stopCount && b.inputNode?.gain?.value > 0.05);
+      return {
+        sources: window.audioProbe.buffers.length,
+        donorGain: donor?.inputNode?.gain?.value ?? 0,
+        channelGain: donor?.inputNode?.nextNode?.gain?.value ?? 0,
+        startedOffset: donor?.startedOffset ?? null,
+        masterGain: window.audioProbe.masterGains[deckIndex]?.gain.value ?? 0,
+        clockPlaying: [...document.querySelectorAll('[data-role="current"] audio')].some(audio => !audio.paused),
+      };
+    }, { before, deckIndex });
     assert.ok(state.donorGain > 0.05, `${label}: donor buffer should be audible after real swap: ${JSON.stringify(state)}`);
+    assert.ok(state.channelGain > 0.05 && state.masterGain > 0.6 && state.clockPlaying &&
+      Number.isFinite(state.startedOffset) && state.startedOffset >= 0,
+    `${label}: newly started donor reaches an audible channel/master while the clock plays: ${JSON.stringify(state)}`);
     return state;
   }
 
@@ -190,10 +214,12 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
       assert.ok(Math.abs(configuredFaders[stem] - value) < 0.03,
         `${mode}: persisted unequal incoming ${stem} fader reaches audio graph (${configuredFaders[stem]} vs ${value})`);
     }
-    const fadeStart = await page.evaluate(({ fromDeck, toDeck }) => {
+    const fadeStart = await page.evaluate(({ fromDeck, toDeck, mode }) => {
       const rows = window.audioProbe.autoFadeSamples;
       const first = rows.find(s => {
-        const from = s.rows.find(r => r.deck === fromDeck)?.master ?? 0;
+        const outgoing = s.rows.find(r => r.deck === fromDeck);
+        const from = outgoing ? outgoing.master * (mode === "source-to-stems"
+          ? 1 : (outgoing.channels["a-drums"] ?? 0) / 0.53) : 0;
         const to = s.rows.find(r => r.deck === toDeck)?.master ?? 0;
         // Before transition the standby master can remain at the session
         // master value while silent. Detect the outgoing departure from .63
@@ -201,8 +227,7 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
         return from > 0.4 && from < 0.6299 && to < 0.2;
       });
       return first ? first.t - 40 : performance.now();
-    }, { fromDeck, toDeck });
-    const fadeEnd = fadeStart + 2000;
+    }, { fromDeck, toDeck, mode });
     // Never use Finish/Mix as a transition command: wait for real completion,
     // then verify automatic role handoff and new current-title state.
     await page.waitForFunction(() => !document.querySelector('[data-testid="Finish"]') &&
@@ -224,12 +249,15 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
       gains: window.audioProbe.masterGains.map(g => g.gain.value),
     }));
     assert.match(handoff.current, /Test b/, `${mode}: automatic fade hands off to queued b without manual Finish`);
-    const finishTime = samples.at(-1)?.t ?? fadeEnd;
     const outgoingBase = stats(samples, fromDeck, fadeStart - 500, fadeStart - 100);
     const steadyRows = samples.slice(sampleCountAtHandoff)
       .map(s => s.rows.find(r => r.deck === toDeck))
       .filter(r => r && r.master > 0.60 && r.rms > 0.005);
     assert.ok(steadyRows.length >= 6, `${mode}: at least six measured incoming steady PCM windows`);
+    for (const row of steadyRows) for (const stem of STEMS) {
+      assert.ok(Math.abs(row.channels[`b-${stem}`] - MIX[stem]) < 0.02,
+        `${mode}: handoff does not reset the incoming ${stem} fader`);
+    }
     const incomingSteady = {
       windows: steadyRows.length,
       rms: steadyRows.reduce((n, r) => n + r.rms, 0) / steadyRows.length,
@@ -237,7 +265,7 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
       master: steadyRows.reduce((n, r) => n + r.master, 0) / steadyRows.length,
     };
     const incomingBase = incomingSteady;
-    const fadeMetrics = assertFadeSamples(mode, samples, fromDeck, toDeck, fadeStart, fadeEnd,
+    const fadeMetrics = assertFadeSamples(mode, samples, fromDeck, toDeck,
       outgoingBase, incomingBase, incomingSteady);
     let afterSwap;
     if (mode === "source-to-stems") {

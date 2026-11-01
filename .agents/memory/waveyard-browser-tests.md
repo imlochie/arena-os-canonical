@@ -51,6 +51,12 @@ Long browser runs with short synthetic tracks must re-establish playback state b
 
 **How to apply:** Before a mirror-tab control assertion, verify the primary's visible play state, ensure the mirror is still silent, then send and await explicit play and pause changes in both tabs.
 
+Verify combined automatic fades against the live gain relationships, not the time when a transition control became visible. Outgoing source playback fades at deck master; outgoing separated stems and their donors fade at shared channel faders instead.
+
+**Why:** UI observation can occur after the fade has advanced, and a stem deck's master can legitimately remain constant while every channel fades. Treating that master as the outgoing envelope produces false failures. Unequal source/stem mixes also need not have equal steady RMS.
+
+**How to apply:** Normalize outgoing channel gains by their saved faders and compare their effective envelope with the live incoming deck gain. Measure per-deck PCM and compare quadrature energy against each deck's own steady baseline, with explicit window tolerances. Check incoming faders again after handoff and confirm a fresh donor actually starts through nonzero channel and master gains. Describe summed per-deck peak bounds and synthetic-fixture evidence accurately; neither proves arbitrary loud music or physical-device audio behavior.
+
 Serve seek-sensitive WAV fixtures with real byte-range responses, including `Accept-Ranges`, `Content-Length`, and `Content-Range` on 206 responses.
 
 **Why:** Chromium accepted decoded duration from a mocked WAV but kept returning a zero media position after nonzero seeks when the fixture did not support byte ranges. This falsely looked like a transport clock reset and an incorrect incoming beat offset.
