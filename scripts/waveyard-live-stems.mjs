@@ -8,6 +8,10 @@ const require = createRequire(new URL("../artifacts/api-server/package.json", im
 const { chromium } = require("playwright-core");
 const sessionId = "00000000-0000-4000-8000-000000000007";
 const automaticFadesOnly = process.argv.includes("--automatic-fades-only");
+const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
+let donorSwapSequence = 0;
+let failNextDonorRestore = false;
+const donorRestoreRequests = [];
 const types = ["vocals", "drums", "bass", "other"];
 function waitForSignal(signal, label, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
@@ -363,6 +367,15 @@ try {
       } } });
     }
     if (url.pathname.endsWith("/swaps") && request.method() === "POST") {
+      if (body.expectedSwapId) {
+        donorRestoreRequests.push(body);
+        if (failNextDonorRestore) {
+          failNextDonorRestore = false;
+          return route.fulfill({ status: 503, json: { error: "Temporary restore outage." } });
+        }
+        const selected = session.swaps.find(s => s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType);
+        if (selected?.id !== body.expectedSwapId) return route.fulfill({ json: { session } });
+      }
       if (body.toTrackId === "b" && body.stemType === "vocals") liveSwapRequestOrder.push("save");
       if (body.toTrackId === "d" && body.stemType === "vocals" && externalDonorSaveGate) {
         liveSwapRequestOrder.push("save-start:d");
@@ -371,7 +384,9 @@ try {
         liveSwapRequestOrder.push("save-complete:d");
       }
       session.swaps = session.swaps.filter(s => !(s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType));
-      session.swaps.push({ ...body, id: `swap-${body.stemType}`, fromTrackId: "a", createdAt: new Date().toISOString(),
+      session.swaps.push({ ...body, id: donorReplacementOnly ? `swap-${++donorSwapSequence}` : `swap-${body.stemType}`,
+        toStemAssetId: body.toStemAssetId ?? `${body.toTrackId}-${body.stemType}`,
+        fromTrackId: "a", createdAt: new Date().toISOString(),
         donorTrack: body.toTrackId === "d" ? { id: "d", title: "Test D", stems: externalStemKeys } : undefined });
     } else if (url.pathname.endsWith("/tracks") && request.method() === "POST") {
       const item = tracks.find(t => t.track.id === body.trackId);
@@ -718,7 +733,101 @@ try {
     console.log("PASS: cancellation and the real preparation timeout keep original audio audible and aligned; late donors stay silent even while cancellation persistence stalls");
   }
 
-  if (process.argv.includes("--switch-recovery-only")) {
+  if (donorReplacementOnly) {
+    // Longer fixtures keep this focused acceptance flow on one recipient.
+    tracks[0].track.durationSeconds = 90;
+    for (const [index, type] of types.entries()) assets.set(`a-${type}`, wav(90, 130 + index * 40));
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    const deck = page.locator('[data-role="current"]');
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element => element.readyState === 4);
+    });
+    const choose = async (stemType, donorId) => {
+      await deck.getByTestId(`open-live-swap-${stemType}`).click();
+      const saved = page.waitForResponse(response => {
+        if (!response.url().endsWith("/swaps") || response.request().method() !== "POST") return false;
+        const body = response.request().postDataJSON();
+        return body.toTrackId === donorId && body.stemType === stemType && !body.expectedSwapId;
+      });
+      await deck.getByTestId(`live-swap-candidate-${stemType}-${donorId}`).click();
+      await saved;
+    };
+    const settled = async (stemType, donorId) => {
+      for (let tries = 0; tries < 200; tries++) {
+        if (session.swaps.find(s => s.stemType === stemType)?.toTrackId === donorId &&
+          await page.getByTestId(`live-swap-pending-${stemType}`).count() === 0) return;
+        await page.waitForTimeout(50);
+      }
+      throw new Error(`Unsettled ${stemType}: ${JSON.stringify(session.swaps)}; ${await deck.innerText()}`);
+    };
+    await page.getByTestId("session-play").click();
+    await choose("vocals", "c");
+    await settled("vocals", "c");
+    await choose("drums", "d");
+    await settled("drums", "d");
+    await page.waitForFunction(() => window.audioProbe.buffers.length === 2);
+    await page.evaluate(() => {
+      window.retainedVocal = window.audioProbe.buffers.find(node => Math.abs(node.buffer.duration - 12) < 0.01);
+      window.retainedDrums = window.audioProbe.buffers.find(node => Math.abs(node.buffer.duration - 4) < 0.01);
+    });
+    const baseline = await page.evaluate(() => ({
+      count: window.audioProbe.buffers.length,
+      clock: document.querySelector('[data-role="current"] audio').currentTime,
+    }));
+    assert.equal(baseline.count, 2, "both retained donors must actually start");
+    failAsset = "b-vocals";
+    for (const failRestore of [false, true]) {
+      failNextDonorRestore = failRestore;
+      await choose("vocals", "b");
+      if (failRestore) {
+        const retry = page.getByRole("button", { name: "Retry saving previous vocals source", exact: true });
+        await retry.waitFor();
+        await page.getByText(/saved source could not be restored/).waitFor();
+        assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "b",
+          "an unsaved recovery must not be presented as persisted");
+        await retry.click();
+      }
+      await settled("vocals", "c");
+      assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "c");
+      assert.equal(session.swaps.find(s => s.stemType === "vocals").toStemAssetId, "c-vocals");
+      assert.equal(session.swaps.find(s => s.stemType === "drums").toTrackId, "d");
+      const retained = await page.evaluate(() => ({
+        count: window.audioProbe.buffers.length,
+        vocalsStopped: window.retainedVocal.stopCount ?? 0,
+        drumsStopped: window.retainedDrums.stopCount ?? 0,
+        vocalGain: window.retainedVocal.inputNode.gain.value,
+        drumGain: window.retainedDrums.inputNode.gain.value,
+        clock: document.querySelector('[data-role="current"] audio').currentTime,
+        playing: [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
+      }));
+      assert.equal(retained.count, baseline.count, "failed B and restored A must not create new audio sources");
+      assert.equal(retained.vocalsStopped, 0, "A must never be stopped during recovery");
+      assert.equal(retained.drumsStopped, 0, "the other donor must remain untouched");
+      assert.ok(retained.vocalGain > 0.9 && retained.drumGain > 0.9, "both donors stay audible");
+      assert.ok(retained.playing && retained.clock > baseline.clock, "recipient playback and clock continue");
+    }
+    assert.ok(donorRestoreRequests.every(body => body.expectedSwapId && body.toStemAssetId === "c-vocals"));
+    await page.reload();
+    await page.getByTestId("session-play").waitFor();
+    if (await page.getByTestId("session-play").getAttribute("aria-pressed") !== "true") {
+      await page.getByTestId("session-play").click();
+    }
+    await page.waitForFunction(() => window.audioProbe.buffers.length === 2 &&
+      window.audioProbe.buffers.some(node => Math.abs(node.buffer.duration - 12) < 0.01));
+    assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "c", "A survives reopening");
+    failAsset = null;
+    const countBeforeRetry = await page.evaluate(() => window.audioProbe.buffers.length);
+    await choose("vocals", "b");
+    await settled("vocals", "b");
+    await page.waitForFunction(before => window.audioProbe.buffers.length > before, countBeforeRetry);
+    await page.waitForFunction(() => window.audioProbe.buffers.find(node => Math.abs(node.buffer.duration - 12) < 0.01)?.stopCount > 0);
+    assert.equal(await page.evaluate(() => window.audioProbe.buffers.find(node => Math.abs(node.buffer.duration - 4) < 0.01)?.stopCount ?? 0), 0,
+      "the successful B retry also leaves the other donor playing");
+    assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "b", "a real retry installs B");
+    assert.equal(session.swaps.find(s => s.stemType === "drums").toTrackId, "d");
+    console.log("PASS: failed donor B preserves audible and saved A, other donors and the recipient clock; recovery save retries, reload and a real B retry work");
+  } else if (process.argv.includes("--switch-recovery-only")) {
     await verifyStemSwitchRecovery();
   } else if (automaticFadesOnly) {
     const toggleForFade = async () => {

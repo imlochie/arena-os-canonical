@@ -591,6 +591,8 @@ export async function recordStemSwap(input: {
   stemType: string;
   toTrackId: string;
   atSeconds: number;
+  expectedSwapId?: string;
+  toStemAssetId?: string | null;
 }): Promise<SessionDetailPayload> {
   await ownedSession(input.ownerId, input.sessionId);
 
@@ -616,7 +618,8 @@ export async function recordStemSwap(input: {
     stem.stemType === input.stemType && stem.engine !== "passthrough-unseparated",
   );
   const donorStem = donorDetail.stems.find((stem) =>
-    stem.stemType === input.stemType && stem.engine !== "passthrough-unseparated",
+    stem.stemType === input.stemType && stem.engine !== "passthrough-unseparated" &&
+    (!input.toStemAssetId || stem.id === input.toStemAssetId),
   );
   const validation = validateStemSwap(currentDetail.stems, donorDetail.stems, input.stemType);
   if (!validation.ok) throw new StemSwapRefusedError(validation.reason);
@@ -625,6 +628,18 @@ export async function recordStemSwap(input: {
   }
 
   await db.transaction(async (tx) => {
+    // All selections for a session serialize here, including guarded restores.
+    // A failed B must never restore A over a newer explicit selection C.
+    await tx.select({ id: listenSessions.id }).from(listenSessions)
+      .where(eq(listenSessions.id, input.sessionId)).for("update");
+    if (input.expectedSwapId) {
+      const [current] = await tx.select({ id: listenSessionSwaps.id }).from(listenSessionSwaps).where(and(
+        eq(listenSessionSwaps.sessionId, input.sessionId),
+        eq(listenSessionSwaps.sessionTrackId, input.sessionTrackId),
+        eq(listenSessionSwaps.stemType, input.stemType),
+      )).orderBy(desc(listenSessionSwaps.createdAt)).limit(1);
+      if (current?.id !== input.expectedSwapId) return;
+    }
     // A stem has one current donor. Repeated live selections must not leave
     // shadow swaps that reappear when the user restores Original.
     await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, input.sessionId));
@@ -650,17 +665,20 @@ export async function recordStemSwap(input: {
 
 export async function removeStemSwap(ownerId: string, sessionId: string, swapId: string): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
-  const [selection] = await db.select().from(listenSessionSwaps).where(and(
-    eq(listenSessionSwaps.id, swapId), eq(listenSessionSwaps.sessionId, sessionId),
-  )).limit(1);
-  if (!selection) return sessionPayload(sessionId);
-  await db
-    .delete(listenSessionSwaps)
-    .where(and(
+  await db.transaction(async (tx) => {
+    await tx.select({ id: listenSessions.id }).from(listenSessions)
+      .where(eq(listenSessions.id, sessionId)).for("update");
+    const [selection] = await tx.select().from(listenSessionSwaps).where(and(
+      eq(listenSessionSwaps.id, swapId), eq(listenSessionSwaps.sessionId, sessionId),
+    )).limit(1);
+    // A stale cancel must not delete a donor restored by a different request.
+    if (!selection) return;
+    await tx.delete(listenSessionSwaps).where(and(
       eq(listenSessionSwaps.sessionId, sessionId),
       eq(listenSessionSwaps.sessionTrackId, selection.sessionTrackId),
       eq(listenSessionSwaps.stemType, selection.stemType),
     ));
+  });
   return sessionPayload(sessionId);
 }
 

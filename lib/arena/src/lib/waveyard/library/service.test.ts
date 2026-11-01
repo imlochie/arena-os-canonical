@@ -1106,10 +1106,45 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   });
   assert.equal(replaced.swaps.length, 2, "one active donor per stem after repeated live selections");
   assert.equal(replaced.swaps.find((entry) => entry.stemType === "drums")?.atSeconds, 18);
+  const previousDrums = replaced.swaps.find((entry) => entry.stemType === "drums")!;
+  const failedReplacement = await sessions.recordStemSwap({
+    ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
+    stemType: "drums", toTrackId: trackB.id, atSeconds: 19,
+  });
+  const failedSwapId = failedReplacement.swaps.find((entry) => entry.stemType === "drums")!.id;
+  const rollback = {
+    ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
+    stemType: "drums", toTrackId: previousDrums.toTrackId,
+    toStemAssetId: previousDrums.toStemAssetId, atSeconds: previousDrums.atSeconds,
+    expectedSwapId: failedSwapId,
+  };
+  const recovered = await sessions.recordStemSwap(rollback);
+  const recoveredDrums = recovered.swaps.find((entry) => entry.stemType === "drums")!;
+  assert.equal(recoveredDrums.toTrackId, previousDrums.toTrackId, "restore the audible donor, not the original stem");
+  assert.equal(recoveredDrums.toStemAssetId, previousDrums.toStemAssetId, "restore its exact saved audio asset");
+  assert.equal(recoveredDrums.atSeconds, previousDrums.atSeconds);
+  assert.deepEqual(recovered.swaps.find((entry) => entry.stemType === "vocals"),
+    replaced.swaps.find((entry) => entry.stemType === "vocals"), "restoration leaves the other donor unchanged");
+  const repeated = await sessions.recordStemSwap(rollback);
+  assert.equal(repeated.swaps.find((entry) => entry.stemType === "drums")!.id, recoveredDrums.id,
+    "repeating a recovery after a lost response is idempotent");
+  const newSelection = await sessions.recordStemSwap({
+    ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
+    stemType: "drums", toTrackId: trackB.id, atSeconds: 21,
+  });
+  const newerDrums = newSelection.swaps.find((entry) => entry.stemType === "drums")!;
+  const staleRestore = await sessions.recordStemSwap(rollback);
+  assert.equal(staleRestore.swaps.find((entry) => entry.stemType === "drums")!.id, newerDrums.id,
+    "a late failed-B restore cannot overwrite a newer selection");
+  const staleCancel = await sessions.removeStemSwap(OWNER, created.id, recoveredDrums.id);
+  assert.equal(staleCancel.swaps.find((entry) => entry.stemType === "drums")!.id, newerDrums.id,
+    "an old cancellation cannot delete a newer donor");
+  await assert.rejects(() => sessions.recordStemSwap({ ...rollback, expectedSwapId: newerDrums.id, toStemAssetId: randomUUID() }),
+    /exact audio/i, "an unavailable prior asset cannot silently resolve to different audio");
   const restored = await sessions.removeStemSwap(
     OWNER,
     created.id,
-    replaced.swaps.find((entry) => entry.stemType === "drums")!.id,
+    newerDrums.id,
   );
   assert.deepEqual(restored.swaps.map((entry) => entry.stemType), ["vocals"],
     "removing one swap leaves the other stem's donor choice intact");

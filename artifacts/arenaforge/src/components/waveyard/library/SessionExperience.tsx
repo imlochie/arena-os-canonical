@@ -105,6 +105,8 @@ interface PendingLiveSwap {
   sessionTrackId: string;
   stemType: string;
   donorTitle: string;
+  previousSwap?: SessionDetail["swaps"][number];
+  failed?: boolean;
 }
 
 interface PendingPerformance {
@@ -2183,7 +2185,12 @@ export default function SessionExperience({
           if (savedSwap) {
             setPendingSwaps((previous) => [
               ...previous.filter((pending) => !(pending.sessionTrackId === currentItem.id && pending.stemType === stemType)),
-              { swapId: savedSwap.id, sessionTrackId: currentItem.id, stemType, donorTitle: donor.title },
+              {
+                swapId: savedSwap.id, sessionTrackId: currentItem.id, stemType, donorTitle: donor.title,
+                previousSwap: session.swaps.filter((swap) =>
+                  swap.sessionTrackId === currentItem.id && swap.stemType === stemType && !cancelledSwapIds.has(swap.id),
+                ).at(-1),
+              },
             ]);
             setStatus(`${stemType} source saved: “${donor.title}”. Playback continues while the layer loads.`);
           } else {
@@ -2194,15 +2201,25 @@ export default function SessionExperience({
         setSavingSwap(false);
       }
     },
-    [session, currentItem, mutate, activeDeck, warmLiveSwap],
+    [session, currentItem, mutate, activeDeck, warmLiveSwap, cancelledSwapIds],
   );
 
   const revertSwap = useCallback(
-    async (swapId: string, successMessage = "Original stem restored.") => {
+    async (swapId: string, successMessage = "Original stem restored.", failed = false) => {
       if (session === null) return;
       const pending = pendingSwaps.find((swap) => swap.swapId === swapId);
+      const previousSwap = (failed || pending?.failed) ? pending?.previousSwap : undefined;
       if (pending) {
-        setCancelledSwapIds((previous) => new Set([...previous, swapId]));
+        if (previousSwap) {
+          // Keep the saved failed selection in place until its guarded restore
+          // finishes. Filtering it out here would tell the engine to remove A,
+          // even though A is still playing underneath the failed preparation.
+          setPendingSwaps((previous) => previous.map((swap) =>
+            swap.swapId === swapId ? { ...swap, failed: true } : swap,
+          ));
+        } else {
+          setCancelledSwapIds((previous) => new Set([...previous, swapId]));
+        }
         // Cancel locally before waiting for persistence. A late donor response
         // must not take over even if the delete request is slow or fails.
         for (const deck of decksRef.current) {
@@ -2215,10 +2232,29 @@ export default function SessionExperience({
       }
       setSavingSwap(true);
       try {
-        const detail = await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" });
+        const detail = previousSwap
+          ? await mutate(`/api/library/sessions/${session.id}/swaps`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              sessionTrackId: previousSwap.sessionTrackId,
+              stemType: previousSwap.stemType,
+              toTrackId: previousSwap.toTrackId,
+              toStemAssetId: previousSwap.toStemAssetId,
+              atSeconds: previousSwap.atSeconds,
+              expectedSwapId: swapId,
+            }),
+          })
+          : await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" });
         if (detail) {
           setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== swapId));
-          setStatus(successMessage);
+          const restored = !previousSwap || detail.swaps.some((swap) =>
+            swap.sessionTrackId === previousSwap.sessionTrackId && swap.stemType === previousSwap.stemType &&
+            swap.toTrackId === previousSwap.toTrackId && swap.toStemAssetId === previousSwap.toStemAssetId,
+          );
+          setStatus(restored ? successMessage : "The failed switch was superseded; the newer source selection was kept.");
+        } else if (previousSwap) {
+          setStatus("The previous audio is still playing, but its saved source could not be restored. Retry saving the previous source before leaving.");
         }
       } finally {
         setSavingSwap(false);
@@ -2230,7 +2266,7 @@ export default function SessionExperience({
   const liveLayerFailureRef = useRef<(sessionTrackId: string, stemType: string, message: string) => void>(() => {});
   liveLayerFailureRef.current = (sessionTrackId, stemType, message) => {
     const pending = pendingSwaps.find((swap) => swap.sessionTrackId === sessionTrackId && swap.stemType === stemType);
-    if (pending) void revertSwap(pending.swapId, message);
+    if (pending) void revertSwap(pending.swapId, message, true);
   };
   const markLiveLayerFailed = useCallback((sessionTrackId: string, stemType: string, message: string) => {
     liveLayerFailureRef.current(sessionTrackId, stemType, message);
@@ -3116,18 +3152,20 @@ export default function SessionExperience({
 
       {pendingSwaps.map((pending) => (
         <p key={pending.swapId} className="sess-status wy-ready" role="status" data-testid={`live-swap-pending-${pending.stemType}`}>
-          {cancelledSwapIds.has(pending.swapId)
+          {pending.failed
+            ? `${pending.stemType} switch failed; the previous audio continues. Its saved source still needs restoring. `
+            : cancelledSwapIds.has(pending.swapId)
             ? `${pending.stemType} switch stopped; current playback continues. `
             : `Preparing ${pending.stemType} from “${pending.donorTitle}”; current playback continues. `}
           <button
             type="button"
             className="button tiny"
-            aria-label={`Cancel ${pending.stemType} switch to ${pending.donorTitle}`}
+            aria-label={pending.failed ? `Retry saving previous ${pending.stemType} source` : `Cancel ${pending.stemType} switch to ${pending.donorTitle}`}
             data-testid={`cancel-live-stem-swap-${pending.swapId}`}
             disabled={savingSwap}
             onClick={() => void revertSwap(pending.swapId, `${pending.stemType} switch cancelled; the previous audio continues.`)}
           >
-            {savingSwap ? "Cancelling…" : cancelledSwapIds.has(pending.swapId) ? "Retry removing switch" : "Cancel switch"}
+            {savingSwap ? "Saving…" : pending.failed ? "Retry saving previous source" : cancelledSwapIds.has(pending.swapId) ? "Retry removing switch" : "Cancel switch"}
           </button>
         </p>
       ))}

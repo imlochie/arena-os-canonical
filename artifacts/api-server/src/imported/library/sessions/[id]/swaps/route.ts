@@ -34,6 +34,8 @@ const swapSchema = z.object({
   stemType: z.string().min(1).max(64),
   toTrackId: z.string().uuid(),
   atSeconds: z.number().min(0).optional(),
+  expectedSwapId: z.string().uuid().optional(),
+  toStemAssetId: z.string().uuid().nullable().optional(),
 });
 
 /** POST /api/library/sessions/[id]/swaps — record a REAL stem swap (validated

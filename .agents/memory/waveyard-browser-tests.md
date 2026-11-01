@@ -74,3 +74,9 @@ When a Studio gesture times out, inspect the actual element under the touch poin
 **Why:** An unrelated canvas-render exception opened Vite's full-page error overlay while the Studio controls remained visible underneath; gesture tests then misleadingly failed as if drag handling were broken.
 
 **How to apply:** Use `document.elementFromPoint` at the intended control coordinates to distinguish an intercepted gesture from a control regression. Resolve the originating render error rather than bypassing the overlay.
+
+A reloaded paused session may have prepared donor buffers without creating playback sources. Resume the transport before asserting that donor `AudioBufferSourceNode`s exist.
+
+**Why:** A recovery check timed out looking for donor sources after reload even though the saved donor had been restored correctly; the transport was intentionally paused.
+
+**How to apply:** Separate saved-selection assertions from audible-playback assertions. For uninterrupted recovery, compare the existing sources' identity, stop counts and gains alongside the advancing recipient clock; a missing pending indicator alone can precede asynchronous save/render completion.
