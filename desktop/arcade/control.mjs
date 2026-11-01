@@ -45,7 +45,7 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
   let workshop;
   ipcMain.handle("arena-native-mod-workshop", async (event, data) => {
     assertArcadeSender(event, window, origin, { action: "inspect" });
-    if (!data || typeof data !== "object" || JSON.stringify(data).length > 32 * 1024 * 1024 || !["list", "inspect", "assess-loader", "loader-inspect", "loader-prepare", "loader-repair", "loader-rollback", "create", "review", "commit", "activate", "rollback", "export", "launch"].includes(data.op)) throw new Error("Invalid mod workshop request.");
+    if (!data || typeof data !== "object" || JSON.stringify(data).length > 32 * 1024 * 1024 || !["list", "inspect", "assess-loader", "loader-inspect", "loader-run", "loader-launch", "loader-download", "loader-prepare", "loader-repair", "loader-rollback", "plugin-import", "plugin-toggle", "plugin-repair", "plugin-rollback", "create", "review", "commit", "activate", "rollback", "export", "launch"].includes(data.op)) throw new Error("Invalid mod workshop request.");
     if (operation) throw new Error("Another native operation is active.");
     operation = true;
     try {
@@ -54,16 +54,50 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
       if (data.op !== "commit" && (typeof data.key !== "string" || data.key.length > 200)) throw new Error("Select a managed game.");
       if (data.op === "inspect") return await workshop.engine.inspect(data.key);
       if (data.op === "assess-loader") return await workshop.assessLoader(data.key);
-      if (data.op === "loader-inspect") return await workshop.loaders.inspect(data.key, data.profileId);
+      if (data.op === "loader-inspect") return await workshop.inspectLoader(data.key, data.profileId);
+      if (data.op === "loader-run") return await workshop.loaderRun(data.key, data.profileId);
+      if (data.op === "loader-download") {
+        if (!await approve("Download the pinned BepInEx 5.4.23.2 release?", "About 640 KB is downloaded directly from the official BepInEx GitHub release and checked against the pinned SHA-256 before preparation. The temporary ZIP is removed afterwards. No game or DLL is executed during setup."))
+          throw new Error("Loader download cancelled.");
+        return await workshop.downloadLoader(data.key, data.profileId);
+      }
+      if (data.op === "loader-launch") {
+        if (!await approve("Launch this profile with native BepInEx plugins?", "Actual plugin code will execute inside the game's Windows LPAC/Job sandbox, with access to this profile's saves and configuration. The base stays read-only. Gameplay compatibility is unverified; this is not proof that a plugin works.")) throw new Error("Modded launch cancelled.");
+        return await workshop.launchLoader(data.key, data.profileId);
+      }
+      if (data.op.startsWith("plugin-")) {
+        let change;
+        if (data.op === "plugin-import") {
+          if (data.authorized !== true || typeof data.license !== "string" || !data.license.trim() || data.license.length > 1000)
+            throw new Error("Confirm permission and provide the DLL's license/use terms.");
+          const selection = await dialog.showOpenDialog(window, { title: "Select an authorized BepInEx 5 plugin/dependency DLL",
+            properties: ["openFile"], filters: [{ name: "Managed plugin assembly", extensions: ["dll"] }] });
+          if (selection.canceled || !selection.filePaths[0]) throw new Error("Plugin selection cancelled.");
+          const { ordinaryFile } = await import("./bepinex-profiles.mjs");
+          const { inspectBepInExAssembly } = await import("./bepinex-metadata.mjs");
+          const bytes = await ordinaryFile(selection.filePaths[0], 16 * 1024 * 1024);
+          const metadata = inspectBepInExAssembly(bytes);
+          if (!await approve(`Import/update ${metadata.assembly} ${metadata.version}?`,
+            `${metadata.plugins.map(plugin => `${plugin.name} (${plugin.id}) ${plugin.version}`).join("\n") || "Managed dependency assembly (no plugin entry class)."}\n\nLicense/use terms: ${data.license}\n\nThe original DLL bytes are retained without rewriting. New imports are disabled until enabled. Native plugin code runs only in the game's sandbox, not in Arena's main process.`))
+            throw new Error("Plugin import cancelled.");
+          change = { kind: "import", bytes, license: data.license, authorized: true };
+        } else {
+          if (!await approve("Change this profile's native plugin inventory?", "Enable/disable, repair or rollback affects plugin DLLs only. Configuration, logs and game saves are retained. Runtime compatibility remains unverified.")) throw new Error("Plugin change cancelled.");
+          change = data.op === "plugin-toggle" ? { kind: "toggle", id: data.id, enabled: data.enabled } :
+            { kind: data.op === "plugin-repair" ? "repair" : "rollback" };
+        }
+        return await workshop.changePlugins(data.key, data.profileId, change, data.revision);
+      }
       if (["loader-prepare", "loader-repair", "loader-rollback"].includes(data.op)) {
-        if (!await approve("Prepare this profile's BepInEx core?", "Only this isolated profile's loader core is prepared or repaired. Existing configuration, logs and saves are retained. This does not install plugins or enable a verified modded launch.")) throw new Error("Loader preparation cancelled.");
+        if (!await approve("Prepare this profile's BepInEx core?", "Only this isolated profile's loader core is prepared or repaired. Repair also removes the derived launch cache, which is rebuilt from the immutable base and reviewed file mods. Existing configuration, logs and saves are retained. This does not prove a modded game works.")) throw new Error("Loader preparation cancelled.");
         let archive;
         if (data.op === "loader-prepare") {
           const selection = await dialog.showOpenDialog(window, { title: "Select the pinned BepInEx 5.4.23.2 ZIP", properties: ["openFile"], filters: [{ name: "BepInEx ZIP", extensions: ["zip"] }] });
           if (selection.canceled || !selection.filePaths[0]) throw new Error("Loader archive selection cancelled.");
           archive = selection.filePaths[0]; // Main-process picker only, never a renderer-supplied path.
         }
-        return await workshop.loaders.change(data.key, data.profileId, { archive, repair: data.op === "loader-repair", rollback: data.op === "loader-rollback" });
+        await workshop.loaders.change(data.key, data.profileId, { archive, repair: data.op === "loader-repair", rollback: data.op === "loader-rollback" });
+        return await workshop.inspectLoader(data.key, data.profileId);
       }
       if (data.op === "create") return await workshop.engine.create(data.key, data.name, data.shareSaves, data.revision);
       if (data.op === "review") return await workshop.engine.review(data.key, data.profileId, data.change, data.revision);

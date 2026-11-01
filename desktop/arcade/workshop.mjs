@@ -6,7 +6,11 @@ import { ModWorkshopEngine } from "../../lib/arena/src/lib/games/mod-workshop-en
 import { modHash } from "../../lib/arena/src/lib/games/mod-workshop.ts";
 import { safePackagePath } from "./packages.mjs";
 import { assessUnityMonoLayout, identifyUnityVersion } from "./bepinex.mjs";
-import { BepInExProfiles } from "./bepinex-profiles.mjs";
+import { BepInExProfiles, directoryTree } from "./bepinex-profiles.mjs";
+import { nativeProfileDirectory } from "./profile-paths.mjs";
+import { BepInExPlugins, resolveBepInExPlugins } from "./bepinex-plugins.mjs";
+import { prepareBepInExLaunch, clearBepInExLaunchCache } from "./bepinex-launch.mjs";
+import { downloadBepInExDistribution } from "./bepinex-distribution.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const MiB = 1024 * 1024;
 async function fileHash(filename) { const hash = createHash("sha256"); for await (const chunk of createReadStream(filename)) hash.update(chunk); return hash.digest("hex"); }
@@ -23,20 +27,29 @@ export class NativeModWorkshop {
       if (!profile) throw new Error("Choose an existing Workshop profile.");
       const descriptor = this.packages.catalog.get(key), assessment = await this.assessLoader(key);
       if (state.baseVersion !== `sha256:${descriptor.sha256}`) throw new Error("This Workshop profile belongs to a different base version.");
+      const launchStorage = path.join(this.root, "runs", hash(`${key}:${profileId}`).slice(0, 16));
       return {
         shareSaves: profile.shareSaves, candidate: assessment.candidate, host: descriptor.host,
         diagnostic: assessment.blockers.join(" "),
+        descriptor, entry: descriptor.entry, install: this.packages.filename(key),
+        launchStorage, clearLaunchCache: () => clearBepInExLaunchCache({ launchStorage }),
         baseVersion: `sha256:${descriptor.sha256}`,
         storage: path.join(this.folder(key), "loaders", profileId),
-        runtime: path.join(this.packages.root, "profiles", hash(descriptor.id), `mod-${profileId}`),
+        runtime: nativeProfileDirectory(this.packages.root, descriptor.id, `mod-${profileId}`),
         running: [...this.host.runs.values()].some(run => run.child),
         checkSpace: async bytes => {
           const storage = await this.packages.storage();
           if (storage.freeBytes < storage.reserveBytes + bytes)
             throw new Error("Not enough free space to prepare loader files while retaining the disk reserve.");
+          const sizes = ["downloads", "staging", "installed", "profiles", "build-cache", "workshop"]
+            .map(name => storage[name] === null ? NaN : storage[name] ?? 0);
+          if (!Number.isFinite(storage.budgetBytes) || sizes.some(size => !Number.isFinite(size)) ||
+              sizes.reduce((sum, size) => sum + size, 0) + bytes > storage.budgetBytes)
+            throw new Error("The managed storage budget cannot accommodate this loader operation. Free managed storage first.");
         },
       };
     });
+    this.plugins = new BepInExPlugins();
     this.engine = new ModWorkshopEngine({
       base: (key, paths) => this.base(key, paths),
       read: key => this.read(key),
@@ -50,6 +63,66 @@ export class NativeModWorkshop {
     await mkdir(path.join(this.root, "packages"), { recursive: true }); await ordinary(path.join(this.root, "packages"), true);
   }
   folder(key) { return path.join(this.root, hash(key)); }
+  async inspectLoader(key, profileId) {
+    const context = await this.loaders.location(key, profileId);
+    const core = await this.loaders.inspectContext(context), plugins = await this.plugins.inspectContext(context);
+    const launchSupported = !!this.host.requirements?.().supportedHost && context.host === "windows-x64";
+    return { ...core, plugins, launchSupported,
+      canLaunch: launchSupported && !!core.integrity && !plugins.diagnostic && context.candidate && !context.running,
+      launchBytes: context.descriptor.files.reduce((sum, file) => sum + file.bytes, 0),
+      run: await this.loaderRun(key, profileId) };
+  }
+  async downloadLoader(key, profileId) {
+    const context = await this.loaders.location(key, profileId);
+    if (!context.candidate || context.running) throw new Error("Use a compatible, stopped Unity Mono profile.");
+    await context.checkSpace(64 * MiB);
+    await directoryTree(context.storage, true);
+    const temporary = path.join(context.storage, `.download-${randomUUID()}.zip`);
+    try {
+      await downloadBepInExDistribution({ host: context.host, destination: temporary });
+      await this.loaders.change(key, profileId, { archive: temporary });
+      return this.inspectLoader(key, profileId);
+    } finally { await rm(temporary, { force: true }); }
+  }
+  async loaderRun(key, profileId) {
+    const state = await this.read(key), descriptor = this.packages.catalog.get(key);
+    if (!descriptor || !state?.profiles.some(profile => profile.id === profileId)) throw new Error("Choose an existing native profile.");
+    const directory = nativeProfileDirectory(this.packages.root, descriptor.id, `mod-${profileId}`);
+    const run = [...this.host.runs.values()].filter(run => run.profile === directory).at(-1);
+    return run ? { id: run.id, phase: run.phase, logs: run.logs, exitCode: run.exitCode, gameplayVerified: false } : null;
+  }
+  async changePlugins(key, profileId, change, revision) {
+    const context = await this.loaders.location(key, profileId);
+    if (!await this.loaders.read(context)) throw new Error("Prepare the pinned BepInEx loader first.");
+    await this.plugins.change(context, change, revision);
+    return this.inspectLoader(key, profileId);
+  }
+  async launchLoader(key, profileId) {
+    const context = await this.loaders.location(key, profileId);
+    if (!this.host.requirements().supportedHost || context.host !== "windows-x64")
+      throw new Error("Modded launch requires the Windows x64 native host with a successful LPAC/Job containment probe.");
+    if (context.running) throw new Error("Stop the current native game first.");
+    if (!context.candidate) throw new Error("Unity Mono assessment failed.");
+    await this.host.probe();
+    const lockFile = path.join(context.storage, "prepare.lock");
+    await directoryTree(context.storage, true);
+    const lock = await open(lockFile, "wx").catch(error => {
+      if (error.code === "EEXIST") throw new Error("Another loader operation is active or interrupted.");
+      throw error;
+    });
+    try {
+      const state = await this.loaders.read(context), core = await this.loaders.inspectContext(context);
+      if (!state || !core.integrity) throw new Error("Prepare/repair the loader core before launch.");
+      const plugins = await this.plugins.read(context);
+      const order = resolveBepInExPlugins(plugins.assemblies, context.entry);
+      await this.plugins.verifyRuntime(context, plugins);
+      const { result } = await this.engine.play(key, profileId);
+      const install = await prepareBepInExLaunch(context, state, result.files);
+      await this.host.launch(key, { install, dataProfile: `mod-${profileId}`,
+        bepinex: { version: state.version, archiveSha256: state.archiveSha256, plugins: order, gameplayVerified: false } });
+    } finally { await lock.close(); await rm(lockFile, { force: true }); }
+    return this.inspectLoader(key, profileId);
+  }
   async assessLoader(key) {
     // Assess only immutable, hash-verified managed bytes. The preflight does
     // not stage files, enable plugin permissions or launch a game.

@@ -9,7 +9,7 @@ import { safePackagePath } from "./packages.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-async function directoryTree(folder, create = false) {
+export async function directoryTree(folder, create = false) {
   const absolute = path.resolve(folder);
   let current = path.parse(absolute).root;
   for (const part of absolute.slice(current.length).split(path.sep).filter(Boolean)) {
@@ -19,7 +19,7 @@ async function directoryTree(folder, create = false) {
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Loader storage has a linked or non-directory ancestor.");
   }
 }
-async function ordinaryFile(file, maxBytes) {
+export async function ordinaryFile(file, maxBytes) {
   const info = await lstat(file);
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > maxBytes)
     throw new Error("Loader storage contains a linked, special or oversized file.");
@@ -151,6 +151,7 @@ export class BepInExProfiles {
       }
       const source = path.join(context.storage, state.generation, "BepInEx", "core");
       await inspectCore(source, state.core);
+      if (repair && context.clearLaunchCache) await context.clearLaunchCache();
       await directoryTree(path.join(context.runtime, "BepInEx"), true);
       // Config/cache/logs and ordinary saves are deliberately never copied,
       // removed, restored or migrated by core preparation/repair.

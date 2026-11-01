@@ -10,6 +10,35 @@ import { safePackagePath } from "./packages.mjs";
 
 const MiB = 1024 * 1024;
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+export async function downloadBepInExDistribution({ host, destination }) {
+  const pin = BEPINEX_RELEASES[host];
+  if (!pin) throw new Error("No pinned loader download for this host.");
+  await ordinaryAncestors(path.dirname(path.resolve(destination)));
+  const signal = AbortSignal.timeout(60000);
+  let url = new URL(pin.url), response;
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    if (url.protocol !== "https:" || url.username || url.password ||
+        !["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"].includes(url.hostname))
+      throw new Error("Loader redirects must stay on official GitHub release hosting.");
+    response = await fetch(url, { signal, credentials: "omit", redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get("location");
+    await response.body?.cancel();
+    if (!location || redirects === 5) throw new Error("Too many or invalid loader download redirects.");
+    url = new URL(location, url);
+  }
+  if (response.status !== 200 || !response.body) throw new Error("The official pinned loader download was unavailable.");
+  const chunks = []; let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    if (size > pin.bytes) throw new Error("Loader download exceeded its pinned byte budget.");
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks);
+  if (bytes.length !== pin.bytes || hash(bytes) !== pin.sha256) throw new Error("Downloaded loader bytes do not match the pinned release.");
+  await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+  return { version: pin.version, bytes: pin.bytes, sha256: pin.sha256 };
+}
 async function ordinaryAncestors(directory) {
   const absolute = path.resolve(directory);
   let current = path.parse(absolute).root;
