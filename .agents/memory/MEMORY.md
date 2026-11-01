@@ -32,3 +32,4 @@
 - [Mod profile boundaries](arcade-mod-profile-boundaries.md) — rollback restores content, not saves; native isolation requires separate OS identities, not just folders.
 - [Playwright frame evidence](playwright-frame-evidence.md) — text filters exclude scripts; inspect DOM code and verify gameplay after iframe navigation.
 - [Source adoption expectations](source-adoption-expectations.md) — assess priority source collections against all relevant rooms, not just a few ideas or presets.
+- [Spaces expectations](spaces-product-expectations.md) — persistent AI-operated Linux environments that build and perform real tasks, not browser presets.
