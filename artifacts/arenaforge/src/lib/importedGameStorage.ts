@@ -54,8 +54,6 @@ export async function saveImportedGames(records: readonly unknown[]): Promise<vo
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE, "readwrite");
     const store = transaction.objectStore(STORE);
-    store.clear();
-    for (const record of records) store.put(record);
     transaction.oncomplete = () => {
       database.close();
       resolve();
@@ -68,6 +66,15 @@ export async function saveImportedGames(records: readonly unknown[]): Promise<vo
       database.close();
       reject(transaction.error ?? new Error("Saving the local game shelf was cancelled."));
     };
+    try {
+      store.clear();
+      for (const record of records) store.put(record);
+    } catch (error) {
+      // Synchronous DataCloneError/DataError does not automatically abort a
+      // transaction. Without this, clear() could commit after put() throws.
+      try { transaction.abort(); } catch { database.close(); }
+      reject(error instanceof Error ? error : new Error("Could not save the local game shelf."));
+    }
   });
 }
 
@@ -113,12 +120,8 @@ export async function saveImportedGameChanges<T extends { id: string }>(
       for (const record of changes.upsert) store.put(record);
       for (const id of changes.remove) store.delete(id);
     } catch (error) {
-      try {
-        transaction.abort();
-      } catch {
-        database.close();
-        reject(error instanceof Error ? error : new Error("Could not update the local game shelf."));
-      }
+      try { transaction.abort(); } catch { database.close(); }
+      reject(error instanceof Error ? error : new Error("Could not update the local game shelf."));
     }
   });
 }

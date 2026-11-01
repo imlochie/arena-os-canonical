@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Copy, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { createGameSandboxDocument, useArcadeGameSave } from "../lib/arcadeGameSave";
-import { loadImportedGames, saveImportedGameChanges, saveImportedGames } from "../lib/importedGameStorage";
+import { loadImportedGames, saveImportedGameChanges } from "../lib/importedGameStorage";
 import { deleteNesSaveState, readNesSaveState, writeNesSaveState } from "../lib/nesSaveStates";
 import {
   arcadeEmulatorSystemLabel,
@@ -378,6 +378,9 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
 
 export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt }: ImportedGameWorkspaceProps) {
   const [games, setGames] = useState<ImportedGame[]>([]);
+  const persistedGames = useRef<ImportedGame[]>([]);
+  const shelfWrites = useRef<Promise<void>>(Promise.resolve());
+  const [removing, setRemoving] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [rightsAccepted, setRightsAccepted] = useState(false);
   const [description, setDescription] = useState("");
@@ -471,6 +474,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         const stored = await loadImportedGames();
         const valid = stored.filter(isStoredImportedGame).sort((a, b) => b.addedAt - a.addedAt).slice(0, 12);
         if (active) {
+          persistedGames.current = valid;
           setGames(valid);
           setSelectedId(valid[0]?.id ?? "");
         }
@@ -484,16 +488,23 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     return () => { active = false; };
   }, []);
 
-  const saveGames = useCallback(async (next: ImportedGame[]) => {
-    setGames(next);
+  const saveGames = useCallback(async (next: ImportedGame[], optimistic = true) => {
+    if (optimistic) setGames(next);
+    const operation = shelfWrites.current.then(async () => {
+      await saveImportedGameChanges(persistedGames.current, next);
+      persistedGames.current = next;
+    });
+    shelfWrites.current = operation.catch(() => {});
     try {
-      await saveImportedGameChanges(games, next);
+      await operation;
+      if (!optimistic) setGames(next);
       return true;
-    } catch {
-      setError("The game is available for this session, but this browser could not save the local shelf.");
+    } catch (cause) {
+      const quota = cause instanceof Error && cause.name === "QuotaExceededError";
+      setError(`${optimistic ? "The game is available for this session, but it could not be saved." : "The game could not be removed. It remains on your shelf."} Previously saved records are unchanged.${quota ? " Browser storage is full; free space and retry." : ""}`);
       return false;
     }
-  }, [games]);
+  }, []);
 
   useEffect(() => {
     if (!selected || selected.kind !== "nes" || !canvasRef.current) {
@@ -803,16 +814,19 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   const removeSelected = async () => {
-    if (!selected) return;
+    if (!selected || removing || busy) return;
     const next = games.filter((game) => game.id !== selected.id);
     // Clear the removed game's error before the async storage write. A newer
     // import may start as soon as the row disappears; late cleanup must not
     // erase that import's validation feedback.
     setNotice("");
     setError("");
-    await saveGames(next);
-    setReaAnalysis((current) => current?.gameId === selected.id ? null : current);
-    setSelectedId(next[0]?.id ?? "");
+    setRemoving(true);
+    try {
+      if (!await saveGames(next, false)) return;
+      setReaAnalysis((current) => current?.gameId === selected.id ? null : current);
+      setSelectedId((current) => current === selected.id ? next[0]?.id ?? "" : current);
+    } finally { setRemoving(false); }
   };
 
   const remakePrompt = useMemo(() => {
@@ -973,7 +987,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         </header>
 
         {error && <div role="alert" className="flex items-start gap-2 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2.5 text-xs leading-relaxed text-red-200"><AlertTriangle size={15} className="mt-0.5 shrink-0" />{error}</div>}
-        {notice && <div role="status" className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2.5 text-xs text-emerald-100">{notice}</div>}
+        {notice && !error && <div role="status" className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2.5 text-xs text-emerald-100">{notice}</div>}
 
         {selected ? (
           <div className="glass overflow-hidden rounded-2xl border border-white/10">
@@ -988,8 +1002,8 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                       : selected.system ? arcadeEmulatorSystemLabel(selected.system) : "Console ROM"}
               </span>
               <h3 className="min-w-0 flex-1 truncate text-sm font-extrabold text-white">{selected.name}</h3>
-              <button type="button" onClick={removeSelected} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-slate-400 hover:bg-red-400/10 hover:text-red-200" aria-label={`Remove ${selected.name}`}>
-                <Trash2 size={13} /> Remove
+              <button type="button" onClick={removeSelected} disabled={removing || busy} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-slate-400 hover:bg-red-400/10 hover:text-red-200" aria-label={`Remove ${selected.name}`}>
+                <Trash2 size={13} /> {removing ? "Removing…" : "Remove"}
               </button>
             </div>
             {selected.kind === "html" ? (

@@ -3715,3 +3715,11 @@ execFileSync(
   ["--test", new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
   { stdio: "inherit" },
 );
+
+// Isolated persistent browser profile: verifies real IndexedDB writes and a
+// complete browser restart without touching the main smoke session's shelf.
+execFileSync(
+  process.execPath,
+  [new URL("./arcade-shelf-persistence.mjs", import.meta.url).pathname],
+  { stdio: "inherit", env: { ...process.env, TEST_BASE_URL: base } },
+);
