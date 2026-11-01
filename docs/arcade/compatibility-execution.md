@@ -14,9 +14,14 @@ previews cannot execute local binaries or inspect a visitor's laptop facilities.
 
 ## Verified current facts — 2026-11-01
 
+The user subsequently chose to build Linux execution now rather than defer it.
+The deeper admission work below was done in response. This changes priority,
+not the meaning of a verified execution result.
+
 - Current assessment machine is Linux x86_64, not a packaged Arena desktop.
-- Wine, wine64, wineserver, Steam and pressure-vessel-wrap were not found on PATH.
-  This is not a machine-wide installation inventory.
+- Initially Wine, wine64, wineserver, Steam and pressure-vessel-wrap were not
+  found on PATH. Wine and the bounded diagnostic dependencies were subsequently
+  installed for the deeper check. Presence is not gameplay support.
 - User/mount/PID/network namespace creation successfully ran a `true` process.
   That verifies a kernel primitive, **not an allowlisted root filesystem, network
   denial test, resource controls, owned cleanup, or a registered game service**.
@@ -40,7 +45,47 @@ installed executable never flips a runtime into `available`.
 
 The current host has useful facilities, but lacks an integrated, supported
 execution pathway. Installing Wine first would not resolve that architecture
-gap. No large runtime/toolchain/download was started.
+gap.
+
+### Deeper admission result
+
+`node desktop/check-compatibility-host.mjs --probe-sandbox` is the opt-in
+controlled probe. It returns exit **2**, not success, on this host:
+
+```
+status: blocked
+cgroupControlsConfigured: true
+privateProcMounted: false
+probeGroupCleaned: true
+code: PRIVATE_PROC_MOUNT_DENIED
+diagnostic: bwrap: Can't mount proc on /newroot/proc: Operation not permitted
+gameplayVerified: false
+```
+
+Independent read-only fresh-proc mounting in a new user/mount/PID namespace
+also failed with permission denied (exit 32). Namespace creation alone had
+passed. No host namespace policy, security controls or existing process groups
+were changed. The temporary owned probe cgroup and files were removed.
+
+The real cgroup-v2 memory/swap/process/CPU settings could be configured in an
+independent owned group. This is **configuration evidence**, not an OOM,
+game-child-cleanup or full containment acceptance test.
+
+An inherited-capability incompatibility initially prevented Bubblewrap setup.
+The trusted `arcade-linux-gate.c` clears effective/permitted/inheritable/ambient
+capabilities and sets no-new-privileges, after the owner attaches it to the
+probe's unique cgroup. Setup then reaches the actual private-proc permission
+failure. It never advances to Wine or any untrusted program.
+
+The check deliberately does not bind the owner's `/proc` as a workaround,
+reuse the host network or display/audio sockets, or run uncontained Wine.
+No prefix was initialized. No Windows game was compiled, downloaded or run in
+this pass; the rejected cross-compiler package did not install.
+
+To finish actual execution acceptance requires a Linux host permitting the
+private-proc sandbox setup, followed by implementing the driver and passing the
+gameplay/lifecycle checks below. A permissive primitive probe by itself must
+still not enable an absent driver.
 
 ## Distribution and legal assessment
 
@@ -53,8 +98,23 @@ pin the Wine binaries, loader/libc/dependencies, host ABI and all relevant
 licenses, and pass integrity checks. “Use whatever wine is on PATH” is not a
 reproducible adapter.
 
-No binary distribution was selected or downloaded before host admission.
-Wine/source presence does not provide proprietary Windows redistributable rights.
+A development candidate was acquired after namespace/cgroup facility checks:
+
+- Nix package: `wineWowPackages.stable`, Wine **10.0**.
+- Store root: `/nix/store/fcg184k2q4ij70dfl25j8zma4x8q9fq8-wine-wow-10.0`.
+- Recorded NAR hash:
+  `sha256:0q8qg8l5sqgjnvyyfnb7i35sljyxi2f7ws4vajblvk2gwl0qa2j2`.
+- Selected `bin/wine64` SHA-256:
+  `75b99edf914cf01e3b44290f73b55ff9440412e5c3a17b329bcf169e6ba057d7`.
+- `wine64 --version` returns `wine-10.0`; this is a version-only observation.
+- The separate 32-bit `wine` ELF fails with `Exec format error` here. No
+  32-bit-host-ABI support is claimed, and the exact underlying cause was not
+  diagnosed.
+
+The NAR hash above was queried from the package database; it is not a fresh
+full-closure tamper audit. There is no verified distributable Wine game adapter.
+Wine/source presence does not provide proprietary Windows redistributable
+rights. Native Windows packaging does not bundle this development Nix closure.
 
 ### Proton
 

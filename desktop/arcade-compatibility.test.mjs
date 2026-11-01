@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assessCompatibilityHost } from "./arcade/compatibility.mjs";
+import { probeLinuxAdmission } from "./arcade/linux-admission.mjs";
+import { mkdtemp, readdir, rm, symlink } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 
 test("Windows x64 recommends native releases, never unnecessary Wine/Proton setup", () => {
   const result = assessCompatibilityHost({ platform: "win32", arch: "x64" });
@@ -50,4 +54,27 @@ test("macOS and ARM Linux have no implicit compatibility or architecture fallbac
     assert.match(result.wine.reasons.join(" "), /arm64/);
     assert.equal(result.proton.available, false);
   }
+});
+
+test("admission refuses fake controller files on an ordinary filesystem", { skip: process.platform !== "linux" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-fake-cgroup-"));
+  try {
+    const result = await probeLinuxAdmission({ cgroupRoot: root });
+    assert.equal(result.status, "blocked");
+    assert.equal(result.cgroupControlsConfigured, false);
+    assert.equal(result.privateProcMounted, false);
+    assert.match(result.diagnostic, /real delegated cgroup/);
+    assert.deepEqual(await readdir(root), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("admission rejects a symlinked cgroup root before changing any controls", { skip: process.platform !== "linux" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-linked-cgroup-"));
+  try {
+    await symlink("/sys/fs/cgroup", path.join(root, "link"));
+    const result = await probeLinuxAdmission({ cgroupRoot: path.join(root, "link") });
+    assert.equal(result.status, "blocked");
+    assert.equal(result.cgroupControlsConfigured, false);
+    assert.equal(result.gameplayVerified, false);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

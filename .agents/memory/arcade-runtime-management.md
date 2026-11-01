@@ -15,6 +15,12 @@ Runtime registration and declared requirements are not installation, startup or 
 
 **How to apply:** Bind a real launch driver and resource owner before calling a new runtime supported. Scope evidence to game content, runtime/version, profile and host/browser identity. Keep player observations distinct from automated checks. Model readiness/WebGPU says nothing about game execution.
 
+Linux admission must test a real private-proc sandbox setup, not infer viability from successful namespace creation or cgroup access.
+
+**Why:** The hosted environment allowed namespace creation and independent resource controls but refused mounting fresh procfs inside the sandbox. Advertised facilities initially concealed the execution blocker.
+
+**How to apply:** Recheck the actual target host. Never bind the owner's existing procfs or weaken containment to bypass a failed admission test. Treat tool/version detection as separate from executable game support.
+
 Native Windows execution must fail closed when real OS containment cannot be verified; a Job/process tree alone is not a filesystem/network sandbox.
 
 **Why:** Imported native code is a different trust boundary from browser games. Linux protocol simulations and a successful process spawn cannot establish Windows isolation or SDL/audio compatibility.

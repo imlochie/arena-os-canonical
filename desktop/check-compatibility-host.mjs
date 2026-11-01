@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { assessCompatibilityHost } from "./arcade/compatibility.mjs";
+import { probeLinuxAdmission } from "./arcade/linux-admission.mjs";
 
 const exec = promisify(execFile);
 async function tool(name) {
@@ -56,5 +57,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     context: process.env.ARENA_DESKTOP_MODE === "1" ? "desktop" : "hosted",
     facilities: await inspectCompatibilityFacilities(),
   });
+  if (process.argv.includes("--probe-sandbox")) {
+    assessment.admission = await probeLinuxAdmission();
+    // This is deliberately nonzero when the prerequisites fail. A successful
+    // primitive check still cannot certify an absent game driver.
+    if (assessment.admission.status !== "primitives-only") process.exitCode = 2;
+  }
   console.log(JSON.stringify({ assessedAt: new Date().toISOString(), ...assessment }, null, 2));
 }
