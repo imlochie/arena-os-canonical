@@ -1688,3 +1688,18 @@ test("audio backup restore creates a playable local library track and skips the 
     await archive.dispose();
   }
 });
+
+// Keep this after the shared-fixture checks, which intentionally count the first
+// intake's rows. Requires the running preview, Chromium and pinned Kim model:
+// WAVEYARD_RUN_REAL_LIBRARY_RETRY=1 pnpm --filter @workspace/scripts exec tsx --test <absolute path to this file>
+test("library retry action completes its original job through the real stem worker", {
+  skip: process.env.WAVEYARD_RUN_REAL_LIBRARY_RETRY !== "1",
+  timeout: 180_000,
+}, async t => {
+  assert.ok(client && root);
+  const { verifyLibraryRetryWithRealWorker } = await import("./retry-worker-acceptance.test-helper");
+  const result = await verifyLibraryRetryWithRealWorker({
+    database: db.db, client, directory: root, addTrack: service.addTrackFromAudioFile,
+  });
+  t.diagnostic(`Real library retry: ${result.stemCount} stems on ${result.device} in ${result.elapsedMs} ms; one-second synthetic input, not Windows or separation-quality evidence.`);
+});
