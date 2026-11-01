@@ -9,6 +9,54 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary Explicit owner-authorized local-model development with private source
+ */
+export const runArcadeDevelopmentBodyEventDraftHashRegExp = new RegExp('^[a-f0-9]{64}$');
+export const runArcadeDevelopmentBodyEventProfileIdMax = 100;
+
+export const runArcadeDevelopmentBodySnapshotDevelopmentIdMax = 100;
+
+export const runArcadeDevelopmentBodySnapshotGameIdMax = 200;
+
+export const runArcadeDevelopmentBodySnapshotTitleMax = 200;
+
+export const runArcadeDevelopmentBodySnapshotOriginalMax = 50000;
+
+export const runArcadeDevelopmentBodySnapshotDraftMax = 50000;
+
+export const runArcadeDevelopmentBodySnapshotProvenanceMax = 1000;
+
+export const runArcadeDevelopmentBodyPromptMax = 1000;
+
+
+
+export const RunArcadeDevelopmentBody = zod.object({
+  "authorized": zod.boolean(),
+  "op": zod.enum(['start', 'resume', 'approve', 'deny', 'check', 'event']),
+  "developmentId": zod.string().optional(),
+  "event": zod.object({
+  "type": zod.enum(['installed', 'launched', 'stopped', 'rolled-back', 'owner-assessed-working', 'owner-assessed-failed']),
+  "draftHash": zod.string().regex(runArcadeDevelopmentBodyEventDraftHashRegExp),
+  "profileId": zod.string().max(runArcadeDevelopmentBodyEventProfileIdMax)
+}).optional(),
+  "snapshot": zod.object({
+  "developmentId": zod.string().max(runArcadeDevelopmentBodySnapshotDevelopmentIdMax),
+  "gameId": zod.string().max(runArcadeDevelopmentBodySnapshotGameIdMax),
+  "title": zod.string().max(runArcadeDevelopmentBodySnapshotTitleMax),
+  "original": zod.string().max(runArcadeDevelopmentBodySnapshotOriginalMax),
+  "draft": zod.string().max(runArcadeDevelopmentBodySnapshotDraftMax),
+  "provenance": zod.string().max(runArcadeDevelopmentBodySnapshotProvenanceMax)
+}).optional(),
+  "spaceId": zod.string().optional(),
+  "modelId": zod.string().optional(),
+  "prompt": zod.string().max(runArcadeDevelopmentBodyPromptMax).optional(),
+  "approvalId": zod.string().optional()
+})
+
+export const RunArcadeDevelopmentResponse = zod.record(zod.string(), zod.unknown())
+
+
+/**
  * @summary Read a licensed pinned mod package without executing repository code
  */
 export const reviewArcadeModRepositoryBodyUrlMax = 1000;

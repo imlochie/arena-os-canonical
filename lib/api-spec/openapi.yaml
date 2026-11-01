@@ -13,6 +13,26 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /arcade/development:
+    post:
+      operationId: runArcadeDevelopment
+      tags: [arcade]
+      summary: Explicit owner-authorized local-model development with private source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArcadeDevelopmentInput" }
+      responses:
+        "200":
+          description: Request-scoped snapshot and source-redacted mission journal
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503":
+          description: No supported selected model
   /arcade/mods/repository/review:
     post:
       operationId: reviewArcadeModRepository
@@ -586,6 +606,34 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
 components:
   schemas:
+    ArcadeDevelopmentInput:
+      type: object
+      required: [authorized, op]
+      properties:
+        authorized: { type: boolean }
+        op: { type: string, enum: [start, resume, approve, deny, check, event] }
+        developmentId: { type: string }
+        event:
+          type: object
+          required: [type, draftHash, profileId]
+          properties:
+            type: { type: string, enum: [installed, launched, stopped, rolled-back, owner-assessed-working, owner-assessed-failed] }
+            draftHash: { type: string, pattern: "^[a-f0-9]{64}$" }
+            profileId: { type: string, maxLength: 100 }
+        snapshot:
+          type: object
+          required: [developmentId, gameId, title, original, draft, provenance]
+          properties:
+            developmentId: { type: string, maxLength: 100 }
+            gameId: { type: string, maxLength: 200 }
+            title: { type: string, maxLength: 200 }
+            original: { type: string, maxLength: 50000 }
+            draft: { type: string, maxLength: 50000 }
+            provenance: { type: string, maxLength: 1000 }
+        spaceId: { type: string }
+        modelId: { type: string }
+        prompt: { type: string, maxLength: 1000 }
+        approvalId: { type: string }
     ArcadeModRepositoryInput:
       type: object
       required: [url, authorized]

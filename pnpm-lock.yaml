@@ -248,6 +248,9 @@ importers:
 
   artifacts/arenaforge:
     dependencies:
+      acorn:
+        specifier: ^8.19.0
+        version: 8.19.0
       jszip:
         specifier: 3.10.2
         version: 3.10.2

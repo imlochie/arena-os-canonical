@@ -5,6 +5,66 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export type ArcadeDevelopmentInputOp = typeof ArcadeDevelopmentInputOp[keyof typeof ArcadeDevelopmentInputOp];
+
+
+export const ArcadeDevelopmentInputOp = {
+  start: 'start',
+  resume: 'resume',
+  approve: 'approve',
+  deny: 'deny',
+  check: 'check',
+  event: 'event',
+} as const;
+
+export type ArcadeDevelopmentInputEventType = typeof ArcadeDevelopmentInputEventType[keyof typeof ArcadeDevelopmentInputEventType];
+
+
+export const ArcadeDevelopmentInputEventType = {
+  installed: 'installed',
+  launched: 'launched',
+  stopped: 'stopped',
+  'rolled-back': 'rolled-back',
+  'owner-assessed-working': 'owner-assessed-working',
+  'owner-assessed-failed': 'owner-assessed-failed',
+} as const;
+
+export type ArcadeDevelopmentInputEvent = {
+  type: ArcadeDevelopmentInputEventType;
+  /** @pattern ^[a-f0-9]{64}$ */
+  draftHash: string;
+  /** @maxLength 100 */
+  profileId: string;
+};
+
+export type ArcadeDevelopmentInputSnapshot = {
+  /** @maxLength 100 */
+  developmentId: string;
+  /** @maxLength 200 */
+  gameId: string;
+  /** @maxLength 200 */
+  title: string;
+  /** @maxLength 50000 */
+  original: string;
+  /** @maxLength 50000 */
+  draft: string;
+  /** @maxLength 1000 */
+  provenance: string;
+};
+
+export interface ArcadeDevelopmentInput {
+  authorized: boolean;
+  op: ArcadeDevelopmentInputOp;
+  developmentId?: string;
+  event?: ArcadeDevelopmentInputEvent;
+  snapshot?: ArcadeDevelopmentInputSnapshot;
+  spaceId?: string;
+  modelId?: string;
+  /** @maxLength 1000 */
+  prompt?: string;
+  approvalId?: string;
+}
+
 export interface ArcadeModRepositoryInput {
   /** @maxLength 1000 */
   url: string;
@@ -631,6 +691,8 @@ export interface LibraryTrackSeparationStartResponse {
   /** @nullable */
   error: string | null;
 }
+
+export type RunArcadeDevelopment200 = { [key: string]: unknown };
 
 export type ReviewArcadeModRepository200 = {
   packageJson: string;

@@ -89,6 +89,8 @@ test("classification: every mission tool maps to its action class", () => {
 
 test("classification: the gated classes are exactly the consequential ones", () => {
   assert.deepEqual([...APPROVAL_REQUIRED].sort(), [
+    "arcade.install",
+    "arcade.launch",
     "browser.interact",
     "external.call",
     "external.sms",

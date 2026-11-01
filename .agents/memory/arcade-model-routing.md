@@ -5,6 +5,16 @@ description: Why game generation and revisions must not silently try unrelated p
 
 Arcade generation and source-based modifications must use a connected provider or a loaded on-device model. When neither is available, report the missing model directly rather than trying unrelated public endpoints or substituting a preset game.
 
+Manual game editing, static validation and local packaging must remain usable
+without a model or hosted owner session. Only explicit model missions need the
+authenticated source handoff.
+
+**Why:** Local work should not be blocked by an unavailable model or preview
+login, and static inspection does not justify uploading private game source.
+
+**How to apply:** Keep parser-only checks local. Never weaken owner API guards
+to make browser-local development tools usable.
+
 Arcade should offer both free on-device code models and an explicit credit-based Replit AI route, while keeping other sourceable providers opt-in. REA is a local reverse-engineering MCP toolkit, not a game-writing model.
 
 **Why:** The user requested both local and Replit-credit model options and named REA as a source to evaluate.

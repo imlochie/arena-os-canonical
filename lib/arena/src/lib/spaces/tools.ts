@@ -508,8 +508,13 @@ export async function executeTool(
     execTarget?: import("./workspace-isolation").ExecTarget;
     browserEngine?: import("./browser").BrowserEngine;
     externalDeps?: import("./external").ExternalDeps;
+    arcade?: import("./arcade-development").ArcadeDevelopmentTools;
   } = {}
 ): Promise<ToolOutcome> {
+  if (action.tool.startsWith("arcade_")) {
+    if (opts.arcade) return opts.arcade.execute(action);
+    return { tool: action.tool, input: {}, output: "refused: no owner-authorized Arcade development context", ok: false, ms: 0 };
+  }
   const dir = await ensureWorkspace(spaceId);
   const t0 = Date.now();
   const run = async (): Promise<string> => {

@@ -35,7 +35,9 @@ export type ActionClass =
   | "browser.interact"
   | "external.call"
   | "external.sms"
-  | "payment.link";
+  | "payment.link"
+  | "arcade.install"
+  | "arcade.launch";
 
 /** Action classes that ALWAYS require an explicit human approval before
  * execution. Everything else is journaled but auto-executed (bounded by the
@@ -46,6 +48,8 @@ export const APPROVAL_REQUIRED: readonly ActionClass[] = [
   "external.call",
   "external.sms",
   "payment.link",
+  "arcade.install",
+  "arcade.launch",
 ];
 
 export function approvalRequired(actionClass: ActionClass): boolean {
@@ -55,6 +59,9 @@ export function approvalRequired(actionClass: ActionClass): boolean {
 /** Map a mission tool name to its action class. */
 export function classifyToolAction(tool: string): ActionClass {
   switch (tool) {
+    case "arcade_install": return "arcade.install";
+    case "arcade_launch": return "arcade.launch";
+    case "arcade_edit": return "filesystem.write";
     case "write_file":
     case "edit_file":
     case "delete_file":

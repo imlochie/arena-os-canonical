@@ -242,6 +242,7 @@
     "./lib/spaces/governance.test": "./src/lib/spaces/governance.test.ts",
     "./lib/spaces/governance": "./src/lib/spaces/governance.ts",
     "./lib/spaces/mission": "./src/lib/spaces/mission.ts",
+    "./lib/spaces/arcade-development": "./src/lib/spaces/arcade-development.ts",
     "./lib/spaces/spaces-tools.test": "./src/lib/spaces/spaces-tools.test.ts",
     "./lib/spaces/tools": "./src/lib/spaces/tools.ts",
     "./lib/spaces/watchers": "./src/lib/spaces/watchers.ts",

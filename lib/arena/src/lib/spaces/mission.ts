@@ -31,6 +31,7 @@ import { listAgents } from "@workspace/arena/lib/spaces";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
 import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
 import { ensureIsolatedWorkspace, teardownIsolatedWorkspace, type ExecTarget } from "./workspace-isolation";
+import { ARCADE_DEVELOPMENT_DISCIPLINE, ARCADE_DEVELOPMENT_TOOLS, type ArcadeDevelopmentTools, type ArcadeDevelopmentBinding } from "./arcade-development";
 
 export interface MissionAgentSpec {
   name: string;
@@ -46,13 +47,14 @@ export interface MissionStep {
   handoff: string;
   done: boolean;
   thought: string;
-  runtime?: { backend?: string; modelId?: string; fallback?: boolean };
+  runtime?: { backend?: string; modelId?: string; fallback?: boolean; via?: string };
   ms: number;
 }
 
 export interface MissionJournal {
   steps: MissionStep[];
-  mode?: "browser";
+  mode?: "browser" | "arcade";
+  arcadeBinding?: ArcadeDevelopmentBinding;
 }
 
 export interface MissionSummary {
@@ -69,12 +71,13 @@ export interface MissionSummary {
   startedAt: string;
   updatedAt: string;
   endedAt: string | null;
-  mode?: "browser";
+  mode?: "browser" | "arcade";
+  arcadeBinding?: ArcadeDevelopmentBinding;
 }
 
 export interface MissionOpts {
   goal: string;
-  mode?: "browser";
+  mode?: "browser" | "arcade";
   resume?: boolean;
   timeBudgetMs?: number;
   agentPlan?: MissionAgentSpec[];
@@ -101,6 +104,8 @@ export interface MissionDeps {
   browserEngine?: import("./browser").BrowserEngine;
   /** External action deps (fetcher/env) override for tests. */
   externalDeps?: import("./external").ExternalDeps;
+  arcade?: ArcadeDevelopmentTools;
+  signal?: AbortSignal;
 }
 
 const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
@@ -197,6 +202,7 @@ function rowToSummary(row: typeof spaceMissions.$inferSelect): MissionSummary {
     updatedAt: (row.updatedAt ?? new Date()).toISOString(),
     endedAt: row.endedAt ? row.endedAt.toISOString() : null,
     mode: (row.journal as MissionJournal | null)?.mode,
+    arcadeBinding: (row.journal as MissionJournal | null)?.arcadeBinding,
   };
 }
 
@@ -231,6 +237,14 @@ export async function runMission(
   deps: MissionDeps = {}
 ): Promise<MissionSummary> {
   const previous = opts.resume !== false ? await getLatestMission(spaceId) : null;
+  // The daemon and generic mission endpoint cannot rehydrate private source or
+  // resume a privileged Arcade action. Only the authenticated development route
+  // can provide the exact owner/base-bound request-scoped tools.
+  const latest = previous ?? await getLatestMission(spaceId);
+  if ((latest?.mode === "arcade" || opts.mode === "arcade") && !deps.arcade)
+    throw new Error("Arcade development must be resumed explicitly from its browser-local workspace.");
+  if (deps.arcade && latest?.arcadeBinding && (Object.keys(deps.arcade.binding) as (keyof ArcadeDevelopmentBinding)[]).some(key => latest.arcadeBinding![key] !== deps.arcade!.binding[key]))
+    throw new Error("The owner or immutable base differs from this development mission.");
   if (previous && (previous.status === "checkpointed" || previous.status === "awaiting_approval")) {
     opts = { ...opts, mode: previous.mode ?? opts.mode };
   }
@@ -240,7 +254,8 @@ export async function runMission(
   // recorded in the mission's statusDetail, never a silent downgrade.
   let execTarget: ExecTarget = { env: "host" };
   let isolationNote = "";
-  const isolationMode = opts.mode === "browser" ? "host" : opts.isolation ?? "auto";
+  const isolationMode = opts.mode === "browser" || opts.mode === "arcade" ? "host" : opts.isolation ?? "auto";
+  if (opts.mode === "arcade") isolationNote = "request-scoped source copy; no shell, network tools or server game execution";
   if (opts.mode === "browser") isolationNote = "per-workspace browser profile and files; shell commands are disabled";
   if (isolationMode !== "host") {
     try {
@@ -302,7 +317,7 @@ async function runMissionInner(
         ? fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt }))
         : defaultPlan("openai"); // any text alias: routes via Groq/OpenRouter key when sent, else keyless pollinations, else honest local fallback
 
-  await ensureWorkspace(spaceId);
+  if (opts.mode !== "arcade") await ensureWorkspace(spaceId);
   let row: any;
   if (resuming) {
     if (missionDbHealthy) {
@@ -336,7 +351,7 @@ async function runMissionInner(
       try {
         const [inserted] = await db.insert(spaceMissions).values({
           spaceId: fresh.spaceId, goal: fresh.goal, timeBudgetMs, agentPlan: plan,
-          journal: { steps: [], mode: opts.mode }, artifacts: [], handoff: "",
+           journal: { steps: [], mode: opts.mode, arcadeBinding: deps.arcade?.binding }, artifacts: [], handoff: "",
         }).returning();
         row = inserted;
       } catch {
@@ -358,7 +373,8 @@ async function runMissionInner(
   let statusDetail = "";
 
   const save = async (patch: Partial<typeof spaceMissions.$inferInsert>) => {
-    const journal = { steps, mode: opts.mode };
+      const journal = { steps: deps.arcade ? steps.map(step => deps.arcade!.redactStep(step)) : steps, mode: opts.mode, arcadeBinding: deps.arcade?.binding };
+      if (deps.arcade) patch = { ...patch, handoff: "" };
     const apply = (r: any) => rowToSummary({ ...r, ...patch, journal, updatedAt: new Date() });
     if (missionDbHealthy) {
       try {
@@ -385,10 +401,10 @@ async function runMissionInner(
 
   // Approval is permission for the exact persisted action, not a request for
   // the model to guess it again. This also works after the native API restarts.
-  if (resuming && opts.mode === "browser" && existing.status === "awaiting_approval") {
+  if (resuming && (opts.mode === "browser" || opts.mode === "arcade") && existing.status === "awaiting_approval") {
     const waiting = steps.at(-1)?.actions.find(action =>
       !action.ok && action.output.includes("awaiting human approval")
-      && (action.tool === "browser_click" || action.tool === "browser_fill"));
+      && (action.tool === "browser_click" || action.tool === "browser_fill" || action.tool === "arcade_install" || action.tool === "arcade_launch"));
     if (waiting) {
       const approval = await findLatestBySignature(actionSignature(mission.id, waiting.tool, waiting.input));
       if (!approval || approval.status === "pending") {
@@ -396,7 +412,7 @@ async function runMissionInner(
       }
       let output: ToolOutcome;
       if (approval.status === "approved" && await claimExecution(approval.id)) {
-        output = await executeTool(spaceId, { tool: waiting.tool, args: waiting.input }, { browserEngine: deps.browserEngine });
+        output = await executeTool(spaceId, { tool: waiting.tool, args: waiting.input }, { browserEngine: deps.browserEngine, arcade: deps.arcade });
         await completeExecution(approval.id, output.ok, { tool: output.tool, output: output.output.slice(0, 2000) }, output.ok ? undefined : output.output.slice(0, 500));
       } else {
         output = {
@@ -409,12 +425,18 @@ async function runMissionInner(
         thought: "Resumed the exact saved approval decision; no model call was used for this step.", ms: output.ms,
       });
       await save({ status: "running" });
+      if (opts.mode === "arcade") {
+        return save({ status: output.ok ? "done" : "failed",
+          statusDetail: output.ok ? "Approved artifact handed back to the browser; installation and gameplay are not yet verified." : "The approved artifact could not be prepared; no browser installation occurred.",
+          endedAt: new Date() });
+      }
     }
   }
 
   agentLoop: for (let ai = 0; ai < plan.length; ai++) {
     const agent = plan[ai];
     for (let turn = 1; turn <= maxTurns; turn++) {
+      if (deps.signal?.aborted) { status = "cancelled"; statusDetail = "Cancelled; the base game and saves were not changed."; break agentLoop; }
       if (Date.now() >= deadline) {
         status = "checkpointed";
         statusDetail = `time budget (${Math.round(timeBudgetMs / 1000)}s) reached before ${agent.name} could run — resume to continue`;
@@ -426,14 +448,14 @@ async function runMissionInner(
       const observations = steps
         .slice(-2)
         .flatMap((s) =>
-          s.actions.map((a) => `${s.agent} → ${a.tool}: ${a.output.slice(0, 1200)}`),
+           s.actions.map((a) => `${s.agent} → ${a.tool}: ${a.output.slice(0, opts.mode === "arcade" ? 12_000 : 1200)}`),
         )
         .slice(-6)
         .join("\n---\n");
       // Workspace map (Aider-style repo map): cheap, high-signal orientation.
       let map = "";
       try {
-        if (opts.mode !== "browser") map = (await toolListFiles(wsDir(spaceId))).slice(0, 1500);
+        if (opts.mode !== "browser" && opts.mode !== "arcade") map = (await toolListFiles(wsDir(spaceId))).slice(0, 1500);
       } catch {
         /* empty workspace */
       }
@@ -441,7 +463,7 @@ async function runMissionInner(
       // this space persist in AGENT_NOTES.md and are injected here.
       let memory = "";
       try {
-        const notes = await readFile(path.join(wsDir(spaceId), "AGENT_NOTES.md"), "utf8").catch(() => "");
+        const notes = opts.mode === "arcade" ? "" : await readFile(path.join(wsDir(spaceId), "AGENT_NOTES.md"), "utf8").catch(() => "");
         if (notes.trim()) memory = notes.slice(0, 1500);
       } catch {
         /* no memory yet */
@@ -467,11 +489,13 @@ async function runMissionInner(
               `You are ${agent.name}, the ${agent.role} agent of a ${opts.mode === "browser" ? "browser" : "build"} mission with REAL tool execution. ` +
               "You draft actions; the runner executes them and shows you what actually happened. " +
               "Never claim an action you did not emit. " +
-              (opts.mode === "browser" ? BROWSER_DISCIPLINE : AGENT_KNOWLEDGE + "\n\n" + TOOL_DOC),
+              (opts.mode === "arcade" ? ARCADE_DEVELOPMENT_DISCIPLINE : opts.mode === "browser" ? BROWSER_DISCIPLINE : AGENT_KNOWLEDGE + "\n\n" + TOOL_DOC),
             temperature: 0.3,
             maxTokens: opts.mode === "browser" ? 2_000 : 8_000,
             keys: opts.localOnly ? undefined : opts.keys,
             localOnly: opts.localOnly,
+             signal: deps.arcade ? deps.signal : undefined,
+             allowPublicFallback: opts.mode === "arcade" ? false : undefined,
           },
         );
       } catch (e) {
@@ -480,26 +504,38 @@ async function runMissionInner(
           thought: `model call failed: ${e instanceof Error ? e.message : "error"}`,
           ms: Date.now() - t0,
         });
-        status = "failed";
-        statusDetail = `${agent.name}'s model call failed`;
+        status = deps.signal?.aborted ? "cancelled" : "failed";
+        statusDetail = deps.signal?.aborted ? "Development cancelled; no installation occurred." : `${agent.name}'s model call failed`;
         break agentLoop;
       }
 
-      if (opts.mode === "browser" && (result.fallback || result.backend === "arena-local-engine")) {
+      if ((opts.mode === "browser" || opts.mode === "arcade") && (result.fallback || result.backend === "arena-local-engine")) {
         steps.push({
           agent: agent.name, turn, actions: [], handoff: "", done: false,
           thought: "The selected model did not execute. No browser actions were taken.",
-          runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback },
+          runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback, via: result.via },
           ms: Date.now() - t0,
         });
         status = "failed";
-        statusDetail = "The selected model was unavailable. Start the local runtime or reconnect your provider; the offline fallback cannot automate this browser task.";
+        statusDetail = opts.mode === "arcade"
+          ? "The selected local code model is unavailable. Connect a running code model in Model Hub. No generated gameplay change or installation is claimed."
+          : "The selected model was unavailable. Start the local runtime or reconnect your provider; the offline fallback cannot automate this browser task.";
         break agentLoop;
       }
       const parsed = parseAgentJson(result.text);
       const actions = Array.isArray(parsed?.actions) ? parsed!.actions!.slice(0, maxActions) : [];
       const outcomes: ToolOutcome[] = [];
-      for (const a of actions) {
+      for (let a of actions) {
+        if (deps.signal?.aborted) { status = "cancelled"; statusDetail = "Cancelled; no further tools executed."; break agentLoop; }
+        if (opts.mode === "arcade") {
+          try {
+            if (!deps.arcade || !ARCADE_DEVELOPMENT_TOOLS.has(a.tool)) throw new Error("Only narrow Arcade development tools are permitted.");
+            a = deps.arcade.canonicalAction(a);
+          } catch {
+            outcomes.push({ tool: "unsupported", input: {}, output: "refused: unsupported tool, stale artifact or failed static build", ok: false, ms: 0 });
+            continue;
+          }
+        }
         if (opts.mode === "browser" && (
           !BROWSER_TOOLS.has(a.tool)
           || (a.tool === "write_file" && (
@@ -592,12 +628,12 @@ async function runMissionInner(
             continue;
           }
           const tExec = Date.now();
-          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps });
+          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps, arcade: deps.arcade });
           await completeExecution(approval.id, gated.ok, { tool: gated.tool, output: gated.output.slice(0, 2000) }, gated.ok ? undefined : gated.output.slice(0, 500));
           outcomes.push({ ...gated, ms: Date.now() - tExec });
           continue;
         }
-        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps }));
+        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps, arcade: deps.arcade }));
       }
 
       const step: MissionStep = {
@@ -607,7 +643,7 @@ async function runMissionInner(
         handoff: String(parsed?.handoff ?? "").slice(0, 2000),
         done: parsed?.done === true,
         thought: String(parsed?.thought ?? result.text.slice(0, 200)).slice(0, 500),
-        runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback },
+        runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback, via: result.via },
         ms: Date.now() - t0,
       };
       steps.push(step);
@@ -640,13 +676,36 @@ async function runMissionInner(
       statusDetail = "The browser task has partial progress but no completed, saved result. Resume to continue.";
     }
   }
+  // A capable model may finish after editing/building without emitting the
+  // handoff tool. Do not strand an otherwise reviewable draft behind another
+  // model call. Preparing an approval is safe; executing it is still gated.
+  if (opts.mode === "arcade" && deps.arcade && status === "done") {
+    const build = await deps.arcade.execute({ tool: "arcade_build", args: {} });
+    if (!build.ok) {
+      status = "checkpointed";
+      statusDetail = "No statically buildable gameplay change is ready. Review diagnostics or continue the selected-model mission.";
+    } else {
+      const action = deps.arcade.canonicalAction({ tool: "arcade_install", args: { draftHash: deps.arcade.hash } });
+      const signature = actionSignature(mission.id, action.tool, action.args);
+      const approval = await findLatestBySignature(signature) ?? await requestApproval({ spaceId, missionId: mission.id,
+        signature, actionClass: "arcade.install", summary: `Review built Arcade artifact ${deps.arcade.hash.slice(0, 12)}`, payload: action.args });
+      if (approval.status === "pending") {
+        status = "awaiting_approval";
+        statusDetail = "A statically checked draft is ready for your exact-artifact review. It has not been installed or gameplay-tested.";
+        steps.push({ agent: "Runner", turn: 0, thought: "Prepared owner review without another model call.", handoff: "", done: false, ms: 0,
+          actions: [build, { tool: action.tool, input: action.args, output: "awaiting human approval", ok: false, ms: 0 }] });
+      } else {
+        status = "failed"; statusDetail = "The previous artifact decision is terminal; it was not automatically repeated.";
+      }
+    }
+  }
 
   const statusDetailWithEnv = isolationNote ? `${statusDetail} · ${isolationNote}` : statusDetail;
   await save({
     status,
     statusDetail: statusDetailWithEnv,
     handoff,
-    artifacts: await listArtifacts(spaceId),
+    artifacts: opts.mode === "arcade" ? [] : await listArtifacts(spaceId),
     endedAt: status === "running" || status === "awaiting_approval" ? null : new Date(),
   });
   return mission;
@@ -666,4 +725,32 @@ async function listArtifacts(spaceId: string): Promise<{ path: string; bytes: nu
   } catch {
     return [];
   }
+}
+
+/** Owner-reported browser handoff evidence, not a server gameplay assertion. */
+export async function recordArcadeDevelopmentEvent(spaceId: string, binding: ArcadeDevelopmentBinding, event: {
+  type: "installed" | "launched" | "stopped" | "rolled-back" | "owner-assessed-working" | "owner-assessed-failed";
+  draftHash: string; profileId: string;
+}): Promise<MissionSummary> {
+  const mission = await getLatestMission(spaceId);
+  if (!mission || mission.mode !== "arcade" || !mission.arcadeBinding ||
+    (Object.keys(binding) as (keyof ArcadeDevelopmentBinding)[]).some(key => mission.arcadeBinding![key] !== binding[key]))
+    throw new Error("This evidence does not belong to the current owner/base-bound mission.");
+  const journal: MissionJournal = { mode: "arcade", arcadeBinding: binding, steps: [...mission.journal, {
+    agent: "Owner browser", turn: 0, thought: "Owner-reported browser event; no independent gameplay verification is claimed.",
+    handoff: "", done: false, ms: 0, actions: [{ tool: `arcade_${event.type}`, input: event,
+      output: JSON.stringify({ ...event, trust: "owner-reported", saveScope: "independent" }), ok: true, ms: 0 }],
+  }].slice(-100) };
+  if (missionDbHealthy) {
+    try {
+      const [row] = await db.update(spaceMissions).set({ journal, updatedAt: new Date() })
+        .where(eq(spaceMissions.id, mission.id)).returning();
+      if (row) { memoryMissions.set(spaceId, row); return rowToSummary(row); }
+    } catch { missionDbHealthy = false; }
+  }
+  const row = memoryMissions.get(spaceId);
+  if (!row) throw new Error("Could not persist this browser evidence. No privileged work was resumed.");
+  const next = { ...row, journal, updatedAt: new Date() };
+  memoryMissions.set(spaceId, next);
+  return rowToSummary(next);
 }
