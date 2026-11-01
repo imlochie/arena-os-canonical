@@ -28,3 +28,17 @@ mtime_ms = 1793538717389
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/25ffff66-fc87-4f98-9605-f8d438ab179c/5238dec9-eb2f-474b-9a3c-e4c1cb5c4e82"
 storage_version_token = "1793538760313771"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "SvrE7aWf8mNcddi2i_PJS"
+uri = "file://docs/arena-everywhere-feasibility.html"
+type = "html"
+title = "Arena Everywhere — Architecture & Feasibility Audit"
+description = "Current-code findings, reusable foundations, 3DS/Switch/Wii constraints, proposed Core boundaries, and evidence-based delivery gates. No console compatibility is claimed."
+logical_id = "bfe41ecd-a079-405f-ac3d-1e0b62c1d3dc"
+content_hash = "sha256:07c534e7b6d368d2542021441c77c92966aef1895664a3c1c6cc0c80468e01d4"
+size = 25612
+mtime_ms = 1793549523639
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/bfe41ecd-a079-405f-ac3d-1e0b62c1d3dc/5b15cf9b-6364-4dfa-82f8-67630ff2780c"
+storage_version_token = "1793549615762007"
+content_type = "text/html"

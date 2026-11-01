@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arena Everywhere — Architecture and Feasibility Audit</title>
+<style>
+:root{color-scheme:light;--ink:#172232;--muted:#526176;--line:#dbe3eb;--accent:#006858}
+*{box-sizing:border-box}body{margin:0;background:#f3f6f8;color:var(--ink);font:16px/1.65 system-ui,-apple-system,sans-serif}
+main{max-width:1080px;margin:auto;padding:42px 28px 70px;background:#fff}
+h1{font-size:clamp(30px,5vw,46px);line-height:1.12;letter-spacing:-.035em;margin:12px 0 22px}h2{font-size:25px;margin-top:44px;border-top:1px solid var(--line);padding-top:25px}
+h3{font-size:19px;margin-top:26px}p,li{max-width:94ch}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:800}
+.lead{font-size:20px}.note{padding:18px 22px;border-left:4px solid var(--accent);background:#eef7f4;border-radius:4px}.warning{background:#fff7e8;border-color:#b97400}
+.muted{color:var(--muted)}a{color:var(--accent)}code{font-size:.88em;background:#edf1f5;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{background:#142333;color:#eff7fc;padding:20px;overflow:auto;border-radius:8px;line-height:1.5;font-size:13px}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:12px 10px}th{background:#edf3f5}td:first-child{font-weight:650}
+.tag{display:inline-block;font-size:12px;font-weight:750;padding:3px 8px;border:1px solid var(--line);border-radius:20px;margin:3px}
+nav{display:flex;flex-wrap:wrap;gap:8px 20px;margin:25px 0}nav a{font-size:14px}ul,ol{padding-left:24px}li{margin:7px 0}
+@media(max-width:600px){main{padding:28px 18px}td,th{min-width:150px}.lead{font-size:18px}}
+@media print{body{background:#fff}main{padding:0;max-width:none}nav{display:none}h2{break-after:avoid}tr,pre,.note{break-inside:avoid}a{color:inherit}}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">Architecture audit · 2 November 2026</div>
+<h1>Arena Everywhere</h1>
+<p class="lead">One shared ecosystem, native device shells, and explicit execution limits.</p>
+<div class="note"><strong>Conclusion:</strong> The vision is feasible as a shared data/service platform with small native console applications—not as an Electron or React application copied onto consoles. Reuse existing Arena contracts and services. Build one native shell first, prove actual launching and recovery, then expand.</div>
+<p class="muted">Scope: an architectural survey of the current working tree and primary SDK documentation. This is not an exhaustive historical-branch reconciliation or an end-to-end certification of existing rooms. No application code, dependencies, firmware, game files or runtime registrations were changed for this report.</p>
+<nav><a href="#existing">Existing foundations</a><a href="#gaps">Concrete gaps</a><a href="#architecture">Architecture</a><a href="#devices">Device feasibility</a><a href="#delivery">Delivery gates</a><a href="#sources">Sources</a></nav>
+
+<h2 id="existing">1. What exists and should be reused</h2>
+<p><strong>“Verified code” below means inspected implementation, not proof that every surrounding user journey works.</strong></p>
+<div class="scroll"><table>
+<thead><tr><th>Area</th><th>Verified implementation</th><th>Reuse boundary</th></tr></thead>
+<tbody>
+<tr><td>Shell and navigation</td><td><code data-source="artifacts/arenaforge/src/App.tsx">artifacts/arenaforge/src/App.tsx</code> and <code data-source="artifacts/arenaforge/src/routes.ts">routes.ts</code>: React Router, browser UI, service-worker registration and persistent Waveyard listening host.</td><td>Reuse room identities and navigation concepts, not this DOM-based shell. Console startup should not initialize unrelated desktop/audio services.</td></tr>
+<tr><td>Game and runtime contracts</td><td><code data-source="artifacts/arenaforge/src/lib/arcadeManifest.ts">artifacts/arenaforge/src/lib/arcadeManifest.ts</code>: game ownership/provenance, runtime definitions, requirements, permissions, profiles and version-specific execution evidence.</td><td>Extract the data contract and pure checks rather than inventing another library schema. Existing metadata explicitly excludes source, ROMs and saves.</td></tr>
+<tr><td>Local manifest persistence</td><td><code data-source="artifacts/arenaforge/src/lib/arcadeManifestStorage.ts">artifacts/arenaforge/src/lib/arcadeManifestStorage.ts</code>: IndexedDB, version-keyed metadata and transactional updates that preserve existing game data.</td><td>Keep browser storage intact behind an adapter. This local “sync” function is not a cross-device synchronization protocol.</td></tr>
+<tr><td>Native game projection</td><td><code data-source="desktop/arcade/manifest.mjs">desktop/arcade/manifest.mjs</code>: metadata-only projection of native packages into the game contract; install evidence is distinguished from gameplay.</td><td>Preserve this evidence distinction. Its current Windows-specific projection must not be reused unchanged for consoles.</td></tr>
+<tr><td>Mod contracts</td><td><code data-source="lib/arena/src/lib/games/mod-workshop.ts">lib/arena/src/lib/games/mod-workshop.ts</code>: version/base requirements, payload hashes, dependencies/conflicts, settings and replace/IPS/BPS/JSON-config operations.</td><td>Reuse manifest semantics and conformance fixtures. New SDKs do not automatically make these operations or native loaders executable on a console.</td></tr>
+<tr><td>Identity and devices</td><td><code data-source="lib/arena/src/lib/identityService.ts">lib/arena/src/lib/identityService.ts</code>: database-backed owner/device enrollment, authenticated sessions, revocation and device capability grants.</td><td>Reuse the authority and audit model. Native console pairing needs an adapter; existing verified-user-presence requirements must not be bypassed because a console lacks browser authentication.</td></tr>
+<tr><td>Capability diagnostics</td><td><code data-source="lib/arena/src/lib/capabilities/resolver.ts">lib/arena/src/lib/capabilities/resolver.ts</code> resolves host executables using Node filesystem/path APIs. <code data-source="lib/arena/src/lib/capabilities/report.ts">report.ts</code> distinguishes ready, degraded and unavailable capabilities.</td><td>Reuse reporting semantics, not host executable discovery as a console hardware detector.</td></tr>
+<tr><td>Agents and missions</td><td><code data-source="lib/arena/src/lib/spaces/mission.ts">lib/arena/src/lib/spaces/mission.ts</code>: bounded mission execution with tool outcomes, governance hooks, journal/checkpoint data, Node filesystem access and database dependencies.</td><td>Retain host-side orchestration. A console can later request narrowly authorized jobs; this is not evidence that local AI models, browser automation or Linux workspaces run on consoles.</td></tr>
+<tr><td>API boundary</td><td><code data-source="artifacts/api-server/src/routes/imported.ts">artifacts/api-server/src/routes/imported.ts</code>: Express adaptation of existing handlers and a local-request mutation gate.</td><td>Expose purpose-built authenticated device endpoints. Do not disable origin controls or interpret them as device authentication.</td></tr>
+</tbody></table></div>
+
+<h2 id="gaps">2. Ten concrete gaps before claiming portability</h2>
+<ol>
+<li><strong>The canonical game contract is frontend-owned.</strong> Core concepts and compatibility functions currently live alongside browser code. Some manifest construction also emits browser-specific save locations. Extract only the neutral contract/checks; retain environment-specific construction and persistence in adapters.</li>
+<li><strong>OS/platform compatibility is not explicitly compared.</strong> <code>ArcadeHost</code> contains <code>platform</code>, but the inspected runtime check compares host kind, CPU architecture, runtime version and capability flags—not that platform field. Console adapters need explicit OS/ABI/environment requirements. “ARM64” alone cannot distinguish Switch Horizon, Android and Linux.</li>
+<li><strong>Native projection is hard-coded to Windows.</strong> Its runtime ID, isolation requirement, permission descriptions and AppContainer save locations are Windows-specific. A generic-looking descriptor must not produce Windows claims for another device.</li>
+<li><strong>There is no portable storage/sync interface in the surveyed paths.</strong> IndexedDB and desktop-private paths are implementation details, not console locations. A console needs local SD storage and recovery without a running Node/PostgreSQL host.</li>
+<li><strong>Device enrollment is not yet a console pairing flow.</strong> Existing identity code is useful authority, but the console UI, credential provisioning, trust level, renewal and revocation behavior need explicit design and tests.</li>
+<li><strong>Runtime evidence needs device-environment specificity.</strong> Existing evidence is tied to host, content, runtime version and profile. New console records must also make firmware/loader environment and the tested execution mode identifiable; availability is not gameplay proof.</li>
+<li><strong>Save portability is not automatic.</strong> A common title or even matching source repository does not establish matching save format. Emulator states, SRAM, native saves and configuration need separate compatibility declarations and explicit copy/restore—not silent identity merging.</li>
+<li><strong>Mod manifests are not console installation adapters.</strong> Base hashes/dependency checks can be shared; device filesystem mappings, installed-title identity, patch application and power-loss recovery need native implementations. Windows BepInEx DLLs are not portable console plugins.</li>
+<li><strong>Desktop isolation claims cannot be carried over.</strong> Separate folders and permission declarations do not establish an enforced console sandbox. Arena has not implemented or proven such enforcement on these targets. Community native code must be treated according to its actual privileges.</li>
+<li><strong>No console toolchain or shell has been demonstrated here.</strong> The targeted source scan found no libctru/libnx/libogc integration or console executable packaging. No target cross compiler was found on PATH. No console build, emulator run or hardware test was performed.</li>
+</ol>
+
+<h2 id="architecture">3. Proposed architecture—not implemented by this audit</h2>
+<pre>Existing Arena services / optional companion host
+  identity · catalog · projects · missions · authorized heavy processing
+                         │
+        versioned contracts + authenticated device API
+        explicit metadata/file sync; no arbitrary tool forwarding
+                         │
+              Shared native offline Core subset
+  catalog index · settings · compatibility policy · launch journal
+  content references · save/mod manifests · recovery · theme definitions
+                         │
+          ┌──────────────┼──────────────┐
+       Wii shell      3DS shell     Switch shell
+       libogc         libctru        libnx
+       SD/USB         SD             SD
+       TV/input       two screens    handheld/docked
+                         │
+      Explicit per-device game/homebrew/emulator launch adapters</pre>
+<h3>Core is a contract and authority boundary, not one universal executable</h3>
+<ul>
+<li>Keep existing TypeScript services authoritative where they already work. Extract neutral types, schemas and pure compatibility policy into a shared package without changing existing callers or save identities.</li>
+<li>Publish a versioned, bounded wire format with shared validation/conformance fixtures. Native consoles cannot import a TypeScript package merely because its types are platform-neutral.</li>
+<li>Implement only the necessary offline subset in a small shared C/C++ library used by all console shells. Keep SDK calls behind storage, input, display, clock, network and launch interfaces. This is one common native implementation—not three independent catalog/mod systems.</li>
+<li>Use the same fixtures to check native and existing service behavior. A shared JSON schema alone does not guarantee matching business rules.</li>
+<li>Do not move the current whole manifest module blindly: browser save-location construction belongs outside the neutral contract. Preserve existing URLs, metadata schemas and private ownership during extraction; introduce versioned migrations rather than destructive replacement.</li>
+</ul>
+<h3>Interfaces the first extraction should establish</h3>
+<div class="scroll"><table>
+<thead><tr><th>Interface</th><th>Responsibility</th><th>Critical rule</th></tr></thead>
+<tbody>
+<tr><td>CatalogStore / ContentStore</td><td>Bounded metadata pages and content-addressed local resources.</td><td>Resource IDs are resolved by adapters; desktop absolute paths and browser database keys are never assumed usable on a console.</td></tr>
+<tr><td>DeviceCapabilities / RuntimeRegistry</td><td>Platform, architecture, ABI, environment, storage, controls and registered executors.</td><td>An unknown executor is unavailable. No fallback to a similarly named game, runtime or preset.</td></tr>
+<tr><td>LaunchAdapter</td><td>Validate target/version, flush local state, record intent, hand off and report the next observable outcome.</td><td>Starting another homebrew program may replace the shell process. Do not promise a resident overlay or automatic return unless the loader supports and proves it.</td></tr>
+<tr><td>ProfileStore / ModInstaller</td><td>Pinned base, declared dependencies, staged changes, retained recovery copy and save ownership.</td><td>Rollback restores mod content—not newer saves. Permission reports distinguish requested behavior from enforced restrictions.</td></tr>
+<tr><td>DeviceSession / SyncTransport</td><td>Owner-approved enrollment, scoped synchronization, conflict handling and revocation.</td><td>No provider API keys, private browser runtime state or unrestricted mission credentials on an SD card.</td></tr>
+<tr><td>Shell / ThemeDefinition</td><td>Layout, input mapping, icons, bounded textures, sounds and accessibility settings.</td><td>Themes are declarative data initially. Community packages do not gain executable hooks by calling themselves themes.</td></tr>
+</tbody></table></div>
+<h3>Offline storage and synchronization</h3>
+<p>Local catalog, settings, approved installed content and launch recovery must work with networking disabled. Use bounded indexes and lazy artwork decoding, not a full desktop database or an eager artwork collection in RAM. Determine memory budgets from each SDK baseline and measure them on the target; this audit provides no fabricated performance figures.</p>
+<p>For SD/FAT storage, design recoverable generations or dual-slot records with hashes and sequence numbers. Stage new payloads before committing a pointer; retain the last valid generation. Do not assume desktop transactional guarantees or that a rename alone proves power-loss durability. Test interrupted writes and low storage.</p>
+<p>Synchronize three distinct categories: <strong>portable metadata</strong> (collections/preferences), <strong>explicitly transferable user files</strong> (declared compatible saves/artwork), and <strong>platform-specific executables/mod outputs</strong> (only for matching adapters). Conflicts preserve both versions and require resolution where progress could be lost. A disconnected console remains useful; pending remote AI jobs must not block local play or silently execute destructive actions after reconnection.</p>
+
+<h2 id="devices">4. Hardware feasibility</h2>
+<p>SDK existence is verified from primary sources. Arena support for every target below is <strong>planned, not implemented or hardware-tested</strong>.</p>
+<div class="scroll"><table>
+<thead><tr><th>Target</th><th>Native path</th><th>Shell design</th><th>Launch constraints</th><th>Assessment</th></tr></thead>
+<tbody>
+<tr><td>Nintendo Wii</td><td>devkitPPC + libogc; Homebrew Channel application packaging using DOL/ELF and metadata on SD, with supported USB paths.</td><td>TV-first focus navigation; Wii Remote and Classic Controller adapters; SD-first catalog/settings, USB discovered explicitly.</td><td>Homebrew Channel launching Arena does not prove Arena can chainload other programs. A reviewed DOL/ELF handoff/loader integration, return behavior and interrupted-launch recovery must be implemented and tested.</td><td>Recommended first bounded launcher candidate if hardware is available: one display model and established homebrew packaging. Big-endian/native loader correctness and low memory remain real engineering work.</td></tr>
+<tr><td>Nintendo 3DS family</td><td>devkitARM + libctru, with a native renderer; 3DSX homebrew packaging is documented.</td><td>Upper screen for active content; lower touchscreen for context. Physical focus navigation remains usable without touch. Detect Old/New hardware rather than requiring New-only resources.</td><td>libctru exposes APT chainloader functions for application IDs/media and New 3DS detection. That is not an arbitrary “run this file” interface. Installed-title and homebrew-loader paths need distinct adapters and appropriate existing environment privileges.</td><td>Feasible native client, with dual-screen design and tighter resource constraints. Strong next handheld target; no claim that a desktop browser/emulator bundle runs unchanged.</td></tr>
+<tr><td>Nintendo Switch</td><td>devkitA64 + libnx, an AArch64 userland library; native homebrew shell and loader integration.</td><td>Controller-first handheld/docked layouts, optional touch and explicit resource/environment detection.</td><td>libnx exposes <code>envHasNextLoad</code> and <code>envSetNextLoad</code>: the actual loader environment must support handoff. Applet/application mode, firmware, available services and owner-provided homebrew setup must be assessed.</td><td>Feasible and comparatively capable, but hardware revision/installation access and execution mode are prerequisites. Switch Linux would be a separate host/ABI, not proof of a native Horizon shell.</td></tr>
+</tbody></table></div>
+<div class="note warning"><strong>Installation boundary:</strong> Initial delivery should be an ordinary application launched within an owner-managed, authorized homebrew environment. Replacing a system menu, modifying boot behavior, installing firmware or promising compatibility across every console revision is outside the first shell. No exploit, console keys, proprietary SDK or commercial game payload is needed for the proposed initial demonstration.</div>
+<h3>Which one first?</h3>
+<p><strong>Provisional recommendation: Wii.</strong> A small offline launcher offers a clear first vertical slice without dual-screen or handheld/docked complexity. This is a recommendation based on the inspected SDK/packaging paths, not proof that its handoff implementation is already solved. Hardware availability is unknown. If the available test device is a 3DS or Switch, choose that instead rather than building an untestable first port.</p>
+
+<h2>5. Arcade, Modder, extensions and agents</h2>
+<ul>
+<li><strong>Arcade:</strong> Keep one library identity/provenance model. Each platform registers only actual native ports, emulator adapters or homebrew executors with matching prerequisites. An open-source catalog entry is discovery metadata, not an executable for every device.</li>
+<li><strong>Emulators:</strong> Assess each target build, core, content format, controls, performance and license separately. Browser EmulatorJS assets and desktop DOS/Windows executors do not establish a console implementation. Save-state portability must be declared by exact core/version/format, not inferred.</li>
+<li><strong>Universal Modder:</strong> Begin with one reviewed data-patch adapter on one lawful game/port. Reuse base/version/dependency/hash semantics and keep original files recoverable. Console-specific overlays, title identifiers and runtime patchers require separate assessments; none is claimed integrated here.</li>
+<li><strong>Community extensions:</strong> Separate data packages (themes, metadata, controller profiles) from executable packages. Bound sizes, validate paths and dependencies, verify hashes and record provenance/licenses. Signature verification identifies a publisher; it does not make native code safe. No automatic native-code execution.</li>
+<li><strong>Agents:</strong> Existing missions remain on an appropriately capable host. A future console UI may submit fixed, scoped requests and show approvals, progress and results. Do not give it a raw terminal/tool-proxy endpoint or claim an offline Wii hosts the current Linux workspace/browser automation stack.</li>
+</ul>
+
+<h2 id="delivery">6. Delivery sequence and acceptance gates</h2>
+<ol>
+<li><strong>Contract extraction:</strong> Isolate existing game/runtime/mod DTOs and pure policy; add explicit platform/ABI requirements. Keep old browser/native consumers working. Test unknown runtimes, wrong OS with matching CPU, wrong version, missing capabilities and old schema handling.</li>
+<li><strong>One SDK build probe:</strong> Select one target and use official toolchain distributions. Record exact compiler, SDK/library versions and artifact hashes. Build a minimal native program before adding application logic. Do not install all three SDKs or bundle them in the Windows app. Toolchain setup has not been verified in this workspace.</li>
+<li><strong>Native offline shell:</strong> Load a bounded exported catalog from local storage; navigate with actual controls; persist settings and one declarative theme. Display unsupported entries honestly. Cold start must succeed without the companion host.</li>
+<li><strong>Real game handoff:</strong> Launch one authorized homebrew game or open-source native port. Confirm visible gameplay and input, then demonstrate the supported return/relaunch path. Test missing/corrupt executables and an interrupted launch journal.</li>
+<li><strong>One real mod path:</strong> Show a visible change to that compatible game/port, then disable, update, fail an incompatible update, repair and roll back without losing newer saves. File copies or synthetic logs alone do not pass.</li>
+<li><strong>Scoped pairing/sync:</strong> Reuse existing owner/device authority. Start with metadata, then explicitly compatible file transfers. Prove offline edits, reconnect conflicts, revocation and interrupted transfers before broadening permissions.</li>
+<li><strong>Second device:</strong> Link the same shared native subset and implement only new SDK adapters/shell presentation. Shared conformance fixtures must pass unchanged before claiming the ecosystem is genuinely reused.</li>
+</ol>
+<p>Native CI can establish reproducible compilation and run host-side policy/recovery tests. Emulator tests can add evidence for specific behavior; they are not universal substitutes for actual controls, storage timing, firmware/loader mode or power-loss tests on hardware. No Windows test is required merely to conduct this audit.</p>
+
+<h2>7. Current evidence status</h2>
+<p><span class="tag">Inspected: existing contracts/services</span><span class="tag">Verified: SDK and launch API documentation</span><span class="tag">Planned: shared native offline subset</span><span class="tag">Unverified: console toolchain setup</span><span class="tag">Not implemented: console shells</span><span class="tag">Not tested: console gameplay/mods/sync</span></p>
+<p>No console compatibility badges, runtime executors or new launcher buttons were added. Cancelled desktop tasks were not resumed. Existing behavior and historical work were not rewritten or merged during the audit.</p>
+
+<h2 id="sources">8. Primary references checked</h2>
+<ol>
+<li><a href="https://devkitpro.org/wiki/Getting_Started">devkitPro: Getting Started</a> — devkitARM/devkitPPC/devkitA64 toolchains, official package groups and distribution guidance.</li>
+<li><a href="https://github.com/devkitPro/libctru">libctru</a> — ARM11 user-mode library, supported devkitARM toolchain, 3DSX tooling and license terms.</li>
+<li><a href="https://raw.githubusercontent.com/devkitPro/libctru/master/libctru/include/3ds/services/apt.h">libctru APT header</a> — application chainloader interfaces and <code>APT_CheckNew3DS</code>.</li>
+<li><a href="https://github.com/switchbrew/libnx">libnx</a> — AArch64-only Switch userland library and development-environment reference.</li>
+<li><a href="https://raw.githubusercontent.com/switchbrew/libnx/master/nx/include/switch/runtime/env.h">libnx environment header</a> — next-load support detection and request API.</li>
+<li><a href="https://github.com/devkitPro/libogc">libogc</a> — Wii/GameCube C library, input/storage-related components and build-system sources. Review component licenses, not just the repository name.</li>
+<li><a href="https://wiibrew.org/wiki/Homebrew_Channel">WiiBrew: Homebrew Channel</a> — application packaging, SD/USB loading and metadata conventions.</li>
+</ol>
+<p class="muted">References describe available upstream facilities; they do not certify Arena integration. License/notice inventories for selected SDK components, ports, renderers, emulators and loader code must precede redistribution. The first platform decision still requires knowing which authorized hardware is available.</p>
+</main></body></html>
