@@ -26,3 +26,9 @@ Source restoration is not permission to rewind gameplay progress.
 **Why:** The requested recovery behavior is to restore game code while retaining the same game's identity and browser progress. An older code version and an older save are separate user choices.
 
 **How to apply:** Keep those choices separate when extending revision history, profiles and portable backups; do not silently replace or erase progress to make restored source appear compatible.
+
+Bound retained source by total bytes as well as copy count, including bundled media.
+
+**Why:** Offline HTML games can embed large images and audio even when the editable code sent to a model is small. A short history can still multiply storage and memory costs, which conflicts with the user's resource concerns.
+
+**How to apply:** Budget full stored source, not the media-stripped model prompt, and make retention limits visible before players rely on history as a permanent backup.

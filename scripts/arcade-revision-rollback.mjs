@@ -36,7 +36,7 @@ await page.route("**/api/arcade/import/revise", async route => {
   if (body.prompt === "cancel" || body.prompt === "stale") await new Promise(resolve => { release = resolve; });
   try {
     if (body.prompt === "network fail") await route.fulfill({ status: 503, json: { error: "Injected model outage" } });
-    else await route.fulfill({ json: { code: body.prompt === "unsafe" ? '<html><script src="https://example.invalid/script.js"></script></html>' : source(body.prompt === "C" ? "C" : "B"), warnings: [] } });
+    else await route.fulfill({ json: { code: body.prompt === "unsafe" ? '<html><script src="https://example.invalid/script.js"></script></html>' : source(body.prompt), warnings: [] } });
   } catch (error) { if (body.prompt !== "cancel") throw error; }
 });
 const frame = () => page.frameLocator('iframe[title="Playable game: rollback-fixture.html"]');
@@ -52,7 +52,7 @@ const records = () => page.evaluate(() => new Promise((resolve, reject) => {
 }));
 const saveBytes = () => page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter(k => k.startsWith("arenaforge.game-save.v1:")).map(k => [k, localStorage.getItem(k)])));
 const version = async expected => {
-  await frame().locator("#version").waitFor();
+  await frame().getByRole("heading", { name: expected, exact: true }).waitFor();
   assert.equal(await frame().locator("#version").innerText(), expected);
 };
 const revise = async prompt => {
@@ -60,6 +60,12 @@ const revise = async prompt => {
   await page.getByRole("button", { name: "Apply revision", exact: true }).click();
 };
 const quota = value => page.evaluate(value => { window.__failRevisionWrites = value; }, value);
+const older = async label => {
+  const history = page.getByTestId("imported-revision-history");
+  if (!await history.getAttribute("open").then(value => value !== null)) await history.locator("summary").click();
+  await page.getByTestId("imported-revision-history-entry").filter({ has: page.getByText(label, { exact: true }) })
+    .getByRole("button", { name: "Restore this version", exact: true }).click();
+};
 const reopen = async () => {
   await page.goto(`${base}/arcade`);
   await page.getByRole("tab", { name: "Import and emulate" }).click();
@@ -143,7 +149,58 @@ try {
   assert.equal(final[0].revisionRollback.source, source("B"));
   assert.equal(final[0].source, source("C"));
   assert.deepEqual(errors, []);
-  checks.push("a subsequent kept revision replaces the single bounded rollback, rather than accumulating history");
+  assert.equal(final[0].revisionHistory[0].source, original);
+  checks.push("subsequent kept revisions retain older source copies without duplicating the head");
+  await quota(true);
+  await older("Earlier source");
+  await page.getByText(/The previous version could not be restored/).waitFor();
+  assert.deepEqual(await records(), final);
+  await version("C");
+  await quota(false);
+  await older("Earlier source");
+  await page.getByText(/Earlier version restored/).waitFor();
+  await version("A");
+  const earlier = (await records())[0];
+  assert.equal(earlier.id, kept[0].id);
+  assert.equal(earlier.revisionRollback.source, source("C"));
+  assert.equal(earlier.revisionHistory[0].source, source("B"));
+  assert.deepEqual(await saveBytes(), progress);
+  await reopen();
+  await version("A");
+  await page.getByTestId("button-restore-imported-revision").click();
+  await page.getByText(/Previous version restored/).waitFor();
+  await version("C");
+  checks.push("older restoration is atomic, survives reload, preserves other versions and progress, and is reversible");
+  for (const next of ["D", "E", "F", "G", "H"]) {
+    await revise(next);
+    await page.getByTestId("button-keep-imported-revision").click();
+    await page.getByTestId("imported-revision-rollback").waitFor();
+    await version(next);
+  }
+  await reopen();
+  await version("H");
+  const bounded = (await records())[0];
+  assert.deepEqual([bounded.revisionRollback, ...bounded.revisionHistory].map(copy => copy.label), ["G", "F", "E", "D", "C"]);
+  assert.equal(bounded.revisionHistory.length, 4);
+  assert.equal(await page.getByText(/5 of up to 5 previous versions retained locally/).isVisible(), true);
+  assert.deepEqual(await saveBytes(), progress);
+  await revise("pending");
+  await page.getByTestId("imported-revision-undo").waitFor();
+  assert.equal(await page.getByTestId("imported-revision-rollback").count(), 0);
+  await page.getByTestId("button-undo-imported-revision").click();
+  await page.getByText(/Earlier game source restored/).waitFor();
+  await version("H");
+  const undone = (await records())[0];
+  assert.deepEqual(undone.revisionRollback, bounded.revisionRollback);
+  assert.deepEqual(undone.revisionHistory, bounded.revisionHistory);
+  assert.equal(undone.revisionLabel, "H");
+  await older("C");
+  await page.getByText(/Earlier version restored/).waitFor();
+  await version("C");
+  assert.equal((await records())[0].id, kept[0].id);
+  assert.deepEqual(await saveBytes(), progress);
+  assert.deepEqual(errors, []);
+  checks.push("five-copy retention, labeled oldest-copy restore and pending undo work without changing saved progress");
   await page.getByTestId("imported-revision-rollback").scrollIntoViewIfNeeded();
   await page.screenshot({ path: new URL("rollback.png", output).pathname });
   await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, checks, modelCallTested: false }, null, 2));
