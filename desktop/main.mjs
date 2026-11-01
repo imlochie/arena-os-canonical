@@ -9,6 +9,7 @@ import { DesktopDatabase } from "./database.mjs";
 import { createArenaBackup, restoreArenaBackup, verifyArenaBackup } from "./arena-backup.mjs";
 import { killProcessTree } from "./process-tree.mjs";
 import { stopBeforeQuit } from "./shutdown.mjs";
+import { createArcadeControl } from "./arcade/control.mjs";
 
 app.setName("Arena");
 app.setAppUserModelId("ai.arena.os");
@@ -18,6 +19,7 @@ let origin;
 let window;
 let stopping = false;
 let log = () => {};
+let arcade;
 
 function port() {
   return new Promise((resolve, reject) => {
@@ -46,6 +48,7 @@ function password(root) {
 }
 
 async function stop() {
+  await arcade?.shutdown();
   if (server && server.exitCode === null && server.signalCode === null) {
     const child = server;
     const exited = new Promise(resolve => child.once("exit", resolve));
@@ -346,7 +349,7 @@ async function start() {
   if (!healthy) throw new Error("Vite/Express runtime did not become healthy. Check logs/desktop.log; the saved port may be in use.");
   window = new BrowserWindow({
     width: 1440, height: 960, minWidth: 900, minHeight: 650,
-    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, preload: path.join(__dirname, "arcade-preload.cjs") },
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     // Report/capture popouts stay inside the local app; websites open outside it.
@@ -358,6 +361,11 @@ async function start() {
     if (new URL(url).origin !== origin) event.preventDefault();
   });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  try { arcade = await createArcadeControl({ root, resources, window, origin, ipcMain, dialog }); }
+  catch (error) {
+    log("arcade", `Native control unavailable: ${error.message}`);
+    ipcMain.handle("arena-native-arcade", () => { throw new Error("Native management could not initialize; original games/saves were retained. Check the desktop log."); });
+  }
   // A normal launch never enables remote debugging. Acceptance is explicit.
   log("runtime", `ready; platform=${process.platform}; version=${app.getVersion()}; data=${root}`);
   await window.loadURL(`${origin}/spaces`);

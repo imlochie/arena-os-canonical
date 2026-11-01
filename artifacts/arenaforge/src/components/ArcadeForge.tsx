@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
 import ImportedGameWorkspace from "./ImportedGameWorkspace";
+import NativeGamesWorkspace from "./NativeGamesWorkspace";
 import { useArcadeGameSave } from "../lib/arcadeGameSave";
 import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
@@ -40,7 +41,7 @@ import {
 } from "@workspace/arena/lib/webllm";
 
 type Strategy = "auto" | "instant" | "ai";
-type ArcadeWorkspace = "create" | "imports";
+type ArcadeWorkspace = "create" | "imports" | "native";
 type ArcadeServerModel = {
   id: string;
   name: string;
@@ -1430,7 +1431,7 @@ export default function ArcadeForge() {
           </div>
         </details>
 
-        <div className="mt-4 flex gap-2" role="tablist" aria-label="Arcade workspace">
+        <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Arcade workspace">
           <button
             type="button"
             role="tab"
@@ -1449,9 +1450,20 @@ export default function ArcadeForge() {
           >
             Import and emulate
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspace === "native"}
+            onClick={() => setWorkspace("native")}
+            className={`rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "native" ? "bg-emerald-400 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}
+          >
+            Native games
+          </button>
         </div>
 
-        {workspace === "imports" ? (
+        {workspace === "native" ? (
+          <NativeGamesWorkspace />
+        ) : workspace === "imports" ? (
           <ImportedGameWorkspace onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} />
         ) : (
           <>

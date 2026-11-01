@@ -76,3 +76,13 @@ jobs:
           path: generated-artifacts/windows/*.exe
           if-no-files-found: error
           retention-days: 14
+      - name: Upload independent native packages matching this exact installer catalog
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arenaforge-native-packages-same-build
+          path: |
+            generated-artifacts/arcade-native-packages/*.tar
+            generated-artifacts/arcade-native-packages/arcade-catalog.json
+          if-no-files-found: error
+          retention-days: 14

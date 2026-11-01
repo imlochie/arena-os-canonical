@@ -12,6 +12,7 @@ module.exports = {
     { from: "stage/chromium", to: "chromium" },
     { from: "stage/embedded-postgres", to: "embedded-postgres" },
     { from: "stage/bin", to: "bin" },
+    { from: "stage/arcade-catalog.json", to: "arcade-catalog.json" },
     { from: "THIRD-PARTY-NOTICES.md", to: "THIRD-PARTY-NOTICES.md" },
     { from: "../lib/arena/desktop-migrations", to: "desktop-migrations", filter: ["*.sql"] },
   ],

@@ -3,6 +3,7 @@ import { createGameSandboxDocument } from "./arcadeGameSave";
 import { Chip8Runtime, type Chip8Dialect } from "./chip8Runtime";
 import { ARCADE_EMULATOR_SYSTEMS, EMULATORJS_VERSION, EMULATORJS_DATA_URL, arcadeEmulatorGameKey, type ArcadeEmulatorSystemId } from "./arcadeEmulatorRuntime";
 import { assessArcadeRuntime, type ArcadeRuntimeDefinition, type ArcadeGameDescriptor, type ArcadeHost, type ArcadeManifest } from "./arcadeManifest";
+import { getNativeBridge, type NativeArcadeBridge } from "../components/nativeArcadeTypes";
 
 export type ArcadeProvisioning = { state: "available" | "delegated" | "unavailable"; detail: string };
 /** Concrete sessions retain their native input/render/save interfaces. Their
@@ -12,7 +13,7 @@ export type ArcadeRuntimeAdapter<Request, Session> = {
   identify: (game: ArcadeGameDescriptor) => boolean;
   provision: (host: ArcadeHost, signal?: AbortSignal) => Promise<ArcadeProvisioning>;
   launch: (request: Request) => Session;
-  cleanup: (session: Session) => void;
+  cleanup: (session: Session) => void | Promise<void>;
   diagnostics: (manifest: ArcadeManifest, host: ArcadeHost) => ReturnType<typeof assessArcadeRuntime>;
 };
 type DiscoverableAdapter = Pick<ArcadeRuntimeAdapter<never, never>, "definition" | "identify" | "provision" | "diagnostics">;
@@ -112,7 +113,35 @@ export const browserEmulatorJsAdapter = contract(
       detail: "The existing player loads pinned CDN assets. Download/cache success is unknown until that player reports it; no core installation is claimed." };
   },
 );
-for (const adapter of [browserHtmlAdapter, browserNesAdapter, browserChip8Adapter, browserEmulatorJsAdapter]) registerArcadeRuntimeAdapter(adapter);
+type NativeSession = Promise<{ bridge: NativeArcadeBridge; id: string | null }>;
+export const nativeWindowsAdapter: ArcadeRuntimeAdapter<{ key: string; bridge: NativeArcadeBridge }, NativeSession> = {
+  definition: {
+    id: "arena.desktop.windows-lpac", version: "1", name: "Windows LPAC native host", hosts: ["desktop"], architectures: ["x64"],
+    provision: { mode: "external-assets", detail: "Independently pinned native packages; no hosted execution and no host-jail fallback." },
+    interfaces: { input: "Game-owned native window", audio: "OS output; per-game compatibility requires real execution",
+      graphics: "Game-owned renderer", persistence: "Separate private per-game profile", mods: "No game-specific mod loader in this adapter" },
+    cleanup: "Owned supervisor stop/EOF and kill-on-close Job", recovery: "Retry verified packages; logs and profiles retained",
+    requirements: [{ capability: "native-lpac-isolation", reason: "A real Windows LPAC/Job probe must pass.", optional: false }],
+    permissions: { execution: "Native owner confirmation; LPAC/Job", network: "none", allowedOrigins: [], filesystem: "Managed read-only packages and private writable profile" },
+  },
+  identify: game => game.format === "windows-native",
+  provision: async host => {
+    const bridge = getNativeBridge();
+    if (!bridge || host.kind !== "desktop" || host.architecture !== "x64") return { state: "unavailable", detail: "Requires the Windows x64 desktop bridge." };
+    const status = await bridge.inspect();
+    return status.requirements.verified
+      ? { state: "available", detail: "Live containment probe passed. Package/startup/gameplay compatibility is separate." }
+      : { state: "unavailable", detail: "Run the live containment probe first; imported execution remains blocked." };
+  },
+  launch: async ({ key, bridge }) => {
+    const before = new Set((await bridge.inspect()).runs.map(run => run.id));
+    const after = await bridge.launch(key);
+    return { bridge, id: after.runs.find(run => run.key === key && !before.has(run.id))?.id ?? null };
+  },
+  cleanup: async session => { const { bridge, id } = await session; if (id) await bridge.stop(id); },
+  diagnostics(manifest, host) { return assessArcadeRuntime(this.definition, manifest, host); },
+};
+for (const adapter of [browserHtmlAdapter, browserNesAdapter, browserChip8Adapter, browserEmulatorJsAdapter, nativeWindowsAdapter]) registerArcadeRuntimeAdapter(adapter);
 
 let host: ArcadeHost | undefined;
 export function currentArcadeHost(): ArcadeHost {

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { stageFfmpegBundle } from "./ffmpeg-bundle.mjs";
 import { verifyOnnxRuntime } from "./onnx-runtime-probe.mjs";
+import { buildArcadeFixture } from "./build-arcade-fixture.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -142,6 +143,15 @@ export async function buildWaveyardCaptureHost(outputDirectory) {
   await access(output);
   return output;
 }
+export async function buildArcadeNativeHost(outputDirectory) {
+  await mkdir(outputDirectory, { recursive: true });
+  const result = spawnSync("cl.exe", ["/nologo", "/std:c++20", "/EHsc", "/O2", "/MT", "/W4", "/utf-8",
+    `/Fo${path.join(outputDirectory, "arcade-host.obj")}`, `/Fe${path.join(outputDirectory, "arena-native-host.exe")}`,
+    path.join(here, "native", "arcade-host.cpp")], { shell: false, stdio: "inherit" });
+  if (result.error || result.status !== 0) throw result.error ?? new Error("Windows LPAC host compilation failed.");
+  await access(path.join(outputDirectory, "arena-native-host.exe"));
+  await rm(path.join(outputDirectory, "arcade-host.obj"), { force: true });
+}
 
 async function main() {
   if (process.platform !== "win32" || process.arch !== "x64") {
@@ -161,6 +171,11 @@ async function main() {
   await rm(stage, { recursive: true, force: true });
   await recordBuildSpacePhase("retry-stage-cleanup-complete");
   await buildWaveyardCaptureHost(path.join(stage, "native"));
+  await buildArcadeNativeHost(path.join(stage, "native"));
+  await buildArcadeFixture();
+  const catalog = path.join(root, "generated-artifacts", "arcade-native-packages", "arcade-catalog.json");
+  await access(catalog); // Independently delivered native packages are not bundled.
+  await cp(catalog, path.join(stage, "arcade-catalog.json"));
   runPnpm(["--filter", "@workspace/arenaforge", "run", "build"], {
     NODE_ENV: "production", BASE_PATH: "/", PORT: "5173",
   });
@@ -209,6 +224,10 @@ async function main() {
   });
   await build({
     entryPoints: [path.join(here, "backup-preload.mjs")], outfile: path.join(here, "dist/backup-preload.cjs"),
+    bundle: true, platform: "node", format: "cjs", external: ["electron"], target: "node22",
+  });
+  await build({
+    entryPoints: [path.join(here, "arcade-preload.mjs")], outfile: path.join(here, "dist/arcade-preload.cjs"),
     bundle: true, platform: "node", format: "cjs", external: ["electron"], target: "node22",
   });
   await recordBuildSpacePhase("staging-ready");

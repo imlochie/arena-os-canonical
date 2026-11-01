@@ -14,3 +14,9 @@ Runtime registration and declared requirements are not installation, startup or 
 **Why:** Arcade's broader native/emulator/mod targets otherwise become another collection of configured names rather than functioning capabilities.
 
 **How to apply:** Bind a real launch driver and resource owner before calling a new runtime supported. Scope evidence to game content, runtime/version, profile and host/browser identity. Keep player observations distinct from automated checks. Model readiness/WebGPU says nothing about game execution.
+
+Native Windows execution must fail closed when real OS containment cannot be verified; a Job/process tree alone is not a filesystem/network sandbox.
+
+**Why:** Imported native code is a different trust boundary from browser games. Linux protocol simulations and a successful process spawn cannot establish Windows isolation or SDL/audio compatibility.
+
+**How to apply:** Keep hosted execution unavailable. Require actual target-host evidence before claiming support, and distinguish hard process/CPU/memory limits from a best-effort disk reserve. Deliver independent native packages with the exact installer catalog that pins their bytes.

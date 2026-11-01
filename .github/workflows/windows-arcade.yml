@@ -1,0 +1,52 @@
+name: Windows Arcade containment and SDL acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "A desktop runner needs a real audio output endpoint; hosted Windows may report unsupported audio."
+        type: choice
+        options:
+          - windows-latest
+          - self-hosted-audio
+        default: windows-latest
+permissions:
+  contents: read
+jobs:
+  native-acceptance:
+    runs-on: ${{ fromJSON(inputs.runner == 'self-hosted-audio' && '["self-hosted","Windows","X64","arena-audio"]' || '["windows-latest"]') }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter "@workspace/desktop..."
+      - name: Build actual native supervisor and independent fixture packages
+        run: >-
+          node --input-type=module -e
+          "const b=await import('./desktop/build.mjs'); await b.buildArcadeNativeHost('generated-artifacts/arcade-native-host');
+          const f=await import('./desktop/build-arcade-fixture.mjs'); await f.buildArcadeFixture();"
+      - name: Exercise real Windows isolation, OS keyboard input, SDL audio/rendering and save restart
+        run: node desktop/arcade-windows-acceptance.mjs generated-artifacts/arcade-native-host/arena-native-host.exe
+      - name: Retain native acceptance evidence even when containment or audio is unavailable
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcade-windows-acceptance
+          path: generated-artifacts/arcade-windows-acceptance/
+          if-no-files-found: warn
+      - name: Retain independent native packages only after actual acceptance passes
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcade-native-packages
+          path: |
+            generated-artifacts/arcade-native-packages/*.tar
+            generated-artifacts/arcade-native-packages/arcade-catalog.json
+          if-no-files-found: error
