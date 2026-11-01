@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Copy, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, Copy, Download, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { createGameSandboxDocument, useArcadeGameSave } from "../lib/arcadeGameSave";
 import { importedGameRecordsMatch, importedGameStorageChanges, ImportedGameStorageConflictError, loadImportedGameRecords, loadImportedGames, saveImportedGameChanges, subscribeImportedGamesChanged } from "../lib/importedGameStorage";
 import { deleteNesSaveState, readNesSaveState, writeNesSaveState } from "../lib/nesSaveStates";
@@ -18,7 +18,7 @@ import Chip8Player from "./Chip8Player";
 import type { ButtonKey, NES } from "jsnes";
 import type { ArcadeRepositoryProvenance } from "@workspace/api-client-react";
 import RepositoryGameImport from "./RepositoryGameImport";
-import { isRepositoryProvenance, withRepositoryAttribution, withoutRepositoryAttribution } from "../lib/importedRepositoryAttribution";
+import { isRepositoryProvenance, resolveRepositoryAttribution, withRepositoryAttribution, withoutRepositoryAttribution } from "../lib/importedRepositoryAttribution";
 
 type ImportedGame = {
   id: string;
@@ -733,10 +733,11 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         if (isArchive && file.size > MAX_ARCHIVE_BYTES) throw new Error("Game archives are limited to 3 MB compressed.");
         if (!isArchive && file.size > MAX_HTML_BYTES) throw new Error("HTML files are limited to 6 MB.");
         const rawSource = isArchive ? await bundleOfflineBrowserGame(file) : await file.text();
-        const source = withRepositoryAttribution(rawSource, provenance);
+        const recoveredProvenance = resolveRepositoryAttribution(rawSource, provenance);
+        const source = withRepositoryAttribution(rawSource, recoveredProvenance);
         const issue = htmlSafetyIssue(source);
         if (issue) throw new Error(issue);
-        const game: ImportedGame = { id: crypto.randomUUID(), name: file.name, kind, source, addedAt: Date.now(), ...(provenance ? { provenance } : {}) };
+        const game: ImportedGame = { id: crypto.randomUUID(), name: file.name, kind, source, addedAt: Date.now(), ...(recoveredProvenance ? { provenance: recoveredProvenance } : {}) };
         if (currentGames.current.length >= 12) throw new Error("Your local shelf filled while importing. Remove a game and retry.");
         const next = [game, ...currentGames.current];
         await saveGames(next);
@@ -806,14 +807,37 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     }
   };
 
+  const exportSelectedHtml = () => {
+    if (selected?.kind !== "html") return;
+    let url: string | undefined;
+    const link = document.createElement("a");
+    try {
+      const source = withRepositoryAttribution(selected.source, selected.provenance);
+      url = URL.createObjectURL(new Blob([source], { type: "text/html;charset=utf-8" }));
+      link.href = url;
+      const name = selected.name.replace(/\.(?:zip|html?)$/i, "").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 120);
+      link.download = `${name || "arcade-game"}.html`;
+      document.body.appendChild(link);
+      link.click();
+      setError("");
+      setNotice("HTML source exported with its source notices. Local game-save progress is not included.");
+    } catch (cause) {
+      setError(`The game could not be exported: ${errorMessage(cause)}`);
+    } finally {
+      link.remove();
+      if (url) window.setTimeout(() => URL.revokeObjectURL(url!), 1000);
+    }
+  };
+
   const applyHtmlRevision = async (id: string, source: string) => {
     const current = games.find((game) => game.id === id);
     if (!current || current.kind !== "html" || current.revisionUndoSource !== undefined) return false;
-    const attributed = withRepositoryAttribution(source, current.provenance);
+    const provenance = resolveRepositoryAttribution(current.source, current.provenance);
+    const attributed = withRepositoryAttribution(source, provenance);
     const issue = htmlSafetyIssue(attributed);
     if (issue) { setError(`Revision not applied: ${issue}`); return false; }
     const next = games.map((game) => game.id === id
-      ? { ...game, source: attributed, revisionUndoSource: game.source }
+      ? { ...game, source: attributed, ...(provenance ? { provenance } : {}), revisionUndoSource: game.source }
       : game);
     const saved = await saveGames(next);
     gameSaves.reloadGame();
@@ -1131,6 +1155,11 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                       : selected.system ? arcadeEmulatorSystemLabel(selected.system) : "Console ROM"}
               </span>
               <h3 className="min-w-0 flex-1 truncate text-sm font-extrabold text-white">{selected.name}</h3>
+              {selected.kind === "html" && <button type="button" onClick={exportSelectedHtml} disabled={removing || busy}
+                data-testid="export-imported-html" title="Download editable HTML source and its license notices. Local game-save progress is not included."
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-emerald-200 hover:bg-emerald-300/10 disabled:opacity-40">
+                <Download size={13} /> Export HTML source
+              </button>}
               <button type="button" onClick={removeSelected} disabled={removing || busy} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-slate-400 hover:bg-red-400/10 hover:text-red-200" aria-label={`Remove ${selected.name}`}>
                 <Trash2 size={13} /> {removing ? "Removing…" : "Remove"}
               </button>

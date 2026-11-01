@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   inspectRepository, acquireRepository, rememberRepositoryPlan, recalledRepositoryPlan,
 } from "../artifacts/api-server/src/imported/arcade/repository-source.ts";
@@ -81,6 +81,27 @@ try {
   const frame = page.frameLocator('iframe[title^="Playable game:"]');
   await frame.getByRole("button", { name: "Score point" }).click();
   assert.equal(await frame.locator("#points").textContent(), "1");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByTestId("export-imported-html").click(),
+  ]);
+  assert.match(download.suggestedFilename(), /\.html$/);
+  const exported = await readFile(await download.path(), "utf8");
+  assert.match(exported, /arena-repository-attribution/);
+  assert.ok(exported.includes(revision));
+  assert.equal(await frame.locator("#points").textContent(), "1", "export must not restart the active game");
+  await page.getByLabel(/I own this game or have permission to use and play it/).check();
+  await page.locator('input[accept=".html,.htm,.zip,text/html,application/zip"]').setInputFiles({
+    name: "round-trip-game.html", mimeType: "text/html", buffer: Buffer.from(exported),
+  });
+  await page.locator('iframe[title="Playable game: round-trip-game.html"]').waitFor();
+  assert.ok((await page.getByTestId("imported-repository-provenance").textContent()).includes(revision));
+  await page.reload();
+  await page.getByRole("tab", { name: "Import and emulate" }).click();
+  await page.locator('iframe[title="Playable game: round-trip-game.html"]').waitFor();
+  await frame.getByRole("button", { name: "Score point" }).click();
+  assert.equal(await frame.locator("#points").textContent(), "1");
+  assert.ok((await page.getByTestId("imported-repository-provenance").textContent()).includes("MIT"));
   assert.equal(rawDownloads, sources.size);
   await page.getByTestId("imported-repository-provenance").waitFor();
   await page.reload();
@@ -96,6 +117,6 @@ try {
   assert.match(await page.getByTestId("repository-error").textContent(), /Only public/i);
   assert.equal(await frame.locator("#points").textContent(), "1", "a refused repository must not restart the retained game");
   assert.deepEqual(errors, []);
-  await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, rawDownloads, checks: ["rights gate", "review before download", "pinned files", "license preview", "sandbox gameplay", "reload provenance", "unsafe-link refusal retains game"], modelCallTested: false }, null, 2));
-  console.log("PASS: repository preview → pinned acquisition → sandbox play → local reload; refused links retain the current game.");
+  await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, rawDownloads, checks: ["rights gate", "review before download", "pinned files", "license preview", "sandbox gameplay", "reload provenance", "HTML download retains active game", "HTML reimport/reload retains source and license", "unsafe-link refusal retains game"], modelCallTested: false }, null, 2));
+  console.log("PASS: repository import/play/reload and native HTML export/reimport/reload preserve source attribution; refused links retain the current game.");
 } finally { await browser.close(); }
