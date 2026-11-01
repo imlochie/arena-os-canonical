@@ -20,3 +20,9 @@ Concurrency metadata alone does not justify a destructive browser-database migra
 **Why:** Existing shelf clients and regression tools share the established database contract; a version bump requires coordinated legacy-client handling.
 
 **How to apply:** Prefer compatible per-record revisions for this purpose. If future manifest work genuinely needs a schema change, explicitly address old clients and retained game/save data rather than clearing the shelf.
+
+Distinguish read-only notification refreshes from write-transaction conflict checks when measuring browser storage operations.
+
+**Why:** A live peer notification can legitimately read the same ID while a stale save checks it. Counting all tab-wide reads as one save's work falsely reports duplicate operations and makes the concurrency regression timing-dependent.
+
+**How to apply:** Tag storage probes by transaction mode. Require exactly one guarded read in the write transaction, retain assertions that stale conflicts make no mutations, and deliberately overlap a read-only refresh to keep this race covered.

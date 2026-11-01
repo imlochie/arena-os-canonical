@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 
 import {
   MAX_CROSSFADE_SECONDS,
+  automaticCueTiming,
+  automaticTransitionCue,
   beatAlignedTransitionStart,
   crossfadeCancel,
   crossfadeEnvelope,
@@ -301,6 +303,40 @@ test("beat alignment: position before the grid, at the end, and missing grids", 
 });
 
 // ------------------------------------------------------------- advancement
+
+test("automatic fades choose the last verified beat or bar that fits before the end", () => {
+  const grid = Array.from({ length: 24 }, (_, i) => 120 + i * 500);
+  for (const [mode, expected] of [["beat", 9620], ["bar", 8120]] as const) {
+    const cue = automaticTransitionCue({ ...defaultTransitionConfig(), mode, crossfadeSeconds: 2 }, 12, grid, gridB);
+    assert.equal(cue.ok, true);
+    assert.equal(cue.startInCurrentMs, expected);
+    assert.equal(cue.incomingOffsetMs, 120);
+    assert.ok(cue.startInCurrentMs! + 2000 <= 12000);
+  }
+});
+
+test("automatic alignment refuses missing, invalid, or too-late grids rather than guessing", () => {
+  for (const mode of ["beat", "bar"] as const) {
+    const cfg = { ...defaultTransitionConfig(), mode, crossfadeSeconds: 2 };
+    for (const [outgoing, incoming] of [[null, gridB], [gridA, null], [[], gridB], [[0, "bad"], gridB], [[11000, 11500], gridB]]) {
+      assert.equal(automaticTransitionCue(cfg, 12, outgoing, incoming).ok, false);
+    }
+    assert.equal(automaticTransitionCue({ ...cfg, crossfadeSeconds: 20 }, 12, gridA, gridB).ok, false);
+  }
+});
+
+test("automatic manual crossfade keeps its duration-based cue without beat grids", () => {
+  const cue = automaticTransitionCue({ ...defaultTransitionConfig(), crossfadeSeconds: 2 }, 12, null, null);
+  assert.equal(cue.startInCurrentMs, 10000);
+  assert.equal(cue.incomingOffsetMs, 0);
+});
+
+test("automatic cue timing waits before the cue and refuses a late off-beat start", () => {
+  assert.equal(automaticCueTiming(9749, 9750), "wait");
+  assert.equal(automaticCueTiming(9750, 9750), "start");
+  assert.equal(automaticCueTiming(10100, 9750), "start");
+  assert.equal(automaticCueTiming(10101, 9750), "missed");
+});
 
 test("session advancement: ordered, stops at the end, no wrap", () => {
   const order = [

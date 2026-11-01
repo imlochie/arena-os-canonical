@@ -50,3 +50,15 @@ Long browser runs with short synthetic tracks must re-establish playback state b
 **Why:** The suite spends real time waiting on synthetic audio and transitions, so a previous state assumption can expire or become stale without a product failure.
 
 **How to apply:** Before a mirror-tab control assertion, verify the primary's visible play state, ensure the mirror is still silent, then send and await explicit play and pause changes in both tabs.
+
+Serve seek-sensitive WAV fixtures with real byte-range responses, including `Accept-Ranges`, `Content-Length`, and `Content-Range` on 206 responses.
+
+**Why:** Chromium accepted decoded duration from a mocked WAV but kept returning a zero media position after nonzero seeks when the fixture did not support byte ranges. This falsely looked like a transport clock reset and an incorrect incoming beat offset.
+
+**How to apply:** Implement requested byte slices in intercepted audio responses before diagnosing beat-offset failures. Seek through the visible transport control so its internal clock and the media element agree.
+
+When a Studio gesture times out, inspect the actual element under the touch point and the browser's earlier errors before changing timeline behavior.
+
+**Why:** An unrelated canvas-render exception opened Vite's full-page error overlay while the Studio controls remained visible underneath; gesture tests then misleadingly failed as if drag handling were broken.
+
+**How to apply:** Use `document.elementFromPoint` at the intended control coordinates to distinguish an intercepted gesture from a control regression. Resolve the originating render error rather than bypassing the overlay.

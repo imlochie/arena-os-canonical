@@ -255,6 +255,36 @@ export function beatAlignedTransitionStart(
 
 // ------------------------------------------------------- evidence labeling
 
+/** Select a verified cue which leaves room for the entire automatic fade.
+ * Unlike manual alignment, never clamp to a beat past the last usable bar. */
+export function automaticTransitionCue(
+  cfg: TransitionConfig,
+  durationSeconds: number,
+  currentBeatGridMs: unknown,
+  incomingBeatGridMs: unknown,
+): BeatAlignedStart {
+  const latestMs = Math.max(0, durationSeconds - cfg.crossfadeSeconds) * 1000;
+  if (cfg.mode === "manual") {
+    return { ok: true, startInCurrentMs: latestMs, incomingOffsetMs: 0, approximate: true, reason: "Automatic crossfade." };
+  }
+  const aligned = beatAlignedTransitionStart(currentBeatGridMs, incomingBeatGridMs, 0, cfg.mode);
+  if (!aligned.ok) return aligned;
+  const beats = usableBeatGrid(currentBeatGridMs)!;
+  const step = cfg.mode === "bar" ? 4 : 1;
+  const cue = beats.filter((beat, index) => index % step === 0 && beat <= latestMs).at(-1);
+  if (cue === undefined || cfg.crossfadeSeconds > durationSeconds) {
+    return { ...aligned, ok: false, startInCurrentMs: null, reason: "No verified cue leaves enough time for the automatic fade." };
+  }
+  return { ...aligned, startInCurrentMs: cue };
+}
+
+/** A delayed/backgrounded clock must not turn a verified cue into an off-beat fade.
+ * Browser alignment is approximate; allow the existing 350ms control window. */
+export function automaticCueTiming(positionMs: number, cueMs: number): "wait" | "start" | "missed" {
+  if (positionMs < cueMs) return "wait";
+  return positionMs - cueMs <= 350 ? "start" : "missed";
+}
+
 /** How strongly a compatibility claim is backed: real analysis evidence,
  * an honest approximation, or nothing (never blurred — P5 STEP 7). */
 export type EvidenceLevel = "real" | "approximate" | "unavailable";

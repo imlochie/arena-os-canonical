@@ -13,6 +13,8 @@ import LiveStemSwapPicker, {
   type LiveStemPreparationOption,
 } from "./LiveStemSwapPicker";
 import {
+  automaticCueTiming,
+  automaticTransitionCue,
   beatAlignedTransitionStart,
   compatibilityEvidence,
   crossfadeCancel,
@@ -1572,7 +1574,7 @@ export default function SessionExperience({
     [finishTransition],
   );
 
-  const beginTransition = useCallback(async () => {
+  const beginTransition = useCallback(async (automaticCue?: { startInCurrentMs: number; incomingOffsetMs: number }) => {
     if (phase === "fading") return;
     cancelPendingPerformance("Pending stem changes cancelled because a transition started.");
     endTemporaryIsolation();
@@ -1590,12 +1592,18 @@ export default function SessionExperience({
       setStatus("The next deck is empty — press Next on a song in the library.");
       return;
     }
-    const cfg = transitions[fromItem.id] ?? fromItem.transition;
+    let cfg = transitions[fromItem.id] ?? fromItem.transition;
     advancingRef.current = false;
 
-    let startInCurrent = fromApi.transport.position;
+    let startInCurrent = automaticCue ? fromApi.transport.currentPosition() : fromApi.transport.position;
     let incomingOffset = 0;
-    if (cfg.mode === "beat" || cfg.mode === "bar") {
+    if (automaticCue) {
+      // The live clock has reached the cue: do not seek or recalculate the
+      // next beat. Bound the fade when a clock callback arrives slightly late.
+      incomingOffset = automaticCue.incomingOffsetMs / 1000;
+      cfg = { ...cfg, crossfadeSeconds: Math.min(cfg.crossfadeSeconds, Math.max(0, fromItem.track.durationSeconds - startInCurrent)) };
+      setStatus(`Automatic ${cfg.mode === "manual" ? "crossfade" : `${cfg.mode}-aligned fade`} from ${formatClock(automaticCue.startInCurrentMs / 1000)}.`);
+    } else if (cfg.mode === "beat" || cfg.mode === "bar") {
       const aligned = beatAlignedTransitionStart(fromItem.analysis?.beatGridMs ?? null, toItem.analysis?.beatGridMs ?? null, startInCurrent * 1000, cfg.mode);
       if (!aligned.ok) {
         setStatus(aligned.reason);
@@ -1608,8 +1616,10 @@ export default function SessionExperience({
       setStatus(`Crossfade ${cfg.crossfadeSeconds}s from ${formatClock(startInCurrent)}.`);
     }
 
-    fromApi.transport.seek(startInCurrent);
-    await fromApi.transport.play();
+    if (!automaticCue) {
+      fromApi.transport.seek(startInCurrent);
+      await fromApi.transport.play();
+    }
     toApi.transport.seek(incomingOffset);
     if (cfg.crossfadeSeconds <= 0) {
       toApi.transport.setMasterVolume(masterRef.current);
@@ -1621,6 +1631,9 @@ export default function SessionExperience({
     }
     toApi.transport.setMasterVolume(0);
     await toApi.transport.play();
+    if (automaticCue) {
+      cfg = { ...cfg, crossfadeSeconds: Math.min(cfg.crossfadeSeconds, Math.max(0, fromItem.track.durationSeconds - fromApi.transport.currentPosition())) };
+    }
     runFade(cfg, fromDeck, toDeck, { ...currentEffective });
   }, [phase, activeDeck, standbyDeckIndex, deckItems, transitions, runFade, finishTransition, currentEffective, cancelPendingPerformance, endTemporaryIsolation]);
 
@@ -1763,6 +1776,7 @@ export default function SessionExperience({
         return;
       }
       api?.transport.pause();
+      autoCrossfadeStartedForRef.current = null;
       currentIdRef.current = itemId;
       setAutoPlayId(autoplay ? itemId : null);
       setCurrentId(itemId);
@@ -2642,28 +2656,26 @@ export default function SessionExperience({
     if (cfg.crossfadeSeconds <= 0) return;
     const currentPosition = fromApi.transport.position;
     const duration = currentItem.track.durationSeconds;
+    const cue = automaticTransitionCue(cfg, duration, currentItem.analysis?.beatGridMs ?? null, nextItem.analysis?.beatGridMs ?? null);
+    const triggerMs = cue.startInCurrentMs ?? Math.max(0, duration - cfg.crossfadeSeconds) * 1000;
     if (autoCrossfadeStartedForRef.current === currentItem.id) {
-      if (currentPosition >= duration - cfg.crossfadeSeconds - 1) return;
+      // Rearm only after a genuine rewind, not while the clock is still
+      // approaching the duration-based fallback after a skipped aligned cue.
+      if (currentPosition * 1000 >= triggerMs - 1000) return;
       autoCrossfadeStartedForRef.current = null;
     }
-
-    let alignmentLeadSeconds = 0;
-    if (cfg.mode === "beat" || cfg.mode === "bar") {
-      const aligned = beatAlignedTransitionStart(
-        currentItem.analysis?.beatGridMs ?? null,
-        nextItem.analysis?.beatGridMs ?? null,
-        currentPosition * 1000,
-        cfg.mode,
-      );
-      if (aligned.ok && aligned.startInCurrentMs !== null) {
-        alignmentLeadSeconds = Math.max(0, aligned.startInCurrentMs / 1000 - currentPosition);
-      }
-    }
-    const remaining = duration - currentPosition;
-    if (remaining > cfg.crossfadeSeconds + alignmentLeadSeconds + 0.35) return;
-
+    const timing = automaticCueTiming(currentPosition * 1000, triggerMs);
+    if (timing === "wait") return;
     autoCrossfadeStartedForRef.current = currentItem.id;
-    void beginTransition();
+    if (!cue.ok || cue.startInCurrentMs === null || cue.incomingOffsetMs === null) {
+      setStatus(`${cue.reason} Automatic fade skipped; the next track will start at the end.`);
+      return;
+    }
+    if (cfg.mode !== "manual" && timing === "missed") {
+      setStatus("The verified automatic fade cue was missed; the next track will start at the end.");
+      return;
+    }
+    void beginTransition({ startInCurrentMs: cue.startInCurrentMs, incomingOffsetMs: cue.incomingOffsetMs });
   }, [
     autoCrossfadeEnabled, phase, playingByDeck, activeDeck, currentItem, nextItem,
     transitions, beginTransition, positions,

@@ -28,7 +28,7 @@ function hooks() {
       const info = method === "put"
         ? { id: value?.id ?? null, kind: value?.kind ?? null, byteLength: value?.romData?.byteLength ?? 0 }
         : { key: method === "delete" || method === "get" ? args[0] : null };
-      window.__arcadeShelfOps.push({ method, ...info });
+      window.__arcadeShelfOps.push({ method, transactionMode: this.transaction.mode, ...info });
       if (method === "put" && window.__failArcadeShelfPut) {
         throw new DOMException("Injected deterministic shelf failure", "QuotaExceededError");
       }
@@ -368,8 +368,8 @@ try {
   assert.equal((await records()).find(row => row.id === staleTargetId).source, updatedSource,
     "stale edit must preserve the exact newer source");
   const conflictOps = await opsOn(pageB);
-  assert.deepEqual(conflictOps.filter(op => op.method === "get").map(op => op.key), [staleTargetId],
-    "stale conflict checks only the changed record");
+  assert.deepEqual(conflictOps.filter(op => op.method === "get" && op.transactionMode === "readwrite").map(op => op.key), [staleTargetId],
+    "stale write-transaction conflict checks only the changed record, independently of read-only shelf refreshes");
   assert(!conflictOps.some(op => ["put", "delete", "clear"].includes(op.method)),
     "stale edit conflict must not write or clear records");
   report.push("Two separately loaded real Vite-module snapshots: stale B update rejected ImportedGameStorageConflictError, preserved A's exact source, and touched only the changed ID.");
@@ -391,13 +391,24 @@ try {
   const resurrectionName = await pageB.evaluate(async ({ moduleUrl, id }) => {
     const storage = await import(moduleUrl);
     const old = window.__deleteRaceSnapshotB.find(row => row.id === id);
-    try { await storage.saveImportedGameChanges([old], [{ ...old, source: `${old.source}\n<!-- stale resurrection -->` }]); return "no-conflict"; }
-    catch (error) { return error.name; }
+    // Model the legitimate live shelf refresh that can arrive from tab A's
+    // deletion notification while this stale save is being checked.
+    const refresh = storage.loadImportedGameRecords([id]);
+    const save = storage.saveImportedGameChanges([old], [{ ...old, source: `${old.source}\n<!-- stale resurrection -->` }])
+      .then(() => "no-conflict", error => error.name);
+    const [result] = await Promise.all([save, refresh]);
+    return result;
   }, { moduleUrl: moduleImport, id: deleteRaceId });
   assert.equal(resurrectionName, "ImportedGameStorageConflictError", "stale update must not resurrect a remotely deleted item");
   assert(!(await records()).some(row => row.id === deleteRaceId), "deleted record must remain absent");
-  assert.deepEqual((await opsOn(pageB)).filter(op => op.method === "get").map(op => op.key), [deleteRaceId]);
-  report.push("A stale B update after A's committed deletion conflicted instead of resurrecting the record; only the deleted ID was checked.");
+  const resurrectionOps = await opsOn(pageB);
+  assert.deepEqual(resurrectionOps.filter(op => op.method === "get" && op.transactionMode === "readwrite").map(op => op.key), [deleteRaceId],
+    "the stale save guards the deleted ID exactly once, excluding independent read-only refreshes");
+  assert(resurrectionOps.some(op => op.method === "get" && op.transactionMode === "readonly" && op.key === deleteRaceId),
+    "the regression must include an overlapping read-only shelf refresh");
+  assert(!resurrectionOps.some(op => ["put", "delete", "clear"].includes(op.method)),
+    "stale resurrection conflict must not write, delete, or clear records");
+  report.push("A stale B update after A's committed deletion conflicted instead of resurrecting the record; the write transaction checked only the deleted ID even with an overlapping read-only refresh, and no mutations occurred.");
 
   // UI stale removal: pause B after open succeeds but before its helper begins the guarded transaction.
   await importHtml("ui-conflict-target.html", "<!doctype html><html><body><p>Conflict UI target</p></body></html>");

@@ -62,7 +62,7 @@ function drawSpecToCanvas(spec: CoverSpec): HTMLCanvasElement {
   ctx.fillStyle = `hsl(${spec.backgroundHue} 42% 12%)`;
   ctx.fillRect(0, 0, COVER_PX, COVER_PX);
   const glow = ctx.createRadialGradient(COVER_PX / 2, COVER_PX / 2, 0, COVER_PX / 2, COVER_PX / 2, COVER_PX * 0.7);
-  glow.addColorStop(0, `hsla(${spec.backgroundHue} 60% 30% 0.9)`);
+  glow.addColorStop(0, `hsl(${spec.backgroundHue} 60% 30% / 0.9)`);
   glow.addColorStop(1, "transparent");
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, COVER_PX, COVER_PX);

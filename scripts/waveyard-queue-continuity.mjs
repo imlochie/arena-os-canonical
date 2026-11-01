@@ -1,6 +1,7 @@
 // Browser regression for library queue and playlist → listening-session flow.
 // All database/API responses and WAV bytes are isolated Playwright fixtures.
 import assert from "node:assert/strict";
+import { verifyAlignedFades } from "./waveyard-aligned-fades.mjs";
 import { createRequire } from "node:module";
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
@@ -742,6 +743,8 @@ try {
   await page.getByTestId("playlist-row-test-set").waitFor({ state: "detached" });
   assert.equal(await page.locator(`[data-testid="button-play-${ids[0]}"]`).count(), 1, "deleting a playlist leaves its library tracks playable");
   console.log("PASS: queue and playlist edits report failures; deletion confirms consequences and preserves library tracks; live continuity, handoff, and Studio reopen survive");
+  await context.close();
+  await verifyAlignedFades(browser);
 } finally {
   await browser.close();
 }
