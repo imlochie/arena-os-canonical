@@ -9,12 +9,18 @@ No real game/plugin has run through BepInEx in Arena yet.
 Implemented so far:
 
 - A bounded executable-header and Unity-layout assessment.
+- Bounded Unity-version extraction from the selected game's serialized metadata.
 - Immutable BepInEx 5.4.23.2 Windows/Linux x64 archive references with measured
   SHA-256 and byte counts in `desktop/arcade/bepinex.mjs`.
 - `NativeModWorkshop.assessLoader` verifies the managed package and reads at
   most 64 KiB of its selected executable; it never loads game or plugin code.
 - The owner-window-checked Workshop IPC exposes the read-only `assess-loader`
   operation. There is no install button or installed/working claim.
+- `stageBepInExDistribution` verifies exact upstream archive bytes and safely
+  prepares a fresh loader directory. It rejects preexisting destinations,
+  links, unsafe paths, unexpected layout, oversized/encrypted entries and proxy
+  architecture mismatches. No installer script or DLL is executed. This helper
+  is not yet connected to profile review/activation or a user-facing installer.
 - Architecture mismatch, absent Mono layout, another executable's data,
   IL2CPP/mixed layouts, and existing loader/proxy conflicts fail preflight.
   Unrecognized layouts are not universally unsupported; they need another
@@ -59,12 +65,58 @@ the actual pinned archive, not assumed from the older documentation.
 The release is a **prerelease**; GitHub's `/releases/latest` returns 404.
 This is not evidence that the repository has no downloadable releases.
 
-Only public repository license, project settings and release metadata were
-inspected. The game archives have not been downloaded or hashed. The shipped
-backend, Unity version, actual managed assemblies, bundled asset notices and
-binary redistribution terms have not been verified. MIT repository metadata
-must not be generalized into a license for Unity's proprietary runtime.
-Do not register this as a working game/loader fixture until those checks pass.
+The Linux archive has subsequently been downloaded from that exact upstream
+release and inspected as ZIP data, without running its executable:
+
+- Archive SHA-256:
+  `f6d0355533b1b71ac0cf06619a1bd78d4f7d0de703b73f10c23242a63c0f69a4`.
+- 267 ZIP entries (including directories).
+- Entry: `0.5.0a18/OpenSkiJumping_v0.5.0a18.x86_64`, ELF x86-64.
+- Unity metadata identifies **2020.3.2f1**.
+- Managed game assembly:
+  `0.5.0a18/OpenSkiJumping_v0.5.0a18_Data/Managed/Assembly-CSharp.dll`.
+- Mono:
+  `0.5.0a18/OpenSkiJumping_v0.5.0a18_Data/MonoBleedingEdge/x86_64/libmonobdwgc-2.0.so`.
+
+The shipped data-local Mono layout was missing from the initial preflight.
+It is now recognized and regression-covered. The actual archive produces
+`candidate: true`, `canInstall: false`, `gameplayVerified: false`. This is
+executable-header and package-layout evidence, not an executed managed-runtime
+check. The bounded headers, file inventory and assessment are retained under
+ignored `generated-artifacts/bepinex-research/`, not bundled in the app.
+
+No license/notice-named files were found in this ZIP's inventory scan.
+Its source repository's MIT license does not grant blanket redistribution
+rights to Unity's runtime or all third-party assets. Keep this as an upstream
+personal test download; do not add the binary to Arena distribution/catalog
+without the relevant notices and permission assessment. The Windows game ZIP
+has not been downloaded. Do not register either game as verified BepInEx support.
+
+## Verification and remaining execution limitation
+
+Both real pinned BepInEx archives have passed preparation tests: their actual
+native proxies match Windows/Linux x64 respectively, core files are present,
+and temporary staging/snapshot files are removed. These tests execute only
+trusted Node ZIP/hash/parser code, not BepInEx or game code. Real-archive tests
+explicitly skip when the ignored upstream downloads are absent.
+
+The current host still has no admitted native-game execution pathway, and the
+previous private-proc sandbox check failed. No uncontained Unity game was run
+as a workaround. GitHub CI dispatch credentials were withheld, so there is no
+external-runner gameplay result either. This blocks the task's required real
+plugin/gameplay acceptance here; it does **not** mean the remaining loader,
+profile and UI implementation work is finished.
+
+The pinned BepInEx preloader source derives its BepInEx root from the actual
+preloader assembly location, and `Paths.cs` places config/cache/plugins under
+that root. A naive DLL copy into the current read-only Workshop generation
+would therefore not provide writable config/cache/log behavior. The dedicated
+adapter must account for this without modifying the immutable base, weakening
+the game sandbox, or redirecting one profile into another profile's storage:
+
+https://github.com/BepInEx/BepInEx/blob/v5.4.23.2/BepInEx.Preloader/Entrypoint.cs
+
+https://github.com/BepInEx/BepInEx/blob/v5.4.23.2/BepInEx/Paths.cs
 
 ## Next implementation and acceptance
 

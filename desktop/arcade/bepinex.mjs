@@ -34,13 +34,21 @@ export function identifyExecutable(header) {
   return null;
 }
 
-export function assessUnityMonoLayout({ files, entry, header, host }) {
+export function identifyUnityVersion(header) {
+  const text = Buffer.from(header ?? []).subarray(0, 256).toString("latin1");
+  return /(?:^|\0)((?:20\d{2}|[3-5])\.\d+\.\d+[abfp]\d+)\0/.exec(text)?.[1] ?? null;
+}
+
+export function assessUnityMonoLayout({ files, entry, header, host, unityVersion }) {
   const result = {
     framework: "bepinex-5", evidence: "package-layout-and-executable-header",
     candidate: false, canInstall: false, gameplayVerified: false,
     blockers: [], installationBlockers: ["The dedicated loader installation/execution adapter is not yet verified."],
   };
   if (!BEPINEX_RELEASES[host]) result.blockers.push("Only Windows x64 and Linux x64 loader distributions have been pinned.");
+  if (typeof unityVersion !== "string" || !/^(?:20\d{2}|[3-5])\.\d+\.\d+[abfp]\d+$/.test(unityVersion))
+    result.blockers.push("The Unity engine version must be read from the selected game's serialized metadata before modification.");
+  result.unityVersion = unityVersion ?? null;
   if (!Array.isArray(files) || files.length > 2000 || !entry) {
     result.blockers.push("A bounded verified game inventory and explicit executable are required.");
     return result;
@@ -67,8 +75,10 @@ export function assessUnityMonoLayout({ files, entry, header, host }) {
   if (!names.has(`${data}/Managed/Assembly-CSharp.dll`) || !names.has(`${data}/globalgamemanagers`))
     result.blockers.push("The selected executable lacks the supported Unity managed game layout; another game's files do not count.");
   const monoPaths = host === "windows-x64"
-    ? [`${prefix}MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll`, `${data}/Mono/mono.dll`]
-    : [`${prefix}MonoBleedingEdge/EmbedRuntime/libmonobdwgc-2.0.so`, `${data}/Mono/x86_64/libmono.so`];
+    ? [`${prefix}MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll`, `${data}/Mono/mono.dll`,
+      `${data}/MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll`]
+    : [`${prefix}MonoBleedingEdge/EmbedRuntime/libmonobdwgc-2.0.so`, `${data}/Mono/x86_64/libmono.so`,
+      `${data}/MonoBleedingEdge/x86_64/libmonobdwgc-2.0.so`];
   if (!monoPaths.some(file => names.has(file)))
     result.blockers.push("No recognized Mono runtime accompanies this executable.");
   if (files.some(file => file === `${prefix}GameAssembly.dll` || file === `${prefix}GameAssembly.so` ||

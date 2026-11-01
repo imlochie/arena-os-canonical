@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assessUnityMonoLayout, BEPINEX_RELEASES, identifyExecutable } from "./arcade/bepinex.mjs";
+import { assessUnityMonoLayout, BEPINEX_RELEASES, identifyExecutable, identifyUnityVersion } from "./arcade/bepinex.mjs";
 
 function pe(machine = 0x8664) {
   const b = Buffer.alloc(256); b.write("MZ"); b.writeUInt32LE(128, 60);
   b.write("PE\0\0", 128); b.writeUInt16LE(machine, 132); return b;
 }
 function layout() {
-  return { host: "windows-x64", entry: "Game.exe", header: pe(), files: [
+  return { host: "windows-x64", entry: "Game.exe", header: pe(), unityVersion: "2020.3.2f1", files: [
     "Game.exe", "Game_Data/globalgamemanagers", "Game_Data/Managed/Assembly-CSharp.dll",
     "MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll",
   ] };
@@ -50,10 +50,24 @@ test("Linux Mono preflight does not require Wine", () => {
   const header = Buffer.alloc(64);
   Buffer.from([127, 69, 76, 70, 2, 1, 1]).copy(header); header.writeUInt16LE(62, 18);
   const r = assessUnityMonoLayout({
-    host: "linux-x64", entry: "Game.x86_64", header,
+    host: "linux-x64", entry: "Game.x86_64", header, unityVersion: "2020.3.2f1",
     files: ["Game.x86_64", "Game_Data/globalgamemanagers", "Game_Data/Managed/Assembly-CSharp.dll",
       "MonoBleedingEdge/EmbedRuntime/libmonobdwgc-2.0.so"],
   });
   assert.equal(r.candidate, true);
   assert.equal(r.canInstall, false);
+});
+
+test("the fixture's data-local Mono runtime is recognized without borrowing unrelated files", () => {
+  const input = layout();
+  input.files[input.files.length - 1] = "Game_Data/MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll";
+  assert.equal(assessUnityMonoLayout(input).candidate, true);
+});
+
+test("engine version comes from bounded serialized metadata, not an executable name", () => {
+  const bytes = Buffer.concat([Buffer.alloc(48), Buffer.from("2020.3.2f1\0")]);
+  assert.equal(identifyUnityVersion(bytes), "2020.3.2f1");
+  assert.equal(identifyUnityVersion(Buffer.from("unknown")), null);
+  assert.equal(identifyUnityVersion(Buffer.concat([Buffer.alloc(256), Buffer.from("2020.3.2f1\0")])), null);
+  assert.equal(assessUnityMonoLayout({ ...layout(), unityVersion: null }).candidate, false);
 });

@@ -5,7 +5,7 @@ import path from "node:path";
 import { ModWorkshopEngine } from "../../lib/arena/src/lib/games/mod-workshop-engine.ts";
 import { modHash } from "../../lib/arena/src/lib/games/mod-workshop.ts";
 import { safePackagePath } from "./packages.mjs";
-import { assessUnityMonoLayout } from "./bepinex.mjs";
+import { assessUnityMonoLayout, identifyUnityVersion } from "./bepinex.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const MiB = 1024 * 1024;
 async function fileHash(filename) { const hash = createHash("sha256"); for await (const chunk of createReadStream(filename)) hash.update(chunk); return hash.digest("hex"); }
@@ -46,9 +46,21 @@ export class NativeModWorkshop {
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
       header = buffer.subarray(0, bytesRead);
     } finally { await file.close(); }
+    const root = path.posix.dirname(descriptor.entry), name = path.posix.basename(descriptor.entry).replace(/\.(?:exe|x86_64|x86)$/i, "");
+    const metadataPath = `${root === "." ? "" : root + "/"}${name}_Data/globalgamemanagers`;
+    let unityVersion = null;
+    if (descriptor.files.some(file => file.path === metadataPath)) {
+      const metadataFile = path.join(this.packages.filename(key), ...metadataPath.split("/"));
+      await ordinary(metadataFile);
+      const handle = await open(metadataFile, "r");
+      try {
+        const bytes = Buffer.alloc(256), { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+        unityVersion = identifyUnityVersion(bytes.subarray(0, bytesRead));
+      } finally { await handle.close(); }
+    }
     return assessUnityMonoLayout({
       files: descriptor.files.map(file => file.path), entry: descriptor.entry,
-      header, host: descriptor.host,
+      header, host: descriptor.host, unityVersion,
     });
   }
   async read(key) {

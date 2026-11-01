@@ -13,3 +13,14 @@ Save-sharing scope must match on portable restore; reject mismatches before impo
 **Why:** Restore into a shared destination can otherwise write to base-game saves despite an isolated backup. Using enabled load order as the inventory makes disabled mods disappear, preventing reversible editing.
 
 **How to apply:** Treat save scope, inventory and resolved execution order as separate concerns in new loaders and migration tools.
+
+Framework loader runtime state needs an explicit writable, profile-private
+location; copying loader DLLs into an immutable generation is insufficient.
+
+**Why:** BepInEx 5 derives its root from the preloader assembly's location and
+places configuration/cache/plugins beneath that root. A naive read-only
+overlay may load files but cannot support normal configuration and recovery.
+
+**How to apply:** Verify the pinned loader's own path behavior before choosing
+a layout. Keep base content unchanged, preserve each profile's runtime state,
+and do not infer functional plugin support from successful archive staging.
