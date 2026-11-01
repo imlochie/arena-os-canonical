@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
@@ -57,6 +57,23 @@ function controlsFor(stems: Stem[]) {
 
 function canHandleShortcut(target: EventTarget | null) {
   return !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable));
+}
+
+function navigateViewTabs(event: ReactKeyboardEvent<HTMLElement>) {
+  if (event.altKey || event.ctrlKey || event.metaKey || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (target?.getAttribute("role") !== "tab") return;
+  const list = target.closest(".presentation-nav,.studio-tabs");
+  if (!list) return;
+  const tabs = [...list.querySelectorAll<HTMLButtonElement>("button[role='tab']:not(:disabled)")];
+  const index = tabs.indexOf(target as HTMLButtonElement);
+  if (index < 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+    : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next]?.focus();
+  tabs[next]?.click();
 }
 
 type StudioTab = "edit" | "analyze" | "showcase";
@@ -129,6 +146,20 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
    *  switching tabs never stops playback. The Play and Visual presentations
    *  above remain the listener-facing faces. */
   const [studioTab, setStudioTab] = useState<StudioTab>("edit");
+  const studioElement = useRef<HTMLElement>(null);
+  const previousView = useRef({ presentation, studioTab });
+  useLayoutEffect(() => {
+    const previous = previousView.current;
+    previousView.current = { presentation, studioTab };
+    if (previous.presentation === presentation && previous.studioTab === studioTab) return;
+    // In-view "Open Studio"/mini-player controls unmount during a switch.
+    // Restore focus only if it was lost; persistent tab buttons keep theirs.
+    if (document.activeElement !== document.body) return;
+    const selector = previous.presentation !== presentation
+      ? ".presentation-nav [aria-selected='true']"
+      : ".studio-tabs [aria-selected='true']";
+    studioElement.current?.querySelector<HTMLButtonElement>(selector)?.focus({ preventScroll: true });
+  }, [presentation, studioTab]);
   // Visual preferences are browser-only presentation choices; they never
   // mutate the project, RemixVersion, or transport's musical state.
   const [visualPreset, setVisualPreset] = useState<CinematicVisualPreset>("halo");
@@ -883,6 +914,8 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
 
   const remixCreationBusy = creatingRemixSession || buildingAutomaticRemix !== null;
   return <section
+    ref={studioElement}
+    onKeyDown={navigateViewTabs}
     id={editorId}
     tabIndex={editorId ? -1 : undefined}
     className={`studio waveyard-surface mode-${presentation}`}

@@ -1060,6 +1060,7 @@
 #studio-editor{scroll-margin-top:18px}
 .timeline-keyboard-help,.timeline-edit-status{color:var(--muted);font-size:12px;line-height:1.5;margin:0}
 .timeline-edit-status:empty{display:none}
+.presentation-nav button:focus-visible,.studio-tabs .tab-chip:focus-visible{outline:3px solid var(--acid);outline-offset:3px}
 .timeline-scroll:focus-visible{outline:3px solid var(--acid);outline-offset:2px}
 .timeline-direct .clip:focus-visible,.timeline-direct .clip-lane:focus-visible,.timeline-direct .trim-handle:focus-visible,.timeline-direct .clip-move-handle:focus-visible{outline:3px solid var(--acid);outline-offset:-3px}
 #studio-editor:focus{outline:3px solid var(--acid);outline-offset:5px}

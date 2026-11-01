@@ -2254,6 +2254,59 @@ try {
   assert.equal(await page.locator(".clip").count(), 8, "keyboard edits leave the original arrangement restored for later checks");
   report.push("Studio keyboard users can enter the timeline, select clips, navigate lanes and clips, move by the snap grid, trim and save both edges, duplicate through a focused button, delete with focus recovery including empty lanes, and undo without dragging.");
   const mobileTransport = page.getByRole("region", { name: "Transport controls" });
+  const presentationTabs = page.getByRole("tablist", { name: "Waveyard presentation mode" });
+  const studioFocusTabs = page.getByRole("tablist", { name: "Studio focus" });
+  const assertViewFocus = async (tab) => {
+    assert.equal(await tab.getAttribute("aria-selected"), "true", "keyboard switching must activate the focused view");
+    assert(await tab.evaluate((element) => document.activeElement === element && element.closest("#studio-editor") !== null),
+      "switching a Studio view must keep focus in the editor, not on the page body");
+    assert(await tab.evaluate((element) => Number.parseFloat(getComputedStyle(element).outlineWidth) >= 3),
+      "the focused view tab must have a visible keyboard indicator");
+  };
+  await presentationTabs.getByRole("tab", { name: "Studio", exact: true }).focus();
+  await page.keyboard.press("ArrowLeft");
+  await assertViewFocus(presentationTabs.getByRole("tab", { name: "Play", exact: true }));
+  await page.getByTestId("living-player").waitFor();
+  const openStudioFromPlay = page.getByTestId("living-player").getByRole("button", { name: "Open Studio", exact: true });
+  await openStudioFromPlay.focus();
+  await page.keyboard.press("Enter");
+  await assertViewFocus(presentationTabs.getByRole("tab", { name: "Studio", exact: true }));
+  await keyboardTimeline.waitFor();
+  await page.keyboard.press("End");
+  await assertViewFocus(presentationTabs.getByRole("tab", { name: "Visual", exact: true }));
+  await page.getByTestId("cinematic-visual").waitFor();
+  const visualPresetButton = page.getByRole("group", { name: "Visual preset", exact: true })
+    .getByRole("button", { name: "Prism", exact: true });
+  await visualPresetButton.focus();
+  await page.keyboard.press("Space");
+  assert.equal(await visualPresetButton.getAttribute("aria-pressed"), "true",
+    "the visual view must remain usable through its keyboard-operated preset buttons");
+  await page.getByTestId("cinematic-visual").getByRole("button", { name: "Studio", exact: true }).focus();
+  await page.keyboard.press("Space");
+  await assertViewFocus(presentationTabs.getByRole("tab", { name: "Studio", exact: true }));
+  await studioFocusTabs.getByRole("tab", { name: "Edit", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await assertViewFocus(studioFocusTabs.getByRole("tab", { name: "Analyze", exact: true }));
+  await page.getByText("Linked library audio. Mix and arrange it here; source analysis stays with the original project.", { exact: true }).waitFor();
+  await keyboardTimeline.waitFor();
+  await page.keyboard.press("ArrowRight");
+  await assertViewFocus(studioFocusTabs.getByRole("tab", { name: "Showcase", exact: true }));
+  await page.getByTestId("stem-deck").waitFor();
+  await page.keyboard.press("Home");
+  await assertViewFocus(studioFocusTabs.getByRole("tab", { name: "Edit", exact: true }));
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  await keyboardTimeline.focus();
+  await page.keyboard.press("Enter");
+  assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element),
+    "returning to Edit must leave the timeline usable from the keyboard");
+  await page.getByTestId("mini-player").locator(".mini-player-title").focus();
+  await page.keyboard.press("Enter");
+  await assertViewFocus(presentationTabs.getByRole("tab", { name: "Play", exact: true }));
+  await openStudioFromPlay.focus();
+  await page.keyboard.press("Space");
+  await assertViewFocus(presentationTabs.getByRole("tab", { name: "Studio", exact: true }));
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  report.push("Keyboard view switches retain visible focus across Play, Studio, Visual, Edit, Analyze and Showcase; disappearing in-view launch buttons restore focus to the active mode, and preset/timeline controls remain usable.");
   for (const width of [320, 402]) {
     await page.setViewportSize({ width, height: 874 });
     const timelineScroller = page.getByRole("region", { name: "Arrangement timeline" });
