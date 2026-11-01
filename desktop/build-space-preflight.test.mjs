@@ -10,10 +10,120 @@ import {
   inspectBuildSpace,
   minimumFreeGiBForPreviousBuild,
   parseMinimumFreeGiB,
+  resolvePnpmStorePath,
 } from "./build-space-preflight.mjs";
 import { summarizeBuildSpaceMeasurement } from "./build-space-measurement.mjs";
 
 const GiB = 1024 ** 3;
+
+test("installed pinned pnpm resolves a configured store without enabling downloads", () => {
+  const calls = [];
+  const store = resolvePnpmStorePath({
+    platform: "win32",
+    cwd: "C:\\Arena",
+    env: { npm_config_store_dir: "D:\\Custom Store", NPM_CONFIG_OFFLINE: "false" },
+    run: (command, args, options) => {
+      calls.push({ command, args, options });
+      return { status: 0, stdout: args.includes("--version") ? "10.26.1\r\n" : "D:\\Custom Store\\v10\r\n" };
+    },
+  });
+  assert.equal(store, "D:\\Custom Store\\v10");
+  assert.deepEqual(calls.map(({ command }) => command), ["pnpm", "pnpm"]);
+  assert.deepEqual(calls[1].args, ["--config.manage-package-manager-versions=false", "store", "path"]);
+  assert.equal(calls[1].options.cwd, "C:\\Arena");
+  assert.equal(calls[1].options.env.npm_config_store_dir, "D:\\Custom Store");
+  assert.equal(calls[1].options.env.COREPACK_ENABLE_NETWORK, "0");
+  assert.equal(calls[1].options.env.npm_config_offline, "true");
+  assert.equal(calls[1].options.env.NPM_CONFIG_OFFLINE, undefined);
+  assert.equal(calls[0].options.env.npm_config_manage_package_manager_versions, "false");
+});
+
+test("a missing or different installed pnpm uses only the pinned offline cache", () => {
+  for (const version of [null, "9.0.0"]) {
+    const calls = [];
+    assert.equal(resolvePnpmStorePath({
+      platform: "win32",
+      run: (command, args, options) => {
+        calls.push({ command, args, options });
+        return command === "pnpm"
+          ? { status: version ? 0 : 1, stdout: version }
+          : { status: 0, stdout: "E:\\pnpm\\store\\v10\n" };
+      },
+    }), "E:\\pnpm\\store\\v10");
+    assert.equal(calls[1].command, "npx.cmd");
+    assert.deepEqual(calls[1].args.slice(0, 3), ["--offline", "--yes", "pnpm@10.26.1"]);
+    assert.equal(calls[1].options.env.COREPACK_ENABLE_NETWORK, "0");
+  }
+});
+
+test("unavailable offline pnpm and invalid store output fail closed", () => {
+  for (const result of [
+    { status: 1, stdout: "" },
+    { status: null, error: new Error("unavailable") },
+    { status: 0, stdout: "relative\\store" },
+    { status: 0, stdout: "D:\\store\nunexpected output" },
+  ]) {
+    assert.throws(() => resolvePnpmStorePath({
+      platform: "win32",
+      run: (_command, args) => args.includes("--version")
+        ? { status: 0, stdout: "10.26.1" }
+        : result,
+    }), /No dependency download has started/);
+  }
+});
+
+test("a custom store on another drive is checked even before the store exists", () => {
+  const checked = [];
+  const locations = inspectBuildSpace([
+    { label: "workspace", path: "C:\\Arena" },
+    { label: "pnpm dependency store", path: "D:\\Custom Store\\v10" },
+  ], {
+    pathApi: path.win32,
+    exists: (target) => ["C:\\", "D:\\"].includes(target),
+    statfs: (target) => {
+      checked.push(target);
+      return { bsize: 1, bavail: (target === "D:\\" ? 7 : 30) * GiB };
+    },
+  });
+  assert.deepEqual(checked, ["C:\\", "D:\\"]);
+  assert.equal(locations[0].belowMinimumFreeSpace, false);
+  assert.equal(locations[1].availableGiB, 7);
+  assert.equal(locations[1].belowMinimumFreeSpace, true);
+  assert.equal(locations[1].path, "D:\\Custom Store\\v10");
+});
+
+test("an unavailable store drive is not silently replaced by the workspace drive", () => {
+  const [store] = inspectBuildSpace([
+    { label: "pnpm dependency store", path: "Z:\\offline-store\\v10" },
+  ], {
+    pathApi: path.win32,
+    exists: () => false,
+    statfs: () => assert.fail("An unavailable volume must not be measured elsewhere"),
+  });
+  assert.equal(store.availableBytes, null);
+  assert.equal(store.belowMinimumFreeSpace, true);
+  assert.match(store.inspectionError, /No existing parent/);
+});
+
+test("sampled reports retain consumption on the custom dependency-store drive", () => {
+  const report = summarizeBuildSpaceMeasurement({
+    initialLocations: [
+      { label: "workspace", availableBytes: 40 * GiB },
+      { label: "pnpm dependency store", availableBytes: 30 * GiB },
+    ],
+    samples: [{
+      phase: "dependencies-installed",
+      checkpoint: true,
+      locations: [
+        { label: "workspace", freeBytes: 39 * GiB },
+        { label: "pnpm dependency store", freeBytes: 24 * GiB },
+      ],
+    }],
+  });
+  const store = report.locations.find(({ label }) => label === "pnpm dependency store");
+  assert.equal(store.peakPhase, "dependencies-installed");
+  assert.equal(report.measuredPeakConsumptionGiB, 6);
+});
 
 test("reports free space for each build location without modifying it", () => {
   const checked = [];
@@ -87,6 +197,8 @@ test("the Windows installer fails closed before installing dependencies", async 
   assert.match(script, /temporary files=/);
   assert.match(script, /if \(\$spaceReport\.insufficientSpace\)/);
   assert.match(script, /ARENA_BUILD_MIN_FREE_GIB/);
+  assert.match(script, /"--include-pnpm-store" @spaceLocations/);
+  assert.ok(script.indexOf("$spaceReport.locations | ForEach-Object") < script.indexOf("$monitorLocationsJson ="));
   assert.doesNotMatch(script, /Read-Host "To continue anyway/);
 });
 

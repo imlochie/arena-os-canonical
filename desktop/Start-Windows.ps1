@@ -40,9 +40,12 @@ if ($Action -eq "Build") {
     $spaceLocations += "Electron build cache=$(Join-Path $env:LOCALAPPDATA 'electron-builder\Cache')"
   }
   $spaceOutput = & node (Join-Path $PSScriptRoot "build-space-preflight.mjs") `
-    @spaceLocations
-  if ($LASTEXITCODE -ne 0) { throw "Could not inspect build disk space. No dependency installation has started." }
+    "--include-pnpm-store" @spaceLocations
+  if ($LASTEXITCODE -ne 0) { throw "Could not inspect build disk space or resolve the pnpm store offline. See the error above. No dependency installation has started." }
   $spaceReport = $spaceOutput | ConvertFrom-Json
+  # Include paths discovered by the preflight (notably a custom pnpm drive) in
+  # the exact same list used by the background disk-usage sampler.
+  $spaceLocations = @($spaceReport.locations | ForEach-Object { "$($_.label)=$($_.path)" })
   foreach ($location in $spaceReport.locations) {
     if ($null -eq $location.availableGiB) {
       Write-Host ("{0}: could not inspect this volume; the build will stop safely." -f $location.label)
