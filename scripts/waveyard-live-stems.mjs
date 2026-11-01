@@ -1494,6 +1494,24 @@ try {
   assert.equal(await masterVolume.inputValue(), "0.63", "the chosen master level is active before returning");
   assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
     "the live master gain matches its control before returning");
+  await current.getByLabel("Snap stem changes", { exact: true }).selectOption("off");
+  const vocalsLevel = current.getByLabel("vocals level, current deck", { exact: true });
+  await vocalsLevel.evaluate(element => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(element, "0.37");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await vocalsLevel.inputValue(), "0.37", "the distinctive vocals level is set before returning");
+  await current.getByLabel("Mute drums", { exact: true }).click();
+  await page.waitForFunction(() => {
+    const gain = type => window.audioProbe.sources
+      .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
+      .at(-1)?.inputNode?.nextNode?.gain?.value;
+    return Math.abs(gain("vocals") - 0.37) < 0.01 && gain("drums") < 0.01;
+  });
+  assert.equal(await current.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
+    "drums are muted before returning to the full track");
   const beforeReturn = await current.locator("audio").evaluateAll(elements => Math.max(...elements.map(element => element.currentTime)));
   const returnStartedAt = Date.now();
   let notifyHeldRequest;
@@ -1541,11 +1559,34 @@ try {
   assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "true",
     "the deck remains in the playing state after returning to the full track");
 
+  const beforeStemsSwitch = await current.locator("audio").evaluate(element => element.currentTime);
+  const stemsSwitchStartedAt = Date.now();
   await page.getByTestId("button-switch-stems-a").click();
   await page.waitForFunction(() => {
     const audio = [...document.querySelectorAll('[data-role="current"] audio')];
     return audio.length === 4 && audio.every(element => !element.paused && element.src.includes("/a-"));
   });
+  const afterStemsSwitch = await current.locator("audio").evaluateAll(elements => elements.map(element => element.currentTime));
+  const expectedStemsPosition = beforeStemsSwitch + (Date.now() - stemsSwitchStartedAt) / 1000;
+  assert.ok(afterStemsSwitch.every(time => Math.abs(time - expectedStemsPosition) < 0.5),
+    `switching back to stems preserves the live playhead; expected ${expectedStemsPosition}, received ${afterStemsSwitch}`);
+  assert.equal(await current.getByLabel("vocals level, current deck", { exact: true }).inputValue(), "0.37",
+    "switching back to stems restores the vocals fader");
+  assert.equal(await current.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
+    "switching back to stems restores the muted drums state");
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+    "switching back to stems preserves the master gain");
+  await page.waitForFunction(() => {
+    const gain = type => window.audioProbe.sources
+      .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
+      .at(-1)?.inputNode?.nextNode?.gain?.value;
+    return Math.abs(gain("vocals") - 0.37) < 0.01 && gain("drums") < 0.01 &&
+      gain("bass") > 0.9 && gain("other") > 0.9;
+  });
+  assert.equal(session.tracks.find(item => item.id === "a").stemMix.vocals, 0.37,
+    "the distinctive vocals level remains saved on the session track");
+  assert.equal(session.tracks.find(item => item.id === "a").stemMix.drums, 0,
+    "the muted drums level remains saved on the session track");
   const beforeFailedReturn = await current.locator("audio").evaluateAll(elements => Math.max(...elements.map(element => element.currentTime)));
   failedAssetRequests = 0;
   failAsset = "a-source";
