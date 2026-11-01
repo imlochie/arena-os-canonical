@@ -1090,6 +1090,122 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   await sessions.deleteSession(OWNER, created.id);
 });
 
+test("Studio reload routes keep vocals and drums linked to distinct donor sources", async () => {
+  // Real database, private WAV fixtures, service mutations, and production GET
+  // handlers. These tones test routing/persistence, not separation quality.
+  const seed = async (name: string, frequency: number, types: string[]) => {
+    const filePath = path.join(root!, `${name}.wav`);
+    writeWav(filePath, 1, frequency);
+    const { track } = await service.addTrackFromAudioFile({
+      ownerId: OWNER, filePath, filename: `${name}.wav`, mimeType: "audio/wav",
+    });
+    const [row] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id));
+    const [job] = await db.db.select().from(schema.processingJobs)
+      .where(eq(schema.processingJobs.sourceAssetId, row.sourceAssetId));
+    const stemIds = new Map<string, string>();
+    for (const stemType of types) {
+      const storageKey = `route-fixtures/${track.id}/${stemType}.wav`;
+      await getStorage().putFile(storageKey, filePath, "audio/wav");
+      const [stem] = await db.db.insert(schema.stemAssets).values({
+        projectId: track.studioProjectId,
+        sourceAssetId: row.sourceAssetId,
+        separationJobId: job.id,
+        stemType,
+        engine: "demucs",
+        model: "routing-fixture",
+        modelVersion: "test",
+        storageKey,
+        checksumSha256: createHash("sha256").update(readFileSync(filePath)).digest("hex"),
+        durationSeconds: 1,
+        sampleRate: 44100,
+        channels: 1,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: statSync(filePath).size,
+      }).returning();
+      stemIds.set(stemType, stem.id);
+    }
+    return { track, sourceId: row.sourceAssetId, stemIds };
+  };
+  const base = await seed("Studio route base", 311, ["vocals", "drums"]);
+  const vocals = await seed("Studio route vocal donor", 523, ["vocals"]);
+  const drums = await seed("Studio route drum donor", 733, ["drums"]);
+  assert.notEqual(vocals.sourceId, drums.sourceId);
+  const session = await sessions.createSession(OWNER, "Distinct donor route reload");
+  const detail = await sessions.addTrackToSession({
+    ownerId: OWNER, sessionId: session.id, trackId: base.track.id,
+  });
+  const sessionTrackId = detail.tracks[0].id;
+  const expected = [
+    { type: "vocals", donor: vocals, volume: 0.72 },
+    { type: "drums", donor: drums, volume: 0.37 },
+  ];
+  for (const { type, donor } of expected) {
+    await sessions.recordStemSwap({
+      ownerId: OWNER, sessionId: session.id, sessionTrackId,
+      stemType: type as "vocals" | "drums", toTrackId: donor.track.id, atSeconds: 0,
+    });
+  }
+  const handoff = await sessions.sendSessionToStudio(OWNER, session.id, [sessionTrackId], [
+    { sessionTrackId, stemMix: { vocals: 0.72, drums: 0.37 } },
+  ]);
+  assert.equal(handoff.preservedSwapCount, 2);
+  // Import after the temporary database is configured, without replacing DB,
+  // access-control helpers, or any route response with a mock.
+  const projectRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/waveyard/projects/[id]/route.ts",
+    import.meta.url,
+  ).href);
+  const remixRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/remixes/[id]/route.ts",
+    import.meta.url,
+  ).href);
+  let firstTrackIds: string[] | undefined;
+  for (let reload = 0; reload < 2; reload += 1) {
+    const projectResponse = await projectRoute.GET(
+      new Request(`http://localhost/api/waveyard/projects/${handoff.projectId}`),
+      { params: Promise.resolve({ id: handoff.projectId }) },
+    );
+    const remixResponse = await remixRoute.GET(
+      new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`),
+      { params: Promise.resolve({ id: handoff.remixSessionId }) },
+    );
+    assert.equal(projectResponse.status, 200);
+    assert.equal(remixResponse.status, 200);
+    const project = await projectResponse.json();
+    const remix = await remixResponse.json();
+    assert.equal(project.sources.length, 0, "handoff links audio rather than copying sources");
+    assert.equal(project.studioSources.length, 2, "both different donor sources reach Studio");
+    assert.equal(project.stems.length, 2);
+    assert.equal(remix.tracks.length, 2);
+    assert.equal(remix.stems.length, 2);
+    const trackIds = remix.tracks.map((track: { id: string }) => track.id).sort();
+    if (firstTrackIds) assert.deepEqual(trackIds, firstTrackIds, "reload keeps saved lane IDs");
+    firstTrackIds = trackIds;
+    for (const { type, donor, volume } of expected) {
+      const stemId = donor.stemIds.get(type)!;
+      const projectStem = project.stems.find((stem: { id: string }) => stem.id === stemId);
+      const remixStem = remix.stems.find((stem: { id: string }) => stem.id === stemId);
+      assert.ok(projectStem && remixStem, `${type} donor appears in both actual route responses`);
+      assert.equal(projectStem.sourceAssetId, donor.sourceId);
+      assert.equal(projectStem.projectId, donor.track.studioProjectId);
+      assert.equal(remixStem.sourceAssetId, donor.sourceId);
+      assert.equal(remixStem.stemType, type);
+      assert.ok(project.studioSources.some((source: { id: string; linkedFromLibrary: boolean }) =>
+        source.id === donor.sourceId && source.linkedFromLibrary));
+      const lane = remix.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === stemId);
+      assert.ok(lane, `${type} lane keeps its exact donor asset after reload`);
+      assert.equal(lane.volume, volume);
+      assert.ok(lane.name.includes(donor.track.title));
+      assert.equal(lane.clips.length, 1);
+      assert.equal(lane.clips[0].stemAssetId, stemId);
+      assert.equal(lane.clips[0].remixTrackId, lane.id);
+      assert.equal("storageKey" in projectStem, false, "private storage paths stay off the API");
+    }
+  }
+  await sessions.deleteSession(OWNER, session.id);
+});
+
 test("session stem swap: a donor without the requested stem is refused", async () => {
   const created = await sessions.createSession(OWNER, "Swap refusal");
   const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
