@@ -8,3 +8,9 @@ Arena should be a ChatGPT-like personal workspace with useful local capabilities
 **Why:** The user said previous passes felt like an empty shell and that they had not been able to use the product despite repeated claims that it was ready. They emphasized that presets must not stand in for capabilities and that product stages need to work together. On 2026-10-29, they affirmed the expectation-aligned work was on track and asked to keep checking against their expectations; they also explicitly asked to fast-forward progress without regressing prior work that had a real idea or implementation.
 
 **How to apply:** Keep checking each change against the user's latest product expectations. Look for blockers from capability, discoverability, handoff, persistence, speed, and failure-recovery perspectives. Before replacing existing behavior, inspect its intent and tests; make targeted changes and preserve the contracts that still work. Verify complete input-to-usable-output workflows and distinguish truly local capabilities from cloud-backed features. Do not claim readiness without observable evidence.
+
+Prioritize the already-approved main-chat Arcade roadmap over unrelated small fixes and additional suggestions.
+
+**Why:** The user repeatedly pointed to the main chat's existing queue after the agent substituted side fixes and confused that queue with background task slots.
+
+**How to apply:** Inspect the live ownership and dependency records before explaining why queued work is waiting. Follow the existing roadmap; do not infer that main-chat tasks need approval again or that every blocked item is directly waiting for a concurrency slot.

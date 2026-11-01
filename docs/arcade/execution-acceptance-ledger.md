@@ -1,0 +1,103 @@
+# Arcade execution foundation: baseline and acceptance ledger
+
+Baseline inspected: 2026-11-01.
+
+This is the initial source-backed audit for the existing universal-execution foundation task, not a completed foundation implementation or a Windows readiness declaration. It does not change task dependencies, game storage, runtime selection, or existing player behavior.
+
+## Scope and evidence rules
+
+The governing directive is `attached_assets/Pasted-I-think-Arcade-needs-a-much-bigger-ambition-Arcade-shou_1793462458411.txt`.
+
+- **Implemented** means the named, bounded capability has a wired implementation. It does not imply every game in a family works.
+- **Partial** means a pathway exists but a requested lifecycle capability or execution proof is missing.
+- **Planned** means no corresponding execution pathway was identified in the audited Arcade TypeScript paths. This is not a claim that every unrelated desktop subsystem has been audited.
+- Source evidence, controlled-fixture execution, public-repository downloads, real model inference, and target-host gameplay are different evidence categories.
+- A runtime being configured or downloaded is not proof that a particular game launched or played.
+
+## Current capability matrix
+
+| Capability | Current status | Source evidence | Execution evidence and limits |
+|---|---|---|---|
+| Authorized offline HTML/ZIP game import | Implemented, bounded | `artifacts/arenaforge/src/components/ImportedGameWorkspace.tsx`: authorization, archive asset inlining, size/file limits, existing sandbox player | Original controlled game imported, clicked, reloaded, exported, reimported, and clicked again by `scripts/arcade-repository-import.mjs`. Not proof for arbitrary HTML games. |
+| Public GitHub repository/release-tag source acquisition | Implemented, bounded | `artifacts/api-server/src/imported/arcade/repository-source.ts`; inspect/acquire route registrations; `RepositoryGameImport.tsx` | Real GitHub acquisition of `gabrielecirulli/2048`, commit `478b6ec346e3787f589e4af751378d06ded4cbbc`: 27 pinned files, 586714 bytes, MIT. **Download verification only; that public game was not gameplay-verified.** Browser integration uses an original fixture instead. |
+| Source and repository-license retention | Implemented for the main repository notice | `importedRepositoryAttribution.ts`; import, export and revision application in `ImportedGameWorkspace.tsx` | Focused tests cover round trips, edit retention, malformed/conflicting records and unrelated scripts. Browser export/reimport/reload retains the fixture's origin and license. Additional dependency-specific notices require further work. File-declared provenance is not fresh GitHub verification. |
+| Prompt-created games | Partial: real provider paths exist; runtime success is not established here | `ArcadeForge.tsx`, `lib/arena/src/lib/games/forge-ai.ts`; existing forge routes | No real model call was performed in this audit. Neither starter games nor mocked responses count as generation proof. |
+| Prompt edits of imported HTML | Partial: current-source handoff and safety checks exist | `onReviseSource`, embedded-media masking/restoration and `applyHtmlRevision` in `ImportedGameWorkspace.tsx`; imported revise route | Attribution retention is unit-tested. A complete real-model edit/play/restart journey was not run here. |
+| Imported-game revision history | Partial | Existing `revisionUndoSource` supports a pending revision's undo/keep behavior | This does not establish arbitrary earlier-version restoration or a complete history. Pending revision-preview/history prerequisites must be reconciled before migration. |
+| NES through JSNES | Implemented pathway, compatibility-limited | `ImportedGameWorkspace.tsx`: iNES validation, 1 MB import limit, mapper checks, controls, battery RAM and save-state calls | Existing regression script coverage is source evidence only in this audit. Actual visible-progress restoration must be demonstrated separately. |
+| Classic CHIP-8 | Implemented pathway, format-limited | `ImportedGameWorkspace.tsx` routes to `Chip8Player`; classic program bound is `0x1000 - 0x200` bytes | No new CHIP-8 gameplay test performed here. Super-CHIP support is a separate pending prerequisite, not implied by classic CHIP-8 support. |
+| Browser EmulatorJS integrations | Implemented pathway, host/core/game-dependent | `arcadeEmulatorRuntime.ts`, `EmulatorJsPlayer.tsx`: version 4.2.3; GB/GBC, GBA, SNES, Mega Drive, Master System, Game Gear and N64 selectors | Registry entries are not per-game compatibility proof. Current data URL is the versioned EmulatorJS CDN; offline provisioning and target-host behavior require verification. |
+| Browser-local shelf persistence | Implemented, with explicit failure handling | `importedGameStorage.ts`: IndexedDB, transactional stale-write checks, storage revisions and change notifications; `ImportedGameWorkspace.tsx`: committed baseline and retry handling | Fixture source/provenance survive reload. Do not infer all save formats, storage-quota failures, cross-device portability or private browsing from that test. |
+| Versioned cross-runtime game manifest | Planned foundation work | Current imported records retain identity, source/ROM, kind, optional system, provenance and pending revision state | No common versioned manifest with the directive's installation, permissions, profiles and host-specific verification model was identified in the audited paths. |
+| Independently managed runtime adapters | Planned foundation work | Existing player components and the EmulatorJS registry are integration points | These do not establish a complete common provisioning/assessment/lifecycle contract. The legacy console selector must not become the architectural ceiling. |
+| Managed desktop installation and native execution | Planned downstream work | Existing isolated desktop execution plan | No execution claim from this audit. The broader desktop host still needs its own source/security investigation. |
+| Reproducible repository builds and native releases | Planned downstream work | Existing repository acquisition/build plan | Current GitHub importer intentionally does not run install or build scripts. Successful source acquisition is not a compiled, installed or playable game. |
+| DOSBox, ScummVM, native Libretro/RetroArch, MAME and standalone emulators | Planned integration targets | Existing classic-runtime plan; no direct Arcade TypeScript launch wiring identified in this audit | Browser emulator cores do not prove a managed native frontend/Libretro lifecycle. Each adapter needs separate actual execution evidence. |
+| Wine/Proton compatibility-layer execution | Planned downstream work | Existing compatibility-layer plan | No host provision, game launch, controls, audio or save/restart proof established here. |
+| Mod Workshop: patches, independent profiles, dependency/load order and rollback | Planned downstream work | Existing Mod Workshop plan | HTML source revision and a pending undo field are not a replacement for this subsystem. |
+| Existing game-specific mod loaders | Planned downstream work | Existing loader plan, initially targeting Unity Mono/BepInEx | No loader installation or modified-game execution proved here. Do not generalize Mono evidence to IL2CPP or other engines. |
+| Governed agent-assisted mod development | Planned downstream work | Existing agent/mod-development plan | A prompt editor is not proof of governed source investigation, build, installation, launch, testing or rollback. |
+
+## Existing paths to preserve
+
+1. **Prompt creation:** Arcade room → selected connected code-writing model → source/safety and isolated startup checks → game/draft distinction → existing player and save identity. A quick starter is an example, not a model fallback.
+2. **File import:** explicit permission → HTML or ZIP/ROM/program validation → local game record → existing browser runtime → existing save mechanism.
+3. **Repository import:** approved GitHub link → immutable revision, recognized repository license and bounded manifest → explicit review → pinned file download/hash checks → existing offline ZIP importer → browser-local shelf. Unsupported layouts remain explicit refusals.
+4. **Source edit:** selected game's current HTML → mask bundled media and remove only recognized inert attribution from model input → explicit selected-model request → restore media → source/safety checks → pending revision with original source retained.
+5. **Persistence:** imported records remain in browser-owned IndexedDB; battery/save-state/progress mechanisms retain their existing game identity. Do not move imported ROM bytes or private source into the shared catalog.
+6. **Portable source:** explicit HTML download → import through the same authorization/safety path → restore declared provenance → local shelf. This export does **not** include gameplay save/progress data.
+
+## Queue dependency checkpoint
+
+Live task records inspected on 2026-11-01 show all eight roadmap tasks assigned to the main chat and pending. The foundation task is blocked by three unfinished prerequisites:
+
+- Larger Super-CHIP homebrew support.
+- Reviewing changes before keeping an imported-game revision.
+- Undoing earlier imported-game revisions.
+
+The imported-edit/restart and emulator input/unsupported-format prerequisites are already merged. The three remaining prerequisites are pending background tasks, reported as waiting for concurrency slots. The desktop-execution task depends on foundation; repository builds and Mod Workshop depend on foundation/desktop execution; the remaining runtime/mod tasks depend on those later layers.
+
+This audit does not remove those links, reassign jobs, or mark blocked work as running/completed. Re-read live task states before acting; this checkpoint can become stale.
+
+## Migration and adapter constraints
+
+- Preserve existing game IDs, save-slot aliases, source/ROM bytes, ROM system identifiers, pending edits, and storage revision/CAS semantics.
+- Reconcile incoming prerequisite changes before defining history migration. Do not flatten a new history back into one pending undo field.
+- Use atomic, recoverable migrations. A failed write must leave the previous committed game and progress available; do not manufacture a new identity to bypass a conflict.
+- Wrap existing HTML, JSNES, CHIP-8 and EmulatorJS players rather than replacing their working controls or persistence with a demonstration adapter.
+- Model availability and game-runtime availability are separate concerns. A model's WebGPU status must not become a blanket game-runtime compatibility indicator.
+- Runtime IDs must be extensible. Existing console IDs may be retained as legacy configuration, not treated as the universe of supported future engines.
+- Keep host/runtime provisioning, a game's requirements, and game-specific compatibility evidence distinct.
+- Runtime installation, permission grants, dependency resolution and uninstall/cleanup need explicit contracts. Do not silently execute third-party repository scripts in the API process.
+- Keep optional runtimes separately provisioned rather than adding every engine/core to the base application bundle.
+- Record downloaded, installed, built, startup-verified and gameplay-verified separately, with game version, runtime/version, host and evidence. Do not promote a successful download to playable status.
+
+## Representative acceptance collection
+
+| Required example | Current evidence | Evidence still required |
+|---|---|---|
+| Browser open-source game | Controlled original HTML fixture play/reload; separate public repository acquisition | Select a legally suitable real repository game and demonstrate its actual installation/import, controls, audio where applicable, persistence and recovery. |
+| Source-built Godot game | None established | Reproducible build, isolated install, native launch, input/audio, saves, shutdown/recovery. |
+| Source-built SDL or similar game | None established | Same full native lifecycle, with actual dependency resolution and logs. |
+| DOS game | None established | Lawful fixture, actual DOS runtime, controls/audio and save/restart behavior. |
+| Libretro-compatible game | No native workflow established | Actual managed adapter/core/game lifecycle; do not substitute a console name in a registry. |
+| Standalone console emulator workflow | Browser pathways exist, not this acceptance case | Actual standalone executable provisioning, controls, saves, shutdown and cleanup. |
+| Compatibility-layer game | None established | Exact host, layer/version, legally usable game and observed full lifecycle. |
+| Working mod loader | None established | Game/version/framework-specific loader installation and observable mod behavior. |
+| Multiple independent mod profiles | None established | Profile isolation, deterministic load order, correct saves/configuration boundaries and independent launch results. |
+| Patched game with verified rollback | Source-level pending undo is not this acceptance case | Patch/base integrity, visible change, rollback to the original content and preserved unrelated data. |
+
+## Reproducible checks already available
+
+Run from the workspace root:
+
+```sh
+pnpm --filter @workspace/scripts exec tsx --test \
+  "$PWD/artifacts/api-server/src/imported/arcade/repository-source.test.ts" \
+  "$PWD/artifacts/arenaforge/src/lib/importedRepositoryAttribution.test.ts"
+pnpm --filter @workspace/scripts exec tsx "$PWD/scripts/arcade-repository-import.mjs"
+pnpm --filter @workspace/arenaforge run typecheck
+pnpm --filter @workspace/api-server run typecheck
+```
+
+The focused browser report is generated at `generated-artifacts/arcade-repository-import/report.json` and explicitly records `modelCallTested: false`. Existing broader scenarios live in `scripts/arena-smoke.mjs`; their presence is not evidence they were rerun for this audit. No new runtime or Windows checks were run for this documentation-only pass.
