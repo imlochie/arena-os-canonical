@@ -12,7 +12,7 @@ export type ModManifest = {
   settings: Record<string, Setting>; operations: ModOperation[]; payloads: Record<string, string>;
 };
 export type ModPackage = { manifest: ModManifest; files: Record<string, Uint8Array>; digest: string };
-export type ModProfile = { id: string; name: string; enabled: string[]; order: string[]; settings: Record<string, Record<string, string | number | boolean>>; shareSaves: boolean };
+export type ModProfile = { id: string; name: string; enabled: string[]; order: string[]; settings: Record<string, Record<string, string | number | boolean>>; shareSaves: boolean; outputFiles?: Record<string, { hash: string; bytes: number }> };
 export type ModBase = { id: string; version: string; kind: string; files: Record<string, Uint8Array> };
 const hashPattern = /^[a-f0-9]{64}$/, idPattern = /^[a-z0-9][a-z0-9.-]{0,79}$/, versionPattern = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
 function object(value: unknown): asserts value is Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected a manifest object."); }
@@ -48,12 +48,14 @@ export function versionMatches(version: string, range: string) {
 export function validateModManifest(value: unknown): ModManifest {
   object(value); keys(value, ["schema", "schemaVersion", "id", "name", "version", "license", "source", "base", "adapter", "permissions", "requires", "conflicts", "after", "settings", "operations", "payloads"]);
   if (value.schema !== "arena.arcade.mod" || value.schemaVersion !== 1 || !idPattern.test(value.id) || !versionPattern.test(value.version)) throw new Error("Unsupported mod identity/schema/version.");
+  text(value.id, 80); text(value.version, 32);
   text(value.name, 100); object(value.license); keys(value.license, ["spdx", "text", "redistributable"]); text(value.license.spdx, 100); text(value.license.text, 65536);
   if (typeof value.license.redistributable !== "boolean") throw new Error("Declare whether the mod's own payload may be redistributed.");
   object(value.source); keys(value.source, ["kind", "url", "revision"]);
   if (!["local", "repository"].includes(value.source.kind)) throw new Error("Invalid mod source.");
   if (value.source.url !== undefined) { text(value.source.url, 1000); const url = new URL(value.source.url); if (url.protocol !== "https:" || url.username || url.password) throw new Error("Mod source must be an HTTPS provenance URL."); }
   if (value.source.revision !== undefined && !/^[a-f0-9]{40}$/.test(value.source.revision)) throw new Error("Repository revision must be pinned.");
+  if (value.source.kind === "repository" && (!value.source.url || !value.source.revision)) throw new Error("Repository mods require pinned provenance.");
   object(value.base); keys(value.base, ["id", "version", "files"]); text(value.base.id, 200);
   if (!/^sha256:[a-f0-9]{64}$/.test(value.base.version)) throw new Error("Mods must pin an exact base version SHA256.");
   object(value.base.files); object(value.payloads);
@@ -86,9 +88,10 @@ export function validateModManifest(value: unknown): ModManifest {
     if (operation.kind !== "config-json" && !hashPattern.test(operation.resultSha256)) throw new Error("Each patch/replacement must verify its result SHA256.");
     if (operation.afterMod !== undefined && !idPattern.test(operation.afterMod)) throw new Error("Invalid explicit override.");
     if (/\.(?:exe|dll|sys|com|bat|cmd|ps1|vbs|msi|lnk|reg)$/i.test(operation.target)) throw new Error("Executable/native loader replacement requires a separate adapter.");
-    const permission = operation.kind === "config-json" ? "configuration" : operation.kind === "ips" || operation.kind === "bps" ? "patch-binary" : /\.(?:js|lua|gd|py|cfgscript)$/i.test(operation.target) ? "scripts" : "assets";
+    const permission = operation.kind === "config-json" ? "configuration" : operation.kind === "ips" || operation.kind === "bps" ? "patch-binary" : /\.(?:html?|js|lua|gd|py|cfgscript)$/i.test(operation.target) ? "scripts" : "assets";
     if (!value.permissions.includes(permission)) throw new Error(`Declare ${permission} permission for ${operation.target}.`);
   }
+  if (Object.keys(value.payloads).some(path => !value.operations.some((operation: ModOperation) => operation.payload === path))) throw new Error("Unreferenced payloads cannot be bundled with a mod.");
   return value as ModManifest;
 }
 export async function parseModPackage(json: string): Promise<ModPackage> {
@@ -171,6 +174,8 @@ export async function composeMods(base: ModBase, packages: ModPackage[], profile
   const changes: { path: string; before: string; after: string; bytes: number; mod: string }[] = [];
   const caseNames = new Map<string, string>();
   for (const [path, bytes] of Object.entries(files)) { safeModPath(path); if (caseNames.has(path.toLowerCase())) throw new Error("Case-colliding base paths."); caseNames.set(path.toLowerCase(), path); originalHashes[path] = await modHash(bytes); }
+  let totalOutput = Object.values(files).reduce((sum, bytes) => sum + bytes.length, 0);
+  if (totalOutput > PATCH_LIMIT) throw new Error("Modified working files exceed the 64 MiB memory budget.");
   for (const mod of resolved.mods) {
     const m = mod.manifest;
     if (m.base.id !== base.id || m.base.version !== base.version) throw new Error(`${m.name} requires a different base game/version.`);
@@ -189,6 +194,8 @@ export async function composeMods(base: ModBase, packages: ModPackage[], profile
       if ((operation.kind === "ips" || operation.kind === "bps") && !files[path]) throw new Error("Binary patches need an existing authorized base file.");
       const result = operation.kind === "ips" ? applyIps(files[path], payload) : operation.kind === "bps" ? applyBps(files[path], payload) : operation.kind === "config-json" ? configure(payload, settings) : new Uint8Array(payload);
       if (result.length > PATCH_LIMIT) throw new Error("Overlay output exceeds 64 MiB.");
+      totalOutput += result.length - (files[path]?.length ?? 0);
+      if (totalOutput > PATCH_LIMIT) throw new Error("Combined overlay files exceed the 64 MiB memory budget.");
       const after = await modHash(result);
       if (operation.resultSha256 && operation.resultSha256 !== after) throw new Error(`Patch result checksum mismatch: ${path}.`);
       files[path] = result; caseNames.set(lower, path); owners.set(lower, m.id);

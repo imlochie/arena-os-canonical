@@ -126,7 +126,7 @@ export default function NativeGamesWorkspace() {
 
       {st && (
         <p className="break-words font-mono text-[10px] text-slate-400">
-          downloads {formatBytes(st.downloads)} / staging {formatBytes(st.staging)} / installed {formatBytes(st.installed)} / profiles {formatBytes(st.profiles)} / cache {formatBytes(st["build-cache"])} / free {formatBytes(st.freeBytes)} (reserve {formatBytes(st.reserveBytes)}, budget {formatBytes(st.budgetBytes)})
+          downloads {formatBytes(st.downloads)} / staging {formatBytes(st.staging)} / installed {formatBytes(st.installed)} / profiles {formatBytes(st.profiles)} / mods {formatBytes(st.workshop ?? 0)} / cache {formatBytes(st["build-cache"])} / free {formatBytes(st.freeBytes)} (reserve {formatBytes(st.reserveBytes)}, budget {formatBytes(st.budgetBytes)})
         </p>
       )}
       {st?.warning && <p className="text-xs text-amber-300">{st.warning}</p>}

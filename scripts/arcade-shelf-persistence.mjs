@@ -121,7 +121,7 @@ async function launchPersistent() {
 async function records() {
   return page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open("arenaforge-imported-games", 1);
+      const req = indexedDB.open("arenaforge-imported-games");
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
@@ -442,7 +442,7 @@ try {
   await page.evaluate(async () => {
     const storage = await import(`/src/lib/importedGameStorage.ts?test=${Date.now()}`);
     const baseline = await new Promise((resolve, reject) => {
-      const req = indexedDB.open("arenaforge-imported-games", 1);
+      const req = indexedDB.open("arenaforge-imported-games");
       req.onsuccess = () => {
         const db = req.result, read = db.transaction("games", "readonly").objectStore("games").getAll();
         read.onsuccess = () => { resolve(read.result); db.close(); };

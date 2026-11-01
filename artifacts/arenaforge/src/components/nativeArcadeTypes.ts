@@ -35,6 +35,7 @@ export type NativeSnapshot = {
     installed: number | null;
     profiles: number | null;
     "build-cache": number | null;
+    workshop?: number | null;
     warning?: string;
     freeBytes: number;
     reserveBytes: number;
@@ -55,6 +56,7 @@ export type NativeSnapshot = {
 };
 
 export type NativeArcadeBridge = {
+  workshop?(data: Record<string, unknown>): Promise<unknown>;
   inspect(): Promise<NativeSnapshot>;
   probe(): Promise<NativeSnapshot>;
   install(key: string): Promise<NativeSnapshot>;

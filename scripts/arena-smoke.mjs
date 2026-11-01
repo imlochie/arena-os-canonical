@@ -1,3 +1,8 @@
+if (process.argv.includes("--mod-workshop-only")) {
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync("pnpm", ["--filter", "@workspace/scripts", "exec", "tsx", "--test", `${process.cwd()}/lib/arena/src/lib/games/mod-workshop.test.ts`, `${process.cwd()}/desktop/arcade-workshop.test.ts`], { stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -3271,7 +3276,7 @@ try {
   const revisedArchiveHtml = '<!doctype html><html><head><title>Revised offline project</title><style>#tile{width:48px;height:48px;background-image:url("data:ARENA_ASSET_TOKEN_0001");background-size:cover}</style></head><body><p id="hud">Score 0</p><div id="tile"></div><img id="dynamic-sprite" src="data:ARENA_ASSET_TOKEN_0004"><audio id="sfx" src="data:ARENA_ASSET_TOKEN_0002"></audio><button id="play-sfx">Play sound</button><button id="play-dynamic-sfx">Play dynamic sound</button><script>let score=Number(localStorage.getItem("zip-score")||0);const hud=document.getElementById("hud");hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score+=2;localStorage.setItem("zip-score",String(score));hud.textContent="Score "+score}});const dynamicSfx=new Audio("data:ARENA_ASSET_TOKEN_0003");dynamicSfx.id="dynamic-sfx";document.body.appendChild(dynamicSfx);document.getElementById("play-sfx").addEventListener("click",()=>{void document.getElementById("sfx").play()});document.getElementById("play-dynamic-sfx").addEventListener("click",()=>{void dynamicSfx.play()});</script></body></html>';
   const readImportedFixture = async () => page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("arenaforge-imported-games", 1);
+      const request = indexedDB.open("arenaforge-imported-games");
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });

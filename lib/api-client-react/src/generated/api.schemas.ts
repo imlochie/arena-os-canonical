@@ -5,6 +5,12 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface ArcadeModRepositoryInput {
+  /** @maxLength 1000 */
+  url: string;
+  authorized: boolean;
+}
+
 export type ArcadeCatalogSearchInputCatalog = typeof ArcadeCatalogSearchInputCatalog[keyof typeof ArcadeCatalogSearchInputCatalog];
 
 
@@ -625,6 +631,10 @@ export interface LibraryTrackSeparationStartResponse {
   /** @nullable */
   error: string | null;
 }
+
+export type ReviewArcadeModRepository200 = {
+  packageJson: string;
+};
 
 export type SearchArcadeCatalog200SourcesItem = {
   catalog: string;

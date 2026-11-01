@@ -37,6 +37,27 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
   const approve = async (message, detail) => (await dialog.showMessageBox(window, { type: "warning", message, detail, buttons: ["Approve", "Cancel"], defaultId: 1, cancelId: 1 })).response === 0;
   let operation = false;
   let acquisition;
+  let workshop;
+  ipcMain.handle("arena-native-mod-workshop", async (event, data) => {
+    assertArcadeSender(event, window, origin, { action: "inspect" });
+    if (!data || typeof data !== "object" || JSON.stringify(data).length > 32 * 1024 * 1024 || !["list", "inspect", "create", "review", "commit", "activate", "rollback", "export", "launch"].includes(data.op)) throw new Error("Invalid mod workshop request.");
+    if (operation) throw new Error("Another native operation is active.");
+    operation = true;
+    try {
+      if (!workshop) { const { NativeModWorkshop } = await import("./workshop.mjs"); workshop = new NativeModWorkshop(packages, host); await workshop.initialize(); }
+      if (data.op === "list") return Promise.all([...packages.catalog].filter(([key, item]) => item.kind === "game" && packages.state.packages[key]?.phase === "ready").map(async ([key]) => (await workshop.engine.inspect(key)).game));
+      if (data.op !== "commit" && (typeof data.key !== "string" || data.key.length > 200)) throw new Error("Select a managed game.");
+      if (data.op === "inspect") return await workshop.engine.inspect(data.key);
+      if (data.op === "create") return await workshop.engine.create(data.key, data.name, data.shareSaves, data.revision);
+      if (data.op === "review") return await workshop.engine.review(data.key, data.profileId, data.change, data.revision);
+      if (data.op === "export") return await workshop.engine.export(data.key, data.profileId);
+      if (!await approve("Apply this native mod profile operation?", "Only the reviewed managed game profile is affected. The base installation remains immutable. Native launch still requires a successful Windows containment probe. Save sharing follows the profile's explicit setting.")) throw new Error("Native mod operation cancelled.");
+      if (data.op === "commit") return await workshop.engine.commit(data.id);
+      if (data.op === "activate") return await workshop.engine.activate(data.key, data.profileId, data.revision);
+      if (data.op === "rollback") return await workshop.engine.rollback(data.key, data.profileId, data.revision);
+      if (data.op === "launch") return await workshop.launch(data.key, data.profileId);
+    } finally { operation = false; storageCache = undefined; }
+  });
   ipcMain.handle("arena-native-arcade", async (event, payload) => {
     assertArcadeSender(event, window, origin, payload);
     if (payload.action === "inspect") return inspect();
@@ -135,5 +156,5 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
     } finally { operation = false; storageCache = undefined; }
   });
   return { shutdown: async () => { acquisition?.abort(new Error("Desktop is stopping.")); await repositories.shutdown(); await host.shutdown(); },
-    dispose: () => ipcMain.removeHandler("arena-native-arcade") };
+    dispose: () => { ipcMain.removeHandler("arena-native-arcade"); ipcMain.removeHandler("arena-native-mod-workshop"); } };
 }

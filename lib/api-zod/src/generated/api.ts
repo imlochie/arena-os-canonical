@@ -9,6 +9,23 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary Read a licensed pinned mod package without executing repository code
+ */
+export const reviewArcadeModRepositoryBodyUrlMax = 1000;
+
+
+
+export const ReviewArcadeModRepositoryBody = zod.object({
+  "url": zod.string().max(reviewArcadeModRepositoryBodyUrlMax),
+  "authorized": zod.boolean()
+})
+
+export const ReviewArcadeModRepositoryResponse = zod.object({
+  "packageJson": zod.string()
+})
+
+
+/**
  * @summary Search both public catalogs without downloading or claiming a playable game
  */
 export const searchArcadeCatalogBodyQueryMax = 80;

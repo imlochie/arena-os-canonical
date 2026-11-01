@@ -32,3 +32,7 @@ test("raw HTML resource/code rejection happens before constructing a DOM parser"
     if (original) global.DOMParser = original; else delete global.DOMParser;
   }
 });
+test("ordinary authorized HTML retains exact source bytes, including absent head and original whitespace", () => {
+  const original = '<!doctype html><html><body><p>Original source</p><script>\n const score = 0;\n</script></body></html>';
+  assert.equal(prepareOfflineHtml(original), original);
+});

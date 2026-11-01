@@ -36,7 +36,7 @@ const frame = () => page.frameLocator('iframe[title="Playable game: same-name.ht
 const saves = (target = page) => target.evaluate(() => Object.fromEntries(Object.keys(localStorage)
   .filter(key => key.startsWith("arenaforge.game-save.v1:")).map(key => [key.slice("arenaforge.game-save.v1:".length), localStorage.getItem(key)])));
 const records = (target = page) => target.evaluate(() => new Promise((resolve, reject) => {
-  const open = indexedDB.open("arenaforge-imported-games", 1);
+  const open = indexedDB.open("arenaforge-imported-games");
   open.onerror = () => reject(open.error);
   open.onsuccess = () => {
     const db = open.result;

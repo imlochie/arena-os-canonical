@@ -23,8 +23,7 @@ type Props = { onPlay(playback: WorkshopPlayback): void; activePlayback?: Worksh
 const UNSUPPORTED_ADAPTERS = [
   { name: "UPS patches", reason: "No UPS adapter is installed. Convert to a supported package before intake." },
   { name: "xdelta / VCDIFF", reason: "No xdelta adapter is installed in the browser workshop." },
-  { name: "Executable plugins / scripts", reason: "Code plugins are not loaded. Packages may only change declared file targets." },
-  { name: "Native runtime profiles", reason: "Browser workshop playback only. Native mod launch is not available here." },
+  { name: "Framework plugins / install hooks", reason: "Generic installer hooks are not executed. Declared script overlays run only through the game's existing sandboxed runtime." },
 ];
 
 function message(cause: unknown) {
@@ -327,7 +326,10 @@ export default function ModWorkshop({ onPlay, activePlayback = null }: Props) {
                     className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-bold text-slate-200 disabled:opacity-40"><Check size={12} />{snapshot.activeProfileId === profile.id ? "Active" : "Activate"}</button>
                   <button type="button" data-testid="workshop-play" disabled={locked || dirty}
                     title={dirty ? "Commit or discard pending edits before playing" : "Play this profile in the browser runtime"}
-                    onClick={() => void run("Building profile runtime…", () => launchWorkshopProfile(snapshot.game.id, profile.id), (playback) => onPlay(playback))}
+                    onClick={() => void run("Building profile runtime…", () => launchWorkshopProfile(snapshot.game.id, profile.id), (playback) => {
+                      if (playback.native) setNotice("Native launch requested. Check the game window and Native games run status; process startup is not gameplay verification.");
+                      else onPlay(playback);
+                    })}
                     className="inline-flex items-center gap-1 rounded-lg bg-emerald-400 px-3 py-2 text-[11px] font-extrabold text-slate-950 disabled:opacity-40"><Play size={12} />Play in browser</button>
                   <button type="button" data-testid="workshop-rollback" disabled={locked || profile.history === 0}
                     onClick={() => { if (window.confirm(`Restore “${profile.name}” to its last known good checkpoint?`)) void run("Restoring…", () => rollbackWorkshopProfile(snapshot.game.id, profile.id, snapshot.revision), (next) => { setSnapshot(next); setNotice("Restored last known good profile."); }); }}
@@ -361,7 +363,7 @@ export default function ModWorkshop({ onPlay, activePlayback = null }: Props) {
                       <Upload size={14} />Choose package file
                       <input type="file" className="sr-only" data-testid="workshop-package-file" disabled={!rights || locked} onChange={(e) => { onPackageFile(e.target.files?.[0]); e.currentTarget.value = ""; }} />
                     </label>
-                    <div className="flex gap-2">
+                    <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
                       <input data-testid="workshop-repository-url" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="https://github.com/owner/mod" disabled={!rights || locked}
                         className="min-w-0 flex-1 rounded-lg border border-white/15 bg-slate-950 px-3 py-2 text-xs text-slate-100 disabled:opacity-40" />
                       <button type="button" data-testid="workshop-repository-review" onClick={onRepository} disabled={!rights || locked || !repoUrl.trim()}
@@ -472,6 +474,13 @@ function PreviewPanel({ preview, packagesByKey, locked, onCommit, onDiscard }: {
           {preview.warnings.map((w, i) => <li key={i} className="flex gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" />{w}</li>)}
         </ul>
       )}
+      <div className="mt-3 space-y-2">
+        {preview.licenses.map(license => <details key={license.mod} className="rounded-lg border border-white/10 p-3 text-xs text-slate-300">
+          <summary className="cursor-pointer">{license.mod} · {license.spdx} · {license.redistributable ? "Payload redistribution declared" : "Excluded from portable backups"}</summary>
+          <p className="mt-2 break-all text-slate-400">{license.source}</p>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-[10px]">{license.text}</pre>
+        </details>)}
+      </div>
       <div className="mt-3 grid gap-3 md:grid-cols-3 text-[11px]">
         <div className="rounded-lg bg-black/20 p-3">
           <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Permissions</p>

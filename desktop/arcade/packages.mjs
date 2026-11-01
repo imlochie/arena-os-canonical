@@ -193,7 +193,7 @@ export class ArcadePackages {
     return path.join(this.root, "installed", key);
   }
   async initialize() {
-    for (const name of ["downloads", "staging", "installed", "profiles", "build-cache"]) await mkdir(path.join(this.root, name), { recursive: true });
+    for (const name of ["downloads", "staging", "installed", "profiles", "build-cache", "workshop"]) await mkdir(path.join(this.root, name), { recursive: true });
     try {
       const raw = await readFile(path.join(this.root, "state.json"), "utf8");
       if (raw.length > 1024 * 1024) throw new Error("Managed package state is oversized.");
@@ -217,7 +217,7 @@ export class ArcadePackages {
   async persist() { await atomicJson(path.join(this.root, "state.json"), this.state); }
   async storage() {
     const result = {};
-    for (const name of ["downloads", "staging", "installed", "profiles", "build-cache"]) {
+    for (const name of ["downloads", "staging", "installed", "profiles", "build-cache", "workshop"]) {
       try { result[name] = await directoryBytes(path.join(this.root, name)); }
       catch { result[name] = null; result.warning = "Some storage could not be safely counted. Stop/remove controls remain available; new installations are blocked until accounting is complete."; }
     }

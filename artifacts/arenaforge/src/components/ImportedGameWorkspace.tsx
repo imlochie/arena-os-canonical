@@ -488,11 +488,12 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     id: selected.id, title: selected.name, source: selected.romData ?? selected.source,
     format: selected.kind === "html" ? "html" : selected.kind === "nes" ? "ines" : selected.kind === "chip8" ? "chip8" : `emulatorjs:${selected.system}`,
     profile: selected.kind === "chip8" ? selected.chip8Dialect ?? "chip8" : selected.system ?? selected.kind,
-    scope: "imported-private", trust: selected.kind === "html" ? "imported-code" : "rom", saveId: selected.id,
+    scope: "imported-private", trust: selected.kind === "html" ? "imported-code" : "rom", saveId: runtimeSaveId,
+    ...(workshopActive && workshopLaunch ? { workshop: { profileId: workshopLaunch.profileId, modKeys: workshopLaunch.modKeys, saveScope: runtimeSaveId === selected.id ? "shared" as const : "isolated" as const } } : {}),
     stored: savingShelf === 0 && !unsavedIds.includes(selected.id), addedAt: selected.addedAt,
     sourceRevisionCopies: selected.kind === "html" ? getImportedRevisionHistory(selected).length : 0,
     provenance: selected.provenance,
-  } : null, [selected, savingShelf, unsavedIds]);
+  } : null, [selected, savingShelf, unsavedIds, workshopActive, workshopLaunch, runtimeSaveId]);
   const management = useArcadeManagement(managedDescriptor);
   const revisionCopies = useMemo(() => selected?.kind === "html"
     ? getImportedRevisionHistory(selected).map(copy => ({ ...copy, sizeKb: Math.ceil(new Blob([copy.source]).size / 1024) }))

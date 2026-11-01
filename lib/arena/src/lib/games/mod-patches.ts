@@ -31,7 +31,7 @@ export function applyIps(source: Uint8Array, patch: Uint8Array): Uint8Array {
   if (cursor + 3 === patch.length) truncate = read() * 65536 + read() * 256 + read();
   if (cursor !== patch.length) throw new Error("Unexpected IPS trailing bytes.");
   const result = new Uint8Array(size); result.set(source);
-  for (const record of records) record.bytes ? result.set(record.bytes, record.offset) : result.fill(record.value, record.offset, record.offset + record.count);
+  for (const record of records) record.bytes ? result.set(record.bytes, record.offset) : result.fill(record.value!, record.offset, record.offset + record.count);
   if (truncate === undefined) return result;
   bounds(truncate); const resized = new Uint8Array(truncate); resized.set(result.subarray(0, truncate)); return resized;
 }

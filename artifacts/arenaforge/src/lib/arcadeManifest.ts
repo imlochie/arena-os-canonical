@@ -6,6 +6,7 @@ export type ArcadeEvidence = {
   at: number; hostId: string; gameVersion: string; runtimeId: string; runtimeVersion: string; profile: string; detail: string;
 };
 export type ArcadeManifest = {
+  workshop?: { profileId: string; modKeys: string[]; saveScope: "isolated" | "shared"; baseVersion?: string };
   schema: "arena.arcade.game"; schemaVersion: 1; id: string; title: string;
   ownership: "imported-private" | "created"; trust: "imported-code" | "generated-code" | "rom";
   provenance: { origin: string; repository?: string; revision?: string; sourceUrl?: string };
@@ -22,6 +23,7 @@ export type ArcadeManifest = {
   evidence: ArcadeEvidence[];
 };
 export type ArcadeGameDescriptor = {
+  workshop?: ArcadeManifest["workshop"];
   id: string; title: string; source: string | ArrayBuffer; format: string; profile?: string;
   scope: "imported-private" | "created"; trust: ArcadeManifest["trust"]; saveId?: string;
   stored: boolean; addedAt: number; sourceRevisionCopies?: number;
@@ -75,10 +77,11 @@ export async function createArcadeManifest(game: ArcadeGameDescriptor, runtime: 
   const installedVersion = await arcadeContentVersion(game.source);
   const slot = game.saveId ?? game.id;
   const saveLocations = runtime.id === "arena.browser.html" ? [`localStorage:arenaforge.game-save.v1:${slot}`]
-    : runtime.id === "arena.browser.jsnes" ? [`indexeddb:arenaforge-nes-save-states/states/${game.id}`, `localStorage:arenaforge.nes-sram.v1:${game.id}`]
-    : runtime.id === "arena.browser.chip8" ? [`localStorage:arenaforge.${game.profile === "schip" ? "schip-state.v2" : "chip8-state.v1"}:${game.id}`]
+    : runtime.id === "arena.browser.jsnes" ? [`indexeddb:arenaforge-nes-save-states/states/${slot}`, `localStorage:arenaforge.nes-sram.v1:${slot}`]
+    : runtime.id === "arena.browser.chip8" ? [`localStorage:arenaforge.${game.profile === "schip" ? "schip-state.v2" : "chip8-state.v1"}:${slot}`]
     : ["Runtime-owned browser storage; preserve the existing game key."];
   const manifest: ArcadeManifest = {
+    ...(game.workshop ? { workshop: game.workshop } : {}),
     schema: "arena.arcade.game", schemaVersion: 1, id: game.id, title: game.title, ownership: game.scope, trust: game.trust,
     provenance: game.provenance ? { origin: "repository", repository: game.provenance.repository, revision: game.provenance.revision, sourceUrl: game.provenance.sourceUrl } : { origin: game.origin ?? (game.scope === "created" ? "generated-or-offline" : "local-file") },
     license: game.provenance ? { status: "declared", details: game.provenance.license } : { status: "unknown" },
@@ -86,7 +89,7 @@ export async function createArcadeManifest(game: ArcadeGameDescriptor, runtime: 
     requirements: runtime.requirements, launch: { entryRef: `${game.scope === "imported-private" ? "imported-game" : "created-game"}:${game.id}`, arguments: [] },
     permissions: runtime.permissions,
     locations: { installation: game.scope === "imported-private" ? `indexeddb:arenaforge-imported-games/games/${game.id}` : `existing-created-game:${game.id}`, saves: saveLocations, configuration: [`manifest-profile:${game.scope}:${game.id}/default`] },
-    profiles: [{ id: "default", name: "Existing controls and settings", ...runtime.interfaces, mods: [] }],
+    profiles: [{ id: game.workshop?.profileId ?? "default", name: game.workshop ? "Reviewed mod profile" : "Existing controls and settings", ...runtime.interfaces, mods: game.workshop?.modKeys ?? [] }],
     history: [{ at: game.addedAt, version: installedVersion, note: "Existing game identity retained; source and progress were not migrated." }],
     sourceRevisionCopies: game.sourceRevisionCopies ?? 0, evidence: [],
   };

@@ -81,7 +81,7 @@ export class NativeArcadeHost {
       child.once("exit", code => { if (timer) clearTimeout(timer); failure ? reject(failure) : resolve(code ?? 1); });
     });
   }
-  async launch(key) {
+  async launch(key, workshop) {
     if (!this.requirements().supportedHost) throw new Error(this.requirements().message);
     if (!this.proof || Date.now() - this.proof.checkedAt > 300_000) await this.probe();
     const descriptor = await this.packages.verify(key);
@@ -93,13 +93,15 @@ export class NativeArcadeHost {
       await this.packages.verify(runtime);
     }
     if (descriptor.runtimes.length > 1) throw new Error("This initial native driver supports one independently installed runtime directory. No dependency is silently omitted.");
-    const install = this.packages.filename(key);
+    const install = workshop?.install ?? this.packages.filename(key);
     const runtime = descriptor.runtimes.length ? this.packages.filename(descriptor.runtimes[0]) : install;
-    const profile = path.join(this.packages.root, "profiles", hash(descriptor.id), "default"); await mkdir(profile, { recursive: true });
+    const dataProfile = workshop?.dataProfile ?? "default";
+    if (!/^(?:default|mod-[a-f0-9-]{36})$/.test(dataProfile)) throw new Error("Invalid isolated save profile.");
+    const profile = path.join(this.packages.root, "profiles", hash(descriptor.id), dataProfile); await mkdir(profile, { recursive: true });
     const args = descriptor.arguments.map(argument => argument.replaceAll("{profile}", profile).replaceAll("{runtime}", runtime).replaceAll("{install}", install));
     const executable = descriptor.runtimeEntry ? path.join(runtime, ...descriptor.runtimeEntry.split("/")) : path.join(install, ...descriptor.entry.split("/"));
     if (descriptor.runtimeEntry && !this.packages.catalog.get(descriptor.runtimes[0])?.files.some(file => file.path === descriptor.runtimeEntry)) throw new Error("Pinned runtime does not contain this game's engine executable.");
-    const moniker = `arena.arcade.${hash(`${this.packages.root}:${descriptor.id}`)}`;
+    const moniker = `arena.arcade.${hash(`${this.packages.root}:${descriptor.id}${dataProfile === "default" ? "" : `:${dataProfile}`}`)}`;
     const id = randomUUID();
     const record = { id, key, phase: "starting", profile, logs: [], startedAt: Date.now(), gameplayVerified: false };
     for (const [oldId, old] of this.runs) if (this.runs.size >= 32 && !old.child) this.runs.delete(oldId);

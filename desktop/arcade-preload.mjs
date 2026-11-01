@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld("arenaNativeArcade", Object.freeze({
   selectRepositoryVersion: key => call("select-version", key),
   installRepositoryRelease: selection => call("install-release", selection),
   resetBuildTool: id => call("reset-build-tool", id),
+  workshop: data => ipcRenderer.invoke("arena-native-mod-workshop", data),
 }));

@@ -1,0 +1,163 @@
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, rename, rm, statfs, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { ModWorkshopEngine } from "../../lib/arena/src/lib/games/mod-workshop-engine.ts";
+import { modHash } from "../../lib/arena/src/lib/games/mod-workshop.ts";
+import { safePackagePath } from "./packages.mjs";
+const hash = value => createHash("sha256").update(value).digest("hex");
+const MiB = 1024 * 1024;
+async function fileHash(filename) { const hash = createHash("sha256"); for await (const chunk of createReadStream(filename)) hash.update(chunk); return hash.digest("hex"); }
+async function ordinary(filename, directory = false) {
+  const info = await lstat(filename);
+  if (info.isSymbolicLink() || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) throw new Error("Workshop storage contains a link or special file.");
+  return info;
+}
+export class NativeModWorkshop {
+  constructor(packages, host) {
+    this.packages = packages; this.host = host; this.root = path.join(packages.root, "workshop");
+    this.engine = new ModWorkshopEngine({
+      base: (key, paths) => this.base(key, paths),
+      read: key => this.read(key),
+      package: async digest => { if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("Invalid package digest."); const file = path.join(this.root, "packages", digest + ".json"); if ((await ordinary(file)).size > 24 * MiB) throw new Error("Stored mod package is oversized."); return readFile(file, "utf8"); },
+      commit: (...args) => this.commit(...args),
+    });
+  }
+  async initialize() {
+    await ordinary(this.packages.root, true);
+    await mkdir(this.root, { recursive: true }); await ordinary(this.root, true);
+    await mkdir(path.join(this.root, "packages"), { recursive: true }); await ordinary(path.join(this.root, "packages"), true);
+  }
+  folder(key) { return path.join(this.root, hash(key)); }
+  async read(key) {
+    try {
+      const filename = path.join(this.folder(key), "index.json"); await ordinary(this.folder(key), true);
+      const info = await ordinary(filename); if (info.size > MiB) throw new Error("Workshop index is oversized.");
+      return JSON.parse(await readFile(filename, "utf8")).state;
+    } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  }
+  async base(key, paths) {
+    const descriptor = this.packages.catalog.get(key);
+    if (!descriptor || descriptor.kind !== "game" || this.packages.state.packages[key]?.phase !== "ready") throw new Error("Install a verified managed game first.");
+    const files = Object.create(null);
+    if (paths !== undefined) {
+      await this.packages.verify(key); let total = 0;
+      for (const filename of paths) {
+        safePackagePath(filename);
+        const original = descriptor.files.find(file => file.path.toLowerCase() === filename.toLowerCase());
+        if (original && original.path !== filename) throw new Error("Overlay target differs from a base path only by case.");
+        if (!original) continue;
+        total += original.bytes; if (total > 64 * MiB) throw new Error("Modified native base files are limited to 64 MiB per review; untouched files are streamed separately.");
+        const location = path.join(this.packages.filename(key), ...filename.split("/")); await ordinary(location);
+        files[filename] = new Uint8Array(await readFile(location));
+      }
+    }
+    return { id: descriptor.id, gameKey: key, title: descriptor.title ?? descriptor.id, version: `sha256:${descriptor.sha256}`, kind: "native", files,
+      metadata: descriptor.files.map(file => ({ path: file.path, bytes: file.bytes, sha256: file.sha256 })) };
+  }
+  async commit(key, revision, base, state, additions, result) {
+    const folder = this.folder(key); await mkdir(folder, { recursive: true }); await ordinary(folder, true);
+    const lockPath = path.join(folder, "write.lock");
+    let lock;
+    try { lock = await open(lockPath, "wx"); }
+    catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      await ordinary(lockPath);
+      const owner = JSON.parse(await readFile(lockPath, "utf8").catch(() => "{}"));
+      if (!Number.isSafeInteger(owner.pid) || owner.pid < 1) throw new Error("An interrupted empty workshop lock needs explicit recovery after closing other Arena instances. The retained profile is still playable.");
+      let alive = true; try { process.kill(owner.pid, 0); } catch (error) { if (error.code === "ESRCH") alive = false; }
+      if (alive) throw new Error("Another native workshop write is active. No active profile was replaced.");
+      await rm(lockPath); lock = await open(lockPath, "wx");
+    }
+    await lock.writeFile(JSON.stringify({ pid: process.pid })); await lock.sync();
+    let stage, promoted;
+    try {
+      if ((await this.read(key))?.revision !== revision && !((await this.read(key)) === null && revision === 0)) throw new Error("Workshop changed in another window. Refresh.");
+      if ([...this.host.runs.values()].some(run => run.child && run.key === key)) throw new Error("Stop this game's running process before changing its profile.");
+      const descriptor = await this.packages.verify(key);
+      if (`sha256:${descriptor.sha256}` !== base.version) throw new Error("Base version changed after review.");
+      const volume = await statfs(folder), extra = Object.values(additions).reduce((n, json) => n + Buffer.byteLength(json), 0) + (result ? descriptor.unpackedBytes + Object.values(result.files).reduce((n, bytes) => n + bytes.length, 0) : 0);
+      if (Number(volume.bavail * volume.bsize) < extra + this.packages.reserveBytes) throw new Error("Insufficient space for atomic mod staging plus the retained active installation. No base or profile was deleted.");
+      if (this.packages.storage) {
+        const usage = await this.packages.storage(), sizes = ["downloads", "staging", "installed", "profiles", "build-cache", "workshop"].map(name => usage[name]);
+        if (sizes.some(size => !Number.isFinite(size)) || sizes.reduce((sum, size) => sum + size, 0) + extra > this.packages.budgetBytes) throw new Error("Native disk accounting or storage budget prevents safe mod staging.");
+      }
+      let previous;
+      try { previous = JSON.parse(await readFile(path.join(folder, "index.json"), "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      let generation = previous?.generation ?? null;
+      // Recovery removes generated, unreferenced staging only; saves, mods and
+      // the active generation remain authoritative and are never swept here.
+      for (const name of await readdir(folder)) {
+        if ((/^staging-[a-f0-9-]{36}$/.test(name) || /^index-[a-f0-9-]{36}\.tmp$/.test(name) || /^[a-f0-9-]{36}$/.test(name)) && name !== generation?.id) {
+          const filename = path.join(folder, name), info = await lstat(filename);
+          if (info.isSymbolicLink()) throw new Error("Unsafe abandoned workshop staging entry.");
+          await rm(filename, { recursive: info.isDirectory(), force: true });
+        }
+      }
+      if (result) {
+        stage = path.join(folder, `staging-${randomUUID()}`); await mkdir(stage); await ordinary(stage, true);
+        for (const file of descriptor.files) {
+          const source = path.join(this.packages.filename(key), ...file.path.split("/")); await ordinary(source);
+          const target = path.join(stage, ...file.path.split("/")); await mkdir(path.dirname(target), { recursive: true }); await copyFile(source, target);
+          if (await fileHash(target) !== file.sha256) throw new Error("Base file changed while staging.");
+        }
+        for (const [filename, bytes] of Object.entries(result.files)) {
+          const target = path.join(stage, ...safePackagePath(filename).split("/")); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, bytes);
+        }
+        const hashes = new Map(descriptor.files.map(file => [file.path, file.sha256]));
+        for (const [filename, bytes] of Object.entries(result.files)) hashes.set(filename, await modHash(bytes));
+        const inventory = [...hashes].sort(([a], [b]) => a.localeCompare(b)).map(([filename, sha256]) => ({ path: filename, sha256 }));
+        for (const file of inventory) await chmod(path.join(stage, ...file.path.split("/")), 0o444);
+        generation = { id: randomUUID(), profileId: state.activeProfileId, files: inventory };
+        promoted = path.join(folder, generation.id); await rename(stage, promoted); stage = null;
+      }
+      for (const [digest, json] of Object.entries(additions)) {
+        const filename = path.join(this.root, "packages", `${digest}.json`);
+        try { await ordinary(filename); if (await readFile(filename, "utf8") !== json) throw new Error("Immutable package content differs."); }
+        catch (error) {
+          if (error.code !== "ENOENT") throw error;
+          const temporary = `${filename}.${randomUUID()}.tmp`, file = await open(temporary, "wx", 0o600);
+          try { await file.writeFile(json); await file.sync(); } finally { await file.close(); }
+          await rename(temporary, filename);
+        }
+      }
+      const temporary = path.join(folder, `index-${randomUUID()}.tmp`), file = await open(temporary, "wx", 0o600);
+      try { await file.writeFile(JSON.stringify({ state, generation })); await file.sync(); } finally { await file.close(); }
+      await rename(temporary, path.join(folder, "index.json")); promoted = null;
+      if (previous?.generation?.id && previous.generation.id !== generation?.id) await rm(path.join(folder, previous.generation.id), { recursive: true, force: true }).catch(() => {});
+    } finally {
+      if (stage) await rm(stage, { recursive: true, force: true }).catch(() => {});
+      if (promoted) await rm(promoted, { recursive: true, force: true }).catch(() => {});
+      await lock.close(); await rm(path.join(folder, "write.lock"), { force: true });
+    }
+  }
+  async launch(key, profileId) {
+    const state = await this.read(key);
+    if (!state || state.activeProfileId !== profileId) throw new Error("Activate this reviewed profile before native launch.");
+    const { profile, result } = await this.engine.play(key, profileId);
+    const folder = this.folder(key), indexFile = path.join(folder, "index.json"); await ordinary(indexFile);
+    const index = JSON.parse(await readFile(indexFile, "utf8")), generation = index.generation;
+    if (!generation || generation.profileId !== profileId || !/^[a-f0-9-]{36}$/.test(generation.id)) throw new Error("The active mod installation is unavailable. Activate again to reconstruct it.");
+    const install = path.join(folder, generation.id); await ordinary(install, true);
+    const expected = new Map(this.packages.catalog.get(key).files.map(file => [file.path, file.sha256]));
+    for (const [filename, bytes] of Object.entries(result.files)) expected.set(filename, await modHash(bytes));
+    let count = 0;
+    const verifyTree = async (directory, prefix = "") => {
+      const entries = await readdir(directory, { withFileTypes: true });
+      if (entries.length > 2000) throw new Error("Unexpected mod installation inventory.");
+      for (const entry of entries) {
+        const relative = prefix + entry.name, filename = path.join(directory, entry.name);
+        safePackagePath(relative); if (relative.split("/").length > 20) throw new Error("Mod installation paths are too deep.");
+        if (entry.isDirectory()) { await ordinary(filename, true); await verifyTree(filename, relative + "/"); }
+        else {
+          if (++count > 2128 || !expected.has(relative)) throw new Error("Unlisted file in mod installation.");
+          await ordinary(filename);
+          if (await fileHash(filename) !== expected.get(relative)) throw new Error("Active mod installation integrity failed. Activate again; no unverified code was launched.");
+        }
+      }
+    };
+    await verifyTree(install);
+    if (count !== expected.size) throw new Error("Mod installation is missing expected files.");
+    return this.host.launch(key, { install, dataProfile: profile.shareSaves ? "default" : `mod-${profile.id}` });
+  }
+}

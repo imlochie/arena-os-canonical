@@ -13,6 +13,25 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /arcade/mods/repository/review:
+    post:
+      operationId: reviewArcadeModRepository
+      summary: Read a licensed pinned mod package without executing repository code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArcadeModRepositoryInput" }
+      responses:
+        "200":
+          description: Package bytes and verified provenance for separate local review
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packageJson]
+                properties:
+                  packageJson: { type: string }
   /arcade/import/catalog/search:
     post:
       operationId: searchArcadeCatalog
@@ -567,6 +586,12 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
 components:
   schemas:
+    ArcadeModRepositoryInput:
+      type: object
+      required: [url, authorized]
+      properties:
+        url: { type: string, maxLength: 1000 }
+        authorized: { type: boolean }
     ArcadeCatalogSearchInput:
       type: object
       required: [query, catalog, offset]

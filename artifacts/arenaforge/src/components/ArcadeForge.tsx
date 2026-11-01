@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
 import ImportedGameWorkspace from "./ImportedGameWorkspace";
 import NativeGamesWorkspace from "./NativeGamesWorkspace";
+import ModWorkshop from "./ModWorkshop";
+import type { WorkshopPlayback } from "../lib/modWorkshopTypes";
 import { useArcadeGameSave } from "../lib/arcadeGameSave";
 import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
@@ -41,7 +43,7 @@ import {
 } from "@workspace/arena/lib/webllm";
 
 type Strategy = "auto" | "instant" | "ai";
-type ArcadeWorkspace = "create" | "imports" | "native";
+type ArcadeWorkspace = "create" | "imports" | "native" | "mods";
 type ArcadeServerModel = {
   id: string;
   name: string;
@@ -199,6 +201,7 @@ export default function ArcadeForge() {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<ArcadeWorkspace>("create");
+  const [workshopLaunch, setWorkshopLaunch] = useState<WorkshopPlayback | null>(null);
   const [modelSetupOpen, setModelSetupOpen] = useState(() =>
     typeof window !== "undefined" && new URLSearchParams(window.location.search).has("testModel"),
   );
@@ -1459,12 +1462,18 @@ export default function ArcadeForge() {
           >
             Native games
           </button>
+          <button type="button" role="tab" aria-selected={workspace === "mods"} onClick={() => setWorkspace("mods")}
+            className={`rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "mods" ? "bg-emerald-400 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}>
+            Mod Workshop
+          </button>
         </div>
 
-        {workspace === "native" ? (
+        {workspace === "mods" ? (
+          <ModWorkshop activePlayback={workshopLaunch} onPlay={playback => { setWorkshopLaunch(playback); setWorkspace("imports"); }} />
+        ) : workspace === "native" ? (
           <NativeGamesWorkspace />
         ) : workspace === "imports" ? (
-          <ImportedGameWorkspace onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} onNativeInstalled={() => setWorkspace("native")} />
+          <ImportedGameWorkspace workshopLaunch={workshopLaunch} onExitWorkshop={() => setWorkshopLaunch(null)} onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} onNativeInstalled={() => setWorkspace("native")} />
         ) : (
           <>
         {/* Composer */}

@@ -24,6 +24,7 @@ import type {
   ArcadeCatalogEntry,
   ArcadeCatalogResolveInput,
   ArcadeCatalogSearchInput,
+  ArcadeModRepositoryInput,
   ArcadeRepositoryAcquisitionInput,
   ArcadeRepositoryAssessment,
   ArcadeRepositoryError,
@@ -51,6 +52,7 @@ import type {
   LibraryConversionResponse,
   LibraryTrackListResponse,
   LibraryTrackSeparationStartResponse,
+  ReviewArcadeModRepository200,
   SearchArcadeCatalog200
 } from './api.schemas';
 
@@ -80,6 +82,94 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getReviewArcadeModRepositoryUrl = () => {
+
+
+
+
+  return `/api/arcade/mods/repository/review`
+}
+
+/**
+ * @summary Read a licensed pinned mod package without executing repository code
+ */
+export const reviewArcadeModRepository = async (arcadeModRepositoryInput: ArcadeModRepositoryInput, options?: Parameters<typeof customFetch>[1]): Promise<ReviewArcadeModRepository200> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<ReviewArcadeModRepository200>(getReviewArcadeModRepositoryUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(arcadeModRepositoryInput)
+  }
+);}
+
+
+
+
+
+export const getReviewArcadeModRepositoryMutationKey = () => ['reviewArcadeModRepository'] as const;
+
+export const getReviewArcadeModRepositoryMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reviewArcadeModRepository>>, TError,ReviewArcadeModRepositoryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reviewArcadeModRepository>>, TError,ReviewArcadeModRepositoryMutationVariables, TContext> => {
+
+const mutationKey = getReviewArcadeModRepositoryMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reviewArcadeModRepository>>, ReviewArcadeModRepositoryMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  reviewArcadeModRepository(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReviewArcadeModRepositoryMutationResult = NonNullable<Awaited<ReturnType<typeof reviewArcadeModRepository>>>
+    export type ReviewArcadeModRepositoryMutationBody = BodyType<ArcadeModRepositoryInput>
+    export type ReviewArcadeModRepositoryMutationError = ErrorType<unknown>
+    export type ReviewArcadeModRepositoryMutationVariables = {data: BodyType<ArcadeModRepositoryInput>}
+
+    /**
+ * @summary Read a licensed pinned mod package without executing repository code
+ */
+export const useReviewArcadeModRepository = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reviewArcadeModRepository>>, TError,ReviewArcadeModRepositoryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reviewArcadeModRepository>>,
+        TError,
+        ReviewArcadeModRepositoryMutationVariables,
+        TContext
+      > => {
+      return useMutation(getReviewArcadeModRepositoryMutationOptions(options));
+    }
 
 export const getSearchArcadeCatalogUrl = () => {
 

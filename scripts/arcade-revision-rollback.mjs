@@ -43,7 +43,7 @@ await page.route("**/api/arcade/import/revise", async route => {
 });
 const frame = () => page.frameLocator('iframe[title="Playable game: rollback-fixture.html"]');
 const records = () => page.evaluate(() => new Promise((resolve, reject) => {
-  const open = indexedDB.open("arenaforge-imported-games", 1);
+  const open = indexedDB.open("arenaforge-imported-games");
   open.onerror = () => reject(open.error);
   open.onsuccess = () => {
     const db = open.result;

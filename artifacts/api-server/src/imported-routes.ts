@@ -1,4 +1,5 @@
 export const importedRoutes = [
+  { path: "/arcade/mods/repository/review", methods: ["POST"], load: () => import("./imported/arcade/mods/repository/review/route.ts") },
   { path: "/waveyard/projects/:id/arrangement-layers/:layerId/midi", methods: ["GET","POST"], load: () => import("./imported/waveyard/projects/[id]/arrangement-layers/[layerId]/midi/route.ts") },
   { path: "/waveyard/projects/:id/publication/audit", methods: ["GET"], load: () => import("./imported/waveyard/projects/[id]/publication/audit/route.ts") },
   { path: "/waveyard/projects/:id/vocal-chops/auto-sequence", methods: ["POST"], load: () => import("./imported/waveyard/projects/[id]/vocal-chops/auto-sequence/route.ts") },
