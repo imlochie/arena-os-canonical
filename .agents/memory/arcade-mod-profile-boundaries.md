@@ -35,3 +35,14 @@ but does not make its contents trusted for later main-process reads or repair.
 
 **How to apply:** Bound reads, refuse links/special files, repair from protected
 hash-checked sources, and recheck integrity before any future loader activation.
+
+Loader preparation and native execution must use the same canonical profile
+identity and storage derivation, not independently computed namespaces.
+
+**Why:** Isolated preparation tests passed while the preparation and execution
+paths derived different folders. Correct private files in the wrong namespace
+do not establish that the runtime can load them.
+
+**How to apply:** Verify the adapter-to-host path contract as well as individual
+file operations. Do not automatically merge or delete older profile folders:
+they may contain configuration or progress with separate ownership.

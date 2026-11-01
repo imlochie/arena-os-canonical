@@ -330,7 +330,7 @@ export default function ModWorkshop({ onPlay, activePlayback = null }: Props) {
                     onClick={() => void run("Activating…", () => activateWorkshopProfile(snapshot.game.id, profile.id, snapshot.revision), (next) => { setSnapshot(next); setNotice(`${profile.name} is the active profile.`); })}
                     className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-bold text-slate-200 disabled:opacity-40"><Check size={12} />{snapshot.activeProfileId === profile.id ? "Active" : "Activate"}</button>
                   <button type="button" data-testid="workshop-play" disabled={locked || dirty}
-                    title={dirty ? "Commit or discard pending edits before playing" : "Play this profile in the browser runtime"}
+                    title={dirty ? "Commit or discard pending edits before playing" : snapshot.game.id.startsWith("native:") ? "Play reviewed file mods only; use Launch with BepInEx for plugins" : "Play this profile in the browser runtime"}
                     onClick={() => void run("Building profile runtime…", () => launchWorkshopProfile(snapshot.game.id, profile.id), (playback) => {
                       if (playback.native) setNotice("Native launch requested. Check the game window and Native games run status; process startup is not gameplay verification.");
                       else onPlay(playback);
@@ -349,7 +349,7 @@ export default function ModWorkshop({ onPlay, activePlayback = null }: Props) {
                   </label>
                 </div>
                 {activePlayback?.profileId === profile.id && <p className="text-[10px] text-emerald-200">This profile is loaded in “Import and emulate”. Use “Leave profile” there to return to the base.</p>}
-                <p className="text-[10px] text-slate-500">Playback uses the browser runtime only; native runtime mod launch is not offered here.</p>
+                <p className="text-[10px] text-slate-500">{snapshot.game.id.startsWith("native:") ? "Ordinary Play launches reviewed file mods. Use Launch with BepInEx above for enabled plugins; native gameplay remains unverified." : "Playback uses the browser runtime."}</p>
                 {excluded && (
                   <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-[11px] text-slate-300" data-testid="workshop-export-excluded">
                     {excluded.length ? <>Not included in export: {excluded.join(", ")}</> : "Export includes every package in this profile."}

@@ -65,9 +65,10 @@ export default function BepInExProfileControls({ gameId, profileId, shareSaves, 
     let pending = false;
     const timer = window.setInterval(() => {
       const bridge = getNativeBridge();
-      if (!bridge?.workshop || pending || inflight.current) return;
+      const request = bridge?.workshop?.bind(bridge);
+      if (!request || pending || inflight.current) return;
       pending = true;
-      void bridge.workshop({ op: "loader-run", key, profileId }).then(async result => {
+      void request({ op: "loader-run", key, profileId }).then(async result => {
         if (serial.current !== token) return;
         const next = result as Snapshot["run"];
         if (!next || !["starting", "process-started"].includes(next.phase)) {
@@ -75,7 +76,7 @@ export default function BepInExProfileControls({ gameId, profileId, shareSaves, 
           // reads the final loader log. Do not hash the game every poll.
           inflight.current = true; setBusy(true);
           try {
-            const refreshed = await bridge.workshop({ op: "loader-inspect", key, profileId });
+            const refreshed = await request({ op: "loader-inspect", key, profileId });
             if (serial.current === token) setSnapshot(refreshed as Snapshot);
           } finally { if (serial.current === token) { inflight.current = false; setBusy(false); } }
         } else setSnapshot(current => current ? { ...current, run: next } : current);

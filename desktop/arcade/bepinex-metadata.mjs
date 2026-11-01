@@ -117,6 +117,17 @@ export function inspectBepInExAssembly(input) {
     bounds(cursor.at, length, blobs.end); if (length > 16384) fail("oversized attribute.");
     return bytes.subarray(cursor.at, cursor.at + length);
   };
+  for (let index = 1; index <= rows[35]; index++) {
+    const reference = row(35, index), name = string(reference[6]);
+    if (["BepInEx.Core", "BepInEx.Unity.Mono", "BepInEx.Unity.IL2CPP", "MelonLoader", "Il2CppInterop.Runtime", "UnhollowerBaseLib"].includes(name))
+      fail(`${name} requires a different, unverified loader/backend.`);
+    if (name === "BepInEx") {
+      const required = reference.slice(0, 4), pinned = [5, 4, 23, 2];
+      let newer = 0;
+      for (let part = 0; part < 4 && !newer; part++) newer = required[part] - pinned[part];
+      if (required[0] !== 5 || newer > 0) fail(`BepInEx ${required.join(".")} is outside the pinned loader version.`);
+    }
+  }
   const reference = index => {
     const type = row(1, index), scope = type[0];
     if ((scope & 3) !== 2 || string(row(35, scope >>> 2)[6]) !== "BepInEx") return null;

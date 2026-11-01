@@ -21,10 +21,12 @@ Implemented so far:
   links, unsafe paths, unexpected layout, oversized/encrypted entries and proxy
   architecture mismatches. No installer script or DLL is executed.
 
-## Profile preparation controls
+## Native plugin workflow
 
-Native Workshop profiles now expose **BepInEx 5 · profile preparation**:
-inspection, owner-approved ZIP selection, repair, and prior-core restoration.
+Native Workshop profiles expose **BepInEx 5 · native plugins**:
+inspection, an owner-approved official pinned download or offline ZIP selection,
+core repair/restoration, DLL intake, dependency review, enable/disable,
+plugin repair/restoration, and a dedicated Windows launch action.
 The main-process file picker supplies the archive path; renderer requests
 cannot choose an arbitrary local source path.
 
@@ -38,7 +40,7 @@ state remain outside the game's writable capability.
 - Any active native game prevents mutations.
 - Hash and ordinary-file checks catch tampering; links/special files are
   refused even during repair.
-- The disk reserve is checked before preparation.
+- Disk reserve and managed-storage budget are checked before allocation.
 - Configuration, cache, logs, plugins and ordinary game saves are not restored
   as part of core repair or rollback.
 - A bounded history retains at most four previous core preparations.
@@ -47,12 +49,35 @@ state remain outside the game's writable capability.
 - A failed/interrupted preparation lock is reported rather than silently
   removed while another process might own it.
 
-Preparation is **not activation**. Ordinary Workshop Play does not use this
-companion loader yet. The panel says so, and its responses always retain
-`canLaunch: false` and `gameplayVerified: false`. Plugin intake, permission and
-dependency review, native Doorstop launch wiring, and actual modded-game
-evidence remain within this unfinished task. Generic file overlays still do
-not gain executable-DLL/plugin permissions.
+Preparation is **not activation**. Ordinary Workshop Play uses only reviewed
+file overlays; **Launch with BepInEx** is the dedicated plugin path. `canLaunch`
+means an attempt is available, not compatibility proof. Every response retains
+`gameplayVerified: false`. Generic overlays still cannot introduce plugin DLLs.
+
+Original managed DLLs are read as bounded PE/CLI metadata, never loaded in the
+main process. Real BepInEx attributes supply GUIDs, versions, dependencies,
+conflicts and process restrictions. Imports require owner authorization and
+recorded license/use terms. New imports start disabled. Missing/old required
+dependencies, duplicate enabled GUIDs, cycles, conflicts, wrong processes and
+known other-loader/backend references fail closed. Raw managed plugin/support
+DLLs are supported; asset ZIPs, native libraries, install hooks and preloader
+patchers are not.
+
+Protected sources and bounded plugin history remain outside the game's
+writable capability. Only enabled copies enter its plugins directory.
+Expected revisions reject stale edits. Repair/rollback preserve config/saves.
+
+The launch adapter creates a separate read-only game copy from the immutable
+base and reviewed overlays. It adds the pinned Windows Doorstop proxy and
+configuration targeting the actual private profile's preloader location.
+Execution requires the existing Windows host's containment probe; no
+uncontained fallback exists. Short cache paths reduce Windows path growth;
+full hashes still verify every file. Core repair clears derived launch caches
+under the profile lock. Only the newest derived game copy per profile is kept.
+
+The panel exposes launch/stop, failures and loader logs. Active-run polling is
+lightweight, not repeated game hashing; one full inspection after exit
+restores edit/launch availability and reads final logs.
 - Architecture mismatch, absent Mono layout, another executable's data,
   IL2CPP/mixed layouts, and existing loader/proxy conflicts fail preflight.
   Unrecognized layouts are not universally unsupported; they need another
@@ -121,8 +146,35 @@ No license/notice-named files were found in this ZIP's inventory scan.
 Its source repository's MIT license does not grant blanket redistribution
 rights to Unity's runtime or all third-party assets. Keep this as an upstream
 personal test download; do not add the binary to Arena distribution/catalog
-without the relevant notices and permission assessment. The Windows game ZIP
-has not been downloaded. Do not register either game as verified BepInEx support.
+without the relevant notices and permission assessment.
+
+The actual Windows archive was also inspected as data:
+
+- Asset `OpenSkiJumping_v0.5.0a18_64.zip`, 97213668 bytes.
+- SHA-256 `2c2f389680af19ee63af42b029c6670f04ab92c8eef08a386c7533cbca0d77bb`.
+- Entry `OpenSkiJumping_v0.5.0a18_64/Open Ski Jumping.exe`.
+- 249 files; actual x64 header, matching Mono layout, Unity `2020.3.2f1`.
+- Assessment `candidate: true`, `canInstall: false`, `gameplayVerified: false`.
+
+This is Windows-specific package/header evidence, not Linux extrapolation or
+execution. Neither game is registered as verified BepInEx support.
+
+## Actual third-party plugin evidence
+
+Official Configuration Manager v19.1:
+https://github.com/BepInEx/BepInEx.ConfigurationManager/releases/tag/v19.1
+
+- ZIP SHA-256 `dc10b1e7435dd3e0d32658b3f0f4230ddd71750164963b1095deca3bc3a98275`.
+- Original `ConfigurationManager.dll`, 64000 bytes, SHA-256
+  `143bb25e8f03ed8728224de0b72752de29c0962ff69d20ec685831ec7491b323`.
+- Assembly `ConfigurationManager` version `19.1.0.0`.
+- Plugin `com.bepis.bepinex.configurationmanager`, version `19.1`.
+- The upstream archive includes GNU LGPL version 3 terms. This is a personal
+  upstream test download, not a binary bundled into Arena.
+
+Tests parse, import, enable/disable, repair and roll back these original DLL
+bytes across two profiles without executing or rewriting them. This is
+intake/state evidence, **not a plugin-loaded or visible-gameplay result**.
 
 ## Verification and remaining execution limitation
 
@@ -132,42 +184,46 @@ and temporary staging/snapshot files are removed. These tests execute only
 trusted Node ZIP/hash/parser code, not BepInEx or game code. Real-archive tests
 explicitly skip when the ignored upstream downloads are absent.
 
-The current host still has no admitted native-game execution pathway, and the
-previous private-proc sandbox check failed. No uncontained Unity game was run
-as a workaround. GitHub CI dispatch credentials were withheld, so there is no
-external-runner gameplay result either. This blocks the task's required real
-plugin/gameplay acceptance here; it does **not** mean the remaining loader,
-profile and UI implementation work is finished.
+This Linux workspace cannot execute the Windows LPAC/Job launch path, and the
+previous Linux private-proc check failed. No uncontained game was run as a
+workaround. No external-runner gameplay result has been obtained. Intake,
+profile management, launch composition and UI wiring are implemented; real
+plugin/gameplay acceptance remains blocked.
 
 The pinned BepInEx preloader source derives its BepInEx root from the actual
 preloader assembly location, and `Paths.cs` places config/cache/plugins under
 that root. A naive DLL copy into the current read-only Workshop generation
-would therefore not provide writable config/cache/log behavior. The dedicated
-adapter must account for this without modifying the immutable base, weakening
+would therefore not provide writable config/cache/log behavior. The implemented
+adapter accounts for this without modifying the immutable base, weakening
 the game sandbox, or redirecting one profile into another profile's storage:
 
 https://github.com/BepInEx/BepInEx/blob/v5.4.23.2/BepInEx.Preloader/Entrypoint.cs
 
 https://github.com/BepInEx/BepInEx/blob/v5.4.23.2/BepInEx/Paths.cs
 
-## Next implementation and acceptance
+## Remaining end-to-end acceptance
 
-1. Assess the actual fixture archive and its notices; pin exact bytes, entry,
-   Mono/Unity version and supported host. Use an owner-authorized build if the
-   published payload cannot be redistributed. Linux-native assessment does not
-   need Wine, but Arena's Linux game execution service is still absent.
-2. Add a dedicated staged loader adapter. Do not relax generic DLL replacement
-   rules. Keep the base installation untouched and separate writable loader
-   config/log/cache paths from immutable loader/plugin payloads.
-3. Import existing third-party plugin DLLs without rewriting them. Read their
-   assembly metadata as data, check BepInEx dependencies/version constraints,
-   hash and review native-capable permissions, and reject unsupported layouts.
-4. Wire the adapter through existing Workshop review/commit/profile lifecycle
-   and expose compatibility, versions, logs and failure recovery in its UI.
-5. Use a real observable plugin (for example, a clearly labeled in-game HUD
-   change) through actual BepInEx startup. A fake loader log is not evidence.
-6. Prove two profiles with different plugin/config states, enable/disable,
-   ordinary save restoration, failed update preservation, repair and exact
-   known-good content rollback without rewinding current saves.
+1. On an authorized Windows x64 host, install the exact upstream game through
+   the managed-game path using the entry above. Confirm preflight and the real
+   LPAC/Job containment probe. Its acquisition-to-launch UI path is not yet
+   demonstrated for this specific fixture.
+2. Create private profiles A and B, prepare the pinned core, and import the
+   actual Configuration Manager DLL with its license recorded. Enable it only
+   in A. Launch A using **Launch with BepInEx**, not ordinary Play.
+3. Retain the genuine loader log identifying the expected plugin GUID/version,
+   obtain its visible in-game interface/change, and confirm game input works.
+   A marker program, process start, metadata parse or fake log is not proof.
+4. Launch B and demonstrate independent plugin/config/save state; verify
+   unchanged base hashes. Disable A's plugin and show the change disappears.
+5. Exercise a legitimate plugin update, failed/incompatible update, repair and
+   rollback without rewinding current saves. Same-pin core preparation is not
+   a loader-version upgrade test.
+6. Tamper with writable loader/plugin copies and a derived launch cache;
+   require refusal before execution and recover through repair controls.
+   Verify crash/log visibility, stop/process-tree termination and relaunch.
+
+Until this passes, the result is **implemented but native-gameplay
+unverified**, not a completed real-game demonstration. Linux archive
+preparation does not implement or prove Linux modded-game execution.
 
 MelonLoader, IL2CPP and Unreal remain unverified, separate integrations.
