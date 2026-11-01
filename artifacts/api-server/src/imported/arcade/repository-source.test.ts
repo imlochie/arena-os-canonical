@@ -27,6 +27,7 @@ function fixture(overrides: { spdx?: string; tree?: any[]; private?: boolean; tr
     const path = new URL(url).pathname;
     let data: unknown;
     if (path === "/repos/author/game") data = { private: overrides.private ?? false, default_branch: "main" };
+    else if (path.endsWith("/git/ref/tags/v1")) data = { object: { type: "commit", sha: revision } };
     else if (path.endsWith("/commits/main") || path.endsWith(`/commits/${revision}`) || path.endsWith("/commits/v1")) data = { sha: revision };
     else if (path.endsWith(`/git/trees/${revision}`)) data = { tree, truncated: overrides.truncated ?? false };
     else if (path.endsWith("/license")) data = { path: "LICENSE", encoding: "base64", content: fixtureBytes.get("LICENSE")!.toString("base64"), license: { spdx_id: overrides.spdx ?? "MIT" } };

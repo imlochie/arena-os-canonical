@@ -13,6 +13,134 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /arcade/import/catalog/search:
+    post:
+      operationId: searchArcadeCatalog
+      summary: Search both public catalogs without downloading or claiming a playable game
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArcadeCatalogSearchInput"
+      responses:
+        "200":
+          description: Bounded discovery results, with source availability
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, total, offset, hasMore, sources]
+                properties:
+                  entries: { type: array, items: { $ref: "#/components/schemas/ArcadeCatalogEntry" } }
+                  total: { type: integer }
+                  offset: { type: integer }
+                  hasMore: { type: boolean }
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      required: [catalog, available, error, fetchedAt]
+                      properties:
+                        catalog: { type: string }
+                        available: { type: boolean }
+                        error: { type: [string, "null"] }
+                        fetchedAt: { type: [number, "null"] }
+        default:
+          description: Catalog unavailable or input invalid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArcadeRepositoryError" }
+  /arcade/import/catalog/resolve:
+    post:
+      operationId: resolveArcadeCatalogGame
+      summary: Resolve the catalog's actual source repository; no arbitrary URLs or execution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArcadeCatalogResolveInput"
+      responses:
+        "200":
+          description: Unverified catalog metadata and resolved source URL for separate repository review
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArcadeCatalogEntry" }
+        default:
+          description: Entry unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArcadeRepositoryError" }
+  /arcade/import/repository/release:
+    post:
+      operationId: resolveArcadeRepositoryRelease
+      summary: Resolve a reviewed immutable release to a publisher-digested Windows x64 portable ZIP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArcadeRepositoryReleaseInput"
+      responses:
+        "200":
+          description: Download pin only; owner desktop approval is still required before installation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryReleasePlan"
+        default:
+          description: Release needs a new review, digest or supported portable layout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryError"
+  /arcade/import/repository/assess:
+    post:
+      operationId: assessArcadeRepository
+      summary: Review pinned source, licenses, dependencies and release candidates without installing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArcadeRepositoryLinkInput"
+      responses:
+        "200":
+          description: Owner-bound five-minute review; static evidence is not build or gameplay proof
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryAssessment"
+        default:
+          description: Unsupported provider or unavailable repository
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryError"
+  /arcade/import/repository/source:
+    post:
+      operationId: acquireArcadeRepositorySource
+      summary: Acquire verified native project source without executing it on the API host
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArcadeRepositoryAcquisitionInput"
+      responses:
+        "200":
+          description: Bounded verified source bytes for a separate approved desktop build
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositorySourceSnapshot"
+        default:
+          description: Review expired, blocked, unavailable or belongs to another owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArcadeRepositoryError"
   /arcade/import/repository/inspect:
     post:
       operationId: inspectArcadeRepository
@@ -439,6 +567,118 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
 components:
   schemas:
+    ArcadeCatalogSearchInput:
+      type: object
+      required: [query, catalog, offset]
+      properties:
+        query: { type: string, maxLength: 80 }
+        catalog: { type: string, enum: [all, bobeff, trilarion] }
+        offset: { type: integer, minimum: 0, maximum: 10000 }
+    ArcadeCatalogResolveInput:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, maxLength: 100 }
+    ArcadeCatalogEntry:
+      type: object
+      required: [id, title, summary, category, sourceUrl, detailsUrl, catalogs, platforms, codeLicense, assetLicense]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        summary: { type: string }
+        category: { type: string }
+        sourceUrl: { type: [string, "null"] }
+        detailsUrl: { type: string }
+        catalogs: { type: array, items: { type: string } }
+        platforms: { type: array, items: { type: string } }
+        codeLicense: { type: [string, "null"] }
+        assetLicense: { type: [string, "null"] }
+    ArcadeRepositoryReleaseInput:
+      type: object
+      properties:
+        token: { type: string, maxLength: 100 }
+        releaseIndex: { type: integer, minimum: 0, maximum: 3 }
+        assetIndex: { type: integer, minimum: 0, maximum: 23 }
+        authorized: { type: boolean }
+      required: [token, releaseIndex, assetIndex, authorized]
+    ArcadeRepositoryReleasePlan:
+      type: object
+      properties:
+        provenance: { $ref: "#/components/schemas/ArcadeRepositoryProvenance" }
+        tag: { type: string }
+        prerelease: { type: boolean }
+        asset: { $ref: "#/components/schemas/ArcadeRepositoryReleaseAsset" }
+      required: [provenance, tag, prerelease, asset]
+    ArcadeRepositoryEvidence:
+      type: object
+      properties:
+        path: { type: string }
+        detail: { type: string }
+      required: [path, detail]
+    ArcadeRepositoryReleaseAsset:
+      type: object
+      properties:
+        name: { type: string }
+        url: { type: string }
+        bytes: { type: integer }
+        sha256: { type: [string, "null"] }
+      required: [name, url, bytes, sha256]
+    ArcadeRepositoryRelease:
+      type: object
+      properties:
+        name: { type: string }
+        tag: { type: string }
+        reviewUrl: { type: string }
+        prerelease: { type: boolean }
+        assets:
+          type: array
+          items: { $ref: "#/components/schemas/ArcadeRepositoryReleaseAsset" }
+      required: [name, tag, reviewUrl, prerelease, assets]
+    ArcadeRepositoryAssessment:
+      type: object
+      properties:
+        token: { type: string }
+        expiresAt: { type: integer }
+        provider: { type: string }
+        repository: { type: string }
+        revision: { type: string }
+        sourceUrl: { type: string }
+        folder: { type: string }
+        reference: { type: string }
+        projectType: { type: string, enum: [browser, godot, sdl, native, unknown] }
+        confidence: { type: string, enum: [high, medium, low] }
+        languages: { type: array, items: { type: string } }
+        buildSystems: { type: array, items: { type: string } }
+        dependencies: { type: array, items: { type: string } }
+        sdks: { type: array, items: { type: string } }
+        targets: { type: array, items: { type: string } }
+        modHooks: { type: array, items: { type: string } }
+        evidence:
+          type: array
+          items: { $ref: "#/components/schemas/ArcadeRepositoryEvidence" }
+        blockers: { type: array, items: { type: string } }
+        license:
+          anyOf:
+            - { $ref: "#/components/schemas/ArcadeRepositoryLicense" }
+            - { type: "null" }
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/ArcadeRepositoryFile" }
+        totalBytes: { type: integer }
+        releases:
+          type: array
+          items: { $ref: "#/components/schemas/ArcadeRepositoryRelease" }
+      required: [token, expiresAt, provider, repository, revision, reference, sourceUrl, folder, projectType, confidence, languages, buildSystems, dependencies, sdks, targets, modHooks, evidence, blockers, license, files, totalBytes, releases]
+    ArcadeRepositorySourceSnapshot:
+      type: object
+      properties:
+        provenance: { $ref: "#/components/schemas/ArcadeRepositoryProvenance" }
+        folder: { type: string }
+        projectType: { type: string, enum: [godot, sdl] }
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/ArcadeRepositoryDownloadFile" }
+      required: [provenance, folder, projectType, files]
     ArcadeRepositoryLinkInput:
       type: object
       properties:

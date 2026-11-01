@@ -20,7 +20,8 @@ export type RepositoryProvenance = {
 export type RepositoryPlan = RepositoryProvenance & {
   entryPath: string; files: RepositoryFile[]; totalBytes: number; reference: string;
 };
-type ReadBytes = (url: string, limit: number, signal: AbortSignal) => Promise<Buffer>;
+export type ReadBytes = (url: string, limit: number, signal: AbortSignal) => Promise<Buffer>;
+export type RepositoryNode = { path: string; mode: string; type: string; size: number; sha: string };
 
 export function parseRepositoryLink(value: string) {
   let url: URL;
@@ -129,7 +130,7 @@ function blobSha(bytes: Buffer) {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
-export async function inspectRepository(value: string, signal: AbortSignal, read: ReadBytes = safeGithubBytes): Promise<RepositoryPlan> {
+export async function resolveRepositoryTree(value: string, signal: AbortSignal, read: ReadBytes = safeGithubBytes, allowReleaseFallback = false) {
   const link = parseRepositoryLink(value);
   const api = `https://api.github.com/repos/${link.repository}`;
   const json = async (path: string, limit = 512 * 1024) => {
@@ -143,24 +144,42 @@ export async function inspectRepository(value: string, signal: AbortSignal, read
   if (repo.private !== false || repo.disabled === true) throw new RepositoryImportError("Only public, enabled GitHub repositories can be imported.");
   const reference = link.ref ?? repo.default_branch;
   if (typeof reference !== "string" || reference.length > 256) throw new RepositoryImportError("The repository has no usable default revision.");
-  const commit = await json(`/commits/${encodeURIComponent(reference)}`);
+  let commitReference = reference;
+  if (value.includes("/releases/tag/")) {
+    let object = (await json(`/git/ref/tags/${encodeURIComponent(reference)}`)).object;
+    for (let depth = 0; object?.type === "tag" && depth < 4; depth++) {
+      if (!sha.test(object.sha ?? "")) throw new RepositoryImportError("Invalid release tag object.", 502);
+      object = (await json(`/git/tags/${object.sha}`)).object;
+    }
+    if (object?.type !== "commit" || !sha.test(object.sha ?? "")) throw new RepositoryImportError("The release tag does not resolve to a bounded immutable commit.", 422);
+    commitReference = object.sha;
+  }
+  const commit = await json(`/commits/${encodeURIComponent(commitReference)}`);
   if (!sha.test(commit.sha ?? "")) throw new RepositoryImportError("GitHub did not resolve this link to an immutable commit.", 502);
   const revision = commit.sha as string;
-  const tree = await json(`/git/trees/${revision}?recursive=1`);
-  if (tree.truncated || !Array.isArray(tree.tree) || tree.tree.length > 2000) {
-    throw new RepositoryImportError("This repository tree is too large. Import a small, already-built offline game package instead.");
+  let tree, sourceComplete = true;
+  try {
+    tree = await json(`/git/trees/${revision}?recursive=1`);
+    if (tree.truncated || !Array.isArray(tree.tree) || tree.tree.length > 2000) throw new RepositoryImportError("This repository tree is too large.", 422);
+    if (tree.tree.some((node: RepositoryNode) => typeof node.path !== "string" || !node.path.split("/").every(safePathSegment))) {
+      throw new RepositoryImportError("The repository contains unsafe file paths.", 422);
+    }
+  } catch (error) {
+    if (!allowReleaseFallback || !(error instanceof RepositoryImportError) || ![413, 422].includes(error.status)) throw error;
+    tree = await json(`/git/trees/${revision}`);
+    if (tree.truncated || !Array.isArray(tree.tree) || tree.tree.length > 2000) throw new RepositoryImportError("Root source metadata is too large to review safely.", 422);
+    tree.tree = tree.tree.filter((node: RepositoryNode) => typeof node.path === "string" && !node.path.includes("/") && safePathSegment(node.path));
+    sourceComplete = false;
   }
-  const nodes: Array<{ path: string; mode: string; type: string; size: number; sha: string }> = tree.tree;
+  const nodes: RepositoryNode[] = tree.tree;
   if (nodes.some(node => typeof node.path !== "string" || !node.path.split("/").every(safePathSegment))) {
     throw new RepositoryImportError("The repository contains unsafe file paths.");
   }
-  const pages = nodes.filter(node => node.type === "blob" && node.path.startsWith(link.folder) && /\.html?$/i.test(node.path));
-  const indexPage = pages.find(node => node.path === `${link.folder}index.html`);
-  if (!indexPage && pages.length !== 1) throw new RepositoryImportError(pages.length
-    ? `Found ${pages.length} HTML pages. Use a pinned /tree/${revision}/game-folder link containing exactly one game page.`
-    : "No ready-to-play HTML page was found. This importer does not run build scripts; provide an offline HTML game or built game folder.");
-  const entryPath = (indexPage ?? pages[0]).path;
-  const gameFolder = entryPath.slice(0, entryPath.lastIndexOf("/") + 1);
+  return { link, reference, revision, nodes, json, metadata: repo, sourceComplete };
+}
+
+export async function readRepositoryLicense(snapshot: Awaited<ReturnType<typeof resolveRepositoryTree>>) {
+  const { json, revision, nodes } = snapshot;
   let licenseData;
   try { licenseData = await json(`/license?ref=${revision}`, 256 * 1024); }
   catch (error) {
@@ -180,6 +199,32 @@ export async function inspectRepository(value: string, signal: AbortSignal, read
   if (!licenseBytes.length || licenseBytes.length > 128 * 1024 || !licenseNode || licenseNode.sha !== blobSha(licenseBytes)) {
     throw new RepositoryImportError("The license file could not be verified against the pinned source tree.");
   }
+  return { spdx: spdx as string, path: licensePath as string, text: licenseBytes.toString("utf8") };
+}
+
+export async function readRepositoryFile(repository: string, revision: string, file: RepositoryFile, signal: AbortSignal, read: ReadBytes = safeGithubBytes) {
+  if (!sha.test(revision) || !file.path.split("/").every(safePathSegment) || !Number.isSafeInteger(file.size) || file.size < 0 || !sha.test(file.sha)) {
+    throw new RepositoryImportError("Invalid pinned repository file.");
+  }
+  const encoded = file.path.split("/").map(encodeURIComponent).join("/");
+  const bytes = await read(`https://raw.githubusercontent.com/${repository}/${revision}/${encoded}`, file.size, signal);
+  if (bytes.length !== file.size || blobSha(bytes) !== file.sha) throw new RepositoryImportError(`Pinned file verification failed: ${file.path}.`);
+  if (bytes.subarray(0, 100).toString().startsWith("version https://git-lfs.github.com/spec/")) throw new RepositoryImportError(`Git LFS files are not supported: ${file.path}.`);
+  return bytes;
+}
+
+export async function inspectRepository(value: string, signal: AbortSignal, read: ReadBytes = safeGithubBytes): Promise<RepositoryPlan> {
+  const snapshot = await resolveRepositoryTree(value, signal, read);
+  const { link, revision, reference, nodes } = snapshot;
+  const pages = nodes.filter(node => node.type === "blob" && node.path.startsWith(link.folder) && /\.html?$/i.test(node.path));
+  const indexPage = pages.find(node => node.path === `${link.folder}index.html`);
+  if (!indexPage && pages.length !== 1) throw new RepositoryImportError(pages.length
+    ? `Found ${pages.length} HTML pages. Use a pinned /tree/${revision}/game-folder link containing exactly one game page.`
+    : "No ready-to-play HTML page was found. This importer does not run build scripts; provide an offline HTML game or built game folder.");
+  const entryPath = (indexPage ?? pages[0]).path;
+  const gameFolder = entryPath.slice(0, entryPath.lastIndexOf("/") + 1);
+  const license = await readRepositoryLicense(snapshot);
+  const licensePath = license.path;
   const selected = nodes.filter(node => node.path === licensePath ||
     (node.path.startsWith(gameFolder) && node.type !== "tree" && supportedFile.test(node.path) &&
       (!/\.html?$/i.test(node.path) || node.path === entryPath)));
@@ -198,7 +243,7 @@ export async function inspectRepository(value: string, signal: AbortSignal, read
     repository: link.repository, revision, reference,
     sourceUrl: `https://github.com/${link.repository}/tree/${revision}`,
     entryPath, files, totalBytes,
-    license: { spdx, path: licensePath, text: licenseBytes.toString("utf8") },
+    license,
   };
 }
 
@@ -207,12 +252,7 @@ export async function acquireRepository(plan: RepositoryPlan, signal: AbortSigna
   // Small sequential batches bound both network concurrency and transient bytes.
   for (let offset = 0; offset < plan.files.length; offset += 4) {
     const batch = await Promise.all(plan.files.slice(offset, offset + 4).map(async file => {
-      const path = file.path.split("/").map(encodeURIComponent).join("/");
-      const bytes = await read(`https://raw.githubusercontent.com/${plan.repository}/${plan.revision}/${path}`, file.size, signal);
-      if (bytes.length !== file.size || blobSha(bytes) !== file.sha) throw new RepositoryImportError(`Pinned file verification failed: ${file.path}.`);
-      if (bytes.subarray(0, 100).toString().startsWith("version https://git-lfs.github.com/spec/")) {
-        throw new RepositoryImportError(`Git LFS files are not supported: ${file.path}.`);
-      }
+      const bytes = await readRepositoryFile(plan.repository, plan.revision, file, signal, read);
       return { ...file, contentBase64: bytes.toString("base64") };
     }));
     files.push(...batch);

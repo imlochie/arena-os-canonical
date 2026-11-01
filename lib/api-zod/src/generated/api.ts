@@ -9,6 +9,209 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary Search both public catalogs without downloading or claiming a playable game
+ */
+export const searchArcadeCatalogBodyQueryMax = 80;
+
+export const searchArcadeCatalogBodyOffsetMin = 0;
+export const searchArcadeCatalogBodyOffsetMax = 10000;
+
+
+
+export const SearchArcadeCatalogBody = zod.object({
+  "query": zod.string().max(searchArcadeCatalogBodyQueryMax),
+  "catalog": zod.enum(['all', 'bobeff', 'trilarion']),
+  "offset": zod.number().int().min(searchArcadeCatalogBodyOffsetMin).max(searchArcadeCatalogBodyOffsetMax)
+})
+
+export const SearchArcadeCatalogResponse = zod.object({
+  "entries": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "summary": zod.string(),
+  "category": zod.string(),
+  "sourceUrl": zod.string().nullable(),
+  "detailsUrl": zod.string(),
+  "catalogs": zod.array(zod.string()),
+  "platforms": zod.array(zod.string()),
+  "codeLicense": zod.string().nullable(),
+  "assetLicense": zod.string().nullable()
+})),
+  "total": zod.number().int(),
+  "offset": zod.number().int(),
+  "hasMore": zod.boolean(),
+  "sources": zod.array(zod.object({
+  "catalog": zod.string(),
+  "available": zod.boolean(),
+  "error": zod.string().nullable(),
+  "fetchedAt": zod.number().nullable()
+}))
+})
+
+
+/**
+ * @summary Resolve the catalog's actual source repository; no arbitrary URLs or execution
+ */
+export const resolveArcadeCatalogGameBodyIdMax = 100;
+
+
+
+export const ResolveArcadeCatalogGameBody = zod.object({
+  "id": zod.string().max(resolveArcadeCatalogGameBodyIdMax)
+})
+
+export const ResolveArcadeCatalogGameResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "summary": zod.string(),
+  "category": zod.string(),
+  "sourceUrl": zod.string().nullable(),
+  "detailsUrl": zod.string(),
+  "catalogs": zod.array(zod.string()),
+  "platforms": zod.array(zod.string()),
+  "codeLicense": zod.string().nullable(),
+  "assetLicense": zod.string().nullable()
+})
+
+
+/**
+ * @summary Resolve a reviewed immutable release to a publisher-digested Windows x64 portable ZIP
+ */
+export const resolveArcadeRepositoryReleaseBodyTokenMax = 100;
+
+export const resolveArcadeRepositoryReleaseBodyReleaseIndexMin = 0;
+export const resolveArcadeRepositoryReleaseBodyReleaseIndexMax = 3;
+
+export const resolveArcadeRepositoryReleaseBodyAssetIndexMin = 0;
+export const resolveArcadeRepositoryReleaseBodyAssetIndexMax = 23;
+
+
+
+export const ResolveArcadeRepositoryReleaseBody = zod.object({
+  "token": zod.string().max(resolveArcadeRepositoryReleaseBodyTokenMax),
+  "releaseIndex": zod.number().int().min(resolveArcadeRepositoryReleaseBodyReleaseIndexMin).max(resolveArcadeRepositoryReleaseBodyReleaseIndexMax),
+  "assetIndex": zod.number().int().min(resolveArcadeRepositoryReleaseBodyAssetIndexMin).max(resolveArcadeRepositoryReleaseBodyAssetIndexMax),
+  "authorized": zod.boolean()
+})
+
+export const ResolveArcadeRepositoryReleaseResponse = zod.object({
+  "provenance": zod.object({
+  "repository": zod.string(),
+  "revision": zod.string(),
+  "sourceUrl": zod.string(),
+  "license": zod.object({
+  "spdx": zod.string(),
+  "path": zod.string(),
+  "text": zod.string()
+})
+}),
+  "tag": zod.string(),
+  "prerelease": zod.boolean(),
+  "asset": zod.object({
+  "name": zod.string(),
+  "url": zod.string(),
+  "bytes": zod.number().int(),
+  "sha256": zod.string().nullable()
+})
+})
+
+
+/**
+ * @summary Review pinned source, licenses, dependencies and release candidates without installing
+ */
+export const assessArcadeRepositoryBodyUrlMax = 1000;
+
+
+
+export const AssessArcadeRepositoryBody = zod.object({
+  "url": zod.string().max(assessArcadeRepositoryBodyUrlMax),
+  "authorized": zod.boolean()
+})
+
+export const AssessArcadeRepositoryResponse = zod.object({
+  "token": zod.string(),
+  "expiresAt": zod.number().int(),
+  "provider": zod.string(),
+  "repository": zod.string(),
+  "revision": zod.string(),
+  "sourceUrl": zod.string(),
+  "folder": zod.string(),
+  "reference": zod.string(),
+  "projectType": zod.enum(['browser', 'godot', 'sdl', 'native', 'unknown']),
+  "confidence": zod.enum(['high', 'medium', 'low']),
+  "languages": zod.array(zod.string()),
+  "buildSystems": zod.array(zod.string()),
+  "dependencies": zod.array(zod.string()),
+  "sdks": zod.array(zod.string()),
+  "targets": zod.array(zod.string()),
+  "modHooks": zod.array(zod.string()),
+  "evidence": zod.array(zod.object({
+  "path": zod.string(),
+  "detail": zod.string()
+})),
+  "blockers": zod.array(zod.string()),
+  "license": zod.union([zod.object({
+  "spdx": zod.string(),
+  "path": zod.string(),
+  "text": zod.string()
+}),zod.null()]),
+  "files": zod.array(zod.object({
+  "path": zod.string(),
+  "size": zod.number().int(),
+  "sha": zod.string()
+})),
+  "totalBytes": zod.number().int(),
+  "releases": zod.array(zod.object({
+  "name": zod.string(),
+  "tag": zod.string(),
+  "reviewUrl": zod.string(),
+  "prerelease": zod.boolean(),
+  "assets": zod.array(zod.object({
+  "name": zod.string(),
+  "url": zod.string(),
+  "bytes": zod.number().int(),
+  "sha256": zod.string().nullable()
+}))
+}))
+})
+
+
+/**
+ * @summary Acquire verified native project source without executing it on the API host
+ */
+export const acquireArcadeRepositorySourceBodyTokenMax = 100;
+
+
+
+export const AcquireArcadeRepositorySourceBody = zod.object({
+  "token": zod.string().max(acquireArcadeRepositorySourceBodyTokenMax),
+  "authorized": zod.boolean()
+})
+
+export const AcquireArcadeRepositorySourceResponse = zod.object({
+  "provenance": zod.object({
+  "repository": zod.string(),
+  "revision": zod.string(),
+  "sourceUrl": zod.string(),
+  "license": zod.object({
+  "spdx": zod.string(),
+  "path": zod.string(),
+  "text": zod.string()
+})
+}),
+  "folder": zod.string(),
+  "projectType": zod.enum(['godot', 'sdl']),
+  "files": zod.array(zod.object({
+  "path": zod.string(),
+  "size": zod.number().int(),
+  "sha": zod.string()
+}).and(zod.object({
+  "contentBase64": zod.string()
+})))
+})
+
+
+/**
  * @summary Preview a public GitHub offline game at a pinned commit
  */
 export const inspectArcadeRepositoryBodyUrlMax = 1000;

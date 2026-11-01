@@ -5,6 +5,174 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export type ArcadeCatalogSearchInputCatalog = typeof ArcadeCatalogSearchInputCatalog[keyof typeof ArcadeCatalogSearchInputCatalog];
+
+
+export const ArcadeCatalogSearchInputCatalog = {
+  all: 'all',
+  bobeff: 'bobeff',
+  trilarion: 'trilarion',
+} as const;
+
+export interface ArcadeCatalogSearchInput {
+  /** @maxLength 80 */
+  query: string;
+  catalog: ArcadeCatalogSearchInputCatalog;
+  /**
+     * @minimum 0
+     * @maximum 10000
+     */
+  offset: number;
+}
+
+export interface ArcadeCatalogResolveInput {
+  /** @maxLength 100 */
+  id: string;
+}
+
+export interface ArcadeCatalogEntry {
+  id: string;
+  title: string;
+  summary: string;
+  category: string;
+  /** @nullable */
+  sourceUrl: string | null;
+  detailsUrl: string;
+  catalogs: string[];
+  platforms: string[];
+  /** @nullable */
+  codeLicense: string | null;
+  /** @nullable */
+  assetLicense: string | null;
+}
+
+export interface ArcadeRepositoryReleaseInput {
+  /** @maxLength 100 */
+  token: string;
+  /**
+     * @minimum 0
+     * @maximum 3
+     */
+  releaseIndex: number;
+  /**
+     * @minimum 0
+     * @maximum 23
+     */
+  assetIndex: number;
+  authorized: boolean;
+}
+
+export interface ArcadeRepositoryLicense {
+  spdx: string;
+  path: string;
+  text: string;
+}
+
+export interface ArcadeRepositoryProvenance {
+  repository: string;
+  revision: string;
+  sourceUrl: string;
+  license: ArcadeRepositoryLicense;
+}
+
+export interface ArcadeRepositoryReleaseAsset {
+  name: string;
+  url: string;
+  bytes: number;
+  /** @nullable */
+  sha256: string | null;
+}
+
+export interface ArcadeRepositoryReleasePlan {
+  provenance: ArcadeRepositoryProvenance;
+  tag: string;
+  prerelease: boolean;
+  asset: ArcadeRepositoryReleaseAsset;
+}
+
+export interface ArcadeRepositoryEvidence {
+  path: string;
+  detail: string;
+}
+
+export interface ArcadeRepositoryRelease {
+  name: string;
+  tag: string;
+  reviewUrl: string;
+  prerelease: boolean;
+  assets: ArcadeRepositoryReleaseAsset[];
+}
+
+export type ArcadeRepositoryAssessmentProjectType = typeof ArcadeRepositoryAssessmentProjectType[keyof typeof ArcadeRepositoryAssessmentProjectType];
+
+
+export const ArcadeRepositoryAssessmentProjectType = {
+  browser: 'browser',
+  godot: 'godot',
+  sdl: 'sdl',
+  native: 'native',
+  unknown: 'unknown',
+} as const;
+
+export type ArcadeRepositoryAssessmentConfidence = typeof ArcadeRepositoryAssessmentConfidence[keyof typeof ArcadeRepositoryAssessmentConfidence];
+
+
+export const ArcadeRepositoryAssessmentConfidence = {
+  high: 'high',
+  medium: 'medium',
+  low: 'low',
+} as const;
+
+export interface ArcadeRepositoryFile {
+  path: string;
+  size: number;
+  sha: string;
+}
+
+export interface ArcadeRepositoryAssessment {
+  token: string;
+  expiresAt: number;
+  provider: string;
+  repository: string;
+  revision: string;
+  sourceUrl: string;
+  folder: string;
+  reference: string;
+  projectType: ArcadeRepositoryAssessmentProjectType;
+  confidence: ArcadeRepositoryAssessmentConfidence;
+  languages: string[];
+  buildSystems: string[];
+  dependencies: string[];
+  sdks: string[];
+  targets: string[];
+  modHooks: string[];
+  evidence: ArcadeRepositoryEvidence[];
+  blockers: string[];
+  license: ArcadeRepositoryLicense | null;
+  files: ArcadeRepositoryFile[];
+  totalBytes: number;
+  releases: ArcadeRepositoryRelease[];
+}
+
+export type ArcadeRepositorySourceSnapshotProjectType = typeof ArcadeRepositorySourceSnapshotProjectType[keyof typeof ArcadeRepositorySourceSnapshotProjectType];
+
+
+export const ArcadeRepositorySourceSnapshotProjectType = {
+  godot: 'godot',
+  sdl: 'sdl',
+} as const;
+
+export type ArcadeRepositoryDownloadFile = ArcadeRepositoryFile & {
+  contentBase64: string;
+};
+
+export interface ArcadeRepositorySourceSnapshot {
+  provenance: ArcadeRepositoryProvenance;
+  folder: string;
+  projectType: ArcadeRepositorySourceSnapshotProjectType;
+  files: ArcadeRepositoryDownloadFile[];
+}
+
 export interface ArcadeRepositoryLinkInput {
   /** @maxLength 1000 */
   url: string;
@@ -21,25 +189,6 @@ export interface ArcadeRepositoryError {
   error: string;
 }
 
-export interface ArcadeRepositoryLicense {
-  spdx: string;
-  path: string;
-  text: string;
-}
-
-export interface ArcadeRepositoryFile {
-  path: string;
-  size: number;
-  sha: string;
-}
-
-export interface ArcadeRepositoryProvenance {
-  repository: string;
-  revision: string;
-  sourceUrl: string;
-  license: ArcadeRepositoryLicense;
-}
-
 export type ArcadeRepositoryPreview = ArcadeRepositoryProvenance & {
   token: string;
   expiresAt: number;
@@ -47,10 +196,6 @@ export type ArcadeRepositoryPreview = ArcadeRepositoryProvenance & {
   entryPath: string;
   totalBytes: number;
   files: ArcadeRepositoryFile[];
-};
-
-export type ArcadeRepositoryDownloadFile = ArcadeRepositoryFile & {
-  contentBase64: string;
 };
 
 export interface ArcadeRepositorySnapshot {
@@ -480,6 +625,23 @@ export interface LibraryTrackSeparationStartResponse {
   /** @nullable */
   error: string | null;
 }
+
+export type SearchArcadeCatalog200SourcesItem = {
+  catalog: string;
+  available: boolean;
+  /** @nullable */
+  error: string | null;
+  /** @nullable */
+  fetchedAt: number | null;
+};
+
+export type SearchArcadeCatalog200 = {
+  entries: ArcadeCatalogEntry[];
+  total: number;
+  offset: number;
+  hasMore: boolean;
+  sources: SearchArcadeCatalog200SourcesItem[];
+};
 
 export type GetLibraryTracksParams = {
 q?: string;

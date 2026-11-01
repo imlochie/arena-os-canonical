@@ -14,3 +14,9 @@ Build preflight must resolve the dependency store using the pinned package manag
 **Why:** A configured store can be on another drive; guessing or downloading before resolving it defeats the user's disk-exhaustion safeguard.
 
 **How to apply:** Keep the same resolved locations in the before-download report and the build-time sampler. Treat a missing offline manager as an explicit setup prerequisite, not permission to skip the store check.
+
+Keep game-build SDK acquisition on demand, separate from building/installing Arena itself.
+
+**Why:** The user's repeated laptop disk exhaustion makes compiler/editor payloads an unacceptable hidden installer prerequisite.
+
+**How to apply:** Show download and unpack budgets before acquisition; retain exact pins, bound staging, and keep disposable SDK cache reset separate from installed games and saves.

@@ -17,6 +17,8 @@ import {
   type ArcadeEmulatorSystemId,
 } from "../lib/arcadeEmulatorRuntime";
 import { importedHtmlSafetyIssue } from "@workspace/arena/lib/games";
+import { neutralizeOfflineNavigation, prepareOfflineHtml } from "../lib/offlineGameNavigation";
+import { archiveStylesheetImports } from "../lib/offlineGameStyles";
 import EmulatorJsPlayer from "./EmulatorJsPlayer";
 import Chip8Player from "./Chip8Player";
 import ImportedGameSourceComparison from "./ImportedGameSourceComparison";
@@ -26,6 +28,7 @@ import { CHIP8_MAX_ROM_BYTES, chip8DialectForFile, chip8DialectLabel, isChip8Dia
 import type { ButtonKey, NES } from "jsnes";
 import type { ArcadeRepositoryProvenance } from "@workspace/api-client-react";
 import RepositoryGameImport from "./RepositoryGameImport";
+import { getNativeBridge } from "./nativeArcadeTypes";
 import { isRepositoryProvenance, resolveRepositoryAttribution, withRepositoryAttribution, withoutRepositoryAttribution } from "../lib/importedRepositoryAttribution";
 
 type ImportedGame = {
@@ -167,16 +170,17 @@ async function inlineArchiveCss(
   if (seen.has(cssPath)) throw new Error("The project contains a circular stylesheet import.");
   const nextSeen = new Set(seen);
   nextSeen.add(cssPath);
-  const imports = [...css.matchAll(/@import\s+(?:url\(\s*)?(['"])(.*?)\1\s*\)?[^;]*;/gi)];
+  const imports = archiveStylesheetImports(css);
   for (const match of imports) {
-    const targetPath = archivePath(cssPath, match[2]);
+    const targetPath = archivePath(cssPath, match.reference);
     if (!targetPath) continue;
     const target = files[targetPath];
-    if (!target) throw new Error(`The archive is missing stylesheet ${match[2]}.`);
+    if (!target) throw new Error(`The archive is missing stylesheet ${match.reference}.`);
+    if (/\b(?:layer|supports)\b/i.test(match.media)) throw new Error("Bundle CSS layer/supports imports before importing this game.");
     const nested = await target.async("string");
     reserveArchiveBytes(budget, new TextEncoder().encode(nested).byteLength);
     const rewritten = await inlineArchiveCss(nested, targetPath, files, nextSeen, budget);
-    css = css.replace(match[0], () => rewritten);
+    css = css.replace(match.statement, () => match.media ? `@media ${match.media} {\n${rewritten}\n}` : rewritten);
   }
   const urls = [...css.matchAll(/url\(\s*(?:(['"])(.*?)\1|([^)'"\s][^)]*))\s*\)/gi)];
   for (const match of urls) {
@@ -345,6 +349,7 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
     element.setAttribute("srcset", rewritten.join(", "));
   }
 
+  neutralizeOfflineNavigation(document);
   source = `<!doctype html>${document.documentElement.outerHTML}`;
   const issue = htmlSafetyIssue(source);
   if (issue) throw new Error(issue);
@@ -414,7 +419,7 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
   return false;
 }
 
-export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt }: ImportedGameWorkspaceProps) {
+export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt, onNativeInstalled }: ImportedGameWorkspaceProps & { onNativeInstalled?: () => void }) {
   const [games, setGames] = useState<ImportedGame[]>([]);
   const currentGames = useRef<ImportedGame[]>([]);
   const persistedGames = useRef<ImportedGame[]>([]);
@@ -766,7 +771,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         const isArchive = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
         if (isArchive && file.size > MAX_ARCHIVE_BYTES) throw new Error("Game archives are limited to 3 MB compressed.");
         if (!isArchive && file.size > MAX_HTML_BYTES) throw new Error("HTML files are limited to 6 MB.");
-        const rawSource = isArchive ? await bundleOfflineBrowserGame(file) : await file.text();
+        const rawSource = isArchive ? await bundleOfflineBrowserGame(file) : prepareOfflineHtml(await file.text());
         const recoveredProvenance = resolveRepositoryAttribution(rawSource, provenance);
         const source = withRepositoryAttribution(rawSource, recoveredProvenance);
         const issue = htmlSafetyIssue(source);
@@ -1202,6 +1207,14 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         {error && <div role="alert" className="flex items-start gap-2 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2.5 text-xs leading-relaxed text-red-200"><AlertTriangle size={15} className="mt-0.5 shrink-0" />{error}</div>}
         {notice && !error && <div role="status" className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2.5 text-xs text-emerald-100">{notice}</div>}
         <RepositoryGameImport disabled={!rightsAccepted || !loaded || busy || removing || games.length >= 12}
+          onBuildSource={getNativeBridge()?.buildRepositorySource ? async token => {
+            await getNativeBridge()!.buildRepositorySource!(token);
+            onNativeInstalled?.();
+          } : undefined}
+          onInstallRelease={getNativeBridge()?.installRepositoryRelease ? async selection => {
+            await getNativeBridge()!.installRepositoryRelease!(selection);
+            onNativeInstalled?.();
+          } : undefined}
           onImport={(file, provenance) => handleImport(file, "html", provenance)} />
         {selected?.provenance && <details className="rounded-xl border border-emerald-300/20 bg-black/20 p-3 text-xs text-slate-300" data-testid="imported-repository-provenance">
           <summary className="cursor-pointer font-bold text-emerald-100">Source and license · {selected.provenance.license.spdx}</summary>

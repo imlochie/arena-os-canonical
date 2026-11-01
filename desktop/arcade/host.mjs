@@ -67,7 +67,7 @@ export class NativeArcadeHost {
       child.stdin?.on("error", () => {}); // Exiting helpers can close a stop pipe.
       onChild(child);
       let buffer = "", stderr = "", failure;
-      const timer = timeout ? setTimeout(() => { failure = new Error("Native containment probe timed out; execution is blocked."); child.kill(); }, timeout) : null;
+      const timer = timeout ? setTimeout(() => { failure = new Error("Native operation timed out; its owned process group was stopped."); child.kill(); }, timeout) : null;
       child.stdout?.on("data", chunk => {
         buffer += chunk.toString("utf8");
         const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
@@ -96,14 +96,16 @@ export class NativeArcadeHost {
     const install = this.packages.filename(key);
     const runtime = descriptor.runtimes.length ? this.packages.filename(descriptor.runtimes[0]) : install;
     const profile = path.join(this.packages.root, "profiles", hash(descriptor.id), "default"); await mkdir(profile, { recursive: true });
-    const args = descriptor.arguments.map(argument => argument.replaceAll("{profile}", profile).replaceAll("{runtime}", runtime));
+    const args = descriptor.arguments.map(argument => argument.replaceAll("{profile}", profile).replaceAll("{runtime}", runtime).replaceAll("{install}", install));
+    const executable = descriptor.runtimeEntry ? path.join(runtime, ...descriptor.runtimeEntry.split("/")) : path.join(install, ...descriptor.entry.split("/"));
+    if (descriptor.runtimeEntry && !this.packages.catalog.get(descriptor.runtimes[0])?.files.some(file => file.path === descriptor.runtimeEntry)) throw new Error("Pinned runtime does not contain this game's engine executable.");
     const moniker = `arena.arcade.${hash(`${this.packages.root}:${descriptor.id}`)}`;
     const id = randomUUID();
     const record = { id, key, phase: "starting", profile, logs: [], startedAt: Date.now(), gameplayVerified: false };
     for (const [oldId, old] of this.runs) if (this.runs.size >= 32 && !old.child) this.runs.delete(oldId);
     this.runs.set(id, record);
     await this.persist();
-    record.exited = this.execute(["run", moniker, path.join(install, ...descriptor.entry.split("/")), install, runtime, profile, "--", ...args], event => {
+    record.exited = this.execute([descriptor.workingDirectory === "entry" ? "play" : "run", moniker, executable, install, runtime, profile, "--", ...args], event => {
       if (event.event === "isolated") { record.phase = "process-started"; record.nativePid = event.pid; } // Not startup/gameplay evidence.
       if (event.event === "error") record.logs.push(`Supervisor: ${event.message}`);
       if (event.event === "log") record.logs.push(`${event.channel}: ${String(event.text).slice(0, 8192)}`);

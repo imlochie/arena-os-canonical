@@ -19,6 +19,11 @@ export type NativeRun = {
 };
 
 export type NativeSnapshot = {
+  repository?: {
+    jobs: { id: string; phase: string; repository: string; revision: string; detail: string; log?: string; key?: string; createdAt: number }[];
+    projects: { id: string; repository: string; folder: string; activeKey?: string; versions: { key: string; revision: string; sourceUrl: string; recipe: string; evidence: string; builtAt: number }[] }[];
+    toolPins: { id: string; version: string; bytes: number; license: string }[];
+  };
   packages: {
     busy: boolean;
     catalog: NativeDescriptor[];
@@ -57,6 +62,10 @@ export type NativeArcadeBridge = {
   stop(runId: string): Promise<NativeSnapshot>;
   remove(key: string): Promise<NativeSnapshot>;
   cancel(): Promise<NativeSnapshot>;
+  buildRepositorySource?(token: string): Promise<NativeSnapshot>;
+  selectRepositoryVersion?(key: string): Promise<NativeSnapshot>;
+  installRepositoryRelease?(selection: string): Promise<NativeSnapshot>;
+  resetBuildTool?(id: string): Promise<NativeSnapshot>;
 };
 
 export function getNativeBridge(): NativeArcadeBridge | null {

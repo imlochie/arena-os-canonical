@@ -8,4 +8,8 @@ contextBridge.exposeInMainWorld("arenaNativeArcade", Object.freeze({
   stop: key => call("stop", key),
   remove: key => call("remove", key),
   cancel: () => call("cancel"),
+  buildRepositorySource: token => call("build-source", token),
+  selectRepositoryVersion: key => call("select-version", key),
+  installRepositoryRelease: selection => call("install-release", selection),
+  resetBuildTool: id => call("reset-build-tool", id),
 }));

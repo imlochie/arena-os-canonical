@@ -5,6 +5,21 @@ description: The user's product expectation for prompt-created, imported, modifi
 
 The user expects Arcade to create playable games from prompts, import authorized games and run them, support gameplay-changing prompts for editable source, and preserve progress locally. Saved starter games are examples, not the product ceiling. Clearly identify engine and format limits; one runtime cannot honestly claim universal game support.
 
+The user specifically wants games from https://github.com/bobeff/open-source-games and https://trilarion.github.io/opensourcegames/ runnable through Arcade.
+
+**Why:** These are concrete coverage targets for the broader import-and-play expectation, not a request for another list of external links.
+
+**How to apply:** Connect catalog discovery to verified source/release acquisition and real launch/configuration; track unsupported providers, multi-executable packages, owned assets and target-host gameplay honestly rather than calling a catalog listing playable.
+
+Test repository imports against representative upstream games with author links,
+stylesheets and fonts, not just tiny synthetic HTML fixtures.
+
+**Why:** Successful pinned acquisition previously concealed offline packaging failures
+on ordinary credit links and valid CSS imports; download proof is not playability proof.
+
+**How to apply:** Verify real input and visible gameplay in the active, onscreen player
+after conversion, while preserving offline restrictions and attribution.
+
 **Why:** The user repeated this expectation after earlier Arcade passes leaned too heavily on presets or browser-only imports.
 
 **How to apply:** Prioritize real game creation and import/runtime capability, then source-based gameplay edits and local saves. State unsupported formats plainly rather than implying every game can be imported or modified.

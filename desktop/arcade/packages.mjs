@@ -8,7 +8,7 @@ const identifier = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 const version = /^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,99}$/;
 export const packageKey = descriptor => `${descriptor.id}@${descriptor.version}`;
 export function safePackagePath(value) {
-  if (typeof value !== "string" || value.length > 200 || !/^[a-zA-Z0-9._/-]+$/.test(value) ||
+  if (typeof value !== "string" || value.length > 200 || !/^[a-zA-Z0-9._/+-]+$/.test(value) ||
     value.split("/").some(part => !part || part === "." || part === ".." || part.endsWith(".") || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)))
     throw new Error("Package contains an unsafe or platform-ambiguous path.");
   return value;
@@ -31,8 +31,13 @@ export function validatePackageDescriptor(value) {
   }
   if (bytes !== value.unpackedBytes || value.runtimes.some(key => typeof key !== "string" || !/^[a-z0-9._-]+@[a-zA-Z0-9.+_-]+$/.test(key))) throw new Error("Package sizes or dependency references do not match.");
   if (value.kind === "game") {
+    if (value.workingDirectory !== undefined && value.workingDirectory !== "entry") throw new Error("Unsupported managed working directory.");
     safePackagePath(value.entry);
-    if (!value.files.some(file => file.path === value.entry) || !value.entry.toLowerCase().endsWith(".exe") ||
+    if (value.runtimeEntry) {
+      safePackagePath(value.runtimeEntry);
+      if (value.runtimes.length !== 1 || !value.runtimeEntry.toLowerCase().endsWith(".exe") || !value.entry.endsWith(".pck")) throw new Error("An engine-backed game needs one pinned runtime executable and pack.");
+    }
+    if (!value.files.some(file => file.path === value.entry) || (!value.runtimeEntry && !value.entry.toLowerCase().endsWith(".exe")) ||
       !Array.isArray(value.arguments) || value.arguments.length > 32 || value.arguments.some(arg => typeof arg !== "string" || arg.length > 1000 || /[\0\r\n]/.test(arg)))
       throw new Error("A game needs an exact managed executable and bounded argument array.");
   }
@@ -165,7 +170,7 @@ async function atomicJson(filename, value) {
 async function directoryBytes(root, budget = { entries: 0 }) {
   let bytes = 0;
   for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (++budget.entries > 20000) throw new Error("Storage accounting exceeded its bounded file scan; cleanup needs review.");
+    if (++budget.entries > 100000) throw new Error("Storage accounting exceeded its bounded file scan; cleanup needs review.");
     if (entry.isSymbolicLink()) throw new Error("Unexpected symbolic link in managed package storage.");
     const filename = path.join(root, entry.name);
     bytes += entry.isDirectory() ? await directoryBytes(filename, budget) : (await lstat(filename)).size;

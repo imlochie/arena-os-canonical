@@ -20,3 +20,9 @@ Native Windows execution must fail closed when real OS containment cannot be ver
 **Why:** Imported native code is a different trust boundary from browser games. Linux protocol simulations and a successful process spawn cannot establish Windows isolation or SDL/audio compatibility.
 
 **How to apply:** Keep hosted execution unavailable. Require actual target-host evidence before claiming support, and distinguish hard process/CPU/memory limits from a best-effort disk reserve. Deliver independent native packages with the exact installer catalog that pins their bytes.
+
+Treat a stopped native build's output tree as untrusted before privileged postprocessing.
+
+**Why:** An isolated editor script can plant junctions or hard links that make the owner process escape the sandbox when it later copies assets or writes provenance.
+
+**How to apply:** Stop all owned descendants first, then reject links/reparse points in writable-root ancestors and contents before any owner-side output traversal or write. A trusted compiler executable does not make repository-produced filesystem entries trusted.

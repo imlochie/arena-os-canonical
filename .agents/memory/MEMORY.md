@@ -1,4 +1,5 @@
 - [Migration verification](migration-verification.md) — preserve server/client boundaries and validate detail-page data, not just builds and homepages.
+- [OpenAPI generator naming](openapi-codegen.md) — prefer named request schemas; generation alone can miss duplicate body-type exports.
 - [Browser workspace privacy](browser-workspaces.md) — private browser runtime state is not task output or agent context.
 - [Arcade model routing](arcade-model-routing.md) — use connected code-writing models; no implicit public-service cascade for game prompts or source.
 - [Arcade capability scope](arcade-capability-scope.md) — prompt-created games, authorized imports, gameplay edits, and local progress are core; presets are examples.

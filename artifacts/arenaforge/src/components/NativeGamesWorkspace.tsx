@@ -10,6 +10,7 @@ import {
 
 const POLL_MS = 2000;
 const LOG_LINES = 40;
+const TERMINAL_JOB = new Set(["installed", "failed", "cancelled", "interrupted"]);
 const ACTIVE_RUN = new Set(["starting", "process-started", "running", "launching", "stopping"]);
 
 const btn =
@@ -99,7 +100,7 @@ export default function NativeGamesWorkspace() {
             {pending === "probe" ? "Probing..." : "Run containment probe"}
           </button>
           <button type="button" className={btn} disabled={!snap?.canCancel} onClick={() => run("cancel", (b) => b.cancel())}>
-            Cancel install
+            Cancel operation
           </button>
         </div>
       </div>
@@ -163,7 +164,7 @@ export default function NativeGamesWorkspace() {
                   {d.kind === "game" && (
                     <button type="button" className={btn} disabled={busy || !!launchBlock || active} title={launchBlock ?? undefined} aria-label={`Launch ${k}`} onClick={() => run(`launch ${k}`, async (b) => { await nativeWindowsAdapter.launch({ key: k, bridge: b }); return b.inspect(); })}>Launch</button>
                   )}
-                  {installed(k) && (
+                  {snap.packages.packages[k] && snap.packages.packages[k].phase !== "removed" && (
                     <button type="button" className={btn} disabled={busy || active || referenced} title={referenced ? "Remove games referencing this runtime first" : undefined} aria-label={`Remove ${k}`} onClick={() => run(`remove ${k}`, (b) => b.remove(k))}>Remove</button>
                   )}
                 </div>
@@ -185,6 +186,71 @@ export default function NativeGamesWorkspace() {
         <p className="break-all text-xs text-amber-300">
           Retained from another build (not executable without its trusted descriptor): {Object.keys(pkgs).filter(key => !snap?.packages.catalog.some(d => keyOf(d) === key)).join(", ")}
         </p>
+      )}
+
+      {snap?.repository && (snap.repository.jobs.length > 0 || snap.repository.projects.length > 0 || snap.repository.toolPins.length > 0) && (
+        <div className="space-y-2" aria-labelledby="native-repo-title">
+          <h3 id="native-repo-title" className="text-xs font-extrabold text-slate-200">Source builds</h3>
+          <p className="text-[10px] text-slate-500">Built and installed means the build finished. Startup and gameplay are not verified. Saves live in profiles, separate from versions.</p>
+          {snap.repository.toolPins.length > 0 && (
+            <p className="break-words font-mono text-[10px] text-slate-400" title="Downloaded on demand into Arcade's build cache; nothing is installed system-wide.">
+              SDK pins (on demand, not global): {snap.repository.toolPins.map(p => `${p.id} ${p.version} · ${formatBytes(p.bytes)} · ${p.license}`).join("  /  ")}
+              {bridge?.resetBuildTool && <span className="mt-2 flex flex-wrap gap-2">{snap.repository.toolPins.map(p =>
+                <button key={p.id} type="button" className={btn} disabled={busy}
+                  onClick={() => run(`reset ${p.id} SDK`, b => b.resetBuildTool!(p.id))}>Reset {p.id} SDK cache</button>)}</span>}
+            </p>
+          )}
+          {snap.repository.jobs.slice(-6).reverse().map(j => (
+            <div key={j.id} className="rounded-xl border border-white/10 bg-black/30 p-3">
+              <p className="break-all text-[11px] font-bold text-white">{j.repository} <span className="font-mono text-slate-400">{j.revision.slice(0, 10)}</span> <span className={TERMINAL_JOB.has(j.phase) ? (j.phase === "installed" ? "text-emerald-200" : "text-rose-300") : "text-amber-200"}>/ {j.phase}{TERMINAL_JOB.has(j.phase) ? "" : "…"}</span></p>
+              {j.detail && <p className="mt-0.5 text-[10px] text-slate-300">{j.detail}</p>}
+              <p className="text-[10px] text-slate-500">Started {new Date(j.createdAt).toLocaleString()}{j.key ? ` · ${j.key}` : ""}</p>
+              {j.log && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-[10px] text-slate-300">Build log</summary>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-black/40 p-2 font-mono text-[10px] text-slate-300">
+                    {j.log.split("\n").slice(-LOG_LINES * 5).join("\n")}
+                  </pre>
+                </details>
+              )}
+            </div>
+          ))}
+          {snap.repository.projects.map(p => {
+            const versions = [...p.versions].sort((a, b) => b.builtAt - a.builtAt);
+            const select = bridge.selectRepositoryVersion?.bind(bridge);
+            return (
+              <div key={p.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                <p className="break-all text-xs font-extrabold text-white">{p.repository}{p.folder ? <span className="font-normal text-slate-400"> / {p.folder}</span> : null}</p>
+                <ul className="mt-2 space-y-1.5">
+                  {versions.map(v => {
+                    const isActive = v.key === p.activeKey;
+                    const present = pkgs[v.key]?.phase === "ready";
+                    return (
+                      <li key={v.key} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/5 bg-black/20 px-2 py-1.5">
+                        <div className="min-w-0 text-[10px]">
+                          <p className="text-slate-200"><span className="font-mono">{v.revision.slice(0, 10)}</span> · built {new Date(v.builtAt).toLocaleString()} {isActive && <span className="ml-1 rounded bg-emerald-300/15 px-1.5 font-bold text-emerald-200">active</span>}{!present && <span className="ml-1 rounded bg-rose-400/15 px-1.5 font-bold text-rose-200">removed</span>}</p>
+                          <p className="break-all text-slate-500">{v.recipe} · {v.evidence} · {present ? "installed, startup and gameplay unverified" : "files not installed — reinstall or repair from its package card above"}</p>
+                        </div>
+                        {!isActive && present && (
+                          <button type="button" className={btn} disabled={busy || !select} title={select ? undefined : "This desktop build cannot switch versions"}
+                            aria-label={`Use version ${v.revision.slice(0, 10)} of ${p.repository}`}
+                            onClick={() => select && run(`select ${v.key}`, () => select(v.key))}>
+                            {pending === `select ${v.key}` ? "Switching..." : "Use this version"}
+                          </button>
+                        )}
+                        {present && <button type="button" className={btn}
+                          disabled={busy || snap.runs.some(r => r.phase === "starting" || r.phase === "process-started")}
+                          title="Requires the verified Windows isolation driver; no host fallback"
+                          aria-label={`Launch version ${v.revision.slice(0, 10)} of ${p.repository}`}
+                          onClick={() => run(`launch ${v.key}`, async b => { await nativeWindowsAdapter.launch({ key: v.key, bridge: b }); return b.inspect(); })}>Launch</button>}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {snap && snap.runs.length > 0 && (

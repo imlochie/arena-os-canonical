@@ -131,7 +131,7 @@ struct Session {
     if (sid) FreeSid(sid);
   }
   void launch(const std::wstring& moniker, const fs::path& executable, const std::vector<fs::path>& readRoots,
-    const fs::path& profile, const std::vector<std::wstring>& args) {
+    const fs::path& profile, const std::vector<std::wstring>& args, bool readonlyWorkingDirectory = false) {
     if (moniker.size() > 64 || moniker.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz0123456789.-") != std::wstring::npos) throw std::runtime_error("Invalid container moniker.");
     regularPath(executable); regularPath(profile);
     HRESULT hr = CreateAppContainerProfile(moniker.c_str(), L"Arena game", L"Isolated Arena game; no network capabilities", nullptr, 0, &sid);
@@ -167,8 +167,13 @@ struct Session {
     fs::create_directories(profile / "temp");
     wchar_t system[MAX_PATH]{}, windows[MAX_PATH]{};
     require(GetSystemDirectoryW(system, MAX_PATH) && GetWindowsDirectoryW(windows, MAX_PATH), "Windows directories");
+    std::wstring dllSearch = system;
+    for (const auto& root : readRoots) {
+      require(root.wstring().find(L';') == std::wstring::npos, "Managed runtime path cannot contain a PATH separator");
+      dllSearch += L";" + root.wstring() + L";" + (root / "bin").wstring();
+    }
     std::vector<std::wstring> variables{ L"APPDATA=" + profile.wstring(), L"ARENA_ARCADE_PROFILE=" + profile.wstring(), L"LOCALAPPDATA=" + profile.wstring(),
-      L"PATH=" + std::wstring(system), L"SystemRoot=" + std::wstring(windows), L"TEMP=" + (profile / "temp").wstring(), L"TMP=" + (profile / "temp").wstring(), L"USERPROFILE=" + profile.wstring(), L"WINDIR=" + std::wstring(windows) };
+      L"PATH=" + dllSearch, L"SystemRoot=" + std::wstring(windows), L"TEMP=" + (profile / "temp").wstring(), L"TMP=" + (profile / "temp").wstring(), L"USERPROFILE=" + profile.wstring(), L"WINDIR=" + std::wstring(windows) };
     std::vector<wchar_t> environment;
     for (const auto& variable : variables) { environment.insert(environment.end(), variable.begin(), variable.end()); environment.push_back(0); }
     environment.push_back(0);
@@ -176,7 +181,8 @@ struct Session {
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = list;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES; startup.StartupInfo.hStdOutput = outWrite.value; startup.StartupInfo.hStdError = errWrite.value; startup.StartupInfo.hStdInput = input.value;
     PROCESS_INFORMATION child{};
-    require(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, environment.data(), profile.c_str(), &startup.StartupInfo, &child) != 0, "LPAC process creation");
+    const fs::path workingDirectory = readonlyWorkingDirectory ? executable.parent_path() : profile;
+    require(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, environment.data(), workingDirectory.c_str(), &startup.StartupInfo, &child) != 0, "LPAC process creation");
     process.value = child.hProcess; Handle thread(child.hThread);
     // Only the child owns writers after creation. Close our copies before
     // starting readers, including paths where Job/token/resume checks fail.
@@ -291,9 +297,9 @@ int wmain(int argc, wchar_t** argv) {
       event("{\"event\":\"probe\",\"passed\":true,\"backend\":\"windows-lpac-job-v1\",\"filesystem\":true,\"loopbackDenied\":true,\"restrictedToken\":true,\"jobLimits\":true,\"descendantCleanup\":true,\"overLimitMemoryDenied\":true}");
       return 0;
     }
-    if (argc >= 8 && std::wstring(argv[1]) == L"run" && std::wstring(argv[7]) == L"--") {
+    if (argc >= 8 && (std::wstring(argv[1]) == L"run" || std::wstring(argv[1]) == L"play") && std::wstring(argv[7]) == L"--") {
       std::vector<std::wstring> args; for (int i = 8; i < argc; i++) args.emplace_back(argv[i]);
-      Session session; session.launch(argv[2], argv[3], {argv[4], argv[5]}, argv[6], args);
+      Session session; session.launch(argv[2], argv[3], {argv[4], argv[5]}, argv[6], args, std::wstring(argv[1]) == L"play");
       // Poll only the private parent pipe. No detached reader can outlive this
       // session, and EOF stops the Job rather than orphaning a game.
       std::string command;
@@ -327,6 +333,18 @@ int wmain(int argc, wchar_t** argv) {
       }
       require(WaitForSingleObject(session.process.value, 8000) == WAIT_OBJECT_0, "confirm game exit");
       DWORD code = 1; require(GetExitCodeProcess(session.process.value, &code) != 0, "game exit code");
+      // The primary process exiting is not proof that all descendants stopped.
+      // In particular, owner-side build postprocessing must not race a child
+      // still changing the writable tree. Fail closed unless the Job drains.
+      require(TerminateJobObject(session.job.value, code) != 0, "stop owned descendants");
+      const ULONGLONG drainDeadline = GetTickCount64() + 5000;
+      JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+      do {
+        require(QueryInformationJobObject(session.job.value, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr) != 0, "query owned descendants");
+        if (accounting.ActiveProcesses == 0) break;
+        Sleep(10);
+      } while (GetTickCount64() < drainDeadline);
+      require(accounting.ActiveProcesses == 0, "confirm all owned descendants stopped");
       event("{\"event\":\"exited\",\"code\":" + std::to_string(code) + "}");
       return code == 0 ? 0 : 1;
     }

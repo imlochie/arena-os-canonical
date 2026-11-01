@@ -1464,7 +1464,7 @@ export default function ArcadeForge() {
         {workspace === "native" ? (
           <NativeGamesWorkspace />
         ) : workspace === "imports" ? (
-          <ImportedGameWorkspace onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} />
+          <ImportedGameWorkspace onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} onNativeInstalled={() => setWorkspace("native")} />
         ) : (
           <>
         {/* Composer */}
