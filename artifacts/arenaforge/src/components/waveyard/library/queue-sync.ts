@@ -147,6 +147,28 @@ export function publishWaveyardTransportChange(
   return { ...transport, sender };
 }
 
+/** Re-read saved state on return even if suspension dropped every live notice. */
+export function subscribeToWaveyardResume(listener: () => void) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onReturn = () => {
+    if (document.visibilityState === "hidden" || timer !== undefined) return;
+    // Focus, pageshow and visibilitychange often arrive together.
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (document.visibilityState !== "hidden") listener();
+    }, 0);
+  };
+  document.addEventListener("visibilitychange", onReturn);
+  window.addEventListener("focus", onReturn);
+  window.addEventListener("pageshow", onReturn);
+  return () => {
+    clearTimeout(timer);
+    document.removeEventListener("visibilitychange", onReturn);
+    window.removeEventListener("focus", onReturn);
+    window.removeEventListener("pageshow", onReturn);
+  };
+}
+
 export function subscribeToWaveyardQueueChanges(listener: QueueChangeListener) {
   const seen = new Set<string>();
   const onLocal = () => listener({ affectedSessionIds: [] });

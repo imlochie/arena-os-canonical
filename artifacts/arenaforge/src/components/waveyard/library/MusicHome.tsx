@@ -16,7 +16,7 @@ import { ConnectedLibraries } from "../studio/ConnectedLibraries";
 import StemEngineSetup from "./StemEngineSetup";
 import { AudioCaptureWorkbench } from "./AudioCaptureWorkbench";
 import { ConversionWorkbench } from "./ConversionWorkbench";
-import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges } from "./queue-sync";
+import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges, subscribeToWaveyardResume } from "./queue-sync";
 
 import {
   formatPlayClock,
@@ -457,10 +457,15 @@ export function MusicHome() {
         setQueue((await response.json()).queue ?? []);
       }).catch(() => setMessage("The saved queue could not be refreshed."));
     };
-    return subscribeToWaveyardQueueChanges(({ affectedSessionIds }) => {
+    const unsubscribeChanges = subscribeToWaveyardQueueChanges(({ affectedSessionIds }) => {
       reloadQueue();
       host.refreshSession(affectedSessionIds);
     });
+    const unsubscribeResume = subscribeToWaveyardResume(reloadQueue);
+    return () => {
+      unsubscribeChanges();
+      unsubscribeResume();
+    };
   }, [host]);
 
   // Debounced live search over real persisted metadata.

@@ -21,6 +21,12 @@ For app-background audio recovery tests, this workspace's Chromium build does no
 
 **How to apply:** Use the deterministic document-state shim for lifecycle listeners and keep context/media interruption behavior native; describe this as simulated browser coverage, not physical phone acceptance.
 
+Chromium does support CDP `Page.setWebLifecycleState` with `frozen` and `active` for suspension checks. Freezing alone does not prove missed-notice recovery: queued cross-tab messages can arrive on thaw, and background polling can independently refresh the view.
+
+**Why:** A resume regression must distinguish lifecycle-triggered recovery from delayed notice delivery or ordinary polling.
+
+**How to apply:** Drop cross-tab messages through the resume assertions, keep polling on an old snapshot until the explicit return event, and verify both saved queue and visible session order. Pair native freezing with a document-visibility shim where the visibility CDP command is unavailable.
+
 A broad trace that attaches metadata to every native audio node and retains every gain node caused the cross-tab playback check to time out before the fade assertions; reverting that instrumentation restored the test.
 
 **Why:** Audio graph instrumentation can change timing and object lifetime, and transition controls may appear before the audio fade reaches its midpoint.

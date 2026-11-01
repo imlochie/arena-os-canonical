@@ -42,6 +42,7 @@ import {
   publishWaveyardQueueChange,
   publishWaveyardTransportChange,
   subscribeToWaveyardQueueChanges,
+  subscribeToWaveyardResume,
   type WaveyardRemoteTransport,
 } from "./queue-sync";
 
@@ -2408,7 +2409,7 @@ export default function SessionExperience({
       sessionRef.current = next;
       setSession(next);
     } catch {
-      /* The next queue or transport update will retry the refresh. */
+      /* The next queue update or tab resume will retry the refresh. */
     }
   }, [sessionId, deckItems]);
 
@@ -2416,6 +2417,10 @@ export default function SessionExperience({
     if (transport !== undefined) receiveRemoteTransport(transport);
     else if (affectedSessionIds.includes(sessionId)) void refreshSessionFromOtherTab();
   }), [sessionId, receiveRemoteTransport, refreshSessionFromOtherTab]);
+
+  useEffect(() => subscribeToWaveyardResume(() => {
+    void refreshSessionFromOtherTab();
+  }), [refreshSessionFromOtherTab]);
 
   // Background refresh: picks up finished separations and new library tracks.
   // A deck that is AUDIBLE keeps its source until the user switches.

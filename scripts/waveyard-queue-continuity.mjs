@@ -467,6 +467,23 @@ try {
   await queueTrack("Queue fixture 2");
   await waitForFixture(() => session.tracks.length === 4 && savedQueue.length === 2, "a distinct queue item for cross-tab reorder");
   const secondPage = await context.newPage();
+  await secondPage.addInitScript(() => {
+    // A discarded/suspended tab may never receive queued cross-tab notices.
+    // Drop them deliberately so resume cannot pass via delayed delivery.
+    window.__waveyardSleeping = false;
+    const NativeBroadcastChannel = window.BroadcastChannel;
+    window.BroadcastChannel = class extends NativeBroadcastChannel {
+      constructor(name) {
+        super(name);
+        this.addEventListener("message", (event) => {
+          if (window.__waveyardSleeping) event.stopImmediatePropagation();
+        });
+      }
+    };
+    window.addEventListener("storage", (event) => {
+      if (window.__waveyardSleeping && event.key === "waveyard:queue-change") event.stopImmediatePropagation();
+    }, true);
+  });
   await secondPage.goto("http://localhost:80/waveyard");
   await secondPage.getByTestId("listening-workspace").waitFor();
   await secondPage.waitForFunction(
@@ -539,6 +556,60 @@ try {
   const secondTabTimeAfterMove = await secondPage.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
   assert.ok(currentTimeAfterTabMove >= currentTimeBeforeTabMove - 0.1, "the playing tab is not rewound by a queue move");
   assert.ok(secondTabTimeAfterMove >= secondTabTimeBeforeMove - 0.1, "the other tab is not rewound by the queue refresh");
+
+  const lifecycle = await context.newCDPSession(secondPage);
+  let sleepingSession = null;
+  let sleepingQueue = null;
+  // Keep background polling from masking the missing-notice regression after
+  // thawing Chromium, before the explicit return event.
+  await secondPage.route(`**/api/library/sessions/${sessionId}`, (route) => {
+    if (sleepingSession && route.request().method() === "GET") {
+      return routeJson(route, { session: sleepingSession });
+    }
+    return route.fallback();
+  });
+  await secondPage.route("**/api/library/queue", (route) => {
+    if (sleepingQueue && route.request().method() === "GET") {
+      return routeJson(route, { queue: sleepingQueue });
+    }
+    return route.fallback();
+  });
+  for (const returnEvent of ["visibilitychange", "focus", "pageshow"]) {
+    const oldQueueOrder = await readQueueOrder(secondPage);
+    const oldSessionOrder = await readSessionOrder(secondPage);
+    sleepingSession = structuredClone(session);
+    sleepingQueue = structuredClone(savedQueue);
+    await secondPage.evaluate(() => {
+      window.__waveyardSleeping = true;
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await lifecycle.send("Page.setWebLifecycleState", { state: "frozen" });
+    const movedTitle = savedQueue[1].track.title;
+    await page.getByRole("button", { name: `Move ${movedTitle} up from position 2` }).click();
+    await waitForFixture(() => savedQueue[0].track.title === movedTitle, "a reorder while the other tab is frozen");
+    const expectedQueue = savedQueue.map((item) => item.track.title);
+    const expectedSession = session.tracks.map((item) => item.track.title);
+    await waitForViewOrder(page, expectedQueue, expectedSession, "the awake tab commits the new order");
+    await lifecycle.send("Page.setWebLifecycleState", { state: "active" });
+    await waitForViewOrder(secondPage, oldQueueOrder, oldSessionOrder, "the sleeping tab remains stale without notices");
+    sleepingSession = null;
+    sleepingQueue = null;
+    await secondPage.evaluate((eventName) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      if (eventName === "visibilitychange") document.dispatchEvent(new Event(eventName));
+      else if (eventName === "pageshow") window.dispatchEvent(new PageTransitionEvent(eventName, { persisted: true }));
+      else window.dispatchEvent(new Event(eventName));
+      // Leave notice delivery blocked until after the refresh assertions.
+    }, returnEvent);
+    await waitForViewOrder(secondPage, expectedQueue, expectedSession, `${returnEvent} recovers queue and session after missed notices`);
+    assert.equal(await secondPage.locator(".wy-now b").innerText(), "Queue fixture 2", "resuming keeps the same current track");
+    assert.equal(await secondPage.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.paused), true,
+      "resuming a mirror does not start duplicate playback");
+    await secondPage.evaluate(() => { window.__waveyardSleeping = false; });
+  }
+  await lifecycle.detach();
+  console.log("PASS: frozen tab recovers saved queue and active session via visibility, focus, and page restore without live notices");
 
   await page.getByRole("region", { name: "Your music" })
     .getByRole("button", { name: "Clear", exact: true }).click();
