@@ -7,6 +7,10 @@ if (process.argv.includes("--chip8-only")) {
   await import("./arcade-chip8-smoke.mjs");
   process.exit(0);
 }
+if (process.argv.includes("--revision-rollback-only")) {
+  await import("./arcade-revision-rollback.mjs");
+  process.exit(0);
+}
 
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");

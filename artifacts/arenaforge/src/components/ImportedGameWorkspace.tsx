@@ -15,6 +15,7 @@ import {
 import { importedHtmlSafetyIssue } from "@workspace/arena/lib/games";
 import EmulatorJsPlayer from "./EmulatorJsPlayer";
 import Chip8Player from "./Chip8Player";
+import { keepImportedRevision, undoImportedRevision, restoreImportedRevision, type ImportedRevisionRollback } from "../lib/importedGameRevision";
 import { CHIP8_MAX_ROM_BYTES, chip8DialectForFile, chip8DialectLabel, isChip8Dialect, type Chip8Dialect } from "../lib/chip8Runtime";
 import type { ButtonKey, NES } from "jsnes";
 import type { ArcadeRepositoryProvenance } from "@workspace/api-client-react";
@@ -27,6 +28,7 @@ type ImportedGame = {
   kind: "html" | "nes" | "emulator" | "chip8";
   source: string;
   revisionUndoSource?: string;
+  revisionRollback?: ImportedRevisionRollback;
   addedAt: number;
   system?: ArcadeEmulatorSystemId;
   romData?: ArrayBuffer;
@@ -372,6 +374,11 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
   if (game.kind === "html") {
     return (game.provenance === undefined || isRepositoryProvenance(game.provenance)) &&
       htmlSafetyIssue(game.source) === null &&
+      (game.revisionRollback === undefined ||
+        (typeof game.revisionRollback === "object" && game.revisionRollback !== null &&
+          typeof game.revisionRollback.source === "string" && htmlSafetyIssue(game.revisionRollback.source) === null &&
+          Number.isFinite(game.revisionRollback.savedAt) && game.revisionRollback.savedAt >= 0 &&
+          game.revisionRollback.savedAt <= 8.64e15)) &&
       (game.revisionUndoSource === undefined ||
         (typeof game.revisionUndoSource === "string" && htmlSafetyIssue(game.revisionUndoSource) === null));
   }
@@ -435,6 +442,8 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const revisionAbortRef = useRef<AbortController | null>(null);
   const buttonsRef = useRef<Map<string, ButtonKey>>(new Map());
   const selected = games.find((game) => game.id === selectedId) ?? null;
+  const rollbackSizeKb = useMemo(() => selected?.revisionRollback
+    ? Math.ceil(new Blob([selected.revisionRollback.source]).size / 1024) : 0, [selected?.revisionRollback?.source]);
   const selectedEmulatorRom = useMemo(
     () => (selected?.kind === "emulator" || selected?.kind === "chip8") && selected.romData instanceof ArrayBuffer
       ? selected.romData
@@ -568,7 +577,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     };
   }, [refreshSavedShelf]);
 
-  const saveGames = useCallback(async (next: ImportedGame[], optimistic = true) => {
+  const saveGames = useCallback(async (next: ImportedGame[], optimistic = true, failureMessage?: string) => {
     if (optimistic) setShelfGames(next);
     setSavingShelf((count) => count + 1);
     const operation = shelfWrites.current.then(async () => {
@@ -587,7 +596,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         return false;
       }
       const quota = cause instanceof Error && cause.name === "QuotaExceededError";
-      setError(`${optimistic ? "The game is available for this session, but it could not be saved." : "The game could not be removed. It remains on your shelf."} Previously saved records are unchanged.${quota ? " Browser storage is full; free space and retry." : ""}`);
+      setError(`${failureMessage ?? (optimistic ? "The game is available for this session, but it could not be saved." : "The game could not be removed. It remains on your shelf.")} Previously saved records are unchanged.${quota ? " Browser storage is full; free space and retry." : ""}`);
       return false;
     } finally {
       if (shelfMounted.current) {
@@ -833,48 +842,64 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     }
   };
 
-  const applyHtmlRevision = async (id: string, source: string) => {
-    const current = games.find((game) => game.id === id);
-    if (!current || current.kind !== "html" || current.revisionUndoSource !== undefined) return false;
+  const applyHtmlRevision = async (expected: ImportedGame, source: string) => {
+    const id = expected.id;
+    const current = currentGames.current.find((game) => game.id === id);
+    if (!current || current.kind !== "html" || !importedGameRecordsMatch(expected, current)) {
+      throw new Error("This game changed while the revision was running. Review the current version and retry.");
+    }
+    if (current.revisionUndoSource !== undefined) throw new Error("Keep or undo the current revision first.");
     const provenance = resolveRepositoryAttribution(current.source, current.provenance);
     const attributed = withRepositoryAttribution(source, provenance);
     const issue = htmlSafetyIssue(attributed);
     if (issue) { setError(`Revision not applied: ${issue}`); return false; }
-    const next = games.map((game) => game.id === id
+    const next = currentGames.current.map((game) => game.id === id
       ? { ...game, source: attributed, ...(provenance ? { provenance } : {}), revisionUndoSource: game.source }
       : game);
-    const saved = await saveGames(next);
+    const saved = await saveGames(next, false, "The revision could not be saved. Active source and rollback copies are unchanged.");
+    if (!saved) return false;
     gameSaves.reloadGame();
     setReaAnalysis((current) => current?.gameId === id ? null : current);
     return saved;
   };
 
   const keepHtmlRevision = async () => {
-    if (!selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
-    const next = games.map((game) => {
+    if (busy || savingShelf || !selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
+    setError(""); setNotice("");
+    const next = currentGames.current.map((game) => {
       if (game.id !== selected.id || game.kind !== "html" || game.revisionUndoSource === undefined) return game;
-      const { revisionUndoSource: _revisionUndoSource, ...accepted } = game;
-      return accepted;
+      return keepImportedRevision(game);
     });
-    await saveGames(next);
-    setNotice("Revision kept. Your saved progress is unchanged.");
+    if (await saveGames(next, false, "The revision could not be kept. The pending undo and previous version remain available.")) {
+      setNotice("Revision kept. The previous version is saved locally for restoration. Your saved progress is unchanged.");
+    }
   };
 
   const undoHtmlRevision = async () => {
-    if (!selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
-    const next = games.map((game) => {
+    if (busy || savingShelf || !selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
+    setError(""); setNotice("");
+    const next = currentGames.current.map((game) => {
       if (game.id !== selected.id || game.kind !== "html" || game.revisionUndoSource === undefined) return game;
-      const { revisionUndoSource, ...restored } = game;
-      return { ...restored, source: revisionUndoSource };
+      return undoImportedRevision(game);
     });
-    await saveGames(next);
+    if (!await saveGames(next, false, "Undo could not be saved. Active source and rollback copies are unchanged.")) return;
     gameSaves.reloadGame();
     setReaAnalysis((current) => current?.gameId === selected.id ? null : current);
     setNotice("Earlier game source restored. Your saved progress is unchanged.");
   };
 
+  const restoreHtmlRevision = async () => {
+    if (busy || savingShelf || !selected || selected.kind !== "html" || selected.revisionUndoSource !== undefined || !selected.revisionRollback) return;
+    setError(""); setNotice("");
+    const next = currentGames.current.map(game => game.id === selected.id ? restoreImportedRevision(game) : game);
+    if (!await saveGames(next, false, "The previous version could not be restored. Active source and rollback copies are unchanged.")) return;
+    gameSaves.reloadGame();
+    setReaAnalysis(current => current?.gameId === selected.id ? null : current);
+    setNotice("Previous version restored. The replaced source is now the rollback copy. Your saved progress is unchanged.");
+  };
+
   const revise = async () => {
-    if (!selected || selected.kind !== "html" || !instruction.trim() || busy) return;
+    if (!selected || selected.kind !== "html" || !instruction.trim() || busy || savingShelf) return;
     const controller = new AbortController();
     revisionAbortRef.current = controller;
     setBusy(true);
@@ -897,7 +922,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       if (selected.revisionUndoSource !== undefined) {
         throw new Error("Keep or undo the current revision before applying another.");
       }
-      await applyHtmlRevision(selected.id, revised);
+      if (!await applyHtmlRevision(selected, revised)) return;
       setInstruction("");
       setNotice("Revision applied. Play it, then keep it or undo it.");
     } catch (cause) {
@@ -1338,7 +1363,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   <p className="text-[10px] leading-relaxed text-slate-500">A change is applied only when it returns complete HTML that passes Arcade's game safety checks.</p>
                    {compactHtml && compactHtml.source.length > 50_000 && <p className="text-[10px] text-amber-200">This game has more than 50 KB of executable source after media is excluded. It can still be played locally.</p>}
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => void revise()} disabled={busy || selected.revisionUndoSource !== undefined || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
+                    <button type="button" onClick={() => void revise()} disabled={busy || savingShelf > 0 || selected.revisionUndoSource !== undefined || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
                       {busy ? "Revising…" : "Apply revision"}
                     </button>
                     {busy && revisionAbortRef.current && (
@@ -1357,13 +1382,25 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                       <p className="text-[11px] font-bold text-amber-100">Review this revision in the game above.</p>
                       <p className="mt-1 text-[10px] leading-relaxed text-slate-400">Keep it to accept, or restore the earlier source. Your game identity and browser progress stay the same.</p>
                       <div className="mt-2 flex flex-wrap gap-2">
-                        <button type="button" onClick={() => void keepHtmlRevision()} className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-[10px] font-bold text-emerald-100 hover:bg-emerald-300/15" data-testid="button-keep-imported-revision">
+                        <button type="button" disabled={savingShelf > 0 || busy} onClick={() => void keepHtmlRevision()} className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-[10px] font-bold text-emerald-100 hover:bg-emerald-300/15 disabled:opacity-40" data-testid="button-keep-imported-revision">
                           Keep revision
                         </button>
-                        <button type="button" onClick={() => void undoHtmlRevision()} className="rounded-lg border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-[10px] font-bold text-amber-100 hover:bg-amber-300/15" data-testid="button-undo-imported-revision">
+                        <button type="button" disabled={savingShelf > 0 || busy} onClick={() => void undoHtmlRevision()} className="rounded-lg border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-[10px] font-bold text-amber-100 hover:bg-amber-300/15 disabled:opacity-40" data-testid="button-undo-imported-revision">
                           Undo revision
                         </button>
                       </div>
+                    </div>
+                  )}
+                  {selected.revisionUndoSource === undefined && selected.revisionRollback && (
+                    <div className="rounded-xl border border-sky-300/20 bg-sky-300/5 p-3" data-testid="imported-revision-rollback">
+                      <p className="text-[11px] font-bold text-sky-100">Previous version available</p>
+                      <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                        Source saved {new Date(selected.revisionRollback.savedAt).toLocaleString()} · {rollbackSizeKb} KB.
+                        {" "}Restore replaces the active source; the replaced version remains recoverable. Your game identity and saved progress stay the same.
+                      </p>
+                      <button type="button" data-testid="button-restore-imported-revision" disabled={busy || savingShelf > 0} onClick={() => void restoreHtmlRevision()} className="mt-2 rounded-lg border border-sky-300/25 bg-sky-300/10 px-3 py-2 text-[10px] font-bold text-sky-100 hover:bg-sky-300/15 disabled:opacity-40">
+                        Restore previous version
+                      </button>
                     </div>
                   )}
                 </div>

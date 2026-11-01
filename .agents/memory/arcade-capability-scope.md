@@ -20,3 +20,9 @@ Do not silently reclassify existing classic CHIP-8 games when expanding dialect 
 **Why:** Classic CHIP-8 and Super-CHIP disagree on shifts, register transfers, jumps and drawing. A technically valid reinterpretation can change gameplay or invalidate old progress, contrary to the user's requirement not to regress working games.
 
 **How to apply:** Preserve legacy defaults and save identity when adding adapters or migrating records. Keep compatibility-profile limits explicit rather than advertising every historical implementation as equivalent.
+
+Source restoration is not permission to rewind gameplay progress.
+
+**Why:** The requested recovery behavior is to restore game code while retaining the same game's identity and browser progress. An older code version and an older save are separate user choices.
+
+**How to apply:** Keep those choices separate when extending revision history, profiles and portable backups; do not silently replace or erase progress to make restored source appear compatible.
