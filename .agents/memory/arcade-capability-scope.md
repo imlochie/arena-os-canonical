@@ -32,3 +32,9 @@ Bound retained source by total bytes as well as copy count, including bundled me
 **Why:** Offline HTML games can embed large images and audio even when the editable code sent to a model is small. A short history can still multiply storage and memory costs, which conflicts with the user's resource concerns.
 
 **How to apply:** Budget full stored source, not the media-stripped model prompt, and make retention limits visible before players rely on history as a permanent backup.
+
+Do not reuse per-document model media markers as comparison identities.
+
+**Why:** Position-based markers serve asset preservation during model edits, but independently masking two versions can give different images or audio the same marker and hide a real change.
+
+**How to apply:** Compare embedded data with a shared exact-value identity across both versions, keep raw-source equality separate from display normalization, and leave the model's asset-preservation contract unchanged.

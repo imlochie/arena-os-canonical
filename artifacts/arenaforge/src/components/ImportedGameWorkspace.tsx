@@ -15,6 +15,7 @@ import {
 import { importedHtmlSafetyIssue } from "@workspace/arena/lib/games";
 import EmulatorJsPlayer from "./EmulatorJsPlayer";
 import Chip8Player from "./Chip8Player";
+import ImportedGameSourceComparison from "./ImportedGameSourceComparison";
 import { keepImportedRevision, undoImportedRevision, restoreImportedRevision, getImportedRevisionHistory, importedRevisionMetadataValid, MAX_IMPORTED_REVISION_COPIES, MAX_IMPORTED_REVISION_BYTES, type ImportedRevisionRollback } from "../lib/importedGameRevision";
 import { CHIP8_MAX_ROM_BYTES, chip8DialectForFile, chip8DialectLabel, isChip8Dialect, type Chip8Dialect } from "../lib/chip8Runtime";
 import type { ButtonKey, NES } from "jsnes";
@@ -1387,6 +1388,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                       <p className="text-[11px] font-bold text-amber-100">Review this revision in the game above.</p>
                       <p className="mt-1 text-[10px] leading-relaxed text-slate-400">Keep it to accept, or restore the earlier source. Your game identity and browser progress stay the same.</p>
                       <div className="mt-2 flex flex-wrap gap-2">
+                        <ImportedGameSourceComparison previous={selected.revisionUndoSource} current={selected.source} onBackToGame={() => {
+                          htmlFrameRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                          htmlFrameRef.current?.focus();
+                        }} />
                         <button type="button" disabled={savingShelf > 0 || busy} onClick={() => void keepHtmlRevision()} className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-[10px] font-bold text-emerald-100 hover:bg-emerald-300/15 disabled:opacity-40" data-testid="button-keep-imported-revision">
                           Keep revision
                         </button>
@@ -1407,6 +1412,12 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                       <button type="button" data-testid="button-restore-imported-revision" disabled={busy || savingShelf > 0} onClick={() => void restoreHtmlRevision()} className="mt-2 rounded-lg border border-sky-300/25 bg-sky-300/10 px-3 py-2 text-[10px] font-bold text-sky-100 hover:bg-sky-300/15 disabled:opacity-40">
                         Restore previous version
                       </button>
+                      <div className="mt-2">
+                        <ImportedGameSourceComparison previous={revisionCopies[0].source} current={selected.source} onBackToGame={() => {
+                          htmlFrameRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                          htmlFrameRef.current?.focus();
+                        }} />
+                      </div>
                       {revisionCopies.length > 1 && (
                         <details className="mt-3" data-testid="imported-revision-history">
                           <summary className="cursor-pointer text-[11px] font-bold text-sky-100">Older versions ({revisionCopies.length - 1})</summary>
