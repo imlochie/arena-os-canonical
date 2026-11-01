@@ -1,0 +1,52 @@
+name: Linux Arcade isolation admission (not gameplay)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: linux-arcade-admission-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  admission:
+    # Disposable VM only. Never route this job onto a user's desktop.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      - name: Exercise admission policy tests without installing the application
+        run: nix-shell desktop/linux-admission-ci.nix --run 'node --test desktop/arcade-compatibility.test.mjs'
+      - name: Test private procfs and real delegated cgroup controls
+        env:
+          ARENA_SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p generated-artifacts/arcade-linux-admission
+          # No sysctl/AppArmor changes, host proc bind or uncontained fallback.
+          # Root only creates the delegated service. All probe code runs as the
+          # runner user; the gate joins its own child cgroup before sandboxing.
+          nix-shell desktop/linux-admission-ci.nix --run '
+            sudo systemd-run \
+              --unit="arena-admission-${{ github.run_id }}-${{ github.run_attempt }}" \
+              --property="User=$(id -un)" \
+              --property=Delegate=yes \
+              --property="WorkingDirectory=$PWD" \
+              --property=RuntimeMaxSec=60 \
+              --property=TimeoutStopSec=10 \
+              --property=KillMode=control-group \
+              --wait --pipe --collect \
+              /usr/bin/env -i PATH="$PATH" \
+              ARENA_SOURCE_REVISION="$ARENA_SOURCE_REVISION" \
+              "$(command -v node)" desktop/ci-linux-admission.mjs
+          ' 2>&1 | tee generated-artifacts/arcade-linux-admission/runner.log
+      - name: Retain admission evidence on pass or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcade-linux-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: generated-artifacts/arcade-linux-admission/
+          if-no-files-found: warn
+          retention-days: 7

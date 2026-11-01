@@ -89,6 +89,34 @@ still not enable an absent driver.
 
 ## Distribution and legal assessment
 
+### Disposable Linux CI admission
+
+The user selected a Linux CI runner for the next verification stage.
+`.github/workflows/linux-arcade-admission.yml` is a manually dispatched,
+read-only-repository-permission workflow on a disposable Ubuntu 22.04 x64 VM.
+It downloads only admission tools from a fixed nixpkgs revision, not Wine,
+game binaries or the full application dependencies. The Nix source URL pins
+the Git commit; it does not currently carry an additional archive/NAR hash.
+
+Systemd creates a dedicated runner-user service with delegated cgroup controls.
+The probe derives its cgroup from its own kernel membership, rejects ordinary
+runner/root groups, then creates and cleans up only its owned child group.
+The privileged command starts the service; the Node/C probe runs unprivileged.
+No host security policy is relaxed when namespace or procfs setup fails.
+The service also has a hard lifetime and owned-descendant cleanup on exit.
+
+The JSON report records the exact source revision, cleanup status and
+`gameplayVerified: false`. A passing job means **admission primitives only**.
+Real gameplay, input, captured audio, prefix/save lifecycle, repair, rollback
+and actual game containment still require implementation and separate evidence.
+
+The workflow has **not been dispatched or verified on GitHub**. The GitHub
+connection was authorized but its callable credentials were withheld in this
+session. Once these files are on the repository's default branch, use Actions →
+“Linux Arcade isolation admission (not gameplay)” → Run workflow. Download
+the `arcade-linux-admission-*` evidence, including failures. A failed bootstrap
+can leave only `runner.log`; absence of JSON is not a passed probe.
+
 ### Wine
 
 [Wine 10.0's source license](https://github.com/wine-mirror/wine/blob/wine-10.0/LICENSE)

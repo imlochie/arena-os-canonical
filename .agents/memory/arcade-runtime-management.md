@@ -21,6 +21,12 @@ Linux admission must test a real private-proc sandbox setup, not infer viability
 
 **How to apply:** Recheck the actual target host. Never bind the owner's existing procfs or weaken containment to bypass a failed admission test. Treat tool/version detection as separate from executable game support.
 
+Use a disposable Linux CI runner for the next Linux compatibility execution verification, rather than asking for an owner-machine run.
+
+**Why:** The user selected Linux CI after the hosted private-proc restriction was demonstrated; Windows testing remains deferred to the final pass.
+
+**How to apply:** Prepare and run the CI path when repository access permits. Do not treat CI admission success as gameplay or Windows evidence.
+
 Native Windows execution must fail closed when real OS containment cannot be verified; a Job/process tree alone is not a filesystem/network sandbox.
 
 **Why:** Imported native code is a different trust boundary from browser games. Linux protocol simulations and a successful process spawn cannot establish Windows isolation or SDL/audio compatibility.
