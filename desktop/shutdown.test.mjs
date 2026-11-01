@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { stopBeforeQuit } from "./shutdown.mjs";
+import { stopBeforeQuit, stopDesktopServices } from "./shutdown.mjs";
+
+test("native shutdown failure cannot prevent API/database cleanup", async () => {
+  const events = [];
+  await assert.rejects(stopDesktopServices({
+    stopNative: async () => { events.push("native"); throw new Error("native stop timed out"); },
+    stopServices: async () => { events.push("API"); events.push("database"); },
+  }), /native stop timed out/);
+  assert.deepEqual(events, ["native", "API", "database"]);
+});
+
+test("shutdown retains failures from both cleanup paths", async () => {
+  await assert.rejects(stopDesktopServices({
+    stopNative: async () => { throw new Error("native"); },
+    stopServices: async () => { throw new Error("API"); },
+  }), error => error instanceof AggregateError && error.errors.length === 2 && /native; API/.test(error.message));
+});
 
 test("clean shutdown quits without showing a failure prompt", async () => {
   const events = [];

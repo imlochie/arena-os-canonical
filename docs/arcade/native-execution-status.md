@@ -6,7 +6,10 @@ The native lifecycle, Electron control path, common runtime adapter/manifest
 projection and Windows supervisor source are implemented. Linux storage,
 ownership and simulated supervisor tests do **not** verify Windows containment.
 No actual Windows/MSVC/SDL execution pass has been obtained in this workspace.
-The desktop-execution task remains open.
+The user explicitly deferred target-Windows verification to the final Windows
+pass so queued implementation can continue. This closes the implementation
+step only; it is **not** a verified Windows-execution or release-readiness claim.
+The final pass must cover the real-host acceptance and remaining gaps below.
 
 The original SDL fixture is an acceptance game, not a replacement for Arcade's
 prompt/import/mod vision. Reproducible repository builds and real mod loaders

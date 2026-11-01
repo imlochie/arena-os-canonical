@@ -3480,7 +3480,15 @@ try {
   await page.getByRole("button", { name: "Apply revision" }).click();
   await page.getByText("Revision applied. Play it, then keep it or undo it.").waitFor({ timeout: 10000 });
   const revisedArchiveFrame = page.frameLocator('iframe[title="Playable game: open-homebrew-project.zip"]');
-  const revisedArchiveScript = await revisedArchiveFrame.locator("script").evaluateAll(scripts => scripts.map(script => script.textContent ?? "").join("\n"));
+  // The parent status can precede srcdoc navigation. Playwright's text
+  // filtering excludes script elements, so inspect their DOM text directly.
+  let revisedArchiveScript = "";
+  const revisionDocumentDeadline = Date.now() + 10_000;
+  do {
+    revisedArchiveScript = await revisedArchiveFrame.locator("script").evaluateAll(scripts => scripts.map(script => script.textContent ?? "").join("\n"));
+    if (revisedArchiveScript.includes("score+=2")) break;
+    await page.waitForTimeout(50);
+  } while (Date.now() < revisionDocumentDeadline);
   assert(revisedArchiveScript.includes("score+=2"), "The imported game's actual scoring logic must be rewritten");
   const restoredImage = await revisedArchiveFrame.locator("#tile").evaluate(element => getComputedStyle(element).backgroundImage);
   assert(restoredImage.includes("data:image/svg+xml;base64,"), "Original local image must be restored after model revision");

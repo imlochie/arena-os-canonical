@@ -8,7 +8,7 @@ import { dataRoot } from "./data-paths.mjs";
 import { DesktopDatabase } from "./database.mjs";
 import { createArenaBackup, restoreArenaBackup, verifyArenaBackup } from "./arena-backup.mjs";
 import { killProcessTree } from "./process-tree.mjs";
-import { stopBeforeQuit } from "./shutdown.mjs";
+import { stopBeforeQuit, stopDesktopServices } from "./shutdown.mjs";
 import { createArcadeControl } from "./arcade/control.mjs";
 
 app.setName("Arena");
@@ -48,7 +48,10 @@ function password(root) {
 }
 
 async function stop() {
-  await arcade?.shutdown();
+  return stopDesktopServices({ stopNative: () => arcade?.shutdown(), stopServices: stopBackendServices });
+}
+
+async function stopBackendServices() {
   if (server && server.exitCode === null && server.signalCode === null) {
     const child = server;
     const exited = new Promise(resolve => child.once("exit", resolve));

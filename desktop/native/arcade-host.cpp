@@ -178,6 +178,10 @@ struct Session {
     PROCESS_INFORMATION child{};
     require(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, environment.data(), profile.c_str(), &startup.StartupInfo, &child) != 0, "LPAC process creation");
     process.value = child.hProcess; Handle thread(child.hThread);
+    // Only the child owns writers after creation. Close our copies before
+    // starting readers, including paths where Job/token/resume checks fail.
+    CloseHandle(outWrite.value); outWrite.value = nullptr;
+    CloseHandle(errWrite.value); errWrite.value = nullptr;
     try { require(AssignProcessToJobObject(job.value, process.value) != 0, "assign suspended child to Job"); tokenProof(process.value); }
     catch (...) { TerminateProcess(process.value, 125); throw; }
     auto pump = [](HANDLE pipe, const char* channel) {
