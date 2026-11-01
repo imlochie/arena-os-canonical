@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
-if (process.argv.includes("--progress-isolation-only")) {
+if (process.argv.includes("--progress-isolation-only") || process.argv.includes("--progress-backup-only")) {
   await import("./arcade-progress-isolation.mjs");
   process.exit(0);
 }

@@ -2,6 +2,7 @@
 - [Browser workspace privacy](browser-workspaces.md) — private browser runtime state is not task output or agent context.
 - [Arcade model routing](arcade-model-routing.md) — use connected code-writing models; no implicit public-service cascade for game prompts or source.
 - [Arcade capability scope](arcade-capability-scope.md) — prompt-created games, authorized imports, gameplay edits, and local progress are core; presets are examples.
+- [Arcade progress portability](arcade-progress-portability.md) — matching source permits confirmed copy migration, not automatic identity merging; stale restore previews must not overwrite newer progress.
 - [EmulatorJS save handling](emulatorjs-save-handling.md) — telemetry-only save hooks can disable the runtime’s built-in browser persistence.
 - [Waveyard processing evidence](waveyard-processing.md) — model readiness is not processing proof; verify pinned input shapes and bound native session lifetimes.
 - [Waveyard real-audio test runner](waveyard-real-audio-runner.md) — use resolver-aware TypeScript loading and an absolute test path from pnpm's scripts workspace.

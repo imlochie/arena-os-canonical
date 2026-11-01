@@ -1,7 +1,7 @@
 // Real sandboxed players and browser persistence; only inference is mocked.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
@@ -33,9 +33,9 @@ await page.route("**/api/arcade/import/revise", async route => {
   await route.fulfill({ json: { code: revised, warnings: [] } });
 });
 const frame = () => page.frameLocator('iframe[title="Playable game: same-name.html"]');
-const saves = () => page.evaluate(() => Object.fromEntries(Object.keys(localStorage)
+const saves = (target = page) => target.evaluate(() => Object.fromEntries(Object.keys(localStorage)
   .filter(key => key.startsWith("arenaforge.game-save.v1:")).map(key => [key.slice("arenaforge.game-save.v1:".length), localStorage.getItem(key)])));
-const records = () => page.evaluate(() => new Promise((resolve, reject) => {
+const records = (target = page) => target.evaluate(() => new Promise((resolve, reject) => {
   const open = indexedDB.open("arenaforge-imported-games", 1);
   open.onerror = () => reject(open.error);
   open.onsuccess = () => {
@@ -172,6 +172,105 @@ try {
   assert.equal((await saves())[first.id], undefined);
   assert.deepEqual(errors, []);
   checks.push("ordinary saves and game-originated remove/clear never restart the player; all clear controls affect only the active game, including after reload");
+  if (process.argv.includes("--progress-backup-only")) {
+    const panel = page.getByTestId("imported-progress-backup");
+    await panel.locator("summary").click();
+    const downloadEvent = page.waitForEvent("download");
+    await panel.getByTestId("button-export-imported-progress").click();
+    const download = await downloadEvent;
+    const backupText = await readFile(await download.path(), "utf8");
+    const backup = JSON.parse(backupText);
+    assert.equal(backup.gameId, second.id);
+    assert.equal(backup.data.progress, "private-progress-blue-22");
+    assert.equal("source" in backup, false);
+    const sourcesBefore = await records();
+    const upload = async text => {
+      await panel.getByTestId("input-imported-progress-backup").setInputFiles({ name: "fixture.arena-progress.json", mimeType: "application/json", buffer: Buffer.from(text) });
+    };
+    const confirm = async () => {
+      await panel.getByRole("checkbox").check();
+      await panel.getByTestId("button-restore-imported-progress").click();
+    };
+    await save(second.id, "private-progress-blue-23");
+    await upload(backupText);
+    await panel.getByTestId("imported-progress-restore-preview").waitFor();
+    assert.equal(await panel.getByTestId("button-restore-imported-progress").isDisabled(), true);
+    await panel.getByRole("button", { name: "Cancel restore", exact: true }).click();
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-23");
+    for (const invalid of ["not JSON", JSON.stringify({ ...backup, version: 999 }),
+      JSON.stringify({ ...backup, gameId: "unrelated-id", sourceSha256: "a".repeat(64) }),
+      JSON.stringify({ ...backup, data: { progress: 1 } }), " ".repeat(256 * 1024 + 1)]) {
+      await upload(invalid);
+      await panel.getByRole("alert").waitFor();
+      assert.equal(await panel.getByTestId("imported-progress-restore-preview").count(), 0);
+      assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-23");
+    }
+    await page.evaluate(() => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (window.__failProgressRestore && key.startsWith("arenaforge.game-save.v1:")) throw new DOMException("Injected progress quota failure", "QuotaExceededError");
+        return set.call(this, key, value);
+      };
+    });
+    await upload(backupText);
+    await panel.getByTestId("imported-progress-restore-preview").waitFor();
+    await page.evaluate(() => { window.__failProgressRestore = true; });
+    await confirm();
+    await panel.getByRole("alert").getByText(/Injected progress quota failure/).waitFor();
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-23");
+    await page.evaluate(() => { window.__failProgressRestore = false; });
+    await panel.getByTestId("button-restore-imported-progress").click();
+    await panel.getByText(/Progress restored locally/).waitFor();
+    await expectStored("private-progress-blue-22");
+    assert.deepEqual(await records(), sourcesBefore);
+    assert.equal((await saves())[first.id], undefined);
+    checks.push("backup export, cancel, malformed/mismatched/oversized rejection and quota-safe retry preserve source and unrelated progress");
+    await upload(backupText);
+    await panel.getByTestId("imported-progress-restore-preview").waitFor();
+    await save(second.id, "private-progress-blue-24");
+    await confirm();
+    await panel.getByRole("alert").getByText(/Progress changed/).waitFor();
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-24");
+    await upload(backupText);
+    await panel.getByTestId("imported-progress-restore-preview").waitFor();
+    await confirm();
+    await panel.getByText(/Progress restored locally/).waitFor();
+    await reopen();
+    await select(second.id, "private-progress-blue-22");
+    assert.deepEqual(await records(), sourcesBefore);
+    checks.push("changed progress invalidates an old preview; a confirmed fresh restore survives page reload without changing source or history");
+    const otherContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
+    const other = await otherContext.newPage();
+    other.on("pageerror", error => errors.push(error.message));
+    await other.goto(`${base}/arcade`);
+    await other.getByRole("tab", { name: "Import and emulate" }).click();
+    await other.getByLabel(/I own this game or have permission to use and play it/).check();
+    await other.locator('input[type="file"][accept*=".html"]').setInputFiles({ name: "same-name.html", mimeType: "text/html", buffer: Buffer.from(original) });
+    const otherFrame = other.frameLocator('iframe[title="Playable game: same-name.html"]');
+    await otherFrame.locator("#stored").filter({ hasText: /^unset$/ }).waitFor();
+    const otherGame = (await records(other))[0];
+    assert.notEqual(otherGame.id, second.id);
+    const otherPanel = other.getByTestId("imported-progress-backup");
+    await otherPanel.locator("summary").click();
+    await otherPanel.getByTestId("input-imported-progress-backup").setInputFiles({ name: "fixture.arena-progress.json", mimeType: "application/json", buffer: Buffer.from(backupText) });
+    await otherPanel.getByText(/Different import identity, but the HTML source matches exactly/).waitFor();
+    assert.equal(await otherPanel.getByTestId("button-restore-imported-progress").isDisabled(), true);
+    await otherPanel.getByRole("checkbox").check();
+    await otherPanel.getByTestId("button-restore-imported-progress").click();
+    await otherPanel.getByText(/Progress restored locally/).waitFor();
+    await otherFrame.locator("#stored").filter({ hasText: /^private-progress-blue-22$/ }).waitFor();
+    assert.deepEqual(Object.keys(await saves(other)), [otherGame.id]);
+    await other.reload();
+    await other.getByRole("tab", { name: "Import and emulate" }).click();
+    await otherFrame.locator("#stored").filter({ hasText: /^private-progress-blue-22$/ }).waitFor();
+    assert.equal((await records(other))[0].source, original);
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-22");
+    await other.getByTestId("imported-progress-backup").locator("summary").click();
+    await other.screenshot({ path: new URL("backup-mobile.png", output).pathname });
+    await otherContext.close();
+    assert.deepEqual(errors, []);
+    checks.push("a fresh browser context restores to a new identity only after exact-source matching and explicit copy confirmation; progress survives its reload");
+  }
   await page.screenshot({ path: new URL("isolation.png", output).pathname });
   await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, checks, modelCallTested: false }, null, 2));
   console.log(JSON.stringify({ passed: true, checks, modelCallTested: false }));

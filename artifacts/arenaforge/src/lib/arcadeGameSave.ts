@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { ARCADE_SAVE_PREFIX, MAX_ARCADE_SAVE_BYTES, MAX_ARCADE_SAVE_KEY_LENGTH, commitHtmlProgressRestore, type GameSaveData } from "./arcadeGameProgressBackup";
 
-const STORAGE_PREFIX = "arenaforge.game-save.v1:";
+const STORAGE_PREFIX = ARCADE_SAVE_PREFIX;
 const MESSAGE_CHANNEL = "arenaforge-game-save";
-const MAX_SAVE_BYTES = 64 * 1024;
-const MAX_KEY_LENGTH = 256;
-
-type GameSaveData = Record<string, string>;
+const MAX_SAVE_BYTES = MAX_ARCADE_SAVE_BYTES;
+const MAX_KEY_LENGTH = MAX_ARCADE_SAVE_KEY_LENGTH;
 
 function encodedSize(value: string) {
   return new TextEncoder().encode(value).byteLength;
@@ -40,20 +39,20 @@ function safelyEmbedJson(value: unknown) {
 
 function saveRuntimeScript(gameId: string, saved: GameSaveData) {
   const safeId = safelyEmbedJson(gameId);
-  const safeSaved = safelyEmbedJson(saved);
+  const safeSaved = safelyEmbedJson(JSON.stringify(saved));
   return `<script data-arenaforge-save-runtime>(function(){` +
-    `var gameId=${safeId},data=${safeSaved},channel=${safelyEmbedJson(MESSAGE_CHANNEL)};` +
+    `var gameId=${safeId},data=Object.assign(Object.create(null),JSON.parse(${safeSaved})),channel=${safelyEmbedJson(MESSAGE_CHANNEL)};` +
     `function send(op,key,value){try{parent.postMessage({channel:channel,gameId:gameId,op:op,key:key,value:value},"*")}catch(e){}}` +
     `function write(key,value){key=String(key);value=String(value);if(!key||key.length>${MAX_KEY_LENGTH}||value.length>${MAX_SAVE_BYTES})return;` +
     `var old=data[key];data[key]=value;if(JSON.stringify(data).length>${MAX_SAVE_BYTES}){if(old===undefined)delete data[key];else data[key]=old;return}send("set",key,value)}` +
     `var store={getItem:function(key){key=String(key);return Object.prototype.hasOwnProperty.call(data,key)?data[key]:null},setItem:write,` +
-    `removeItem:function(key){key=String(key);delete data[key];send("remove",key)},clear:function(){data={};send("clear")},` +
+    `removeItem:function(key){key=String(key);delete data[key];send("remove",key)},clear:function(){data=Object.create(null);send("clear")},` +
     `key:function(index){return Object.keys(data)[index]||null}};` +
     `Object.defineProperty(store,"length",{get:function(){return Object.keys(data).length}});` +
     `try{Object.defineProperty(window,"localStorage",{configurable:true,value:store})}catch(e){}` +
     `window.__arenaGameSave={get:function(key,fallback){var raw=store.getItem(key);if(raw===null)return fallback;try{return JSON.parse(raw)}catch(e){return raw}},` +
     `set:function(key,value){write(key,JSON.stringify(value))},remove:function(key){store.removeItem(key)},clear:function(){store.clear()}};` +
-    `window.addEventListener("message",function(event){var m=event.data;if(event.source===parent&&m&&m.channel===channel&&m.gameId===gameId&&m.op==="clear"){data={}}});` +
+    `window.addEventListener("message",function(event){var m=event.data;if(event.source===parent&&m&&m.channel===channel&&m.gameId===gameId&&m.op==="clear"){data=Object.create(null)}});` +
     `})();</script>`;
 }
 
@@ -78,13 +77,14 @@ export function useArcadeGameSave(
 ) {
   const [hasSavedProgress, setHasSavedProgress] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const retiredSaveWindow = useRef<Window | null>(null);
 
   useEffect(() => {
     setHasSavedProgress(gameId ? Object.keys(readSaveData(gameId)).length > 0 : false);
     if (!gameId) return;
 
     const onMessage = (event: MessageEvent) => {
-      if (event.source !== frameRef.current?.contentWindow) return;
+      if (event.source !== frameRef.current?.contentWindow || event.source === retiredSaveWindow.current) return;
       const message = event.data;
       if (!message || message.channel !== MESSAGE_CHANNEL || message.gameId !== gameId) return;
 
@@ -134,5 +134,14 @@ export function useArcadeGameSave(
     setReloadKey((key) => key + 1);
   }, []);
 
-  return { hasSavedProgress, reloadKey, clearSavedProgress, reloadGame };
+  const restoreSavedProgress = useCallback((data: GameSaveData, expectedRaw: string | null) => {
+    if (!gameId) throw new Error("Select an imported HTML game before restoring progress.");
+    commitHtmlProgressRestore(gameId, data, expectedRaw);
+    // Ignore queued writes from the outgoing player before React replaces it.
+    retiredSaveWindow.current = frameRef.current?.contentWindow ?? null;
+    setHasSavedProgress(Object.keys(data).length > 0);
+    setReloadKey(key => key + 1);
+  }, [gameId, frameRef]);
+
+  return { hasSavedProgress, reloadKey, clearSavedProgress, reloadGame, restoreSavedProgress };
 }

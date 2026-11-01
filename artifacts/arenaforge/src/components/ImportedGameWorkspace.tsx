@@ -16,6 +16,7 @@ import { importedHtmlSafetyIssue } from "@workspace/arena/lib/games";
 import EmulatorJsPlayer from "./EmulatorJsPlayer";
 import Chip8Player from "./Chip8Player";
 import ImportedGameSourceComparison from "./ImportedGameSourceComparison";
+import ImportedGameProgressBackup from "./ImportedGameProgressBackup";
 import { keepImportedRevision, undoImportedRevision, restoreImportedRevision, getImportedRevisionHistory, importedRevisionMetadataValid, MAX_IMPORTED_REVISION_COPIES, MAX_IMPORTED_REVISION_BYTES, type ImportedRevisionRollback } from "../lib/importedGameRevision";
 import { CHIP8_MAX_ROM_BYTES, chip8DialectForFile, chip8DialectLabel, isChip8Dialect, type Chip8Dialect } from "../lib/chip8Runtime";
 import type { ButtonKey, NES } from "jsnes";
@@ -1238,6 +1239,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                     </button>
                   )}
                 </div>
+                <ImportedGameProgressBackup key={selected.id} game={selected} hasProgress={gameSaves.hasSavedProgress} disabled={busy || savingShelf > 0} onRestore={gameSaves.restoreSavedProgress} />
               </div>
             ) : selected.kind === "emulator" && selected.system && selectedEmulatorRom ? (
               <EmulatorJsPlayer
