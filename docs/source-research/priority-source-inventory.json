@@ -1,0 +1,2429 @@
+{
+  "auditedAt": "2026-11-01T13:09:03.800Z",
+  "scope": "Public source inventory and bounded code inspection, not a complete code review, build, execution or security certification. No upstream application has been integrated or launched. Original Node persistence hardening informed by craft-atomic is the first design-pattern adoption.",
+  "repositories": [
+    {
+      "repository": "KytyPS5/KytyPS5",
+      "url": "https://github.com/KytyPS5/KytyPS5",
+      "commit": "893b03552699dc873474023bc1f4c69c57fb36b2",
+      "description": null,
+      "language": "C++",
+      "reportedLicense": null,
+      "licenseTextLocated": [
+        "LICENSE"
+      ],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "LICENSE"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 687,
+        "testFiles": 47,
+        "entrySources": [
+          {
+            "path": "src/main.cpp",
+            "bytes": 19532
+          },
+          {
+            "path": "src/launcher/src/main.cpp",
+            "bytes": 708
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade / native console execution",
+        "assessment": "Optional PS5 runtime candidate; lawful input, native Vulkan/CPU preflight, pinned separate packages and real gameplay/save/controller proof before enablement. GPL and submodule obligations; no browser emulator claim."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "morluto/rea",
+      "url": "https://github.com/morluto/rea",
+      "commit": "53363166f068a21f00a605187e1c3af428aa7d5d",
+      "description": null,
+      "language": "TypeScript",
+      "reportedLicense": null,
+      "licenseTextLocated": [
+        "LICENSE"
+      ],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "package.json",
+        "LICENSE"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 7030,
+        "testFiles": 3485,
+        "entrySources": [
+          {
+            "path": "package.json",
+            "bytes": 27644
+          },
+          {
+            "path": "scripts/verify-tools/skills/package.json",
+            "bytes": 201
+          },
+          {
+            "path": "tests/conformance/readiness/electron/package.json",
+            "bytes": 82
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + Spaces / evidence-backed inspection",
+        "assessment": "Scoped CLI/MCP investigation, provider-specific readiness, reference-source import and behavior evidence; selected targets only, bounded tool families and local model handoff. No blanket host/debugger access."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/ActorSpawningPlugin",
+      "url": "https://github.com/storytold/ActorSpawningPlugin",
+      "commit": "b920a363b0ab473f5ced3d4e772dc401831a87c9",
+      "description": "⚡ UE Plugin: Spawn actors and more in-engine.",
+      "language": "C++",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 18,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/AniCraft",
+      "url": "https://github.com/storytold/AniCraft",
+      "commit": null,
+      "description": "AniCraft: An open-source 2D animation editor written from scratch in pure Rust.",
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [],
+      "review": {
+        "level": "empty repository"
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/AnimationTest",
+      "url": "https://github.com/storytold/AnimationTest",
+      "commit": "71e1c2111866fd65b4b9b215794de14459a8eeda",
+      "description": "UE5 VTuber show HyperJail",
+      "language": "C#",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 145,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/artcraft",
+      "url": "https://github.com/storytold/artcraft",
+      "commit": "1f969a9224934a55417daf10359a6fb1458b63f4",
+      "description": "ArtCraft is an intentional crafting engine for artists, designers, and filmmakers",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 5824,
+        "testFiles": 30,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 5444
+          },
+          {
+            "path": "frontend/package.json",
+            "bytes": 3944
+          },
+          {
+            "path": "artcraft-native/Cargo.toml",
+            "bytes": 1807
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/artcraft-services",
+      "url": "https://github.com/storytold/artcraft-services",
+      "commit": "3ccdf1341a8c33bb965562523da495aeb1bc9241",
+      "description": "backend, web frontend, etc.",
+      "language": "Rust",
+      "reportedLicense": "NOASSERTION",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 17604,
+        "testFiles": 854,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 14161
+          },
+          {
+            "path": "frontend/package.json",
+            "bytes": 3790
+          },
+          {
+            "path": "crates/lib/pager/Cargo.toml",
+            "bytes": 563
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/artcraftx",
+      "url": "https://github.com/storytold/artcraftx",
+      "commit": "c6b5d338303251d8bcb93ec6806b412f95127936",
+      "description": "ArtCraft-X",
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 4212,
+        "testFiles": 10,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 7305
+          },
+          {
+            "path": "frontend/package.json",
+            "bytes": 2901
+          },
+          {
+            "path": "crates/models/Cargo.toml",
+            "bytes": 668
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/Azure-Kinect-Sample-for-Unity",
+      "url": "https://github.com/storytold/Azure-Kinect-Sample-for-Unity",
+      "commit": "bdc6061b425e62b7e661004345303199c9a5fe60",
+      "description": null,
+      "language": null,
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 161,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/bevy-mocap",
+      "url": "https://github.com/storytold/bevy-mocap",
+      "commit": "1de4500cbae9f81ce37c304a22360c8a6990a0e4",
+      "description": null,
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 21,
+        "testFiles": 3,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 557
+          },
+          {
+            "path": "src/lib.rs",
+            "bytes": 4891
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/cadcraft",
+      "url": "https://github.com/storytold/cadcraft",
+      "commit": "258c89fbb021fd22cf25ef519e5caf018b692093",
+      "description": "CADCraft: computer-aided design and drafting — an open-source, clean-room AutoCAD-style app in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 1036,
+        "testFiles": 426,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 6130
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 222
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 9019
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/cloud-worker",
+      "url": "https://github.com/storytold/cloud-worker",
+      "commit": "e375345bf6109a23425f8a8c2d35fee79eb062c7",
+      "description": null,
+      "language": "Python",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 40,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/cloudcam",
+      "url": "https://github.com/storytold/cloudcam",
+      "commit": "497d941746fdd168a579623bbb7a29c8ecd2ef0f",
+      "description": "Handles polling the cameras and generating the pointclouds",
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 72,
+        "testFiles": 0,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 527
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/CloudCamPlugin",
+      "url": "https://github.com/storytold/CloudCamPlugin",
+      "commit": "50cd9a3870bb699740d88db93fb3b17060ded183",
+      "description": "⚡ UE Plugin: Renders point clouds sent via the cloudcam program",
+      "language": "C++",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 25,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-ai-integrations",
+      "url": "https://github.com/storytold/craft-ai-integrations",
+      "commit": "e8f320321aac28174ec2f5b75cb8a6ab52139416",
+      "description": "AI layer for the Craft apps: connections, keys, providers, client, egui widgets (first draft)",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 520,
+        "testFiles": 170,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 2487
+          },
+          {
+            "path": "crates/ai-bfl/Cargo.toml",
+            "bytes": 512
+          },
+          {
+            "path": "crates/ai-bfl/src/lib.rs",
+            "bytes": 9877
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-anything",
+      "url": "https://github.com/storytold/craft-anything",
+      "commit": "1c7a7b8ef150523ccc8eec8c8c99729865dccfe3",
+      "description": "Craft Anything: understand how any software works, and craft your own.",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 604,
+        "testFiles": 19,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 2697
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 322
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 20434
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-common-actions",
+      "url": "https://github.com/storytold/craft-common-actions",
+      "commit": "44a7db40b1a3e99eed02c88f89f38cdd6cfffe81",
+      "description": null,
+      "language": "Python",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 65,
+        "testFiles": 27,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-contrib",
+      "url": "https://github.com/storytold/craft-contrib",
+      "commit": "88cb930e18df6c1660e6a369d52bf881c4d75e9e",
+      "description": null,
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 5,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-fonts",
+      "url": "https://github.com/storytold/craft-fonts",
+      "commit": "aced4137c022f1f587624d48e81ec77e1914a9cc",
+      "description": "Fonts for the Crafting Apps",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 121,
+        "testFiles": 1,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 261
+          },
+          {
+            "path": "crates/craft-fonts/Cargo.toml",
+            "bytes": 543
+          },
+          {
+            "path": "crates/craft-fonts/src/lib.rs",
+            "bytes": 8471
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared media / fonts, formats and platform support",
+        "assessment": "Fonts/layout/import validation, INDD-to-IDML, native printing/window/input and regression corpora. Framework forks are dependencies of selected engines, not new room capabilities. Font/data licenses and platform requirements need independent checks."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-i18n",
+      "url": "https://github.com/storytold/craft-i18n",
+      "commit": "cac2cf0c269d7581fcf38b4c6dbb247c1dfdf58c",
+      "description": "Shared translations for the storytold Crafting Apps: TSV catalogs and the CI that checks them",
+      "language": "Python",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 223,
+        "testFiles": 1,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 260
+          },
+          {
+            "path": "crates/craft-i18n-tests/Cargo.toml",
+            "bytes": 462
+          },
+          {
+            "path": "crates/craft-i18n-tests/src/lib.rs",
+            "bytes": 642
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-launcher",
+      "url": "https://github.com/storytold/craft-launcher",
+      "commit": "ffa3440c153f08c015f23ebcf9dfe0ec8025d0aa",
+      "description": "The Craft App Launcher",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 240,
+        "testFiles": 19,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 3658
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 216
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 4575
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-launcher-assets",
+      "url": "https://github.com/storytold/craft-launcher-assets",
+      "commit": "8619bdedefbddd71963ec3de872d7baa98b289ab",
+      "description": "Pictures ArtCraft Launcher downloads at run time (details-page screenshots)",
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 42,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Brand assets / no product capability",
+        "assessment": "Do not copy branding/screenshots or infer an engine from launcher artwork; no asset reuse license verified by this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-libs",
+      "url": "https://github.com/storytold/craft-libs",
+      "commit": "f8f8829cc7be65d466d687dae381d1ca60e31242",
+      "description": "Rust libraries for the Craft Apps",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 1002,
+        "testFiles": 195,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 4663
+          },
+          {
+            "path": "crates/ui/Cargo.toml",
+            "bytes": 3441
+          },
+          {
+            "path": "crates/ui/src/lib.rs",
+            "bytes": 743
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Original Node persistence pattern adopted; upstream Rust library not installed"
+    },
+    {
+      "repository": "storytold/craft-repo-status-app",
+      "url": "https://github.com/storytold/craft-repo-status-app",
+      "commit": "4259a45631a69ff8d85f952e2552b20fb30bad88",
+      "description": "See the status of PRs, builds, etc. ",
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 61,
+        "testFiles": 3,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 629
+          },
+          {
+            "path": "package.json",
+            "bytes": 449
+          },
+          {
+            "path": "crates/craft-core/Cargo.toml",
+            "bytes": 341
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/craft-skills",
+      "url": "https://github.com/storytold/craft-skills",
+      "commit": "2a55dce3b5b42c3da4ab09bb084a7889bdd0a0fd",
+      "description": "Corpus of shared skills used in agentic development of craft apps",
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 1,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared app / AI, consent and lifecycle",
+        "assessment": "Shared persistence, files, consent/history, tool routing, scoped install/update and study-build-check workflows. Some repositories are empty/scaffolding. Existing Arena ownership/private workspace rules stay authoritative."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/crafthub",
+      "url": "https://github.com/storytold/crafthub",
+      "commit": "ca18a5727075044599a13421b73bb63476440b84",
+      "description": null,
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 1,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/deckcraft",
+      "url": "https://github.com/storytold/deckcraft",
+      "commit": "5fb694d9917d232fbf5b2e0f42ac15d73febde7c",
+      "description": "Presentations and slide shows: an open-source, clean-room reimplementation of Microsoft PowerPoint in pure Rust. Part of the ArtCraft Crafting Apps.",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 752,
+        "testFiles": 153,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 5920
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 192
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 8763
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/designcraft",
+      "url": "https://github.com/storytold/designcraft",
+      "commit": "008f519c46ae82c281bea921e297b3f2e37d99f2",
+      "description": "DesignCraft: An open-source page and layout design editor written by scratch in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 843,
+        "testFiles": 150,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 9230
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 192
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 11306
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/discord-vocodes",
+      "url": "https://github.com/storytold/discord-vocodes",
+      "commit": "6fe54011a7137ade8cbd6439f94c1c70292249e5",
+      "description": null,
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 10,
+        "testFiles": 0,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 575
+          },
+          {
+            "path": "src/main.rs",
+            "bytes": 5660
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/effectcraft",
+      "url": "https://github.com/storytold/effectcraft",
+      "commit": "e71dd629c56c78a82959ee50c271da9209c55b80",
+      "description": "EffectCraft: An open-source motion graphics and compositing tool written by scratch in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 1438,
+        "testFiles": 405,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 12424
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 257
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 26410
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/egui",
+      "url": "https://github.com/storytold/egui",
+      "commit": "bf5ac0dac137af9a4861611f3d2a77ad531f50e3",
+      "description": "egui: an easy-to-use immediate mode GUI in Rust that runs on both web and native",
+      "language": null,
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 900,
+        "testFiles": 294,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 12747
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 188
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 912
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared media / fonts, formats and platform support",
+        "assessment": "Fonts/layout/import validation, INDD-to-IDML, native printing/window/input and regression corpora. Framework forks are dependencies of selected engines, not new room capabilities. Font/data licenses and platform requirements need independent checks."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/EventCenterPlugin",
+      "url": "https://github.com/storytold/EventCenterPlugin",
+      "commit": "c69a1a3ef5b87f491c82fe0a067fa773c79966f4",
+      "description": "⚡ UE Plugin: Bind Redis PubSub-based events (WIP)",
+      "language": "C++",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 15,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/fakeyou-recast",
+      "url": "https://github.com/storytold/fakeyou-recast",
+      "commit": "8e65d3a2f18e3e8ec2742cd83de1945e5d4b64f4",
+      "description": null,
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 81,
+        "testFiles": 5,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 412
+          },
+          {
+            "path": "crates/lib/model-serde/Cargo.toml",
+            "bytes": 285
+          },
+          {
+            "path": "crates/lib/model-serde/src/lib.rs",
+            "bytes": 697
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/figcraft",
+      "url": "https://github.com/storytold/figcraft",
+      "commit": "53259cf50eba496998ae156ddc3270197ac056c5",
+      "description": "FigCraft: interface design and prototyping; an open-source, clean-room reimplementation of collaborative design workflows in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 1456,
+        "testFiles": 714,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 9724
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 231
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 12030
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/filmcraft",
+      "url": "https://github.com/storytold/filmcraft",
+      "commit": "9c6d66114c71179f66d21933b6bf6b88311adf46",
+      "description": "FilmCraft: An open-source, nonlinear video editor written by scratch in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 1579,
+        "testFiles": 445,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 7395
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 233
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 26363
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/FineTrainers-Conditioning",
+      "url": "https://github.com/storytold/FineTrainers-Conditioning",
+      "commit": "9f0fdb5055b7c363e71e8a19c2805406fe79fb6a",
+      "description": null,
+      "language": "Python",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 97,
+        "testFiles": 14,
+        "entrySources": [
+          {
+            "path": "finetrainers/__init__.py",
+            "bytes": 69
+          },
+          {
+            "path": "finetrainers/utils/__init__.py",
+            "bytes": 478
+          },
+          {
+            "path": "training/cogvideox/__init__.py",
+            "bytes": 0
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Infrastructure / conditional, not local-app defaults",
+        "assessment": "Cloud/IAM/training references only unless a concrete Arena requirement justifies them; no paid cloud infrastructure or large training setup introduced by default."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/font-preview-service",
+      "url": "https://github.com/storytold/font-preview-service",
+      "commit": "4b3398dfb1c5f14a41d055c611ec79346307a4f7",
+      "description": "A service that renders previews for fonts.",
+      "language": "C++",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 549,
+        "testFiles": 23,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 1287
+          },
+          {
+            "path": "src/lib.rs",
+            "bytes": 113
+          },
+          {
+            "path": "src/main.rs",
+            "bytes": 369
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared media / fonts, formats and platform support",
+        "assessment": "Fonts/layout/import validation, INDD-to-IDML, native printing/window/input and regression corpora. Framework forks are dependencies of selected engines, not new room capabilities. Font/data licenses and platform requirements need independent checks."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/github-media",
+      "url": "https://github.com/storytold/github-media",
+      "commit": "22a27373707b13f48fc56405f1f89ca143c43d5d",
+      "description": "Videos for Github READMEs, etc.",
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 5,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/gridcraft",
+      "url": "https://github.com/storytold/gridcraft",
+      "commit": "5e415cdd34d287b90a4a9df67eb4f532f6f72d96",
+      "description": "GridCraft: an open-source, clean-room spreadsheet (Microsoft Excel-style) in pure Rust. By ArtCraft.",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 732,
+        "testFiles": 210,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 5423
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 632
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 9896
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/hanashi-graphics-demo",
+      "url": "https://github.com/storytold/hanashi-graphics-demo",
+      "commit": "86ffdb51a880023fe999c40b9519ee425c746cba",
+      "description": "demo of mrDIMAS fyrox wasm",
+      "language": "JavaScript",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 18,
+        "testFiles": 0,
+        "entrySources": [
+          {
+            "path": "pkg/package.json",
+            "bytes": 236
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/html_test",
+      "url": "https://github.com/storytold/html_test",
+      "commit": "078e8ac11b4ffb970849664f6935a802de2e3377",
+      "description": "test",
+      "language": "HTML",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": true,
+      "fork": false,
+      "documentsRead": [],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 7,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/HyperJail",
+      "url": "https://github.com/storytold/HyperJail",
+      "commit": "37ff28a2798fc0264d3b8254849da1d7e244652e",
+      "description": "HyperJail is a UE5-powered VTubing Experiment",
+      "language": "C++",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 356,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/indd-utils",
+      "url": "https://github.com/storytold/indd-utils",
+      "commit": "136f973a9d5f1b3ef34e46e27f4a08af196efde7",
+      "description": "Read INDD files without InDesign; convert to IDML",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 108,
+        "testFiles": 4,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 236
+          },
+          {
+            "path": "src/lib.rs",
+            "bytes": 10004
+          },
+          {
+            "path": "src/main.rs",
+            "bytes": 11618
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared media / fonts, formats and platform support",
+        "assessment": "Fonts/layout/import validation, INDD-to-IDML, native printing/window/input and regression corpora. Framework forks are dependencies of selected engines, not new room capabilities. Font/data licenses and platform requirements need independent checks."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/irsa-manager",
+      "url": "https://github.com/storytold/irsa-manager",
+      "commit": "f1775f8f3c5292227af701ecf7e48e15e50229d3",
+      "description": null,
+      "language": null,
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 130,
+        "testFiles": 10,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Infrastructure / conditional, not local-app defaults",
+        "assessment": "Cloud/IAM/training references only unless a concrete Arena requirement justifies them; no paid cloud infrastructure or large training setup introduced by default."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/k4a-sys-temp",
+      "url": "https://github.com/storytold/k4a-sys-temp",
+      "commit": "ffc38156faca14a44fb2c489049c8bf9d4959f5a",
+      "description": "A patched version of k4a-sys that builds on linux",
+      "language": "Rust",
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 34,
+        "testFiles": 0,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 470
+          },
+          {
+            "path": "src/lib.rs",
+            "bytes": 241
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/lightcraft",
+      "url": "https://github.com/storytold/lightcraft",
+      "commit": "07301cbd1e1cab5c152228891d9c9ed87e263003",
+      "description": "LightCraft: An open-source non-destructive photo editor written by scratch in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 1287,
+        "testFiles": 275,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 9712
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 392
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 8032
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/LiveScan3D",
+      "url": "https://github.com/storytold/LiveScan3D",
+      "commit": "a65c5ab9b80efda7176e817930668086545c2072",
+      "description": "LiveScan3D is a system designed for real time 3D reconstruction using multiple Azure Kinect or Kinect v2 depth sensors simultaneously at real time speed.",
+      "language": null,
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 267,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/motion-capture-data",
+      "url": "https://github.com/storytold/motion-capture-data",
+      "commit": "a6e477b5b113eb478ad4c7e5044c5c7060c77148",
+      "description": "Data from mocap sessions",
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 7,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/pdfcraft",
+      "url": "https://github.com/storytold/pdfcraft",
+      "commit": "47f42ba07b61553da50ca2df91b070519bd3386e",
+      "description": "PdfCraft: An open-source PDF reader and editor written by scratch in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 1918,
+        "testFiles": 300,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 8493
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 458
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 4122
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/photocraft",
+      "url": "https://github.com/storytold/photocraft",
+      "commit": "97a83f074f5407841a1444ee3f9be478ce03368b",
+      "description": "PhotoCraft: An open-source, photo editor written by scratch in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 2704,
+        "testFiles": 762,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 9751
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 324
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 13707
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/photocraft-corpus",
+      "url": "https://github.com/storytold/photocraft-corpus",
+      "commit": "c3abfc1c794409a71ade6a22283caab4ba4d2aa8",
+      "description": "Test data for photocraft",
+      "language": "JavaScript",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 311,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared media / fonts, formats and platform support",
+        "assessment": "Fonts/layout/import validation, INDD-to-IDML, native printing/window/input and regression corpora. Framework forks are dependencies of selected engines, not new room capabilities. Font/data licenses and platform requirements need independent checks."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/placeholder-artcraft",
+      "url": "https://github.com/storytold/placeholder-artcraft",
+      "commit": "0daf83dba9b36e2d9a870114cb12ec873913bd58",
+      "description": "Artcraft",
+      "language": "TypeScript",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": true,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 8735,
+        "testFiles": 817,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 9769
+          },
+          {
+            "path": "frontend/libs/api/package.json",
+            "bytes": 473
+          },
+          {
+            "path": "frontend/libs/api/src/index.ts",
+            "bytes": 730
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Creator platform / architecture references",
+        "assessment": "Review useful local job/project/provider boundaries without importing whole cloud stacks, credentials or gigabytes of media. Placeholders, branding, status dashboards and demos do not create editing capabilities."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/point-generator",
+      "url": "https://github.com/storytold/point-generator",
+      "commit": "29938fd712e474a9a968f8a735080ecca708c8bd",
+      "description": "⛔ [DEPRECATED] generate points to send to the unreal engine demo",
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 7,
+        "testFiles": 0,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 418
+          },
+          {
+            "path": "src/main.rs",
+            "bytes": 3402
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/realtime-voice-conversion",
+      "url": "https://github.com/storytold/realtime-voice-conversion",
+      "commit": "4a222ad81553153e4f5aceb97fb9d046c16ef87a",
+      "description": "Stream audio from the mic to the model to the speaker",
+      "language": "Python",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": true,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 21,
+        "testFiles": 0,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 718
+          },
+          {
+            "path": "src/main.rs",
+            "bytes": 1925
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/redirect-vocodes",
+      "url": "https://github.com/storytold/redirect-vocodes",
+      "commit": "4fba73d4192b381feecca9921a151209ae4ee546",
+      "description": "Netlify redirect vo.codes -> fakeyou.com ",
+      "language": null,
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 3,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/RuntimeAudioImporter",
+      "url": "https://github.com/storytold/RuntimeAudioImporter",
+      "commit": "2ecfcee44daccc6dcffd7533f7455fa2f5498c33",
+      "description": "Runtime Audio Importer plugin for Unreal Engine 4. Currently supports the following formats: mp3, wav, flac. Without any external dependencies. ",
+      "language": "C++",
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 26,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/RuntimeFilesDownloader",
+      "url": "https://github.com/storytold/RuntimeFilesDownloader",
+      "commit": "1a8e141d657f26d56208f2f503dd4b3e7a5aaaff",
+      "description": "Runtime Files Downloader plugin for Unreal Engine. Allows you to download any files via the HTTP protocol to the device memory.",
+      "language": null,
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "tree only; no selected entry source",
+        "treeTruncated": false,
+        "files": 10,
+        "testFiles": 0,
+        "entrySources": []
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/soundcraft",
+      "url": "https://github.com/storytold/soundcraft",
+      "commit": "7169dc492eab3d068baa05bd2b0fd303409a86ac",
+      "description": "An open-source, clean-room reimplementation of Avid Pro Tools in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 603,
+        "testFiles": 173,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 5308
+          },
+          {
+            "path": "xtask/Cargo.toml",
+            "bytes": 186
+          },
+          {
+            "path": "xtask/src/main.rs",
+            "bytes": 10693
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/spark",
+      "url": "https://github.com/storytold/spark",
+      "commit": "b7b3d5c42790186c72fc2b0bcf9a0c04a46af65e",
+      "description": ":sparkles:  An advanced 3D Gaussian Splatting renderer for THREE.js",
+      "language": "TypeScript",
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md",
+        "package.json"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 230,
+        "testFiles": 1,
+        "entrySources": [
+          {
+            "path": "package.json",
+            "bytes": 2539
+          },
+          {
+            "path": "src/index.ts",
+            "bytes": 2109
+          },
+          {
+            "path": "rust/Cargo.toml",
+            "bytes": 342
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/storyteller-bevy",
+      "url": "https://github.com/storytold/storyteller-bevy",
+      "commit": "4ce8b72c4cf3263ef9df99761f93832009026a89",
+      "description": "Danny's Bevy exploration",
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "tree plus entry-source spot-check",
+        "treeTruncated": false,
+        "files": 576,
+        "testFiles": 1,
+        "entrySources": [
+          {
+            "path": "Cargo.toml",
+            "bytes": 337
+          },
+          {
+            "path": "package.json",
+            "bytes": 1406
+          },
+          {
+            "path": "studio/Cargo.toml",
+            "bytes": 2089
+          }
+        ]
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/storyteller-ml",
+      "url": "https://github.com/storytold/storyteller-ml",
+      "commit": "a7179c873d25ccdcb54d82e01aeeed492aff73cf",
+      "description": "Tacotron core, eventually with more models",
+      "language": "Jupyter Notebook",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/StreamTwo",
+      "url": "https://github.com/storytold/StreamTwo",
+      "commit": "d3a1270b417a0929ba2d533fa2b0c25ab8f36db2",
+      "description": " 🎮 Unreal Engine Project for the second stream",
+      "language": "C#",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/terraform-aws-observability-accelerator",
+      "url": "https://github.com/storytold/terraform-aws-observability-accelerator",
+      "commit": "2ecdcd1f583d0ae16e15685573e908778bb546a2",
+      "description": "Open source project to help accelerate and ease observability setup on AWS environments",
+      "language": null,
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Infrastructure / conditional, not local-app defaults",
+        "assessment": "Cloud/IAM/training references only unless a concrete Arena requirement justifies them; no paid cloud infrastructure or large training setup introduced by default."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/torchscript-models",
+      "url": "https://github.com/storytold/torchscript-models",
+      "commit": "d012036a05c8d31ba6e09d9b45f8185b279f28cc",
+      "description": "Create JIT libtorch models from pytorch models",
+      "language": "Python",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/UE4-OSC",
+      "url": "https://github.com/storytold/UE4-OSC",
+      "commit": "a17317cd5b2066b5d66aa4dcbbd561916345d49a",
+      "description": "OSC plugin for Unreal Engine 4 Blueprints",
+      "language": null,
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": true,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/UnrealZeroMQ",
+      "url": "https://github.com/storytold/UnrealZeroMQ",
+      "commit": "b916bda40c72d3810bf345b257a864e9e06463ce",
+      "description": "ZeroMQ plugin for UE4",
+      "language": "C#",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/vectorcraft",
+      "url": "https://github.com/storytold/vectorcraft",
+      "commit": "05d5f99fd7e7dc00db3a9754d594b1214945d855",
+      "description": "VectorCraft: An open-source, vector art tool written by scratch in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/vits-finetuning",
+      "url": "https://github.com/storytold/vits-finetuning",
+      "commit": "b1e03bee38e0d28c0cb420e5cb4e653e4643506c",
+      "description": null,
+      "language": "Python",
+      "reportedLicense": "MIT",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/voder-proxy",
+      "url": "https://github.com/storytold/voder-proxy",
+      "commit": "e4ee56e0dc3263005755604a3d871e83fb889147",
+      "description": "proxy to the backend voder/tts_service",
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": true,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Waveyard + voice / audio engines and ML",
+        "assessment": "SoundCraft DSP/editing/playback/automation and sample-accurate interchange are strongest candidates. Legacy speech/model projects require separate license/weights/consent/compute checks; hosted voice services are not a free local engine."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/winit",
+      "url": "https://github.com/storytold/winit",
+      "commit": "f0a83481c233c714d061356305f89bace0106f39",
+      "description": "Window handling library in pure Rust",
+      "language": null,
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared media / fonts, formats and platform support",
+        "assessment": "Fonts/layout/import validation, INDD-to-IDML, native printing/window/input and regression corpora. Framework forks are dependencies of selected engines, not new room capabilities. Font/data licenses and platform requirements need independent checks."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/winprint.rs",
+      "url": "https://github.com/storytold/winprint.rs",
+      "commit": "d1dc3c2089e93aad91e56c178e4b8a5e0868969c",
+      "description": "A crate for printing to a Windows printer device using Windows API.",
+      "language": "Rust",
+      "reportedLicense": "BSD-3-Clause",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": true,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Shared media / fonts, formats and platform support",
+        "assessment": "Fonts/layout/import validation, INDD-to-IDML, native printing/window/input and regression corpora. Framework forks are dependencies of selected engines, not new room capabilities. Font/data licenses and platform requirements need independent checks."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/wordcraft",
+      "url": "https://github.com/storytold/wordcraft",
+      "commit": "a88e005256087285bc7d34310cc0f5f932bc8562",
+      "description": "An open-source, clean-room reimplementation of Microsoft Word in pure Rust",
+      "language": "Rust",
+      "reportedLicense": "Apache-2.0",
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Projects + creative rooms / engine-backed editing",
+        "assessment": "Inspect actual document models, import/export, CLI/MCP and WASM entrypoints individually; prefer project/asset round-trips or optional worker engines over replacing Arena with unrelated native interfaces. AniCraft has no resolved HEAD in this pass."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    },
+    {
+      "repository": "storytold/xsens-packet-send",
+      "url": "https://github.com/storytold/xsens-packet-send",
+      "commit": "a1c4b9fa2791bc04ce06b3a47d2049fa077465cb",
+      "description": "Send XSENS packets (from Wireshark) to Unreal without Xsens",
+      "language": "Rust",
+      "reportedLicense": null,
+      "licenseTextLocated": [],
+      "archived": false,
+      "fork": false,
+      "documentsRead": [
+        "README.md",
+        "Cargo.toml"
+      ],
+      "review": {
+        "level": "README/manifests only",
+        "treeError": 403
+      },
+      "runtimeVerified": false,
+      "arenaFit": {
+        "area": "Arcade + media / 3D, live control and hardware",
+        "assessment": "Conditional game-engine, OSC/live-control, spatial capture and rendering candidates. Kinect/Xsens/Unreal dependencies and dataset rights are not implied by source access; do not bundle large demo assets or treat deprecated prototypes as production systems."
+      },
+      "adoptionStatus": "Candidate/reference only; not integrated"
+    }
+  ]
+}

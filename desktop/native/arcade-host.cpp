@@ -297,9 +297,16 @@ int wmain(int argc, wchar_t** argv) {
       event("{\"event\":\"probe\",\"passed\":true,\"backend\":\"windows-lpac-job-v1\",\"filesystem\":true,\"loopbackDenied\":true,\"restrictedToken\":true,\"jobLimits\":true,\"descendantCleanup\":true,\"overLimitMemoryDenied\":true}");
       return 0;
     }
-    if (argc >= 8 && (std::wstring(argv[1]) == L"run" || std::wstring(argv[1]) == L"play") && std::wstring(argv[7]) == L"--") {
-      std::vector<std::wstring> args; for (int i = 8; i < argc; i++) args.emplace_back(argv[i]);
-      Session session; session.launch(argv[2], argv[3], {argv[4], argv[5]}, argv[6], args, std::wstring(argv[1]) == L"play");
+    if (argc >= 8 && (std::wstring(argv[1]) == L"run" || std::wstring(argv[1]) == L"play")) {
+      std::vector<fs::path> roots{argv[4], argv[5]};
+      int separator = 7;
+      while (separator + 1 < argc && std::wstring(argv[separator]) == L"--read-root") {
+        require(roots.size() < 6, "too many pinned runtime roots");
+        roots.emplace_back(argv[separator + 1]); separator += 2;
+      }
+      require(separator < argc && std::wstring(argv[separator]) == L"--", "structured runtime argument separator");
+      std::vector<std::wstring> args; for (int i = separator + 1; i < argc; i++) args.emplace_back(argv[i]);
+      Session session; session.launch(argv[2], argv[3], roots, argv[6], args, std::wstring(argv[1]) == L"play");
       // Poll only the private parent pipe. No detached reader can outlive this
       // session, and EOF stops the Job rather than orphaning a game.
       std::string command;

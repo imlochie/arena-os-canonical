@@ -4,11 +4,14 @@ import { ArcadePackages } from "./packages.mjs";
 import { NativeArcadeHost } from "./host.mjs";
 import { nativeGameManifest } from "./manifest.mjs";
 import { RepositoryBuilds, validateSourceSnapshot } from "./repository-builds.mjs";
+import { ClassicLibrary } from "./classic-library.mjs";
 export function assertArcadeSender(event, window, origin, payload) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
     new URL(event.senderFrame.url).origin !== origin) throw new Error("Native Arcade is restricted to the owning desktop main frame.");
-  if (!payload || !["inspect", "probe", "install", "launch", "stop", "remove", "cancel", "build-source", "select-version", "install-release", "reset-build-tool"].includes(payload.action) ||
-    Object.keys(payload).some(key => !["action", "key"].includes(key)) ||
+  if (!payload || !["inspect", "probe", "install", "launch", "stop", "remove", "cancel", "build-source", "select-version", "install-release", "reset-build-tool", "import-classic", "rebind-classic"].includes(payload.action) ||
+    Object.keys(payload).some(key => !["action", "key", "engine", "choice"].includes(key)) ||
+    (payload.choice !== undefined && (payload.action !== "rebind-classic" || !/^[a-f0-9]{32}$/.test(payload.choice))) ||
+    (payload.engine !== undefined && (payload.action !== "import-classic" || typeof payload.engine !== "string" || !/^[a-z0-9][a-z0-9_-]{0,59}$/.test(payload.engine))) ||
     (payload.key !== undefined && (typeof payload.key !== "string" || payload.key.length > 200 || /[\0\r\n]/.test(payload.key))))
     throw new Error("Invalid structured native control request.");
 }
@@ -25,13 +28,15 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
   const host = new NativeArcadeHost({ packages, helper: path.join(resources, "native", "arena-native-host.exe") });
   const repositories = new RepositoryBuilds({ packages, host });
   await repositories.initialize();
+  const classics = new ClassicLibrary({ packages, host });
+  await classics.initialize();
   await packages.initialize();
   await host.initialize();
   let storageCache, storageCheckedAt = 0;
   const inspect = async () => {
     const runtime = host.snapshot();
     if (!storageCache || Date.now() - storageCheckedAt > 30_000) { storageCache = await packages.storage(); storageCheckedAt = Date.now(); }
-    return { packages: packages.snapshot(), storage: storageCache, ...runtime, operation, canCancel: !!acquisition, repository: repositories.snapshot(),
+    return { packages: packages.snapshot(), storage: storageCache, ...runtime, operation, canCancel: !!acquisition, repository: repositories.snapshot(), classics: classics.snapshot(),
       managedGames: [...packages.catalog.values()].filter(item => item.kind === "game").map(item => nativeGameManifest(item, packages.state.packages[`${item.id}@${item.version}`], runtime.host)) };
   };
   const approve = async (message, detail) => (await dialog.showMessageBox(window, { type: "warning", message, detail, buttons: ["Approve", "Cancel"], defaultId: 1, cancelId: 1 })).response === 0;
@@ -74,6 +79,41 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
         if (!["godot", "llvm", "sdl"].includes(payload.key)) throw new Error("Choose a registered SDK.");
         if (!await approve(`Reset disposable ${payload.key} build SDK cache?`, "Only this downloaded compiler/editor cache is removed. It is acquired again on the next approved build. Installed games, installed runtimes, all versions and saves remain unchanged.")) return inspect();
         await repositories.tools.reset(payload.key); return inspect();
+      }
+      if (payload.action === "import-classic") {
+        if (!host.requirements().supportedHost) throw new Error(host.requirements().message);
+        const choice = classics.choices().find(c => c.id === payload.key);
+        if (!choice) throw new Error("Choose an exact trusted runtime/core combination.");
+        if (choice.adapter === "scummvm" && !payload.engine) throw new Error("Enter the upstream ScummVM engine/game identifier.");
+        if (!await approve(`Import authorized data for ${choice.title}?`,
+          `${choice.runtime}${choice.core ? ` + ${choice.core}` : ""}\nConfirm that you own or have permission to use the selected game/data. Personal snapshot only; no licensed game/BIOS downloads. Original files stay untouched. Saves/configuration use an independent game identity. Import/installation does not verify gameplay.`)) return inspect();
+        let source, entry;
+        if (["sameboy", "libretro"].includes(choice.adapter)) {
+          const selected = await dialog.showOpenDialog(window, { title: "Choose your authorized GB/GBC homebrew or game", properties: ["openFile"], filters: [{ name: "GB/GBC ROM", extensions: ["gb", "gbc"] }] });
+          if (selected.canceled || !selected.filePaths[0]) return inspect();
+          source = path.dirname(selected.filePaths[0]); entry = path.basename(selected.filePaths[0]);
+        } else {
+          const selected = await dialog.showOpenDialog(window, { title: "Choose the authorized game data folder (not a whole library)", properties: ["openDirectory"] });
+          if (selected.canceled || !selected.filePaths[0]) return inspect();
+          source = selected.filePaths[0];
+          const selectedEntry = await dialog.showOpenDialog(window, { title: choice.adapter === "scummvm" ? "Choose an engine data file inside that folder" : "Choose its DOS executable inside that folder", defaultPath: source, properties: ["openFile"],
+            ...(choice.adapter === "dosbox-staging" ? { filters: [{ name: "DOS program", extensions: ["com", "exe"] }] } : {}) });
+          if (selectedEntry.canceled || !selectedEntry.filePaths[0]) return inspect();
+          entry = path.relative(source, selectedEntry.filePaths[0]).split(path.sep).join("/");
+        }
+        acquisition = new AbortController();
+        try { await classics.import({ choiceId: choice.id, source, entry, engine: payload.engine, signal: acquisition.signal }); }
+        finally { acquisition = undefined; storageCache = undefined; }
+        return inspect();
+      }
+      if (payload.action === "rebind-classic") {
+        if (!host.requirements().supportedHost) throw new Error(host.requirements().message);
+        if (!await approve("Create a separately pinned runtime version for this game?",
+          "The prior game/runtime version remains installed. This preserves the game/save identity, not arbitrary save-state compatibility. RetroArch states are scoped to the exact runtime/core pair; managed configuration changes retain three backups. No current progress is deleted or automatically restored.")) return inspect();
+        acquisition = new AbortController();
+        try { await classics.rebind(payload.key, payload.choice, acquisition.signal); }
+        finally { acquisition = undefined; storageCache = undefined; }
+        return inspect();
       }
       if (payload.action === "select-version") {
         if (!await approve("Use a retained repository version?", "This switches the selected installed version only. Saves stay in the same separate game profile. Stop this game's running version first.")) return inspect();
@@ -133,7 +173,7 @@ export async function createArcadeControl({ root, resources, window, origin, ipc
       if (payload.action === "install") {
         if (!await approve(`Install ${descriptor.id} ${descriptor.version}?`, `${descriptor.license}\nPinned archive: ${descriptor.sha256}\nDownload/staging: ${descriptor.downloadBytes} + ${descriptor.unpackedBytes} bytes.\nNo scripts or games execute during installation. Profiles/saves are separate.`)) return inspect();
         let source;
-        if (repositories.state.catalog.some(row => `${row.id}@${row.version}` === payload.key)) {
+        if (repositories.state.catalog.some(row => `${row.id}@${row.version}` === payload.key) || classics.catalog.some(row => `${row.id}@${row.version}` === payload.key)) {
           source = path.join(packages.root, "downloads", `${descriptor.sha256}.tar`);
         } else if (!descriptor.url) {
           const selection = await dialog.showOpenDialog(window, { title: `Choose ${payload.key}.tar from this installer build`, properties: ["openFile"], filters: [{ name: "Pinned Arena package", extensions: ["tar"] }] });

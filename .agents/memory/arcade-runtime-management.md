@@ -26,3 +26,9 @@ Treat a stopped native build's output tree as untrusted before privileged postpr
 **Why:** An isolated editor script can plant junctions or hard links that make the owner process escape the sandbox when it later copies assets or writes provenance.
 
 **How to apply:** Stop all owned descendants first, then reject links/reparse points in writable-root ancestors and contents before any owner-side output traversal or write. A trusted compiler executable does not make repository-produced filesystem entries trusted.
+
+DOS games need a writable working game copy, not just a read-only asset drive and an empty save drive.
+
+**Why:** Many DOS programs read assets relative to the working directory and mix progress with original files. Assuming they accept an independent save directory creates a fixture-only integration that fails real games.
+
+**How to apply:** Keep the immutable installation separate from each isolated profile's working copy. Preserve game-written changes across launches/runtime updates. Require an explicit new profile for conflicting source changes rather than guessing which modified assets are progress.

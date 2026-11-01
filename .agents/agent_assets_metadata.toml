@@ -14,3 +14,17 @@ mtime_ms = 1793429331029
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/50f70701-14be-4085-9977-fc64ef0b44f1/a49606d2-daaa-4c75-9689-0b875628d3f8"
 storage_version_token = "1793429335920915"
 content_type = "text/html"
+
+[[outputs]]
+id = "cosClnf745Gk51YLLKSke"
+uri = "file://docs/source-research/priority-source-adoption.md"
+type = "text"
+title = "Arena priority-source investigation and adoption map"
+description = "All 73 repositories accounted for, room-by-room opportunities, verified source findings, first reliability adoption, and explicit remaining gaps. This is not a claim that the upstream applications are integrated."
+logical_id = "25ffff66-fc87-4f98-9605-f8d438ab179c"
+content_hash = "sha256:56696e4671b42feca9bc108907cd2af7f95c081224e8fd94cbad78904602ebf5"
+size = 16263
+mtime_ms = 1793538717389
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/25ffff66-fc87-4f98-9605-f8d438ab179c/5238dec9-eb2f-474b-9a3c-e4c1cb5c4e82"
+storage_version_token = "1793538760313771"
+content_type = "text/markdown"

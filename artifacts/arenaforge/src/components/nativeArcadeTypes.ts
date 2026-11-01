@@ -1,12 +1,15 @@
 import type { ArcadeManifest, ArcadeHost } from "../lib/arcadeManifest";
 export type NativeDescriptor = {
   id: string;
+  title?: string;
   version: string;
   kind: "game" | "runtime";
   license: string;
   downloadBytes: number;
   unpackedBytes: number;
   runtimes: string[];
+  classic?: { adapter: string; runtime: string; core?: string; engine?: string };
+  classicRuntime?: { adapter: string; entry: string; license: string; source: string; api?: number };
 };
 
 export type NativeRun = {
@@ -16,9 +19,16 @@ export type NativeRun = {
   logs: string[];
   gameplayVerified: false;
   profile?: string;
+  classic?: { adapter: string; runtime: string; core: string | null; controls: string; saves: string; limitations: string; requiredAssets: string; runtimeLicense: string; coreLicense: string | null; recipeHash: string };
 };
 
 export type NativeSnapshot = {
+  classics?: {
+    choices: { id: string; adapter: string; title: string; runtime: string; core?: string; ready: boolean; controls: string; saves: string; limitations: string; runtimeLicense: string; coreLicense: string | null }[];
+    imports: { key: string; id: string; title: string; version: string; classic: { adapter: string; runtime: string; core?: string; engine?: string } }[];
+    adapters: { id: string; title: string; controls: string; saves: string; limitations: string }[];
+    verification: string;
+  };
   repository?: {
     jobs: { id: string; phase: string; repository: string; revision: string; detail: string; log?: string; key?: string; createdAt: number }[];
     projects: { id: string; repository: string; folder: string; activeKey?: string; versions: { key: string; revision: string; sourceUrl: string; recipe: string; evidence: string; builtAt: number }[] }[];
@@ -68,6 +78,8 @@ export type NativeArcadeBridge = {
   selectRepositoryVersion?(key: string): Promise<NativeSnapshot>;
   installRepositoryRelease?(selection: string): Promise<NativeSnapshot>;
   resetBuildTool?(id: string): Promise<NativeSnapshot>;
+  importClassic?(choiceId: string, engine?: string): Promise<NativeSnapshot>;
+  rebindClassic?(key: string, choiceId: string): Promise<NativeSnapshot>;
 };
 
 export function getNativeBridge(): NativeArcadeBridge | null {

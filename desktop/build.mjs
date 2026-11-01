@@ -7,6 +7,7 @@ import path from "node:path";
 import { stageFfmpegBundle } from "./ffmpeg-bundle.mjs";
 import { verifyOnnxRuntime } from "./onnx-runtime-probe.mjs";
 import { buildArcadeFixture } from "./build-arcade-fixture.mjs";
+import { buildClassicPackages } from "./build-classic-packages.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -173,6 +174,7 @@ async function main() {
   await buildWaveyardCaptureHost(path.join(stage, "native"));
   await buildArcadeNativeHost(path.join(stage, "native"));
   await buildArcadeFixture();
+  if (process.env.ARENA_CLASSIC_PACKAGES === "1") await buildClassicPackages();
   const catalog = path.join(root, "generated-artifacts", "arcade-native-packages", "arcade-catalog.json");
   await access(catalog); // Independently delivered native packages are not bundled.
   await cp(catalog, path.join(stage, "arcade-catalog.json"));

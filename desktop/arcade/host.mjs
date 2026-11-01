@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, writeFile, rename, statfs } from "node:fs/promises";
 import path from "node:path";
+import { prepareClassicLaunch } from "./classic.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex").slice(0, 32);
 export class NativeArcadeHost {
   constructor({ packages, helper, platform = process.platform, arch = process.arch, spawnProcess = spawn }) {
@@ -25,7 +26,8 @@ export class NativeArcadeHost {
       if (Array.isArray(previous)) for (const run of previous.slice(-32))
         if (typeof run?.id === "string" && typeof run.key === "string") this.runs.set(run.id, { id: run.id, key: run.key,
           phase: ["exited", "crashed", "stopped"].includes(run.phase) ? run.phase : "interrupted",
-          gameplayVerified: false,
+           gameplayVerified: false,
+           ...(run.classic && JSON.stringify(run.classic).length <= 16_384 ? { classic: structuredClone(run.classic) } : {}),
           logs: [...(Array.isArray(run.logs) ? run.logs.filter(line => typeof line === "string").slice(-63).map(line => line.slice(0, 8192)) : []),
             "Prior session record retained. No reused PID was touched; target-host shutdown evidence is separate."] });
     } catch (error) { if (error.code !== "ENOENT") throw new Error("Native run journal is unreadable; existing installations and saves were retained."); }
@@ -92,22 +94,24 @@ export class NativeArcadeHost {
       if (this.packages.state.packages[runtime]?.phase !== "ready") throw new Error(`Install pinned runtime ${runtime} first.`);
       await this.packages.verify(runtime);
     }
-    if (descriptor.runtimes.length > 1) throw new Error("This initial native driver supports one independently installed runtime directory. No dependency is silently omitted.");
+     if (descriptor.runtimes.length > 1 && !descriptor.classic) throw new Error("This native driver supports one runtime directory, or an explicitly bound RetroArch/core pair.");
     const install = workshop?.install ?? this.packages.filename(key);
-    const runtime = descriptor.runtimes.length ? this.packages.filename(descriptor.runtimes[0]) : install;
+    const runtime = descriptor.runtimes.length ? this.packages.filename(descriptor.classic?.runtime ?? descriptor.runtimes[0]) : install;
     const dataProfile = workshop?.dataProfile ?? "default";
     if (!/^(?:default|mod-[a-f0-9-]{36})$/.test(dataProfile)) throw new Error("Invalid isolated save profile.");
     const profile = path.join(this.packages.root, "profiles", hash(descriptor.id), dataProfile); await mkdir(profile, { recursive: true });
-    const args = descriptor.arguments.map(argument => argument.replaceAll("{profile}", profile).replaceAll("{runtime}", runtime).replaceAll("{install}", install));
-    const executable = descriptor.runtimeEntry ? path.join(runtime, ...descriptor.runtimeEntry.split("/")) : path.join(install, ...descriptor.entry.split("/"));
+    const classic = descriptor.classic ? await prepareClassicLaunch({ descriptor, catalog: this.packages.catalog, filename: key => this.packages.filename(key), install, profile, root: this.packages.root, storage: await this.packages.storage() }) : null;
+    const args = classic?.args ?? descriptor.arguments.map(argument => argument.replaceAll("{profile}", profile).replaceAll("{runtime}", runtime).replaceAll("{install}", install));
+    const executable = classic?.executable ?? (descriptor.runtimeEntry ? path.join(runtime, ...descriptor.runtimeEntry.split("/")) : path.join(install, ...descriptor.entry.split("/")));
     if (descriptor.runtimeEntry && !this.packages.catalog.get(descriptor.runtimes[0])?.files.some(file => file.path === descriptor.runtimeEntry)) throw new Error("Pinned runtime does not contain this game's engine executable.");
     const moniker = `arena.arcade.${hash(`${this.packages.root}:${descriptor.id}${dataProfile === "default" ? "" : `:${dataProfile}`}`)}`;
     const id = randomUUID();
-    const record = { id, key, phase: "starting", profile, logs: [], startedAt: Date.now(), gameplayVerified: false };
+    const record = { id, key, phase: "starting", profile, logs: [], startedAt: Date.now(), gameplayVerified: false, ...(classic ? { classic: classic.diagnostics } : {}) };
     for (const [oldId, old] of this.runs) if (this.runs.size >= 32 && !old.child) this.runs.delete(oldId);
     this.runs.set(id, record);
     await this.persist();
-    record.exited = this.execute([descriptor.workingDirectory === "entry" ? "play" : "run", moniker, executable, install, runtime, profile, "--", ...args], event => {
+    record.exited = this.execute([descriptor.workingDirectory === "entry" ? "play" : "run", moniker, executable, install, runtime, profile,
+      ...(classic?.additionalReadRoots ?? []).flatMap(root => ["--read-root", root]), "--", ...args], event => {
       if (event.event === "isolated") { record.phase = "process-started"; record.nativePid = event.pid; } // Not startup/gameplay evidence.
       if (event.event === "error") record.logs.push(`Supervisor: ${event.message}`);
       if (event.event === "log") record.logs.push(`${event.channel}: ${String(event.text).slice(0, 8192)}`);

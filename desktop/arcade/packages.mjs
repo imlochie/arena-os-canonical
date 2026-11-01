@@ -2,14 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, rename, rm, statfs } from "node:fs/promises";
 import path from "node:path";
+import { classicBinding, validateClassicGame, validateClassicRuntime } from "./classic.mjs";
 const MiB = 1024 * 1024;
 const digest = /^[a-f0-9]{64}$/;
 const identifier = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 const version = /^[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,99}$/;
 export const packageKey = descriptor => `${descriptor.id}@${descriptor.version}`;
 export function safePackagePath(value) {
-  if (typeof value !== "string" || value.length > 200 || !/^[a-zA-Z0-9._/+-]+$/.test(value) ||
-    value.split("/").some(part => !part || part === "." || part === ".." || part.endsWith(".") || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)))
+  if (typeof value !== "string" || value.length > 200 || !/^[a-zA-Z0-9._/ @+()[\]-]+$/.test(value) ||
+    value.split("/").some(part => !part || part !== part.trim() || part === "." || part === ".." || part.endsWith(".") || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)))
     throw new Error("Package contains an unsafe or platform-ambiguous path.");
   return value;
 }
@@ -33,13 +34,18 @@ export function validatePackageDescriptor(value) {
   if (value.kind === "game") {
     if (value.workingDirectory !== undefined && value.workingDirectory !== "entry") throw new Error("Unsupported managed working directory.");
     safePackagePath(value.entry);
-    if (value.runtimeEntry) {
+    if (value.classic) validateClassicGame(value);
+    if (value.runtimeEntry && !value.classic) {
       safePackagePath(value.runtimeEntry);
       if (value.runtimes.length !== 1 || !value.runtimeEntry.toLowerCase().endsWith(".exe") || !value.entry.endsWith(".pck")) throw new Error("An engine-backed game needs one pinned runtime executable and pack.");
     }
-    if (!value.files.some(file => file.path === value.entry) || (!value.runtimeEntry && !value.entry.toLowerCase().endsWith(".exe")) ||
+    if (!value.files.some(file => file.path === value.entry) || (!value.classic && !value.runtimeEntry && !value.entry.toLowerCase().endsWith(".exe")) ||
       !Array.isArray(value.arguments) || value.arguments.length > 32 || value.arguments.some(arg => typeof arg !== "string" || arg.length > 1000 || /[\0\r\n]/.test(arg)))
       throw new Error("A game needs an exact managed executable and bounded argument array.");
+  }
+  if (value.classicRuntime) {
+    if (value.kind !== "runtime" || value.runtimes.length) throw new Error("A classic runtime/core must be an independent package.");
+    validateClassicRuntime(value);
   }
   if (value.url) {
     const url = new URL(value.url);
@@ -185,6 +191,7 @@ export class ArcadePackages {
     if (this.catalog.size !== catalog.length) throw new Error("Duplicate catalog package identity/version.");
     for (const item of this.catalog.values()) for (const key of item.runtimes)
       if (this.catalog.get(key)?.kind !== "runtime") throw new Error("Catalog dependency is not a pinned runtime.");
+    for (const item of this.catalog.values()) if (item.classic) classicBinding(item, this.catalog);
     this.reserveBytes = reserveBytes; this.budgetBytes = budgetBytes; this.beforePromote = beforePromote;
     this.state = { schemaVersion: 1, packages: {} }; this.busy = false;
   }

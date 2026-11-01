@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { nativeWindowsAdapter } from "../lib/arcadeRuntimeAdapters";
+import ClassicRuntimeControls from "./ClassicRuntimeControls";
 import {
   formatBytes,
   getNativeBridge,
@@ -188,6 +189,10 @@ export default function NativeGamesWorkspace() {
         </p>
       )}
 
+      {snap?.classics && (
+        <ClassicRuntimeControls classics={snap.classics} bridge={bridge} busy={busy} pending={pending} installed={installed} run={(l, f) => void run(l, f)} />
+      )}
+
       {snap?.repository && (snap.repository.jobs.length > 0 || snap.repository.projects.length > 0 || snap.repository.toolPins.length > 0) && (
         <div className="space-y-2" aria-labelledby="native-repo-title">
           <h3 id="native-repo-title" className="text-xs font-extrabold text-slate-200">Source builds</h3>
@@ -265,6 +270,18 @@ export default function NativeGamesWorkspace() {
                 )}
               </div>
               <p className="text-[10px] text-slate-500">Gameplay not verified. Process state only.{r.profile ? ` Profile: ${r.profile}` : ""}</p>
+              {r.classic && (
+                <details className="mt-1 text-[10px]">
+                  <summary className="cursor-pointer text-slate-300">Classic diagnostics: {r.classic.adapter} / {r.classic.runtime}{r.classic.core ? ` + ${r.classic.core}` : ""}</summary>
+                  <div className="mt-1 space-y-0.5 text-slate-400">
+                    <p>Controls: {r.classic.controls}</p>
+                    <p>Saves: {r.classic.saves}</p>
+                    <p>Limitations: {r.classic.limitations}</p>
+                    <p>Required assets (you provide): {r.classic.requiredAssets}</p>
+                    <p className="break-all font-mono text-slate-500">runtime {r.classic.runtimeLicense}{r.classic.coreLicense ? ` / core ${r.classic.coreLicense}` : ""} / recipe {r.classic.recipeHash}</p>
+                  </div>
+                </details>
+              )}
               {r.logs.length > 0 && (
                 <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-black/40 p-2 font-mono text-[10px] text-slate-300">
                   {r.logs.slice(-LOG_LINES).join("\n")}
