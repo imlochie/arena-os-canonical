@@ -68,6 +68,13 @@ test("capture budget preserves a disk reserve and estimates time from PCM rate",
   const format = { sampleRate: 48_000, channels: 2, bitsPerSample: 16, blockAlign: 4 };
   assert.equal(createCaptureStorageBudget(reserveBytes).canRecord, false);
   assert.equal(createCaptureStorageBudget(reserveBytes + 1).canRecord, true);
+  const recordingBytes = 700 * 1024 * 1024;
+  const growingCaptureBudget = createCaptureStorageBudget(reserveBytes + recordingBytes, recordingBytes);
+  assert.equal(growingCaptureBudget.canRecord, false, "disk space must include a second copy for library import");
+  assert.equal(
+    createCaptureStorageBudget(growingCaptureBudget.reserveBytes + 1, recordingBytes).canRecord,
+    true,
+  );
   assert.equal(
     estimateCaptureSecondsRemaining(reserveBytes + 90 * 48_000 * 4, reserveBytes, format),
     90,
@@ -190,6 +197,7 @@ if [ "$run" = "1" ]; then
   sleep 0.1
   exit 7
 fi
+printf '\\001\\000\\002\\000'
 while IFS= read -r command; do
   if [ "$command" = "stop" ]; then
     printf '\\001\\000\\002\\000'
@@ -212,6 +220,19 @@ done
   assert.equal(options.activeSession?.status, "recording");
   assert.equal(getAudioCaptureStatus("capture-priority-owner", failed.sessionId)?.status, "failed",
     "the previous session must remain available for recovery");
+
+  const baseReserveBytes = createCaptureStorageBudget(0).reserveBytes;
+  const reserveDeadline = Date.now() + 7000;
+  let liveStatus = getAudioCaptureStatus("capture-priority-owner", current.sessionId);
+  while ((liveStatus?.reserveBytes ?? 0) <= baseReserveBytes + 64 * 1024 * 1024
+    && Date.now() < reserveDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    liveStatus = getAudioCaptureStatus("capture-priority-owner", current.sessionId);
+  }
+  assert.ok(
+    (liveStatus?.reserveBytes ?? 0) > baseReserveBytes + 64 * 1024 * 1024,
+    "live capture size is added to the disk reserve before the archive copy",
+  );
 
   const saved = await stopAudioCapture("capture-priority-owner", current.sessionId);
   assert.ok(saved);
@@ -459,7 +480,7 @@ printf '%s\\n' '{"type":"stopped"}' >&2
     lowSpaceStatus = getAudioCaptureStatus(ownerId, lowSpace.sessionId);
   }
   assert.equal(lowSpaceStatus?.status, "completed", JSON.stringify(lowSpaceStatus));
-  assert.match(lowSpaceStatus?.message ?? "", /1 GiB safety reserve/);
+  assert.match(lowSpaceStatus?.message ?? "", /space reserved to archive this recording/);
   process.env.ARENA_DATA_DIR = root;
   const lowSpaceRecovery = await getRecoverableAudioCapture(ownerId, lowSpace.sessionId);
   assert.ok(lowSpaceRecovery);

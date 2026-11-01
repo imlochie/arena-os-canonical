@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, statfs, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
@@ -19,6 +19,7 @@ const STOP_TIMEOUT_MS = 15_000;
 const SHUTDOWN_STOP_TIMEOUT_MS = 5_000;
 const SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS = 2_000;
 const CAPTURE_DISK_RESERVE_BYTES = 1024 * 1024 * 1024;
+const CAPTURE_IMPORT_HEADROOM_BYTES = 64 * 1024 * 1024;
 const CAPTURE_DISK_CHECK_INTERVAL_MS = 5_000;
 const MAX_DEVICE_OUTPUT_BYTES = 1_000_000;
 const COMPLETED_IMPORT_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -196,7 +197,7 @@ function captureRoot(): string {
   return join(dataRoot, "waveyard", "capture");
 }
 
-async function readCaptureStorageBudget(): Promise<AudioCaptureStorageBudget> {
+async function readCaptureStorageBudget(recordingBytes = 0): Promise<AudioCaptureStorageBudget> {
   const dataRoot = process.env.ARENA_DATA_DIR;
   if (!dataRoot) throw new Error("The Windows desktop data directory is not configured.");
   const filesystem = await statfs(dataRoot, { bigint: true });
@@ -204,17 +205,25 @@ async function readCaptureStorageBudget(): Promise<AudioCaptureStorageBudget> {
   const rawAvailableBytes = Number(
     available > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : available,
   );
-  return createCaptureStorageBudget(rawAvailableBytes);
+  return createCaptureStorageBudget(rawAvailableBytes, recordingBytes);
 }
 
-export function createCaptureStorageBudget(availableBytes: number): AudioCaptureStorageBudget {
+export function createCaptureStorageBudget(availableBytes: number, recordingBytes = 0): AudioCaptureStorageBudget {
   const safeAvailableBytes = Number.isFinite(availableBytes)
     ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(availableBytes)))
     : 0;
-  const canRecord = safeAvailableBytes > CAPTURE_DISK_RESERVE_BYTES;
+  const safeRecordingBytes = Number.isFinite(recordingBytes)
+    ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(recordingBytes)))
+    : 0;
+  const importHeadroom = safeRecordingBytes > 0 ? CAPTURE_IMPORT_HEADROOM_BYTES : 0;
+  const reserveBytes = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    CAPTURE_DISK_RESERVE_BYTES + safeRecordingBytes + importHeadroom,
+  );
+  const canRecord = safeAvailableBytes > reserveBytes;
   return {
     availableBytes: safeAvailableBytes,
-    reserveBytes: CAPTURE_DISK_RESERVE_BYTES,
+    reserveBytes,
     canRecord,
     ...(!canRecord
       ? { reason: "Free at least 1 GiB on Arena’s data drive before recording." }
@@ -481,7 +490,7 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
     session.diskMonitor = setInterval(() => {
       if (session.diskMonitorBusy || session.status !== "recording") return;
       session.diskMonitorBusy = true;
-      void readCaptureStorageBudget().then((budget) => {
+       void stat(session.partialPath).then(({ size }) => readCaptureStorageBudget(size)).then((budget) => {
         session.availableBytes = budget.availableBytes;
         session.reserveBytes = budget.reserveBytes;
         if (session.format) {
@@ -492,7 +501,7 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
           );
         }
         if (!budget.canRecord && session.status === "recording") {
-          session.notice = "Stopped before the data drive’s 1 GiB safety reserve was used; the recording is preserved below.";
+           session.notice = "Stopped with space reserved to archive this recording; the audio is preserved below.";
           void stopAudioCapture(session.ownerId, session.id).catch((error: unknown) => {
             session.failure = error instanceof Error ? error.message : session.failure;
             session.status = "failed";
