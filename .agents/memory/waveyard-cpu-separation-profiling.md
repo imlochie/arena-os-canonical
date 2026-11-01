@@ -16,3 +16,9 @@ Four-stem progress is not a reliable whole-job percentage when model passes take
 **Why:** On the measured excerpt, individual passes ranged from about 7 to 27 seconds; a fixed percentage per model would overstate or understate the remaining wait.
 
 **How to apply:** For multi-model separation, show the current stem pass and its chunk count. Keep percentage progress only for single-pass jobs unless duration-weighted estimates are measured and validated for that runtime.
+
+On 2026-11-01, seven consecutive pinned four-model jobs on the same 8-second, 44.1 kHz stereo real excerpt completed on a four-logical-CPU Linux host. With explicit GC, post-job RSS was 724.5, 868.4, 860.1, 1020.5, 1020.2, 1019.4, and 1024.9 MiB from a 625.8 MiB baseline. The first three jobs retained 234.3 MiB; RSS rose further on job four, then the final-half median was 1022.2 MiB, only 1.7 MiB above the first steady sample. Post-job JS heap stayed between 25.0 and 25.5 MiB, external memory between 267.0 and 271.2 MiB, and array buffers at 58 MiB. A mid-run active-inference spot check read 3377 MiB RSS; it was not a peak measurement.
+
+**Why:** Repeated real excerpts show a substantial one-time native/allocator warm-up followed by a plateau, while post-GC JS heap stayed flat. Active inference can consume much more memory than post-job samples, which matters on constrained laptops.
+
+**How to apply:** Treat this as Linux CPU evidence for an 8-second excerpt only. Continue measuring active peaks and Windows separately; do not infer Windows/DirectML memory from this plateau.

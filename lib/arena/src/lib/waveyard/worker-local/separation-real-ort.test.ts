@@ -112,6 +112,32 @@ async function createFourStemProbeSource(durationSeconds: number) {
   return { directory, path, sampleCount };
 }
 
+async function createMemoryMeasurementSource(realWavPath?: string) {
+  if (!realWavPath) {
+    return {
+      ...await createFourStemProbeSource(4),
+      kind: "synthetic" as const,
+      checksum: null,
+    };
+  }
+
+  const path = resolve(realWavPath);
+  const bytes = await readFile(path);
+  const decoded = decodeWav16(new Uint8Array(bytes));
+  assert.ok(decoded, "the real memory-test input must be a readable 16-bit PCM WAV");
+  assert.equal(decoded.sampleRate, 44_100, "the real memory-test excerpt must be 44.1 kHz");
+  assert.equal(decoded.channels, 2, "the real memory-test excerpt must be stereo");
+  assert.ok(decoded.frames >= 2 * 44_100, "the real memory-test excerpt must be at least two seconds");
+  assert.ok(decoded.frames <= 20 * 44_100, "the real memory-test excerpt must not exceed twenty seconds");
+  return {
+    directory: null,
+    path,
+    sampleCount: decoded.frames,
+    kind: "real" as const,
+    checksum: await checksumFile(path),
+  };
+}
+
 function createLocalRetryHarness(
   database: SeparationFixture["database"],
   onInferenceTiming?: (modelId: string, timings: MdxStageTimings) => void,
@@ -673,7 +699,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
   );
   const warmupJobs = 3;
 
-  const source = await createFourStemProbeSource(4);
+  const source = await createMemoryMeasurementSource(process.env.WAVEYARD_REAL_ORT_MEMORY_WAV?.trim());
   const f = await fixture({ model: "stems_4", sourceWavPath: source.path });
   let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
   const forceGc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
@@ -779,6 +805,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
 
     t.diagnostic(
       `Pinned four-model memory run: ${repetitions} completed jobs in ${Date.now() - startedAt} ms; ` +
+        `input ${source.kind} ${source.sampleCount / 44_100}s${source.checksum ? ` sha256=${source.checksum}` : ""}; ` +
         `RSS baseline ${toMiB(baseline.rss)} MiB; post-job RSS ${samples.map(({ rss }) => toMiB(rss)).join(" → ")} MiB; ` +
         `${warmupJobs} warm-up jobs retained ${toMiB(samples[warmupJobs - 1]!.rss - baseline.rss)} MiB; ` +
         `first steady RSS ${toMiB(firstSteadySample.rss)} MiB; ` +
@@ -792,7 +819,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
   } finally {
     await harness?.restore();
     await f.close();
-    await rm(source.directory, { recursive: true, force: true });
+    if (source.directory) await rm(source.directory, { recursive: true, force: true });
   }
 });
 

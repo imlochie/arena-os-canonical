@@ -805,11 +805,14 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const removeSelected = async () => {
     if (!selected) return;
     const next = games.filter((game) => game.id !== selected.id);
+    // Clear the removed game's error before the async storage write. A newer
+    // import may start as soon as the row disappears; late cleanup must not
+    // erase that import's validation feedback.
+    setNotice("");
+    setError("");
     await saveGames(next);
     setReaAnalysis((current) => current?.gameId === selected.id ? null : current);
     setSelectedId(next[0]?.id ?? "");
-    setNotice("");
-    setError("");
   };
 
   const remakePrompt = useMemo(() => {
