@@ -34,3 +34,4 @@
 - [Source adoption expectations](source-adoption-expectations.md) — assess priority source collections against all relevant rooms, not just a few ideas or presets.
 - [Spaces expectations](spaces-product-expectations.md) — persistent AI-operated Linux environments that build and perform real tasks, not browser presets.
 - [Arena Everywhere](arena-everywhere-expectations.md) — one ecosystem with native 3DS, Switch and Wii shells; audit first, offline usefulness and evidence before compatibility claims.
+- [Partial task updates](task-update-failures.md) — task descriptions can persist despite dependency-update errors; verify before retrying and never equate edits with archival.

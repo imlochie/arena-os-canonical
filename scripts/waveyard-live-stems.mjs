@@ -733,7 +733,39 @@ try {
     console.log("PASS: cancellation and the real preparation timeout keep original audio audible and aligned; late donors stay silent even while cancellation persistence stalls");
   }
 
-  if (donorReplacementOnly) {
+  async function verifyStudioSaveReload() {
+    const originalAssets = assetSnapshot();
+    const originalStemMetadata = structuredClone(tracks.map(track => track.stems));
+    await page.getByRole("tab", { name: "Edit" }).click();
+    const volume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+    await volume.waitFor();
+    assert.equal(await volume.inputValue(), "0.42", "Studio starts with the handed-off session fader");
+    const saved = page.waitForResponse(response =>
+      response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+    );
+    await volume.fill("0.55");
+    assert.ok((await saved).ok(), "the arrangement edit receives a successful save response");
+    await page.locator(".save-state.saved").waitFor();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const reloaded = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+    await reloaded.waitFor();
+    assert.equal(await reloaded.inputValue(), "0.55", "the edited fader survives reopening the project");
+    assert.deepEqual(assetSnapshot(), originalAssets, "editing the arrangement does not change source or stem bytes");
+    assert.deepEqual(tracks.map(track => track.stems), originalStemMetadata, "original library stem metadata stays unchanged");
+    return reloaded;
+  }
+
+  if (process.argv.includes("--studio-persistence-only")) {
+    tracks[0].stemMix = { vocals: 0.42 };
+    const originalAssets = assetSnapshot();
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.getByTestId("session-handoff").click();
+    await page.getByRole("link", { name: "Open in Studio" }).click();
+    await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+    await verifyStudioSaveReload();
+    assert.deepEqual(assetSnapshot(), originalAssets, "handoff and editing preserve original audio");
+    console.log("PASS: a session handoff opens in Studio, an edited volume is saved and restored after reload, and original audio and stem metadata stay unchanged");
+  } else if (donorReplacementOnly) {
     // Longer fixtures keep this focused acceptance flow on one recipient.
     tracks[0].track.durationSeconds = 90;
     for (const [index, type] of types.entries()) assets.set(`a-${type}`, wav(90, 130 + index * 40));
@@ -1948,23 +1980,7 @@ try {
   await page.getByText("Section added to the arrangement.", { exact: true }).waitFor();
   assert.equal(sectionArrangementRequests, 2, "section insertion can be retried after the failed request");
   await page.getByRole("tab", { name: "Edit" }).click();
-  const vocalsVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
-  await vocalsVolume.waitFor();
-  assert.equal(await vocalsVolume.inputValue(), "0.42",
-    "the saved session fader is carried into the editable Studio arrangement");
-  const arrangementSave = page.waitForResponse(response =>
-    response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
-  );
-  await vocalsVolume.fill("0.55");
-  assert.equal(await vocalsVolume.inputValue(), "0.55", "the generated arrangement volume control is editable");
-  assert.ok((await arrangementSave).ok(), "the changed fader is saved to the remix session");
-  await page.locator(".save-state.saved").waitFor();
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
-  const reloadedVocalsVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
-  await reloadedVocalsVolume.waitFor();
-  assert.equal(await reloadedVocalsVolume.inputValue(), "0.55",
-    "the session-derived arrangement fader survives leaving and reopening Studio");
+  const reloadedVocalsVolume = await verifyStudioSaveReload();
 
   const studioSaveHeld = new Promise(resolve => { signalHeldStudioRemixPut = resolve; });
   holdNextStudioRemixPut = true;

@@ -1277,6 +1277,38 @@ test("Studio reload routes keep vocals and drums linked to distinct donor source
       assert.equal("storageKey" in projectStem, false, "private storage paths stay off the API");
     }
   }
+  // Unlike the browser fixture, this round trip uses the real PUT/GET routes
+  // against the temporary PostgreSQL database and the actual ownership checks.
+  const sourcesBefore = await db.db.select().from(schema.sourceAssets);
+  const stemsBefore = await db.db.select().from(schema.stemAssets);
+  const remixParams = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const beforeEdit = await (await remixRoute.GET(
+    new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
+  )).json();
+  const editedTrackId = beforeEdit.tracks[0].id;
+  const input = {
+    ...beforeEdit.remix,
+    tracks: beforeEdit.tracks.map((track: { id: string; clips: Array<{ timelineStartMs: number }> }) =>
+      track.id === editedTrackId ? {
+        ...track, volume: 0.61,
+        clips: track.clips.map(clip => ({ ...clip, timelineStartMs: clip.timelineStartMs + 250, beatSnapEnabled: false })),
+      } : track),
+    automation: beforeEdit.automation,
+  };
+  const saveResponse = await remixRoute.PUT(new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+  }), remixParams);
+  assert.equal(saveResponse.status, 200, "a handed-off arrangement remains editable through the real API");
+  const reopened = await (await remixRoute.GET(
+    new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
+  )).json();
+  const editedTrack = reopened.tracks.find((track: { id: string }) => track.id === editedTrackId);
+  assert.equal(editedTrack.volume, 0.61, "track level survives a fresh database-backed read");
+  assert.equal(editedTrack.clips[0].timelineStartMs, beforeEdit.tracks[0].clips[0].timelineStartMs + 250,
+    "clip position survives a fresh database-backed read");
+  assert.equal(editedTrack.stemAssetId, beforeEdit.tracks[0].stemAssetId, "editing keeps the exact donor asset");
+  assert.deepEqual(await db.db.select().from(schema.sourceAssets), sourcesBefore, "Studio edits do not mutate original source rows");
+  assert.deepEqual(await db.db.select().from(schema.stemAssets), stemsBefore, "Studio edits do not mutate original stem rows");
   await sessions.deleteSession(OWNER, session.id);
 });
 
