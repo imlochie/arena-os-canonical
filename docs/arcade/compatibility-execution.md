@@ -1,0 +1,143 @@
+# Wine / Proton: admission assessment, execution still blocked
+
+## Delivery status
+
+Host-aware admission diagnostics are implemented. **A Wine launch adapter,
+runtime provisioning, prefix management and verified Linux gameplay are not
+implemented. This work is not complete and must not be called verified
+compatibility-layer execution.** No Wine/Proton runtime is registered or offered
+as a working install/launch action.
+
+Windows x64 continues through the native LPAC/Job route. Windows ARM64 and other
+architectures are not promoted into support by suggesting Wine. Hosted browser
+previews cannot execute local binaries or inspect a visitor's laptop facilities.
+
+## Verified current facts — 2026-11-01
+
+- Current assessment machine is Linux x86_64, not a packaged Arena desktop.
+- Wine, wine64, wineserver, Steam and pressure-vessel-wrap were not found on PATH.
+  This is not a machine-wide installation inventory.
+- User/mount/PID/network namespace creation successfully ran a `true` process.
+  That verifies a kernel primitive, **not an allowlisted root filesystem, network
+  denial test, resource controls, owned cleanup, or a registered game service**.
+- X11 is advertised and its socket directory exists; PulseAudio answers a
+  protocol query. No physical `/dev/dri` or `/dev/snd` directories were observed.
+  No Wine rendering, input or audible-output behavior was tested.
+- Existing `NativeArcadeHost` launches the Windows-only supervisor implemented
+  in `desktop/native/arcade-host.cpp`; the actual backend is
+  `windows-lpac-job-v1`.
+- The Electron entrypoint/build assumes Windows Chromium and packaged Windows
+  services. There is no existing Linux native control/launch product path.
+- The Spaces container/host-jail command runner is not an equivalent game
+  supervisor. Its host fallback and ordinary SIGTERM are not adequate Wine
+  filesystem/network isolation or wineserver/descendant ownership.
+
+Run `node desktop/check-compatibility-host.mjs` for a fresh read-only assessment.
+It runs bounded ordinary OS diagnostics and checks command presence, never Wine,
+Proton, installers or game inputs. Its output excludes environment values, raw
+diagnostic output, credentials, browser state and game content. A connection or
+installed executable never flips a runtime into `available`.
+
+The current host has useful facilities, but lacks an integrated, supported
+execution pathway. Installing Wine first would not resolve that architecture
+gap. No large runtime/toolchain/download was started.
+
+## Distribution and legal assessment
+
+### Wine
+
+[Wine 10.0's source license](https://github.com/wine-mirror/wine/blob/wine-10.0/LICENSE)
+states LGPL 2.1 or later. This identifies a source candidate, **not a pinned,
+redistributable ready-to-run Linux distribution**. A runnable distribution must
+pin the Wine binaries, loader/libc/dependencies, host ABI and all relevant
+licenses, and pass integrity checks. “Use whatever wine is on PATH” is not a
+reproducible adapter.
+
+No binary distribution was selected or downloaded before host admission.
+Wine/source presence does not provide proprietary Windows redistributable rights.
+
+### Proton
+
+[Valve's Proton 10.0 README](https://github.com/ValveSoftware/Proton/blob/proton_10.0/README.md)
+describes Proton as a Steam-client tool and recommends the client-provided
+version. Its build instructions also involve container tooling; building Proton
+and launching a game are different prerequisite sets.
+
+The documented Steam pathway needs a compatible Linux Steam client, tool/app
+context, matching Steam Linux Runtime/pressure-vessel facilities, libraries and
+graphics drivers. A standalone runner can be another pathway, but neither one
+is implemented or verified here. Do not claim Steam is universally necessary
+for every possible Proton integration, or that a proton script alone suffices.
+
+Proton combines separately licensed components; Steam is not a freely
+redistributable dependency to silently bundle. No Steam installation, system
+driver setup, unsupported Replit container deployment or mock Proton adapter
+was attempted.
+
+### Representative legal game
+
+Use Arena's existing original MIT SDL acceptance game, not an unverified
+download or commercial title:
+
+- Source: `desktop/native/arcade-sdl-fixture.cpp`
+- Inspected source SHA-256:
+  `1a8491044e29bd613b41680023547df92bfdd0138d465b7d85bb16eb5dadf1c8`
+- Builder/catalog: `desktop/build-arcade-fixture.mjs`.
+- Source and MIT notice accompany the independent package.
+- The corresponding Windows PE, SDL runtime and package hashes must come from
+  the exact matching successful build/catalog. A source hash is not a binary
+  pin or proof of Wine compatibility.
+
+The existing fixture provides visible interaction, score/save behavior and
+synthesized audio. It has **not** run through Wine.
+
+## Required implementation boundary
+
+To finish without creating an unrelated Linux desktop product, first establish
+an explicit supported Linux host entrypoint for the existing owned execution
+service. This requires architecture work, not just adding `wine game.exe`:
+
+1. Live denial/cleanup/resource probes for a Linux game supervisor. Namespaces
+   must be combined with an allowlisted root and enforced ownership/limits;
+   neither a working directory nor a process group is a security boundary.
+2. Read-only immutable runtime/game roots; a per-game/per-profile writable
+   root and explicit non-inherited environment. Never expose owner home,
+   credentials, host `Z:` mappings or shared default `~/.wine`.
+3. Initialize Wine prefixes only inside that verified containment. No
+   uncontained wineboot, arbitrary installer scripts or fallback to a host shell.
+4. Independent display/input/audio access. Passing the shared host X11 socket
+   can expose unrelated windows/input; passing a shared Pulse socket can expose
+   capture/monitor sources. A successful connection is not safe least-privilege
+   access. Use an isolated presentation/audio pathway or verified brokers.
+5. Owned wineserver/helper lifetime, prefix locks and all-descendant shutdown.
+   Never terminate the owner's unrelated Wine instances or recycled PIDs.
+6. Prefix identity must bind game, profile, architecture and exact runtime
+   lineage. Retain save/configuration roots and private registry state.
+7. Snapshot stopped prefixes before repair or migration. Wine version changes
+   can modify prefix registry/runtime state, so a binary-only downgrade is not
+   a complete rollback. Preserve newer game progress; never silently restore an
+   older prefix over it. Repairs need explicit owner-reviewed copies.
+8. Fit provisioning/repair into existing budget/reserve/cancellation semantics.
+   Account for prefix, dependency, staging, backup and shader-cache disk usage.
+
+## Completion evidence still required
+
+Record exact host OS/architecture, native supervisor, Wine distribution and
+dependencies, game/SDL hashes, profile/prefix identity and observed facilities.
+
+Then demonstrate through the actual shared game manager:
+
+- acquisition and prefix initialization with deny tests already passed;
+- real visible game control and observed/captured game audio;
+- nonzero saved progress surviving ordinary exit and relaunch;
+- independent game and mod profiles, without touching other Wine prefixes;
+- child/helper/wineserver shutdown, crash recovery and refusal to repair a live
+  prefix;
+- stopped-prefix backup/repair, failed upgrade and rollback while preserving
+  current progress;
+- cancellation, storage failure and missing display/audio/ABI prerequisites.
+
+Keep Proton unavailable unless its complete chosen distribution/runtime/launch
+path passes equivalent evidence. No readiness flag is accepted as gameplay
+proof. Linux Wine acceptance is distinct from the user's deferred final Windows
+native test; do not pressure them for Windows testing to resolve this gap.

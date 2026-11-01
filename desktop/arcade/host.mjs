@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, writeFile, rename, statfs } from "node:fs/promises";
 import path from "node:path";
 import { prepareClassicLaunch } from "./classic.mjs";
+import { assessCompatibilityHost } from "./compatibility.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex").slice(0, 32);
 export class NativeArcadeHost {
   constructor({ packages, helper, platform = process.platform, arch = process.arch, spawnProcess = spawn }) {
@@ -16,6 +17,7 @@ export class NativeArcadeHost {
       verified: this.proof !== null, message: this.platform !== "win32" || this.arch !== "x64"
         ? "Native execution requires Windows x64, NTFS and a successful live LPAC containment probe. Hosted/Linux previews cannot run imported Windows executables."
         : "Windows 10/11 x64, NTFS, Windows network isolation APIs and a successful live restricted-token/filesystem/network/Job probe are mandatory. There is no host-jail fallback.",
+      compatibility: assessCompatibilityHost({ platform: this.platform, arch: this.arch }),
       limits: { jobMemoryMiB: 1024, processMemoryMiB: 512, processes: 16, cpuPercent: 25, network: "none", clipboard: "denied" } };
   }
   async initialize() {

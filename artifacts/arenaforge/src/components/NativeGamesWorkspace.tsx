@@ -74,6 +74,7 @@ export default function NativeGamesWorkspace() {
         <p className="mt-2 text-xs text-slate-300">
           Native games require the Arena Arcade Windows desktop app. This preview has no native bridge, so nothing can be installed or launched here.
         </p>
+        <p className="mt-1 text-xs text-slate-400">Wine and Proton are not browser runtimes. This hosted server is not your laptop, and no Linux compatibility execution service is registered. Windows uses compatible native releases, not Wine.</p>
         <p className="mt-1 text-xs text-slate-400">Browser games in Create and Import still work in this preview.</p>
       </section>
     );
@@ -118,6 +119,18 @@ export default function NativeGamesWorkspace() {
             Platform: {req.supportedHost ? "Windows x64 candidate" : "unsupported"} / containment {req.verified ? "verified by live probe" : "not verified"} / {req.backend}
           </p>
           <p className="mt-1 text-slate-400">{req.message}</p>
+          {req.compatibility && (
+            <details className="mt-2 text-slate-400">
+              <summary className="cursor-pointer text-slate-300">Native releases, Wine and Proton</summary>
+              <p className="mt-1">{req.compatibility.nativeWindows.reason}</p>
+              {(["wine", "proton"] as const).map(layer => (
+                <div key={layer} className="mt-2">
+                  <p className="font-semibold">{layer === "wine" ? "Wine" : "Proton"} — unavailable</p>
+                  <ul className="ml-4 list-disc">{req.compatibility![layer].reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
+                </div>
+              ))}
+            </details>
+          )}
           <p className="mt-1 break-words font-mono text-[10px] text-slate-500">
             {Object.entries(req.limits).map(([k, v]) => `${k}: ${v}`).join("  ")}
           </p>

@@ -56,6 +56,13 @@ export type NativeSnapshot = {
     backend: string;
     verified: boolean;
     message: string;
+    compatibility?: {
+      scope: string; platform: string; architecture: string;
+      nativeWindows: { candidate: boolean; reason: string };
+      wine: { available: false; status: string; reasons: string[] };
+      proton: { available: false; status: string; reasons: string[] };
+      gameplayVerified: false;
+    };
     limits: Record<string, string | number>;
   };
   runs: NativeRun[];
