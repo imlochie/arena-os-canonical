@@ -39,14 +39,20 @@ import { cpus, release, tmpdir, type as osType } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { eq } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
 import { decodeSourceToStereoPcm } from "../measure/pcm";
-import { stemAssets, processingJobs } from "@workspace/db/waveyardSchema";
+import {
+  listenSessions,
+  listenSessionTracks,
+  processingJobs,
+  sourceAssets,
+  stemAssets,
+} from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { evaluateFourStemSeparation, type FourStemSamples } from "@workspace/arena/lib/waveyard/separation/quality";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
@@ -89,6 +95,21 @@ function audioMetrics(samples: Float32Array) {
     peakDbfs: Number((20 * Math.log10(Math.max(peak, 1e-12))).toFixed(1)),
     clippedSamples: clipped,
   };
+}
+
+async function createFourStemProbeSource(durationSeconds: number) {
+  const sampleCount = durationSeconds * 44_100;
+  const interleaved = new Float32Array(sampleCount * 2);
+  for (let index = 0; index < sampleCount; index += 1) {
+    const phase = (2 * Math.PI * 220 * index) / 44_100;
+    const overtone = (2 * Math.PI * 660 * index) / 44_100;
+    interleaved[index * 2] = 0.28 * Math.sin(phase) + 0.08 * Math.sin(overtone);
+    interleaved[index * 2 + 1] = 0.25 * Math.sin(phase + 0.2) + 0.07 * Math.sin(overtone + 0.4);
+  }
+  const directory = await mkdtemp(join(tmpdir(), "waveyard-four-stem-multichunk-"));
+  const path = join(directory, "multi-chunk-source.wav");
+  await writeFile(path, encodeWav16(interleaved, 44_100));
+  return { directory, path, sampleCount };
 }
 
 function createLocalRetryHarness(
@@ -382,7 +403,7 @@ test("a pinned local Kim model completes a failed separation through the product
   }
 });
 
-test("the pinned four-model recipe completes through the production worker on retry", { timeout: 300_000 }, async (t) => {
+test("the pinned four-model recipe completes through the production worker on retry", { timeout: 600_000 }, async (t) => {
   const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
   const workspaceRoot = resolve(arenaRoot, "../..");
   const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
@@ -395,7 +416,10 @@ test("the pinned four-model recipe completes through the production worker on re
     assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
   }
 
-  const f = await fixture({ model: "stems_4" });
+  // Longer than the largest pinned model chunk so all four real inference
+  // sessions process multiple chunks through the production local worker.
+  const source = await createFourStemProbeSource(8);
+  const f = await fixture({ model: "stems_4", sourceWavPath: source.path });
   let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
   try {
     for (const spec of FOUR_STEM_MODELS) {
@@ -412,53 +436,187 @@ test("the pinned four-model recipe completes through the production worker on re
       })
       .where(eq(processingJobs.id, f.job.id));
 
+    const [session] = await f.database
+      .insert(listenSessions)
+      .values({ ownerId: f.project.ownerId, name: "Separation responsiveness probe" })
+      .returning();
+    const completedModelPasses: { model: string; chunkCount: number }[] = [];
+    const requestSamples: { phase: string; libraryMs: number; sessionMs: number }[] = [];
+    const progressSamples: { phase: string; model: string; done: number; total: number; percent: number; kind: string }[] = [];
+    let samplingError: string | null = null;
+    let stopSampling = false;
     let playbackTicks = 0;
     let lastPlaybackTick = Date.now();
     let maxPlaybackGapMs = 0;
+    const requestWithTimeout = async <T>(request: Promise<T>, message: string): Promise<T> => {
+      let timeout: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          request,
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error(message)), 1_000);
+          }),
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+    };
     const playbackTimer = setInterval(() => {
       const now = Date.now();
       maxPlaybackGapMs = Math.max(maxPlaybackGapMs, now - lastPlaybackTick);
       lastPlaybackTick = now;
       playbackTicks += 1;
     }, 20);
+    const sampleResponsiveness = (async () => {
+      while (!stopSampling) {
+        try {
+          const [latestJob] = await f.database
+            .select()
+            .from(processingJobs)
+            .where(eq(processingJobs.id, f.job.id));
+          const metadata = typeof latestJob?.metadata === "string"
+            ? JSON.parse(latestJob.metadata)
+            : (latestJob?.metadata ?? {});
+          const progress = metadata?.progress;
+          const phase = typeof progress?.phase === "string" ? progress.phase : "not-started";
+          if (
+            progress &&
+            typeof progress.model === "string" &&
+            typeof progress.done === "number" &&
+            typeof progress.total === "number" &&
+            typeof progress.percent === "number" &&
+            typeof progress.kind === "string"
+          ) {
+            progressSamples.push({
+              phase,
+              model: progress.model,
+              done: progress.done,
+              total: progress.total,
+              percent: progress.percent,
+              kind: progress.kind,
+            });
+          }
+
+          const libraryStartedAt = Date.now();
+          const libraryRead = await requestWithTimeout(
+            f.database
+              .select({ id: sourceAssets.id, status: processingJobs.status })
+              .from(sourceAssets)
+              .leftJoin(processingJobs, eq(processingJobs.sourceAssetId, sourceAssets.id))
+              .where(eq(sourceAssets.id, f.source.id)),
+            "Library read stalled during four-stem separation",
+          );
+          const libraryMs = Date.now() - libraryStartedAt;
+          assert.equal(libraryRead.length, 1);
+
+          const sessionStartedAt = Date.now();
+          const sessionRead = await requestWithTimeout(
+            f.database
+              .select({ id: listenSessions.id, trackCount: count(listenSessionTracks.id) })
+              .from(listenSessions)
+              .leftJoin(listenSessionTracks, eq(listenSessionTracks.sessionId, listenSessions.id))
+              .where(eq(listenSessions.id, session.id))
+              .groupBy(listenSessions.id),
+            "Live-session read stalled during four-stem separation",
+          );
+          const sessionMs = Date.now() - sessionStartedAt;
+          assert.equal(sessionRead.length, 1);
+          const currentPhase = phase === "not-started" ? "1/4" : phase;
+          requestSamples.push({ phase: currentPhase, libraryMs, sessionMs });
+        } catch (error) {
+          samplingError = error instanceof Error ? error.message : String(error);
+          return;
+        }
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 500));
+      }
+    })();
     let retryPromise: Promise<{ queued: boolean }> | undefined;
     let elapsedMs = 0;
-    let requestLatencyMs = 0;
     try {
-      harness = createLocalRetryHarness(f.database);
+      harness = createLocalRetryHarness(f.database, (model, timings) => {
+        // Production-worker timing is emitted only after its inference worker
+        // exits; that worker awaits session.release() before posting results.
+        // Therefore each callback proves that pass released before the next
+        // model session could be opened.
+        completedModelPasses.push({ model, chunkCount: timings.chunkCount });
+      });
       const startedAt = Date.now();
       retryPromise = retrySeparationJob(f.database, f.job.id);
-      const requestStartedAt = Date.now();
-      let requestTimeout: NodeJS.Timeout | undefined;
-      const request = await Promise.race([
-        f.database.select().from(processingJobs).then((rows) => ({
-          rows,
-          latencyMs: Date.now() - requestStartedAt,
-        })),
-        new Promise<never>((_, reject) => {
-          requestTimeout = setTimeout(
-            () => reject(new Error("Library read stalled during real four-stem separation")),
-            1_000,
-          );
-        }),
-      ]).finally(() => {
-        if (requestTimeout) clearTimeout(requestTimeout);
-      });
-      requestLatencyMs = request.latencyMs;
-      assert.equal(request.rows.length, 1);
-      assert.ok(requestLatencyMs < 1_000);
-
       const retry = await retryPromise;
-      assert.equal(await harness.broker.drain(240_000), true, "the four-model retry drains through the local worker");
+      assert.equal(await harness.broker.drain(570_000), true, "the multi-chunk four-model retry drains through the local worker");
       elapsedMs = Date.now() - startedAt;
       assert.deepEqual(retry, { queued: true });
-      assert.equal(harness.broker.stats().succeeded, 1, "the real worker completed the four-model broker submission");
+      const brokerStats = harness.broker.stats();
+      const [workerJob] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+      assert.equal(
+        brokerStats.succeeded,
+        1,
+        `the real worker completed the four-model broker submission; stats=${JSON.stringify(brokerStats)}; job=${JSON.stringify({
+          status: workerJob?.status,
+          errorCode: workerJob?.errorCode,
+          errorMessage: workerJob?.errorMessage,
+        })}`,
+      );
     } finally {
+      stopSampling = true;
+      await sampleResponsiveness;
       clearInterval(playbackTimer);
       await retryPromise?.catch(() => undefined);
     }
+    assert.equal(samplingError, null, samplingError ?? undefined);
+    assert.ok(requestSamples.length >= 8, `library and session reads repeated ${requestSamples.length} times during separation`);
+    for (const [label, field] of [
+      ["library", "libraryMs"],
+      ["live-session", "sessionMs"],
+    ] as const) {
+      const slowest = Math.max(...requestSamples.map((sample) => sample[field]));
+      assert.ok(slowest < 1_000, `${label} reads stayed responsive (slowest ${slowest}ms)`);
+    }
     assert.ok(playbackTicks >= 5, `playback timer advanced ${playbackTicks} times during separation`);
     assert.ok(maxPlaybackGapMs < 1_000, `playback timer's longest pause was ${maxPlaybackGapMs}ms`);
+    assert.deepEqual(
+      completedModelPasses.map(({ model }) => model),
+      FOUR_STEM_MODELS.map(({ id }) => id),
+      "each preceding model session is released before the next model pass completes",
+    );
+    assert.ok(
+      completedModelPasses.every(({ chunkCount }) => chunkCount > 1),
+      `all four pinned model passes process multiple chunks: ${completedModelPasses.map(({ model, chunkCount }) => `${model}=${chunkCount}`).join(", ")}`,
+    );
+    assert.ok(
+      FOUR_STEM_MODELS.every(({ id }) => requestSamples.some(({ phase }) => phase === `${FOUR_STEM_MODELS.findIndex((model) => model.id === id) + 1}/4`)),
+      "library and live-session reads remain active in every model phase",
+    );
+
+    let lastPercent = -1;
+    for (const sample of progressSamples) {
+      const phaseIndex = Number(sample.phase.split("/")[0]) - 1;
+      assert.ok(phaseIndex >= 0 && phaseIndex < FOUR_STEM_MODELS.length, `valid model phase ${sample.phase}`);
+      assert.equal(sample.model, FOUR_STEM_MODELS[phaseIndex]!.id, `${sample.phase} identifies its active model`);
+      if (sample.kind === "model-pass") {
+        assert.equal(sample.done, phaseIndex, `${sample.phase} begins at its model boundary`);
+        assert.equal(sample.total, FOUR_STEM_MODELS.length);
+        assert.equal(sample.percent, Math.floor((phaseIndex / FOUR_STEM_MODELS.length) * 100));
+      } else {
+        assert.equal(sample.kind, "chunk");
+        assert.ok(
+          Number.isInteger(sample.total) && sample.total > 0 &&
+            Number.isInteger(sample.done) && sample.done >= 1 && sample.done <= sample.total,
+          `${sample.phase} reports valid chunk progress`,
+        );
+        assert.equal(
+          sample.percent,
+          Math.floor(((phaseIndex + sample.done / sample.total) / FOUR_STEM_MODELS.length) * 100),
+          `${sample.phase} percentage reflects its actual chunk within the full recipe`,
+        );
+      }
+      assert.ok(sample.percent >= lastPercent, "whole-recipe progress never moves backward between model passes");
+      lastPercent = sample.percent;
+    }
+    assert.ok(
+      FOUR_STEM_MODELS.every(({ id }) => progressSamples.some(({ model, kind }) => model === id && kind === "chunk")),
+      "durable progress exposes chunk updates for every pinned model",
+    );
 
     const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
     assert.equal(job.status, "complete");
@@ -482,14 +640,15 @@ test("the pinned four-model recipe completes through the production worker on re
       const decoded = decodeWav16(new Uint8Array(await readFile(storedPath!)));
       assert.ok(decoded, `${stemType} is a readable WAV`);
       assert.equal(decoded.sampleRate, 44_100);
-      assert.equal(decoded.frames, SAMPLES);
+      assert.equal(decoded.frames, source.sampleCount);
     }
     t.diagnostic(
-      `Pinned four-model retry completed on ${job.resolvedDevice} with ${WAVEYARD_ORT_EXECUTION_MODE} mode (intra=${WAVEYARD_ORT_INTRA_OP_THREADS}, inter=${WAVEYARD_ORT_INTER_OP_THREADS}) in ${elapsedMs} ms; library read ${requestLatencyMs} ms; max playback timer gap ${maxPlaybackGapMs} ms. Synthetic fixture proves execution, not separation quality.`,
+      `Pinned multi-chunk four-model retry completed on ${job.resolvedDevice} with ${WAVEYARD_ORT_EXECUTION_MODE} mode (intra=${WAVEYARD_ORT_INTRA_OP_THREADS}, inter=${WAVEYARD_ORT_INTER_OP_THREADS}) in ${elapsedMs} ms; chunks ${completedModelPasses.map(({ model, chunkCount }) => `${model}=${chunkCount}`).join(", ")}; ${requestSamples.length} library/session probe rounds; max library read ${Math.max(...requestSamples.map(({ libraryMs }) => libraryMs))} ms; max session read ${Math.max(...requestSamples.map(({ sessionMs }) => sessionMs))} ms; max playback timer gap ${maxPlaybackGapMs} ms. Synthetic input proves worker execution and responsiveness, not separation quality.`,
     );
   } finally {
     await harness?.restore();
     await f.close();
+    await rm(source.directory, { recursive: true, force: true });
   }
 });
 
@@ -514,7 +673,8 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
   );
   const warmupJobs = 3;
 
-  const f = await fixture({ model: "stems_4" });
+  const source = await createFourStemProbeSource(4);
+  const f = await fixture({ model: "stems_4", sourceWavPath: source.path });
   let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
   const forceGc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
   const sampleMemory = async () => {
@@ -541,11 +701,15 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       })
       .where(eq(processingJobs.id, f.job.id));
 
-    harness = createLocalRetryHarness(f.database);
+    const completedModelPasses: { model: string; chunkCount: number }[] = [];
+    harness = createLocalRetryHarness(f.database, (model, timings) => {
+      completedModelPasses.push({ model, chunkCount: timings.chunkCount });
+    });
     const baseline = await sampleMemory();
     const samples: Awaited<ReturnType<typeof sampleMemory>>[] = [];
     const startedAt = Date.now();
     for (let run = 0; run < repetitions; run += 1) {
+      const firstPassIndex = completedModelPasses.length;
       if (run > 0) {
         // Reuse the same durable job and input while exercising a fresh set of
         // four production worker sessions for each repetition.
@@ -574,6 +738,16 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       assert.equal(job?.status, "complete", `pinned four-model repetition ${run + 1} completes before timeout`);
       assert.equal(harness.broker.stats().submitted, run + 1, `repetition ${run + 1} reached the local production worker`);
       assert.equal(harness.broker.stats().succeeded, run + 1, `repetition ${run + 1} succeeded in the local production worker`);
+      const runPasses = completedModelPasses.slice(firstPassIndex);
+      assert.deepEqual(
+        runPasses.map(({ model }) => model),
+        FOUR_STEM_MODELS.map(({ id }) => id),
+        `repetition ${run + 1} released each model session before opening the next`,
+      );
+      assert.ok(
+        runPasses.every(({ chunkCount }) => chunkCount > 1),
+        `repetition ${run + 1} exercised multiple chunks in every model: ${runPasses.map(({ model, chunkCount }) => `${model}=${chunkCount}`).join(", ")}`,
+      );
       assert.equal(job.status, "complete", `repetition ${run + 1} completes`);
       const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
       assert.equal(stems.length, 4, `repetition ${run + 1} persists all four stems`);
@@ -618,6 +792,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
   } finally {
     await harness?.restore();
     await f.close();
+    await rm(source.directory, { recursive: true, force: true });
   }
 });
 
