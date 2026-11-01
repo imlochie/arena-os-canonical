@@ -256,11 +256,14 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
   recoveryError?: string;
 }> {
   pruneCompletedImports();
-  const active = ownerId
-    ? [...sessions.values()].find((session) =>
-      session.ownerId === ownerId &&
-      ["starting", "recording", "stopping", "failed"].includes(session.status))
-    : undefined;
+  const ownerSessions = ownerId
+    ? [...sessions.values()].filter((session) => session.ownerId === ownerId)
+    : [];
+  // A recoverable failure remains visible for import, but it must not shadow a
+  // newer live recording when the workbench refreshes its active-session view.
+  const active = ownerSessions.find((session) =>
+    ["starting", "recording", "stopping"].includes(session.status))
+    ?? ownerSessions.find((session) => session.status === "failed");
   const activeSession = active ? snapshot(active) : undefined;
   let recoveries: AudioCaptureRecovery[] | undefined;
   let recoveryError: string | undefined;

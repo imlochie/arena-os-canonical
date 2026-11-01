@@ -146,6 +146,80 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   clearRecoveredAudioCapture("process-owner", started.sessionId);
 });
 
+test("a newer live recording takes priority over an older failed session", {
+  skip: originalPlatform?.value === "win32",
+}, async () => {
+  const root = await makeTemporaryRoot();
+  const resources = path.join(root, "resources");
+  const hostDirectory = path.join(resources, "native");
+  await mkdir(hostDirectory, { recursive: true });
+  process.env.ARENA_DATA_DIR = root;
+  process.env.ARENA_RESOURCES_DIR = resources;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+
+  const formatChunk = Buffer.alloc(16);
+  formatChunk.writeUInt16LE(1, 0);
+  formatChunk.writeUInt16LE(2, 2);
+  formatChunk.writeUInt32LE(48000, 4);
+  formatChunk.writeUInt32LE(192000, 8);
+  formatChunk.writeUInt16LE(4, 12);
+  formatChunk.writeUInt16LE(16, 14);
+  const ready = JSON.stringify({
+    type: "ready", mode: "system-loopback", formatChunkBase64: formatChunk.toString("base64"),
+    sampleRate: 48000, channels: 2, bitsPerSample: 16, blockAlign: 4,
+  });
+  const hostPath = path.join(hostDirectory, "waveyard-capture-host.exe");
+  const runCount = path.join(root, "capture-runs");
+  await writeFile(hostPath, `#!/bin/sh
+if [ "$1" = "devices" ]; then
+  printf '%s\\n' '{"devices":[{"id":"default","name":"Default","isDefault":true}]}'
+  exit 0
+fi
+if [ -f '${runCount}' ]; then
+  run=2
+else
+  run=1
+fi
+printf '%s' "$run" > '${runCount}'
+printf '%s\\n' '${ready}' >&2
+IFS= read -r command
+[ "$command" = "start" ] || exit 4
+printf '%s\\n' '{"type":"started"}' >&2
+if [ "$run" = "1" ]; then
+  sleep 0.1
+  exit 7
+fi
+while IFS= read -r command; do
+  if [ "$command" = "stop" ]; then
+    printf '\\001\\000\\002\\000'
+    printf '%s\\n' '{"type":"stopped"}' >&2
+    exit 0
+  fi
+done
+`);
+  await chmod(hostPath, 0o755);
+
+  const failed = await startAudioCapture("capture-priority-owner", { title: "Interrupted capture" });
+  const failedDeadline = Date.now() + 2000;
+  while (getAudioCaptureStatus("capture-priority-owner", failed.sessionId)?.status !== "failed"
+    && Date.now() < failedDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(getAudioCaptureStatus("capture-priority-owner", failed.sessionId)?.status, "failed");
+
+  const current = await startAudioCapture("capture-priority-owner", { title: "Current capture", deviceId: "default" });
+  const options = await getAudioCaptureOptions("capture-priority-owner");
+  assert.equal(options.activeSession?.sessionId, current.sessionId);
+  assert.equal(options.activeSession?.status, "recording");
+  assert.equal(getAudioCaptureStatus("capture-priority-owner", failed.sessionId)?.status, "failed",
+    "the previous session must remain available for recovery");
+
+  const saved = await stopAudioCapture("capture-priority-owner", current.sessionId);
+  assert.ok(saved);
+  assert.equal(saved.metadata.title, "Current capture");
+  clearRecoveredAudioCapture("capture-priority-owner", failed.sessionId);
+  clearRecoveredAudioCapture("capture-priority-owner", current.sessionId);
+});
+
 test("requesting process capture rejects a host that silently switches to whole output", {
   skip: originalPlatform?.value === "win32",
 }, async () => {
