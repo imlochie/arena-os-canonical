@@ -9,6 +9,46 @@ import { fileURLToPath } from "node:url";
 
 const exec = promisify(execFile);
 const source = fileURLToPath(new URL("../native/arcade-linux-gate.c", import.meta.url));
+// Trusted admission processes only, never an arbitrary game supervisor.
+// An unattached gate has not received permission to execute its payload.
+export async function cleanupAdmissionProbe({
+  child, closed, attached, groupCreated, group, directory,
+  io = { writeFile, rmdir, rm }, timeoutMs = 1000,
+}) {
+  const result = { probeGroupCleaned: !groupCreated, cleanupErrors: [] };
+  child?.stdin?.end();
+  if (child && !attached) child.kill("SIGKILL");
+  try {
+    if (groupCreated) await io.writeFile(path.join(group, "cgroup.kill"), "1");
+  } catch (error) {
+    result.cleanupErrors.push(`Owned cgroup kill failed: ${error.message}`);
+  }
+  if (closed) {
+    let timer;
+    try {
+      await Promise.race([closed, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Probe exit cleanup timed out.")), timeoutMs);
+      })]);
+    } catch (error) { result.cleanupErrors.push(error.message); }
+    finally { clearTimeout(timer); }
+  }
+  if (groupCreated) {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try { await io.rmdir(group); result.probeGroupCleaned = true; break; }
+      catch (error) {
+        if (!["EBUSY", "ENOTEMPTY"].includes(error.code) || attempt === 19) {
+          result.cleanupErrors.push(`Owned cgroup removal failed: ${error.message}`);
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    }
+  }
+  try { await io.rm(directory, { recursive: true, force: true }); }
+  catch (error) { result.cleanupErrors.push(`Probe directory cleanup failed: ${error.message}`); }
+  return result;
+}
+
 async function resolveTool(name) {
   for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
     try {
@@ -32,7 +72,7 @@ export async function probeLinuxAdmission({ cgroupRoot = "/sys/fs/cgroup" } = {}
   };
   const directory = await mkdtemp(path.join(os.tmpdir(), "arena-linux-admission-"));
   const group = path.join(cgroupRoot, `arena-admission-${randomUUID()}`);
-  let groupCreated = false, child, closed;
+  let groupCreated = false, attached = false, child, closed;
   // Only trusted compiler/OS tools execute. No provider/session credentials are
   // inherited, and the game-facing environment is not created by this probe.
   const env = Object.fromEntries(["PATH", "LANG", "LC_ALL", "TMPDIR"].flatMap(key =>
@@ -74,6 +114,7 @@ export async function probeLinuxAdmission({ cgroupRoot = "/sys/fs/cgroup" } = {}
     // Prevent an unhandled rejection if attaching fails before awaiting close.
     closed.catch(() => {});
     await writeFile(path.join(group, "cgroup.procs"), String(child.pid));
+    attached = true;
     child.stdin.write("G");
     let timer;
     try {
@@ -87,19 +128,13 @@ export async function probeLinuxAdmission({ cgroupRoot = "/sys/fs/cgroup" } = {}
     result.code = error.code ?? "ADMISSION_CHECK_FAILED";
     result.diagnostic = String(error.message).slice(0, 4096);
   } finally {
-    if (groupCreated) {
-      // Never kill recorded/recycled PIDs or another user's/global Wine server.
-      await writeFile(path.join(group, "cgroup.kill"), "1");
-      if (closed) await closed.catch(() => {});
-      for (let attempt = 0; attempt < 20; attempt++) {
-        try { await rmdir(group); result.probeGroupCleaned = true; break; }
-        catch (error) {
-          if (!["EBUSY", "ENOTEMPTY"].includes(error.code) || attempt === 19) throw error;
-          await new Promise(resolve => setTimeout(resolve, 25));
-        }
-      }
+    Object.assign(result, await cleanupAdmissionProbe({
+      child, closed, attached, groupCreated, group, directory,
+    }));
+    if (result.cleanupErrors.length) {
+      result.status = "blocked";
+      result.code = "PROBE_CLEANUP_FAILED";
     }
-    await rm(directory, { recursive: true, force: true });
   }
   result.diagnostic = result.diagnostic.trim();
   return result;

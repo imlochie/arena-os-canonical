@@ -117,6 +117,45 @@ session. Once these files are on the repository's default branch, use Actions â†
 the `arcade-linux-admission-*` evidence, including failures. A failed bootstrap
 can leave only `runner.log`; absence of JSON is not a passed probe.
 
+#### Handoff and acceptance checklist
+
+Local verification of the admission implementation:
+
+```
+node --test desktop/arcade-compatibility.test.mjs \
+  desktop/arcade-linux-cleanup.test.mjs desktop/arcade-linux-gate.test.mjs
+node desktop/check-compatibility-host.mjs --probe-sandbox
+```
+
+The 12 focused tests passed, including compiling and running the trusted C
+launcher with missing, incorrect and valid grants. They execute trusted OS
+`true`, not a Windows game. The real hosted sandbox probe returned exit 2 with
+`PRIVATE_PROC_MOUNT_DENIED`, `probeGroupCleaned: true` and no cleanup errors.
+
+Cleanup now handles failed cgroup attachment without leaving its blocked
+launcher waiting indefinitely. Attached processes are terminated through their
+owned cgroup; only an unattached, unreleased trusted gate can be killed directly.
+Group-kill failure, child-exit timeout and group-removal failure are retained as
+failure evidence; they cannot produce a passing admission status. Temporary
+file removal is attempted even when group cleanup fails.
+
+On the CI VM, accept **only the prerequisite stage** when all these are true:
+
+- The workflow and tests pass for the intended source revision.
+- `admission.json` exists and `sourceRevision` matches that revision.
+- `status` is `primitives-only`, `cgroupControlsConfigured` and
+  `privateProcMounted` are true, `probeGroupCleaned` is true, and
+  `cleanupErrors` is empty.
+- `gameplayVerified` remains false. A true value here would be invalid evidence.
+
+Stop on a failed prerequisite; inspect `runner.log` and the JSON rather than
+relaxing isolation. No Windows machine is needed for this CI stage.
+
+Still not delivered: a registered Linux Wine game driver, pinned distributable
+runtime closure, private graphics/audio forwarding, prefix provisioning and
+save-preserving repair/rollback. Those must be implemented and exercised using
+the representative game below before compatibility execution can be completed.
+
 ### Wine
 
 [Wine 10.0's source license](https://github.com/wine-mirror/wine/blob/wine-10.0/LICENSE)

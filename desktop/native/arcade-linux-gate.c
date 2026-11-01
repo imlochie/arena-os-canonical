@@ -9,7 +9,8 @@
 #include <string.h>
 
 int main(int argc, char **argv) {
-  if (argc < 3 || (strcmp(argv[1], "--gated") && strcmp(argv[1], "--reset"))) return 64;
+  if (argc < 3 || argv[2][0] != '/' ||
+      (strcmp(argv[1], "--gated") && strcmp(argv[1], "--reset"))) return 64;
   if (!strcmp(argv[1], "--gated")) {
     char grant = 0;
     if (read(STDIN_FILENO, &grant, 1) != 1 || grant != 'G') return 65;

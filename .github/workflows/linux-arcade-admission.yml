@@ -17,7 +17,7 @@ jobs:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31
       - name: Exercise admission policy tests without installing the application
-        run: nix-shell desktop/linux-admission-ci.nix --run 'node --test desktop/arcade-compatibility.test.mjs'
+        run: nix-shell desktop/linux-admission-ci.nix --run 'node --test desktop/arcade-compatibility.test.mjs desktop/arcade-linux-cleanup.test.mjs desktop/arcade-linux-gate.test.mjs'
       - name: Test private procfs and real delegated cgroup controls
         env:
           ARENA_SOURCE_REVISION: ${{ github.sha }}
