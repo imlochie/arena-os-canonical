@@ -862,12 +862,15 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
 
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
-      if (!remix || !canHandleShortcut(event.target)) return;
+      if (event.defaultPrevented || !remix || !canHandleShortcut(event.target)) return;
       const command = event.ctrlKey || event.metaKey;
-      if (event.code === "Space") { event.preventDefault(); toggleStemPreview(); return; }
+      if (event.code === "Space") {
+        if (event.target instanceof HTMLElement && event.target.closest("button,a,[role='button']")) return;
+        event.preventDefault(); toggleStemPreview(); return;
+      }
       if (command && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); return; }
       if (command && event.key.toLowerCase() === "y") { event.preventDefault(); redo(); return; }
-      if (event.key.toLowerCase() !== "s" || !clipSelection) return;
+      if (command || event.altKey || event.key.toLowerCase() !== "s" || !clipSelection) return;
       const track = remix.tracks.find((candidate) => candidate.id === clipSelection.trackId);
       const clip = track?.clips[clipSelection.clipIndex];
       if (!clip?.id) return;

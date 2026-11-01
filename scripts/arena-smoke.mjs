@@ -1968,6 +1968,8 @@ try {
   };
   let studioProjectRequestCount = 0;
   let studioRemixRequestCount = 0;
+  const studioKeyboardEdits = [];
+  const studioSavedStates = [];
   await page.route(`**/api/waveyard/projects/${studioProjectId}`, async (route) => {
     studioProjectRequestCount += 1;
     await route.fulfill({
@@ -2022,15 +2024,33 @@ try {
     if (route.request().method() === "GET") {
       studioRemixRequestCount += 1;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(studioRemixResponse) });
+    } else if (route.request().method() === "PUT") {
+      const request = route.request().postDataJSON();
+      studioSavedStates.push(request);
+      const { tracks, automation, ...settings } = request;
+      Object.assign(studioRemixResponse.remix, settings);
+      studioRemixResponse.tracks = tracks;
+      studioRemixResponse.automation = automation;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(studioRemixResponse) });
     } else {
       await route.continue();
     }
   });
   await page.route(`**/api/remixes/${studioRemixId}/clips/batch-edit`, async (route) => {
     const request = route.request().postDataJSON();
+    studioKeyboardEdits.push(request);
     const movedClips = studioRemixResponse.tracks.flatMap((track) => track.clips)
       .filter((clip) => request.clipIds.includes(clip.id))
-      .map((clip) => ({ ...clip, timelineStartMs: clip.timelineStartMs + Number(request.timelineDeltaMs ?? 0) }));
+      .map((clip) => request.operation === "duplicate"
+        ? { ...clip, id: `${clip.id}-copy-${studioKeyboardEdits.length}`, timelineStartMs: clip.timelineStartMs + clip.durationMs }
+        : { ...clip, timelineStartMs: clip.timelineStartMs + Number(request.timelineDeltaMs ?? (request.direction === "back" ? -1 : request.direction === "forward" ? 1 : 0)) });
+    studioRemixResponse.tracks = studioRemixResponse.tracks.map((track) => ({
+      ...track,
+      clips: request.operation === "delete" ? track.clips.filter((clip) => !request.clipIds.includes(clip.id))
+        : request.operation === "duplicate"
+          ? [...track.clips, ...movedClips.filter((clip) => clip.remixTrackId === track.id)]
+          : track.clips.map((clip) => movedClips.find((updated) => updated.id === clip.id) ?? clip),
+    }));
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -2157,6 +2177,82 @@ try {
   await page.locator(".timeline-track").filter({ hasText: "Next source track.wav — Vocals" }).locator(".clip").click();
   assert.equal(await page.getByLabel("Fade in (ms)").inputValue(), "1000",
     "the incoming supported transition must survive reload");
+  const keyboardTimeline = page.getByRole("region", { name: "Arrangement timeline" });
+  const keyboardFirstLane = page.locator(".timeline-track").first();
+  const keyboardFirstClip = keyboardFirstLane.locator(".clip").first();
+  const keyboardSecondClip = page.locator(".timeline-track").nth(1).locator(".clip").first();
+  const playingBeforeKeyboard = await page.locator("audio").evaluateAll((elements) => elements.filter((audio) => !audio.paused).length);
+  const waitForStudioSave = (method, suffix = "") => page.waitForResponse((response) =>
+    new URL(response.url()).pathname === `/api/remixes/${studioRemixId}${suffix}` && response.request().method() === method);
+  const pressAndSave = async (key, method = "POST", suffix = "/clips/batch-edit") => {
+    const saved = waitForStudioSave(method, suffix);
+    await page.keyboard.press(key);
+    await saved;
+    await page.waitForTimeout(80);
+  };
+  await keyboardTimeline.focus();
+  await page.keyboard.press("Enter");
+  assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element),
+    "Enter on the timeline must focus and select its first clip");
+  assert((await keyboardFirstClip.getAttribute("class")).includes("selected"));
+  assert(await keyboardFirstClip.evaluate((element) => Number.parseFloat(getComputedStyle(element).outlineWidth) >= 3),
+    "keyboard-focused clips need a visible outline distinct from selection");
+  await page.keyboard.press("Space");
+  assert.equal(await page.locator("audio").evaluateAll((elements) => elements.filter((audio) => !audio.paused).length), playingBeforeKeyboard,
+    "Space on a clip selects it instead of starting playback");
+  await page.keyboard.press("ArrowDown");
+  assert(await keyboardSecondClip.evaluate((element) => document.activeElement === element), "Down moves to the next timeline lane");
+  await page.keyboard.press("ArrowUp");
+  assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element), "Up returns to the previous lane");
+  const keyboardOriginalLeft = await keyboardFirstClip.evaluate((element) => element.style.left);
+  await pressAndSave("Alt+ArrowRight");
+  assert.equal(studioKeyboardEdits.at(-1).timelineDeltaMs, 500, "keyboard movement must use the active beat snap grid");
+  assert.notEqual(await keyboardFirstClip.evaluate((element) => element.style.left), keyboardOriginalLeft);
+  assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element), "moving a clip must retain its focus");
+  await pressAndSave("Alt+ArrowLeft");
+  assert.equal(await keyboardFirstClip.evaluate((element) => element.style.left), keyboardOriginalLeft);
+  await page.keyboard.press("Tab");
+  assert(await keyboardFirstClip.locator(".trim-left").evaluate((element) => document.activeElement === element),
+    "Tab must reach a clip's left trim handle");
+  await pressAndSave("ArrowRight", "PUT", "");
+  assert.equal(studioSavedStates.at(-1).tracks[0].clips[0].sourceOffsetMs, 500,
+    "left trim keys must save the changed source window, not just a visual preview");
+  await pressAndSave("ArrowLeft", "PUT", "");
+  const keyboardOriginalWidth = await keyboardFirstClip.evaluate((element) => element.style.width);
+  await keyboardFirstClip.locator(".trim-right").focus();
+  await pressAndSave("ArrowLeft", "PUT", "");
+  assert.notEqual(await keyboardFirstClip.evaluate((element) => element.style.width), keyboardOriginalWidth,
+    "right trim keys must resize the clip without dragging");
+  await pressAndSave("ArrowRight", "PUT", "");
+  assert.equal(await keyboardFirstClip.evaluate((element) => element.style.width), keyboardOriginalWidth);
+  await keyboardFirstClip.focus();
+  await page.locator(".multi-clip-actions").getByRole("button", { name: "Duplicate", exact: true }).focus();
+  await pressAndSave("Space");
+  assert.equal(await keyboardFirstLane.locator(".clip").count(), 2,
+    "Space must activate the focused Duplicate button rather than the global playback shortcut");
+  await keyboardFirstClip.focus();
+  await page.keyboard.press("End");
+  assert(await keyboardFirstLane.locator(".clip").nth(1).evaluate((element) => document.activeElement === element),
+    "End must reach the last clip in the lane");
+  await page.keyboard.press("Home");
+  assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element), "Home must reach the first clip");
+  await page.keyboard.press("ArrowRight");
+  await pressAndSave("Delete");
+  assert.equal(await keyboardFirstLane.locator(".clip").count(), 1);
+  assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element),
+    "deleting the focused clip must focus the remaining clip rather than the page body");
+  await pressAndSave("Delete");
+  const emptyKeyboardLane = keyboardFirstLane.locator(".clip-lane");
+  assert(await emptyKeyboardLane.evaluate((element) => document.activeElement === element),
+    "deleting the last clip must leave focus on its empty lane");
+  assert(await emptyKeyboardLane.evaluate((element) => Number.parseFloat(getComputedStyle(element).outlineWidth) >= 3));
+  await page.keyboard.press("ArrowDown");
+  assert(await keyboardSecondClip.evaluate((element) => document.activeElement === element),
+    "keyboard navigation must still work from an empty lane");
+  await pressAndSave("Control+z", "PUT", "");
+  assert.equal(await keyboardFirstLane.locator(".clip").count(), 1, "keyboard undo restores the deleted clip through the save route");
+  assert.equal(await page.locator(".clip").count(), 8, "keyboard edits leave the original arrangement restored for later checks");
+  report.push("Studio keyboard users can enter the timeline, select clips, navigate lanes and clips, move by the snap grid, trim and save both edges, duplicate through a focused button, delete with focus recovery including empty lanes, and undo without dragging.");
   const mobileTransport = page.getByRole("region", { name: "Transport controls" });
   for (const width of [320, 402]) {
     await page.setViewportSize({ width, height: 874 });

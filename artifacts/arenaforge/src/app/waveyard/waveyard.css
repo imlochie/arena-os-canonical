@@ -1058,6 +1058,10 @@
 /* Progressive disclosure inside the Studio presentation (vision P3) */
 .studio-tabs{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
 #studio-editor{scroll-margin-top:18px}
+.timeline-keyboard-help,.timeline-edit-status{color:var(--muted);font-size:12px;line-height:1.5;margin:0}
+.timeline-edit-status:empty{display:none}
+.timeline-scroll:focus-visible{outline:3px solid var(--acid);outline-offset:2px}
+.timeline-direct .clip:focus-visible,.timeline-direct .clip-lane:focus-visible,.timeline-direct .trim-handle:focus-visible,.timeline-direct .clip-move-handle:focus-visible{outline:3px solid var(--acid);outline-offset:-3px}
 #studio-editor:focus{outline:3px solid var(--acid);outline-offset:5px}
 #remix-timeline{scroll-margin-top:18px}
 .studio{grid-template-columns:minmax(0,1fr)}
