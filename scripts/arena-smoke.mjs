@@ -530,6 +530,7 @@ try {
   let liveTrackPatchRequestCount = 0;
   let liveDonorFetchCount = 0;
   let liveDrumDonorFetchCount = 0;
+  let failLiveDrumDonorFetch = false;
   let signalFirstDonorFetchStarted;
   const firstDonorFetchStarted = new Promise(resolve => { signalFirstDonorFetchStarted = resolve; });
   let releaseFirstDonorFetch;
@@ -906,6 +907,10 @@ try {
     }
     if (assetId === liveDrumDonorDrumsAssetId) {
       liveDrumDonorFetchCount += 1;
+      if (failLiveDrumDonorFetch) {
+        await route.fulfill({ status: 503, headers: { "cache-control": "no-store" }, body: "Donor temporarily unavailable" });
+        return;
+      }
       await route.fulfill({ status: 200, contentType: "audio/wav", body: drumDonorStemWav });
       return;
     }
@@ -1725,6 +1730,32 @@ try {
   }, { assetId: liveVocalsAssetId, after: clockBeforeSwap }, { timeout: 5_000 });
   const clockAfterSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
   assert(clockAfterSwap > clockBeforeSwap + 0.2, `the recipient song clock must continue through a live stem swap (${clockBeforeSwap.toFixed(2)} → ${clockAfterSwap.toFixed(2)})`);
+  failLiveDrumDonorFetch = true;
+  const clockBeforeDonorFailure = await sourceVocals.evaluate((audio) => audio.currentTime);
+  await page.getByTestId("open-live-swap-drums").click();
+  await page.getByTestId(`live-swap-candidate-drums-${liveDrumDonorTrackId}`).click();
+  await page.getByTestId("session-status").filter({ hasText: "drums switch failed: Stem download failed (503)" })
+    .waitFor({ timeout: 8_000 });
+  await page.getByTestId("live-swap-pending-drums").waitFor({ state: "detached" });
+  assert(liveDrumDonorFetchCount >= 1, "the failing drum donor must actually be requested");
+  assert.deepEqual(liveSwaps.map(({ stemType }) => stemType), ["vocals"],
+    "failed drums roll back without deleting the working vocal swap");
+  assert.equal(liveSwapDeleteRequestCount, 2, "only the failed drum swap is removed after the earlier cancellation");
+  assert.equal(liveDonorFetchCount, 2, "the working vocal donor must not be fetched again or discarded");
+  await page.getByTestId("restore-live-swap-vocals").waitFor();
+  assert.equal(await sourceVocals.getAttribute("aria-label"), "vocals audio (swapped layer)");
+  assert.equal(await sourceDrums.getAttribute("aria-label"), "drums audio",
+    "the failed donor leaves the original drum layer selected");
+  await page.waitForFunction(({ assetId, after }) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const bar = document.querySelector(".wy-stem-vocals .wy-stem-meter i");
+    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2 && peak > 0.4;
+  }, { assetId: liveVocalsAssetId, after: clockBeforeDonorFailure }, { timeout: 5_000 });
+  assert.equal(await sourceDrums.evaluate((audio) => audio.paused), false,
+    "the original drums continue playing while the vocal donor stays audible");
+  report.push("A failed drum-donor download rolls back only drums; the working vocal donor remains audible and the recipient clock keeps advancing, then drums can be retried.");
+  failLiveDrumDonorFetch = false;
   await page.getByTestId("open-live-swap-drums").click();
   await page.getByTestId(`live-swap-candidate-drums-${liveDrumDonorTrackId}`).click();
   await page.getByTestId("session-status").filter({ hasText: "drums source saved" }).waitFor({ timeout: 8_000 });
@@ -1755,7 +1786,7 @@ try {
     ],
     "each saved stem swap must retain its own donor track",
   );
-  assert.equal(liveSwapRequestCount, 3, "the canceled attempt and both successful stem swaps each persist once");
+  assert.equal(liveSwapRequestCount, 4, "the cancellation, failed drums, and both successful stem swaps each persist once");
   const isolateVocals = page.getByRole("button", { name: "Isolate vocals", exact: true });
   await isolateVocals.click();
   assert.equal(await isolateVocals.getAttribute("aria-pressed"), "true");

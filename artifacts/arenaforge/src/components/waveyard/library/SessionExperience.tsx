@@ -3,7 +3,7 @@
 import Link from "@/routing/Link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { LibraryTrackSummary } from "@workspace/api-client-react";
-import { useStemTransport, LiveStemSwitchTimeoutError, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
+import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
@@ -357,18 +357,25 @@ function SessionDeck({
       return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined).then((installed) => {
         if (!stale && installed !== false && donor !== null && item !== null) onLiveLayerReady?.(item.id, stemType);
       }).catch((error: unknown) => {
-        if (!stale && donor !== null && item !== null && error instanceof LiveStemSwitchTimeoutError) {
-          onLiveLayerFailed?.(item.id, stemType, error instanceof Error ? error.message : "Live stem loading failed.");
+        if (!stale && donor !== null && item !== null) {
+          // The engine returns false for cancellation. Any rejection here is a
+          // real preparation failure; roll back only this pending stem.
+          const message = error instanceof Error ? error.message : "Live stem loading failed.";
+          onLiveLayerFailed?.(item.id, stemType, `${stemType} switch failed: ${message} The previous layer was kept.`);
         }
         throw error;
       });
     });
-    void Promise.all(replacements)
-      .then(() => { if (!stale) setMediaError(null); })
-      .catch((error: unknown) => {
-        if (!stale) setMediaError(`${error instanceof Error ? error.message : "Live stem loading failed."} The previous layer was kept.`);
-      })
-      .finally(() => { if (!stale) setLoadingLayers(false); });
+    // One rejected donor must not mark other preparations complete or cancel
+    // their independent audio layers.
+    void Promise.allSettled(replacements).then((results) => {
+      if (stale) return;
+      const failure = results.find((result) => result.status === "rejected");
+      setMediaError(failure?.status === "rejected"
+        ? `${failure.reason instanceof Error ? failure.reason.message : "Live stem loading failed."} The previous layer was kept.`
+        : null);
+      setLoadingLayers(false);
+    });
     return () => { stale = true; };
   }, [swapKey, stemTypeByAsset, tempoStretchRatios, transport.replaceStem, onLiveLayerReady, onLiveLayerFailed, item?.id, swapRetry]);
 
