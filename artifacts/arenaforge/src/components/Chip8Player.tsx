@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type Poin
 import { CHIP8_HEIGHT, CHIP8_KEYS, CHIP8_WIDTH, Chip8Runtime, chip8KeyFromKeyboard, chip8DialectLabel, type Chip8Dialect } from "../lib/chip8Runtime";
 import Chip8ProgressBackup from "./Chip8ProgressBackup";
 import { chip8StateKey as stateKey, validateChip8Progress, type Chip8ProgressState } from "../lib/chip8ProgressBackup";
+import { browserChip8Adapter } from "../lib/arcadeRuntimeAdapters";
 
 type Chip8PlayerProps = {
   gameId: string;
@@ -52,7 +53,7 @@ export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Ch
       } catch {
         setStatus("Running fresh. This browser could not read saved CHIP-8 progress.");
       }
-      runtime = new Chip8Runtime(new Uint8Array(rom), saved, dialect);
+      runtime = browserChip8Adapter.launch({ rom: new Uint8Array(rom), snapshot: saved, dialect });
       runtimeRef.current = runtime;
       const canvas = canvasRef.current;
       const context = canvas?.getContext("2d", { alpha: false });
@@ -133,6 +134,7 @@ export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Ch
       window.removeEventListener("pagehide", saveProgress);
       document.removeEventListener("visibilitychange", onVisibility);
       saveProgress();
+      if (runtimeRef.current) browserChip8Adapter.cleanup(runtimeRef.current);
       runtimeRef.current = null;
     };
    }, [gameId, rom, dialect, profile, restartVersion]);
@@ -140,7 +142,7 @@ export default function Chip8Player({ gameId, name, rom, dialect = "chip8" }: Ch
   const restartProgram = () => {
     if (!window.confirm("Restart this program and replace its saved progress? Super-CHIP RPL flags will be retained.")) return;
     try {
-      const fresh = new Chip8Runtime(new Uint8Array(rom), undefined, dialect);
+      const fresh = browserChip8Adapter.launch({ rom: new Uint8Array(rom), dialect });
       if (dialect === "schip" && runtimeRef.current) fresh.rpl.set(runtimeRef.current.rpl);
       localStorage.setItem(stateKey(gameId, dialect), JSON.stringify(fresh.snapshot()));
       // Effect cleanup must not overwrite the newly committed reset with the old run.

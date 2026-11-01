@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Copy, Download, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
-import { createGameSandboxDocument, useArcadeGameSave } from "../lib/arcadeGameSave";
+import { useArcadeGameSave } from "../lib/arcadeGameSave";
+import { browserHtmlAdapter, browserNesAdapter } from "../lib/arcadeRuntimeAdapters";
+import { useArcadeManagement } from "../lib/useArcadeManagement";
+import ArcadeGameManagement from "./ArcadeGameManagement";
+import type { ArcadeGameDescriptor } from "../lib/arcadeManifest";
 import { importedGameRecordsMatch, importedGameStorageChanges, ImportedGameStorageConflictError, loadImportedGameRecords, loadImportedGames, saveImportedGameChanges, subscribeImportedGamesChanged } from "../lib/importedGameStorage";
 import { deleteNesSaveState, readNesSaveState, writeNesSaveState } from "../lib/nesSaveStates";
 import {
@@ -443,6 +447,16 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const revisionAbortRef = useRef<AbortController | null>(null);
   const buttonsRef = useRef<Map<string, ButtonKey>>(new Map());
   const selected = games.find((game) => game.id === selectedId) ?? null;
+  const managedDescriptor = useMemo<ArcadeGameDescriptor | null>(() => selected ? {
+    id: selected.id, title: selected.name, source: selected.romData ?? selected.source,
+    format: selected.kind === "html" ? "html" : selected.kind === "nes" ? "ines" : selected.kind === "chip8" ? "chip8" : `emulatorjs:${selected.system}`,
+    profile: selected.kind === "chip8" ? selected.chip8Dialect ?? "chip8" : selected.system ?? selected.kind,
+    scope: "imported-private", trust: selected.kind === "html" ? "imported-code" : "rom", saveId: selected.id,
+    stored: savingShelf === 0 && !unsavedIds.includes(selected.id), addedAt: selected.addedAt,
+    sourceRevisionCopies: selected.kind === "html" ? getImportedRevisionHistory(selected).length : 0,
+    provenance: selected.provenance,
+  } : null, [selected, savingShelf, unsavedIds]);
+  const management = useArcadeManagement(managedDescriptor);
   const revisionCopies = useMemo(() => selected?.kind === "html"
     ? getImportedRevisionHistory(selected).map(copy => ({ ...copy, sizeKb: Math.ceil(new Blob([copy.source]).size / 1024) }))
     : [], [selected?.kind, selected?.source, selected?.revisionRollback, selected?.revisionHistory]);
@@ -463,7 +477,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   // Save-indicator updates must not regenerate srcDoc with newly saved bytes:
   // changing that attribute navigates the iframe and resets live gameplay.
   const selectedHtmlDocument = useMemo(
-    () => selected?.kind === "html" ? createGameSandboxDocument(selected.source, selected.id) : "",
+    () => selected?.kind === "html" ? browserHtmlAdapter.launch({ source: selected.source, saveId: selected.id }) : "",
     [selected?.kind, selected?.id, selected?.source, gameSaves.reloadKey],
   );
 
@@ -641,7 +655,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   useEffect(() => {
-    if (!selected || selected.kind !== "nes" || !canvasRef.current) {
+    if (!selected || selected.kind !== "nes" || !canvasRef.current || !management.manifest || !management.compatibility?.available) {
       nesRef.current = null;
       return;
     }
@@ -651,7 +665,6 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     let flushBatteryRam = () => {};
     const start = async () => {
       try {
-        const { NES } = await import("jsnes");
         if (!active) return;
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -678,7 +691,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
             setError("The NES game ran, but browser storage could not save its battery-backed progress.");
           }
         };
-        const nes = new NES({
+        const nes = await browserNesAdapter.launch({ binary: atob(selected.source), options: {
           onFrame: (frame) => {
             for (let i = 0; i < frame.length; i += 1) {
               packedPixels[i] = 0xff000000 | (frame[i] ?? 0);
@@ -694,8 +707,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
             window.clearTimeout(batteryFlush);
             batteryFlush = window.setTimeout(flushBatteryRam, 250);
           },
-        });
-        nes.loadROM(atob(selected.source));
+        } });
         const cpuMemory = (nes as unknown as { cpu?: { mem?: Uint8Array } }).cpu?.mem;
         if (cpuMemory) cpuMemory.set(batteryRam, 0x6000);
         try {
@@ -708,6 +720,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           if (active) setNesSaveMessage("This browser could not restore the local save state.");
         }
         if (!active) return;
+        if (!active) { browserNesAdapter.cleanup(Promise.resolve(nes)); return; }
         nesRef.current = nes;
         const tick = () => {
           if (!active) return;
@@ -733,10 +746,11 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       window.clearTimeout(animation);
       window.clearTimeout(batteryFlush);
       flushBatteryRam();
+      if (nesRef.current) browserNesAdapter.cleanup(Promise.resolve(nesRef.current));
       nesRef.current = null;
       buttonsRef.current.clear();
     };
-  }, [selected]);
+  }, [selected, management.manifest?.installedVersion, management.compatibility?.available]);
 
   const handleImport = async (file: File | undefined, kind: "html" | "nes" | "emulator" | "chip8", provenance?: ArcadeRepositoryProvenance): Promise<boolean> => {
     if (!file) return false;
@@ -1218,7 +1232,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                 <Trash2 size={13} /> {removing ? "Removing…" : "Remove"}
               </button>
             </div>
-            {selected.kind === "html" ? (
+            <ArcadeGameManagement management={management} />
+            {!management.manifest ? <p role="status" className="p-3 text-xs text-slate-400">{management.error ? "Runtime metadata could not be prepared. Open diagnostics above to retry; source and saves are retained." : "Checking game runtime metadata…"}</p>
+            : !management.compatibility?.available ? <p role="alert" className="p-3 text-xs text-amber-200">This game needs a compatible runtime. Open diagnostics above for the specific requirement; source and progress are retained.</p>
+            : selected.kind === "html" ? (
               <div className="bg-black/30 p-2 sm:p-3">
                 <iframe
                   key={`${selected.id}:${selected.source.length}:${gameSaves.reloadKey}`}

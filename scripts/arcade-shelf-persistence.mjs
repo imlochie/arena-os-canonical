@@ -24,6 +24,9 @@ function hooks() {
   for (const method of ["put", "delete", "clear", "get"]) {
     const original = proto[method];
     proto[method] = function (...args) {
+      // This suite measures source-shelf transactions, not independent runtime
+      // metadata/save databases which can legitimately write during rendering.
+      if (this.transaction.db.name !== "arenaforge-imported-games" || this.name !== "games") return original.apply(this, args);
       const value = args[0];
       const info = method === "put"
         ? { id: value?.id ?? null, kind: value?.kind ?? null, byteLength: value?.romData?.byteLength ?? 0 }
@@ -41,7 +44,7 @@ function hooks() {
   const originalOpen = IDBFactory.prototype.open;
   IDBFactory.prototype.open = function (...args) {
     const request = originalOpen.apply(this, args);
-    if (!window.__holdNextShelfOpen) return request;
+    if (args[0] !== "arenaforge-imported-games" || !window.__holdNextShelfOpen) return request;
     window.__holdNextShelfOpen = false;
     let proto = request;
     let descriptor;

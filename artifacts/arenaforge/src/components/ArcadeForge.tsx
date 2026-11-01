@@ -1,9 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
 import ImportedGameWorkspace from "./ImportedGameWorkspace";
-import { createGameSandboxDocument, useArcadeGameSave } from "../lib/arcadeGameSave";
+import { useArcadeGameSave } from "../lib/arcadeGameSave";
+import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
+import { useArcadeManagement } from "../lib/useArcadeManagement";
+import ArcadeGameManagement from "./ArcadeGameManagement";
+import type { ArcadeGameDescriptor } from "../lib/arcadeManifest";
 import {
   deleteOfflineSavedGame,
   loadOfflineSavedGames,
@@ -96,7 +100,7 @@ function createLocalModelCheckDocument(code: string, saveId: string, nonce: stri
     `window.addEventListener("unhandledrejection",function(e){send("runtime-error",e.reason&&e.reason.message||e.reason||"Unhandled promise rejection")});` +
     `document.addEventListener("DOMContentLoaded",function(){if(!document.querySelector("canvas")){send("runtime-error","The game preview did not create a canvas");return}` +
     `requestAnimationFrame(function(){requestAnimationFrame(function(){send("ready","")})})});})();</script>`;
-  const document = createGameSandboxDocument(code, saveId);
+  const document = browserHtmlAdapter.launch({ source: code, saveId });
   return document.replace(/<\/head>/i, `${probe}</head>`);
 }
 
@@ -141,7 +145,7 @@ function verifyGameInIsolatedPreview(code: string, saveId: string): Promise<{ ok
       `window.addEventListener("unhandledrejection",function(e){errors.push(String(e.reason&&e.reason.message||e.reason||"promise rejection").slice(0,220))});` +
       `document.addEventListener("DOMContentLoaded",function(){var buttons=document.querySelectorAll("button");for(var i=0;i<buttons.length;i++){if(/\\b(start|play|begin)\\b/i.test(buttons[i].innerText||buttons[i].textContent||"")){buttons[i].click();break}}setTimeout(report,350)});})();</script>`;
     window.addEventListener("message", onMessage);
-    frame.srcdoc = createGameSandboxDocument(code, saveId).replace(/<\/head>/i, `${probe}</head>`);
+    frame.srcdoc = browserHtmlAdapter.launch({ source: code, saveId }).replace(/<\/head>/i, `${probe}</head>`);
     document.body.append(frame);
   });
 }
@@ -221,6 +225,17 @@ export default function ArcadeForge() {
   localModelCheckRef.current = localModelCheck;
   const saveSlotId = game?.saveSlotId ?? game?.id ?? null;
   const gameSaves = useArcadeGameSave(gameFrameRef, saveSlotId);
+  const managedDescriptor = useMemo<ArcadeGameDescriptor | null>(() => game?.id && typeof game.code === "string" ? {
+    id: game.id, title: game.title || "Created game", source: game.code, format: "html", scope: "created",
+    trust: "generated-code", saveId: saveSlotId ?? game.id,
+    stored: offlineGames.some(item => item.id === game.id) || history.some(item => item.id === game.id),
+    addedAt: typeof game.createdAt === "number" ? game.createdAt : 0,
+    origin: game.engine === "ai-codegen" ? "generated" : "offline-core",
+  } : null, [game, saveSlotId, offlineGames, history]);
+  const management = useArcadeManagement(managedDescriptor);
+  const gameDocument = useMemo(() => typeof game?.code === "string"
+    ? browserHtmlAdapter.launch({ source: game.code, saveId: saveSlotId ?? game.id }) : "",
+  [game?.id, game?.code, saveSlotId, gameSaves.reloadKey]);
 
   const fetchHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -1609,14 +1624,17 @@ export default function ArcadeForge() {
             </div>
             {copyError && <p data-testid="arcade-copy-error" role="alert" className="mt-2 text-xs text-red-300">{copyError}</p>}
             <p className="mt-2 text-center text-sm font-semibold text-slate-300">“{game.prompt}”</p>
-            {tab === "play" ? (
+            <ArcadeGameManagement management={management} />
+            {tab === "play" && !management.manifest ? <p role="status" className="p-3 text-xs text-slate-400">{management.error ? "Runtime metadata could not be prepared. Open diagnostics above to retry; source and saves are retained." : "Checking game runtime metadata…"}</p>
+            : tab === "play" && !management.compatibility?.available ? <p role="alert" className="p-3 text-xs text-amber-200">This game needs a compatible runtime. Open diagnostics for its specific requirement.</p>
+            : tab === "play" ? (
               <div className="glass mt-2 overflow-hidden rounded-2xl">
                 <iframe
                   key={`${game.id}:${gameSaves.reloadKey}`}
                   ref={gameFrameRef}
                   title={game.prompt}
                   sandbox="allow-scripts"
-                  srcDoc={createGameSandboxDocument(game.code, saveSlotId ?? game.id)}
+                  srcDoc={gameDocument}
                   className="h-[640px] w-full bg-black"
                 />
                 <div className="flex items-center justify-between gap-3 border-t border-white/5 px-3 py-2">

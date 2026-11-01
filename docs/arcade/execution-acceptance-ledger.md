@@ -2,7 +2,7 @@
 
 Baseline inspected: 2026-11-01.
 
-This is the initial source-backed audit for the existing universal-execution foundation task, not a completed foundation implementation or a Windows readiness declaration. It does not change task dependencies, game storage, runtime selection, or existing player behavior.
+The bounded browser runtime/manifest foundation is implemented. This is not a Windows readiness declaration or a universal game-compatibility claim. The detailed source map and full directive target matrix are in [the runtime foundation audit](runtime-foundation-audit.md).
 
 ## Scope and evidence rules
 
@@ -33,8 +33,8 @@ The governing directive is `attached_assets/Pasted-I-think-Arcade-needs-a-much-b
 | Super-CHIP (modern profile) | Implemented, explicitly separate dialect | `chip8Runtime.ts`, `Chip8Player.tsx`, `ImportedGameWorkspace.tsx`: .sc8/.sch8 or explicit .ch8/.c8 opt-in; 4 KB memory; high/low resolution, scrolling, 16×16 sprites, large hex font, eight RPL flags and normal exit | Subsequent focused implementation check: 12 runtime tests and `node scripts/arena-smoke.mjs --chip8-only` pass with original generated classic/Super-CHIP programs. Observed actual canvas output, on-screen/keyboard input, scrolling, mode changes, save/reload, exit/reload, confirmed restart retaining RPL flags, legacy saves and explicit ambiguous-file selection. No Windows or third-party-game compatibility claim. |
 | Browser EmulatorJS integrations | Implemented pathway, host/core/game-dependent | `arcadeEmulatorRuntime.ts`, `EmulatorJsPlayer.tsx`: version 4.2.3; GB/GBC, GBA, SNES, Mega Drive, Master System, Game Gear and N64 selectors | Registry entries are not per-game compatibility proof. Current data URL is the versioned EmulatorJS CDN; offline provisioning and target-host behavior require verification. |
 | Browser-local shelf persistence | Implemented, with explicit failure handling | `importedGameStorage.ts`: IndexedDB, transactional stale-write checks, storage revisions and change notifications; `ImportedGameWorkspace.tsx`: committed baseline and retry handling | Fixture source/provenance survive reload. Do not infer all save formats, storage-quota failures, cross-device portability or private browsing from that test. |
-| Versioned cross-runtime game manifest | Planned foundation work | Current imported records retain identity, source/ROM, kind, optional system, provenance and pending revision state | No common versioned manifest with the directive's installation, permissions, profiles and host-specific verification model was identified in the audited paths. |
-| Independently managed runtime adapters | Planned foundation work | Existing player components and the EmulatorJS registry are integration points | These do not establish a complete common provisioning/assessment/lifecycle contract. The legacy console selector must not become the architectural ceiling. |
+| Versioned cross-runtime game manifest | Implemented bounded foundation | `arcadeManifest.ts`, `arcadeManifestStorage.ts`, `useArcadeManagement.ts`, `ArcadeGameManagement.tsx` | Separate versioned metadata retains game IDs, source/ROMs, history and save aliases. Atomic write/abort, unknown schema, explicit rebuild/recovery export and exact-context evidence checks pass. No native installation claim. |
+| Independently managed runtime adapters | Implemented for existing browser players | `arcadeRuntimeAdapters.ts`: open registry, identification, provisioning, host/architecture/capability assessment, concrete launch/session, cleanup and recovery contracts | HTML, JSNES, CHIP-8/Super-CHIP and EmulatorJS players use adapters. External assets remain delegated, not fake-installed. New runtime registration still needs an actual bound driver and per-game execution evidence. |
 | Managed desktop installation and native execution | Planned downstream work | Existing isolated desktop execution plan | No execution claim from this audit. The broader desktop host still needs its own source/security investigation. |
 | Reproducible repository builds and native releases | Planned downstream work | Existing repository acquisition/build plan | Current GitHub importer intentionally does not run install or build scripts. Successful source acquisition is not a compiled, installed or playable game. |
 | DOSBox, ScummVM, native Libretro/RetroArch, MAME and standalone emulators | Planned integration targets | Existing classic-runtime plan; no direct Arcade TypeScript launch wiring identified in this audit | Browser emulator cores do not prove a managed native frontend/Libretro lifecycle. Each adapter needs separate actual execution evidence. |
@@ -54,13 +54,18 @@ The governing directive is `attached_assets/Pasted-I-think-Arcade-needs-a-much-b
 
 ## Queue dependency checkpoint
 
-Live task records inspected on 2026-11-01 show all eight roadmap tasks assigned to the main chat and pending. The foundation task is blocked by three unfinished prerequisites:
+The imported-edit/restart, emulator input/refusal, Super-CHIP, change review and bounded source-history prerequisites have been integrated and checked. This foundation extends them rather than replacing them. The queued desktop-execution, reproducible repository/build and Mod Workshop layers remain downstream, followed by game-specific mod loaders, verified compatibility-layer execution, classic PC/external runtimes and governed mod development. Those are still implementation work, not completed capabilities.
 
-- Larger Super-CHIP homebrew support.
-- Reviewing changes before keeping an imported-game revision.
-- Undoing earlier imported-game revisions.
+## Foundation verification
 
-The imported-edit/restart and emulator input/unsupported-format prerequisites are already merged. The three remaining prerequisites are pending background tasks, reported as waiting for concurrency slots. The desktop-execution task depends on foundation; repository builds and Mod Workshop depend on foundation/desktop execution; the remaining runtime/mod tasks depend on those later layers.
+- `pnpm --filter @workspace/arenaforge run typecheck` and `git diff --check`: passed.
+- Six `arcadeManifest.test.ts` checks: schema, bounded metadata/no source bytes, aliases/provenance, independent evidence contexts, required capabilities, open registry and actual sandbox/CHIP-8 construction.
+- `node scripts/arena-smoke.mjs --arcade-manifest-only`: five browser checks cover legacy migration without source/history/save changes, player continuity, honest observation export, unknown runtime/cancel/rebuild/recovery, unsupported schema, atomic quota/abort rollback, created-game aliases/first-save continuity and 390px layout.
+- Existing `--progress-backup-only`, `--chip8-backup-only` and `--revision-rollback-only` suites: passed. Models are controlled responses, not actual inference.
+- `pnpm --filter @workspace/scripts exec tsx "$PWD/scripts/arcade-repository-import.mjs"`: controlled repository/ZIP/assets/license/source export and refusal paths passed. Use the TypeScript loader; plain Node strip-only mode cannot execute the repository helper's parameter properties.
+- `node scripts/arcade-shelf-persistence.mjs`: passed through real Chromium profile restart, original NES input/save restoration, exact large-ROM persistence, per-record stale conflicts, source-store quota/delete/clone failures and cross-tab refresh. Its source-shelf instrumentation is scoped to that database so independent metadata operations do not masquerade as game writes.
+- EmulatorJS configuration remains pinned; save/load defaults remain runtime-owned. Load-error/timeout diagnostics and explicit retry do not install save hooks. The large-ROM fixture intercepts its loader: **storage-only, not new core gameplay evidence**.
+- No real model inference, native Windows execution or native iOS/Safari pass is claimed. The 390px check is Chromium responsive layout, not an iPhone runtime test.
 
 This audit does not remove those links, reassign jobs, or mark blocked work as running/completed. Re-read live task states before acting; this checkpoint can become stale.
 
