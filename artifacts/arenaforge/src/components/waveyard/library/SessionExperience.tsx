@@ -912,6 +912,8 @@ export default function SessionExperience({
   const [preparingSeparationTrackIds, setPreparingSeparationTrackIds] = useState<Set<string>>(() => new Set());
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [movingTrack, setMovingTrack] = useState(false);
+  const movingTrackRef = useRef(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const modeSavesRef = useRef(new Set<string>());
   const [modeSaves, setModeSaves] = useState<Set<string>>(() => new Set());
@@ -2058,15 +2060,27 @@ export default function SessionExperience({
   }, [mutate, setSessionTrackAsNext]);
 
   const moveTrack = useCallback(
-    (itemId: string, position: number) => {
-      if (session === null) return;
-      void mutate(`/api/library/sessions/${session.id}/tracks`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionTrackId: itemId, position }),
-      }).then((detail) => {
+    async (itemId: string, direction: -1 | 1) => {
+      if (session === null || movingTrackRef.current) return;
+      const item = session.tracks.find((entry) => entry.id === itemId);
+      if (item === undefined) return;
+      const sessionOnly = item.queueItemId === null;
+      const candidates = sessionOnly ? session.tracks.filter((entry) => entry.queueItemId === null) : session.tracks;
+      const target = candidates[candidates.findIndex((entry) => entry.id === itemId) + direction];
+      if (target === undefined) return;
+      movingTrackRef.current = true;
+      setMovingTrack(true);
+      try {
+        const detail = await mutate(`/api/library/sessions/${session.id}/tracks`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionTrackId: itemId, position: target.position, sessionOnly }),
+        });
         if (detail !== null) publishWaveyardQueueChange([session.id]);
-      });
+      } finally {
+        movingTrackRef.current = false;
+        setMovingTrack(false);
+      }
     },
     [session, mutate],
   );
@@ -3406,6 +3420,7 @@ export default function SessionExperience({
 
         <details className="wy-drawer">
           <summary>Session order · {session.tracks.length}</summary>
+          <p className="wy-fine">Playlist-only entries move between session-only slots. Saved queue entries stay in place.</p>
           <ol className="sess-queue-list">
             {session.tracks.map((item, index) => (
               <li key={item.id} className={`sess-queue-item${item.id === currentItem?.id ? " current" : ""}${item.id === nextItem?.id ? " next" : ""}`}>
@@ -3413,7 +3428,7 @@ export default function SessionExperience({
                   <span className="sess-queue-pos">{index + 1}</span>
                   <span>
                     {item.track.title}
-                    <small>{item.track.artist || "Unknown artist"}{item.id === currentItem?.id ? " · current" : item.id === nextItem?.id ? " · next" : ""}</small>
+                    <small>{item.track.artist || "Unknown artist"}{item.id === currentItem?.id ? " · current" : item.id === nextItem?.id ? " · next" : ""}{item.queueItemId === null ? " · session only" : " · saved queue"}</small>
                   </span>
                 </button>
                 <span className="sess-queue-actions">
@@ -3433,8 +3448,8 @@ export default function SessionExperience({
                       </select>
                     </label>
                   )}
-                  <button type="button" className="button tiny" aria-label={`Move ${item.track.title} earlier`} disabled={index === 0} onClick={() => moveTrack(item.id, index - 1)}>Up</button>
-                  <button type="button" className="button tiny" aria-label={`Move ${item.track.title} later`} disabled={index === session.tracks.length - 1} onClick={() => moveTrack(item.id, index + 1)}>Down</button>
+                  <button type="button" className="button tiny" aria-label={`Move ${item.track.title} earlier`} disabled={movingTrack || !session.tracks.slice(0, index).some((entry) => item.queueItemId !== null || entry.queueItemId === null)} onClick={() => void moveTrack(item.id, -1)}>Up</button>
+                  <button type="button" className="button tiny" aria-label={`Move ${item.track.title} later`} disabled={movingTrack || !session.tracks.slice(index + 1).some((entry) => item.queueItemId !== null || entry.queueItemId === null)} onClick={() => void moveTrack(item.id, 1)}>Down</button>
                   <button type="button" className="button tiny" aria-label={`Remove ${item.track.title}`} onClick={() => removeTrack(item.id)}>Remove</button>
                 </span>
               </li>

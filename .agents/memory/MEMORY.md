@@ -25,3 +25,4 @@
 - [Arcade emulator evidence](arcade-emulator-test-evidence.md) — wait for initialized fixture output; distinguish import refusal from runtime sandbox isolation.
 - [Artifact workflow ports](artifact-workflow-ports.md) — after stale Vite/API copies collide with managed ports, stop the exact services, then restart and verify each expected port.
 - [Arcade shelf concurrency](arcade-shelf-concurrency.md) — notifications are advisory; stale-write checks must be transactional, and refreshing unrelated games must not restart players.
+- [Session-only ordering](waveyard-session-only-order.md) — playlist-only moves use unlinked slots; preserve unrestricted ordering for explicit up-next cueing.

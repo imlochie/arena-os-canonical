@@ -871,6 +871,45 @@ test("session: create, add tracks (ordered, duplicates allowed), reorder, remove
   assert.equal((await sessions.listSessions(OWNER)).length, 0);
 });
 
+test("session: playlist-only moves preserve linked slots, duplicate identity and playback", async (t) => {
+  const created = await sessions.createSession(OWNER, "Playlist-only moves");
+  const firstQueue = await service.addToQueue({ ownerId: OWNER, trackId: trackB.id });
+  const secondQueue = await service.addToQueue({ ownerId: OWNER, trackId: trackA.id });
+  t.after(async () => {
+    await sessions.deleteSession(OWNER, created.id);
+    await service.removeQueueItem(OWNER, firstQueue.addedQueueItemId);
+    await service.removeQueueItem(OWNER, secondQueue.addedQueueItemId);
+  });
+  let detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id, queueItemId: firstQueue.addedQueueItemId });
+  detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id, queueItemId: secondQueue.addedQueueItemId });
+  detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+  const originalIds = detail.tracks.map((entry) => entry.id);
+  const queueBefore = await service.listQueue(OWNER);
+  await sessions.saveSessionState(OWNER, created.id, originalIds[0], 23.5);
+
+  // Move the second occurrence of A above the first across a linked slot.
+  detail = await sessions.moveSessionTrack(OWNER, created.id, originalIds[2], 0, true);
+  assert.deepEqual(detail.tracks.map((entry) => entry.id), [originalIds[2], originalIds[1], originalIds[0], originalIds[3], originalIds[4]]);
+  assert.deepEqual(detail.tracks.map((entry) => entry.position), [0, 1, 2, 3, 4]);
+  assert.equal(detail.currentSessionTrackId, originalIds[0], "duplicate entries are identified by session row, not song");
+  assert.equal(detail.positionSeconds, 23.5);
+  assert.deepEqual(await service.listQueue(OWNER), queueBefore, "session-only moves never write saved queue rows");
+
+  detail = await sessions.moveSessionTrack(OWNER, created.id, originalIds[2], 2, true);
+  assert.deepEqual(detail.tracks.map((entry) => entry.id), originalIds, "moving down restores the exact duplicate order");
+  detail = await sessions.moveSessionTrack(OWNER, created.id, originalIds[4], 0, true);
+  assert.deepEqual(detail.tracks.map((entry) => entry.id), [originalIds[4], originalIds[1], originalIds[0], originalIds[3], originalIds[2]]);
+  assert.equal(detail.currentSessionTrackId, originalIds[0], "moving another song leaves playback selected");
+  assert.equal(detail.positionSeconds, 23.5);
+  assert.deepEqual(await service.listQueue(OWNER), queueBefore);
+  assert.deepEqual((await sessions.getSession(OWNER, created.id))?.tracks.map((entry) => entry.id), detail.tracks.map((entry) => entry.id), "order survives reloading");
+  await assert.rejects(sessions.moveSessionTrack(OTHER, created.id, originalIds[4], 0, true), sessions.SessionNotFoundError);
+  await assert.rejects(sessions.moveSessionTrack(OWNER, created.id, originalIds[1], 0, true), sessions.SessionTrackNotFoundError);
+  await assert.rejects(sessions.moveSessionTrack(OWNER, created.id, randomUUID(), 0, true), sessions.SessionTrackNotFoundError);
+});
+
 test("session: per-track stem mix and transition persist and round-trip", async () => {
   const created = await sessions.createSession(OWNER, "Mix lab");
   const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });

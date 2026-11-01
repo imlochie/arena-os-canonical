@@ -237,11 +237,20 @@ try {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "PATCH" && url.pathname.endsWith("/tracks")) {
-      const { sessionTrackId, position } = request.postDataJSON();
+      const { sessionTrackId, position, sessionOnly } = request.postDataJSON();
       const from = session.tracks.findIndex((item) => item.id === sessionTrackId);
       assert.notEqual(from, -1, "the moved session row exists, including playlist-only rows");
-      const target = Math.min(Math.max(Math.trunc(position), 0), session.tracks.length - 1);
-      session.tracks.splice(target, 0, session.tracks.splice(from, 1)[0]);
+      if (sessionOnly) {
+        assert.equal(session.tracks[from].queueItemId, null);
+        const slots = session.tracks.flatMap((item, index) => item.queueItemId === null ? [index] : []);
+        const entries = slots.map((index) => session.tracks[index]);
+        const target = Math.max(0, slots.filter((index) => index <= position).length - 1);
+        entries.splice(target, 0, entries.splice(slots.indexOf(from), 1)[0]);
+        slots.forEach((slot, index) => { session.tracks[slot] = entries[index]; });
+      } else {
+        const target = Math.min(Math.max(Math.trunc(position), 0), session.tracks.length - 1);
+        session.tracks.splice(target, 0, session.tracks.splice(from, 1)[0]);
+      }
       session.tracks.forEach((item, index) => { item.position = index; });
     } else if (request.method() === "POST" && url.pathname.endsWith("/tracks")) {
       const { trackId, position, queueItemId } = request.postDataJSON();
@@ -382,6 +391,27 @@ try {
   assert.equal(session.currentSessionTrackId, "session-track-1", "appending the playlist leaves the current song playing");
   assert.equal(savedQueue.length, 2, "playlist-only songs do not create saved-queue rows");
   assert.equal(session.tracks[2].queueItemId, null, "directly appended session songs have no saved-queue link");
+
+  const queueBeforeSessionMove = structuredClone(savedQueue);
+  const orderBeforeSessionMove = session.tracks.map((item) => item.id);
+  const audioBeforeSessionMove = await page.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
+  await page.getByText("Session order · 4", { exact: true }).click();
+  const sessionRows = page.locator(".sess-queue-list .sess-queue-item");
+  assert.equal(await sessionRows.nth(2).getByRole("button", { name: "Move Queue fixture 2 earlier", exact: true }).isDisabled(), true, "the first session-only slot cannot displace linked entries");
+  await sessionRows.nth(3).getByRole("button", { name: "Move Queue fixture 3 earlier", exact: true }).click();
+  await waitForFixture(() => session.tracks[2].id === orderBeforeSessionMove[3], "playlist-only move up");
+  assert.deepEqual(session.tracks.map((item) => item.id), [orderBeforeSessionMove[0], orderBeforeSessionMove[1], orderBeforeSessionMove[3], orderBeforeSessionMove[2]]);
+  assert.deepEqual(savedQueue, queueBeforeSessionMove);
+  assert.equal(session.currentSessionTrackId, orderBeforeSessionMove[0]);
+  await page.waitForFunction((before) => {
+    const audio = document.querySelector('.sess-deck[data-role="current"] audio');
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before;
+  }, audioBeforeSessionMove);
+  await sessionRows.nth(2).getByRole("button", { name: "Move Queue fixture 3 later", exact: true }).click();
+  await waitForFixture(() => session.tracks[3].id === orderBeforeSessionMove[3], "playlist-only move down");
+  assert.deepEqual(session.tracks.map((item) => item.id), orderBeforeSessionMove);
+  assert.deepEqual(savedQueue, queueBeforeSessionMove);
+  await page.getByText("Session order · 4", { exact: true }).click();
 
   const movedQueueId = savedQueue[1].id;
   const directSessionTrackIds = session.tracks.filter((item) => item.queueItemId === null).map((item) => item.id);

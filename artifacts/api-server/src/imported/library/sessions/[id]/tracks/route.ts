@@ -39,7 +39,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 }
 
-const moveSchema = z.object({ sessionTrackId: z.string().uuid(), position: z.number().int().min(0) });
+const moveSchema = z.object({ sessionTrackId: z.string().uuid(), position: z.number().int().min(0), sessionOnly: z.boolean().optional() });
 
 /** PATCH /api/library/sessions/[id]/tracks — reorder. */
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -49,7 +49,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = moveSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) return Response.json({ error: "A session track id and position are required." }, { status: 400 });
-    const session = await moveSessionTrack(user.id, id, parsed.data.sessionTrackId, parsed.data.position);
+    const session = await moveSessionTrack(user.id, id, parsed.data.sessionTrackId, parsed.data.position, parsed.data.sessionOnly);
     return Response.json({ session });
   } catch (error) {
     if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });

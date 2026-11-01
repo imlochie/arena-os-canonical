@@ -470,8 +470,36 @@ export async function moveSessionTrack(
   sessionId: string,
   sessionTrackId: string,
   position: number,
+  sessionOnly = false,
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
+  if (sessionOnly) {
+    // Reorder only the unlinked slots: linked entries and saved queue rows
+    // must not move when a listener rearranges playlist additions.
+    await db.transaction(async (tx) => {
+      const rows = await tx.select({
+        id: listenSessionTracks.id,
+        queueItemId: listenSessionTracks.queueItemId,
+        position: listenSessionTracks.position,
+      }).from(listenSessionTracks)
+        .where(eq(listenSessionTracks.sessionId, sessionId))
+        .orderBy(asc(listenSessionTracks.position), asc(listenSessionTracks.id))
+        .for("update");
+      const slots = rows.filter((row) => row.queueItemId === null);
+      const from = slots.findIndex((row) => row.id === sessionTrackId);
+      if (from === -1) throw new SessionTrackNotFoundError();
+      const to = Math.max(0, slots.filter((row) => row.position <= position).length - 1);
+      const ids = slots.map((row) => row.id);
+      ids.splice(to, 0, ids.splice(from, 1)[0]);
+      for (const [index, id] of ids.entries()) {
+        await tx.update(listenSessionTracks).set({ position: slots[index].position })
+          .where(eq(listenSessionTracks.id, id));
+      }
+      await tx.update(listenSessions).set({ updatedAt: new Date() })
+        .where(eq(listenSessions.id, sessionId));
+    });
+    return sessionPayload(sessionId);
+  }
   const ids = await sessionTrackIds(sessionId);
   const from = ids.indexOf(sessionTrackId);
   if (from === -1) throw new SessionTrackNotFoundError();
