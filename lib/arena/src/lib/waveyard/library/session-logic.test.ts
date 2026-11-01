@@ -156,6 +156,42 @@ test("crossfade stem levels preserve balance and explicit keeps", () => {
   });
 });
 
+for (const kind of ["source-to-stems", "stems-to-stems"] as const) {
+  test(`${kind}: unequal stem levels receive exactly one equal-power envelope`, () => {
+    const outgoing: Record<string, number> = kind === "source-to-stems"
+      ? { source: 1 }
+      : { vocals: 0.42, drums: 0.78, bass: 0, other: 0.31 };
+    const incoming = { vocals: 0.63, drums: 0.29, bass: 0.81, other: 0 };
+    const energy = (mix: Record<string, number>) =>
+      Object.values(mix).reduce((sum, gain) => sum + gain * gain, 0);
+    for (const master of [0, 0.37, 1]) {
+      const fromPower = energy(outgoing) * master * master;
+      const toPower = energy(incoming) * master * master;
+      for (let step = 0; step <= 100; step++) {
+        const envelope = crossfadeEnvelope(step / 25, 4);
+        const from = scaleCrossfadeStemVolumes(outgoing, [], envelope.fromGain);
+        // Incoming playback uses its unchanged faders and a deck master
+        // envelope. Outgoing stems instead receive the envelope at each fader.
+        const fromOutput = Object.fromEntries(Object.entries(from).map(([stem, gain]) => [stem, gain * master]));
+        const toOutput = Object.fromEntries(Object.entries(incoming).map(([stem, gain]) => [stem, gain * master * envelope.toGain]));
+        for (const [stem, level] of Object.entries(outgoing)) {
+          assert.ok(Math.abs(fromOutput[stem] - level * master * envelope.fromGain) < 1e-12,
+            `${stem} must not receive a squared fade or lose its saved balance`);
+        }
+        const expectedPower = fromPower * envelope.fromGain ** 2 + toPower * envelope.toGain ** 2;
+        const actualPower = energy(fromOutput) + energy(toOutput);
+        assert.ok(Math.abs(actualPower - expectedPower) < 1e-12);
+        // Unequal source/stem baselines need not have identical RMS. Their
+        // uncorrelated power must interpolate between those measured baselines.
+        assert.ok(actualPower >= Math.min(fromPower, toPower) - 1e-12);
+        assert.ok(actualPower <= Math.max(fromPower, toPower) + 1e-12);
+        assert.equal(toOutput.other, 0, "a muted incoming layer stays muted");
+        if ("bass" in outgoing) assert.equal(fromOutput.bass, 0, "a muted outgoing layer stays muted");
+      }
+    }
+  });
+}
+
 test("crossfade cancel: freezes both decks at the cancel point, never advances", () => {
   const at = crossfadeCancel(1, 4);
   assert.ok(Math.abs(at.fromGain - Math.cos(Math.PI / 8)) < 1e-12);

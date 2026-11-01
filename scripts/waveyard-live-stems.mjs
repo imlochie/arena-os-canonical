@@ -3,9 +3,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { runAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
 const sessionId = "00000000-0000-4000-8000-000000000007";
+const automaticFadesOnly = process.argv.includes("--automatic-fades-only");
 const types = ["vocals", "drums", "bass", "other"];
 function waitForSignal(signal, label, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
@@ -135,8 +137,8 @@ try {
   const context = await browser.newContext({ serviceWorkers: "block" });
   let page = await context.newPage();
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
-  await context.addInitScript((fixtureSessionId) => {
-    window.audioProbe = { sources: [], buffers: [], masterGains: [] };
+  await context.addInitScript(({ fixtureSessionId, probeAutoFades }) => {
+    window.audioProbe = { sources: [], buffers: [], masterGains: [], outputAnalyzers: [] };
     window.liveStemTimings = [];
     window.liveStemSelectionStart = null;
     window.liveStemObservedAudibleAt = null;
@@ -182,10 +184,18 @@ try {
       }
       createGain() {
         const node = super.createGain(), connect = node.connect.bind(node);
-        node.connect = (target, ...args) => { node.nextNode = target; return connect(target, ...args); };
+        node.connect = (target, ...args) => {
+          node.nextNode = target;
+          if (node.waveyardProbeMaster && target instanceof AnalyserNode &&
+              !window.audioProbe.outputAnalyzers.some(entry => entry.analyser === target)) {
+            window.audioProbe.outputAnalyzers.push({ analyser: target });
+          }
+          return connect(target, ...args);
+        };
         if (this.probeFirstGain) {
           window.audioProbe.masterGains.push(node);
           this.probeFirstGain = false;
+          node.waveyardProbeMaster = probeAutoFades;
         }
         return node;
       }
@@ -206,7 +216,7 @@ try {
         window.audioProbe.buffers.push(node); return node;
       }
     };
-  }, sessionId);
+  }, { fixtureSessionId: sessionId, probeAutoFades: automaticFadesOnly });
   let failAsset = null;
   let failedAssetRequests = 0;
   const liveSwapRequestOrder = [];
@@ -710,6 +720,24 @@ try {
 
   if (process.argv.includes("--switch-recovery-only")) {
     await verifyStemSwitchRecovery();
+  } else if (automaticFadesOnly) {
+    const toggleForFade = async () => {
+      const button = page.getByTestId("session-play");
+      const before = await button.getAttribute("aria-pressed");
+      await button.click();
+      await page.waitForFunction(value =>
+        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") !== value,
+      before);
+    };
+    const chooseFadeDonor = async (stemType, donorId) => {
+      const role = await page.locator('[data-role="current"]').count() ? "current" : "next";
+      const deck = page.locator(`[data-role="${role}"]`);
+      await deck.getByTestId(`open-live-swap-${stemType}`).click();
+      await deck.getByTestId(`live-swap-candidate-${stemType}-${donorId}`).click();
+    };
+    await runAutomaticFadeAcceptance({
+      page, session, tracks, sourceOnlyTrack, toggle: toggleForFade, chooseLiveSource: chooseFadeDonor,
+    });
   } else {
   await page.goto("http://localhost:80/waveyard");
   await page.evaluate(() => localStorage.clear());
