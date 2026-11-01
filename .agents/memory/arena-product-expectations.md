@@ -25,3 +25,7 @@ after already directing that the blocked compatibility work be set aside.
 **How to apply:** Distinguish task bookkeeping from actual technical dependencies.
 Do not falsely complete a task to advance the queue or use its assignment as a
 reason to ignore the user's current work direction.
+Do not claim the active task has switched when only the subject of file edits
+has changed. The user specifically objected to work branching out under the
+old assignment instead of an actual task transition. If reassignment is not
+available, disclose that limitation before starting edits for the next task.
