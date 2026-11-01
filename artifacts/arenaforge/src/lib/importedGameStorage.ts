@@ -1,6 +1,6 @@
 const DATABASE = "arenaforge-imported-games";
 const STORE = "games";
-const VERSION = 1;
+const VERSION = 2;
 const LEGACY_KEY = "arenaforge.imported-games.v1";
 const SIGNAL_KEY = "arenaforge.imported-games.changed";
 const CHANNEL = "arenaforge-imported-games-changed";
@@ -114,9 +114,43 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!database.objectStoreNames.contains(STORE)) {
         database.createObjectStore(STORE, { keyPath: "id" });
       }
+      for (const store of ["workshop", "mod-packages"]) if (!database.objectStoreNames.contains(store)) database.createObjectStore(store, { keyPath: "id" });
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => { request.result.onversionchange = () => request.result.close(); resolve(request.result); };
+    request.onblocked = () => reject(new Error("Close older Arena tabs so the mod shelf can be upgraded safely."));
     request.onerror = () => reject(request.error ?? new Error("Could not open the local game shelf."));
+  });
+}
+
+export async function readImportedWorkshopRecord(store: "workshop" | "mod-packages", id: string): Promise<any> {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction(store, "readonly"), read = tx.objectStore(store).get(id); let value: unknown;
+    read.onsuccess = () => { value = read.result; };
+    tx.oncomplete = () => { database.close(); resolve(value); };
+    tx.onerror = tx.onabort = () => { database.close(); reject(tx.error ?? new Error("Could not read the mod shelf.")); };
+  });
+}
+/** A workshop commit and its base-game stale check share one IDB transaction. */
+export async function commitImportedWorkshop(gameId: string, expectedGame: unknown, expectedRevision: number, state: any, packages: Record<string, string>) {
+  const database = await openDatabase();
+  return new Promise<void>((resolve, reject) => {
+    const tx = database.transaction([STORE, "workshop", "mod-packages"], "readwrite"); let failure: Error | undefined;
+    const fail = (error: Error) => { failure = error; tx.abort(); };
+    const game = tx.objectStore(STORE).get(gameId);
+    game.onsuccess = () => {
+      if (!importedGameRecordsMatch(expectedGame, game.result)) { fail(new ImportedGameStorageConflictError()); return; }
+      const previous = tx.objectStore("workshop").get(gameId);
+      previous.onsuccess = () => {
+        if ((previous.result?.state?.revision ?? 0) !== expectedRevision) { fail(new Error("Workshop changed in another window. Refresh before retrying.")); return; }
+        try {
+          for (const [digest, json] of Object.entries(packages)) tx.objectStore("mod-packages").put({ id: digest, json });
+          tx.objectStore("workshop").put({ id: gameId, state });
+        } catch (error) { fail(error instanceof Error ? error : new Error("Could not save mod profile.")); }
+      };
+    };
+    tx.oncomplete = () => { database.close(); resolve(); };
+    tx.onerror = tx.onabort = () => { database.close(); reject(failure ?? tx.error ?? new Error("The mod transaction was interrupted; the previous profile remains active.")); };
   });
 }
 

@@ -1,0 +1,7 @@
+export type WorkshopGame = { id: string; identity: string; title: string; kind: string; version: string; files: { path: string; bytes: number; sha256: string }[] };
+export type WorkshopMod = { key: string; id: string; name: string; version: string; license: string; source: string; permissions: string[]; settings: Record<string, { type: "string" | "number" | "boolean"; default: string | number | boolean; min?: number; max?: number }> };
+export type WorkshopProfile = { id: string; name: string; enabled: string[]; order: string[]; settings: Record<string, Record<string, string | number | boolean>>; shareSaves: boolean; history: number };
+export type WorkshopSnapshot = { revision: number; game: WorkshopGame; packages: WorkshopMod[]; profiles: WorkshopProfile[]; activeProfileId: string | null };
+export type WorkshopChange = { packageJson?: string; enabled?: string[]; order?: string[]; settings?: WorkshopProfile["settings"]; remove?: string; restoreJson?: string };
+export type WorkshopPreview = { id: string; gameId: string; profileId: string; name: string; order: string[]; addedDependencies: string[]; changes: { path: string; before: string; after: string; bytes: number; mod: string }[]; warnings: string[]; permissions: string[] };
+export type WorkshopPlayback = { gameId: string; profileId: string; profileName: string; saveId: string; source: string; romData?: ArrayBuffer; modKeys: string[] };

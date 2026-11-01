@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./lib/mod-workshop": "./src/lib/games/mod-workshop.ts",
+    "./lib/mod-workshop-engine": "./src/lib/games/mod-workshop-engine.ts",
     "./lib/ai": "./src/lib/ai.ts",
     "./lib/api/ids": "./src/lib/api/ids.ts",
     "./lib/apiErrorClient": "./src/lib/apiErrorClient.ts",

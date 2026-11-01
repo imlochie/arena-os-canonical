@@ -28,6 +28,7 @@ import { CHIP8_MAX_ROM_BYTES, chip8DialectForFile, chip8DialectLabel, isChip8Dia
 import type { ButtonKey, NES } from "jsnes";
 import type { ArcadeRepositoryProvenance } from "@workspace/api-client-react";
 import RepositoryGameImport from "./RepositoryGameImport";
+import type { WorkshopPlayback } from "../lib/modWorkshopTypes";
 import { getNativeBridge } from "./nativeArcadeTypes";
 import { isRepositoryProvenance, resolveRepositoryAttribution, withRepositoryAttribution, withoutRepositoryAttribution } from "../lib/importedRepositoryAttribution";
 
@@ -66,6 +67,9 @@ type ReaGameAnalysis = {
 type ImportedGameWorkspaceProps = {
   onReviseSource(sourceHtml: string, instruction: string, signal: AbortSignal): Promise<string>;
   onUseRemakePrompt(prompt: string): void;
+  /** Optional mod-profile playback. Only runtime bindings and saves change; the base shelf record is never replaced. */
+  workshopLaunch?: WorkshopPlayback | null;
+  onExitWorkshop?: () => void;
 };
 
 const MAX_ARCHIVE_CONTENT_BYTES = 6 * 1024 * 1024;
@@ -419,7 +423,7 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
   return false;
 }
 
-export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt, onNativeInstalled }: ImportedGameWorkspaceProps & { onNativeInstalled?: () => void }) {
+export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt, onNativeInstalled, workshopLaunch = null, onExitWorkshop }: ImportedGameWorkspaceProps & { onNativeInstalled?: () => void }) {
   const [games, setGames] = useState<ImportedGame[]>([]);
   const currentGames = useRef<ImportedGame[]>([]);
   const persistedGames = useRef<ImportedGame[]>([]);
@@ -452,6 +456,34 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const revisionAbortRef = useRef<AbortController | null>(null);
   const buttonsRef = useRef<Map<string, ButtonKey>>(new Map());
   const selected = games.find((game) => game.id === selectedId) ?? null;
+  // Mod profile playback binds only after the shelf loads and only for the
+  // matching base game. Base source, revisions and shelf records stay intact.
+  const workshopActive = !!(workshopLaunch && loaded && selected && workshopLaunch.gameId === selected.id);
+  const runtimeGame = useMemo<ImportedGame | null>(() => {
+    if (!selected) return null;
+    if (!workshopActive || !workshopLaunch) return selected;
+    return { ...selected, source: workshopLaunch.source, romData: workshopLaunch.romData ?? selected.romData };
+  }, [selected, workshopActive, workshopLaunch]);
+  const runtimeSaveId = workshopActive && workshopLaunch ? workshopLaunch.saveId : selected?.id ?? "";
+  const onExitWorkshopRef = useRef(onExitWorkshop);
+  onExitWorkshopRef.current = onExitWorkshop;
+  const alignedLaunch = useRef<WorkshopPlayback | null>(null);
+  useEffect(() => {
+    if (!workshopLaunch) { alignedLaunch.current = null; return; }
+    if (!loaded) return;
+    if (alignedLaunch.current !== workshopLaunch) {
+      if (games.some((game) => game.id === workshopLaunch.gameId)) {
+        alignedLaunch.current = workshopLaunch;
+        setSelectedId(workshopLaunch.gameId);
+      } else {
+        setError("The mod profile's base game is no longer on this shelf, so the profile was not launched.");
+        onExitWorkshopRef.current?.();
+      }
+      return;
+    }
+    // Switching to another game always leaves the profile.
+    if (selectedId && selectedId !== workshopLaunch.gameId) onExitWorkshopRef.current?.();
+  }, [workshopLaunch, loaded, selectedId, games]);
   const managedDescriptor = useMemo<ArcadeGameDescriptor | null>(() => selected ? {
     id: selected.id, title: selected.name, source: selected.romData ?? selected.source,
     format: selected.kind === "html" ? "html" : selected.kind === "nes" ? "ines" : selected.kind === "chip8" ? "chip8" : `emulatorjs:${selected.system}`,
@@ -466,10 +498,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     ? getImportedRevisionHistory(selected).map(copy => ({ ...copy, sizeKb: Math.ceil(new Blob([copy.source]).size / 1024) }))
     : [], [selected?.kind, selected?.source, selected?.revisionRollback, selected?.revisionHistory]);
   const selectedEmulatorRom = useMemo(
-    () => (selected?.kind === "emulator" || selected?.kind === "chip8") && selected.romData instanceof ArrayBuffer
-      ? selected.romData
+    () => (runtimeGame?.kind === "emulator" || runtimeGame?.kind === "chip8") && runtimeGame.romData instanceof ArrayBuffer
+      ? runtimeGame.romData
       : null,
-    [selected],
+    [runtimeGame],
   );
   const compactHtml = useMemo(
     () => selected?.kind === "html" ? maskEmbeddedAssets(withoutRepositoryAttribution(selected.source)) : null,
@@ -477,13 +509,13 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   );
   const gameSaves = useArcadeGameSave(
     htmlFrameRef,
-    selected?.kind === "html" ? selected.id : null,
+    selected?.kind === "html" ? runtimeSaveId || null : null,
   );
   // Save-indicator updates must not regenerate srcDoc with newly saved bytes:
   // changing that attribute navigates the iframe and resets live gameplay.
   const selectedHtmlDocument = useMemo(
-    () => selected?.kind === "html" ? browserHtmlAdapter.launch({ source: selected.source, saveId: selected.id }) : "",
-    [selected?.kind, selected?.id, selected?.source, gameSaves.reloadKey],
+    () => runtimeGame?.kind === "html" ? browserHtmlAdapter.launch({ source: runtimeGame.source, saveId: runtimeSaveId }) : "",
+    [runtimeGame?.kind, runtimeSaveId, runtimeGame?.source, gameSaves.reloadKey],
   );
 
   useEffect(() => () => revisionAbortRef.current?.abort(), []);
@@ -495,18 +527,18 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       return;
     }
     let active = true;
-    readNesSaveState(selected.id).then((state) => {
+    readNesSaveState(runtimeSaveId).then((state) => {
       if (active) setNesSaveAvailable(state !== null);
     }).catch(() => {
       if (active) setNesSaveMessage("Local save-state storage is unavailable in this browser.");
     });
     return () => { active = false; };
-  }, [selected?.id, selected?.kind]);
+  }, [selected?.id, selected?.kind, runtimeSaveId]);
 
   const saveNesProgress = async () => {
     if (!selected || selected.kind !== "nes" || !nesRef.current) return;
     try {
-      await writeNesSaveState(selected.id, nesRef.current.toJSON());
+      await writeNesSaveState(runtimeSaveId, nesRef.current.toJSON());
       setNesSaveAvailable(true);
       setNesSaveMessage("Progress saved on this browser.");
     } catch (cause) {
@@ -517,7 +549,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const loadNesProgress = async () => {
     if (!selected || selected.kind !== "nes" || !nesRef.current) return;
     try {
-      const state = await readNesSaveState(selected.id);
+      const state = await readNesSaveState(runtimeSaveId);
       if (!state) throw new Error("There is no saved progress for this game yet.");
       nesRef.current.fromJSON(state as any);
       setNesSaveMessage("Saved progress restored.");
@@ -529,7 +561,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const clearNesProgress = async () => {
     if (!selected || selected.kind !== "nes") return;
     try {
-      await deleteNesSaveState(selected.id);
+      await deleteNesSaveState(runtimeSaveId);
       setNesSaveAvailable(false);
       setNesSaveMessage("Saved progress cleared from this browser.");
     } catch (cause) {
@@ -660,7 +692,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   useEffect(() => {
-    if (!selected || selected.kind !== "nes" || !canvasRef.current || !management.manifest || !management.compatibility?.available) {
+    if (!runtimeGame || runtimeGame.kind !== "nes" || !canvasRef.current || !management.manifest || !management.compatibility?.available) {
       nesRef.current = null;
       return;
     }
@@ -678,7 +710,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         const pixels = context.createImageData(256, 240);
         const packedPixels = new Uint32Array(pixels.data.buffer);
         const batteryRam = new Uint8Array(0x2000);
-        const batteryKey = `arenaforge.nes-sram.v1:${selected.id}`;
+        const batteryKey = `arenaforge.nes-sram.v1:${runtimeSaveId}`;
         try {
           const encodedRam = localStorage.getItem(batteryKey);
           if (encodedRam) {
@@ -696,7 +728,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
             setError("The NES game ran, but browser storage could not save its battery-backed progress.");
           }
         };
-        const nes = await browserNesAdapter.launch({ binary: atob(selected.source), options: {
+        const nes = await browserNesAdapter.launch({ binary: atob(runtimeGame.source), options: {
           onFrame: (frame) => {
             for (let i = 0; i < frame.length; i += 1) {
               packedPixels[i] = 0xff000000 | (frame[i] ?? 0);
@@ -716,7 +748,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
         const cpuMemory = (nes as unknown as { cpu?: { mem?: Uint8Array } }).cpu?.mem;
         if (cpuMemory) cpuMemory.set(batteryRam, 0x6000);
         try {
-          const savedState = await readNesSaveState(selected.id);
+          const savedState = await readNesSaveState(runtimeSaveId);
           if (active && savedState) {
             nes.fromJSON(savedState as any);
             setNesSaveAvailable(true);
@@ -755,7 +787,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       nesRef.current = null;
       buttonsRef.current.clear();
     };
-  }, [selected, management.manifest?.installedVersion, management.compatibility?.available]);
+  }, [runtimeGame, runtimeSaveId, management.manifest?.installedVersion, management.compatibility?.available]);
 
   const handleImport = async (file: File | undefined, kind: "html" | "nes" | "emulator" | "chip8", provenance?: ArcadeRepositoryProvenance): Promise<boolean> => {
     if (!file) return false;
@@ -891,6 +923,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   const keepHtmlRevision = async () => {
+    if (workshopActive) { setError("Leave the mod profile before changing or removing the base game."); return; }
     if (busy || savingShelf || !selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
     setError(""); setNotice("");
     const next = currentGames.current.map((game) => {
@@ -903,6 +936,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   const undoHtmlRevision = async () => {
+    if (workshopActive) { setError("Leave the mod profile before changing or removing the base game."); return; }
     if (busy || savingShelf || !selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
     setError(""); setNotice("");
     const next = currentGames.current.map((game) => {
@@ -916,6 +950,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   const restoreHtmlRevision = async (index = 0) => {
+    if (workshopActive) { setError("Leave the mod profile before changing or removing the base game."); return; }
     if (busy || savingShelf || !selected || selected.kind !== "html" || selected.revisionUndoSource !== undefined || !revisionCopies[index]) return;
     setError(""); setNotice("");
     const current = currentGames.current.find(game => game.id === selected.id);
@@ -931,6 +966,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   const revise = async () => {
+    if (workshopActive) { setError("Leave the mod profile before changing or removing the base game."); return; }
     if (!selected || selected.kind !== "html" || !instruction.trim() || busy || savingShelf) return;
     const controller = new AbortController();
     revisionAbortRef.current = controller;
@@ -1020,6 +1056,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   };
 
   const removeSelected = async () => {
+    if (workshopActive) { setError("Leave the mod profile before changing or removing the base game."); return; }
     if (!selected || removing || busy) return;
     const next = games.filter((game) => game.id !== selected.id);
     // Clear the removed game's error before the async storage write. A newer
@@ -1241,17 +1278,24 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                 className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-emerald-200 hover:bg-emerald-300/10 disabled:opacity-40">
                 <Download size={13} /> Export HTML source
               </button>}
-              <button type="button" onClick={removeSelected} disabled={removing || busy} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-slate-400 hover:bg-red-400/10 hover:text-red-200" aria-label={`Remove ${selected.name}`}>
+              <button type="button" onClick={removeSelected} disabled={removing || busy || workshopActive} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-slate-400 hover:bg-red-400/10 hover:text-red-200" aria-label={`Remove ${selected.name}`}>
                 <Trash2 size={13} /> {removing ? "Removing…" : "Remove"}
               </button>
             </div>
+            {workshopActive && workshopLaunch && (
+              <div role="status" data-testid="workshop-profile-banner" className="flex flex-wrap items-center gap-2 border-b border-amber-300/20 bg-amber-300/[0.07] px-4 py-2.5 text-[11px] text-amber-100">
+                <span className="rounded-full bg-amber-300/15 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider">Mod profile</span>
+                <span className="min-w-0 flex-1"><b>{workshopLaunch.profileName}</b> · {workshopLaunch.modKeys.length} mod{workshopLaunch.modKeys.length === 1 ? "" : "s"} · saves <span className="font-mono">{workshopLaunch.saveId}</span>. Base source, revisions and removal are locked while playing this profile.</span>
+                <button type="button" data-testid="workshop-leave-profile" onClick={() => onExitWorkshop?.()} className="rounded-lg border border-amber-300/30 px-3 py-1.5 text-[10px] font-black hover:bg-amber-300/10">Leave profile · play base</button>
+              </div>
+            )}
             <ArcadeGameManagement management={management} />
             {!management.manifest ? <p role="status" className="p-3 text-xs text-slate-400">{management.error ? "Runtime metadata could not be prepared. Open diagnostics above to retry; source and saves are retained." : "Checking game runtime metadata…"}</p>
             : !management.compatibility?.available ? <p role="alert" className="p-3 text-xs text-amber-200">This game needs a compatible runtime. Open diagnostics above for the specific requirement; source and progress are retained.</p>
             : selected.kind === "html" ? (
               <div className="bg-black/30 p-2 sm:p-3">
                 <iframe
-                  key={`${selected.id}:${selected.source.length}:${gameSaves.reloadKey}`}
+                  key={`${runtimeSaveId}:${runtimeGame?.source.length ?? 0}:${gameSaves.reloadKey}`}
                   title={`Playable game: ${selected.name}`}
                   sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
@@ -1269,19 +1313,20 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                     </button>
                   )}
                 </div>
-                <ImportedGameProgressBackup key={selected.id} game={selected} hasProgress={gameSaves.hasSavedProgress} disabled={busy || savingShelf > 0} onRestore={gameSaves.restoreSavedProgress} />
+                <ImportedGameProgressBackup key={runtimeSaveId} game={workshopActive && runtimeGame ? { ...runtimeGame, id: runtimeSaveId } : selected} hasProgress={gameSaves.hasSavedProgress} disabled={busy || savingShelf > 0} onRestore={gameSaves.restoreSavedProgress} />
               </div>
             ) : selected.kind === "emulator" && selected.system && selectedEmulatorRom ? (
               <EmulatorJsPlayer
-                gameId={selected.id}
+                key={runtimeSaveId}
+                gameId={runtimeSaveId}
                 name={selected.name}
                 rom={selectedEmulatorRom}
                 system={selected.system}
               />
             ) : selected.kind === "chip8" && selectedEmulatorRom ? (
               <Chip8Player
-                key={selected.id}
-                gameId={selected.id}
+                key={runtimeSaveId}
+                gameId={runtimeSaveId}
                 name={selected.name}
                 rom={selectedEmulatorRom}
                 dialect={selected.chip8Dialect ?? "chip8"}
@@ -1407,7 +1452,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   <p className="text-[10px] leading-relaxed text-slate-500">A change is applied only when it returns complete HTML that passes Arcade's game safety checks.</p>
                    {compactHtml && compactHtml.source.length > 50_000 && <p className="text-[10px] text-amber-200">This game has more than 50 KB of executable source after media is excluded. It can still be played locally.</p>}
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => void revise()} disabled={busy || savingShelf > 0 || selected.revisionUndoSource !== undefined || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
+                    <button type="button" onClick={() => void revise()} disabled={workshopActive || busy || savingShelf > 0 || selected.revisionUndoSource !== undefined || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
                       {busy ? "Revising…" : "Apply revision"}
                     </button>
                     {busy && revisionAbortRef.current && (
@@ -1430,10 +1475,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                           htmlFrameRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
                           htmlFrameRef.current?.focus();
                         }} />
-                        <button type="button" disabled={savingShelf > 0 || busy} onClick={() => void keepHtmlRevision()} className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-[10px] font-bold text-emerald-100 hover:bg-emerald-300/15 disabled:opacity-40" data-testid="button-keep-imported-revision">
+                        <button type="button" disabled={workshopActive || savingShelf > 0 || busy} onClick={() => void keepHtmlRevision()} className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-[10px] font-bold text-emerald-100 hover:bg-emerald-300/15 disabled:opacity-40" data-testid="button-keep-imported-revision">
                           Keep revision
                         </button>
-                        <button type="button" disabled={savingShelf > 0 || busy} onClick={() => void undoHtmlRevision()} className="rounded-lg border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-[10px] font-bold text-amber-100 hover:bg-amber-300/15 disabled:opacity-40" data-testid="button-undo-imported-revision">
+                        <button type="button" disabled={workshopActive || savingShelf > 0 || busy} onClick={() => void undoHtmlRevision()} className="rounded-lg border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-[10px] font-bold text-amber-100 hover:bg-amber-300/15 disabled:opacity-40" data-testid="button-undo-imported-revision">
                           Undo revision
                         </button>
                       </div>
@@ -1447,7 +1492,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                         {revisionCopies[0].label ?? "Earlier source"} · saved {new Date(revisionCopies[0].savedAt).toLocaleString()} · {revisionCopies[0].sizeKb} KB.
                         {" "}Restore replaces the active source; the replaced version remains recoverable. Your game identity and saved progress stay the same.
                       </p>
-                      <button type="button" data-testid="button-restore-imported-revision" disabled={busy || savingShelf > 0} onClick={() => void restoreHtmlRevision()} className="mt-2 rounded-lg border border-sky-300/25 bg-sky-300/10 px-3 py-2 text-[10px] font-bold text-sky-100 hover:bg-sky-300/15 disabled:opacity-40">
+                      <button type="button" data-testid="button-restore-imported-revision" disabled={workshopActive || busy || savingShelf > 0} onClick={() => void restoreHtmlRevision()} className="mt-2 rounded-lg border border-sky-300/25 bg-sky-300/10 px-3 py-2 text-[10px] font-bold text-sky-100 hover:bg-sky-300/15 disabled:opacity-40">
                         Restore previous version
                       </button>
                       <div className="mt-2">
@@ -1464,7 +1509,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                               <li key={`${copy.savedAt}-${index}`} className="rounded-lg border border-white/10 p-2" data-testid="imported-revision-history-entry">
                                 <p className="break-words text-[11px] font-semibold text-slate-200">{copy.label ?? "Earlier source"}</p>
                                 <p className="mt-1 text-[10px] text-slate-400">Saved {new Date(copy.savedAt).toLocaleString()} · {copy.sizeKb} KB</p>
-                                <button type="button" disabled={busy || savingShelf > 0} onClick={() => void restoreHtmlRevision(index + 1)} className="mt-2 rounded-lg border border-sky-300/25 px-3 py-2 text-[10px] font-bold text-sky-100 hover:bg-sky-300/15 disabled:opacity-40">
+                                <button type="button" disabled={workshopActive || busy || savingShelf > 0} onClick={() => void restoreHtmlRevision(index + 1)} className="mt-2 rounded-lg border border-sky-300/25 px-3 py-2 text-[10px] font-bold text-sky-100 hover:bg-sky-300/15 disabled:opacity-40">
                                   Restore this version
                                 </button>
                               </li>
@@ -1539,7 +1584,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           </div>}
           <div className="mt-3 space-y-1.5">
             {games.map((game) => (
-              <button key={game.id} data-testid={`button-select-imported-game-${game.id}`} type="button" onClick={() => { setSelectedId(game.id); setError(""); setNotice(""); }} className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${selectedId === game.id ? "border-emerald-300/30 bg-emerald-300/[0.08]" : "border-transparent bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.05]"}`}>
+              <button key={game.id} data-testid={`button-select-imported-game-${game.id}`} type="button" onClick={() => { if (workshopLaunch && game.id !== workshopLaunch.gameId) onExitWorkshop?.(); setSelectedId(game.id); setError(""); setNotice(""); }} className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${selectedId === game.id ? "border-emerald-300/30 bg-emerald-300/[0.08]" : "border-transparent bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.05]"}`}>
                 <span className="block truncate text-xs font-bold text-slate-200">{game.name}</span>
                 {unsavedIds.includes(game.id) && <span className="block text-[10px] font-bold text-amber-200">Not saved · this tab only</span>}
                 <span className="mt-1 block text-[9px] font-bold uppercase tracking-wider text-slate-500">
