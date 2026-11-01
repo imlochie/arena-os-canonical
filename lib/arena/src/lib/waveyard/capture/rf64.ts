@@ -146,6 +146,10 @@ export class Rf64Recorder {
   private finalizing = false;
   private closed = false;
 
+  get sampleFrames(): number {
+    return this.pcmBytes / this.header.blockAlign;
+  }
+
   async writePcm(chunk: Uint8Array): Promise<void> {
     if (this.finalized || this.finalizing) throw new Error("Cannot write to a finalized RF64 recording.");
     const input = this.pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([this.pending, chunk]);
@@ -265,6 +269,31 @@ async function promoteToUniqueRecoveredPath(partialPath: string): Promise<string
     }
   }
   throw new Error("Could not find a free filename for the recovered recording.");
+}
+
+/** Inspect finalized capture PCM without decoding or changing its format. */
+export async function inspectRf64Recording(path: string) {
+  const handle = await open(path, "r");
+  try {
+    const size = (await handle.stat()).size;
+    const buffer = Buffer.alloc(MAX_FORMAT_CHUNK_BYTES + FIXED_HEADER_BYTES + 10);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const header = parseExistingHeader(buffer.subarray(0, bytesRead));
+    const dataBytes = Number(header.dataBytes);
+    if (!header.finalized || !Number.isSafeInteger(dataBytes) || dataBytes % header.blockAlign !== 0
+      || header.dataOffset + dataBytes > size || header.riffSize !== BigInt(size - 8)) {
+      throw new Error("RF64 capture has incomplete or inconsistent PCM sizes.");
+    }
+    const formatSize = buffer.readUInt32LE(52);
+    return {
+      ...header,
+      dataBytes,
+      sampleFrames: dataBytes / header.blockAlign,
+      format: { formatChunk: Buffer.from(buffer.subarray(FIXED_HEADER_BYTES, FIXED_HEADER_BYTES + formatSize)) },
+    };
+  } finally {
+    await handle.close();
+  }
 }
 
 /**

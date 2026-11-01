@@ -8,6 +8,13 @@
 
 export interface LibraryAudioCaptureStartInput {
   /**
+     * @minimum 1
+     * @maximum 99999
+     */
+  trackNumber?: number;
+  /** @maxLength 2800000 */
+  artworkDataUrl?: string;
+  /**
      * @minLength 1
      * @maxLength 200
      */

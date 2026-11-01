@@ -6,15 +6,19 @@ import {
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import {
   getAudioCaptureOptions,
+  getWindowsMediaMetadata,
   startAudioCapture,
 } from "../../../lib/waveyard/audio-capture-manager";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const user = await requireUser();
-    return Response.json(GetLibraryAudioCaptureOptionsResponse.parse(await getAudioCaptureOptions(user.id)));
+    const options = await getAudioCaptureOptions(user.id);
+    const mediaMetadata = new URL(request.url).searchParams.get("mediaMetadata") === "1"
+      ? await getWindowsMediaMetadata() : undefined;
+    return Response.json(GetLibraryAudioCaptureOptionsResponse.parse({ ...options, ...(mediaMetadata ? { mediaMetadata } : {}) }));
   } catch (error) {
     if (error instanceof Response) return error;
     return Response.json({

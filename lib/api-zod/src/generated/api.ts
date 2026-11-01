@@ -165,12 +165,37 @@ export const CreateLibraryConversionResponse = zod.object({
 /**
  * @summary Check Windows audio loopback capture availability
  */
+export const GetLibraryAudioCaptureOptionsQueryParams = zod.object({
+  "mediaMetadata": zod.enum(['1']).optional()
+})
+
+export const getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataTitleMax = 500;
+
+export const getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataArtistMax = 500;
+
+export const getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataAlbumMax = 500;
+
+export const getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataTrackNumberMax = 99999;
+
+export const getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataArtworkDataUrlMax = 2800000;
+
 export const getLibraryAudioCaptureOptionsResponseApplicationsItemProcessIdMax = 4294967295;
 
 export const getLibraryAudioCaptureOptionsResponseApplicationsItemProcessStartTimeRegExp = new RegExp('^[0-9]{1,20}$');
 export const getLibraryAudioCaptureOptionsResponseStorageAvailableBytesMin = 0;
 
 export const getLibraryAudioCaptureOptionsResponseStorageReserveBytesMin = 0;
+
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataTitleMax = 500;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataArtistMax = 500;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataAlbumMax = 500;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataTrackNumberMax = 99999;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataArtworkDataUrlMax = 2800000;
 
 export const getLibraryAudioCaptureOptionsResponseActiveSessionElapsedSecondsMin = 0;
 
@@ -198,6 +223,18 @@ export const getLibraryAudioCaptureOptionsResponseActiveSessionSignalInvalidSamp
 
 
 export const GetLibraryAudioCaptureOptionsResponse = zod.object({
+  "mediaMetadata": zod.object({
+  "available": zod.boolean(),
+  "reason": zod.string().optional(),
+  "sourceAppId": zod.string().optional(),
+  "metadata": zod.object({
+  "title": zod.string().min(1).max(getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataTitleMax),
+  "artist": zod.string().max(getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataArtistMax).optional(),
+  "album": zod.string().max(getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataAlbumMax).optional(),
+  "trackNumber": zod.number().int().min(1).max(getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataTrackNumberMax).optional(),
+  "artworkDataUrl": zod.string().max(getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataArtworkDataUrlMax).optional().describe('Local PNG/JPEG data URL, validated against image bytes')
+}).optional()
+}).optional(),
   "available": zod.boolean(),
   "devices": zod.array(zod.object({
   "id": zod.string(),
@@ -219,6 +256,17 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
   "reason": zod.string().optional()
 }).optional(),
   "activeSession": zod.object({
+  "markers": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "sampleFrame": zod.number().int().min(1),
+  "metadata": zod.object({
+  "title": zod.string().min(1).max(getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataTitleMax),
+  "artist": zod.string().max(getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataArtistMax).optional(),
+  "album": zod.string().max(getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataAlbumMax).optional(),
+  "trackNumber": zod.number().int().min(1).max(getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataTrackNumberMax).optional(),
+  "artworkDataUrl": zod.string().max(getLibraryAudioCaptureOptionsResponseActiveSessionMarkersItemMetadataArtworkDataUrlMax).optional().describe('Local PNG/JPEG data URL, validated against image bytes')
+})
+})).optional(),
   "sessionId": zod.string().uuid(),
   "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
   "title": zod.string(),
@@ -254,6 +302,10 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
  * Records the selected Windows playback endpoint mix in its native shared-mode PCM format. Protected or unavailable audio is not bypassed.
  * @summary Start an authorized Windows system-loopback recording
  */
+export const startLibraryAudioCaptureBodyTrackNumberMax = 99999;
+
+export const startLibraryAudioCaptureBodyArtworkDataUrlMax = 2800000;
+
 export const startLibraryAudioCaptureBodyTitleMax = 200;
 
 export const startLibraryAudioCaptureBodyArtistMax = 200;
@@ -268,6 +320,8 @@ export const startLibraryAudioCaptureBodyProcessStartTimeRegExp = new RegExp('^[
 
 
 export const StartLibraryAudioCaptureBody = zod.object({
+  "trackNumber": zod.number().int().min(1).max(startLibraryAudioCaptureBodyTrackNumberMax).optional(),
+  "artworkDataUrl": zod.string().max(startLibraryAudioCaptureBodyArtworkDataUrlMax).optional(),
   "title": zod.string().min(1).max(startLibraryAudioCaptureBodyTitleMax),
   "artist": zod.string().max(startLibraryAudioCaptureBodyArtistMax).optional(),
   "album": zod.string().max(startLibraryAudioCaptureBodyAlbumMax).optional(),
@@ -336,6 +390,12 @@ export const ImportLibraryAudioCaptureRecoveryParams = zod.object({
   "id": zod.coerce.string().uuid()
 })
 
+export const importLibraryAudioCaptureRecoveryResponseTracksItemRatingMin = 0;
+export const importLibraryAudioCaptureRecoveryResponseTracksItemRatingMax = 5;
+
+export const importLibraryAudioCaptureRecoveryResponseTracksItemStemAvailabilityThreeProgressPercentMin = 0;
+export const importLibraryAudioCaptureRecoveryResponseTracksItemStemAvailabilityThreeProgressPercentMax = 100;
+
 export const importLibraryAudioCaptureRecoveryResponseTrackRatingMin = 0;
 export const importLibraryAudioCaptureRecoveryResponseTrackRatingMax = 5;
 
@@ -354,6 +414,44 @@ export const importLibraryAudioCaptureRecoveryResponseSignalInvalidSamplesMin = 
 
 
 export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
+  "tracks": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "title": zod.string(),
+  "artist": zod.string(),
+  "album": zod.string(),
+  "durationSeconds": zod.number(),
+  "playCount": zod.number().int(),
+  "rating": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseTracksItemRatingMin).max(importLibraryAudioCaptureRecoveryResponseTracksItemRatingMax),
+  "labels": zod.array(zod.string()),
+  "lastPlayedAt": zod.coerce.date().nullable(),
+  "addedAt": zod.coerce.date(),
+  "stemAvailability": zod.union([zod.object({
+  "status": zod.enum(['separated']),
+  "stemCount": zod.number().int(),
+  "stemTypes": zod.array(zod.string())
+}),zod.object({
+  "status": zod.enum(['source-only', 'not-started', 'unavailable']),
+  "reason": zod.string()
+}),zod.object({
+  "status": zod.enum(['processing']),
+  "reason": zod.string(),
+  "stage": zod.string().optional(),
+  "progress": zod.object({
+  "percent": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseTracksItemStemAvailabilityThreeProgressPercentMin).max(importLibraryAudioCaptureRecoveryResponseTracksItemStemAvailabilityThreeProgressPercentMax),
+  "phase": zod.string().optional()
+}).optional()
+}),zod.object({
+  "status": zod.enum(['rejected', 'failed']),
+  "reason": zod.string(),
+  "retryJobId": zod.string().uuid()
+})]),
+  "analysis": zod.object({
+  "status": zod.string(),
+  "bpm": zod.number().nullable(),
+  "musicalKey": zod.string().nullable()
+}).nullish(),
+  "studioProjectId": zod.string().uuid()
+})).optional(),
   "track": zod.object({
   "id": zod.string().uuid(),
   "title": zod.string(),
@@ -406,11 +504,126 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
 
 
 /**
+ * @summary Confirm the next track at the current captured PCM frame
+ */
+export const MarkLibraryAudioCaptureTrackParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const markLibraryAudioCaptureTrackBodyTitleMax = 500;
+
+export const markLibraryAudioCaptureTrackBodyArtistMax = 500;
+
+export const markLibraryAudioCaptureTrackBodyAlbumMax = 500;
+
+export const markLibraryAudioCaptureTrackBodyTrackNumberMax = 99999;
+
+export const markLibraryAudioCaptureTrackBodyArtworkDataUrlMax = 2800000;
+
+
+
+export const MarkLibraryAudioCaptureTrackBody = zod.object({
+  "title": zod.string().min(1).max(markLibraryAudioCaptureTrackBodyTitleMax),
+  "artist": zod.string().max(markLibraryAudioCaptureTrackBodyArtistMax).optional(),
+  "album": zod.string().max(markLibraryAudioCaptureTrackBodyAlbumMax).optional(),
+  "trackNumber": zod.number().int().min(1).max(markLibraryAudioCaptureTrackBodyTrackNumberMax).optional(),
+  "artworkDataUrl": zod.string().max(markLibraryAudioCaptureTrackBodyArtworkDataUrlMax).optional().describe('Local PNG/JPEG data URL, validated against image bytes')
+})
+
+
+export const markLibraryAudioCaptureTrackResponseMarkersItemMetadataTitleMax = 500;
+
+export const markLibraryAudioCaptureTrackResponseMarkersItemMetadataArtistMax = 500;
+
+export const markLibraryAudioCaptureTrackResponseMarkersItemMetadataAlbumMax = 500;
+
+export const markLibraryAudioCaptureTrackResponseMarkersItemMetadataTrackNumberMax = 99999;
+
+export const markLibraryAudioCaptureTrackResponseMarkersItemMetadataArtworkDataUrlMax = 2800000;
+
+export const markLibraryAudioCaptureTrackResponseElapsedSecondsMin = 0;
+
+export const markLibraryAudioCaptureTrackResponseDiscontinuityCountMin = 0;
+
+export const markLibraryAudioCaptureTrackResponseAvailableBytesMin = 0;
+
+export const markLibraryAudioCaptureTrackResponseReserveBytesMin = 0;
+
+export const markLibraryAudioCaptureTrackResponseEstimatedSecondsRemainingMin = 0;
+
+
+
+
+
+export const markLibraryAudioCaptureTrackResponseSignalPeakMin = 0;
+export const markLibraryAudioCaptureTrackResponseSignalPeakMax = 1;
+
+export const markLibraryAudioCaptureTrackResponseSignalCapturedSecondsMin = 0;
+
+export const markLibraryAudioCaptureTrackResponseSignalClippedSamplesMin = 0;
+
+export const markLibraryAudioCaptureTrackResponseSignalInvalidSamplesMin = 0;
+
+
+
+export const MarkLibraryAudioCaptureTrackResponse = zod.object({
+  "markers": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "sampleFrame": zod.number().int().min(1),
+  "metadata": zod.object({
+  "title": zod.string().min(1).max(markLibraryAudioCaptureTrackResponseMarkersItemMetadataTitleMax),
+  "artist": zod.string().max(markLibraryAudioCaptureTrackResponseMarkersItemMetadataArtistMax).optional(),
+  "album": zod.string().max(markLibraryAudioCaptureTrackResponseMarkersItemMetadataAlbumMax).optional(),
+  "trackNumber": zod.number().int().min(1).max(markLibraryAudioCaptureTrackResponseMarkersItemMetadataTrackNumberMax).optional(),
+  "artworkDataUrl": zod.string().max(markLibraryAudioCaptureTrackResponseMarkersItemMetadataArtworkDataUrlMax).optional().describe('Local PNG/JPEG data URL, validated against image bytes')
+})
+})).optional(),
+  "sessionId": zod.string().uuid(),
+  "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
+  "title": zod.string(),
+  "captureMode": zod.enum(['system-loopback', 'process-loopback']).optional(),
+  "processId": zod.number().int().optional(),
+  "startedAt": zod.coerce.date().optional(),
+  "elapsedSeconds": zod.number().min(markLibraryAudioCaptureTrackResponseElapsedSecondsMin),
+  "discontinuityCount": zod.number().int().min(markLibraryAudioCaptureTrackResponseDiscontinuityCountMin),
+  "availableBytes": zod.number().int().min(markLibraryAudioCaptureTrackResponseAvailableBytesMin).optional(),
+  "reserveBytes": zod.number().int().min(markLibraryAudioCaptureTrackResponseReserveBytesMin).optional(),
+  "estimatedSecondsRemaining": zod.number().int().min(markLibraryAudioCaptureTrackResponseEstimatedSecondsRemainingMin).optional(),
+  "format": zod.object({
+  "sampleRate": zod.number().int().min(1),
+  "channels": zod.number().int().min(1),
+  "bitsPerSample": zod.number().int().min(1),
+  "blockAlign": zod.number().int().min(1)
+}).optional(),
+  "message": zod.string().optional(),
+  "signal": zod.object({
+  "state": zod.enum(['waiting', 'silent', 'active', 'unsupported']),
+  "peak": zod.number().min(markLibraryAudioCaptureTrackResponseSignalPeakMin).max(markLibraryAudioCaptureTrackResponseSignalPeakMax),
+  "capturedSeconds": zod.number().min(markLibraryAudioCaptureTrackResponseSignalCapturedSecondsMin),
+  "signalSeen": zod.boolean(),
+  "clippedSamples": zod.number().int().min(markLibraryAudioCaptureTrackResponseSignalClippedSamplesMin),
+  "invalidSamples": zod.number().int().min(markLibraryAudioCaptureTrackResponseSignalInvalidSamplesMin)
+}).optional()
+})
+
+
+/**
  * @summary Get the status of an active capture session
  */
 export const GetLibraryAudioCaptureStatusParams = zod.object({
   "id": zod.coerce.string().uuid()
 })
+
+
+export const getLibraryAudioCaptureStatusResponseMarkersItemMetadataTitleMax = 500;
+
+export const getLibraryAudioCaptureStatusResponseMarkersItemMetadataArtistMax = 500;
+
+export const getLibraryAudioCaptureStatusResponseMarkersItemMetadataAlbumMax = 500;
+
+export const getLibraryAudioCaptureStatusResponseMarkersItemMetadataTrackNumberMax = 99999;
+
+export const getLibraryAudioCaptureStatusResponseMarkersItemMetadataArtworkDataUrlMax = 2800000;
 
 export const getLibraryAudioCaptureStatusResponseElapsedSecondsMin = 0;
 
@@ -438,6 +651,17 @@ export const getLibraryAudioCaptureStatusResponseSignalInvalidSamplesMin = 0;
 
 
 export const GetLibraryAudioCaptureStatusResponse = zod.object({
+  "markers": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "sampleFrame": zod.number().int().min(1),
+  "metadata": zod.object({
+  "title": zod.string().min(1).max(getLibraryAudioCaptureStatusResponseMarkersItemMetadataTitleMax),
+  "artist": zod.string().max(getLibraryAudioCaptureStatusResponseMarkersItemMetadataArtistMax).optional(),
+  "album": zod.string().max(getLibraryAudioCaptureStatusResponseMarkersItemMetadataAlbumMax).optional(),
+  "trackNumber": zod.number().int().min(1).max(getLibraryAudioCaptureStatusResponseMarkersItemMetadataTrackNumberMax).optional(),
+  "artworkDataUrl": zod.string().max(getLibraryAudioCaptureStatusResponseMarkersItemMetadataArtworkDataUrlMax).optional().describe('Local PNG/JPEG data URL, validated against image bytes')
+})
+})).optional(),
   "sessionId": zod.string().uuid(),
   "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
   "title": zod.string(),
@@ -474,6 +698,12 @@ export const StopLibraryAudioCaptureParams = zod.object({
   "id": zod.coerce.string().uuid()
 })
 
+export const stopLibraryAudioCaptureResponseTracksItemRatingMin = 0;
+export const stopLibraryAudioCaptureResponseTracksItemRatingMax = 5;
+
+export const stopLibraryAudioCaptureResponseTracksItemStemAvailabilityThreeProgressPercentMin = 0;
+export const stopLibraryAudioCaptureResponseTracksItemStemAvailabilityThreeProgressPercentMax = 100;
+
 export const stopLibraryAudioCaptureResponseTrackRatingMin = 0;
 export const stopLibraryAudioCaptureResponseTrackRatingMax = 5;
 
@@ -502,6 +732,44 @@ export const stopLibraryAudioCaptureResponseSignalInvalidSamplesMin = 0;
 
 
 export const StopLibraryAudioCaptureResponse = zod.object({
+  "tracks": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "title": zod.string(),
+  "artist": zod.string(),
+  "album": zod.string(),
+  "durationSeconds": zod.number(),
+  "playCount": zod.number().int(),
+  "rating": zod.number().int().min(stopLibraryAudioCaptureResponseTracksItemRatingMin).max(stopLibraryAudioCaptureResponseTracksItemRatingMax),
+  "labels": zod.array(zod.string()),
+  "lastPlayedAt": zod.coerce.date().nullable(),
+  "addedAt": zod.coerce.date(),
+  "stemAvailability": zod.union([zod.object({
+  "status": zod.enum(['separated']),
+  "stemCount": zod.number().int(),
+  "stemTypes": zod.array(zod.string())
+}),zod.object({
+  "status": zod.enum(['source-only', 'not-started', 'unavailable']),
+  "reason": zod.string()
+}),zod.object({
+  "status": zod.enum(['processing']),
+  "reason": zod.string(),
+  "stage": zod.string().optional(),
+  "progress": zod.object({
+  "percent": zod.number().int().min(stopLibraryAudioCaptureResponseTracksItemStemAvailabilityThreeProgressPercentMin).max(stopLibraryAudioCaptureResponseTracksItemStemAvailabilityThreeProgressPercentMax),
+  "phase": zod.string().optional()
+}).optional()
+}),zod.object({
+  "status": zod.enum(['rejected', 'failed']),
+  "reason": zod.string(),
+  "retryJobId": zod.string().uuid()
+})]),
+  "analysis": zod.object({
+  "status": zod.string(),
+  "bpm": zod.number().nullable(),
+  "musicalKey": zod.string().nullable()
+}).nullish(),
+  "studioProjectId": zod.string().uuid()
+})).optional(),
   "track": zod.object({
   "id": zod.string().uuid(),
   "title": zod.string(),

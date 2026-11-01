@@ -187,6 +187,35 @@ export interface LibraryAudioCaptureApplication {
   name: string;
 }
 
+export interface LibraryAudioCaptureTags {
+  /**
+     * @minLength 1
+     * @maxLength 500
+     */
+  title: string;
+  /** @maxLength 500 */
+  artist?: string;
+  /** @maxLength 500 */
+  album?: string;
+  /**
+     * @minimum 1
+     * @maximum 99999
+     */
+  trackNumber?: number;
+  /**
+     * Local PNG/JPEG data URL, validated against image bytes
+     * @maxLength 2800000
+     */
+  artworkDataUrl?: string;
+}
+
+export type LibraryAudioCaptureOptionsResponseMediaMetadata = {
+  available: boolean;
+  reason?: string;
+  sourceAppId?: string;
+  metadata?: LibraryAudioCaptureTags;
+};
+
 export interface LibraryAudioCaptureStorageBudget {
   /** @minimum 0 */
   availableBytes: number;
@@ -194,6 +223,13 @@ export interface LibraryAudioCaptureStorageBudget {
   reserveBytes: number;
   canRecord: boolean;
   reason?: string;
+}
+
+export interface LibraryAudioCaptureMarker {
+  id: string;
+  /** @minimum 1 */
+  sampleFrame: number;
+  metadata: LibraryAudioCaptureTags;
 }
 
 export type LibraryAudioCaptureStatusResponseStatus = typeof LibraryAudioCaptureStatusResponseStatus[keyof typeof LibraryAudioCaptureStatusResponseStatus];
@@ -253,6 +289,7 @@ export interface LibraryAudioCaptureSignal {
 }
 
 export interface LibraryAudioCaptureStatusResponse {
+  markers?: LibraryAudioCaptureMarker[];
   sessionId: string;
   status: LibraryAudioCaptureStatusResponseStatus;
   title: string;
@@ -275,6 +312,7 @@ export interface LibraryAudioCaptureStatusResponse {
 }
 
 export interface LibraryAudioCaptureOptionsResponse {
+  mediaMetadata?: LibraryAudioCaptureOptionsResponseMediaMetadata;
   available: boolean;
   devices: LibraryAudioCaptureDevice[];
   applications?: LibraryAudioCaptureApplication[];
@@ -300,6 +338,7 @@ export interface LibraryAudioCaptureRecoveriesResponse {
 }
 
 export interface LibraryAudioCaptureRecoveryImportResponse {
+  tracks?: LibraryTrackSummary[];
   track: LibraryTrackSummary;
   created: boolean;
   separationQueued: boolean;
@@ -307,6 +346,13 @@ export interface LibraryAudioCaptureRecoveryImportResponse {
 }
 
 export interface LibraryAudioCaptureStartInput {
+  /**
+     * @minimum 1
+     * @maximum 99999
+     */
+  trackNumber?: number;
+  /** @maxLength 2800000 */
+  artworkDataUrl?: string;
   /**
      * @minLength 1
      * @maxLength 200
@@ -343,6 +389,7 @@ export interface LibraryAudioCaptureStartResponse {
 }
 
 export interface LibraryAudioCaptureStopResponse {
+  tracks?: LibraryTrackSummary[];
   track: LibraryTrackSummary;
   created: boolean;
   separationQueued: boolean;
@@ -389,6 +436,17 @@ q?: string;
  */
 limit?: number;
 };
+
+export type GetLibraryAudioCaptureOptionsParams = {
+mediaMetadata?: GetLibraryAudioCaptureOptionsMediaMetadata;
+};
+
+export type GetLibraryAudioCaptureOptionsMediaMetadata = typeof GetLibraryAudioCaptureOptionsMediaMetadata[keyof typeof GetLibraryAudioCaptureOptionsMediaMetadata];
+
+
+export const GetLibraryAudioCaptureOptionsMediaMetadata = {
+  NUMBER_1: '1',
+} as const;
 
 export type GetLibraryAudioBackupParams = {
 /**

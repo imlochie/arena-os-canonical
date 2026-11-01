@@ -1,6 +1,5 @@
 import type { LibraryAudioCaptureRecoveryImportResponse } from "@workspace/api-zod";
-import { addTrackFromAudioFile } from "@workspace/arena/lib/waveyard/library/service";
-import { sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
+import { importCaptureTracks } from "../../../../../../lib/waveyard/audio-capture-import";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import {
   clearRecoveredAudioCapture,
@@ -16,17 +15,17 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const { id } = await params;
     const capture = await getRecoverableAudioCapture(user.id, id);
     if (!capture) return Response.json({ error: "No interrupted recording was found for this user." }, { status: 404 });
-    const result = await addTrackFromAudioFile({
+    const result = await importCaptureTracks({
       ownerId: user.id,
-      filePath: capture.path,
-      filename: `${sanitizedFilename(capture.title)}.wav`,
-      mimeType: "audio/wav",
-      title: capture.title,
-      artist: capture.artist,
-      album: capture.album,
-      prepareSeparation: capture.signal && capture.signal.state !== "unsupported" && !capture.signal.signalSeen ? false : undefined,
+      ...capture,
+      metadata: capture.metadata ?? { title: capture.title, artist: capture.artist, album: capture.album },
     });
     const response: LibraryAudioCaptureRecoveryImportResponse = {
+      tracks: result.tracks.map((track) => ({
+        ...track,
+        lastPlayedAt: track.lastPlayedAt ? new Date(track.lastPlayedAt) : null,
+        addedAt: new Date(track.addedAt),
+      })),
       track: {
         ...result.track,
         lastPlayedAt: result.track.lastPlayedAt ? new Date(result.track.lastPlayedAt) : null,

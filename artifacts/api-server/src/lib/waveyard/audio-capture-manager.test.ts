@@ -14,6 +14,8 @@ import {
   getAudioCaptureImportResult,
   getAudioCaptureSessionDirectory,
   getAudioCaptureStatus,
+  getWindowsMediaMetadata,
+  markAudioCaptureTrack,
   getRecoverableAudioCapture,
   listRecoverableAudioCaptures,
   shutdownAudioCaptures,
@@ -46,6 +48,54 @@ async function makeTemporaryRoot(): Promise<string> {
   temporaryRoots.push(root);
   return root;
 }
+
+test("confirmed markers persist at captured PCM frames without stopping the recorder", { skip: originalPlatform?.value === "win32" }, async () => {
+  const root = await makeTemporaryRoot();
+  const resources = path.join(root, "resources");
+  const native = path.join(resources, "native");
+  await mkdir(native, { recursive: true });
+  const format = Buffer.alloc(16);
+  format.writeUInt16LE(1, 0); format.writeUInt16LE(2, 2); format.writeUInt32LE(48000, 4);
+  format.writeUInt32LE(192000, 8); format.writeUInt16LE(4, 12); format.writeUInt16LE(16, 14);
+  const host = path.join(native, "waveyard-capture-host.exe");
+  await writeFile(host, `#!${process.execPath}
+const command=process.argv[2];
+if(command==="version"){console.log(JSON.stringify({protocolVersion:1,captureModes:["system-loopback"]}));process.exit(0);}
+if(command==="devices"){console.log(JSON.stringify({devices:[{id:"tone",name:"Tone",isDefault:true}],applications:[]}));process.exit(0);}
+if(command==="media-metadata"){console.log(JSON.stringify({available:true,sourceAppId:"Test.Player",metadata:{title:"Current song",artist:"Artist",album:"Album",trackNumber:4}}));process.exit(0);}
+const emit=(event)=>process.stderr.write(JSON.stringify(event)+"\\n");
+emit({type:"ready",mode:"system-loopback",deviceId:"tone",deviceName:"Tone",formatChunkBase64:"${format.toString("base64")}",sampleRate:48000,channels:2,bitsPerSample:16,blockAlign:4});
+let timer;
+require("node:readline").createInterface({input:process.stdin}).on("line",(line)=>{
+if(line==="start"){emit({type:"started"});process.stdout.write(Buffer.alloc(1920,32));timer=setInterval(()=>process.stdout.write(Buffer.alloc(1920,32)),20);}
+if(line==="stop"){clearInterval(timer);emit({type:"stopped"});process.exit(0);}
+});
+`);
+  await chmod(host, 0o755);
+  process.env.ARENA_DATA_DIR = root;
+  process.env.ARENA_RESOURCES_DIR = resources;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+  const started = await startAudioCapture("marker-owner", { title: "First", trackNumber: 3, deviceId: "tone" });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await assert.rejects(markAudioCaptureTrack("other-owner", started.sessionId, { title: "No" }), /not found/);
+  const marked = await markAudioCaptureTrack("marker-owner", started.sessionId, { title: "Second", artist: "Artist", album: "Album", trackNumber: 4 });
+  assert.equal(marked.status, "recording");
+  assert.equal(marked.markers?.length, 1);
+  assert(marked.markers![0]!.sampleFrame > 0);
+  assert.equal(marked.markers![0]!.metadata.title, "Second");
+  const metadata = await getWindowsMediaMetadata();
+  assert.equal(metadata.available, true);
+  assert.equal(metadata.metadata?.title, "Current song");
+  const finished = await stopAudioCapture("marker-owner", started.sessionId);
+  assert(finished);
+  assert.deepEqual(finished.markers, marked.markers);
+  const manifest = JSON.parse(await readFile(path.join(finished.sessionDirectory, "session.json"), "utf8"));
+  assert.deepEqual(manifest.markers, marked.markers);
+  const preserved = await getRecoverableAudioCapture("marker-owner", started.sessionId);
+  assert.deepEqual(preserved?.markers, marked.markers);
+  assert.equal(preserved?.metadata?.trackNumber, 3);
+});
 
 test("non-Windows preview reports capture unavailable and refuses to start", async () => {
   const root = await makeTemporaryRoot();

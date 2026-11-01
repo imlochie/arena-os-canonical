@@ -20,3 +20,9 @@ Treat signal detection as a diagnostic, not proof of fidelity, app compatibility
 **Why:** Legitimate recordings can be very quiet, while an idle loopback endpoint may deliver no packets at all. A level threshold cannot establish why audio is missing.
 
 **How to apply:** Distinguish missing packets, received silence, and detected signal. Keep compatibility claims tied to a real recording/playback test, and label unavailable historical signal evidence as unverified.
+
+Windows media-session metadata is a suggestion, not proof of the captured application's identity or a sample-aligned track boundary.
+
+**Why:** GSMTC's current media session can belong to a different application, and its title-change timing is not aligned to the captured PCM stream.
+
+**How to apply:** Keep tag retrieval optional and reviewable. Require confirmed capture-frame markers until source identity and boundary timing have independent evidence; never silently split recordings merely because a global media-session title changed.

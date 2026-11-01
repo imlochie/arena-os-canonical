@@ -6,11 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { LibraryAudioCaptureFormat } from './libraryAudioCaptureFormat';
+import type { LibraryAudioCaptureMarker } from './libraryAudioCaptureMarker';
 import type { LibraryAudioCaptureSignal } from './libraryAudioCaptureSignal';
 import type { LibraryAudioCaptureStatusResponseCaptureMode } from './libraryAudioCaptureStatusResponseCaptureMode';
 import type { LibraryAudioCaptureStatusResponseStatus } from './libraryAudioCaptureStatusResponseStatus';
 
 export interface LibraryAudioCaptureStatusResponse {
+  markers?: LibraryAudioCaptureMarker[];
   sessionId: string;
   status: LibraryAudioCaptureStatusResponseStatus;
   title: string;

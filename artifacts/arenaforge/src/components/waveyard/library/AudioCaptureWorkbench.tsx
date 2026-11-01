@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LibraryAudioCaptureSignal, LibraryAudioCaptureApplication } from "@workspace/api-client-react";
 
 type CaptureDevice = {
@@ -24,6 +24,7 @@ type CaptureStorageBudget = {
 };
 
 type CaptureSession = {
+  markers?: Array<{ id: string; sampleFrame: number; metadata: { title: string; artist?: string; album?: string; trackNumber?: number } }>;
   sessionId: string;
   status: "starting" | "recording" | "stopping" | "completed" | "failed";
   title: string;
@@ -105,6 +106,16 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [album, setAlbum] = useState("");
+  const [trackNumber, setTrackNumber] = useState("");
+  const [artworkDataUrl, setArtworkDataUrl] = useState("");
+  const [readingMetadata, setReadingMetadata] = useState(false);
+  const metadataRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => metadataRequest.current?.abort(), []);
+  const cancelMetadataRead = () => {
+    metadataRequest.current?.abort();
+    metadataRequest.current = null;
+    setReadingMetadata(false);
+  };
   const [rightsReviewed, setRightsReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -183,6 +194,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
 
   const start = async () => {
     if (!options?.available || !rightsReviewed || !title.trim() || busy) return;
+    cancelMetadataRead();
     const application = options.applications?.find((app) =>
       `${app.processId}:${app.processStartTime}` === applicationKey);
     if (captureMode === "application" && (!options.processLoopbackSupported || !application)) return;
@@ -197,6 +209,8 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
           title: title.trim(),
           artist: artist.trim() || undefined,
           album: album.trim() || undefined,
+          trackNumber: trackNumber ? Number(trackNumber) : undefined,
+          artworkDataUrl: artworkDataUrl || undefined,
           ...(captureMode === "application" && application
             ? { processId: application.processId, processStartTime: application.processStartTime }
             : { deviceId }),
@@ -206,6 +220,8 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? `Could not start recording (${response.status}).`);
       setSession({ title: title.trim(), elapsedSeconds: 0, discontinuityCount: 0, ...data } as CaptureSession);
+      setTitle("");
+      setTrackNumber((value) => value ? String(Number(value) + 1) : "");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not start Windows audio capture.");
       void refreshOptions().catch(() => {});
@@ -216,6 +232,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
 
   const stop = async () => {
     if (!session || busy) return;
+    cancelMetadataRead();
     setBusy(true);
     setMessage(null);
     try {
@@ -225,11 +242,13 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? `Could not finalize recording (${response.status}).`);
       const warning = signalWarning(data.signal);
-      setMessage(`${data.track?.title ?? title} was added to Waveyard${data.separationQueued ? " and queued for stem separation" : ""}.${warning}`);
+      setMessage(`${data.tracks?.length > 1 ? `${data.tracks.length} tagged tracks were` : `${data.track?.title ?? title} was`} added to Waveyard${data.separationQueued ? " and queued for stem separation" : ""}.${warning}`);
       setSession(null);
       setTitle("");
       setArtist("");
       setAlbum("");
+      setTrackNumber("");
+      setArtworkDataUrl("");
       setRightsReviewed(false);
       await refreshOptions();
       onCaptured();
@@ -252,7 +271,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       );
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? "Could not import the preserved recording.");
-      setMessage(`${data.track?.title ?? recovery.title} was recovered into your Waveyard library.${signalWarning(data.signal)}`);
+      setMessage(`${data.tracks?.length > 1 ? `${data.tracks.length} tagged tracks were` : `${data.track?.title ?? recovery.title} was`} recovered into your Waveyard library.${signalWarning(data.signal)}`);
       await refreshOptions();
       onCaptured();
     } catch (error) {
@@ -276,6 +295,70 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     }
   };
 
+  const readMediaMetadata = async () => {
+    if (busy || metadataRequest.current) return;
+    const controller = new AbortController();
+    metadataRequest.current = controller;
+    setReadingMetadata(true);
+    try {
+      const response = await fetch("/api/library/audio-capture?mediaMetadata=1", { cache: "no-store", signal: controller.signal });
+      const data = await readJson(response);
+      if (controller.signal.aborted) return;
+      if (!response.ok || !data.mediaMetadata?.available || !data.mediaMetadata.metadata)
+        throw new Error(data.mediaMetadata?.reason ?? data.error ?? "The current Windows player did not publish metadata.");
+      const tags = data.mediaMetadata.metadata;
+      setTitle(tags.title);
+      setArtist(tags.artist ?? "");
+      setAlbum(tags.album ?? "");
+      setTrackNumber(tags.trackNumber ? String(tags.trackNumber) : "");
+      setArtworkDataUrl(tags.artworkDataUrl ?? "");
+      setMessage(`Read tags from Windows media session ${data.mediaMetadata.sourceAppId || "(unknown app)"}. Review them before confirming: this may not be the application being recorded.`);
+    } catch (error) {
+      if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : "Could not read Windows media metadata.");
+    } finally {
+      if (metadataRequest.current === controller) {
+        metadataRequest.current = null;
+        setReadingMetadata(false);
+      }
+    }
+  };
+  const markNextTrack = async () => {
+    if (!session || busy || !title.trim()) return;
+    cancelMetadataRead();
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/library/audio-capture/${encodeURIComponent(session.sessionId)}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: title.trim(), artist: artist.trim() || undefined, album: album.trim() || undefined,
+          trackNumber: trackNumber ? Number(trackNumber) : undefined, artworkDataUrl: artworkDataUrl || undefined }),
+      });
+      const data = await readJson(response);
+      if (!response.ok) throw new Error(data.error ?? "Could not confirm the next track.");
+      setSession(data as CaptureSession);
+      setMessage(`Boundary saved. “${title.trim()}” starts at this confirmed PCM position; recording continues.`);
+      setTitle("");
+      setTrackNumber((value) => value ? String(Number(value) + 1) : "");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not mark the next track."); }
+    finally { setBusy(false); }
+  };
+  const metadataFields = <>
+    <label>Track title<input aria-label="Track title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} placeholder="Name this track" disabled={busy} /></label>
+    <label>Artist <span className="optional-label">optional</span><input aria-label="Artist" value={artist} onChange={(event) => setArtist(event.target.value)} maxLength={200} disabled={busy} /></label>
+    <label>Album <span className="optional-label">optional</span><input aria-label="Album" value={album} onChange={(event) => setAlbum(event.target.value)} maxLength={200} disabled={busy} /></label>
+    <label>Track number <span className="optional-label">optional</span><input aria-label="Track number" type="number" min="1" max="99999" value={trackNumber} onChange={(event) => setTrackNumber(event.target.value)} disabled={busy} /></label>
+    <label>Artwork <span className="optional-label">PNG/JPEG, up to 2 MB</span><input aria-label="Capture artwork" type="file" accept="image/png,image/jpeg" disabled={busy} onChange={(event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      if (file.size > 2_000_000 || !["image/png", "image/jpeg"].includes(file.type)) { setMessage("Choose a PNG or JPEG no larger than 2 MB."); return; }
+      const reader = new FileReader();
+      reader.onload = () => { if (typeof reader.result === "string") setArtworkDataUrl(reader.result); };
+      reader.onerror = () => setMessage("Could not read artwork.");
+      reader.readAsDataURL(file);
+    }} /></label>
+    {artworkDataUrl && <div><img src={artworkDataUrl} width={56} height={56} alt="Selected track artwork" /><button type="button" onClick={() => setArtworkDataUrl("")} disabled={busy}>Remove artwork</button></div>}
+    <button type="button" onClick={() => void readMediaMetadata()} disabled={busy || readingMetadata || !options?.available}>{readingMetadata ? "Reading media tags…" : "Read Windows media tags"}</button>
+    {readingMetadata && <button type="button" onClick={cancelMetadataRead}>Cancel tag lookup</button>}
+  </>;
   const recording = session && ["starting", "recording", "stopping"].includes(session.status);
   const recoveries = (options?.recoveries ?? []).filter((recovery) =>
     !(session?.status === "completed" && recovery.sessionId === session.sessionId));
@@ -367,6 +450,16 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                 ? "Add captured audio to library" : "Stop and add to library"}
             </button>
           )}
+          {session.status === "recording" && <fieldset disabled={busy}>
+            <legend>Next track boundary</legend>
+            <p>Enter the next track’s tags, then confirm when it begins. The previous file ends at that captured PCM frame; recording does not stop. Metadata changes alone never split audio.</p>
+            {metadataFields}
+            <button type="button" onClick={() => void markNextTrack()} disabled={busy || !title.trim()}>Confirm next track boundary</button>
+            <ol aria-label="Confirmed track boundaries">{session.markers?.map((marker) => <li key={marker.id}>
+              {marker.metadata.trackNumber ? `${marker.metadata.trackNumber}. ` : ""}{marker.metadata.title}
+              {" · "}{formatElapsed(marker.sampleFrame / (session.format?.sampleRate ?? 1))}
+            </li>)}</ol>
+          </fieldset>}
         </div>
       )}
 
@@ -423,37 +516,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
               ))}
             </select>
           </label>}
-          <label>
-            Track title
-            <input
-              aria-label="Track title"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              maxLength={200}
-              placeholder="Name this recording"
-              disabled={busy}
-            />
-          </label>
-          <label>
-            Artist <span className="optional-label">optional</span>
-            <input
-              aria-label="Artist"
-              value={artist}
-              onChange={(event) => setArtist(event.target.value)}
-              maxLength={200}
-              disabled={busy}
-            />
-          </label>
-          <label>
-            Album <span className="optional-label">optional</span>
-            <input
-              aria-label="Album"
-              value={album}
-              onChange={(event) => setAlbum(event.target.value)}
-              maxLength={200}
-              disabled={busy}
-            />
-          </label>
+          {metadataFields}
           <label className="track-backup-choice">
             <input
               type="checkbox"

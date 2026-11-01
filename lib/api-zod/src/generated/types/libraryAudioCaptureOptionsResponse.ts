@@ -7,10 +7,12 @@
  */
 import type { LibraryAudioCaptureApplication } from './libraryAudioCaptureApplication';
 import type { LibraryAudioCaptureDevice } from './libraryAudioCaptureDevice';
+import type { LibraryAudioCaptureOptionsResponseMediaMetadata } from './libraryAudioCaptureOptionsResponseMediaMetadata';
 import type { LibraryAudioCaptureStatusResponse } from './libraryAudioCaptureStatusResponse';
 import type { LibraryAudioCaptureStorageBudget } from './libraryAudioCaptureStorageBudget';
 
 export interface LibraryAudioCaptureOptionsResponse {
+  mediaMetadata?: LibraryAudioCaptureOptionsResponseMediaMetadata;
   available: boolean;
   devices: LibraryAudioCaptureDevice[];
   applications?: LibraryAudioCaptureApplication[];

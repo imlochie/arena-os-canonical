@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { Rf64Recorder, recoverRf64Partial } from "@workspace/arena/lib/waveyard/capture/rf64";
 import type { Rf64Format, Rf64RecordingResult } from "@workspace/arena/lib/waveyard/capture/rf64";
 import { PcmSignalMonitor, isCaptureSignal, type CaptureSignal } from "@workspace/arena/lib/waveyard/capture/pcm-signal";
+import { validateCaptureTags, type CaptureMarker, type CaptureTags } from "@workspace/arena/lib/waveyard/capture/segments";
 
 const execFileAsync = promisify(execFile);
 const sessions = new Map<string, CaptureSession>();
@@ -54,6 +55,7 @@ export interface AudioCaptureStorageBudget {
 export type AudioCaptureState = "starting" | "recording" | "stopping" | "completed" | "failed";
 
 export interface AudioCaptureSnapshot {
+  markers?: CaptureMarker[];
   sessionId: string;
   status: AudioCaptureState;
   title: string;
@@ -70,7 +72,7 @@ export interface AudioCaptureSnapshot {
   signal?: CaptureSignal;
 }
 
-export interface AudioCaptureStartInput {
+export interface AudioCaptureStartInput extends CaptureTags {
   title: string;
   artist?: string;
   album?: string;
@@ -80,6 +82,7 @@ export interface AudioCaptureStartInput {
 }
 
 export interface AudioCaptureFinalized {
+  markers?: CaptureMarker[];
   path: string;
   result: Rf64RecordingResult;
   format: AudioCaptureFormat;
@@ -99,6 +102,8 @@ export interface AudioCaptureRecovery {
 }
 
 export interface AudioCaptureRecoveryFile extends AudioCaptureRecovery {
+  metadata?: CaptureTags;
+  markers?: CaptureMarker[];
   path: string;
   sessionDirectory: string;
 }
@@ -111,6 +116,7 @@ export interface AudioCaptureShutdownResult {
 }
 
 interface PersistedCaptureManifest {
+  markers?: CaptureMarker[];
   sessionId: string;
   ownerId: string;
   metadata: AudioCaptureStartInput;
@@ -138,6 +144,8 @@ interface NativeEvent {
 }
 
 interface CaptureSession {
+  markers: CaptureMarker[];
+  manifestChain: Promise<void>;
   id: string;
   ownerId: string;
   metadata: AudioCaptureStartInput;
@@ -189,6 +197,64 @@ function captureHostPath(): string | null {
   if (!resources) return null;
   const host = join(resources, "native", "waveyard-capture-host.exe");
   return existsSync(host) ? host : null;
+}
+
+export async function getWindowsMediaMetadata() {
+  const host = captureHostPath();
+  if (!host) return { available: false, reason: "Windows media metadata is available only in the desktop application." };
+  try {
+    const { stdout } = await execFileAsync(host, ["media-metadata"], {
+      timeout: 10_000, windowsHide: true, maxBuffer: 4_000_000,
+    });
+    const result = JSON.parse(stdout);
+    if (result.available !== true) return { available: false, reason: String(result.reason || "The current player did not publish metadata.") };
+    return { available: true, sourceAppId: String(result.sourceAppId || ""), metadata: validateCaptureTags(result.metadata) };
+  } catch (error) {
+    return { available: false, reason: error instanceof Error ? error.message : "Windows media metadata could not be read." };
+  }
+}
+
+function updateCaptureManifest(session: CaptureSession, update: (manifest: PersistedCaptureManifest) => void) {
+  const operation = session.manifestChain.then(async () => {
+    const path = join(session.sessionDirectory, "session.json");
+    const manifest = JSON.parse(await readFile(path, "utf8")) as PersistedCaptureManifest;
+    update(manifest);
+    const temporary = `${path}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const handle = await open(temporary, "r+");
+    try { await handle.sync(); } finally { await handle.close(); }
+    await rename(temporary, path);
+  });
+  session.manifestChain = operation.catch(() => {});
+  return operation;
+}
+
+export async function markAudioCaptureTrack(ownerId: string, id: string, input: unknown) {
+  const session = sessions.get(id);
+  if (!session || session.ownerId !== ownerId) throw new Error("Capture session not found.");
+  if (session.status !== "recording" || !session.recorder) throw new Error("A track boundary requires an active PCM recording.");
+  const metadata = validateCaptureTags(input);
+  // Serialize marker positions with PCM writes and other marker requests.
+  let entered = false;
+  const operation = session.pcmChain.then(async () => {
+    entered = true;
+    if (session.status !== "recording" || !session.recorder) throw new Error("The recording has stopped; no boundary was added.");
+    const sampleFrame = session.recorder.sampleFrames;
+    const previous = session.markers.at(-1)?.sampleFrame ?? 0;
+    if (sampleFrame <= previous) throw new Error("Wait for more captured audio before marking the next track.");
+    if (session.markers.length >= 5000) throw new Error("This recording has reached its 5000-track marker limit.");
+    const artworkBytes = [session.metadata, ...session.markers.map((marker) => marker.metadata), metadata]
+      .reduce((total, tags) => total + (tags.artworkDataUrl?.length ?? 0), 0);
+    if (artworkBytes > 16_000_000) throw new Error("This recording's artwork exceeds 16 MB. Use smaller images or start a new recording.");
+    const marker = { id: randomUUID(), sampleFrame, metadata };
+    const markers = [...session.markers, marker];
+    await session.recorder.flush();
+    await updateCaptureManifest(session, (manifest) => { manifest.markers = markers; });
+    session.markers = markers;
+  });
+  session.pcmChain = operation.catch((error) => { if (!entered) throw error; });
+  await operation;
+  return snapshot(session);
 }
 
 function captureRoot(): string {
@@ -388,8 +454,12 @@ function snapshot(session: CaptureSession): AudioCaptureSnapshot {
   const end = session.endedAt ? Date.parse(session.endedAt) : Date.now();
   return {
     sessionId: session.id,
+    markers: session.markers.map((marker) => {
+      const { artworkDataUrl: _artwork, ...metadata } = marker.metadata;
+      return { ...marker, metadata };
+    }),
     status: session.status,
-    title: session.metadata.title,
+    title: session.markers.at(-1)?.metadata.title ?? session.metadata.title,
     captureMode: session.metadata.processId ? "process-loopback" : "system-loopback",
     ...(session.metadata.processId ? { processId: session.metadata.processId } : {}),
     ...(session.startedAt ? { startedAt: session.startedAt } : {}),
@@ -408,10 +478,7 @@ function snapshot(session: CaptureSession): AudioCaptureSnapshot {
 
 async function persistCaptureSignal(session: CaptureSession): Promise<void> {
   if (!session.signalMonitor) return;
-  const manifestPath = join(session.sessionDirectory, "session.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as PersistedCaptureManifest;
-  manifest.signal = session.signalMonitor.snapshot();
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await updateCaptureManifest(session, (manifest) => { manifest.signal = session.signalMonitor!.snapshot(); });
 }
 
 function sendStop(session: CaptureSession): void {
@@ -604,6 +671,8 @@ function makeSession(input: {
     stderrBuffer: "",
     eventChain: Promise.resolve(),
     pcmChain: Promise.resolve(),
+    manifestChain: Promise.resolve(),
+    markers: [],
     startedPromise,
     resolveStarted,
     rejectStarted,
@@ -616,6 +685,7 @@ export async function startAudioCapture(
   ownerId: string,
   input: AudioCaptureStartInput,
 ): Promise<AudioCaptureSnapshot> {
+  validateCaptureTags(input);
   const host = captureHostPath();
   if (!host) throw new Error("Live audio capture is not available in this runtime.");
   if (Array.from(sessions.values()).some((session) => session.status === "starting" || session.status === "recording" || session.status === "stopping")) {
@@ -789,6 +859,8 @@ async function scanRecoverableAudioCaptures(ownerId: string): Promise<AudioCaptu
     }
 
     recoveries.push({
+      metadata: manifest.metadata,
+      markers: manifest.markers ?? [],
       sessionId: manifest.sessionId,
       title: manifest.metadata.title,
       ...(manifest.metadata.artist ? { artist: manifest.metadata.artist } : {}),
@@ -803,7 +875,7 @@ async function scanRecoverableAudioCaptures(ownerId: string): Promise<AudioCaptu
 }
 
 export async function listRecoverableAudioCaptures(ownerId: string): Promise<AudioCaptureRecovery[]> {
-  return (await scanRecoverableAudioCaptures(ownerId)).map(({ path: _path, sessionDirectory: _directory, ...recovery }) => recovery);
+  return (await scanRecoverableAudioCaptures(ownerId)).map(({ path: _path, sessionDirectory: _directory, metadata: _metadata, markers: _markers, ...recovery }) => recovery);
 }
 
 export async function getRecoverableAudioCapture(ownerId: string, id: string): Promise<AudioCaptureRecoveryFile | null> {
@@ -927,6 +999,7 @@ async function stopAudioCaptureSession(session: CaptureSession): Promise<AudioCa
     }
     session.status = "completed";
     session.final = {
+      markers: session.markers,
       path: result.path,
       result,
       format: session.format,
@@ -935,13 +1008,10 @@ async function stopAudioCaptureSession(session: CaptureSession): Promise<AudioCa
       sessionDirectory: session.sessionDirectory,
       signal: session.signalMonitor?.snapshot(),
     };
-    const manifestPath = join(session.sessionDirectory, "session.json");
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as PersistedCaptureManifest;
-    manifest.recordingFile = basename(result.path);
-    manifest.signal = session.final.signal;
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
+    await updateCaptureManifest(session, (manifest) => {
+      manifest.recordingFile = basename(result.path);
+      manifest.signal = session.final!.signal;
+      manifest.markers = session.markers;
     });
     return session.final;
   } finally {

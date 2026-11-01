@@ -95,6 +95,12 @@ paths:
   /library/audio-capture:
     get:
       operationId: getLibraryAudioCaptureOptions
+      parameters:
+        - name: mediaMetadata
+          in: query
+          schema:
+            type: string
+            enum: ["1"]
       tags: [waveyard]
       summary: Check Windows audio loopback capture availability
       responses:
@@ -172,6 +178,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApiError"
   /library/audio-capture/{id}:
+    post:
+      operationId: markLibraryAudioCaptureTrack
+      tags: [waveyard]
+      summary: Confirm the next track at the current captured PCM frame
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LibraryAudioCaptureTags"
+      responses:
+        "200":
+          description: Boundary saved without restarting capture
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioCaptureStatusResponse"
+        "409":
+          description: Boundary or metadata cannot be recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
     get:
       operationId: getLibraryAudioCaptureStatus
       tags: [waveyard]
@@ -499,6 +535,18 @@ components:
     LibraryAudioCaptureOptionsResponse:
       type: object
       properties:
+        mediaMetadata:
+          type: object
+          properties:
+            available:
+              type: boolean
+            reason:
+              type: string
+            sourceAppId:
+              type: string
+            metadata:
+              $ref: "#/components/schemas/LibraryAudioCaptureTags"
+          required: [available]
         available:
           type: boolean
         devices:
@@ -565,6 +613,10 @@ components:
     LibraryAudioCaptureRecoveryImportResponse:
       type: object
       properties:
+        tracks:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryTrackSummary"
         track:
           $ref: "#/components/schemas/LibraryTrackSummary"
         created:
@@ -590,9 +642,51 @@ components:
           type: integer
           minimum: 1
       required: [sampleRate, channels, bitsPerSample, blockAlign]
+    LibraryAudioCaptureTags:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        artist:
+          type: string
+          maxLength: 500
+        album:
+          type: string
+          maxLength: 500
+        trackNumber:
+          type: integer
+          minimum: 1
+          maximum: 99999
+        artworkDataUrl:
+          type: string
+          maxLength: 2800000
+          description: Local PNG/JPEG data URL, validated against image bytes
+      required: [title]
+      additionalProperties: false
+    LibraryAudioCaptureMarker:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sampleFrame:
+          type: integer
+          minimum: 1
+        metadata:
+          $ref: "#/components/schemas/LibraryAudioCaptureTags"
+      required: [id, sampleFrame, metadata]
     LibraryAudioCaptureStartInput:
       type: object
       properties:
+        trackNumber:
+          type: integer
+          minimum: 1
+          maximum: 99999
+        artworkDataUrl:
+          type: string
+          maxLength: 2800000
         title:
           type: string
           minLength: 1
@@ -658,6 +752,10 @@ components:
     LibraryAudioCaptureStatusResponse:
       type: object
       properties:
+        markers:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryAudioCaptureMarker"
         sessionId:
           type: string
           format: uuid
@@ -699,6 +797,10 @@ components:
     LibraryAudioCaptureStopResponse:
       type: object
       properties:
+        tracks:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryTrackSummary"
         track:
           $ref: "#/components/schemas/LibraryTrackSummary"
         created:

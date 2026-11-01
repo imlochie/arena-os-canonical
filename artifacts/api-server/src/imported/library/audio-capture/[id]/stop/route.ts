@@ -1,6 +1,5 @@
 import { StopLibraryAudioCaptureResponse } from "@workspace/api-zod";
-import { addTrackFromAudioFile } from "@workspace/arena/lib/waveyard/library/service";
-import { sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
+import { importCaptureTracks } from "../../../../../lib/waveyard/audio-capture-import";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import {
   getAudioCaptureImportResult,
@@ -27,18 +26,13 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     if (!capture) return Response.json({ error: "Capture session not found." }, { status: 404 });
 
     const response = await runAudioCaptureImport(user.id, id, async () => {
-      const result = await addTrackFromAudioFile({
+      const result = await importCaptureTracks({
         ownerId: user.id,
-        filePath: capture.path,
-        filename: `${sanitizedFilename(capture.metadata.title)}.wav`,
-        mimeType: "audio/wav",
-        title: capture.metadata.title,
-        artist: capture.metadata.artist,
-        album: capture.metadata.album,
-        prepareSeparation: capture.signal && capture.signal.state !== "unsupported" && !capture.signal.signalSeen ? false : undefined,
+        ...capture,
       });
       const response = StopLibraryAudioCaptureResponse.parse({
         track: result.track,
+        tracks: result.tracks,
         created: result.created,
         separationQueued: result.separationQueued,
         sampleFrames: capture.result.sampleFrames,

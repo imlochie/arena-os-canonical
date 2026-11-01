@@ -10,6 +10,7 @@ import type { LibraryAudioCaptureSignal } from './libraryAudioCaptureSignal';
 import type { LibraryTrackSummary } from './libraryTrackSummary';
 
 export interface LibraryAudioCaptureStopResponse {
+  tracks?: LibraryTrackSummary[];
   track: LibraryTrackSummary;
   created: boolean;
   separationQueued: boolean;

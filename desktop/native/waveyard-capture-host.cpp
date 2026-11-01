@@ -11,6 +11,15 @@
 #include <wrl/client.h>
 #include <wrl/implements.h>
 
+#if __has_include(<winrt/Windows.Media.Control.h>) && __has_include(<winrt/Windows.Storage.Streams.h>)
+#include <winrt/Windows.Media.Control.h>
+#include <winrt/Windows.Storage.Streams.h>
+#pragma comment(lib, "windowsapp.lib")
+#define WAVEYARD_MEDIA_METADATA 1
+#else
+#define WAVEYARD_MEDIA_METADATA 0
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -540,6 +549,55 @@ int run(int argc, wchar_t* argv[]) {
     return 2;
   }
   const std::wstring command = argv[1];
+  if (command == L"media-metadata") {
+#if WAVEYARD_MEDIA_METADATA
+    try {
+      winrt::init_apartment(winrt::apartment_type::multi_threaded);
+      const auto manager = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
+      const auto session = manager.GetCurrentSession();
+      if (!session) {
+        writeLine(GetStdHandle(STD_OUTPUT_HANDLE), "{\"available\":false,\"reason\":\"Windows has no current media session.\"}");
+        return 0;
+      }
+      const auto properties = session.TryGetMediaPropertiesAsync().get();
+      if (properties.Title().empty()) {
+        writeLine(GetStdHandle(STD_OUTPUT_HANDLE), "{\"available\":false,\"reason\":\"The current media session did not publish a title.\"}");
+        return 0;
+      }
+      const auto quote = [](const winrt::hstring& value) { return "\"" + jsonEscape(utf8(std::wstring(value))) + "\""; };
+      std::string output = "{\"available\":true,\"sourceAppId\":" + quote(session.SourceAppUserModelId()) +
+        ",\"metadata\":{\"title\":" + quote(properties.Title()) + ",\"artist\":" + quote(properties.Artist()) +
+        ",\"album\":" + quote(properties.AlbumTitle());
+      if (properties.TrackNumber() > 0) output += ",\"trackNumber\":" + std::to_string(properties.TrackNumber());
+      // Artwork is optional. An unreadable thumbnail must not hide text tags.
+      try {
+        const auto thumbnail = properties.Thumbnail();
+        if (thumbnail) {
+          const auto stream = thumbnail.OpenReadAsync().get();
+          const auto mime = utf8(std::wstring(stream.ContentType()));
+          const auto size = stream.Size();
+          if ((mime == "image/jpeg" || mime == "image/png") && size > 0 && size <= 2'000'000) {
+            const auto reader = winrt::Windows::Storage::Streams::DataReader(stream.GetInputStreamAt(0));
+            if (reader.LoadAsync(static_cast<uint32_t>(size)).get() == size) {
+              std::vector<BYTE> bytes(static_cast<std::size_t>(size));
+              reader.ReadBytes(bytes);
+              output += ",\"artworkDataUrl\":\"data:" + mime + ";base64," + base64(bytes.data(), bytes.size()) + "\"";
+            }
+          }
+        }
+      } catch (...) {}
+      writeLine(GetStdHandle(STD_OUTPUT_HANDLE), output + "}}");
+      return 0;
+    } catch (const winrt::hresult_error& error) {
+      writeLine(GetStdHandle(STD_OUTPUT_HANDLE), "{\"available\":false,\"reason\":\"" +
+        jsonEscape(utf8(std::wstring(error.message()))) + "\"}");
+      return 0;
+    }
+#else
+    writeLine(GetStdHandle(STD_OUTPUT_HANDLE), "{\"available\":false,\"reason\":\"This capture host was built without the Windows C++/WinRT media-session headers.\"}");
+    return 0;
+#endif
+  }
   if (command == L"version") {
     writeLine(GetStdHandle(STD_OUTPUT_HANDLE),
         std::string("{\"protocolVersion\":1,\"captureModes\":[\"system-loopback\"") +
