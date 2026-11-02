@@ -9,15 +9,27 @@
  * stem analyses are the remaining unregistered queues).
  */
 
-export type LocalJobHandler = (payload: Record<string, unknown>) => Promise<void>;
+export type LocalJobHandler = (
+  payload: Record<string, unknown>,
+  context: { signal: AbortSignal },
+) => Promise<void>;
 
 export type BrokerEvent =
   | { kind: "started"; queue: string; jobId: string }
   | { kind: "succeeded"; queue: string; jobId: string; durationMs: number }
+  | { kind: "cancelled"; queue: string; jobId: string; durationMs: number }
   | { kind: "failed"; queue: string; jobId: string; error: string }
   | { kind: "rejected"; queue: string; error: string };
 
 type PendingJob = { queue: string; jobId: string; payload: Record<string, unknown> };
+type ActiveJob = {
+  controller: AbortController;
+  settled: Promise<void>;
+  resolveSettled: () => void;
+};
+
+/** Active native separation must stop and release its worker within this bound. */
+export const LOCAL_JOB_CANCEL_WAIT_MS = 5_000;
 
 export class LocalJobBroker {
   private readonly handlers = new Map<string, LocalJobHandler>();
@@ -25,11 +37,12 @@ export class LocalJobBroker {
   private running = false;
   /** In-flight jobIds — BullMQ's jobId semantics: no duplicate while active. */
   private readonly activeIds = new Set<string>();
+  private readonly activeJobs = new Map<string, ActiveJob>();
   private draining: Promise<boolean> | null = null;
   private readonly events: BrokerEvent[] = [];
   private readonly listeners = new Set<(event: BrokerEvent) => void>();
   private startedAt: Date | null = null;
-  private counts = { submitted: 0, succeeded: 0, failed: 0, rejected: 0 };
+  private counts = { submitted: 0, succeeded: 0, cancelled: 0, failed: 0, rejected: 0 };
 
   register(queue: string, handler: LocalJobHandler): void {
     this.handlers.set(queue, handler);
@@ -74,20 +87,62 @@ export class LocalJobBroker {
         if (handler === undefined) continue; // registered away meanwhile
         this.record({ kind: "started", queue: job.queue, jobId: job.jobId });
         const started = Date.now();
+        const controller = new AbortController();
+        let resolveSettled!: () => void;
+        const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+        this.activeJobs.set(job.jobId, { controller, settled, resolveSettled });
         try {
-          await handler(job.payload);
-          this.counts.succeeded += 1;
-          this.record({ kind: "succeeded", queue: job.queue, jobId: job.jobId, durationMs: Date.now() - started });
+          await handler(job.payload, { signal: controller.signal });
+          if (controller.signal.aborted) {
+            this.counts.cancelled += 1;
+            this.record({ kind: "cancelled", queue: job.queue, jobId: job.jobId, durationMs: Date.now() - started });
+          } else {
+            this.counts.succeeded += 1;
+            this.record({ kind: "succeeded", queue: job.queue, jobId: job.jobId, durationMs: Date.now() - started });
+          }
         } catch (error) {
-          this.counts.failed += 1;
-          this.record({ kind: "failed", queue: job.queue, jobId: job.jobId, error: error instanceof Error ? error.message : String(error) });
+          if (controller.signal.aborted) {
+            this.counts.cancelled += 1;
+            this.record({ kind: "cancelled", queue: job.queue, jobId: job.jobId, durationMs: Date.now() - started });
+          } else {
+            this.counts.failed += 1;
+            this.record({ kind: "failed", queue: job.queue, jobId: job.jobId, error: error instanceof Error ? error.message : String(error) });
+          }
         } finally {
+          this.activeJobs.delete(job.jobId);
           this.activeIds.delete(job.jobId);
+          resolveSettled();
         }
       }
     } finally {
       this.running = false;
     }
+  }
+
+  isRunning(jobId: string): boolean {
+    return this.activeJobs.has(jobId);
+  }
+
+  /**
+   * Abort a running handler and wait for its cleanup. A timeout leaves the
+   * handler active; callers must not report cancellation as complete yet.
+   */
+  async cancelActive(
+    jobId: string,
+    timeoutMs = LOCAL_JOB_CANCEL_WAIT_MS,
+  ): Promise<"stopped" | "not-active" | "timeout"> {
+    const active = this.activeJobs.get(jobId);
+    if (!active) return "not-active";
+    active.controller.abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      active.settled.then(() => "stopped" as const),
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    return result;
   }
 
   /** Wait for in-flight + queued jobs (shutdown drain). */

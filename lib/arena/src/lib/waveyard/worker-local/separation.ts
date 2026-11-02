@@ -70,6 +70,8 @@ import { DependencyMissingError } from "@workspace/arena/lib/waveyard/measure/pc
  *  with a fake inference session and a PGlite database. */
 export type SeparationHandlerDeps = {
   db?: ReturnType<typeof drizzle>;
+  /** The local broker aborts this when the owner stops a running job. */
+  signal?: AbortSignal;
   /** Opens the verified model and returns the inference seam. */
   openEngine?: (spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda") => Promise<OpenedEngine>;
   decode?: typeof decodeSourceToStereoPcm;
@@ -135,6 +137,13 @@ type WorkerDemixResult = {
   timings: MdxStageTimings;
 };
 
+export class SeparationCancelledError extends Error {
+  constructor() {
+    super("Separation was cancelled.");
+    this.name = "SeparationCancelledError";
+  }
+}
+
 function separationWorkerLocation(): { filename: string } {
   const currentFile = fileURLToPath(import.meta.url);
   const candidates = [
@@ -155,7 +164,9 @@ export function demixMdxInWorker(
   requestedDevice: "auto" | "cpu" | "cuda",
   mix: Float32Array[],
   onProgress: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<WorkerDemixResult> {
+  if (signal?.aborted) return Promise.reject(new SeparationCancelledError());
   const target = separationWorkerLocation();
   // Keep the decoded mix available for every model in a multi-stem recipe.
   const left = mix[0].slice();
@@ -169,13 +180,28 @@ export function demixMdxInWorker(
     let settled = false;
     let result: WorkerDemixResult | undefined;
     let workerError: Error | undefined;
+    let termination: Promise<number> | undefined;
+    const onAbort = () => {
+      if (settled || termination !== undefined) return;
+      // Await the actual worker exit before allowing the job to become
+      // terminal; this is what releases its ONNX session and native resources.
+      termination = worker.terminate();
+      void termination.then(
+        () => settle(() => rejectResult(new SeparationCancelledError())),
+        (error) => settle(() => rejectResult(error instanceof Error ? error : new Error(String(error)))),
+      );
+    };
     const settle = (callback: () => void) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener("abort", onAbort);
       callback();
     };
 
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     worker.on("message", (message: Record<string, unknown>) => {
+      if (settled || signal?.aborted) return;
       if (message.type === "progress") {
         onProgress(Number(message.done), Number(message.total));
         return;
@@ -196,10 +222,12 @@ export function demixMdxInWorker(
       }
     });
     worker.once("error", (error) => {
-      workerError = error instanceof Error ? error : new Error(String(error));
+      if (!signal?.aborted) workerError = error instanceof Error ? error : new Error(String(error));
     });
     worker.once("exit", (code) => {
-      if (code !== 0) {
+      if (signal?.aborted) {
+        settle(() => rejectResult(new SeparationCancelledError()));
+      } else if (code !== 0) {
         settle(() => rejectResult(workerError ?? new Error(`Separation inference worker exited with code ${code}.`)));
       } else if (workerError) {
         settle(() => rejectResult(workerError!));
@@ -220,7 +248,12 @@ async function updateJob(
   await database
     .update(processingJobs)
     .set({ ...patch, updatedAt: new Date() })
-    .where(eq(processingJobs.id, id));
+    .where(and(
+      eq(processingJobs.id, id),
+      ne(processingJobs.status, "complete"),
+      ne(processingJobs.status, "cancelled"),
+      ne(processingJobs.stage, "cancelling"),
+    ));
 }
 
 async function updateJobUnlessComplete(
@@ -231,7 +264,51 @@ async function updateJobUnlessComplete(
   await database
     .update(processingJobs)
     .set({ ...patch, updatedAt: new Date() })
-    .where(and(eq(processingJobs.id, id), ne(processingJobs.status, "complete")));
+    .where(and(
+      eq(processingJobs.id, id),
+      ne(processingJobs.status, "complete"),
+      ne(processingJobs.status, "cancelled"),
+      ne(processingJobs.stage, "cancelling"),
+    ));
+}
+
+async function markJobCancelled(
+  database: NonNullable<SeparationHandlerDeps["db"]>,
+  id: string,
+) {
+  await database
+    .update(processingJobs)
+    .set({
+      status: "cancelled",
+      stage: "cancelled",
+      errorCode: null,
+      errorMessage: null,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(processingJobs.id, id),
+      ne(processingJobs.status, "complete"),
+      ne(processingJobs.status, "failed"),
+      ne(processingJobs.status, "cancelled"),
+    ));
+}
+
+async function assertSeparationNotCancelled(
+  database: NonNullable<SeparationHandlerDeps["db"]>,
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw new SeparationCancelledError();
+  const [current] = await database
+    .select({ status: processingJobs.status, stage: processingJobs.stage })
+    .from(processingJobs)
+    .where(eq(processingJobs.id, id))
+    .limit(1);
+  if (!current) throw new Error("Processing job no longer exists.");
+  if (current.status === "cancelled" || current.stage === "cancelling") {
+    throw new SeparationCancelledError();
+  }
 }
 
 async function readSeparationPublication(
