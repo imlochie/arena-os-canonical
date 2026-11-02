@@ -1509,13 +1509,22 @@ test("Studio reload routes preserve distinct donors after blocked library deleti
   const beforeEdit = await (await remixRoute.GET(
     new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
   )).json();
-  const editedTrackId = beforeEdit.tracks[0].id;
+  const drumsStemId = drums.stemIds.get("drums")!;
+  const clipOnlyDrumsStemId = clipOnlyDrums.stemIds.get("drums")!;
+  const editedTrackId = beforeEdit.tracks.find((track: { id: string; stemAssetId: string }) =>
+    track.stemAssetId === drumsStemId)?.id;
+  assert.ok(editedTrackId, "the drum lane exists before editing its clip");
   const input = {
     ...beforeEdit.remix,
-    tracks: beforeEdit.tracks.map((track: { id: string; clips: Array<{ timelineStartMs: number }> }) =>
+    tracks: beforeEdit.tracks.map((track: { id: string; clips: Array<{ stemAssetId: string; timelineStartMs: number }> }) =>
       track.id === editedTrackId ? {
         ...track, volume: 0.61,
-        clips: track.clips.map(clip => ({ ...clip, timelineStartMs: clip.timelineStartMs + 250, beatSnapEnabled: false })),
+        clips: track.clips.map(clip => ({
+          ...clip,
+          stemAssetId: clipOnlyDrumsStemId,
+          timelineStartMs: clip.timelineStartMs + 250,
+          beatSnapEnabled: false,
+        })),
       } : track),
     automation: beforeEdit.automation,
   };
@@ -1526,11 +1535,61 @@ test("Studio reload routes preserve distinct donors after blocked library deleti
   const savedBeforeDeletion = await (await remixRoute.GET(
     new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
   )).json();
+  const persistedClipRows = await db.db.select().from(schema.remixClips)
+    .where(eq(schema.remixClips.remixTrackId, editedTrackId));
+  assert.equal(persistedClipRows.length, 1);
+  assert.equal(persistedClipRows[0].stemAssetId, clipOnlyDrumsStemId,
+    "PostgreSQL stores the clip-only donor on the file-backed clip relation");
+  for (let reload = 0; reload < 3; reload += 1) {
+    const projectAfterEdit = await (await projectRoute.GET(
+      new Request(`http://localhost/api/waveyard/projects/${handoff.projectId}`),
+      { params: Promise.resolve({ id: handoff.projectId }) },
+    )).json();
+    const remixAfterEdit = reload === 0
+      ? savedBeforeDeletion
+      : await (await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
+      )).json();
+    assert.equal(projectAfterEdit.stems.length, 3, "the project reload includes all lane and clip-only stems");
+    assert.equal(projectAfterEdit.studioSources.length, 3, "the project reload includes the clip donor source");
+    assert.equal(remixAfterEdit.stems.length, 3, "the remix reload includes a donor used only by a clip");
+    const drumLane = remixAfterEdit.tracks.find((lane: { id: string }) => lane.id === editedTrackId);
+    assert.ok(drumLane, "the edited lane remains present on every reload");
+    assert.equal(drumLane.stemAssetId, drumsStemId, "the lane default stays unchanged on every reload");
+    assert.equal(drumLane.clips.length, 1, "the edited clip does not become an empty lane");
+    assert.equal(drumLane.clips[0].stemAssetId, clipOnlyDrumsStemId);
+    assert.equal(drumLane.clips[0].remixTrackId, drumLane.id, "clip-to-lane identity survives reload");
+    const routeStem = remixAfterEdit.stems.find((stem: { id: string }) => stem.id === clipOnlyDrumsStemId);
+    assert.ok(routeStem, "the remix response contains the exact clip donor");
+    assert.equal(routeStem.sourceAssetId, clipOnlyDrums.sourceId);
+    assert.equal(routeStem.stemType, "drums");
+    assert.equal(routeStem.fileSizeBytes, statSync(path.join(root!, "Studio route clip-only drum donor.wav")).size);
+    assert.ok(projectAfterEdit.stems.some((stem: { id: string; sourceAssetId: string }) =>
+      stem.id === clipOnlyDrumsStemId && stem.sourceAssetId === clipOnlyDrums.sourceId),
+    "the project response resolves the clip donor to its source");
+    assert.ok(projectAfterEdit.studioSources.some((source: { id: string; linkedFromLibrary?: boolean }) =>
+      source.id === clipOnlyDrums.sourceId && source.linkedFromLibrary),
+    "the clip donor source is available as a linked library source");
+  }
+  assert.equal((await service.getTrackDeletionProtection(routeOwner, clipOnlyDrums.track.id))?.inUse, true,
+    "a clip-only donor remains protected from library deletion");
+  const assetsRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/assets/[id]/route.ts", import.meta.url,
+  ).href);
+  const fileResponse = await assetsRoute.GET(
+    new Request(`http://localhost/api/assets/${clipOnlyDrumsStemId}`),
+    { params: Promise.resolve({ id: clipOnlyDrumsStemId }) },
+  );
+  assert.equal(fileResponse.status, 200, "the selected clip donor is file-backed and readable");
+  const fileBytes = Buffer.from(await fileResponse.arrayBuffer());
+  const clipDonorStem = stemsBefore.find((stem) => stem.id === clipOnlyDrumsStemId)!;
+  assert.equal(createHash("sha256").update(fileBytes).digest("hex"), clipDonorStem.checksumSha256,
+    "the asset route streams the exact selected donor bytes");
   const tracksBeforeDeletion = await db.db.select().from(schema.tracks);
   const deletionRoute = await import(new URL(
     "../../../../../../artifacts/api-server/src/imported/library/tracks/[id]/route.ts", import.meta.url,
   ).href);
-  for (const { donor, type } of expected) {
+  for (const { donor, type } of [...expected, { donor: clipOnlyDrums, type: "drums" }]) {
     const response = await deletionRoute.DELETE(
       new Request(`http://localhost/api/library/tracks/${donor.track.id}`, { method: "DELETE" }),
       { params: Promise.resolve({ id: donor.track.id }) },
@@ -1573,36 +1632,68 @@ test("Studio reload routes preserve distinct donors after blocked library deleti
     { params: Promise.resolve({ id: handoff.projectId }) },
   )).json();
   assert.deepEqual(new Set(projectAfterDeletion.stems.map((stem: { id: string }) => stem.id)),
-    new Set(expected.map(({ donor, type }) => donor.stemIds.get(type))),
-    "the project reload still resolves both distinct donor assets");
+    new Set([...expected.map(({ donor, type }) => donor.stemIds.get(type)), clipOnlyDrumsStemId]),
+    "the project reload still resolves both lane donors and the clip-only donor");
   const editedTrack = reopened.tracks.find((track: { id: string }) => track.id === editedTrackId);
   assert.equal(editedTrack.volume, 0.61, "track level survives a fresh database-backed read");
   assert.equal(editedTrack.clips[0].timelineStartMs, beforeEdit.tracks[0].clips[0].timelineStartMs + 250,
     "clip position survives a fresh database-backed read");
-  assert.equal(editedTrack.stemAssetId, beforeEdit.tracks[0].stemAssetId, "editing keeps the exact donor asset");
+  assert.equal(editedTrack.stemAssetId, drumsStemId, "the drum lane default remains unchanged");
+  assert.equal(editedTrack.clips[0].stemAssetId, clipOnlyDrumsStemId,
+    "the saved clip points to its selected donor, not the lane default");
+  assert.notEqual(editedTrack.clips[0].stemAssetId, editedTrack.stemAssetId,
+    "the persisted clip asset is deliberately distinct from its lane default");
   assert.deepEqual(await db.db.select().from(schema.sourceAssets), sourcesBefore, "Studio edits do not mutate original source rows");
   assert.deepEqual(await db.db.select().from(schema.stemAssets), stemsBefore, "Studio edits do not mutate original stem rows");
-  // A clip may use a different asset from its lane's default. Such a donor
-  // remains protected even when no remix_tracks row points directly to it.
-  const drumLane = reopened.tracks.find((lane: { stemAssetId: string }) =>
-    lane.stemAssetId === drums.stemIds.get("drums"))!;
-  await db.db.update(schema.remixTracks).set({ stemAssetId: vocals.stemIds.get("vocals")! })
-    .where(eq(schema.remixTracks.id, drumLane.id));
-  try {
-    assert.equal((await service.getTrackDeletionProtection(routeOwner, drums.track.id))?.inUse, true,
-      "clip-only donor references also block deletion");
-    const clipOnlyReload = await (await projectRoute.GET(
-      new Request(`http://localhost/api/waveyard/projects/${handoff.projectId}`),
-      { params: Promise.resolve({ id: handoff.projectId }) },
-    )).json();
-    assert.ok(clipOnlyReload.stems.some((stem: { id: string }) => stem.id === drums.stemIds.get("drums")),
-      "the project reload retains a clip donor even when no lane-default stem references it");
-    assert.ok(clipOnlyReload.studioSources.some((source: { id: string }) => source.id === drums.sourceId),
-      "the exact clip donor's source remains available in Studio after reload");
-  } finally {
-    await db.db.update(schema.remixTracks).set({ stemAssetId: drums.stemIds.get("drums")! })
-      .where(eq(schema.remixTracks.id, drumLane.id));
-  }
+  const versionsRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/remixes/[id]/versions/route.ts", import.meta.url,
+  ).href);
+  const versionResponse = await versionsRoute.POST(new Request(
+    `http://localhost/api/remixes/${handoff.remixSessionId}/versions`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Clip-only donor export proof" }) },
+  ), remixParams);
+  assert.equal(versionResponse.status, 201, "the edited clip can be saved as an exportable version");
+  const versionPayload = await versionResponse.json();
+  const [savedVersion] = await db.db.select().from(schema.remixVersions)
+    .where(eq(schema.remixVersions.id, versionPayload.version.id));
+  const versionSnapshot = JSON.parse(savedVersion.snapshot);
+  const versionTrack = versionSnapshot.tracks.find((track: { id: string }) => track.id === editedTrackId);
+  assert.equal(versionTrack.stemAssetId, drumsStemId);
+  assert.equal(versionTrack.clips[0].stemAssetId, clipOnlyDrumsStemId,
+    "the immutable export snapshot preserves the clip-specific donor");
+  const [exportJob] = await db.db.insert(schema.exportJobs).values({
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: savedVersion.id,
+    requestedById: routeOwner,
+    idempotencyKey: `clip-only-export:${randomUUID()}`,
+    format: "wav",
+    sampleRate: 44_100,
+    channels: 2,
+  }).returning();
+  const exportWorker = await import(new URL(
+    "../../../../../../lib/arena/src/lib/waveyard/worker-local/export.ts", import.meta.url,
+  ).href);
+  await exportWorker.handleExportJob({
+    exportJobId: exportJob.id,
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: savedVersion.id,
+    format: "wav",
+  });
+  const [completedExport] = await db.db.select().from(schema.exportJobs)
+    .where(eq(schema.exportJobs.id, exportJob.id));
+  assert.equal(completedExport.status, "complete", "the local exporter renders a linked clip-only donor");
+  const [exportAsset] = await db.db.select().from(schema.exportAssets)
+    .where(eq(schema.exportAssets.exportJobId, exportJob.id));
+  assert.ok(exportAsset, "a real file-backed export is created");
+  const exportedWav = path.join(root!, "clip-only-donor-export.wav");
+  await getStorage().getToFile(exportAsset.storageKey, exportedWav);
+  const donorTone = pcmWavToneMagnitude(exportedWav, 997, 400, 900);
+  const laneDefaultTone = pcmWavToneMagnitude(exportedWav, 733, 400, 900);
+  assert.ok(donorTone > 0.05, `export contains the selected donor tone (magnitude ${donorTone})`);
+  assert.ok(donorTone > laneDefaultTone * 8,
+    `export reads clip donor audio, not lane-default audio (${donorTone} vs ${laneDefaultTone})`);
   await sessions.deleteSession(routeOwner, session.id);
 });
 
