@@ -1321,7 +1321,7 @@ export function MusicHome() {
               Record playback audio
             </a>
             <small>
-              Catalog export is metadata only. Windows may block some playback; recordable audio is stored as WAV and can be downloaded with a CSV manifest.
+              Apple Music catalog exports are metadata-only; likely matches already stored in Waveyard can be zipped with a CSV. The recorder captures only authorized audio, and protected Apple Music playback may be unavailable.
             </small>
           </div>
           <label className="add-music" id="waveyard-add-music">
@@ -1622,7 +1622,7 @@ export function MusicHome() {
         >
           <summary>Apple Music metadata snapshots (CSV, XML, JSON)</summary>
           <p className="library-backup-note">
-            Import a CSV, XML or JSON library metadata snapshot, then download it as CSV or JSON. This backs up track and playlist metadata only—not protected Apple Music subscription audio. Use the separate “Back up local audio” controls above for exact originals stored in Waveyard.
+            Import a CSV, XML or JSON library metadata snapshot, then download it as CSV or JSON. The catalog snapshot is metadata only—not protected Apple Music subscription audio. You can also package likely matching originals already stored in Waveyard.
           </p>
           {streamingBackupsOpen && (
             <ConnectedLibraries

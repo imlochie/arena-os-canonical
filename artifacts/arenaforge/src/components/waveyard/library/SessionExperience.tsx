@@ -2544,7 +2544,9 @@ export default function SessionExperience({
 
   useEffect(() => {
     const savedSwapIds = new Set(session?.swaps.map((swap) => swap.id) ?? []);
-    setPendingSwaps((previous) => previous.filter((pending) => savedSwapIds.has(pending.swapId)));
+    setPendingSwaps((previous) => previous.filter((pending) =>
+      pending.savePending || savedSwapIds.has(pending.swapId),
+    ));
     setCancelledSwapIds((previous) => {
       const next = new Set([...previous].filter((id) => savedSwapIds.has(id)));
       return next.size === previous.size ? previous : next;

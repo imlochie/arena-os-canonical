@@ -398,6 +398,21 @@ export function reconcileSnapshotAudio(
   };
 }
 
+/** Return only unique, high-confidence local file IDs shown in the current catalog view. */
+export function matchedLocalAudioIdsForTracks(
+  matches: readonly SnapshotAudioMatch[],
+  visibleTrackKeys: ReadonlySet<string>,
+): string[] {
+  const ids = new Set<string>();
+  for (const match of matches) {
+    const key = `${match.track.service}:${match.track.externalId}`;
+    if (match.status !== "matched" || !visibleTrackKeys.has(key)) continue;
+    const candidate = match.candidates[0];
+    if (candidate) ids.add(candidate.id);
+  }
+  return [...ids];
+}
+
 export type TrackGroup = {
   /** Canonical display track (the richest member: most fields present). */
   representative: ExternalTrack;

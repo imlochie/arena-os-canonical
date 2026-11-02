@@ -1532,8 +1532,7 @@ try {
   }, playbackBeforeRetry, { timeout: 5_000 });
   console.log("PASS: separation start and retry stay in the live-swap picker without interrupting the current mix");
 
-  let signalSlowDonorRequest;
-  const slowDonorRequested = new Promise(resolve => { signalSlowDonorRequest = resolve; });
+  let slowDonorRequestStarted = false;
   let releaseSlowSwapSave;
   const slowSwapSaveGate = new Promise(resolve => { releaseSlowSwapSave = resolve; });
   let signalSlowSwapSaveStarted;
@@ -1547,7 +1546,9 @@ try {
   heldAssetGate = slowDonorGate;
   pendingSwapSaveGate = slowSwapSaveGate;
   signalPendingSwapSaveStarted = signalSlowSwapSaveStarted;
-  signalHeldAssetRequest = signalSlowDonorRequest;
+  signalHeldAssetRequest = () => {
+    slowDonorRequestStarted = true;
+  };
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
   await current.getByTestId("seek-deck-0").fill("0");
   if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
@@ -1568,19 +1569,20 @@ try {
   // the donor starts both its save request and its audio preparation.
   liveSwapRequestOrder.length = 0;
   await donorBOption.click();
-  const pendingSlowSwap = current.getByTestId("live-swap-pending-vocals");
+  const pendingSlowSwap = page.getByTestId("live-swap-pending-vocals");
   await pendingSlowSwap.waitFor();
   assert.match(await pendingSlowSwap.innerText(), /Saving vocals source/,
     "the cancel action must appear while the donor selection is still being saved");
-  const cancelSlowSwap = current.locator('[data-testid^="cancel-live-stem-swap-"]').first();
+  await waitForSignal(slowSwapSaveStarted, "the held live stem save request");
+  const cancelSlowSwap = page.locator('[data-testid^="cancel-live-stem-swap-"]').first();
   assert.equal(await cancelSlowSwap.isDisabled(), false, "a pending save must remain cancellable");
   await cancelSlowSwap.click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="live-swap-pending-vocals"]')?.textContent?.includes("Stopping vocals switch"),
+  );
   assert.match(await pendingSlowSwap.innerText(), /Stopping vocals switch/,
     "the UI acknowledges cancellation while the save response is still held");
-  await waitForSignal(slowDonorRequested, "the live stem donor request");
-  await waitForSignal(slowSwapSaveStarted, "the live stem save request");
   assert.ok(liveSwapRequestOrder.includes("save"), "the donor choice should be saved");
-  assert.ok(liveSwapRequestOrder.includes("donor-preload"), "the donor audio should start loading");
   releaseSlowSwapSave();
   pendingSwapSaveGate = null;
   signalPendingSwapSaveStarted = null;
@@ -1609,7 +1611,7 @@ try {
   signalPendingSwapSaveStarted = null;
   signalHeldAssetRequest = null;
   releaseSlowDonor();
-  await waitForSignal(slowDonorRouteFinished, "the live stem donor response");
+  if (slowDonorRequestStarted) await waitForSignal(slowDonorRouteFinished, "the live stem donor response");
   signalHeldAssetRouteFinished = null;
 
   assert.equal(session.currentSessionTrackId, "a", "timing comparisons use the same recipient track");

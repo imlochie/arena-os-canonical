@@ -16,6 +16,7 @@ import {
   isStreamingService,
   matchScore,
   matchVerdict,
+  matchedLocalAudioIdsForTracks,
   normalizeArtist,
   normalizeTitle,
   parseAppleMusicLibraryXml,
@@ -540,6 +541,30 @@ test("snapshot audio reconciliation distinguishes strong, ambiguous, review, and
   assert.equal(result.matches.find((item) => item.track.externalId === "review")?.status, "review");
   assert.equal(result.matches.find((item) => item.track.externalId === "missing")?.status, "missing");
   assert.equal(result.matches[1].candidates[0].score, 0.825);
+});
+
+test("local-audio backup selection includes only unique matches in the visible catalog view", () => {
+  const records = [
+    { track: track({ service: "apple", externalId: "matched" }), status: "matched" as const,
+      score: 0.98, candidates: [{ id: "local-a", title: "Back in Black", artist: "AC/DC", score: 0.98 }] },
+    { track: track({ service: "apple", externalId: "duplicate" }), status: "matched" as const,
+      score: 0.97, candidates: [{ id: "local-a", title: "Back in Black", artist: "AC/DC", score: 0.97 }] },
+    { track: track({ service: "apple", externalId: "ambiguous" }), status: "ambiguous" as const,
+      score: 0.96, candidates: [{ id: "local-b", title: "Back in Black", artist: "AC/DC", score: 0.96 }] },
+    { track: track({ service: "apple", externalId: "review" }), status: "review" as const,
+      score: 0.8, candidates: [{ id: "local-c", title: "Back in Black", artist: "AC/DC", score: 0.8 }] },
+  ];
+
+  assert.deepEqual(
+    matchedLocalAudioIdsForTracks(records, new Set(["apple:matched", "apple:duplicate", "apple:ambiguous", "apple:review"])),
+    ["local-a"],
+    "ambiguous and review candidates are excluded, and duplicate local IDs are included once",
+  );
+  assert.deepEqual(
+    matchedLocalAudioIdsForTracks(records, new Set(["apple:matched"])),
+    ["local-a"],
+    "tracks outside the current playlist/search view are not selected",
+  );
 });
 
 test("Apple Library XML rejects malformed or non-library documents", () => {

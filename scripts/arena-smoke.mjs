@@ -412,6 +412,7 @@ try {
   const audioBackupDownloadIds = [];
   const appleBackupAccountId = "arena-smoke-apple-account";
   const appleBackupSnapshotId = "arena-smoke-apple-snapshot";
+  const appleLocalAudioTrackId = "arena-smoke-apple-local-audio";
   let appleBackupSnapshot = null;
   const uploadAttemptNames = [];
   const batchTrackIdsByName = new Map([
@@ -692,6 +693,23 @@ try {
           body: Buffer.from("mock-zip"),
         });
       }
+    } else if (url.pathname === "/api/library/tracks" &&
+      route.request().method() === "GET" &&
+      url.searchParams.get("limit") === "500") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          tracks: [{
+            id: appleLocalAudioTrackId,
+            sourceAssetId: "arena-smoke-apple-local-asset",
+            title: "Apple Library Song",
+            artist: "Example Artist",
+            album: "Test Album",
+            durationSeconds: 150,
+          }],
+        }),
+      });
     } else if (url.pathname === "/api/library/sessions" && route.request().method() === "POST") {
       await route.fulfill({
         status: 201,
@@ -1125,6 +1143,21 @@ try {
   await page.getByRole("link", { name: "Download CSV" }).click();
   assert.equal((await appleCsvDownload).suggestedFilename(), "waveyard-apple-library.csv");
   report.push("Apple Music Library XML imports as a metadata snapshot and exports as CSV; the source file path and protected audio are not copied.");
+  const localAudioBackupButton = page.getByTestId("download-matched-local-audio");
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="download-matched-local-audio"]');
+    return button instanceof HTMLButtonElement && !button.disabled && button.textContent?.includes("Download 1 likely local original");
+  });
+  const matchedLocalAudioDownload = page.waitForEvent("download");
+  await localAudioBackupButton.click();
+  assert.match((await matchedLocalAudioDownload).suggestedFilename(), /^waveyard-audio-backup-.*\.zip$/);
+  assert.deepEqual(
+    audioBackupPreflightIds,
+    [recoveryTrack.id, appleLocalAudioTrackId],
+    "Apple catalog matching only packages the local Waveyard audio ID",
+  );
+  assert.deepEqual(audioBackupDownloadIds, [recoveryTrack.id, appleLocalAudioTrackId]);
+  report.push("Apple Music metadata now filters existing Waveyard originals by the current playlist/search and downloads unique high-confidence local matches as a ZIP with CSV manifest.");
   releaseSecondPlaylistResponse();
   await page.getByTestId("library-refresh-warning").waitFor();
   await page.getByRole("button", { name: "Retry library refresh", exact: true }).click();

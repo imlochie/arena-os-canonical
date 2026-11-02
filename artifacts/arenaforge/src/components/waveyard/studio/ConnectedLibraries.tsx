@@ -37,6 +37,7 @@ import {
   parseBackup,
   snapshotStats,
   parseAppleMusicLibraryXml,
+  matchedLocalAudioIdsForTracks,
   type ExternalTrack,
   type LibrarySnapshot,
   type SnapshotDiff,
@@ -377,6 +378,48 @@ export function ConnectedLibraries({
     if (snapshot === null || localAudioTracks === null) return null;
     return reconcileSnapshotAudio(snapshot.library, localAudioTracks);
   }, [localAudioTracks, snapshot]);
+  const visibleCatalogKeys = useMemo(
+    () => new Set(tracksShown.map((track) => `${track.service}:${track.externalId}`)),
+    [tracksShown],
+  );
+  const matchedLocalAudioIds = useMemo(
+    () => audioCoverage === null ? [] : matchedLocalAudioIdsForTracks(audioCoverage.matches, visibleCatalogKeys),
+    [audioCoverage, visibleCatalogKeys],
+  );
+
+  const downloadMatchedLocalAudio = useCallback(async () => {
+    if (matchedLocalAudioIds.length === 0) {
+      setError("No high-confidence local audio matches are in the current playlist/search view.");
+      return;
+    }
+    if (matchedLocalAudioIds.length > 100) {
+      setError(`There are ${matchedLocalAudioIds.length} matches in this view. Narrow the playlist or search to 100 or fewer for one ZIP.`);
+      return;
+    }
+
+    const downloadUrl = new URL("/api/library/audio-backup", window.location.origin);
+    downloadUrl.searchParams.set("ids", matchedLocalAudioIds.join(","));
+    const preflightUrl = new URL(downloadUrl);
+    preflightUrl.searchParams.set("preflight", "1");
+    setBusy("backup-local-audio");
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(preflightUrl, { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(typeof body.error === "string" ? body.error : "Could not prepare the local-audio ZIP.");
+        return;
+      }
+      const count = typeof body.audioFiles === "number" ? body.audioFiles : matchedLocalAudioIds.length;
+      setNotice(`Downloading ${count} exact local audio file${count === 1 ? "" : "s"} from Waveyard with a CSV manifest. Apple Music subscription streams are not included.`);
+      window.location.assign(downloadUrl.toString());
+    } catch {
+      setError("Could not prepare the local-audio ZIP. Check the connection and retry.");
+    } finally {
+      setBusy(null);
+    }
+  }, [matchedLocalAudioIds]);
 
   return (
     <section className="stream-lib" data-testid="connected-libraries" aria-label="Connected streaming libraries">
@@ -483,6 +526,26 @@ export function ConnectedLibraries({
                   Suggestions use title, artist, and duration; they do not verify audio bytes or create a permanent link.
                   {localAudioLimitReached ? " Only the 500 most recently added local tracks were checked, so results may be incomplete." : ""}
                 </small>
+                <div className="stream-audio-backup-action">
+                  <button
+                    type="button"
+                    className="button secondary"
+                    data-testid="download-matched-local-audio"
+                    onClick={() => void downloadMatchedLocalAudio()}
+                    disabled={busy !== null || matchedLocalAudioIds.length === 0 || matchedLocalAudioIds.length > 100}
+                  >
+                    {busy === "backup-local-audio"
+                      ? "Preparing local-audio ZIP…"
+                      : matchedLocalAudioIds.length === 0
+                        ? "No local originals match this view"
+                        : matchedLocalAudioIds.length > 100
+                          ? `${matchedLocalAudioIds.length} matches — narrow to 100`
+                          : `Download ${matchedLocalAudioIds.length} likely local original${matchedLocalAudioIds.length === 1 ? "" : "s"}`}
+                  </button>
+                  <small>
+                    Uses only unique high-confidence matches in this playlist/search view. The ZIP contains existing Waveyard files—not Apple Music subscription downloads—and is limited to 100 files.
+                  </small>
+                </div>
                 {audioCoverage.matches.length > 0 && (
                   <details>
                     <summary>Review track comparisons</summary>
