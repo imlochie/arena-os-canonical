@@ -1372,8 +1372,16 @@ try {
   }));
   assert.ok(speedLayout.documentWidth <= speedLayout.viewport,
     `session speed control must fit on mobile: ${JSON.stringify(speedLayout)}`);
-  for (let step = 0; step < 10; step += 1) await playbackSpeed.press("ArrowLeft");
+  const resetSpeed = page.getByTestId("session-speed-reset");
+  assert.equal(await resetSpeed.isEnabled(), true, "non-default playback speed can be restored with one tap");
+  await resetSpeed.click();
   assert.equal(await page.getByTestId("session-speed-value").textContent(), "1.00×");
+  assert.equal(await resetSpeed.isDisabled(), true, "reset is disabled at the default speed");
+  await playbackSpeed.press("ArrowRight");
+  assert.equal(await page.getByTestId("session-speed-value").textContent(), "1.01×");
+  await resetSpeed.click();
+  assert.equal(await page.getByTestId("session-speed-value").textContent(), "1.00×",
+    "reset returns to the original tempo after any slider adjustment");
   assert.equal(await page.getByTestId("session-loop-4").isEnabled(), true,
     "a four-beat loop should be available when the analyzed grid covers it");
   assert.equal(await page.getByTestId("session-loop-8").isEnabled(), false,

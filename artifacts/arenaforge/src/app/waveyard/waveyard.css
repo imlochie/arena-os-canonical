@@ -1172,10 +1172,13 @@
 .wy-host-full .wy-transport{pointer-events:none}
 .wy-host-full .wy-transport button,.wy-host-full .wy-transport a,.wy-host-full .wy-transport input{pointer-events:auto}
 .wy-seek input,.wy-deck-seek input,.wy-master input,.wy-stem input{width:100%;accent-color:var(--wy-a);min-height:24px}
-.wy-session-speed{display:grid;grid-template-columns:auto minmax(110px,1fr) auto;gap:4px 10px;align-items:center;padding:8px 10px;border:1px solid var(--line);background:rgba(0,0,0,.12)}
+.wy-session-speed{display:grid;grid-template-columns:auto minmax(110px,1fr) auto auto;gap:4px 10px;align-items:center;padding:8px 10px;border:1px solid var(--line);background:rgba(0,0,0,.12)}
 .wy-session-speed>span{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .wy-session-speed input{width:100%;min-height:28px;accent-color:var(--wy-a)}
 .wy-session-speed output{font:12px ui-monospace,monospace;color:var(--ink)}
+.wy-session-speed button{min-height:28px;padding:3px 8px;border:1px solid var(--line);background:rgba(255,255,255,.035);color:var(--ink);font-size:10px;font-weight:750}
+.wy-session-speed button:disabled{opacity:.4;cursor:not-allowed}
+.wy-session-speed button:focus-visible{outline:2px solid var(--wy-a);outline-offset:2px}
 .wy-session-speed small{grid-column:1/-1;color:var(--muted);font-size:10px}
 .wy-dj-controls{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:8px 10px;border:1px solid var(--line);background:rgba(0,0,0,.12)}
 .wy-dj-controls button{min-width:40px;min-height:38px;padding:6px 10px;border:1px solid var(--line);background:rgba(255,255,255,.035);color:var(--ink);font-size:11px;font-weight:750}

@@ -733,7 +733,7 @@ function SessionDeck({
             <span>{formatClock(duration)}</span>
           </div>
           {active && (
-            <label className="wy-session-speed">
+            <div className="wy-session-speed">
               <span>Speed</span>
               <input
                 type="range"
@@ -747,13 +747,22 @@ function SessionDeck({
                 data-testid="session-playback-speed"
               />
               <output data-testid="session-speed-value">{playbackRate.toFixed(2)}×</output>
+              <button
+                type="button"
+                aria-label="Reset playback speed to 1.00x"
+                data-testid="session-speed-reset"
+                disabled={Math.abs(playbackRate - 1) < 0.001}
+                onClick={() => onPlaybackRateChange(1)}
+              >
+                Reset
+              </button>
               <small>
                 {item.analysis?.bpm == null
                   ? "Tempo analysis unavailable"
                   : `${Math.round(item.analysis.bpm * playbackRate)} BPM`}
                 {" · pitch follows speed"}
               </small>
-            </label>
+            </div>
           )}
           {active && (
             <div className="wy-dj-controls" role="group" aria-label="DJ cue and loop controls">
