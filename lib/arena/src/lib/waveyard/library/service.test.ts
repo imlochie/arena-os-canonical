@@ -1767,10 +1767,19 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   const stemsBeforeHandoff = await db.db.select().from(schema.stemAssets);
   const selectedEntries = sessionBeforeHandoff.tracks.slice(0, 2);
   assert.equal(selectedEntries.length, 2, "the fixture must contain two ready session entries");
+  const ownerProjectsBeforeEmptySelection = await db.db
+    .select({ id: schema.projects.id })
+    .from(schema.projects)
+    .where(eq(schema.projects.ownerId, OWNER));
   await assert.rejects(
     () => sessions.sendSessionToStudio(OWNER, created.id, []),
     sessions.StudioHandoffSelectionError,
     "an empty handoff selection is rejected before creating a project",
+  );
+  assert.equal(
+    (await db.db.select({ id: schema.projects.id }).from(schema.projects).where(eq(schema.projects.ownerId, OWNER))).length,
+    ownerProjectsBeforeEmptySelection.length,
+    "an empty selection does not create a blank Studio project",
   );
   await assert.rejects(
     () => sessions.sendSessionToStudio(OWNER, created.id, [OTHER]),
@@ -1864,6 +1873,22 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
     (await db.db.select().from(schema.stemAssets)).sort((left, right) => left.id.localeCompare(right.id)),
     stemsBeforeHandoff.sort((left, right) => left.id.localeCompare(right.id)),
     "the original stem assets remain unchanged",
+  );
+  const singleTrackHandoff = await sessions.sendSessionToStudio(OWNER, created.id, [selectedEntries[1].id]);
+  const selectedRealStems = selectedEntries[1].stems.filter((stem) => stem.engine !== "passthrough-unseparated");
+  const selectedPlayableStems = selectedRealStems.length > 0
+    ? selectedRealStems
+    : selectedEntries[1].stems.filter((stem) => stem.engine === "passthrough-unseparated");
+  assert.equal(singleTrackHandoff.remixTrackCount, selectedPlayableStems.length,
+    "a single selected entry contributes only its own stem lanes");
+  const singleTrackRows = await db.db
+    .select()
+    .from(schema.remixTracks)
+    .where(eq(schema.remixTracks.remixSessionId, singleTrackHandoff.remixSessionId));
+  assert.deepEqual(
+    new Set(singleTrackRows.map((row) => row.stemAssetId)),
+    new Set(selectedPlayableStems.map((stem) => stem.id)),
+    "unselected session entries contribute no tracks to the derived arrangement",
   );
 
   await sessions.deleteSession(OWNER, created.id);

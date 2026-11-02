@@ -123,6 +123,7 @@ let holdStudioHandoff = false;
 let releaseStudioHandoff = null;
 let signalStudioHandoffStarted = null;
 let studioHandoffRequests = 0;
+let lastStudioHandoffSelection = [];
 let studioProjectData = null;
 let studioRemixData = null;
 let holdSecondStudioProjectLoad = false;
@@ -451,6 +452,7 @@ try {
     const body = route.request().postDataJSON();
     assert.ok(Array.isArray(body?.sessionTrackIds), "the handoff sends an explicit session-entry selection");
     assert.ok(Array.isArray(body?.trackEdits), "the handoff sends the current mixer snapshot");
+    lastStudioHandoffSelection = [...body.sessionTrackIds];
     const selectedIds = new Set(body.sessionTrackIds);
     assert.equal(selectedIds.size, body.sessionTrackIds.length, "a session entry can only be selected once");
     const handoffMixById = new Map();
@@ -784,12 +786,24 @@ try {
     tracks[0].stemMix = { vocals: 0.42 };
     const originalAssets = assetSnapshot();
     await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.getByRole("button", { name: "Clear selection" }).click();
+    assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
+      "an empty Studio selection cannot be submitted");
+    assert.equal(studioHandoffRequests, 0, "an empty selection does not create a Studio project");
+    await page.getByRole("button", { name: "Current only" }).click();
+    assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "1 selected of 3 selectable tracks");
     await page.getByTestId("session-handoff").click();
-    await page.getByRole("link", { name: "Open in Studio" }).click();
+    const studioLink = page.getByRole("link", { name: "Open in Studio" });
+    await studioLink.waitFor();
+    assert.deepEqual(lastStudioHandoffSelection, ["a"], "the UI sends only the explicitly selected session entry");
+    assert.equal(studioRemixData.tracks.length, 4, "the Studio arrangement contains only the selected track's lanes");
+    await studioLink.click();
     await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll(".timeline-track").length === 4);
+    assert.equal(await page.locator(".timeline-track").count(), 4, "Studio opens with the selected track and no unselected tracks");
     await verifyStudioSaveReload();
     assert.deepEqual(assetSnapshot(), originalAssets, "handoff and editing preserve original audio");
-    console.log("PASS: a session handoff opens in Studio, an edited volume is saved and restored after reload, and original audio and stem metadata stay unchanged");
+    console.log("PASS: Studio handoff includes only selected tracks, blocks an empty selection, and preserves edits and original audio");
   } else if (parallelStemSwapsOnly) {
     const gate = () => {
       let release;
@@ -2150,7 +2164,13 @@ try {
   assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "2 selected of 2 selectable tracks");
   assert.equal(await page.getByRole("checkbox", { name: /Unavailable session track/ }).isChecked(), false,
     "unready session entries are excluded from the Studio request");
+  await page.getByRole("checkbox", { name: /session entry 2/ }).uncheck();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "1 selected of 2 selectable tracks");
+  assert.equal(await page.getByRole("checkbox", { name: /session entry 1/ }).isChecked(), true);
+  assert.equal(await page.getByRole("checkbox", { name: /session entry 2/ }).isChecked(), false,
+    "a ready track can be excluded without excluding the selected track");
   studioHandoffRequests = 0;
+  lastStudioHandoffSelection = [];
   holdStudioHandoff = true;
   let notifyStudioHandoffStarted;
   const studioHandoffStarted = new Promise(resolve => { notifyStudioHandoffStarted = resolve; });
@@ -2169,9 +2189,13 @@ try {
   signalStudioHandoffStarted = null;
   const studioLink = page.getByRole("link", { name: "Open in Studio" });
   await studioLink.waitFor();
+  assert.deepEqual(lastStudioHandoffSelection, ["a"],
+    "the handoff request contains only the one explicitly selected session track");
+  assert.equal(studioRemixData.tracks.length, 4,
+    "the derived Studio arrangement contains lanes only for the selected song");
   const handoffResult = await page.getByTestId("session-status").textContent();
   assert.match(handoffResult, /Sent to Studio as a derived arrangement/);
-  assert.match(await studioLink.locator("xpath=..").textContent(), /8 remix tracks/);
+  assert.match(await studioLink.locator("xpath=..").textContent(), /4 remix tracks/);
   assert.doesNotMatch(await studioLink.locator("xpath=..").textContent(), /Unavailable session track/,
     "an unchecked entry is not sent to Studio or reported as a refusal");
   assert.equal(await studioLink.getAttribute("href"),
@@ -2182,17 +2206,17 @@ try {
   await studioLink.click();
   await page.getByRole("heading", { name: "Mixer console" }).waitFor();
   assert.ok(projectLoadAttempts >= 2, "Studio retries opening the project after a transient server failure");
-  await page.waitForFunction(() => document.querySelectorAll(".timeline-track").length === 8);
+  await page.waitForFunction(() => document.querySelectorAll(".timeline-track").length === 4);
   assert.equal(await page.getByTestId("waveyard-mode-studio").getAttribute("aria-selected"), "true",
     "the derived project opens in the Studio presentation");
-  assert.equal(await page.locator(".timeline-track").count(), 8,
-    "both separated songs contribute four editable arrangement lanes");
-  assert.equal(await page.locator(".timeline-track .clip").count(), 8,
-    "every generated lane has a timeline clip");
+  assert.equal(await page.locator(".timeline-track").count(), 4,
+    "only the selected separated song contributes editable arrangement lanes");
+  assert.equal(await page.locator(".timeline-track .clip").count(), 4,
+    "every selected song lane has a timeline clip");
   const clipOffsets = await page.locator(".timeline-track .clip").evaluateAll(elements =>
     elements.map(element => Number.parseFloat(element.style.left)),
   );
-  assert.ok(clipOffsets.some(offset => offset > 0), "the second song is placed after the first on the arrangement timeline");
+  assert.ok(clipOffsets.every(offset => offset === 0), "no timeline placement is created for the unselected song");
   const delayedPreviewAssetId = studioRemixData.tracks[0].stemAssetId;
   let releaseArrangementAsset;
   let signalArrangementAssetRequest;
