@@ -225,14 +225,57 @@ const DEFAULT_MIXER_VALUES: MixerValues = {
   solo: false,
 };
 
-function applyMediaPlaybackRate(element: HTMLAudioElement, rate: number, pitchPreserving = false) {
-  element.playbackRate = rate;
+const mediaPitchProperties = ["preservesPitch", "webkitPreservesPitch", "mozPreservesPitch"] as const;
+
+function setMediaPitchPreserving(element: HTMLAudioElement, enabled: boolean) {
   const capabilities = element as unknown as Record<string, unknown>;
-  for (const property of ["preservesPitch", "webkitPreservesPitch", "mozPreservesPitch"]) {
-    if (property in capabilities) {
-      try { capabilities[property] = pitchPreserving; } catch { /* unsupported setter */ }
+  for (const property of mediaPitchProperties) {
+    if (!(property in capabilities)) continue;
+    try {
+      capabilities[property] = enabled;
+      if (capabilities[property] === enabled) return true;
+    } catch {
+      // Try a browser-prefixed implementation before declaring the mode unavailable.
     }
   }
+  return false;
+}
+
+export function supportsSessionPitchModes() {
+  if (typeof window === "undefined" || typeof document === "undefined") return false;
+  const AudioContextConstructor = window.AudioContext;
+  if (
+    !window.isSecureContext
+    || typeof AudioWorkletNode === "undefined"
+    || !AudioContextConstructor
+    || !("audioWorklet" in AudioContextConstructor.prototype)
+    || !liveStemWorkletUrl
+  ) return false;
+
+  const testElement = document.createElement("audio");
+  const capabilities = testElement as unknown as Record<string, unknown>;
+  const property = mediaPitchProperties.find((candidate) => candidate in capabilities);
+  if (!property) return false;
+  const previous = capabilities[property];
+  try {
+    capabilities[property] = true;
+    const canEnable = capabilities[property] === true;
+    capabilities[property] = false;
+    const canDisable = capabilities[property] === false;
+    capabilities[property] = previous;
+    return canEnable && canDisable;
+  } catch {
+    try { capabilities[property] = previous; } catch { /* keep capability probing isolated */ }
+    return false;
+  }
+}
+
+function applyMediaPlaybackRate(element: HTMLAudioElement, rate: number, pitchPreserving = false) {
+  if (pitchPreserving && !setMediaPitchPreserving(element, true)) {
+    throw new Error("Pitch lock is unavailable for this audio element.");
+  }
+  if (!pitchPreserving) setMediaPitchPreserving(element, false);
+  element.playbackRate = rate;
 }
 
 /** Resolve mixer intent only for the currently loaded audio channels. */
@@ -398,10 +441,29 @@ export function useStemTransport(
   }, []);
   const setPitchPreserving = useCallback(async (enabled: boolean) => {
     if (enabled === pitchPreserving.current) return;
-    await liveLayers.current?.setPitchPreserving(enabled);
-    pitchPreserving.current = enabled;
-    for (const element of Object.values(media.current)) {
-      if (element) applyMediaPlaybackRate(element, playbackRate.current, enabled);
+    const elements = Object.values(media.current).filter((element): element is HTMLAudioElement => element !== null);
+    if (enabled) {
+      if (!supportsSessionPitchModes()) {
+        throw new Error("Pitch lock requires native media pitch control and AudioWorklet support.");
+      }
+      const changed: HTMLAudioElement[] = [];
+      try {
+        for (const element of elements) {
+          applyMediaPlaybackRate(element, playbackRate.current, true);
+          changed.push(element);
+        }
+        await liveLayers.current?.setPitchPreserving(true);
+      } catch (error) {
+        for (const element of changed) applyMediaPlaybackRate(element, playbackRate.current, false);
+        throw error;
+      }
+      pitchPreserving.current = true;
+      return;
+    }
+    await liveLayers.current?.setPitchPreserving(false);
+    pitchPreserving.current = false;
+    for (const element of elements) {
+      applyMediaPlaybackRate(element, playbackRate.current, false);
     }
   }, []);
   const cancelPendingStem = useCallback((id: string) => liveLayers.current!.cancelPending(id), []);

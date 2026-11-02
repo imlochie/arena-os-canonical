@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LiveStemWsola } from "./live-stem-wsola";
+import { copyPcmChannelsForWorklet } from "./live-stem-layers";
 
 const SAMPLE_RATE = 48_000;
 
@@ -60,4 +61,39 @@ test("seeking while pitch lock is enabled starts from the requested source frame
   const output = new Float32Array(128);
   stretcher.process([output]);
   assert.ok(Math.abs(estimateFrequency(output) - 440) < 80);
+});
+
+test("mono donor PCM is transferred once and rendered to both output channels", () => {
+  const mono = new Float32Array(SAMPLE_RATE);
+  const channels = copyPcmChannelsForWorklet({
+    numberOfChannels: 1,
+    getChannelData: () => mono,
+  });
+  assert.equal(channels.length, 1);
+  assert.equal(channels[0].byteLength, mono.byteLength);
+});
+
+test("three-minute stereo pitch-lock migration stays within its measured PCM budget", () => {
+  const frames = SAMPLE_RATE * 180;
+  const before = process.memoryUsage().arrayBuffers;
+  const sourceLeft = new Float32Array(frames);
+  const sourceRight = new Float32Array(frames);
+  const transferred = copyPcmChannelsForWorklet({
+    numberOfChannels: 2,
+    getChannelData: (channel) => channel === 0 ? sourceLeft : sourceRight,
+  });
+  const stretcher = new LiveStemWsola(transferred, SAMPLE_RATE);
+  stretcher.setRate(1.2);
+  stretcher.setPitchPreserving(true);
+  stretcher.setPlaying(true);
+  const left = new Float32Array(128);
+  const right = new Float32Array(128);
+  for (let block = 0; block < 64; block += 1) stretcher.process([left, right]);
+  const measuredBytes = process.memoryUsage().arrayBuffers - before;
+  const pcmBytes = frames * 2 * Float32Array.BYTES_PER_ELEMENT;
+  assert.equal(transferred.reduce((total, channel) => total + channel.byteLength, 0), pcmBytes);
+  assert.ok(
+    measuredBytes <= 140 * 1024 * 1024,
+    `three minutes of 48 kHz stereo PCM, the temporary transfer copy, and WSOLA scratch must stay under 140 MiB (measured ${(measuredBytes / 1024 / 1024).toFixed(2)} MiB)`,
+  );
 });

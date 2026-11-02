@@ -7,6 +7,15 @@ export function normalizeSessionPlaybackRate(value: number): number {
   return Math.min(SESSION_PLAYBACK_RATE_MAX, Math.max(SESSION_PLAYBACK_RATE_MIN, value));
 }
 
+export function copyPcmChannelsForWorklet(
+  buffer: Pick<AudioBuffer, "numberOfChannels" | "getChannelData">,
+) {
+  const left = Float32Array.from(buffer.getChannelData(0));
+  return buffer.numberOfChannels > 1
+    ? [left, Float32Array.from(buffer.getChannelData(1))]
+    : [left];
+}
+
 export class LiveStemSwitchTimeoutError extends Error {
   constructor() {
     super("The stem switch timed out after 15 seconds. The previous audio continues; try again.");
@@ -254,6 +263,10 @@ export class LiveStemLayers {
         throw error;
       }
 
+      const currentOffset = layer.duration > 0 ? media.currentTime % layer.duration : media.currentTime;
+      nextSource.port.postMessage({ type: "rate", value: this.playbackRate });
+      nextSource.port.postMessage({ type: "seek", frame: Math.floor(currentOffset * layer.sampleRate) });
+      nextSource.port.postMessage({ type: media.paused || media.ended ? "pause" : "play" });
       const previousSource = layer.source;
       const previousMode = layer.sourceMode;
       const previousInput = layer.input;
@@ -339,12 +352,7 @@ export class LiveStemLayers {
     });
     try {
       node.connect(destination);
-      const channels = [
-        Float32Array.from(buffer.getChannelData(0)),
-        buffer.numberOfChannels > 1
-          ? Float32Array.from(buffer.getChannelData(1))
-          : Float32Array.from(buffer.getChannelData(0)),
-      ];
+      const channels = copyPcmChannelsForWorklet(buffer);
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => finish(new Error("Pitch lock did not start in time.")), WORKLET_READY_TIMEOUT_MS);
         const finish = (error?: Error) => {

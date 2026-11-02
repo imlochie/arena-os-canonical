@@ -6,6 +6,7 @@ import type { LibraryTrackSummary } from "@workspace/api-client-react";
 import {
   useStemTransport,
   normalizeSessionPlaybackRate,
+  supportsSessionPitchModes,
   SESSION_PLAYBACK_RATE_MAX,
   SESSION_PLAYBACK_RATE_MIN,
   type ChannelMeter,
@@ -278,6 +279,7 @@ function SessionDeck({
   performanceSettings,
   playbackRate,
   onPlaybackRateChange,
+  pitchModesAvailable,
   pitchPreserving,
   pitchLockBusy,
   pitchLockMessage,
@@ -320,6 +322,7 @@ function SessionDeck({
   performanceSettings: PerformanceSettings;
   playbackRate: number;
   onPlaybackRateChange: (value: number) => void;
+  pitchModesAvailable: boolean;
   pitchPreserving: boolean;
   pitchLockBusy: boolean;
   pitchLockMessage: string | null;
@@ -750,7 +753,7 @@ function SessionDeck({
               <input
                 type="range"
                 aria-label="Session playback speed"
-                aria-valuetext={`${playbackRate.toFixed(2)} times${item.analysis?.bpm == null ? "" : `, ${Math.round(item.analysis.bpm * playbackRate)} BPM`}; pitch ${pitchPreserving ? "preserved" : "follows speed"}`}
+                aria-valuetext={`${playbackRate.toFixed(2)} times${item.analysis?.bpm == null ? "" : `, ${Math.round(item.analysis.bpm * playbackRate)} BPM`}; ${pitchModesAvailable ? (pitchPreserving ? "pitch preserved" : "pitch follows speed") : "pitch mode unavailable"}`}
                 min={SESSION_PLAYBACK_RATE_MIN}
                 max={SESSION_PLAYBACK_RATE_MAX}
                 step={0.01}
@@ -772,20 +775,22 @@ function SessionDeck({
                 {item.analysis?.bpm == null
                   ? "Tempo analysis unavailable"
                   : `${Math.round(item.analysis.bpm * playbackRate)} BPM`}
-                {` · pitch ${pitchPreserving ? "stays steady" : "follows speed"}`}
+                {` · ${pitchModesAvailable ? (pitchPreserving ? "pitch stays steady" : "pitch follows speed") : "pitch control unavailable in this browser"}`}
               </small>
-              <button
+              {pitchModesAvailable && <button
                 type="button"
                 className={`wy-session-pitch-lock${pitchPreserving ? " is-active" : ""}`}
-                aria-label="Keep pitch steady during speed changes"
+                aria-label={pitchPreserving
+                  ? "Pitch locked; switch to pitch follows speed"
+                  : "Pitch follows speed; enable pitch lock"}
                 aria-pressed={pitchPreserving}
                 disabled={pitchLockBusy}
                 onClick={() => onPitchPreservingChange(!pitchPreserving)}
                 data-testid="session-pitch-lock"
               >
                 <span aria-hidden="true">{pitchPreserving ? "♫" : "♪"}</span>
-                {pitchLockBusy ? "Switching…" : "Keep pitch"}
-              </button>
+                {pitchLockBusy ? "Switching…" : pitchPreserving ? "Pitch locked" : "Pitch follows speed"}
+              </button>}
               {pitchLockMessage && (
                 <small role="status" data-testid="session-pitch-lock-message">{pitchLockMessage}</small>
               )}
@@ -1157,6 +1162,7 @@ export default function SessionExperience({
   const [temporaryIsolation, setTemporaryIsolation] = useState<TemporaryIsolation | null>(null);
   const [masterLevel, setMasterLevel] = useState(1);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [pitchModesAvailable] = useState(() => supportsSessionPitchModes());
   const [pitchPreserving, setPitchPreserving] = useState(false);
   const [pitchLockBusy, setPitchLockBusy] = useState(false);
   const [pitchLockMessage, setPitchLockMessage] = useState<string | null>(null);
@@ -1177,7 +1183,7 @@ export default function SessionExperience({
   const decksRef = useRef<Array<DeckApi | null>>([null, null]);
 
   const changePitchPreserving = useCallback(async (enabled: boolean) => {
-    if (pitchLockBusy || enabled === pitchPreserving) return;
+    if (pitchLockBusy || !pitchModesAvailable || enabled === pitchPreserving) return;
     const previous = pitchPreserving;
     const active = decksRef.current[activeDeck];
     const standby = decksRef.current[activeDeck === 0 ? 1 : 0];
@@ -1199,7 +1205,7 @@ export default function SessionExperience({
     } finally {
       setPitchLockBusy(false);
     }
-  }, [activeDeck, pitchLockBusy, pitchPreserving]);
+  }, [activeDeck, pitchLockBusy, pitchModesAvailable, pitchPreserving]);
   const pendingPerformanceRef = useRef<PendingPerformance | null>(null);
   const mixesRef = useRef(mixes);
   const transitionsRef = useRef(transitions);
@@ -3437,6 +3443,7 @@ export default function SessionExperience({
         : defaultPerformance(),
       playbackRate,
       onPlaybackRateChange: (value: number) => setPlaybackRate(normalizeSessionPlaybackRate(value)),
+      pitchModesAvailable,
       pitchPreserving,
       pitchLockBusy,
       pitchLockMessage: isActive ? pitchLockMessage : null,

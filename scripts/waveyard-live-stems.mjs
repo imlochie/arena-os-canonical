@@ -183,7 +183,10 @@ try {
   let page = await context.newPage();
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
   await context.addInitScript(({ fixtureSessionId, probeAutoFades }) => {
-    window.audioProbe = { sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [] };
+    window.audioProbe = {
+      sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [],
+      workletLoads: [], workletSeeks: [],
+    };
     window.liveStemTimings = [];
     window.liveStemSelectionStart = null;
     window.liveStemObservedAudibleAt = null;
@@ -267,6 +270,22 @@ try {
         constructor(...args) {
           super(...args);
           this.probeConnections = [];
+          const postMessage = this.port.postMessage.bind(this.port);
+          this.port.postMessage = (message, ...postArgs) => {
+            if (message?.type === "load") {
+              window.audioProbe.workletLoads.push({
+                channelCount: message.channels?.length ?? 0,
+                pcmBytes: (message.channels ?? []).reduce((total, channel) => total + channel.byteLength, 0),
+                startFrame: message.startFrame,
+                rate: message.rate,
+                pitchPreserving: message.pitchPreserving,
+                at: performance.now(),
+              });
+            } else if (message?.type === "seek") {
+              window.audioProbe.workletSeeks.push({ frame: message.frame, at: performance.now() });
+            }
+            return postMessage(message, ...postArgs);
+          };
           const connect = this.connect.bind(this);
           this.connect = (target, ...connectArgs) => {
             this.probeConnections.push(target);
@@ -2008,15 +2027,102 @@ try {
     `the pitch-lock control must fit the mobile viewport: ${JSON.stringify(mobilePitchBounds)}`);
   const workletsBeforePitchLock = await page.evaluate(() => window.audioProbe.worklets.length);
   const speedSlider = current.getByTestId("session-playback-speed");
-  await speedSlider.evaluate(element => {
+  const setPlaybackRate = async rate => {
+    await speedSlider.evaluate((element, value) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setter.call(element, "1.1");
+      setter.call(element, String(value));
     element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  await page.waitForFunction(() =>
-    document.querySelector('[data-testid="session-speed-value"]')?.textContent === "1.10×",
-  );
+    }, rate);
+    await page.waitForFunction(value =>
+      document.querySelector('[data-testid="session-speed-value"]')?.textContent === `${Number(value).toFixed(2)}×`,
+    rate);
+  };
+  await setPlaybackRate(1.1);
+  const pitchMetersCreated = await page.evaluate(trackId => {
+    const original = window.audioProbe.sources.find(source =>
+      source.mediaElement.src.endsWith(`/${trackId}-drums`));
+    const donor = window.audioProbe.buffers.at(-1);
+    if (!original || !donor?.buffer) return false;
+    const context = original.context;
+    const originalAnalyser = context.createAnalyser();
+    originalAnalyser.fftSize = 16_384;
+    const donorAnalyser = context.createAnalyser();
+    donorAnalyser.fftSize = 16_384;
+    const outputAnalyser = context.createAnalyser();
+    outputAnalyser.fftSize = 2_048;
+    const originalInput = original.inputNode;
+    original.connect(originalAnalyser);
+    original.inputNode = originalInput;
+    const donorInput = donor.inputNode;
+    donor.connect(donorAnalyser);
+    donor.inputNode = donorInput;
+    const master = window.audioProbe.masterGains.find(node => node.context === context);
+    if (!master) return false;
+    const masterNext = master.nextNode;
+    master.connect(outputAnalyser);
+    master.nextNode = masterNext;
+    window.pitchMeters = { originalAnalyser, donorAnalyser, outputAnalyser, context, donorDuration: donor.buffer.duration };
+    window.readPitchMeters = () => {
+      const estimate = analyser => {
+        const data = new Float32Array(analyser.fftSize);
+        analyser.getFloatTimeDomainData(data);
+        const crossings = [];
+        for (let index = 1; index < data.length; index += 1) {
+          const previous = data[index - 1], current = data[index];
+          if (previous <= 0 && current > 0) {
+            crossings.push(index - 1 + (-previous / (current - previous)));
+          }
+        }
+        if (crossings.length < 2) return 0;
+        return context.sampleRate * (crossings.length - 1) / (crossings.at(-1) - crossings[0]);
+      };
+      return {
+        originalHz: estimate(originalAnalyser),
+        donorHz: estimate(donorAnalyser),
+      };
+    };
+    window.startPitchOutputSampling = () => {
+      window.pitchOutputSamples = [];
+      const data = new Float32Array(outputAnalyser.fftSize);
+      window.pitchOutputTimer = setInterval(() => {
+        outputAnalyser.getFloatTimeDomainData(data);
+        let sum = 0;
+        for (const sample of data) sum += sample * sample;
+        window.pitchOutputSamples.push(Math.sqrt(sum / data.length));
+      }, 20);
+    };
+    window.stopPitchOutputSampling = () => clearInterval(window.pitchOutputTimer);
+    return true;
+  }, tempoCurrentTrack.id);
+  assert.equal(pitchMetersCreated, true, "the test attaches real analyzers to original and swapped audio");
+
+  const checkClockAndContinuity = async (enabled, rate) => {
+    const before = await current.locator("audio").first().evaluate(audio => audio.currentTime);
+    const startedAt = Date.now();
+    await page.evaluate(() => window.startPitchOutputSampling());
+    await pitchLockButton.click();
+    await page.waitForFunction(expected =>
+      document.querySelector('[data-testid="session-pitch-lock"]')?.getAttribute("aria-pressed") === String(expected),
+    enabled);
+    await page.waitForTimeout(120);
+    await page.evaluate(() => window.stopPitchOutputSampling());
+    const result = await page.evaluate(() => {
+      const media = document.querySelector('[data-role="current"] audio');
+      return {
+        ...window.readPitchMeters(),
+        playhead: media.currentTime,
+        outputRms: [...window.pitchOutputSamples],
+      };
+    });
+    const elapsed = (Date.now() - startedAt) / 1000;
+    assert.ok(Math.abs((result.playhead - before) - elapsed * rate) < 0.35,
+      `pitch-mode changes preserve the running deck clock: ${JSON.stringify({ before, ...result, elapsed, rate })}`);
+    assert.ok(result.outputRms.length >= 4 && Math.min(...result.outputRms) > 0.0001,
+      `the audible mix must not drop out while switching pitch mode: ${JSON.stringify(result.outputRms)}`);
+    return result;
+  };
+
   await pitchLockButton.click();
   await page.waitForFunction(() => {
     const button = document.querySelector('[data-testid="session-pitch-lock"]');
@@ -2038,15 +2144,65 @@ try {
     `the live donor moved into the worklet pitch-preserving graph: ${JSON.stringify(pitchLockState)}`);
   assert.ok(pitchLockState.originalPitchPreserving,
     "the original media stems also keep their pitch at non-unit playback speed");
-  await pitchLockButton.click();
+
+  const donorWorkletAttached = await page.evaluate(() => {
+    const worklet = window.audioProbe.worklets.at(-1);
+    if (!worklet) return false;
+    worklet.connect(window.pitchMeters.donorAnalyser);
+    return window.audioProbe.workletLoads.at(-1)?.channelCount === 1
+      && window.audioProbe.workletLoads.at(-1)?.pcmBytes > 0;
+  });
+  assert.equal(donorWorkletAttached, true, "mono live donors transfer one PCM channel and render through the worklet");
+  await page.waitForTimeout(400);
+  const donorAlignment = await page.evaluate(() => {
+    const seek = window.audioProbe.workletSeeks.at(-1);
+    const media = document.querySelector('[data-role="current"] audio');
+    if (!seek || !media || !(window.pitchMeters.donorDuration > 0)) return null;
+    const expected = ((seek.frame / window.pitchMeters.context.sampleRate
+      + ((performance.now() - seek.at) / 1000) * Number(media.playbackRate))
+      % window.pitchMeters.donorDuration);
+    const actual = media.currentTime % window.pitchMeters.donorDuration;
+    const directError = Math.abs(expected - actual);
+    return Math.min(directError, window.pitchMeters.donorDuration - directError);
+  });
+  assert.ok(donorAlignment != null && donorAlignment < 0.18,
+    `worklet start position stays aligned to the recipient playhead: ${donorAlignment}`);
+  const originalHz = 170 + "abc".indexOf(tempoCurrentTrack.id) * 100;
+  const donorHz = 130 + "abc".indexOf(tempoDonor.id) * 100;
+  const lockedAtOne = await page.evaluate(() => window.readPitchMeters());
+  assert.ok(Math.abs(lockedAtOne.originalHz - originalHz) < 8,
+    `the original media stem remains at its source pitch: ${JSON.stringify(lockedAtOne)}`);
+  assert.ok(Math.abs(lockedAtOne.donorHz - donorHz) < 10,
+    `the live-swapped stem remains at its source pitch: ${JSON.stringify(lockedAtOne)}`);
+  await setPlaybackRate(0.8);
+  await page.waitForTimeout(400);
+  const lockedSlow = await page.evaluate(() => window.readPitchMeters());
+  assert.ok(Math.abs(lockedSlow.originalHz - originalHz) < 8 && Math.abs(lockedSlow.donorHz - donorHz) < 10,
+    `pitch lock remains accurate at 0.8×: ${JSON.stringify(lockedSlow)}`);
+  await setPlaybackRate(1.2);
+  await page.waitForTimeout(400);
+  const lockedFast = await page.evaluate(() => window.readPitchMeters());
+  assert.ok(Math.abs(lockedFast.originalHz - originalHz) < 8 && Math.abs(lockedFast.donorHz - donorHz) < 10,
+    `pitch lock remains accurate at 1.2×: ${JSON.stringify(lockedFast)}`);
+  await checkClockAndContinuity(false, 1.2);
+  await page.waitForTimeout(400);
+  const followFast = await page.evaluate(() => window.readPitchMeters());
+  assert.ok(Math.abs(followFast.originalHz - originalHz * 1.2) < 10 &&
+    Math.abs(followFast.donorHz - donorHz * 1.2) < 12,
+  `pitch-follow rises with the 1.2× speed for both sources: ${JSON.stringify(followFast)}`);
+  await setPlaybackRate(0.8);
+  await page.waitForTimeout(400);
+  const followSlow = await page.evaluate(() => window.readPitchMeters());
+  assert.ok(Math.abs(followSlow.originalHz - originalHz * 0.8) < 10 &&
+    Math.abs(followSlow.donorHz - donorHz * 0.8) < 12,
+  `pitch-follow lowers with the 0.8× speed for both sources: ${JSON.stringify(followSlow)}`);
+  await setPlaybackRate(1);
   await page.waitForFunction(() =>
-    document.querySelector('[data-testid="session-pitch-lock"]')?.getAttribute("aria-pressed") === "false"
-    && Array.from(document.querySelectorAll('[data-role="current"] audio'))
-      .every(audio => audio.preservesPitch === false),
+    Array.from(document.querySelectorAll('[data-role="current"] audio')).every(audio => audio.preservesPitch === false),
   );
   await current.getByTestId("session-speed-reset").click();
   assert.equal(await current.getByTestId("session-speed-value").innerText(), "1.00×");
-  console.log("PASS: pitch lock preserves original and live-swapped stem pitch while speed changes");
+  console.log("PASS: browser-measured pitch lock/follow, playhead continuity, donor alignment, and mobile control");
 
   await current.getByTestId("restore-live-swap-vocals").click();
   await page.waitForTimeout(400);
