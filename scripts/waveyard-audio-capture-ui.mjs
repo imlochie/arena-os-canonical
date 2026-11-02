@@ -30,6 +30,20 @@ try {
   let mediaMetadataReads = 0;
   let startPayload;
   let markerPayload;
+  const baseApplications = [
+    { processId: 4242, processStartTime: "123456789", name: "AuthorizedPlayer.exe" },
+    { processId: 5000, processStartTime: "100", name: "browser.exe" },
+    {
+      processId: 5001, processStartTime: "101", name: "browser.exe",
+      parentProcessId: 5000, parentProcessStartTime: "100",
+    },
+    ...Array.from({ length: 180 }, (_, index) => ({
+      processId: 6000 + index,
+      processStartTime: String(200 + index),
+      name: `WorkerProcess${String(index).padStart(3, "0")}.exe`,
+    })),
+  ];
+  let applicationRecords = baseApplications;
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -71,8 +85,7 @@ try {
           devices,
           processLoopbackSupported: applicationSupported,
           processLoopbackReason: applicationSupported ? undefined : "Application isolation is unavailable in this test host.",
-          applications: applicationPresent
-            ? [{ processId: 4242, processStartTime: "123456789", name: "AuthorizedPlayer.exe" }] : [],
+          applications: applicationPresent ? applicationRecords : [],
           storage: { availableBytes: 8 * 1024 ** 3, reserveBytes: 1024 ** 3, canRecord: true },
           ...(optionsRequests >= 3 ? {
             recoveries: [{
@@ -195,13 +208,60 @@ try {
   assert.equal(await page.getByText("Preserved recordings").isVisible(), true);
   signalPhase = "silent";
   await page.getByLabel("Capture source").selectOption("application");
+  await page.getByLabel("Track title").fill("Stale process guard test");
+  await page.getByRole("checkbox", { name: /authorized to record this audio/i }).check();
   assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true,
     "application capture stays unavailable until a supported app is selected");
-  await page.getByLabel("Windows application").selectOption("4242:123456789");
+  const appPicker = page.getByRole("combobox", { name: "Windows application" });
+  await appPicker.focus();
+  const appList = page.getByRole("listbox", { name: "All accessible Windows processes" });
+  await appList.waitFor();
+  assert((await appList.getByRole("option").count()) >= 180,
+    "the picker keeps a searchable view of the full accessible process list");
+  const longListBounds = await appList.boundingBox();
+  const listDimensions = await appList.evaluate((element) => ({
+    clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+  }));
+  assert(longListBounds && longListBounds.x >= 0 && longListBounds.x + longListBounds.width <= 1280);
+  assert(listDimensions.scrollHeight > listDimensions.clientHeight && listDimensions.clientHeight <= 250,
+    "long process lists scroll inside a bounded selector");
+  await appPicker.fill("browser.exe");
+  const duplicateBrowserOptions = appList.getByRole("option");
+  assert.equal(await duplicateBrowserOptions.count(), 2, "duplicate executable names remain separately selectable");
+  await duplicateBrowserOptions.nth(1).getByText("Child of browser.exe · PID 5000").waitFor();
+  await appPicker.press("ArrowDown");
+  await appPicker.press("Enter");
+  await page.getByText("Selected: browser.exe · PID 5001", { exact: true }).waitFor();
+  await appPicker.fill("AuthorizedPlayer.exe");
+  await appPicker.press("ArrowDown");
+  await appPicker.press("Enter");
+  await page.getByText("Selected: AuthorizedPlayer.exe · PID 4242", { exact: true }).waitFor();
+
+  applicationRecords = baseApplications.map((app) => app.processId === 4242
+    ? { ...app, processStartTime: "999999999" } : app);
+  await page.getByRole("button", { name: "Refresh devices" }).click();
+  await page.getByText(/selected process ended or restarted/i).waitFor();
+  await page.getByText("No application selected.", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Capture source").inputValue(), "application",
+    "a reused PID does not preserve the old creation-time identity or switch to whole output");
+  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true,
+    "an expired process selection cannot start a recording even when authorization and a title are present");
+  applicationRecords = baseApplications;
+  await page.getByRole("button", { name: "Refresh devices" }).click();
+  await appPicker.focus();
+  await page.getByText("All accessible processes · 183", { exact: true }).waitFor();
+  await appPicker.fill("AuthorizedPlayer.exe");
+  await appPicker.press("ArrowDown");
+  await appPicker.press("Enter");
+  await page.getByText("Selected: AuthorizedPlayer.exe · PID 4242", { exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
-  const sourceBounds = await page.getByLabel("Windows application").boundingBox();
+  await appPicker.press("ArrowDown");
+  const sourceBounds = await appPicker.boundingBox();
   assert(sourceBounds && sourceBounds.x >= 0 && sourceBounds.x + sourceBounds.width <= 390,
     "application selection fits the mobile viewport");
+  const mobileListBounds = await appList.boundingBox();
+  assert(mobileListBounds && mobileListBounds.x >= 0 && mobileListBounds.x + mobileListBounds.width <= 390,
+    "the expanded process list stays within mobile viewport bounds");
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.getByLabel("Track title").fill("Application capture test");
   await page.getByRole("button", { name: "Start recording" }).click();
@@ -258,7 +318,13 @@ try {
   await page.getByLabel("Track title").waitFor();
   applicationPresent = false;
   await page.getByRole("button", { name: "Refresh devices" }).click();
-  await page.waitForFunction(() => document.querySelector('select[aria-label="Windows application"]')?.value === "");
+  await page.getByText("No application selected.", { exact: true }).waitFor();
+  await page.getByText(/selected process ended or restarted/i).waitFor();
+  await page.getByLabel("Track title").fill("Removed process guard test");
+  await page.getByRole("checkbox", { name: /authorized to record this audio/i }).check();
+  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true,
+    "a removed process cannot start a recording after refresh");
+  await page.getByRole("checkbox", { name: /authorized to record this audio/i }).uncheck();
   assert.equal(await page.getByLabel("Capture source").inputValue(), "application",
     "an exited source does not silently change to whole output");
   applicationSupported = false;
@@ -282,7 +348,7 @@ try {
     "whole-output capture can start after explicitly choosing that mode and confirming authorization");
   assert.deepEqual(pageErrors, []);
   await context.close();
-  console.log("PASS: explicit device/application selection and isolated payload; PCM signal UI; media-session tag suggestions with user-confirmed PCM-frame markers; mobile bounds; missing-session recovery and silent-file warning (mocked HTTP, not Windows audio).");
+  console.log("PASS: explicit device/application selection; searchable, keyboard-accessible full process list with parent grouping, stale PID handling, and mobile bounds; PCM signal UI; media-session tag suggestions with confirmed PCM-frame markers; recovery and silent-file warning (mocked HTTP, not Windows audio).");
 } finally {
   await browser.close();
 }

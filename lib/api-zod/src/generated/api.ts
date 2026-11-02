@@ -564,6 +564,9 @@ export const getLibraryAudioCaptureOptionsResponseMediaMetadataMetadataArtworkDa
 export const getLibraryAudioCaptureOptionsResponseApplicationsItemProcessIdMax = 4294967295;
 
 export const getLibraryAudioCaptureOptionsResponseApplicationsItemProcessStartTimeRegExp = new RegExp('^[0-9]{1,20}$');
+export const getLibraryAudioCaptureOptionsResponseApplicationsItemParentProcessIdMax = 4294967295;
+
+export const getLibraryAudioCaptureOptionsResponseApplicationsItemParentProcessStartTimeRegExp = new RegExp('^[0-9]{1,20}$');
 export const getLibraryAudioCaptureOptionsResponseStorageAvailableBytesMin = 0;
 
 export const getLibraryAudioCaptureOptionsResponseStorageReserveBytesMin = 0;
@@ -626,7 +629,9 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
   "applications": zod.array(zod.object({
   "processId": zod.number().int().min(1).max(getLibraryAudioCaptureOptionsResponseApplicationsItemProcessIdMax),
   "processStartTime": zod.string().regex(getLibraryAudioCaptureOptionsResponseApplicationsItemProcessStartTimeRegExp),
-  "name": zod.string()
+  "name": zod.string(),
+  "parentProcessId": zod.number().int().min(1).max(getLibraryAudioCaptureOptionsResponseApplicationsItemParentProcessIdMax).optional().describe('Present only when the accessible parent process identity was verified in the same discovery snapshot.'),
+  "parentProcessStartTime": zod.string().regex(getLibraryAudioCaptureOptionsResponseApplicationsItemParentProcessStartTimeRegExp).optional().describe('Creation time paired with parentProcessId to reject reused process IDs.')
 })).optional(),
   "processLoopbackSupported": zod.boolean().optional(),
   "processLoopbackReason": zod.string().optional(),

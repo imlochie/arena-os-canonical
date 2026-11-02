@@ -158,7 +158,7 @@ test("process capture pins the selected identity and preserves audio when the so
   const hostPath = path.join(hostDirectory, "waveyard-capture-host.exe");
   await writeFile(hostPath, `#!/bin/sh
 if [ "$1" = "devices" ]; then
-printf '%s\\n' '{"devices":[],"processLoopbackSupported":true,"applications":[{"processId":42,"processStartTime":"123","name":"Tone.exe"}]}'
+printf '%s\\n' '{"devices":[],"processLoopbackSupported":true,"applications":[{"processId":42,"processStartTime":"123","name":"Tone.exe"},{"processId":43,"processStartTime":"124","name":"Tone.exe","parentProcessId":42,"parentProcessStartTime":"123"}]}'
 exit 0
 fi
 [ "$1" = "record" ] && [ "$2" = "--process-id" ] && [ "$3" = "42" ] && [ "$4" = "--process-start-time" ] && [ "$5" = "123" ] && [ "$#" = "5" ] || exit 7
@@ -174,7 +174,10 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   await chmod(hostPath, 0o755);
   const options = await getAudioCaptureOptions("process-owner");
   assert.equal(options.available, true, "process capture is not bound to a physical endpoint");
-  assert.deepEqual(options.applications, [{ processId: 42, processStartTime: "123", name: "Tone.exe" }]);
+  assert.deepEqual(options.applications, [
+    { processId: 42, processStartTime: "123", name: "Tone.exe" },
+    { processId: 43, processStartTime: "124", name: "Tone.exe", parentProcessId: 42, parentProcessStartTime: "123" },
+  ]);
   await assert.rejects(startAudioCapture("process-owner", {
     title: "Bad", processId: 42, processStartTime: "123", deviceId: "speakers",
   }), /not both/);

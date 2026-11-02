@@ -36,6 +36,8 @@ export interface AudioCaptureApplication {
   processId: number;
   processStartTime: string;
   name: string;
+  parentProcessId?: number;
+  parentProcessStartTime?: string;
 }
 
 export interface AudioCaptureFormat {
@@ -417,7 +419,13 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
         if (!item || typeof item !== "object" ||
             !Number.isSafeInteger(item.processId) || item.processId <= 0 || item.processId > 4294967295 ||
             typeof item.processStartTime !== "string" || !/^[0-9]{1,20}$/.test(item.processStartTime) ||
-            typeof item.name !== "string" || item.name.length > 1024)
+            typeof item.name !== "string" || item.name.length > 1024 ||
+            ((item.parentProcessId === undefined) !== (item.parentProcessStartTime === undefined)) ||
+            (item.parentProcessId !== undefined &&
+              (!Number.isSafeInteger(item.parentProcessId) || item.parentProcessId <= 0 ||
+                item.parentProcessId > 4294967295 || item.parentProcessId === item.processId ||
+                typeof item.parentProcessStartTime !== "string" ||
+                !/^[0-9]{1,20}$/.test(item.parentProcessStartTime))))
           throw new Error("The Windows capture host returned an invalid application.");
         applications.push(item as AudioCaptureApplication);
       }

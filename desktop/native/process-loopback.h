@@ -49,7 +49,14 @@ std::string applicationOptionsJson() {
   }
   PROCESSENTRY32W entry{};
   entry.dwSize = sizeof(entry);
-  bool first = true;
+  struct AccessibleProcess {
+    DWORD processId;
+    DWORD parentProcessId;
+    std::string startTime;
+    std::string name;
+  };
+  std::vector<AccessibleProcess> processes;
+  std::unordered_map<DWORD, std::size_t> processById;
   if (supported && Process32FirstW(snapshot.get(), &entry)) {
     do {
       DWORD session = 0;
@@ -60,12 +67,29 @@ std::string applicationOptionsJson() {
       if (!process.get() || WaitForSingleObject(process.get(), 0) != WAIT_TIMEOUT) continue;
       const auto identity = processStartTime(process.get());
       if (identity.empty()) continue;
-      if (!first) out << ',';
-      first = false;
-      out << "{\"processId\":" << entry.th32ProcessID
-          << ",\"processStartTime\":\"" << identity << "\",\"name\":\""
-          << jsonEscape(utf8(entry.szExeFile)) << "\"}";
+      processById.emplace(entry.th32ProcessID, processes.size());
+      processes.push_back({entry.th32ProcessID, entry.th32ParentProcessID,
+          identity, utf8(entry.szExeFile)});
     } while (Process32NextW(snapshot.get(), &entry));
+  }
+  bool first = true;
+  for (const auto& process : processes) {
+    if (!first) out << ',';
+    first = false;
+    out << "{\"processId\":" << process.processId
+        << ",\"processStartTime\":\"" << process.startTime << "\",\"name\":\""
+        << jsonEscape(process.name) << "\"";
+    const auto parent = processById.find(process.parentProcessId);
+    if (parent != processById.end() && process.parentProcessId != process.processId) {
+      const auto& parentProcess = processes[parent->second];
+      // A reused PID has a newer creation time than this process. Do not
+      // present that unrelated process as its parent.
+      if (std::stoull(parentProcess.startTime) <= std::stoull(process.startTime)) {
+        out << ",\"parentProcessId\":" << parentProcess.processId
+            << ",\"parentProcessStartTime\":\"" << parentProcess.startTime << "\"";
+      }
+    }
+    out << '}';
   }
   out << ']';
   return out.str();

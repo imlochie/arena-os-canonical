@@ -546,6 +546,18 @@
 .library-audio-capture-live span{width:8px;height:8px;border-radius:50%;background:var(--acid);box-shadow:0 0 12px color-mix(in srgb,var(--acid),transparent 30%)}
 .library-audio-capture-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end}
 .library-audio-capture-form>label:not(.track-backup-choice){display:grid;gap:5px;color:var(--muted);font-size:11px}
+.library-capture-application-picker{grid-column:1/-1;display:grid;gap:6px;min-width:0;position:relative;color:var(--muted);font-size:11px}
+.library-capture-application-selected{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--text);font-size:11px}
+.library-capture-application-clear{border:0;background:transparent;color:var(--acid);font:inherit;text-decoration:underline;cursor:pointer}
+.library-capture-application-list-heading{font-weight:650;color:var(--text)}
+.library-capture-application-list{max-height:240px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:8px;background:var(--panel);min-width:0}
+.library-capture-application-option{display:grid;gap:2px;min-width:0;padding:8px 10px;border-bottom:1px solid color-mix(in srgb,var(--line),transparent 45%);color:var(--text);cursor:pointer;overflow-wrap:anywhere}
+.library-capture-application-option:last-child{border-bottom:0}
+.library-capture-application-option small{color:var(--muted);font-size:10px}
+.library-capture-application-option:hover,.library-capture-application-option.is-active{background:color-mix(in srgb,var(--acid),transparent 88%);outline:none}
+.library-capture-application-option[aria-selected=true]{box-shadow:inset 3px 0 var(--acid)}
+.library-capture-application-empty,.library-capture-application-keyboard-hint{margin:0;color:var(--muted);font-size:10px}
+.library-capture-application-picker input:focus-visible,.library-capture-application-option:focus-visible,.library-capture-application-clear:focus-visible{outline:2px solid var(--acid);outline-offset:2px}
 .library-audio-capture-form input:not([type=checkbox]),.library-audio-capture-form select{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit}
 .library-audio-capture-form .track-backup-choice{grid-column:1/-1}
 .library-capture-media-watch{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:11px}

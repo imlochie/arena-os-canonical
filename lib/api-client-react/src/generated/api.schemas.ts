@@ -528,6 +528,17 @@ export interface LibraryAudioCaptureApplication {
   /** @pattern ^[0-9]{1,20}$ */
   processStartTime: string;
   name: string;
+  /**
+     * Present only when the accessible parent process identity was verified in the same discovery snapshot.
+     * @minimum 1
+     * @maximum 4294967295
+     */
+  parentProcessId?: number;
+  /**
+     * Creation time paired with parentProcessId to reject reused process IDs.
+     * @pattern ^[0-9]{1,20}$
+     */
+  parentProcessStartTime?: string;
 }
 
 export interface LibraryAudioCaptureTags {

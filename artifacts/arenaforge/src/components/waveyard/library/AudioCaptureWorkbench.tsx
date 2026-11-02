@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { LibraryAudioCaptureSignal, LibraryAudioCaptureApplication } from "@workspace/api-client-react";
 
 type CaptureDevice = {
@@ -116,12 +116,73 @@ function mediaTagKey(metadata: CaptureTags): string {
     .join("\u0000");
 }
 
+type ApplicationRow = {
+  app: LibraryAudioCaptureApplication;
+  parent?: LibraryAudioCaptureApplication;
+  depth: number;
+};
+
+function applicationRows(
+  applications: LibraryAudioCaptureApplication[],
+  search: string,
+): ApplicationRow[] {
+  const byIdentity = new Map(applications.map((app) => [
+    `${app.processId}:${app.processStartTime}`,
+    app,
+  ]));
+  const children = new Map<string, LibraryAudioCaptureApplication[]>();
+  const parents = new Map<string, LibraryAudioCaptureApplication>();
+  for (const app of applications) {
+    if (app.parentProcessId === undefined || !app.parentProcessStartTime) continue;
+    const key = `${app.parentProcessId}:${app.parentProcessStartTime}`;
+    const parent = byIdentity.get(key);
+    if (!parent || parent === app) continue;
+    const identity = `${app.processId}:${app.processStartTime}`;
+    parents.set(identity, parent);
+    const siblings = children.get(key) ?? [];
+    siblings.push(app);
+    children.set(key, siblings);
+  }
+  const compare = (left: LibraryAudioCaptureApplication, right: LibraryAudioCaptureApplication) =>
+    left.name.localeCompare(right.name, undefined, { sensitivity: "base" }) ||
+    left.processId - right.processId;
+  const sortedChildren = (key: string) => (children.get(key) ?? []).sort(compare);
+  const rows: ApplicationRow[] = [];
+  const visited = new Set<string>();
+  const append = (app: LibraryAudioCaptureApplication, depth: number) => {
+    const identity = `${app.processId}:${app.processStartTime}`;
+    if (visited.has(identity)) return;
+    visited.add(identity);
+    rows.push({ app, ...(parents.has(identity) ? { parent: parents.get(identity) } : {}), depth });
+    for (const child of sortedChildren(identity)) append(child, depth + 1);
+  };
+  for (const app of [...applications].sort(compare)) {
+    const identity = `${app.processId}:${app.processStartTime}`;
+    if (!parents.has(identity)) append(app, 0);
+  }
+  // A malformed cycle should not hide otherwise accessible processes.
+  for (const app of [...applications].sort(compare)) append(app, 0);
+
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  if (!normalizedSearch) return rows;
+  return rows.filter(({ app, parent }) => [
+    app.name,
+    String(app.processId),
+    parent?.name ?? "",
+    parent ? String(parent.processId) : "",
+  ].some((value) => value.toLocaleLowerCase().includes(normalizedSearch)));
+}
+
 export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }) {
   const [options, setOptions] = useState<CaptureOptions | null>(null);
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [deviceId, setDeviceId] = useState("");
   const [captureMode, setCaptureMode] = useState<"application" | "output">("output");
   const [applicationKey, setApplicationKey] = useState("");
+  const [applicationSearch, setApplicationSearch] = useState("");
+  const [applicationListOpen, setApplicationListOpen] = useState(false);
+  const [activeApplicationIndex, setActiveApplicationIndex] = useState(-1);
+  const [applicationSelectionExpired, setApplicationSelectionExpired] = useState(false);
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [album, setAlbum] = useState("");
@@ -144,6 +205,61 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   const [rightsReviewed, setRightsReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const applications = options?.applications ?? [];
+  const visibleApplicationRows = useMemo(
+    () => applicationRows(applications, applicationSearch),
+    [applications, applicationSearch],
+  );
+  const selectedApplication = applications.find((app) =>
+    `${app.processId}:${app.processStartTime}` === applicationKey);
+  const applicationInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!applicationListOpen || activeApplicationIndex < 0) return;
+    document.getElementById(`capture-process-option-${activeApplicationIndex}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeApplicationIndex, applicationListOpen, visibleApplicationRows.length]);
+
+  const chooseApplication = (app: LibraryAudioCaptureApplication) => {
+    setApplicationKey(`${app.processId}:${app.processStartTime}`);
+    setApplicationSearch("");
+    setApplicationListOpen(false);
+    setActiveApplicationIndex(-1);
+    setApplicationSelectionExpired(false);
+  };
+  const handleApplicationKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      if (applicationListOpen) {
+        event.preventDefault();
+        setApplicationListOpen(false);
+        setActiveApplicationIndex(-1);
+        setApplicationSearch("");
+      }
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" ||
+        event.key === "Home" || event.key === "End" ||
+        event.key === "PageDown" || event.key === "PageUp") {
+      event.preventDefault();
+      setApplicationListOpen(true);
+      if (visibleApplicationRows.length === 0) return;
+      const last = visibleApplicationRows.length - 1;
+      setActiveApplicationIndex((current) => {
+        if (event.key === "Home") return 0;
+        if (event.key === "End") return last;
+        if (event.key === "PageDown") return Math.min(last, Math.max(0, current) + 8);
+        if (event.key === "PageUp") return Math.max(0, (current < 0 ? last : current) - 8);
+        if (event.key === "ArrowDown") return current < 0 ? 0 : (current + 1) % visibleApplicationRows.length;
+        return current < 0 ? last : (current - 1 + visibleApplicationRows.length) % visibleApplicationRows.length;
+      });
+      return;
+    }
+    if (event.key === "Enter" && applicationListOpen && activeApplicationIndex >= 0) {
+      event.preventDefault();
+      const row = visibleApplicationRows[activeApplicationIndex];
+      if (row) chooseApplication(row.app);
+    }
+  };
 
   const refreshOptions = async (signal?: AbortSignal) => {
     const response = await fetch("/api/library/audio-capture", {
@@ -158,6 +274,13 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     const fallbackDeviceId = next.devices.find((device) => device.isDefault)?.id ?? next.devices[0]?.id ?? "";
     setDeviceId((current) =>
       next.devices.some((device) => device.id === current) ? current : fallbackDeviceId);
+    if (applicationKey && !next.applications?.some((app) =>
+      `${app.processId}:${app.processStartTime}` === applicationKey)) {
+      setApplicationSearch("");
+      setApplicationListOpen(false);
+      setActiveApplicationIndex(-1);
+      setApplicationSelectionExpired(true);
+    }
     setApplicationKey((current) => next.applications?.some((app) =>
       `${app.processId}:${app.processStartTime}` === current) ? current : "");
     return next;
@@ -658,19 +781,103 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
               {options?.processLoopbackReason ?? "Application isolation requires the packaged Windows host and Windows build 20348 or later."}
             </p>
           )}
-          {captureMode === "application" ? <label>
-            Windows application
-            <select aria-label="Windows application" value={applicationKey}
-              onChange={(event) => setApplicationKey(event.target.value)} disabled={busy || !options?.available}>
-              <option value="">Select a running application</option>
-              {options?.applications?.map((app) => <option
-                key={`${app.processId}:${app.processStartTime}`} value={`${app.processId}:${app.processStartTime}`}>
-                {app.name} · PID {app.processId}
-              </option>)}
-            </select>
-            <span>Includes child processes. For browsers, select the parent browser process; multiple tabs may share it.
-              If the app restarts, refresh and select it again. Nothing switches to whole-output capture automatically.</span>
-          </label> : <label>
+          {captureMode === "application" ? <div className="library-capture-application-picker">
+            <label htmlFor="library-capture-application-search">Windows application</label>
+            <input
+              ref={applicationInputRef}
+              id="library-capture-application-search"
+              type="search"
+              role="combobox"
+              aria-label="Windows application"
+              aria-autocomplete="list"
+              aria-expanded={applicationListOpen}
+              aria-controls="library-capture-application-list"
+              aria-activedescendant={applicationListOpen && activeApplicationIndex >= 0
+                ? `capture-process-option-${activeApplicationIndex}` : undefined}
+              aria-describedby="library-capture-application-selected library-capture-application-help"
+              placeholder="Search all accessible processes"
+              value={applicationSearch}
+              disabled={busy || !options?.available}
+              onFocus={() => {
+                setApplicationSearch("");
+                setApplicationListOpen(true);
+                setActiveApplicationIndex(applications.length ? 0 : -1);
+              }}
+              onChange={(event) => {
+                setApplicationSearch(event.target.value);
+                setApplicationListOpen(true);
+                setActiveApplicationIndex(applicationRows(applications, event.target.value).length ? 0 : -1);
+              }}
+              onKeyDown={handleApplicationKeyDown}
+              onBlur={() => window.setTimeout(() => {
+                setApplicationListOpen(false);
+                setActiveApplicationIndex(-1);
+              }, 100)}
+            />
+            <div className="library-capture-application-selected" id="library-capture-application-selected" aria-live="polite">
+              <span>{selectedApplication
+                ? `Selected: ${selectedApplication.name} · PID ${selectedApplication.processId}`
+                : "No application selected."}</span>
+              {selectedApplication && <button type="button" className="library-capture-application-clear"
+                disabled={busy} onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  setApplicationKey("");
+                  setApplicationSelectionExpired(false);
+                  setApplicationSearch("");
+                  setApplicationListOpen(true);
+                  applicationInputRef.current?.focus();
+                }}>Clear selection</button>}
+            </div>
+            {applicationSelectionExpired && <p className="library-audio-capture-notice" role="status">
+              The selected process ended or restarted. Choose an available process again; capture will not switch to whole output.
+            </p>}
+            <p className="library-audio-capture-notice" id="library-capture-application-help">
+              Selecting a browser parent may include audio from multiple tabs; it does not isolate one tab.
+              Child processes are included when Windows identifies them. Refresh the list if the application restarts.
+            </p>
+            {applicationListOpen && <>
+              <div className="library-capture-application-list-heading" aria-hidden="true">
+                {applicationSearch.trim()
+                  ? `Matching processes · ${visibleApplicationRows.length} of ${applications.length}`
+                  : `All accessible processes · ${applications.length}`}
+              </div>
+              <div
+                className="library-capture-application-list"
+                id="library-capture-application-list"
+                role="listbox"
+                aria-label="All accessible Windows processes"
+                aria-busy={busy}
+              >
+                {visibleApplicationRows.map(({ app, parent, depth }, index) => {
+                  const identity = `${app.processId}:${app.processStartTime}`;
+                  const parentLabel = parent ? `${parent.name} · PID ${parent.processId}` : "";
+                  return <div
+                    id={`capture-process-option-${index}`}
+                    key={identity}
+                    role="option"
+                    aria-selected={applicationKey === identity}
+                    aria-label={`${app.name}, PID ${app.processId}${parent ? `, child of ${parentLabel}` : ""}`}
+                    className={`library-capture-application-option${activeApplicationIndex === index ? " is-active" : ""}`}
+                    style={{ paddingInlineStart: `${10 + Math.min(depth, 4) * 14}px` }}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setActiveApplicationIndex(index)}
+                    onClick={() => chooseApplication(app)}
+                  >
+                    <span>{app.name} · PID {app.processId}</span>
+                    {parent && <small>Child of {parentLabel}</small>}
+                  </div>;
+                })}
+              </div>
+              {visibleApplicationRows.length === 0 && <p className="library-capture-application-empty" role="status">
+                {applications.length
+                  ? "No accessible process matches this search."
+                  : "No accessible processes were found in this Windows session."}
+              </p>}
+              <span className="library-capture-application-keyboard-hint">
+                Use Up and Down to browse, Enter to select, and Escape to close.
+              </span>
+            </>}
+          </div> : <label>
             Windows playback device
             <select
               aria-label="Windows playback device"
