@@ -16,12 +16,16 @@ export interface ShellOpts {
 export function gameShell(o: ShellOpts): string {
   const accent = o.accent ?? "#8b5cf6";
   const help = (o.help ?? ["Arrows / WASD — move", "P — pause · M — sound · R — restart"]).join(" · ");
+  const controlMetadata = (o.help ?? ["Arrows / WASD — move", "P — pause · M — sound · R — restart"])
+    .map((item) => item.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"))
+    .join(" | ");
   const actionLabel = o.actionLabel ?? "●";
 
   return (
     "<!DOCTYPE html>\n" +
     '<html lang="en">\n<head>\n<meta charset="utf-8">\n' +
     '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">\n' +
+    '<meta name="arena-controls" content="' + controlMetadata + '">\n' +
     "<title>" + o.title + "</title>\n<style>\n" +
     "*{box-sizing:border-box;margin:0;padding:0}\n" +
     "body{background:#05070f;color:#e8edf7;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:10px;-webkit-user-select:none;user-select:none}\n" +

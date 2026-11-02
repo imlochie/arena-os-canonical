@@ -2862,6 +2862,7 @@ try {
   assert(await historyGameButton.isVisible(), "a failed game open must leave its library entry available");
   await page.getByRole("button", { name: "Retry saved game action" }).click();
   await page.locator('iframe[title="History action recovery"]').waitFor();
+  await page.getByTestId("game-controls").getByText("No control instructions are available for this game.").waitFor();
   const historyCard = page.locator('[data-game-id="arena-smoke-history"]');
   await historyCard.hover();
   page.once("dialog", dialog => dialog.accept());
@@ -2876,6 +2877,7 @@ try {
   const platformerButton = page.getByRole("button", { name: "Open offline game Platform Adventure" });
   await platformerButton.waitFor({ timeout: 15000 });
   await platformerButton.click();
+  await page.getByTestId("game-controls").getByText("← → / A-D — run · Space / W / ▲ — jump").waitFor();
   const platformerFrame = page.frameLocator('iframe[title*="Platform Adventure"]');
   await platformerFrame.locator("#game").waitFor({ timeout: 10000 });
   await platformerFrame.locator("#game").evaluate(canvas => {
@@ -2919,7 +2921,7 @@ try {
   let heldGenerationHasSource = false;
   let generationStartedResolve = null;
   let releaseHeldGeneration = null;
-  const generatedPong = '<!doctype html><html><head><title>Generated Pong</title></head><body><p id="generated-pong">AI Pong</p><canvas width="320" height="180"></canvas><script>let x=0;const c=document.querySelector("canvas"),ctx=c.getContext("2d");addEventListener("keydown",e=>{if(e.key==="ArrowRight")x++});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(x,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>';
+  const generatedPong = '<!doctype html><html><head><title>Generated Pong</title><meta name="arena-controls" content="ArrowRight — move the paddle"></head><body><p id="generated-pong">AI Pong</p><canvas width="320" height="180"></canvas><script>let x=0;const c=document.querySelector("canvas"),ctx=c.getContext("2d");addEventListener("keydown",e=>{if(e.key==="ArrowRight")x++});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(x,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>';
   const passedStartupVerification = {
     status: "passed",
     scope: "startup-render-only",
@@ -3164,6 +3166,7 @@ try {
   await page.getByRole("button", { name: "🎮 Create & play" }).click();
   await page.getByText("✨ AI codegen").waitFor({ timeout: 10000 });
   assert(promptGenerationSeen, "Automatic prompt generation must call the code-writing model instead of a preset core");
+  await page.getByTestId("game-controls").getByText("ArrowRight — move the paddle").waitFor();
   await page.locator('iframe[title="Pong"]').waitFor();
   report.push("Automatic creation routes a bare Pong prompt and the selected model source to generated game code instead of a preset.");
   await page.getByRole("button", { name: /Code/ }).click();

@@ -12,6 +12,7 @@ import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
 import ArcadeGameManagement from "./ArcadeGameManagement";
 import type { ArcadeGameDescriptor } from "../lib/arcadeManifest";
+import { readArcadeGameControls } from "../lib/arcadeGameControls";
 import {
   deleteOfflineSavedGame,
   loadOfflineSavedGames,
@@ -229,6 +230,7 @@ export default function ArcadeForge() {
   const localModelCheckRef = useRef<LocalModelCheck | null>(null);
   localModelCheckRef.current = localModelCheck;
   const saveSlotId = game?.saveSlotId ?? game?.id ?? null;
+  const gameControls = readArcadeGameControls(game?.code);
   const gameSaves = useArcadeGameSave(gameFrameRef, saveSlotId);
   const managedDescriptor = useMemo<ArcadeGameDescriptor | null>(() => game?.id && typeof game.code === "string" ? {
     id: game.id, title: game.title || "Created game", source: game.code, format: "html", scope: "created",
@@ -1657,6 +1659,26 @@ export default function ArcadeForge() {
             : tab === "play" && !management.compatibility?.available ? <p role="alert" className="p-3 text-xs text-amber-200">This game needs a compatible runtime. Open diagnostics for its specific requirement.</p>
             : tab === "play" ? (
               <div className="glass mt-2 overflow-hidden rounded-2xl">
+                <section
+                  data-testid="game-controls"
+                  aria-label="Game controls"
+                  className="border-b border-white/10 bg-black/25 px-4 py-3"
+                >
+                  <h3 className="text-xs font-extrabold uppercase tracking-wide text-slate-200">Controls</h3>
+                  {gameControls ? (
+                    <ul className="mt-2 grid min-w-0 grid-cols-1 gap-1.5 text-xs leading-relaxed text-slate-300 sm:grid-cols-2">
+                      {gameControls.map((control, index) => (
+                        <li key={`${index}:${control}`} className="min-w-0 break-words rounded-lg bg-white/[0.04] px-2.5 py-2">
+                          {control}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                      No control instructions are available for this game.
+                    </p>
+                  )}
+                </section>
                 <iframe
                   key={`${game.id}:${gameSaves.reloadKey}`}
                   ref={gameFrameRef}

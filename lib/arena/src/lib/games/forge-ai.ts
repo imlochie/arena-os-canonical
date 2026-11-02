@@ -34,6 +34,7 @@ CONSTRUCTION KNOWLEDGE — every game you ship contains all of this, chosen to f
 - Aesthetic: dark theme, one accent color, readable HUD typography, canvas scaled responsively (CSS max-width, aspect kept).
 - Robustness: no unbounded arrays (cap particles), no NaN propagation, works at 60fps and 144fps (dt-based).
 - A short "how to play" block listing controls.
+- Include a <meta name="arena-controls" content="..."> in <head> with concise, accurate, game-specific controls separated by |. Omit it if the controls are unknown, and update it when revising controls.
 
 HARD REQUIREMENTS for the output:
 - One complete <!DOCTYPE html> document, 8KB–120KB.
