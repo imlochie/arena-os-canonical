@@ -26,7 +26,7 @@
 - [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, disable caching for failures, and wait for the intended track before asserting queue-switch playback.
 - [Waveyard touch gesture tests](waveyard-touch-tests.md) — preflight visible touch coordinates so offscreen clip bounds do not turn gesture failures into misleading scroll results.
 - [Waveyard startup recovery](waveyard-startup-recovery.md) — retry transient database outages at boot within bounds; fail fast on schema errors.
-- [Playwright touch isolation](playwright-touch-emulation.md) — scope touch emulation to mobile interaction checks in shared smoke browsers so hover-dependent tests remain desktop-like.
+- [Playwright touch evidence](playwright-touch-emulation.md) — native pan needs touch input; Chromium emulation is not proof of iOS Safari or physical Android behavior.
 - [Arcade emulator evidence](arcade-emulator-test-evidence.md) — wait for initialized fixture output; distinguish import refusal from runtime sandbox isolation.
 - [Artifact workflow ports](artifact-workflow-ports.md) — after stale Vite/API copies collide with managed ports, stop the exact services, then restart and verify each expected port.
 - [Arcade shelf concurrency](arcade-shelf-concurrency.md) — notifications are advisory; stale-write checks must be transactional, and refreshing unrelated games must not restart players.

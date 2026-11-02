@@ -148,6 +148,39 @@ async function dragTouch(locator, deltaX, deltaY, cancel = false, xFraction = 0.
     touchPoints: [],
   });
 }
+async function swipeTouch(locator, deltaX, deltaY, xFraction = 0.5, yFraction = 0.5) {
+  const bounds = await locator.boundingBox();
+  assert(bounds, "Touch swipe target must have visible bounds");
+  if (!touchSession) {
+    touchSession = await context.newCDPSession(page);
+    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  }
+  const startX = Math.round(bounds.x + bounds.width * xFraction);
+  const startY = Math.round(bounds.y + bounds.height * yFraction);
+  assert(await locator.evaluate((element, point) => {
+    const hit = document.elementFromPoint(point.x, point.y);
+    return hit === element || element.contains(hit);
+  }, { x: startX, y: startY }), "The touch swipe must begin on its intended visible target");
+  await touchSession.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: startX, y: startY, id: 1, radiusX: 1, radiusY: 1, force: 1 }],
+  });
+  for (let step = 1; step <= 5; step += 1) {
+    await touchSession.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{
+        x: Math.round(startX + deltaX * step / 5),
+        y: Math.round(startY + deltaY * step / 5),
+        id: 1,
+        radiusX: 1,
+        radiusY: 1,
+        force: 1,
+      }],
+    });
+    await page.waitForTimeout(24);
+  }
+  await touchSession.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+}
 async function setSimulatedVisibility(targetPage, visibilityState) {
   await targetPage.evaluate((nextState) => {
     if (!Object.hasOwn(document, "__arenaSmokeVisibility")) {
@@ -2406,36 +2439,35 @@ try {
       assert.equal(await seekSlider.inputValue(), touchSeekBefore,
         "selecting a clip by touch must not seek the arrangement");
 
-      const emptyLane = page.locator(".clip-lane").first();
-      await emptyLane.scrollIntoViewIfNeeded();
       await timelineScroller.evaluate((element) => { element.scrollLeft = 0; });
       const scrollBeforeTouchSwipe = await timelineScroller.evaluate((element) => element.scrollLeft);
       assert.equal(await timelineScroller.evaluate((element) => getComputedStyle(element).touchAction), "pan-x pan-y",
         "the mobile timeline must leave horizontal touch movement to native scrolling");
-      const laneTouchPoint = await emptyLane.evaluate((lane) => {
-        const bounds = lane.getBoundingClientRect();
-        const scroller = lane.closest(".timeline-scroll")?.getBoundingClientRect();
-        return {
-          x: Math.max(bounds.left + 10, Math.min(window.innerWidth - 20, (scroller?.left ?? bounds.left) + 140)),
-          y: bounds.top + 3,
-        };
+      const clipPositionBeforeTouchSwipe = await touchClip.evaluate((element) => element.style.left);
+      const swipeBounds = await touchClip.boundingBox();
+      assert(swipeBounds, "The clip must be visible for the native-scroll touch test");
+      const swipePoint = await touchClip.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const visibleLeft = Math.max(0, bounds.left);
+        const visibleRight = Math.min(window.innerWidth, bounds.right);
+        return { x: visibleLeft + (visibleRight - visibleLeft) / 2, y: bounds.top + Math.min(20, bounds.height / 2) };
       });
-      await emptyLane.dispatchEvent("pointerdown", {
-        pointerId: 80, pointerType: "touch", isPrimary: true, button: 0, buttons: 1,
-        clientX: laneTouchPoint.x, clientY: laneTouchPoint.y,
-      });
-      await emptyLane.dispatchEvent("pointermove", {
-        pointerId: 80, pointerType: "touch", isPrimary: true, button: 0, buttons: 1,
-        clientX: laneTouchPoint.x - 64, clientY: laneTouchPoint.y,
-      });
-      await emptyLane.dispatchEvent("pointerup", {
-        pointerId: 80, pointerType: "touch", isPrimary: true, button: 0, buttons: 0,
-        clientX: laneTouchPoint.x - 64, clientY: laneTouchPoint.y,
-      });
+      assert(swipePoint.x >= 0 && swipePoint.x < width,
+        "The native-scroll touch must start on the visible portion of the clip");
+      const swipeX = swipePoint.x;
+      const swipeFraction = (swipeX - swipeBounds.x) / swipeBounds.width;
+      const swipeYFraction = (swipePoint.y - swipeBounds.y) / swipeBounds.height;
+      await swipeTouch(touchClip, -76, 0, swipeFraction, swipeYFraction);
+      await page.waitForFunction(({ before }) => {
+        const scroller = document.querySelector(".timeline-scroll");
+        return scroller instanceof HTMLElement && scroller.scrollLeft > before;
+      }, { before: scrollBeforeTouchSwipe }, { timeout: 3_000 });
       assert.equal(await seekSlider.inputValue(), touchSeekBefore,
-        "a horizontal touch gesture on the clip lane must not seek the playback position");
-      assert.equal(await timelineScroller.evaluate((element) => element.scrollLeft), scrollBeforeTouchSwipe,
-        "a cancelled horizontal lane gesture must not change the scroll position through timeline seeking");
+        "a native horizontal touch swipe beginning on a clip must not seek the playback position");
+      assert(await timelineScroller.evaluate((element, before) => element.scrollLeft > before, scrollBeforeTouchSwipe),
+        "a native horizontal touch swipe beginning on a clip must scroll the arrangement");
+      assert.equal(await touchClip.evaluate((element) => element.style.left), clipPositionBeforeTouchSwipe,
+        "a native horizontal touch swipe must not drag the clip");
 
       await timelineScroller.evaluate((element) => { element.scrollLeft = 0; });
       const initialClipLeft = await touchClip.evaluate((element) => element.style.left);
@@ -2608,7 +2640,7 @@ try {
     touchSession = null;
   }
   await page.setViewportSize(desktopViewport);
-  report.push("At phone widths, touch selects clips without seeking, horizontal lane gestures remain available for scrolling, dedicated controls move and trim clips, and cancelled moves restore the arrangement.");
+  report.push("In Chromium touch emulation at phone widths, touch selects clips without seeking, native horizontal swipes scroll without dragging clips, dedicated controls move and trim clips, and cancelled move/trim gestures restore the arrangement.");
   report.push("At 320px and 402px, the arrangement scrolls internally with no page overflow; touch-sized play, seek, and arrangement preview controls respond to taps.");
   report.push("A session handoff opens a linked, audio-backed Studio arrangement; clips, isolated mix, two distinct donor swaps, and supported crossfades survive reload.");
   report.push("A slow live stem switch can be cancelled without rewinding playback; later swaps, isolation, Camelot cueing, and mobile stem controls pass.");
