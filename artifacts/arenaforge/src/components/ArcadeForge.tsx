@@ -240,6 +240,8 @@ export default function ArcadeForge() {
     origin: game.engine === "ai-codegen" ? "generated" : "offline-core",
   } : null, [game, saveSlotId, offlineGames, history]);
   const management = useArcadeManagement(managedDescriptor);
+  // Save-indicator updates are frequent; only source, save identity, or an
+  // explicit reload may rebuild srcDoc, since assigning it restarts gameplay.
   const gameDocument = useMemo(() => typeof game?.code === "string"
     ? browserHtmlAdapter.launch({ source: game.code, saveId: saveSlotId ?? game.id }) : "",
   [game?.id, game?.code, saveSlotId, gameSaves.reloadKey]);

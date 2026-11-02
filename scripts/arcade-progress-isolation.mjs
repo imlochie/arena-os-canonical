@@ -18,6 +18,11 @@ page.on("pageerror", error => errors.push(error.message));
 const base = process.env.TEST_BASE_URL || "http://localhost:80";
 const output = new URL("../generated-artifacts/arcade-progress-isolation/", import.meta.url);
 await mkdir(output, { recursive: true });
+await page.route(url => {
+  const request = new URL(url);
+  return request.pathname === "/api/arcade" && request.searchParams.get("limit") === "30";
+}, route => route.fulfill({ json: { games: [] } }));
+await page.route(url => new URL(url).pathname === "/api/models", route => route.fulfill({ json: { models: [] } }));
 const original = `<!doctype html><html><head><title>Original shared-key fixture</title></head><body>
 <h1 id="version">Original</h1><label>Progress value<input id="value"></label>
 <button id="save">Save progress</button><button id="remove">Remove key</button><button id="clear">Clear game data</button><output id="stored"></output>
@@ -35,6 +40,22 @@ await page.route("**/api/arcade/import/revise", async route => {
 const frame = () => page.frameLocator('iframe[title="Playable game: same-name.html"]');
 const saves = (target = page) => target.evaluate(() => Object.fromEntries(Object.keys(localStorage)
   .filter(key => key.startsWith("arenaforge.game-save.v1:")).map(key => [key.slice("arenaforge.game-save.v1:".length), localStorage.getItem(key)])));
+const playerState = player => player.locator("body").evaluate(body => ({
+  session: body.dataset.playerSession,
+  ticks: Number(body.dataset.gameTicks || 0),
+  loaded: body.dataset.loadedProgress || "unset",
+  title: body.querySelector("#fixture-title")?.textContent ?? "",
+}));
+const waitForLiveProgress = async (player, session, priorTicks, label) => {
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    const state = await playerState(player);
+    assert.equal(state.session, session, `${label}: the active player document must remain mounted`);
+    if (state.ticks > priorTicks) return state;
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  assert.fail(`${label}: game animation state did not keep advancing`);
+};
 const records = (target = page) => target.evaluate(() => new Promise((resolve, reject) => {
   const open = indexedDB.open("arenaforge-imported-games");
   open.onerror = () => reject(open.error);
@@ -271,6 +292,173 @@ try {
     assert.deepEqual(errors, []);
     checks.push("a fresh browser context restores to a new identity only after exact-source matching and explicit copy confirmation; progress survives its reload");
   }
+
+  // Exercise the created-game player with a local fixture, not a model call.
+  await page.goto(`${base}/arcade`);
+  const starterButton = page.getByRole("button", { name: "Open offline game Platform Adventure" });
+  await starterButton.waitFor({ timeout: 15000 });
+  const fixturePrompt = "Created game progress lifecycle fixture";
+  const fixtureId = "task219-created-progress-fixture";
+  const secondId = "task219-distinct-save-identity";
+  const fixtureCode = title => `<!doctype html><html><head><title>${title}</title><meta name="arena-controls" content="Save progress with the buttons"></head><body>
+<h1 id="fixture-title">${title}</h1><input id="progress" value="created-progress">
+<button id="save">Save checkpoint</button><button id="remove">Remove last key</button><button id="clear">Clear game data</button>
+<output id="stored"></output><canvas width="120" height="80"></canvas>
+<script>
+document.body.dataset.playerSession=Date.now()+"-"+Math.random().toString(36).slice(2);
+const field=document.getElementById("progress"),stored=document.getElementById("stored");
+document.body.dataset.loadedProgress=localStorage.getItem("checkpoint")||"unset";
+function draw(){stored.textContent=localStorage.getItem("checkpoint")||"unset"}
+document.getElementById("save").onclick=()=>{localStorage.setItem("checkpoint",field.value);draw()};
+document.getElementById("remove").onclick=()=>{localStorage.removeItem("checkpoint");draw()};
+document.getElementById("clear").onclick=()=>{localStorage.clear();draw()};
+let ticks=0;function step(){document.body.dataset.gameTicks=String(++ticks);requestAnimationFrame(step)}step();draw();
+</script></body></html>`;
+  const fixtureSource = fixtureCode("Created original");
+  const createdGames = [
+    { id: fixtureId, title: "Created save lifecycle fixture", prompt: fixturePrompt, gameType: "pong", engine: "ai-codegen", code: fixtureSource, saveSlotId: "task219-created-save-slot", starter: false, createdAt: 1, updatedAt: 1 },
+    { id: secondId, title: "Separate save identity fixture", prompt: "Second game save identity fixture", gameType: "pong", engine: "ai-codegen", code: fixtureCode("Second identity"), saveSlotId: "task219-other-save-slot", starter: false, createdAt: 2, updatedAt: 2 },
+  ];
+  await page.evaluate(games => new Promise((resolve, reject) => {
+    const opening = indexedDB.open("arenaforge-offline-shelf", 1);
+    opening.onupgradeneeded = () => {
+      if (!opening.result.objectStoreNames.contains("games")) opening.result.createObjectStore("games", { keyPath: "id" });
+    };
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => {
+      const db = opening.result;
+      const transaction = db.transaction("games", "readwrite");
+      for (const game of games) transaction.objectStore("games").put(game);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  }), createdGames);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const openCreated = () => page.getByRole("button", { name: "Open offline game Created save lifecycle fixture" });
+  const openSecond = () => page.getByRole("button", { name: "Open offline game Separate save identity fixture" });
+  await openCreated().waitFor({ timeout: 15000 });
+  await openCreated().click();
+  const createdPlayer = page.frameLocator(`iframe[title="${fixturePrompt}"]`);
+  await createdPlayer.locator("#fixture-title").waitFor();
+  let live = await playerState(createdPlayer);
+  await createdPlayer.locator("#progress").fill("first-created-save");
+  await createdPlayer.getByRole("button", { name: "Save checkpoint" }).click();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+  assert.equal(JSON.parse((await saves())[createdGames[0].saveSlotId]).checkpoint, "first-created-save");
+  await waitForLiveProgress(createdPlayer, live.session, live.ticks, "created game first save");
+  live = await playerState(createdPlayer);
+  await createdPlayer.getByRole("button", { name: "Remove last key" }).click();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor({ state: "detached" });
+  assert.equal((await saves())[createdGames[0].saveSlotId], undefined);
+  await waitForLiveProgress(createdPlayer, live.session, live.ticks, "created game removes last key");
+  live = await playerState(createdPlayer);
+  await createdPlayer.locator("#progress").fill("game-originated-clear");
+  await createdPlayer.getByRole("button", { name: "Save checkpoint" }).click();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+  live = await playerState(createdPlayer);
+  await createdPlayer.getByRole("button", { name: "Clear game data" }).click();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor({ state: "detached" });
+  assert.equal((await saves())[createdGames[0].saveSlotId], undefined);
+  await waitForLiveProgress(createdPlayer, live.session, live.ticks, "created game clears its own storage");
+
+  await createdPlayer.locator("#progress").fill("source-compatible-progress");
+  await createdPlayer.getByRole("button", { name: "Save checkpoint" }).click();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+  live = await playerState(createdPlayer);
+  await page.getByRole("button", { name: "Clear progress", exact: true }).click();
+  await createdPlayer.locator("#fixture-title").waitFor();
+  const cleared = await playerState(createdPlayer);
+  assert.notEqual(cleared.session, live.session, "explicit Clear progress should intentionally reload the player");
+  assert.equal(cleared.loaded, "unset", "the reloaded player must not receive explicitly cleared progress");
+  assert.equal((await saves())[createdGames[0].saveSlotId], undefined);
+  await createdPlayer.locator("#progress").fill("source-compatible-progress");
+  await createdPlayer.getByRole("button", { name: "Save checkpoint" }).click();
+
+  await page.evaluate(async ({ id, revisedCode }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("arenaforge-offline-shelf", 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction("games", "readwrite");
+      const store = transaction.objectStore("games");
+      const request = store.get(id);
+      request.onsuccess = () => store.put({ ...request.result, code: revisedCode, updatedAt: Date.now() });
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    });
+  }, { id: fixtureId, revisedCode: fixtureCode("Created revised") });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openCreated().waitFor({ timeout: 15000 });
+  await openCreated().click();
+  await createdPlayer.getByRole("heading", { name: "Created revised", exact: true }).waitFor();
+  assert.equal((await playerState(createdPlayer)).loaded, "source-compatible-progress", "a source revision must load the same game's save slot");
+
+  await openSecond().click();
+  const secondPlayer = page.frameLocator('iframe[title="Second game save identity fixture"]');
+  await secondPlayer.locator("#fixture-title").waitFor();
+  assert.equal((await playerState(secondPlayer)).loaded, "unset", "a different save identity must not inherit the prior game's progress");
+  await secondPlayer.locator("#progress").fill("other-identity-progress");
+  await secondPlayer.getByRole("button", { name: "Save checkpoint" }).click();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+  await openCreated().click();
+  await createdPlayer.locator("#fixture-title").waitFor();
+  assert.equal((await playerState(createdPlayer)).loaded, "source-compatible-progress");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openCreated().waitFor({ timeout: 15000 });
+  await openCreated().click();
+  assert.equal((await playerState(createdPlayer)).loaded, "source-compatible-progress");
+  await openSecond().click();
+  assert.equal((await playerState(secondPlayer)).loaded, "other-identity-progress");
+
+  await starterButton.click();
+  const platformer = page.frameLocator('iframe[title*="Platform Adventure"]');
+  const platformCanvas = platformer.locator("#game");
+  await platformCanvas.waitFor({ timeout: 10000 });
+  await platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.__start());
+  const installPlatformProbe = () => platformer.locator("body").evaluate(body => {
+    const view = body.ownerDocument.defaultView;
+    if (!view.__task219Probe) {
+      const probe = { session: `${Date.now()}-${Math.random()}`, ticks: 0 };
+      view.__task219Probe = probe;
+      const advance = () => { probe.ticks++; view.requestAnimationFrame(advance); };
+      view.requestAnimationFrame(advance);
+    }
+    return { ...view.__task219Probe };
+  });
+  const readPlatformProbe = () => platformer.locator("body").evaluate(body => body.ownerDocument.defaultView.__task219Probe ?? null);
+  const verifyPlatformLive = async (before, label) => {
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      const current = await readPlatformProbe();
+      assert.ok(current, `${label}: offline starter document must not be replaced`);
+      assert.equal(current.session, before.session, `${label}: offline starter session must stay live`);
+      if (current.ticks > before.ticks) return;
+      await new Promise(resolve => setTimeout(resolve, 40));
+    }
+    assert.fail(`${label}: offline starter animation did not advance`);
+  };
+  let platformLive = await installPlatformProbe();
+  const setPlatformSave = () => platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.localStorage.setItem("af_platform_unlocked", "2"));
+  const removePlatformSave = () => platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.localStorage.removeItem("af_platform_unlocked"));
+  const clearPlatformSave = () => platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.localStorage.clear());
+  await setPlatformSave();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+  await verifyPlatformLive(platformLive, "offline starter save");
+  platformLive = await readPlatformProbe();
+  await removePlatformSave();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor({ state: "detached" });
+  await verifyPlatformLive(platformLive, "offline starter removes last key");
+  platformLive = await readPlatformProbe();
+  await setPlatformSave();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+  platformLive = await readPlatformProbe();
+  await clearPlatformSave();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor({ state: "detached" });
+  await verifyPlatformLive(platformLive, "offline starter game-originated clear");
+  checks.push("created-game and offline-starter saves, key removal, and game clears keep the live player running; explicit clear, source revisions, identities, and reload restore the right progress");
+
   await page.screenshot({ path: new URL("isolation.png", output).pathname });
   await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, checks, modelCallTested: false }, null, 2));
   console.log(JSON.stringify({ passed: true, checks, modelCallTested: false }));

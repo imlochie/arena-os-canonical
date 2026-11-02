@@ -108,8 +108,10 @@ export function useArcadeGameSave(
       const serialized = JSON.stringify(current);
       if (encodedSize(serialized) > MAX_SAVE_BYTES) return;
       try {
-        localStorage.setItem(storageKey(gameId), serialized);
-        setHasSavedProgress(Object.keys(current).length > 0);
+        const hasProgress = Object.keys(current).length > 0;
+        if (hasProgress) localStorage.setItem(storageKey(gameId), serialized);
+        else localStorage.removeItem(storageKey(gameId));
+        setHasSavedProgress(hasProgress);
       } catch {}
     };
 
