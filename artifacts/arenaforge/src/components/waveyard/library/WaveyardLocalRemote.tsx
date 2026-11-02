@@ -232,12 +232,19 @@ export default function WaveyardLocalRemote() {
 
   const connected = connection === "connected" && state !== null;
   const mixChanged = state?.stems.some((stem) => stem.isolated || Math.abs(stem.level - 1) > 0.001) ?? false;
+  const connectionLabel = connected
+    ? "Connected to your laptop"
+    : connection === "connecting"
+      ? "Connecting…"
+      : connection === "invalid"
+        ? credentials === null ? "Not paired yet" : "Pairing ended"
+        : "Connection paused";
 
   return (
     <main className="wy-remote">
       <header className="wy-remote-header">
         <div className={`wy-remote-indicator ${connected ? "is-connected" : ""}`} />
-        <span>{connected ? "Connected to your laptop" : connection === "connecting" ? "Connecting…" : "Connection paused"}</span>
+        <span>{connectionLabel}</span>
       </header>
 
       <section className="wy-remote-content">

@@ -8,6 +8,7 @@
 - [Waveyard processing evidence](waveyard-processing.md) — model readiness is not processing proof; verify pinned input shapes and bound native session lifetimes.
 - [Waveyard real-audio test runner](waveyard-real-audio-runner.md) — use resolver-aware TypeScript loading and an absolute test path from pnpm's scripts workspace.
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playhead and track state between tabs without autoplaying a second audio engine; passive heartbeats must not override newer controls.
+- [Waveyard private device sync](waveyard-private-device-sync.md) — prefer QR pairing and encrypted laptop-hosted sync; keep audio and library files private and avoid paid-cloud dependency.
 - [Waveyard live-swap recovery](waveyard-live-swap-recovery.md) — keep the last audible layer playing while retaining the failed donor choice for an explicit retry.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
 - [Windows build resource limits](windows-build-resources.md) — user has seen Windows builds exhaust laptop disk; distinguish RAM, dependencies, staging, installers, and downloaded models.

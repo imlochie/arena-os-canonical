@@ -79,11 +79,14 @@ try {
   });
 
   const invite = new URL("/waveyard-remote.html", baseUrl);
+  await page.goto(invite.toString(), { waitUntil: "networkidle" });
+  await page.getByText("Not paired yet").waitFor();
   invite.hash = new URLSearchParams({
     pair: "temporary-pairing-token",
     key,
     host: hostSenderId,
   }).toString();
+  await page.goto("about:blank");
   await page.goto(invite.toString(), { waitUntil: "networkidle" });
   await page.waitForFunction(() => window.__waveyardTestStreams?.length === 1);
   const state = {
