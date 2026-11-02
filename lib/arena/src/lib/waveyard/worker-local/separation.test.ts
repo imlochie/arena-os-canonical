@@ -379,16 +379,17 @@ test("waveform retries a transient storage failure and completes without manual 
   }
 });
 
-test("waveform save retry deletes a partially written object and leaves one asset", async () => {
+test("waveform save retry reuses its object key after a partial write", async () => {
   const f = await fixture();
   try {
     const job = await createSourceWaveformJob(f);
     const baseStorage = getStorage();
     const flakyStorage = Object.create(baseStorage) as typeof baseStorage;
     const attemptedKeys: string[] = [];
-    const deletedKeys: string[] = [];
     const delays: number[] = [];
     let writeCalls = 0;
+    let generationCalls = 0;
+    let deleteCalls = 0;
 
     flakyStorage.putFile = async (key, localPath, contentType) => {
       attemptedKeys.push(key);
@@ -399,29 +400,35 @@ test("waveform save retry deletes a partially written object and leaves one asse
       }
     };
     flakyStorage.delete = async (key) => {
-      deletedKeys.push(key);
-      return baseStorage.delete(key);
+      deleteCalls += 1;
+      throw Object.assign(new Error(`Unexpected deletion of shared waveform object ${key}`), { code: "EIO" });
     };
 
     await handleWaveformJob(sourceWaveformPayload(f, job.id), {
       db: f.database,
       storage: flakyStorage,
-      generateWaveform: async () => validWaveformDocument(),
+      generateWaveform: async () => {
+        generationCalls += 1;
+        return validWaveformDocument();
+      },
       sleep: async (milliseconds) => { delays.push(milliseconds); },
     });
 
     const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
     const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
     assert.equal(attemptedKeys.length, 2);
-    assert.notEqual(attemptedKeys[0], attemptedKeys[1], "each attempt owns a distinct temporary object key");
-    assert.deepEqual(deletedKeys, [attemptedKeys[0]], "the object from the failed save attempt is removed");
-    assert.equal(await baseStorage.exists(attemptedKeys[0]!), false);
-    assert.equal(await baseStorage.exists(attemptedKeys[1]!), true);
+    assert.equal(generationCalls, 2, "the waveform is regenerated within the configured attempt limit");
+    assert.equal(attemptedKeys[0], attemptedKeys[1], "each retry writes to the same idempotent object key");
+    assert.equal(deleteCalls, 0, "a retry must not delete an object another worker may have published");
+    assert.equal(await baseStorage.exists(attemptedKeys[0]!), true);
+    const generatedObjects = (await baseStorage.listObjects("projects"))
+      .filter((object) => object.key.startsWith(`projects/${f.project.id}/waveform/`));
+    assert.deepEqual(generatedObjects.map((object) => object.key), [attemptedKeys[0]]);
     assert.deepEqual(delays, [WAVEFORM_RETRY_BACKOFF_MS[0]]);
     assert.equal(completed.status, "complete");
     assert.equal(completed.attempts, 2);
     assert.equal(assets.length, 1);
-    assert.equal(assets[0]!.storageKey, attemptedKeys[1]);
+    assert.equal(assets[0]!.storageKey, attemptedKeys[0]);
   } finally {
     await f.close();
   }

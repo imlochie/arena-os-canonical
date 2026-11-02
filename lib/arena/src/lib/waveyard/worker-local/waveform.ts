@@ -23,7 +23,7 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import { db } from "@workspace/db";
 import { sourceAnalyses, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { checksumFile, generateWaveform } from "@workspace/arena/lib/waveyard/audio";
-import { getStorage, privateObjectKey, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
+import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueSourceAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "./analysis-engine";
@@ -265,9 +265,11 @@ export async function handleWaveformJob(
     throw new Error(message);
   }
 
+  // A stable key makes retries idempotent even if a failed write left an
+  // object behind and best-effort cleanup could not remove it.
+  const storedKey = `projects/${job.projectId}/waveform/${job.id}.json`;
   const runAttempt = async (attempt: number) => {
     let temporaryDirectory: string | undefined;
-    let storedKey: string | undefined;
     try {
       await updateJob(database, job.id, {
         status: "preparing",
@@ -289,7 +291,6 @@ export async function handleWaveformJob(
       const checksum = await checksumFile(documentPath);
 
       await updateJob(database, job.id, { status: "finalizing", stage: "storing" });
-      storedKey = privateObjectKey(job.projectId, "waveform", "json");
       await storage.putFile(storedKey, documentPath, "application/json");
       const metadata = JSON.stringify({
         format: waveform.format,
@@ -305,7 +306,7 @@ export async function handleWaveformJob(
           sourceAssetId: asset.sourceAssetId,
           stemAssetId: asset.stemAssetId,
           waveformJobId: job.id,
-          storageKey: storedKey!,
+          storageKey: storedKey,
           checksumSha256: checksum,
           format: waveform.format,
           metadata,
@@ -315,9 +316,6 @@ export async function handleWaveformJob(
           .set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date() })
           .where(eq(waveformJobs.id, job.id));
       });
-    } catch (error) {
-      if (storedKey) await storage.delete(storedKey).catch(() => undefined);
-      throw error;
     } finally {
       if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
