@@ -373,8 +373,15 @@ try {
     }),
   );
   const output = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     benchmark: "paired multi-track four-stem sequential and bounded-parallel CPU comparison",
+    timingEvidence: {
+      completePerModelTimings:
+        "Each run's timings.modelInferenceStages comes from the authoritative inference callback and is validated against every pinned model.",
+      sampledProgressTimings:
+        "Each run's timings.sampledProgressModelPasses is approximate polling data; a pass shorter than the sampling interval may be absent and does not invalidate a run.",
+      progressSamplingIntervalMs: 500,
+    },
     measuredMachine: {
       platform: process.platform,
       osType: osType(),

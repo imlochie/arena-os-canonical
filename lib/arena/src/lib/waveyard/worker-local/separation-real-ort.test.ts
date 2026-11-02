@@ -97,6 +97,66 @@ function audioMetrics(samples: Float32Array) {
   };
 }
 
+function createProgressPassSampler() {
+  const passes: { phase: string; model: string; elapsedMs: number }[] = [];
+  let activePass: { phase: string; model: string; startedAt: number } | null = null;
+  return {
+    observe(progress: { phase?: unknown; model?: unknown }, observedAt: number) {
+      if (typeof progress.phase !== "string" || progress.phase === activePass?.phase) return;
+      if (activePass) {
+        passes.push({
+          phase: activePass.phase,
+          model: activePass.model,
+          elapsedMs: observedAt - activePass.startedAt,
+        });
+      }
+      activePass = {
+        phase: progress.phase,
+        model: typeof progress.model === "string" ? progress.model : "unknown",
+        startedAt: observedAt,
+      };
+    },
+    finish(finishedAt: number) {
+      if (activePass) {
+        passes.push({
+          phase: activePass.phase,
+          model: activePass.model,
+          elapsedMs: finishedAt - activePass.startedAt,
+        });
+        activePass = null;
+      }
+      return passes;
+    },
+  };
+}
+
+test("progress sampling can miss a fast model pass without losing authoritative timings", () => {
+  const sampler = createProgressPassSampler();
+  sampler.observe({ phase: "1/4", model: FOUR_STEM_MODELS[0]!.id }, 0);
+  // The second pass runs from 100–200 ms, entirely between 500 ms polls.
+  sampler.observe({ phase: "3/4", model: FOUR_STEM_MODELS[2]!.id }, 500);
+  const sampledProgressPasses = sampler.finish(1_000);
+  const authoritativeTimings = FOUR_STEM_MODELS.map(({ id }) => ({
+    model: id,
+    timings: { totalMs: 100, chunkCount: 1 },
+  }));
+
+  assert.deepEqual(
+    sampledProgressPasses.map(({ model }) => model),
+    [FOUR_STEM_MODELS[0]!.id, FOUR_STEM_MODELS[2]!.id],
+    "sampled progress timing may omit a pass shorter than the polling interval",
+  );
+  assert.deepEqual(
+    authoritativeTimings.map(({ model }) => model).sort(),
+    FOUR_STEM_MODELS.map(({ id }) => id).sort(),
+    "authoritative inference callbacks retain one timing record for every pinned model",
+  );
+  assert.ok(
+    authoritativeTimings.every(({ timings }) => Number.isFinite(timings.totalMs) && timings.totalMs > 0),
+    "authoritative timing records remain valid independently of sampled progress",
+  );
+});
+
 async function createFourStemProbeSource(durationSeconds: number) {
   const sampleCount = durationSeconds * 44_100;
   const interleaved = new Float32Array(sampleCount * 2);
@@ -917,8 +977,7 @@ if (realAudioInputPath) {
       harness = createLocalRetryHarness(f.database, (model, timings) => {
         inferenceStageTimings.push({ model, timings });
       });
-      const modelPassTimings: { phase: string; model: string; elapsedMs: number }[] = [];
-      let activePass: { phase: string; model: string; startedAt: number } | null = null;
+      const progressPassSampler = createProgressPassSampler();
       let stopSamplingProgress = false;
       let progressSamplingError: string | null = null;
       const sampleProgress = (async () => {
@@ -932,21 +991,7 @@ if (realAudioInputPath) {
               ? JSON.parse(latestJob.metadata)
               : (latestJob?.metadata ?? {});
             const progress = metadata?.progress;
-            if (typeof progress?.phase === "string" && progress.phase !== activePass?.phase) {
-              const observedAt = Date.now();
-              if (activePass) {
-                modelPassTimings.push({
-                  phase: activePass.phase,
-                  model: activePass.model,
-                  elapsedMs: observedAt - activePass.startedAt,
-                });
-              }
-              activePass = {
-                phase: progress.phase,
-                model: typeof progress.model === "string" ? progress.model : "unknown",
-                startedAt: observedAt,
-              };
-            }
+            progressPassSampler.observe(progress ?? {}, Date.now());
           } catch (error) {
             progressSamplingError = error instanceof Error ? error.message : String(error);
             return;
@@ -972,30 +1017,18 @@ if (realAudioInputPath) {
         clearInterval(playbackTimer);
         stopSamplingProgress = true;
         await sampleProgress;
-        if (activePass) {
-          modelPassTimings.push({
-            phase: activePass.phase,
-            model: activePass.model,
-            elapsedMs: Date.now() - activePass.startedAt,
-          });
-        }
       }
+      const sampledProgressPasses = progressPassSampler.finish(Date.now());
       const elapsedMs = Date.now() - startedAt;
       assert.deepEqual(retry, { queued: true });
-      assert.equal(
-        modelPassTimings.length,
-        FOUR_STEM_MODELS.length,
-        "the production worker should expose a progress interval for each real model pass",
-      );
-      assert.deepEqual(
-        modelPassTimings.map(({ model }) => model).sort(),
-        FOUR_STEM_MODELS.map(({ id }) => id).sort(),
-        "progress timing must include every pinned model pass exactly once",
-      );
-      for (const pass of modelPassTimings) {
+      for (const pass of sampledProgressPasses) {
+        assert.ok(
+          FOUR_STEM_MODELS.some(({ id }) => id === pass.model),
+          `${pass.phase} sampled progress identifies a pinned model`,
+        );
         assert.ok(
           Number.isFinite(pass.elapsedMs) && pass.elapsedMs > 0,
-          `${pass.model} progress timing must be finite and positive`,
+          `${pass.model} sampled progress timing must be finite and positive`,
         );
       }
 
@@ -1071,6 +1104,11 @@ if (realAudioInputPath) {
             `${entry.model} ${stage} timing must be finite and non-negative`,
           );
         }
+        assert.ok(entry.timings.totalMs > 0, `${entry.model} authoritative total timing must be positive`);
+        assert.ok(
+          Number.isInteger(entry.timings.chunkCount) && entry.timings.chunkCount > 0,
+          `${entry.model} authoritative chunk count must be a positive integer`,
+        );
       }
       const stageTotals = inferenceStageTimings.reduce(
         (totals, entry) => {
@@ -1092,7 +1130,7 @@ if (realAudioInputPath) {
         },
       );
       const report = {
-        schemaVersion: 7,
+        schemaVersion: 8,
         platform: process.platform,
         osType: osType(),
         osRelease: release(),
@@ -1144,8 +1182,12 @@ if (realAudioInputPath) {
           inferenceStageTotals: stageTotals,
           inferenceTimeSharePercent: Number((stageTotals.inferenceMs / Math.max(1, stageTotals.totalMs) * 100).toFixed(1)),
           modelInferenceStages: inferenceStageTimings,
-          progressObservedModelPasses: modelPassTimings,
+          sampledProgressModelPasses: sampledProgressPasses,
           progressSamplingIntervalMs: 500,
+          modelTimingInterpretation: {
+            modelInferenceStages: "Complete per-model timings from the authoritative inference callback; required for all pinned models.",
+            sampledProgressModelPasses: "Approximate durations inferred from progress snapshots every 500 ms; short passes may be omitted and this list is not a completeness check.",
+          },
           ...(progressSamplingError ? { progressSamplingError } : {}),
           excludes: "PGlite fixture setup, model copying, library import/upload, and subjective separation quality",
         },
