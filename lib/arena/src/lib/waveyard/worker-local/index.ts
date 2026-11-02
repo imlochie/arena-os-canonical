@@ -39,6 +39,7 @@ export {
   STARTUP_CLEANUP_RETRY_DELAYS_MS,
 } from "./startup-cleanup";
 export {
+  cleanupAbandonedAudioRestoreUploadDirectories,
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
 } from "./recovery";

@@ -6,6 +6,7 @@ import {
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
   cleanupOrphanedSourceObjects,
+  cleanupAbandonedAudioRestoreUploadDirectories,
 } from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
@@ -33,6 +34,19 @@ if (Number.isNaN(port) || port <= 0) {
 // The Express runtime must register the same real processors as the desktop
 // runtime before accepting uploads. Policy keeps hosted Redis deployments out.
 const worker = startLocalWorker();
+try {
+  const cleanedRestoreUploadDirectories = await cleanupAbandonedAudioRestoreUploadDirectories();
+  if (cleanedRestoreUploadDirectories.length > 0) {
+    logger.info({
+      cleanedRestoreUploadDirectories: cleanedRestoreUploadDirectories.length,
+    }, "Abandoned Waveyard restore uploads removed");
+  }
+} catch (error) {
+  // Upload cleanup is best-effort; a filesystem issue must not prevent the
+  // API from serving requests or restoring audio.
+  logger.warn({ error }, "Abandoned Waveyard restore upload cleanup failed");
+}
+
 if (worker) {
   // The in-memory broker and worker threads belonged to the previous API
   // process. Mark its jobs retryable and remove only their abandoned temp dirs.

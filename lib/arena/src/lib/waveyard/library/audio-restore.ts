@@ -9,6 +9,9 @@ import { Readable, Transform } from "node:stream";
 import { acceptedAudioFilename, MAX_UPLOAD_BYTES } from "../audio";
 import { AudioBackupError, MAX_AUDIO_BACKUP_BYTES, MAX_AUDIO_BACKUP_FILES } from "./audio-backup";
 
+export const AUDIO_RESTORE_UPLOAD_DIRECTORY_PREFIX = "waveyard-audio-restore-upload-";
+export const AUDIO_RESTORE_UPLOAD_RETENTION_MS = 24 * 60 * 60 * 1_000;
+
 const MAX_MANIFEST_BYTES = 512 * 1024;
 const MAX_ZIP_ENTRIES = MAX_AUDIO_BACKUP_FILES + 1;
 const CSV_HEADER = [

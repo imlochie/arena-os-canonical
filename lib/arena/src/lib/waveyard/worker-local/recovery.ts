@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { readdir, rm } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
+import {
+  AUDIO_RESTORE_UPLOAD_DIRECTORY_PREFIX,
+  AUDIO_RESTORE_UPLOAD_RETENTION_MS,
+} from "@workspace/arena/lib/waveyard/library/audio-restore";
 import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { processingJobs, waveformJobs } from "@workspace/db/waveyardSchema";
 
@@ -30,6 +34,47 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/**
+ * Remove only old Waveyard restore upload directories. Upload directories
+ * include their creating API PID so an active restore is preserved even when
+ * it runs longer than the retention period.
+ */
+export async function cleanupAbandonedAudioRestoreUploadDirectories(
+  root = tmpdir(),
+  now = Date.now(),
+  processIsAlive: (pid: number) => boolean = isProcessAlive,
+): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  const removed: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(AUDIO_RESTORE_UPLOAD_DIRECTORY_PREFIX)) continue;
+
+    const ownerMatch = /^(\d+)-/.exec(entry.name.slice(AUDIO_RESTORE_UPLOAD_DIRECTORY_PREFIX.length));
+    if (ownerMatch && processIsAlive(Number(ownerMatch[1]))) continue;
+
+    const directoryPath = join(root, entry.name);
+    let details;
+    try {
+      details = await stat(directoryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (now - details.mtimeMs < AUDIO_RESTORE_UPLOAD_RETENTION_MS) continue;
+
+    await rm(directoryPath, { recursive: true, force: true });
+    removed.push(entry.name);
+  }
+  return removed;
 }
 
 export async function cleanupAbandonedSeparationDirectories(

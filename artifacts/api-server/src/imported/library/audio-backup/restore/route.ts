@@ -7,7 +7,11 @@ import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { addTrackFromAudioFile } from "@workspace/arena/lib/waveyard/library/service";
 import { sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
 import { AudioBackupError, MAX_AUDIO_BACKUP_BYTES } from "@workspace/arena/lib/waveyard/library/audio-backup";
-import { restoreVerifiedAudioBackupZip, writeIncomingAudioBackup } from "@workspace/arena/lib/waveyard/library/audio-restore";
+import {
+  AUDIO_RESTORE_UPLOAD_DIRECTORY_PREFIX,
+  restoreVerifiedAudioBackupZip,
+  writeIncomingAudioBackup,
+} from "@workspace/arena/lib/waveyard/library/audio-restore";
 
 export const runtime = "nodejs";
 
@@ -34,7 +38,7 @@ export async function POST(request: Request) {
     if (Number.isFinite(declaredBytes) && declaredBytes > MAX_AUDIO_BACKUP_BYTES) {
       throw new AudioBackupError("The backup ZIP exceeds the 2 GiB upload limit.", 413);
     }
-    temporaryDirectory = await mkdtemp(join(tmpdir(), "waveyard-audio-restore-upload-"));
+    temporaryDirectory = await mkdtemp(join(tmpdir(), `${AUDIO_RESTORE_UPLOAD_DIRECTORY_PREFIX}${process.pid}-`));
     const archivePath = join(temporaryDirectory, `${randomUUID()}.zip`);
     await writeIncomingAudioBackup(request.body, archivePath, MAX_AUDIO_BACKUP_BYTES, request.signal);
 
