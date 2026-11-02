@@ -459,6 +459,19 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     } catch (error) { setMessage(error instanceof Error ? error.message : "Could not mark the next track."); }
     finally { setBusy(false); }
   };
+
+  const reviewMediaSuggestion = () => {
+    if (!mediaSuggestion) return;
+    const { metadata } = mediaSuggestion;
+    setTitle(metadata.title);
+    setArtist(metadata.artist ?? "");
+    setAlbum(metadata.album ?? "");
+    setTrackNumber(metadata.trackNumber ? String(metadata.trackNumber) : "");
+    setArtworkDataUrl(metadata.artworkDataUrl ?? "");
+    setMediaSuggestion(null);
+    setMessage("Suggested tags loaded. Review or edit them, then confirm at the audible change.");
+  };
+
   const metadataFields = <>
     <label>Track title<input aria-label="Track title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} placeholder="Name this track" disabled={busy} /></label>
     <label>Artist <span className="optional-label">optional</span><input aria-label="Artist" value={artist} onChange={(event) => setArtist(event.target.value)} maxLength={200} disabled={busy} /></label>
@@ -603,6 +616,9 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                 </p>
                 <button type="button" onClick={() => void markNextTrack(mediaSuggestion.metadata)} disabled={busy}>
                   Confirm boundary at current audio frame
+                </button>
+                <button type="button" className="button secondary" onClick={reviewMediaSuggestion} disabled={busy}>
+                  Review suggested tags
                 </button>
                 <button type="button" className="button secondary" onClick={() => setMediaSuggestion(null)} disabled={busy}>
                   Ignore suggestion

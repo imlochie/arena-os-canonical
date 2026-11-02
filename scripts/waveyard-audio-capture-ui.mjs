@@ -26,6 +26,7 @@ try {
   let applicationPresent = true;
   let applicationSupported = true;
   let mediaMetadataTitle = "Application capture test";
+  let mediaMetadataTrackNumber = 2;
   let mediaMetadataReads = 0;
   let startPayload;
   let markerPayload;
@@ -49,7 +50,7 @@ try {
                 title: mediaMetadataTitle,
                 artist: "Authorized Artist",
                 album: "Authorized Album",
-                trackNumber: 2,
+                trackNumber: mediaMetadataTrackNumber,
               },
             },
           }),
@@ -224,6 +225,21 @@ try {
     trackNumber: 2,
   });
   await page.getByText(/Boundary saved.*Second authorized track/).waitFor();
+  mediaMetadataTitle = "Third authorized track";
+  mediaMetadataTrackNumber = 3;
+  await page.getByTestId("media-track-suggestion").waitFor();
+  await page.getByRole("button", { name: "Review suggested tags", exact: true }).click();
+  assert.equal(await page.getByLabel("Track title").inputValue(), "Third authorized track");
+  assert.equal(await page.getByLabel("Track number").inputValue(), "3");
+  await page.getByLabel("Artist").fill("Corrected artist");
+  await page.getByRole("button", { name: "Confirm next track boundary", exact: true }).click();
+  assert.deepEqual(markerPayload, {
+    title: "Third authorized track",
+    artist: "Corrected artist",
+    album: "Authorized Album",
+    trackNumber: 3,
+  }, "suggested tags can be edited before the user confirms another PCM boundary");
+  await page.getByText(/Boundary saved.*Third authorized track/).waitFor();
   await page.getByRole("button", { name: "Stop and add to library" }).click();
   await page.getByText(/Warning: no signal above -80 dBFS was detected/).waitFor();
   await page.getByText(/Automatic stem separation was not requested/).waitFor();
