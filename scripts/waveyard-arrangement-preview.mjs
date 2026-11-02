@@ -196,23 +196,23 @@ test("long and many-stem arrangements are rejected before any full asset is fetc
   const page = await openFixture(t);
   const before = assetRequests.length;
   await page.getByRole("button", { name: "Play long preview" }).click();
-  await page.waitForFunction(
-    () => Boolean(document.querySelector('[data-testid="error"]')?.textContent),
-    null,
-    { timeout: 5_000 },
-  );
-  const longError = await page.locator('[data-testid="error"]').innerText();
-  assert.match(longError, /estimated to need/i);
+  await page.waitForTimeout(500);
+  const longStatus = await page.evaluate(() => ({
+    error: window.preview.error,
+    pending: window.preview.pending,
+    playing: window.preview.playing,
+  }));
+  assert.match(longStatus.error ?? "", /estimated to need/i, JSON.stringify(longStatus));
   assert.equal(assetRequests.length, before, "a long source is rejected before downloading or decoding");
 
   await page.getByRole("button", { name: "Play many-stem preview" }).click();
-  await page.waitForFunction(
-    () => Boolean(document.querySelector('[data-testid="error"]')?.textContent),
-    null,
-    { timeout: 5_000 },
-  );
-  const manyError = await page.locator('[data-testid="error"]').innerText();
-  assert.match(manyError, /estimated to need/i);
+  await page.waitForTimeout(500);
+  const manyStatus = await page.evaluate(() => ({
+    error: window.preview.error,
+    pending: window.preview.pending,
+    playing: window.preview.playing,
+  }));
+  assert.match(manyStatus.error ?? "", /estimated to need/i, JSON.stringify(manyStatus));
   assert.equal(assetRequests.length, before, "many audible long stems are rejected before any decode");
 });
 
