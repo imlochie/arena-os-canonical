@@ -14,3 +14,9 @@ For persistence acceptance, distinguish gesture preview from server state: await
 **Why:** A touch can update the timeline preview without reaching the persistence API, and reloading from an unchanged fixture cannot prove a save. A failure case must also avoid making an in-memory edit look durable.
 
 **How to apply:** Use stateful API fixtures for browser round-trip checks; keep database-level endpoint coverage in the existing persistence integration suite rather than duplicating its broader audit.
+
+Phone-layout acceptance should inspect the whole active route for horizontal overflow, not just the player card. Session handoff panels, native selects, and lower library forms can widen the page even when the stem controls themselves fit. When a phone test uses Restore, reset the server fixture to its pre-test state before later handoff assertions.
+
+**Why:** A narrow viewport exposed offscreen controls that shifted the entire session, and a mobile restore action changed fixture state assumed by a later Studio handoff check.
+
+**How to apply:** Check the document width and visible touch-target bounds at both a common phone width and a narrow width; include actionable overflow details in failures. Keep browser interaction side effects isolated from later tests by restoring fixture state explicitly.

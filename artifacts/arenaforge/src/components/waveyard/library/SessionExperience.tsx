@@ -900,10 +900,12 @@ function SessionDeck({
                           </button>
                           <button
                             type="button"
-                            className="wy-stem-pad-swap"
+                            className={`wy-stem-pad-swap${swaps[stem.stemType] ? " has-donor" : ""}`}
                             data-testid={`quick-open-live-swap-${stem.stemType}`}
-                            aria-label={`Open source picker to swap ${stem.stemType}`}
+                            data-live-swap-anchor={stem.stemType}
+                            aria-label={`${swaps[stem.stemType] ? "Change" : "Choose"} live donor for ${stem.stemType}`}
                             aria-expanded={openSwapPickerStem === stem.stemType}
+                            aria-controls={`live-swap-picker-${stem.stemType}`}
                             disabled={onOpenSwapPicker === undefined}
                             title={`Swap ${stem.stemType} from another track`}
                             onClick={() => onOpenSwapPicker?.(stem.stemType)}
@@ -917,7 +919,7 @@ function SessionDeck({
                       type="button"
                       className="wy-stem-pad-reset"
                       data-testid="quick-restore-mix"
-                      aria-label="Restore full stem mix"
+                      aria-label="Restore all stem levels and isolation"
                       disabled={performanceDisabled}
                       onClick={onReset}
                     >

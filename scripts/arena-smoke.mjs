@@ -1925,27 +1925,167 @@ try {
   await page.waitForTimeout(100);
   const mobileStemControls = await page.evaluate(() => {
     const viewportWidth = document.documentElement.clientWidth;
-    const targets = Array.from(document.querySelectorAll(
-      '[data-testid^="quick-isolate-"], [data-testid^="quick-open-live-swap-"], [data-testid="quick-restore-mix"]',
-    )).map((element) => {
+    const targets = Array.from(document.querySelectorAll([
+      '[data-testid^="quick-isolate-"]',
+      '[data-testid^="quick-open-live-swap-"]',
+      '[data-testid="quick-restore-mix"]',
+      ".wy-deck.sess-deck-active .wy-stem input[type=range]",
+      ".wy-deck.sess-deck-active .wy-stem .wy-toggle",
+      ".wy-transport .wy-buttons button",
+      ".wy-transport .wy-mixbtn",
+      ".wy-transport .wy-seek input",
+      ".wy-transport .wy-master input",
+    ].join(", "))).map((element) => {
       const rect = element.getBoundingClientRect();
       return {
-        testId: element.getAttribute("data-testid"),
+        testId: element.getAttribute("data-testid")
+          ?? element.getAttribute("aria-label")
+          ?? element.className,
         left: rect.left,
         right: rect.right,
         width: rect.width,
         height: rect.height,
       };
     });
-    return { viewportWidth, documentWidth: document.documentElement.scrollWidth, targets };
+    return {
+      viewportWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+      faderCount: document.querySelectorAll(".wy-deck.sess-deck-active .wy-stem input[type=range]").length,
+      stemActionCount: document.querySelectorAll(".wy-deck.sess-deck-active .wy-stem .wy-toggle").length,
+    };
   });
   assert.equal(mobileStemControls.documentWidth, mobileStemControls.viewportWidth, "mobile stem controls must not create horizontal overflow");
   assert.equal(mobileStemControls.targets.filter((target) => target.testId.startsWith("quick-isolate-")).length, 4);
   assert.equal(mobileStemControls.targets.filter((target) => target.testId.startsWith("quick-open-live-swap-")).length, 4);
   assert(mobileStemControls.targets.some((target) => target.testId === "quick-restore-mix"), "the mobile player must expose restore mix");
+  assert.equal(mobileStemControls.faderCount, 4, "all four active stem levels must be present in the phone player");
+  assert.equal(mobileStemControls.stemActionCount, 12, "mute, isolate, and hold actions must remain available for every active stem");
   for (const target of mobileStemControls.targets) {
     assert(target.width >= 44 && target.height >= 44, `${target.testId} must meet a 44px mobile touch target`);
     assert(target.left >= 0 && target.right <= mobileStemControls.viewportWidth, `${target.testId} must stay within the mobile viewport`);
+  }
+
+  const mobileSwapTrigger = page.getByTestId("quick-open-live-swap-vocals");
+  await mobileSwapTrigger.click();
+  const mobileSwapPicker = page.getByTestId("live-swap-picker-vocals");
+  await mobileSwapPicker.waitFor({ state: "visible", timeout: 5_000 });
+  const mobilePickerBounds = await mobileSwapPicker.evaluate((picker) => {
+    const rect = picker.getBoundingClientRect();
+    return {
+      position: getComputedStyle(picker).position,
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      viewportWidth: document.documentElement.clientWidth,
+      viewportHeight: document.documentElement.clientHeight,
+    };
+  });
+  assert.equal(mobilePickerBounds.position, "fixed", "the phone donor picker must open as a sheet, not below the stem rows");
+  assert(mobilePickerBounds.left >= 0 && mobilePickerBounds.right <= mobilePickerBounds.viewportWidth,
+    "the phone donor picker must fit within the viewport");
+  assert(mobilePickerBounds.top >= 0 && mobilePickerBounds.bottom <= mobilePickerBounds.viewportHeight,
+    "the phone donor picker must remain fully reachable above the safe-area edge");
+  await mobileSwapPicker.getByRole("button", { name: "Close source picker" }).click();
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-live-swap-anchor") === "vocals");
+  assert.equal(await mobileSwapTrigger.getAttribute("aria-expanded"), "false",
+    "closing the phone picker returns focus to the pad that opened it");
+
+  const mobilePlay = page.getByTestId("session-play");
+  const wasPlaying = await mobilePlay.getAttribute("aria-pressed") === "true";
+  if (wasPlaying) {
+    await mobilePlay.click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
+  }
+  await mobilePlay.click();
+  await page.waitForFunction(({ assetId }) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused;
+  }, { assetId: liveVocalsAssetId }, { timeout: 5_000 });
+
+  await page.getByLabel("Snap stem changes").selectOption("off");
+  const mobilePlaybackTime = await sourceVocals.evaluate((audio) => audio.currentTime);
+  const isolateBass = page.getByTestId("quick-isolate-bass");
+  await isolateBass.click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="quick-isolate-bass"]')?.getAttribute("aria-pressed") === "true");
+  assert.equal(await page.locator(".wy-stem-vocals").evaluate((row) => row.classList.contains("silent")), true,
+    "phone isolation must apply to the active audio mix, not only change the button state");
+  const mobileRestoreSaved = page.waitForResponse((response) => {
+    if (response.request().method() !== "PATCH" || !response.url().endsWith(`/api/library/sessions/${liveSessionId}/tracks/${liveSessionTrackId}`)) return false;
+    const mix = response.request().postDataJSON()?.stemMix;
+    return mix !== undefined && ["vocals", "drums", "bass", "other"].every((stemType) => mix[stemType] === 1);
+  }, { timeout: 5_000 });
+  await page.getByTestId("quick-restore-mix").click();
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-testid^="quick-isolate-"]')]
+    .every((button) => button.getAttribute("aria-pressed") === "false"));
+  await mobileRestoreSaved;
+  await page.waitForFunction(({ assetId, after }) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2;
+  }, { assetId: liveVocalsAssetId, after: mobilePlaybackTime }, { timeout: 5_000 });
+
+  const mobileSeek = page.getByLabel("Seek current track");
+  const mobileSeekBounds = await mobileSeek.boundingBox();
+  assert(mobileSeekBounds !== null, "the phone seek control must be on screen");
+  await mobileSeek.focus();
+  await mobileSeek.press("Home");
+  await page.waitForFunction(() => Number(document.querySelector('[aria-label="Seek current track"]')?.value) < 1,
+    null, { timeout: 2_000 });
+  await page.waitForFunction(({ assetId }) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime < 1.5;
+  }, { assetId: liveVocalsAssetId }, { timeout: 5_000 });
+
+  liveCurrentItem.stemMix = { ...liveCurrentItem.stemMix, drums: 0 };
+
+  await page.setViewportSize({ width: 320, height: 740 });
+  const narrowPhoneLayout = await page.evaluate(() => ({
+    viewportWidth: document.documentElement.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    overflowingElements: Array.from(document.querySelectorAll("body *")).flatMap((element) => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.right <= document.documentElement.clientWidth + 1) return [];
+      return [{
+        tag: element.tagName,
+        className: typeof element.className === "string" ? element.className : "",
+        id: element.id,
+        testId: element.getAttribute("data-testid"),
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        width: Math.round(rect.width),
+        scrollWidth: element.scrollWidth,
+        computedWidth: getComputedStyle(element).width,
+        minWidth: getComputedStyle(element).minWidth,
+        parent: element.parentElement === null ? null : {
+          className: typeof element.parentElement.className === "string" ? element.parentElement.className : "",
+          left: Math.round(element.parentElement.getBoundingClientRect().left),
+          right: Math.round(element.parentElement.getBoundingClientRect().right),
+          width: Math.round(element.parentElement.getBoundingClientRect().width),
+          display: getComputedStyle(element.parentElement).display,
+        },
+      }];
+    }).slice(0, 12),
+    targets: Array.from(document.querySelectorAll([
+      '[data-testid^="quick-isolate-"]',
+      '[data-testid^="quick-open-live-swap-"]',
+      '[data-testid="quick-restore-mix"]',
+      ".wy-deck.sess-deck-active .wy-stem input[type=range]",
+      ".wy-deck.sess-deck-active .wy-stem .wy-toggle",
+      ".wy-transport .wy-buttons button",
+      ".wy-transport .wy-mixbtn",
+      ".wy-transport .wy-seek input",
+    ].join(", "))).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: rect.width, height: rect.height };
+    }),
+  }));
+  assert.equal(narrowPhoneLayout.documentWidth, narrowPhoneLayout.viewportWidth,
+    `the player must also avoid horizontal overflow on a narrow phone: ${JSON.stringify(narrowPhoneLayout)}`);
+  for (const target of narrowPhoneLayout.targets) {
+    assert(target.width >= 44 && target.height >= 44, "narrow-phone controls must retain a 44px touch target");
+    assert(target.left >= 0 && target.right <= narrowPhoneLayout.viewportWidth,
+      "narrow-phone controls must stay within the viewport");
   }
   await page.setViewportSize(desktopViewport ?? { width: 1280, height: 800 });
   liveSessionTracks.push(liveNextItem);

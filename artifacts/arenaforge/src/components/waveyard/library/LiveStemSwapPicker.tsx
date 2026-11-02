@@ -78,6 +78,13 @@ export default function LiveStemSwapPicker({
   const prefetchedCandidateKeyRef = useRef<string | null>(null);
   const pickerId = `live-swap-picker-${stemType}`;
   const prefetchCandidateId = candidates.slice(1).find((candidate) => candidate.id !== selectedDonorId)?.id ?? null;
+  const focusSwapTrigger = useCallback(() => {
+    const quickTrigger = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-live-swap-anchor]"))
+      .find((candidate) =>
+        candidate.dataset.liveSwapAnchor === stemType && candidate.getClientRects().length > 0,
+      );
+    (quickTrigger ?? triggerRef.current)?.focus();
+  }, [stemType]);
 
   const filteredCandidates = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -131,12 +138,12 @@ export default function LiveStemSwapPicker({
       if (event.key === "Escape") {
         event.preventDefault();
         onClose();
-        triggerRef.current?.focus();
+        focusSwapTrigger();
       }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [focusSwapTrigger, isOpen, onClose]);
 
   useEffect(() => {
     if (!isOpen) clearHoverWarm();
@@ -146,7 +153,7 @@ export default function LiveStemSwapPicker({
 
   const closeAndReturnFocus = () => {
     onClose();
-    triggerRef.current?.focus();
+    focusSwapTrigger();
   };
   const sessionCandidates = filteredCandidates.filter((candidate) => candidate.collection === "session");
   const libraryCandidates = filteredCandidates.filter((candidate) => candidate.collection === "library");
