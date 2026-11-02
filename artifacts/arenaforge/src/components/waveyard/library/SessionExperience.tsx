@@ -3205,10 +3205,16 @@ export default function SessionExperience({
             className="button tiny"
             aria-label={pending.failed ? `Retry saving previous ${pending.stemType} source` : `Cancel ${pending.stemType} switch to ${pending.donorTitle}`}
             data-testid={`cancel-live-stem-swap-${pending.swapId}`}
-            disabled={savingSwap}
+            disabled={savingSwapKeys.has(`${pending.sessionTrackId}:${pending.stemType}`)}
             onClick={() => void revertSwap(pending.swapId, `${pending.stemType} switch cancelled; the previous audio continues.`)}
           >
-            {savingSwap ? "Saving…" : pending.failed ? "Retry saving previous source" : cancelledSwapIds.has(pending.swapId) ? "Retry removing switch" : "Cancel switch"}
+            {savingSwapKeys.has(`${pending.sessionTrackId}:${pending.stemType}`)
+              ? "Saving…"
+              : pending.failed
+                ? "Retry saving previous source"
+                : cancelledSwapIds.has(pending.swapId)
+                  ? "Retry removing switch"
+                  : "Cancel switch"}
           </button>
         </p>
       ))}

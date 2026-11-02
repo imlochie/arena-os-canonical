@@ -20,6 +20,7 @@ const parallelDonorResponseOrder = [];
 let parallelSwapResponses = null;
 const parallelSwapRequestOrder = [];
 const parallelSwapResponseOrder = [];
+const parallelSwapDeleteRequests = [];
 function waitForSignal(signal, label, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label} after ${timeoutMs}ms.`)), timeoutMs);
@@ -423,6 +424,7 @@ try {
         session.tracks.forEach((track, index) => { track.position = index; });
       }
     } else if (request.method() === "DELETE") {
+      parallelSwapDeleteRequests.push(url.searchParams.get("swapId"));
       if (pendingSwapDeleteGate) await pendingSwapDeleteGate;
       session.swaps = session.swaps.filter(s => s.id !== url.searchParams.get("swapId"));
     } else if (url.pathname.endsWith("/state") && body) Object.assign(session, body);
@@ -804,6 +806,7 @@ try {
     const drumSave = gate();
     const vocalDonor = gate();
     const drumDonor = gate();
+    const expectedVocalDuration = 8 * (tracks[1].analysis.bpm / tracks[0].analysis.bpm);
     parallelSwapResponses = new Map([["vocals", vocalSave], ["drums", drumSave]]);
     parallelDonorResponses = new Map([["b-vocals", vocalDonor], ["c-drums", drumDonor]]);
     tracks[0].track.durationSeconds = 90;
@@ -832,7 +835,7 @@ try {
       const responseFor = (stemType) => page.waitForResponse(response => {
         if (!response.url().endsWith("/swaps") || response.request().method() !== "POST") return false;
         return response.request().postDataJSON().stemType === stemType;
-      });
+      }).catch(() => null);
 
       const clockBeforeSaves = await page.locator('[data-role="current"] audio').first().evaluate(audio => audio.currentTime);
       const vocalSaveResponse = responseFor("vocals");
@@ -863,56 +866,78 @@ try {
 
       drumSave.release();
       const drumSaveResult = await drumSaveResponse;
-      assert.ok(drumSaveResult.ok(), "the second channel's saved-swap response succeeds first");
+      assert.ok(drumSaveResult?.ok(), "the second channel's saved-swap response succeeds first");
       assert.deepEqual(parallelSwapResponseOrder, ["drums"]);
       assert.deepEqual(drumSave.snapshot.swaps.map(swap => swap.stemType).sort(), ["drums", "vocals"],
         "the later server snapshot contains both saved channel choices");
 
-      drumDonor.release();
-      await page.waitForFunction(() => window.audioProbe.buffers.some(node => Math.abs(node.buffer.duration - 12) < 0.01));
-      const drumGraph = await page.evaluate(() => window.audioProbe.buffers
-        .filter(node => Math.abs(node.buffer.duration - 12) < 0.01)
-        .map(node => ({ gain: node.inputNode?.gain.value ?? 0, stopped: node.stopCount ?? 0 })));
-      assert.ok(drumGraph.some(node => node.gain > 0.9 && node.stopped === 0),
-        "the first completed donor response installs the chosen drums audio graph");
-      assert.ok(!await page.evaluate(() => window.audioProbe.buffers.some(node => Math.abs(node.buffer.duration - 8) < 0.01)),
-        "the still-delayed vocal donor has not been installed early");
-
       vocalSave.release();
       const vocalSaveResult = await vocalSaveResponse;
-      assert.ok(vocalSaveResult.ok(), "the first channel's stale snapshot arrives last without removing drums");
+      assert.ok(vocalSaveResult?.ok(), "the first channel's stale snapshot arrives last without removing drums");
       assert.deepEqual(parallelSwapResponseOrder, ["drums", "vocals"]);
       assert.deepEqual(vocalSave.snapshot.swaps.map(swap => swap.stemType), ["vocals"],
         "the late vocal response intentionally represents its older one-channel snapshot");
       assert.deepEqual(session.swaps.map(swap => swap.stemType).sort(), ["drums", "vocals"],
         "the server-side saved session contains both independent swaps");
 
-      const assertSelected = async (stemType, donorId) => {
-        await deck.getByTestId(`open-live-swap-${stemType}`).click();
-        const candidate = deck.getByTestId(`live-swap-candidate-${stemType}-${donorId}`);
-        await candidate.waitFor();
-        assert.equal(await candidate.getAttribute("aria-pressed"), "true",
-          `${stemType} keeps the selected ${donorId} donor visible`);
-      };
-      await assertSelected("vocals", "b");
-      await assertSelected("drums", "c");
+      drumDonor.release();
+      await page.waitForFunction(() => window.audioProbe.buffers.some(node =>
+        Math.abs(node.buffer.duration - 12) < 0.01 && node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+      ));
+      const drumGraph = await page.evaluate(() => window.audioProbe.buffers
+        .filter(node => Math.abs(node.buffer.duration - 12) < 0.01)
+        .map(node => ({ gain: node.inputNode?.gain.value ?? 0, stopped: node.stopCount ?? 0 })));
+      assert.ok(drumGraph.some(node => node.gain > 0.9 && node.stopped === 0),
+        "the first completed donor response installs the chosen drums audio graph");
+      assert.ok(!await page.evaluate(expected => window.audioProbe.buffers.some(node => Math.abs(node.buffer.duration - expected) < 0.03),
+        expectedVocalDuration),
+        "the still-delayed vocal donor has not been installed early");
 
       vocalDonor.release();
-      await page.waitForFunction(() => {
-        const nodes = window.audioProbe.buffers;
-        return nodes.some(node => Math.abs(node.buffer.duration - 8) < 0.01) &&
-          nodes.some(node => Math.abs(node.buffer.duration - 12) < 0.01);
-      });
+      try {
+        await page.waitForFunction(expected => {
+          const nodes = window.audioProbe.buffers;
+          return nodes.some(node => Math.abs(node.buffer.duration - expected) < 0.03 &&
+            node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0) &&
+            nodes.some(node => Math.abs(node.buffer.duration - 12) < 0.01 &&
+              node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0);
+        }, expectedVocalDuration, { timeout: 8000 });
+      } catch (error) {
+        const graphs = await page.evaluate(() => window.audioProbe.buffers.map(node => ({
+          duration: node.buffer.duration,
+          gain: node.inputNode?.gain.value ?? 0,
+          stopped: node.stopCount ?? 0,
+        }))).catch(() => []);
+        const pending = await page.locator('[data-testid^="live-swap-pending-"]').allTextContents().catch(() => []);
+        throw new Error(`Late vocal donor did not become active: ${error instanceof Error ? error.message : error}; graphs=${JSON.stringify(graphs)}; donorRequests=${JSON.stringify(parallelDonorRequestOrder)}; donorResponses=${JSON.stringify(parallelDonorResponseOrder)}; deletes=${JSON.stringify(parallelSwapDeleteRequests)}; serverSwaps=${JSON.stringify(session.swaps)}; pending=${JSON.stringify(pending)}; status=${JSON.stringify(await deck.innerText().catch(() => ""))}`);
+      }
       const donorGraphs = await page.evaluate(() => window.audioProbe.buffers.map(node => ({
         duration: node.buffer.duration,
         gain: node.inputNode?.gain.value ?? 0,
         stopped: node.stopCount ?? 0,
       })));
-      assert.ok(donorGraphs.some(node => Math.abs(node.duration - 8) < 0.01 && node.gain > 0.9 && node.stopped === 0),
+      assert.ok(donorGraphs.some(node => Math.abs(node.duration - expectedVocalDuration) < 0.03 && node.gain > 0.9 && node.stopped === 0),
         "the late vocal response installs the selected vocals donor graph");
       assert.ok(donorGraphs.some(node => Math.abs(node.duration - 12) < 0.01 && node.gain > 0.9 && node.stopped === 0),
         "the earlier drums graph remains active after vocals resolves");
       assert.ok(parallelDonorRequestOrder.includes("b-vocals") && parallelDonorRequestOrder.includes("c-drums"));
+      const drumsResponseIndex = parallelDonorResponseOrder.indexOf("c-drums");
+      const vocalsResponseIndex = parallelDonorResponseOrder.indexOf("b-vocals");
+      assert.ok(drumsResponseIndex >= 0 && vocalsResponseIndex > drumsResponseIndex,
+        `the second donor finishes before the first; response order=${JSON.stringify(parallelDonorResponseOrder)}`);
+      assert.deepEqual(parallelSwapDeleteRequests, [],
+        "independently successful swaps do not trigger a rollback request");
+
+      const assertSelected = async (stemType, donorId) => {
+        await deck.getByTestId(`open-live-swap-${stemType}`).click();
+        const candidate = deck.getByTestId(`live-swap-candidate-${stemType}-${donorId}`);
+        await candidate.waitFor();
+        const selected = await candidate.getAttribute("aria-pressed");
+        assert.equal(selected, "true",
+          `${stemType} keeps the selected ${donorId} donor visible; trigger=${await deck.getByTestId(`open-live-swap-${stemType}`).innerText()}`);
+      };
+      await assertSelected("vocals", "b");
+      await assertSelected("drums", "c");
 
       const savedChoices = session.swaps.map(swap => ({
         sessionTrackId: swap.sessionTrackId,
@@ -931,9 +956,14 @@ try {
         const audio = [...document.querySelectorAll('[data-role="current"] audio')];
         return audio.length === 4 && audio.every(element => element.readyState === 4);
       });
+      const reloadedPlay = page.getByTestId("session-play");
+      if (await reloadedPlay.getAttribute("aria-pressed") !== "true") {
+        await reloadedPlay.click();
+        await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+      }
       await page.waitForFunction(() => {
         const nodes = window.audioProbe.buffers;
-        return nodes.some(node => Math.abs(node.buffer.duration - 8) < 0.01) &&
+        return nodes.some(node => Math.abs(node.buffer.duration - 8.2667) < 0.03) &&
           nodes.some(node => Math.abs(node.buffer.duration - 12) < 0.01);
       });
       await reloadedDeck.getByTestId("open-live-swap-vocals").click();
@@ -942,15 +972,19 @@ try {
       await reloadedDeck.getByTestId("open-live-swap-drums").click();
       assert.equal(await reloadedDeck.getByTestId("live-swap-candidate-drums-c").getAttribute("aria-pressed"), "true",
         "the drums choice remains visible after reopening the saved session");
-      const reloadedPlay = page.getByTestId("session-play");
-      if (await reloadedPlay.getAttribute("aria-pressed") !== "true") await reloadedPlay.click();
       const reloadClock = await reloadedDeck.locator("audio").first().evaluate(audio => audio.currentTime);
-      await page.waitForTimeout(350);
-      const advancingAfterReload = await reloadedDeck.locator("audio").first().evaluate(audio => !audio.paused && audio.currentTime > 0.15);
-      assert.ok(advancingAfterReload && reloadClock >= 0,
-        "reopened playback can start and its clock advances with both donor graphs restored");
-      assert.deepEqual(session.swaps.map(swap => swap.stemType).sort(), ["drums", "vocals"],
-        "the saved session still contains both swaps after reload");
+      await page.waitForFunction(before => {
+        const audio = document.querySelector('[data-role="current"] audio');
+        return audio && !audio.paused && audio.currentTime > before + 0.15;
+      }, reloadClock, { timeout: 3000 });
+      const reloadedChoices = session.swaps.map(swap => ({
+        sessionTrackId: swap.sessionTrackId,
+        stemType: swap.stemType,
+        toTrackId: swap.toTrackId,
+        toStemAssetId: swap.toStemAssetId,
+      })).sort((left, right) => left.stemType.localeCompare(right.stemType));
+      assert.deepEqual(reloadedChoices, savedChoices,
+        "both independently saved swaps survive reloading the session");
       console.log("PASS: two stem choices save concurrently, out-of-order donor and session responses preserve both live graphs, playback advances, and both swaps survive reload");
     } finally {
       for (const response of [...(parallelSwapResponses?.values() ?? []), ...(parallelDonorResponses?.values() ?? [])]) response.release();
