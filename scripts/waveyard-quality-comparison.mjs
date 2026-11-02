@@ -57,6 +57,39 @@ export function assertQualityReport(run) {
 }
 
 export function summarizePairedQuality(runs) {
+  const trackIds = runs.map((run) => run.trackId);
+  if (trackIds.some((trackId) => trackId !== undefined)) {
+    assert.ok(
+      trackIds.every((trackId) => typeof trackId === "string" && trackId.length > 0),
+      "Every multi-track quality run must include a trackId.",
+    );
+    const groupedRuns = new Map();
+    for (const run of runs) {
+      const group = groupedRuns.get(run.trackId) ?? [];
+      group.push(run);
+      groupedRuns.set(run.trackId, group);
+    }
+    const orderedTracks = [...groupedRuns.entries()].sort(([left], [right]) => left.localeCompare(right));
+    const perTrack = Object.fromEntries(
+      orderedTracks.map(([trackId, trackRuns]) => [
+        trackId,
+        summarizePairedQuality(trackRuns.map(({ trackId: _id, ...run }) => run)),
+      ]),
+    );
+    const maxRepetitions = Math.max(
+      ...orderedTracks.map(([, trackRuns]) => new Set(trackRuns.map((run) => run.repetition)).size),
+    );
+    const acrossTrackRuns = orderedTracks.flatMap(([, trackRuns], trackIndex) =>
+      trackRuns.map(({ trackId: _id, ...run }) => ({
+        ...run,
+        repetition: trackIndex * maxRepetitions + run.repetition,
+      })),
+    );
+    return {
+      perTrack,
+      acrossTracks: summarizePairedQuality(acrossTrackRuns),
+    };
+  }
   assert.ok(runs.length > 0 && runs.length % modes.length === 0, "Quality runs must form complete pairs.");
   const hasReferenceEvaluation = runs.map((run) => Boolean(run.result.referenceEvaluation));
   assert.ok(

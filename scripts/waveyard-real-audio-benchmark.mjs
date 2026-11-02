@@ -23,6 +23,7 @@ const inputPath =
   process.env.WAVEYARD_REAL_AUDIO_INPUT?.trim() ||
   process.env.WAVEYARD_REAL_AUDIO_WAV?.trim();
 const referenceManifestPath = process.env.WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST?.trim();
+const tracksManifestPath = process.env.WAVEYARD_REAL_AUDIO_TRACKS_MANIFEST?.trim();
 const reportPath = resolve(
   process.env.WAVEYARD_REAL_AUDIO_REPORT?.trim() ||
     "generated-artifacts/waveyard-real-audio-benchmark.json",
@@ -34,7 +35,10 @@ const listeningDirectory = resolve(
 const repetitionText = process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS?.trim() || "3";
 const repetitions = Number(repetitionText);
 
-assert.ok(inputPath, "Set WAVEYARD_REAL_AUDIO_INPUT to the audio file for the paired benchmark.");
+assert.ok(
+  tracksManifestPath || inputPath,
+  "Set WAVEYARD_REAL_AUDIO_INPUT or WAVEYARD_REAL_AUDIO_TRACKS_MANIFEST for the paired benchmark.",
+);
 assert.ok(
   Number.isInteger(repetitions) && repetitions >= 2 && repetitions <= 10,
   "WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS must be an integer from 2 to 10.",
@@ -48,13 +52,117 @@ const modes = Object.keys(settings);
 const intermediateDirectory = await mkdtemp(join(tmpdir(), "waveyard-paired-benchmark-"));
 const runs = [];
 
-async function measure(mode, repetition, order) {
-  const reportFile = join(intermediateDirectory, `${repetition}-${mode}.json`);
+async function loadTracks() {
+  const manifestDirectory = tracksManifestPath ? dirname(resolve(tracksManifestPath)) : process.cwd();
+  const tracksManifest = tracksManifestPath
+    ? JSON.parse(await readFile(resolve(tracksManifestPath), "utf8"))
+    : null;
+  if (tracksManifest) {
+    assert.equal(tracksManifest.schemaVersion, 1, "The tracks manifest schemaVersion must be 1.");
+  }
+  const trackEntries = tracksManifest
+    ? tracksManifest.tracks
+    : [{ id: "track-1", inputPath, referenceManifestPath }];
+  assert.ok(Array.isArray(trackEntries), "The tracks manifest must contain a tracks array.");
+  assert.ok(trackEntries.length >= (tracksManifestPath ? 2 : 1), "Multi-track manifests need at least two tracks.");
+  assert.ok(trackEntries.length <= 10, "A benchmark may include at most ten tracks.");
+  const ids = new Set();
+  const tracks = [];
+  for (const entry of trackEntries) {
+    assert.ok(
+      typeof entry.id === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(entry.id),
+      "Every track needs a unique, filesystem-safe id.",
+    );
+    assert.ok(!ids.has(entry.id), `Duplicate track id: ${entry.id}.`);
+    ids.add(entry.id);
+    const entryBase = tracksManifestPath ? manifestDirectory : process.cwd();
+    assert.ok(typeof entry.inputPath === "string" && entry.inputPath.length > 0, `Track ${entry.id} needs inputPath.`);
+    const sourcePath = resolve(entryBase, entry.inputPath);
+    const referencePath = entry.referenceManifestPath
+      ? resolve(entryBase, entry.referenceManifestPath)
+      : undefined;
+    assert.ok(!tracksManifestPath || referencePath, `Track ${entry.id} must have aligned reference stems.`);
+    const referenceManifest = referencePath
+      ? JSON.parse(await readFile(referencePath, "utf8"))
+      : null;
+    if (entry.startSeconds !== undefined) {
+      assert.ok(
+        Number.isInteger(entry.startSeconds) && entry.startSeconds >= 0 && entry.startSeconds <= 899,
+        `Track ${entry.id} startSeconds must be an integer from 0 to 899.`,
+      );
+    }
+    if (entry.maxSeconds !== undefined) {
+      assert.ok(
+        Number.isInteger(entry.maxSeconds) && entry.maxSeconds >= 2 && entry.maxSeconds <= 20,
+        `Track ${entry.id} maxSeconds must be an integer from 2 to 20.`,
+      );
+    }
+    if (referenceManifest) {
+      assert.ok(
+        ["dataset", "datasetUrl", "track", "license", "attribution"].every(
+          (field) => typeof referenceManifest[field] === "string" && referenceManifest[field].trim(),
+        ),
+        `Track ${entry.id} reference manifest must identify its dataset, track, license, and attribution.`,
+      );
+      assert.ok(
+        ["vocals", "drums", "bass", "other"].every(
+          (stem) => typeof referenceManifest.referenceStems?.[stem] === "string",
+        ),
+        `Track ${entry.id} reference manifest must provide all four aligned stems.`,
+      );
+      referenceManifest.referenceStems = Object.fromEntries(
+        Object.entries(referenceManifest.referenceStems).map(([stem, path]) => [
+          stem,
+          resolve(dirname(referencePath), path),
+        ]),
+      );
+    }
+    const normalizedReferenceManifestPath = referenceManifest
+      ? join(intermediateDirectory, `${entry.id}-references.json`)
+      : undefined;
+    if (normalizedReferenceManifestPath) {
+      await writeFile(normalizedReferenceManifestPath, `${JSON.stringify(referenceManifest, null, 2)}\n`);
+    }
+    tracks.push({
+      id: entry.id,
+      label: entry.label ?? referenceManifest?.track ?? entry.id,
+      inputPath: sourcePath,
+      referenceManifestPath: normalizedReferenceManifestPath,
+      startSeconds: entry.startSeconds,
+      maxSeconds: entry.maxSeconds,
+    });
+  }
+  return tracks;
+}
+
+const tracks = await loadTracks();
+
+async function measure(track, mode, repetition, order) {
+  const reportFile = join(intermediateDirectory, `${track.id}-${repetition}-${mode}.json`);
   const configuration = settings[mode];
   const auditionDirectory =
-    repetition === 1 ? join(intermediateDirectory, "blind-listening-source", mode) : undefined;
+    repetition === 1
+      ? join(intermediateDirectory, "blind-listening-source", track.id, mode)
+      : undefined;
   const env = {
     ...process.env,
+    WAVEYARD_REAL_AUDIO_INPUT: track.inputPath,
+    ...(track.referenceManifestPath
+      ? { WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST: track.referenceManifestPath }
+      : {}),
+    ...(tracksManifestPath
+      ? {
+          WAVEYARD_REAL_AUDIO_START_SECONDS: String(track.startSeconds ?? 0),
+          WAVEYARD_REAL_AUDIO_MAX_SECONDS: String(track.maxSeconds ?? 20),
+        }
+      : {
+          ...(track.startSeconds === undefined
+            ? {}
+            : { WAVEYARD_REAL_AUDIO_START_SECONDS: String(track.startSeconds) }),
+          ...(track.maxSeconds === undefined
+            ? {}
+            : { WAVEYARD_REAL_AUDIO_MAX_SECONDS: String(track.maxSeconds) }),
+        }),
     WAVEYARD_REAL_AUDIO_BENCHMARK_CHILD: "1",
     WAVEYARD_REAL_AUDIO_BENCHMARK_CPU_ONLY: "1",
     WAVEYARD_ORT_EXECUTION_MODE: mode,
@@ -66,7 +174,7 @@ async function measure(mode, repetition, order) {
   delete env.WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS;
 
   console.log(
-    `Benchmark repetition ${repetition}/${repetitions}, order ${order}: ${mode} ` +
+    `${track.id}: benchmark repetition ${repetition}/${repetitions}, order ${order}: ${mode} ` +
       `(requested intra/inter ${configuration.intraOpThreads}/${configuration.interOpThreads}, CPU provider)`,
   );
   const child = spawnSync(
@@ -80,7 +188,7 @@ async function measure(mode, repetition, order) {
     },
   );
   if (child.error) throw child.error;
-  assert.equal(child.status, 0, `${mode} repetition ${repetition} failed.`);
+  assert.equal(child.status, 0, `${track.id} ${mode} repetition ${repetition} failed.`);
 
   const report = JSON.parse(await readFile(reportFile, "utf8"));
   assert.equal(report.platform, process.platform, "The measurement must report its actual platform.");
@@ -98,6 +206,8 @@ async function measure(mode, repetition, order) {
     "The requested inter-op setting must not be clamped.",
   );
   return {
+    trackId: track.id,
+    trackLabel: track.label,
     mode,
     repetition,
     order,
@@ -107,72 +217,144 @@ async function measure(mode, repetition, order) {
 }
 
 try {
-  for (let repetition = 1; repetition <= repetitions; repetition += 1) {
-    const order = repetition % 2 === 1 ? modes : [...modes].reverse();
-    for (const mode of order) {
-      runs.push(await measure(mode, repetition, order.join(" then ")));
+  const trackResults = [];
+  for (const track of tracks) {
+    const trackRuns = [];
+    for (let repetition = 1; repetition <= repetitions; repetition += 1) {
+      const order = repetition % 2 === 1 ? modes : [...modes].reverse();
+      for (const mode of order) {
+        const run = await measure(track, mode, repetition, order.join(" then "));
+        runs.push(run);
+        trackRuns.push(run);
+      }
     }
-  }
+    validatePairedRuns(trackRuns, modes, repetitions);
 
-  validatePairedRuns(runs, modes, repetitions);
-
-  const firstReferenceEvaluation = runs[0].result.referenceEvaluation;
-  const inputIdentity = {
-    filename: basename(runs[0].input.filename),
-    sha256: runs[0].input.sha256,
-    processedExcerptSha256: runs[0].input.processedExcerptSha256,
-    processedStartSeconds: runs[0].input.processedStartSeconds,
-    processedDurationSeconds: runs[0].input.processedDurationSeconds,
-    sampleRate: runs[0].input.sampleRate,
-    channels: runs[0].input.channels,
-    models: runs[0].models,
-    referenceEvaluation: firstReferenceEvaluation
-      ? {
-          dataset: firstReferenceEvaluation.dataset,
-          datasetUrl: firstReferenceEvaluation.datasetUrl,
-          track: firstReferenceEvaluation.track,
-          license: firstReferenceEvaluation.license,
-          attribution: firstReferenceEvaluation.attribution,
-          referenceSha256: firstReferenceEvaluation.referenceSha256,
-        }
-      : null,
-  };
-  assertQualityReport(runs[0]);
-  assert.match(
-    inputIdentity.processedExcerptSha256,
-    /^[a-f0-9]{64}$/i,
-    "Every paired comparison needs the checksum of the exact processed excerpt.",
-  );
-  for (const run of runs) {
-    const referenceEvaluation = run.result.referenceEvaluation;
-    assert.deepEqual(
-      {
-        filename: basename(run.input.filename),
-        sha256: run.input.sha256,
-        processedExcerptSha256: run.input.processedExcerptSha256,
-        processedStartSeconds: run.input.processedStartSeconds,
-        processedDurationSeconds: run.input.processedDurationSeconds,
-        sampleRate: run.input.sampleRate,
-        channels: run.input.channels,
-        models: run.models,
-        referenceEvaluation: referenceEvaluation
-          ? {
-              dataset: referenceEvaluation.dataset,
-              datasetUrl: referenceEvaluation.datasetUrl,
-              track: referenceEvaluation.track,
-              license: referenceEvaluation.license,
-              attribution: referenceEvaluation.attribution,
-              referenceSha256: referenceEvaluation.referenceSha256,
-            }
-          : null,
-      },
-      inputIdentity,
-      "Every paired run must use the same excerpt and pinned model checksums.",
+    const firstRun = trackRuns[0];
+    const reference = firstRun.result.referenceEvaluation;
+    assertQualityReport(firstRun);
+    assert.ok(
+      Array.isArray(firstRun.models) &&
+        firstRun.models.length === 4 &&
+        firstRun.models.every(
+          (model) => typeof model.id === "string" && /^[a-f0-9]{64}$/i.test(model.sha256),
+        ),
+      `Track ${track.id} must record checksums for all four pinned models.`,
     );
-    assertQualityReport(run);
+    if (tracksManifestPath) {
+      assert.ok(reference, `Track ${track.id} needs an aligned reference evaluation.`);
+    }
+    const inputIdentity = {
+      filename: basename(firstRun.input.filename),
+      sha256: firstRun.input.sha256,
+      processedExcerptSha256: firstRun.input.processedExcerptSha256,
+      processedStartSeconds: firstRun.input.processedStartSeconds,
+      processedDurationSeconds: firstRun.input.processedDurationSeconds,
+      sampleRate: firstRun.input.sampleRate,
+      channels: firstRun.input.channels,
+      models: firstRun.models,
+      referenceEvaluation: reference
+        ? {
+            dataset: reference.dataset,
+            datasetUrl: reference.datasetUrl,
+            track: reference.track,
+            license: reference.license,
+            attribution: reference.attribution,
+            referenceSha256: reference.referenceSha256,
+          }
+        : null,
+    };
+    assert.match(inputIdentity.sha256, /^[a-f0-9]{64}$/i, `${track.id} source input needs a SHA-256.`);
+    assert.match(
+      inputIdentity.processedExcerptSha256,
+      /^[a-f0-9]{64}$/i,
+      `${track.id} processed excerpt needs a SHA-256.`,
+    );
+    for (const run of trackRuns) {
+      const evaluation = run.result.referenceEvaluation;
+      assertQualityReport(run);
+      assert.deepEqual(
+        {
+          filename: basename(run.input.filename),
+          sha256: run.input.sha256,
+          processedExcerptSha256: run.input.processedExcerptSha256,
+          processedStartSeconds: run.input.processedStartSeconds,
+          processedDurationSeconds: run.input.processedDurationSeconds,
+          sampleRate: run.input.sampleRate,
+          channels: run.input.channels,
+          models: run.models,
+          referenceEvaluation: evaluation
+            ? {
+                dataset: evaluation.dataset,
+                datasetUrl: evaluation.datasetUrl,
+                track: evaluation.track,
+                license: evaluation.license,
+                attribution: evaluation.attribution,
+                referenceSha256: evaluation.referenceSha256,
+              }
+            : null,
+        },
+        inputIdentity,
+        `Every paired run for ${track.id} must use the same checksummed excerpt, references, and models.`,
+      );
+    }
+
+    const trackSummary = Object.fromEntries(
+      modes.map((mode) => {
+        const modeRuns = trackRuns.filter((run) => run.mode === mode);
+        return [
+          mode,
+          {
+            requestedIntraOpThreads: settings[mode].intraOpThreads,
+            requestedInterOpThreads: settings[mode].interOpThreads,
+            repetitions: modeRuns.length,
+            elapsedMs: summarize(modeRuns.map((run) => run.result.elapsedMs)),
+            maxPlaybackTimerGapMs: summarize(modeRuns.map((run) => run.timings.maxPlaybackTimerGapMs)),
+            inferenceStageTotalsMs: summarizeStageTotals(modeRuns),
+            perModelStageMs: summarizeModelStages(modeRuns),
+          },
+        ];
+      }),
+    );
+    const pairedMetrics = summarizePairedQuality(
+      trackRuns.map(({ trackId: _trackId, trackLabel: _trackLabel, ...run }) => run),
+    );
+    const firstPair = Object.fromEntries(
+      modes.map((mode) => [
+        mode,
+        trackRuns.find((run) => run.mode === mode && run.repetition === 1).auditionDirectory,
+      ]),
+    );
+    const listeningKit = await createBlindListeningKit({
+      outputDirectory: join(listeningDirectory, track.id),
+      sourceFilesByMode: firstPair,
+      metadata: { trackId: track.id, input: inputIdentity, settings },
+    });
+    trackResults.push({
+      id: track.id,
+      label: track.label,
+      input: inputIdentity,
+      summary: trackSummary,
+      qualityComparison: {
+        pairedMetricSummaries: pairedMetrics,
+        interpretation:
+          "parallelMinusSequential values are paired by repetition. Objective scores are not proof of equivalence and do not replace listening review.",
+      },
+      blindListening: {
+        participantPage: listeningKit.participantPage,
+        organizerAnswerKey: listeningKit.answerKey,
+        pairedRepetition: 1,
+        audioSha256: listeningKit.outputChecksums,
+        matchedOutputEquality: listeningKit.matchedOutputEquality,
+        listenerSample: listeningKit.listenerSample,
+        interpretation: listeningKit.matchedOutputEquality.allMatchedOutputsByteIdentical
+          ? "Matched per-stem files are byte-for-byte identical for this track and repetition; no listener responses were collected."
+          : "At least one matched stem differs; no listener responses were collected.",
+      },
+    });
   }
 
-  const summary = Object.fromEntries(
+  const aggregateSummary = Object.fromEntries(
     modes.map((mode) => {
       const modeRuns = runs.filter((run) => run.mode === mode);
       return [
@@ -180,7 +362,8 @@ try {
         {
           requestedIntraOpThreads: settings[mode].intraOpThreads,
           requestedInterOpThreads: settings[mode].interOpThreads,
-          repetitions: modeRuns.length,
+          tracks: tracks.length,
+          repetitionsPerTrack: repetitions,
           elapsedMs: summarize(modeRuns.map((run) => run.result.elapsedMs)),
           maxPlaybackTimerGapMs: summarize(modeRuns.map((run) => run.timings.maxPlaybackTimerGapMs)),
           inferenceStageTotalsMs: summarizeStageTotals(modeRuns),
@@ -189,10 +372,9 @@ try {
       ];
     }),
   );
-
   const output = {
-    schemaVersion: 1,
-    benchmark: "paired four-stem sequential and bounded-parallel CPU comparison",
+    schemaVersion: 2,
+    benchmark: "paired multi-track four-stem sequential and bounded-parallel CPU comparison",
     measuredMachine: {
       platform: process.platform,
       osType: osType(),
@@ -206,39 +388,16 @@ try {
       process.platform === "win32"
         ? "CPU-only Windows results; they do not establish DirectML performance."
         : "Measured on this OS and CPU only; Linux results are not Windows performance evidence.",
-    input: inputIdentity,
-    pairedOrder: "Alternates which setting runs first on each repetition.",
+    pairedOrder: "Alternates which setting runs first for each repetition within each track.",
+    trackCount: tracks.length,
+    tracks: trackResults,
     qualityComparison: {
       pairedMetricSummaries: summarizePairedQuality(runs),
-      interpretation: inputIdentity.referenceEvaluation
-        ? "parallelMinusSequential values are paired by repetition. These observed objective scores do not prove equivalence and do not replace listening review; no score threshold is treated as perceptual equivalence."
-        : "No aligned reference stems were provided, so objective quality scores are omitted. Listening judgments are separate subjective evidence.",
+      interpretation:
+        "Per-track summaries remain visible beside the across-track summary. The pooled summary can conceal track-specific behavior; inspect every track.",
     },
-    summary,
+    summary: aggregateSummary,
     runs,
-  };
-
-  const firstPair = Object.fromEntries(
-    modes.map((mode) => [mode, runs.find((run) => run.mode === mode && run.repetition === 1).auditionDirectory]),
-  );
-  const listeningKit = await createBlindListeningKit({
-    outputDirectory: listeningDirectory,
-    sourceFilesByMode: firstPair,
-    metadata: {
-      input: inputIdentity,
-      settings,
-    },
-  });
-  output.blindListening = {
-    participantPage: listeningKit.participantPage,
-    organizerAnswerKey: listeningKit.answerKey,
-    pairedRepetition: 1,
-    audioSha256: listeningKit.outputChecksums,
-    matchedOutputEquality: listeningKit.matchedOutputEquality,
-    listenerSample: listeningKit.listenerSample,
-    interpretation: listeningKit.matchedOutputEquality.allMatchedOutputsByteIdentical
-      ? "Each matched per-stem pair is byte-for-byte identical by SHA-256, so listeners cannot distinguish the settings in these specific clips. No listener responses were collected; this does not establish equivalence on other inputs or runtimes."
-      : "The outputs differ in at least one matched stem. No listener responses were collected, so no perceptual conclusion is available.",
   };
 
   await mkdir(dirname(reportPath), { recursive: true });
@@ -250,9 +409,9 @@ try {
         modes.map((mode) => [
           mode,
           {
-            elapsedMs: summary[mode].elapsedMs,
-            maxPlaybackTimerGapMs: summary[mode].maxPlaybackTimerGapMs,
-            inferenceStageTotalsMs: summary[mode].inferenceStageTotalsMs,
+            elapsedMs: aggregateSummary[mode].elapsedMs,
+            maxPlaybackTimerGapMs: aggregateSummary[mode].maxPlaybackTimerGapMs,
+            inferenceStageTotalsMs: aggregateSummary[mode].inferenceStageTotalsMs,
           },
         ]),
       ),

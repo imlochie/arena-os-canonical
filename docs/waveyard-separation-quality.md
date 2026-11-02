@@ -38,9 +38,62 @@ No score threshold is used as a pass/fail signal. A non-silent or readable file 
 4. Exclude the first and last 0.5 seconds from reference SI-SDR to reduce model padding/overlap edge influence. Use the full excerpt to evaluate the unscaled sum of all four estimates against the original mixture. Report both SI-SDR and unscaled residual SDR, plus residual RMS.
 5. Preserve the paired reference and estimated WAV files under `generated-artifacts/waveyard-separation-quality/` for audition. This directory is ignored by Git; the licensed audio is not committed.
 
-The opt-in real-audio benchmark accepts `WAVEYARD_REAL_AUDIO_INPUT` and runs paired sequential 2/1 and bounded-parallel 1/2 CPU settings; `WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS` accepts 2–10 (default 3). Set `WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST` with dataset/license attribution and four aligned reference-file paths to include objective quality metrics. Without references, those metrics are omitted while the paired output and listening kit are still produced. `WAVEYARD_REAL_AUDIO_REPORT` selects the report path. `WAVEYARD_REAL_AUDIO_LISTENING_DIR` optionally selects the listening-kit directory; otherwise it is placed alongside the report.
+The opt-in real-audio benchmark accepts `WAVEYARD_REAL_AUDIO_INPUT` for a single track or `WAVEYARD_REAL_AUDIO_TRACKS_MANIFEST` for a multi-track run. For multi-track quality comparisons, use at least two tracks and give each an input excerpt plus a reference manifest containing dataset/license attribution and four aligned reference-stem files. The input excerpt and all references must cover the same samples, duration, and 44.1 kHz stereo signal; when a source mix is cropped with `startSeconds`/`maxSeconds`, the reference stems must already be cropped to that exact interval. Reference paths are relative to their reference manifest; input and reference-manifest paths are relative to the tracks manifest.
 
-The report checks that every run uses the same source and generated excerpt SHA-256 and four pinned model checksums. If a reference manifest is provided, it also checks dataset/track metadata and all four reference-file checksums, then reports reference SI-SDR, mixture baseline and improvement, recombined-mixture SI-SDR, residual SDR, and residual RMS. `qualityComparison.pairedMetricSummaries` reports per-mode ranges and paired parallel-minus-sequential deltas; these objective scores do not prove equivalence or replace listening review. The report also includes per-run stage timings, elapsed time, playback timer gaps, and measured OS/CPU. Windows runs are CPU-only and do not represent DirectML performance; Linux measurements are not Windows evidence.
+Example tracks manifest:
+
+```json
+{
+  "schemaVersion": 1,
+  "tracks": [
+    {
+      "id": "bks-bulldozer",
+      "label": "BKS - Bulldozer",
+      "inputPath": "audio/BKS - Bulldozer-mix-30-38.wav",
+      "referenceManifestPath": "references/BKS - Bulldozer.json"
+    },
+    {
+      "id": "angels-im-alright",
+      "label": "Angels In Amplifiers - I'm Alright",
+      "inputPath": "audio/Angels In Amplifiers - Im Alright-mix-30-38.wav",
+      "referenceManifestPath": "references/Angels In Amplifiers - Im Alright.json"
+    }
+  ]
+}
+```
+
+Each referenced per-track manifest has the existing single-track shape:
+
+```json
+{
+  "dataset": "MUSDB18-HQ (FLAC Optimized)",
+  "datasetUrl": "https://huggingface.co/datasets/roro128/musdb18-hq-flac",
+  "track": "BKS - Bulldozer",
+  "license": "CC BY-NC-SA 4.0",
+  "attribution": "MUSDB18-HQ; distributed by roro128/musdb18-hq-flac, derived from danjacobellis/musdb18HQ",
+  "referenceStems": {
+    "vocals": "BKS - Bulldozer-vocals-30-38.wav",
+    "drums": "BKS - Bulldozer-drums-30-38.wav",
+    "bass": "BKS - Bulldozer-bass-30-38.wav",
+    "other": "BKS - Bulldozer-other-30-38.wav"
+  }
+}
+```
+
+Run it with:
+
+```sh
+WAVEYARD_REAL_AUDIO_TRACKS_MANIFEST=docs/waveyard-quality-tracks.example.json \
+WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS=3 \
+WAVEYARD_REAL_AUDIO_REPORT=generated-artifacts/waveyard-multi-track/report.json \
+node scripts/waveyard-real-audio-benchmark.mjs
+```
+
+The sequential 2/1 and bounded-parallel 1/2 CPU settings are paired for every track and repetition; the first setting alternates by repetition. Each paired group is checked for an identical source-file SHA-256, processed-excerpt SHA-256 and timing window, reference metadata and four reference-file SHA-256 values, and all four registry-pinned model checksums. The worker also verifies that each reference stem decodes to the exact sample count and rate of the measured excerpt. This checks file identity and duration, not that a mislabeled reference is musically aligned, so the supplied stems must originate from the corresponding track and crop.
+
+Schema-version 2 reports keep each track's input/reference hashes, timing summaries, stem metrics, recombination metrics, paired deltas, and listening kit under `tracks[]`. `qualityComparison.pairedMetricSummaries.perTrack` reports the objective metrics separately for each track; `acrossTracks` pools paired observations and includes ranges, but can hide a track-specific outlier, so always inspect each track. `WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS` accepts 2–10 (default 3), `WAVEYARD_REAL_AUDIO_REPORT` selects the report path, and `WAVEYARD_REAL_AUDIO_LISTENING_DIR` optionally selects the listening-kit root; otherwise kits are placed alongside the report. Single-track runs without references remain supported for timing/listening only.
+
+Reports include per-run stage timings, elapsed time, playback timer gaps, and measured OS/CPU. The checksummed input/model and reference evidence is per track, while all CPU comparisons use the same two settings. Objective scores do not prove equivalence or replace listening review. Windows runs are CPU-only and do not represent DirectML performance; Linux measurements are not Windows evidence.
 
 Each successful paired benchmark creates a blind listening kit from the first matched repetition. Share only the `participant/index.html` page and its `participant/audio/` files with listeners; keep `organizer/answer-key.json` private until judgments are collected. A/B assignments are randomized independently for each stem, stem order is randomized, and the key maps both labels to the CPU setting and includes the exact output WAV SHA-256 values plus input, excerpt, and model checksums. Each listener rates audible difference (1–5), preference (A/B/no preference), reports headphone use, and may add a note; the page downloads one JSON response file. Responses are not uploaded. Summarize returned files with:
 

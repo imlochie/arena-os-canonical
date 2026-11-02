@@ -54,6 +54,34 @@ test("paired quality summaries compare every stem and recombined metrics", () =>
   assert.equal(summary.recombinedMixResidualRmsDbfs.parallelMinusSequential.median, -0.08);
 });
 
+test("multi-track quality summary preserves each track and exposes the pooled outlier range", () => {
+  const runs = [
+    { ...run("sequential", 1), trackId: "bks" },
+    { ...run("parallel", 1, 0.1), trackId: "bks" },
+    { ...run("sequential", 1, -20), trackId: "angels" },
+    { ...run("parallel", 1, -19.5), trackId: "angels" },
+  ];
+  const summary = summarizePairedQuality(runs);
+
+  assert.deepEqual(Object.keys(summary.perTrack), ["angels", "bks"]);
+  assert.equal(
+    summary.perTrack.angels.bass.siSdrDb.parallelMinusSequential.median,
+    0.5,
+    "the difficult track retains its own paired stem result",
+  );
+  assert.equal(
+    summary.perTrack.bks.bass.siSdrDb.parallelMinusSequential.median,
+    0.1,
+    "the other track is reported independently",
+  );
+  assert.equal(
+    summary.acrossTracks.bass.siSdrDb.parallelMinusSequential.minimum,
+    0.1,
+    "the pooled result still includes the lowest paired difference",
+  );
+  assert.equal(summary.acrossTracks.recombinedMixResidualSdrDb.parallelMinusSequential.maximum, 0.5);
+});
+
 test("quality reports require checksummed references and finite objective metrics", () => {
   const valid = run("sequential", 1);
   assert.equal(assertQualityReport(valid).perStem.vocals.siSdrDb, 1);
