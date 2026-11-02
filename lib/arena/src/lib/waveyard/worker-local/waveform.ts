@@ -47,6 +47,15 @@ const TRANSIENT_WAVEFORM_ERROR_CODES = new Set([
   "ENETUNREACH",
   "EHOSTUNREACH",
   "EAI_AGAIN",
+  "08000",
+  "08001",
+  "08003",
+  "08004",
+  "08006",
+  "57P01",
+  "57P02",
+  "57P03",
+  "53300",
 ]);
 
 export function desktopAnalysisIdempotencyKey(sourceAssetId: string) {
@@ -103,8 +112,15 @@ export function isTransientWaveformFailure(error: unknown): boolean {
   const details = error && typeof error === "object"
     ? error as { code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown; stderr?: unknown; signal?: unknown; cause?: unknown }
     : {};
-  const code = typeof details.code === "string" ? details.code.toUpperCase() : "";
-  if (TRANSIENT_WAVEFORM_ERROR_CODES.has(code) || details.signal === "SIGKILL") return true;
+  let current: unknown = error;
+  const visited = new Set<object>();
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const code = "code" in current && typeof current.code === "string" ? current.code.toUpperCase() : "";
+    if (TRANSIENT_WAVEFORM_ERROR_CODES.has(code) || code.startsWith("08")) return true;
+    current = "cause" in current ? current.cause : null;
+  }
+  if (details.signal === "SIGKILL") return true;
 
   const status = Number(details.statusCode ?? details.status);
   if (Number.isInteger(status) && (status === 408 || status === 425 || status === 429 || status >= 500)) return true;

@@ -18,8 +18,13 @@ import {
   WAVEFORM_QUEUE,
 } from "@workspace/arena/lib/waveyard/queue";
 import { getLocalJobBroker, localWorkerActive, type LocalJobBroker } from "./broker";
-import { cleanupOrphanedWaveformObjects, handleWaveformJob } from "./waveform";
+import {
+  cleanupOrphanedWaveformObjects,
+  handleWaveformJob,
+  isTransientWaveformFailure,
+} from "./waveform";
 import { cleanupOrphanedSourceObjects } from "./source-cleanup";
+import { runStartupCleanup } from "./startup-cleanup";
 import { handleSeparationJob } from "./separation";
 import { handleSourceAnalysisJob } from "./analysis";
 import { handleSectionAnalysisJob } from "./sections";
@@ -28,19 +33,41 @@ import { handleExportJob } from "./export";
 export { getLocalJobBroker, localWorkerActive };
 export { cleanupOrphanedSourceObjects, ORPHAN_SOURCE_GRACE_PERIOD_MS } from "./source-cleanup";
 export {
+  isStartupCleanupPending,
+  runStartupCleanup,
+  STARTUP_CLEANUP_MAX_ATTEMPTS,
+  STARTUP_CLEANUP_RETRY_DELAYS_MS,
+} from "./startup-cleanup";
+export {
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
 } from "./recovery";
 export type { LocalJobBroker };
+export type LocalWorkerCleanupOverrides = {
+  waveform?: () => Promise<unknown>;
+  source?: () => Promise<unknown>;
+};
 
-export function startLocalWorker(): LocalJobBroker | null {
+export function startLocalWorker(cleanupOverrides: LocalWorkerCleanupOverrides = {}): LocalJobBroker | null {
   if (!localWorkerActive()) return null;
   const broker = getLocalJobBroker();
   if (broker.hasHandler(WAVEFORM_QUEUE)) return broker; // idempotent across module graphs
-  void cleanupOrphanedWaveformObjects().catch((error) => {
-    console.warn("Waveform orphan cleanup failed; it will retry after the next worker restart.", error);
+  void runStartupCleanup("waveforms", cleanupOverrides.waveform ?? cleanupOrphanedWaveformObjects, {
+    isTransient: isTransientWaveformFailure,
+    onRetry: ({ attempt, nextAttempt, maxAttempts, delayMs, error }) => {
+      console.warn(
+        `Waveform orphan cleanup failed; retrying ${nextAttempt}/${maxAttempts} in ${delayMs}ms after attempt ${attempt}.`,
+        error,
+      );
+    },
+    onDeferred: ({ attempts, maxAttempts, error }) => {
+      console.warn(
+        `Waveform orphan cleanup deferred after ${attempts}/${maxAttempts} attempts; it will be retried after the next worker restart.`,
+        error,
+      );
+    },
   });
-  void cleanupOrphanedSourceObjects().catch((error) => {
+  void (cleanupOverrides.source ?? cleanupOrphanedSourceObjects)().catch((error) => {
     console.warn("Source orphan cleanup failed; it will retry after the next worker restart.", error);
   });
   broker.register(WAVEFORM_QUEUE, handleWaveformJob);
