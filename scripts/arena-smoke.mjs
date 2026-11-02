@@ -2068,7 +2068,9 @@ try {
   let studioProjectRequestCount = 0;
   let studioRemixRequestCount = 0;
   const studioKeyboardEdits = [];
+  const studioSaveAttempts = [];
   const studioSavedStates = [];
+  let failNextStudioRemixPut = false;
   await page.route(`**/api/waveyard/projects/${studioProjectId}`, async (route) => {
     studioProjectRequestCount += 1;
     await route.fulfill({
@@ -2125,6 +2127,16 @@ try {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(studioRemixResponse) });
     } else if (route.request().method() === "PUT") {
       const request = route.request().postDataJSON();
+      studioSaveAttempts.push(request);
+      if (failNextStudioRemixPut) {
+        failNextStudioRemixPut = false;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Smoke-test save failure." }),
+        });
+        return;
+      }
       studioSavedStates.push(request);
       const { tracks, automation, ...settings } = request;
       Object.assign(studioRemixResponse.remix, settings);
@@ -2474,11 +2486,25 @@ try {
       await dragTouch(moveHandle, 88, 0, true);
       assert.equal(await touchClip.evaluate((element) => element.style.left), initialClipLeft,
         "cancelling a touch move must restore the original clip position");
+      const touchMoveResponsePromise = page.waitForResponse((response) =>
+        new URL(response.url()).pathname === `/api/remixes/${studioRemixId}/clips/batch-edit` &&
+        response.request().method() === "POST" &&
+        response.request().postDataJSON().operation === "move");
       await dragTouch(moveHandle, 88, 0);
+      const touchMoveResponse = await touchMoveResponsePromise;
+      assert(touchMoveResponse.ok(), "a completed touch move must save through the clip batch-edit API");
       await page.waitForFunction((left) => document.querySelector(".clip")?.style.left !== left, initialClipLeft);
       const movedClipLeft = await touchClip.evaluate((element) => element.style.left);
       assert.notEqual(movedClipLeft, initialClipLeft,
         "the dedicated touch move control must move a clip and preserve timeline snapping");
+      assert.equal(
+        studioRemixResponse.tracks[0].clips[0].timelineStartMs,
+        Number.parseFloat(movedClipLeft) / 80 * 1000,
+        "the touch move must reach the persisted clip batch-edit route, not only the preview",
+      );
+      assert.equal(studioKeyboardEdits.at(-1).operation, "move",
+        "a completed touch move must send the move operation to the API");
+      await page.locator(".save-state.saved").waitFor({ timeout: 5_000 });
 
       const rightTrim = touchClip.locator(".trim-right");
       await rightTrim.scrollIntoViewIfNeeded();
@@ -2486,13 +2512,78 @@ try {
       await dragTouch(rightTrim, -72, 0, true);
       assert.equal(await touchClip.evaluate((element) => element.style.width), initialClipWidth,
         "cancelling a touch trim must preserve the original clip duration");
+      const touchTrimSave = page.waitForResponse((response) =>
+        new URL(response.url()).pathname === `/api/remixes/${studioRemixId}` &&
+        response.request().method() === "PUT");
       await dragTouch(rightTrim, -72, 0);
       await page.waitForFunction((widthBefore) => document.querySelector(".clip")?.style.width !== widthBefore, initialClipWidth);
+      const touchTrimResponse = await touchTrimSave;
+      assert(touchTrimResponse.ok(), "a completed touch trim must save through the remix API");
+      const touchTrimAttempt = studioSaveAttempts.at(-1);
+      assert(touchTrimAttempt, "the touch trim must send an arrangement save");
+      const touchTrimSavedClip = touchTrimAttempt.tracks[0].clips[0];
+      assert.notEqual(touchTrimSavedClip.durationMs, Number.parseFloat(initialClipWidth) / 80 * 1000,
+        "the touch trim request must contain the changed clip duration");
       assert.notEqual(await touchClip.evaluate((element) => element.style.width), initialClipWidth,
         "the enlarged touch trim handle must change a clip's duration");
+      await page.locator(".save-state.saved").waitFor({ timeout: 5_000 });
+      const touchPersistedClip = studioRemixResponse.tracks[0].clips[0];
+      assert.equal(touchPersistedClip.timelineStartMs, Number.parseFloat(movedClipLeft) / 80 * 1000,
+        "the successful trim must retain the saved touch move");
+      assert.equal(touchPersistedClip.durationMs, touchTrimSavedClip.durationMs,
+        "the successful trim response must retain the edited clip duration");
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
       await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
+      const reopenedTouchClip = page.locator(".timeline-track").first().locator(".clip").first();
+      await page.waitForFunction(({ left, width }) => {
+        const clip = document.querySelector(".timeline-track .clip");
+        return clip instanceof HTMLElement && clip.style.left === left && clip.style.width === width;
+      }, {
+        left: `${(touchPersistedClip.timelineStartMs / 1000) * 80}px`,
+        width: `${Math.max(18, (touchPersistedClip.durationMs / 1000) * 80)}px`,
+      }, { timeout: 5_000 });
+      assert.equal(await reopenedTouchClip.evaluate((element) => element.style.left),
+        `${(touchPersistedClip.timelineStartMs / 1000) * 80}px`,
+        "reopening Studio must restore the touch-moved timeline position");
+      assert.equal(await reopenedTouchClip.evaluate((element) => element.style.width),
+        `${Math.max(18, (touchPersistedClip.durationMs / 1000) * 80)}px`,
+        "reopening Studio must restore the touch-trimmed duration");
+
+      const trimLeft = reopenedTouchClip.locator(".trim-left");
+      await trimLeft.scrollIntoViewIfNeeded();
+      const failedSaveResponse = page.waitForResponse((response) =>
+        new URL(response.url()).pathname === `/api/remixes/${studioRemixId}` &&
+        response.request().method() === "PUT");
+      failNextStudioRemixPut = true;
+      await dragTouch(trimLeft, 48, 0);
+      const rejectedTouchSave = await failedSaveResponse;
+      assert.equal(rejectedTouchSave.status(), 503, "the failure fixture must reject the touch edit save");
+      await page.locator(".save-state.failed").waitFor({ timeout: 5_000 });
+      assert.equal(await page.locator(".save-state").innerText(), "Save failed",
+        "a rejected touch edit must visibly report that it was not saved");
+      const rejectedAttempt = studioSaveAttempts.at(-1).tracks[0].clips[0];
+      assert.notDeepEqual(
+        [rejectedAttempt.timelineStartMs, rejectedAttempt.sourceOffsetMs, rejectedAttempt.durationMs],
+        [touchPersistedClip.timelineStartMs, touchPersistedClip.sourceOffsetMs, touchPersistedClip.durationMs],
+        "the failed touch trim must have attempted a distinct unsaved edit",
+      );
+      assert.deepEqual(
+        [studioRemixResponse.tracks[0].clips[0].timelineStartMs, studioRemixResponse.tracks[0].clips[0].sourceOffsetMs, studioRemixResponse.tracks[0].clips[0].durationMs],
+        [touchPersistedClip.timelineStartMs, touchPersistedClip.sourceOffsetMs, touchPersistedClip.durationMs],
+        "a rejected save must not update the server's last saved arrangement",
+      );
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
+      await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
+      const afterFailureClip = page.locator(".timeline-track").first().locator(".clip").first();
+      assert.equal(await afterFailureClip.evaluate((element) => element.style.left),
+        `${(touchPersistedClip.timelineStartMs / 1000) * 80}px`,
+        "reopening after a failed save must retain the previous saved move, not the failed edit");
+      assert.equal(await afterFailureClip.evaluate((element) => element.style.width),
+        `${Math.max(18, (touchPersistedClip.durationMs / 1000) * 80)}px`,
+        "reopening after a failed save must retain the previous saved trim, not the failed edit");
+      report.push("Touch move and trim edits reach the remix APIs and restore after reopening; rejected touch saves are visible and leave the prior saved arrangement intact.");
     }
     await mobileTransport.scrollIntoViewIfNeeded();
     const mobileTargets = await Promise.all([playButton, previewButton, seekSlider].map(async (target) => {
