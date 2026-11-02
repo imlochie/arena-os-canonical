@@ -1298,7 +1298,7 @@ export const getGetLibraryAudioCaptureOptionsUrl = (params?: GetLibraryAudioCapt
 }
 
 /**
- * @summary Check Windows audio loopback capture availability
+ * @summary Check Windows audio capture modes and availability
  */
 export const getLibraryAudioCaptureOptions = async (params?: GetLibraryAudioCaptureOptionsParams, options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureOptionsResponse> => {
 
@@ -1345,7 +1345,7 @@ export type GetLibraryAudioCaptureOptionsQueryError = ErrorType<unknown>
 
 
 /**
- * @summary Check Windows audio loopback capture availability
+ * @summary Check Windows audio capture modes and availability
  */
 
 export function useGetLibraryAudioCaptureOptions<TData = Awaited<ReturnType<typeof getLibraryAudioCaptureOptions>>, TError = ErrorType<unknown>>(
@@ -1375,8 +1375,10 @@ export const getStartLibraryAudioCaptureUrl = () => {
 }
 
 /**
- * Records the selected Windows playback endpoint mix in its native shared-mode PCM format. Protected or unavailable audio is not bypassed.
- * @summary Start an authorized Windows system-loopback recording
+ * When processId and processStartTime are both supplied, captures that application's process tree, excluding other applications. This mode requires Windows build 20348 or later and never falls back to system audio.
+ * Otherwise, captures the selected Windows playback endpoint mix in its native shared-mode PCM format, including other apps routed through that endpoint. If deviceId is omitted, the default output endpoint is used.
+ * Protected or unavailable audio is not bypassed.
+ * @summary Start an authorized Windows audio recording
  */
 export const startLibraryAudioCapture = async (libraryAudioCaptureStartInput: LibraryAudioCaptureStartInput, options?: Parameters<typeof customFetch>[1]): Promise<LibraryAudioCaptureStartResponse> => {
 
@@ -1442,7 +1444,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type StartLibraryAudioCaptureMutationVariables = {data: BodyType<LibraryAudioCaptureStartInput>}
 
     /**
- * @summary Start an authorized Windows system-loopback recording
+ * @summary Start an authorized Windows audio recording
  */
 export const useStartLibraryAudioCapture = <TError = ErrorType<ApiError>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startLibraryAudioCapture>>, TError,StartLibraryAudioCaptureMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}

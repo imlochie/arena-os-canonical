@@ -15,6 +15,7 @@ const builderConfig = createRequire(import.meta.url)("./electron-builder.cjs");
 
 test("native WASAPI host source is included in the Windows installer resources", async () => {
   const source = await readFile(path.join(here, "native", "waveyard-capture-host.cpp"), "utf8");
+  const processLoopback = await readFile(path.join(here, "native", "process-loopback.h"), "utf8");
   const buildScript = await readFile(path.join(here, "build.mjs"), "utf8");
   const desktopMain = await readFile(path.join(here, "main.mjs"), "utf8");
   const captureManager = await readFile(
@@ -23,6 +24,12 @@ test("native WASAPI host source is included in the Windows installer resources",
   );
   assert.match(source, /AUDCLNT_STREAMFLAGS_LOOPBACK/);
   assert.match(source, /formatChunkBase64/);
+  assert.match(source, /processLoopbackSupported\(\)/);
+  assert.match(processLoopback, /AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK/);
+  assert.match(processLoopback, /VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK/);
+  assert.match(processLoopback, /PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE/);
+  assert.match(processLoopback, /version\.dwBuildNumber >= 20348/);
+  assert.match(captureManager, /event\.mode !== \(session\.metadata\.processId \? "process-loopback" : "system-loopback"\)/);
   assert.equal(typeof buildWaveyardCaptureHost, "function");
   assert.match(buildScript, /\/std:c\+\+20/);
   assert.ok(builderConfig.extraResources.some((resource) =>

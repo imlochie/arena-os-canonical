@@ -23,14 +23,21 @@ export interface LibraryAudioCaptureStartInput {
   artist?: string;
   /** @maxLength 200 */
   album?: string;
-  /** @maxLength 4096 */
+  /**
+     * Optional playback endpoint for whole-output system-loopback capture; do not combine with processId or processStartTime.
+     * @maxLength 4096
+     */
   deviceId?: string;
   /**
+     * Target application process ID for process-loopback capture; provide with processStartTime and omit deviceId.
      * @minimum 1
      * @maximum 4294967295
      */
   processId?: number;
-  /** @pattern ^[0-9]{1,20}$ */
+  /**
+     * Target process creation time, used to reject stale or reused process IDs.
+     * @pattern ^[0-9]{1,20}$
+     */
   processStartTime?: string;
   rightsReviewed: true;
 }

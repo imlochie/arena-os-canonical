@@ -95,6 +95,8 @@ try {
         sessionId: "capture-ui-test",
         status: "recording",
         startedAt: new Date().toISOString(),
+        captureMode: startPayload?.processId ? "process-loopback" : "system-loopback",
+        ...(startPayload?.processId ? { processId: startPayload.processId } : {}),
         format: { sampleRate: 48_000, channels: 2, bitsPerSample: 16, blockAlign: 4 },
       }),
     });
@@ -170,7 +172,8 @@ try {
   await page.getByLabel("Track title").fill("Authorized capture test");
   await page.getByRole("checkbox", { name: /authorized to record this audio/i }).check();
   await page.getByRole("button", { name: "Start recording" }).click();
-  await page.getByText("Recording ·", { exact: false }).waitFor({ timeout: 10000 });
+  await page.locator(".library-audio-capture-live").waitFor({ timeout: 10000 });
+  await page.getByText("Whole-output recording · includes other apps", { exact: true }).waitFor();
   await page.getByText("PCM received, but no signal above -80 dBFS", { exact: false }).waitFor();
   await page.getByText(/Check that audio is playing through the selected output/).waitFor();
   signalPhase = "active";
@@ -192,7 +195,8 @@ try {
   assert.equal(await page.getByText("Preserved recordings").isVisible(), true);
   signalPhase = "silent";
   await page.getByLabel("Capture source").selectOption("application");
-  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true,
+    "application capture stays unavailable until a supported app is selected");
   await page.getByLabel("Windows application").selectOption("4242:123456789");
   await page.setViewportSize({ width: 390, height: 844 });
   const sourceBounds = await page.getByLabel("Windows application").boundingBox();
@@ -205,6 +209,7 @@ try {
   assert.equal(startPayload.processId, 4242);
   assert.equal(startPayload.processStartTime, "123456789");
   assert.equal("deviceId" in startPayload, false, "isolated capture must never send an output endpoint");
+  await page.getByText("Application process 4242 and its children", { exact: true }).waitFor();
   const mediaWatch = page.getByRole("checkbox", { name: "Suggest tags when the Windows media session changes" });
   await mediaWatch.check();
   await page.getByText(/Watching media tags from AuthorizedPlayer\.exe/).waitFor({ timeout: 10000 });
@@ -259,7 +264,22 @@ try {
   applicationSupported = false;
   await page.getByRole("button", { name: "Refresh devices" }).click();
   await page.getByText("Application isolation is unavailable in this test host.", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true);
+  const captureSource = page.getByLabel("Capture source");
+  assert.equal(await captureSource.inputValue(), "application",
+    "an unsupported host does not silently switch capture modes");
+  assert.equal(await captureSource.locator('option[value="application"]').evaluate((option) => option.disabled), true,
+    "application capture is unavailable without process-loopback support");
+  assert.equal(await captureSource.locator('option[value="output"]').evaluate((option) => option.disabled), false,
+    "whole-output system-mix capture remains an explicit option");
+  await page.getByLabel("Track title").fill("Explicit whole-output fallback");
+  await captureSource.selectOption("output");
+  assert.equal(await captureSource.inputValue(), "output",
+    "system-mix capture requires an explicit source selection");
+  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true,
+    "the existing recording authorization confirmation is still required");
+  await page.getByRole("checkbox", { name: /authorized to record this audio/i }).check();
+  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), false,
+    "whole-output capture can start after explicitly choosing that mode and confirming authorization");
   assert.deepEqual(pageErrors, []);
   await context.close();
   console.log("PASS: explicit device/application selection and isolated payload; PCM signal UI; media-session tag suggestions with user-confirmed PCM-frame markers; mobile bounds; missing-session recovery and silent-file warning (mocked HTTP, not Windows audio).");

@@ -352,10 +352,10 @@ paths:
             type: string
             enum: ["1"]
       tags: [waveyard]
-      summary: Check Windows audio loopback capture availability
+      summary: Check Windows audio capture modes and availability
       responses:
         "200":
-          description: Capture-host status and active Windows playback endpoints
+          description: Capture-host status, active playback endpoints, and eligible applications when process loopback is supported
           content:
             application/json:
               schema:
@@ -363,8 +363,11 @@ paths:
     post:
       operationId: startLibraryAudioCapture
       tags: [waveyard]
-      summary: Start an authorized Windows system-loopback recording
-      description: Records the selected Windows playback endpoint mix in its native shared-mode PCM format. Protected or unavailable audio is not bypassed.
+      summary: Start an authorized Windows audio recording
+      description: |
+        When processId and processStartTime are both supplied, captures that application's process tree, excluding other applications. This mode requires Windows build 20348 or later and never falls back to system audio.
+        Otherwise, captures the selected Windows playback endpoint mix in its native shared-mode PCM format, including other apps routed through that endpoint. If deviceId is omitted, the default output endpoint is used.
+        Protected or unavailable audio is not bypassed.
       requestBody:
         required: true
         content:
@@ -1222,13 +1225,16 @@ components:
         deviceId:
           type: string
           maxLength: 4096
+          description: Optional playback endpoint for whole-output system-loopback capture; do not combine with processId or processStartTime.
         processId:
           type: integer
           minimum: 1
           maximum: 4294967295
+          description: Target application process ID for process-loopback capture; provide with processStartTime and omit deviceId.
         processStartTime:
           type: string
           pattern: '^[0-9]{1,20}$'
+          description: Target process creation time, used to reject stale or reused process IDs.
         rightsReviewed:
           type: boolean
           enum: [true]
@@ -1243,12 +1249,21 @@ components:
         status:
           type: string
           enum: [recording]
+        captureMode:
+          type: string
+          enum: [system-loopback, process-loopback]
+          description: Verified mode used by the Windows capture host.
+        processId:
+          type: integer
+          minimum: 1
+          maximum: 4294967295
+          description: Present for process-loopback recordings.
         startedAt:
           type: string
           format: date-time
         format:
           $ref: "#/components/schemas/LibraryAudioCaptureFormat"
-      required: [sessionId, status, startedAt, format]
+      required: [sessionId, status, startedAt, captureMode, format]
     LibraryAudioCaptureSignal:
       type: object
       required: [state, peak, capturedSeconds, signalSeen, clippedSamples, invalidSamples]

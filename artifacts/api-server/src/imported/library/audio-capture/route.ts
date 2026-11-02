@@ -64,6 +64,8 @@ export async function POST(request: Request) {
       sessionId: session.sessionId,
       status: "recording",
       startedAt: session.startedAt,
+      captureMode: session.captureMode,
+      ...(session.processId !== undefined ? { processId: session.processId } : {}),
       format: session.format,
     }), { status: 201 });
   } catch (error) {

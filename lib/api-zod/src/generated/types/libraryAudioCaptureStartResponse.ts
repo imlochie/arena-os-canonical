@@ -6,11 +6,20 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { LibraryAudioCaptureFormat } from './libraryAudioCaptureFormat';
+import type { LibraryAudioCaptureStartResponseCaptureMode } from './libraryAudioCaptureStartResponseCaptureMode';
 import type { LibraryAudioCaptureStartResponseStatus } from './libraryAudioCaptureStartResponseStatus';
 
 export interface LibraryAudioCaptureStartResponse {
   sessionId: string;
   status: LibraryAudioCaptureStartResponseStatus;
+  /** Verified mode used by the Windows capture host. */
+  captureMode: LibraryAudioCaptureStartResponseCaptureMode;
+  /**
+     * Present for process-loopback recordings.
+     * @minimum 1
+     * @maximum 4294967295
+     */
+  processId?: number;
   startedAt: Date;
   format: LibraryAudioCaptureFormat;
 }

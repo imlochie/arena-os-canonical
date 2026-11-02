@@ -56,6 +56,7 @@ export * from './libraryAudioCaptureSignal';
 export * from './libraryAudioCaptureSignalState';
 export * from './libraryAudioCaptureStartInput';
 export * from './libraryAudioCaptureStartResponse';
+export * from './libraryAudioCaptureStartResponseCaptureMode';
 export * from './libraryAudioCaptureStartResponseStatus';
 export * from './libraryAudioCaptureStatusResponse';
 export * from './libraryAudioCaptureStatusResponseCaptureMode';

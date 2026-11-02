@@ -544,7 +544,7 @@ export const GetLibraryConversionJobResponse = zod.object({
 
 
 /**
- * @summary Check Windows audio loopback capture availability
+ * @summary Check Windows audio capture modes and availability
  */
 export const GetLibraryAudioCaptureOptionsQueryParams = zod.object({
   "mediaMetadata": zod.enum(['1']).optional()
@@ -680,8 +680,10 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
 
 
 /**
- * Records the selected Windows playback endpoint mix in its native shared-mode PCM format. Protected or unavailable audio is not bypassed.
- * @summary Start an authorized Windows system-loopback recording
+ * When processId and processStartTime are both supplied, captures that application's process tree, excluding other applications. This mode requires Windows build 20348 or later and never falls back to system audio.
+ * Otherwise, captures the selected Windows playback endpoint mix in its native shared-mode PCM format, including other apps routed through that endpoint. If deviceId is omitted, the default output endpoint is used.
+ * Protected or unavailable audio is not bypassed.
+ * @summary Start an authorized Windows audio recording
  */
 export const startLibraryAudioCaptureBodyTrackNumberMax = 99999;
 
@@ -706,11 +708,13 @@ export const StartLibraryAudioCaptureBody = zod.object({
   "title": zod.string().min(1).max(startLibraryAudioCaptureBodyTitleMax),
   "artist": zod.string().max(startLibraryAudioCaptureBodyArtistMax).optional(),
   "album": zod.string().max(startLibraryAudioCaptureBodyAlbumMax).optional(),
-  "deviceId": zod.string().max(startLibraryAudioCaptureBodyDeviceIdMax).optional(),
-  "processId": zod.number().int().min(1).max(startLibraryAudioCaptureBodyProcessIdMax).optional(),
-  "processStartTime": zod.string().regex(startLibraryAudioCaptureBodyProcessStartTimeRegExp).optional(),
+  "deviceId": zod.string().max(startLibraryAudioCaptureBodyDeviceIdMax).optional().describe('Optional playback endpoint for whole-output system-loopback capture; do not combine with processId or processStartTime.'),
+  "processId": zod.number().int().min(1).max(startLibraryAudioCaptureBodyProcessIdMax).optional().describe('Target application process ID for process-loopback capture; provide with processStartTime and omit deviceId.'),
+  "processStartTime": zod.string().regex(startLibraryAudioCaptureBodyProcessStartTimeRegExp).optional().describe('Target process creation time, used to reject stale or reused process IDs.'),
   "rightsReviewed": zod.literal(true)
 })
+
+export const startLibraryAudioCaptureResponseProcessIdMax = 4294967295;
 
 
 
@@ -721,6 +725,8 @@ export const StartLibraryAudioCaptureBody = zod.object({
 export const StartLibraryAudioCaptureResponse = zod.object({
   "sessionId": zod.string().uuid(),
   "status": zod.enum(['recording']),
+  "captureMode": zod.enum(['system-loopback', 'process-loopback']).describe('Verified mode used by the Windows capture host.'),
+  "processId": zod.number().int().min(1).max(startLibraryAudioCaptureResponseProcessIdMax).optional().describe('Present for process-loopback recordings.'),
   "startedAt": zod.coerce.date(),
   "format": zod.object({
   "sampleRate": zod.number().int().min(1),
