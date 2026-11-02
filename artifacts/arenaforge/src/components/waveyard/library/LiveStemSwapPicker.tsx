@@ -38,6 +38,7 @@ interface LiveStemSwapPickerProps {
   onClose: () => void;
   onChoose: (donorId: string) => void;
   onWarm: (donorId: string) => void;
+  onPrefetch: (donorId: string) => void;
   onPrepare: (trackId: string) => void;
   onRestore: () => void;
 }
@@ -64,6 +65,7 @@ export default function LiveStemSwapPicker({
   onClose,
   onChoose,
   onWarm,
+  onPrefetch,
   onPrepare,
   onRestore,
 }: LiveStemSwapPickerProps) {
@@ -73,7 +75,9 @@ export default function LiveStemSwapPicker({
   const firstCandidateRef = useRef<HTMLButtonElement>(null);
   const firstPreparationRef = useRef<HTMLButtonElement>(null);
   const hoverWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefetchedCandidateKeyRef = useRef<string | null>(null);
   const pickerId = `live-swap-picker-${stemType}`;
+  const prefetchCandidateId = candidates.slice(1).find((candidate) => candidate.id !== selectedDonorId)?.id ?? null;
 
   const filteredCandidates = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -105,12 +109,21 @@ export default function LiveStemSwapPicker({
   useEffect(() => {
     if (!isOpen) {
       setQuery("");
+      prefetchedCandidateKeyRef.current = null;
       return;
     }
     if (sourceCount > 4) searchRef.current?.focus();
     else if (candidates.length > 0) firstCandidateRef.current?.focus();
     else firstPreparationRef.current?.focus();
   }, [candidates.length, isOpen, sourceCount]);
+
+  useEffect(() => {
+    if (!isOpen || prefetchCandidateId === null) return;
+    const key = `${stemType}:${prefetchCandidateId}`;
+    if (prefetchedCandidateKeyRef.current === key) return;
+    prefetchedCandidateKeyRef.current = key;
+    onPrefetch(prefetchCandidateId);
+  }, [isOpen, onPrefetch, prefetchCandidateId, stemType]);
 
   useEffect(() => {
     if (!isOpen) return;

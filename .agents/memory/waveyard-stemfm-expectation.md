@@ -8,3 +8,15 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 **Why:** the user explicitly described these as expected product behavior, not optional enhancements or preset content, asked for quick and visible Stem.fm-like swapping, pitch choice, DJ-style interaction, provided mobile usability references, and named Apple Music backup/library use as a future focus. Browser verification showed that separately saved stem choices can receive full session responses in reverse order, so treating those snapshots as interchangeable loses real user state; cancellation also needs to cover the interval before a pending save returns. The user's laptop has also run out of disk space during builds, so pitch-mode changes should not add a second full-length PCM render.
 
 **How to apply:** Put clearly labelled isolate and donor-swap actions together on the active stems, and verify them on desktop and mobile. Keep independent channel saves usable, merge each response only into its own channel while preserving the latest transport state, and test with reversed save and donor responses plus real audio graphs. Show cancel immediately when a swap save begins; if canceled then, retain the user's intent and delete the just-saved swap before it can install. Keep pitch-lock consistent across original and swapped layers, use real audio-frequency checks at the speed limits, and keep the audible mix intact if preparation fails. Use analyzed beat-grid data for loops and keep cue/loop controls reachable in the player. Prioritize reliable replacement and a clear session-to-Studio workflow. Keep the Apple Music source/backup workflow in scope. Verify real end-to-end behavior rather than relying on labels, explanations, or a build alone.
+
+**Tempo-match latency constraint:** Do not trade BPM-match pitch preservation for a varispeed shortcut.
+
+**Why:** BPM correction and the user's session-speed pitch-follow/pitch-lock preference are independent behaviors; one rate-and-pitch mode can conflate them and silently change the sound.
+
+**How to apply:** Any streaming tempo-match optimization must verify BPM alignment and both speed pitch modes independently before replacing the existing path.
+
+**Device-sync privacy rule:** Cross-device sessions and library state must be isolated to the user's authenticated or cryptographically paired devices; the fixed local-owner identity is not an access-control boundary.
+
+**Why:** The user explicitly requires multi-device session sync while protecting personal privacy.
+
+**How to apply:** Establish real identity or secure device pairing before syncing. Never expose owner-scoped library or playback data through an unauthenticated shared endpoint.

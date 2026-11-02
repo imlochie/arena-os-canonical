@@ -228,6 +228,7 @@ type DeckApi = {
   hasStemChannels: boolean;
   applyStemVolumes: (volumes: Record<string, number>) => void;
   preloadStem: (recipientStemId: string, donorStemId: string, tempoStretchRatio: number, selectedAt?: number) => Promise<void>;
+  preloadStemAsset: (url: string) => Promise<void>;
   prepareHandoff: (
     target: SessionTrackItem,
     volumes: Record<string, number>,
@@ -568,6 +569,7 @@ function SessionDeck({
       applyStemVolumes,
       preloadStem: (recipientStemId, donorStemId, ratio, selectedAt) =>
         transport.preloadStem(recipientStemId, `/api/assets/${donorStemId}`, ratio, selectedAt),
+      preloadStemAsset: (url) => transport.preloadStemAsset(url),
       hasStemChannels: item?.playback?.kind === "stems" && (item?.stems ?? []).some((stem) => assetIds.includes(stem.id)),
       prepareHandoff,
     });
@@ -2385,6 +2387,29 @@ export default function SessionExperience({
     [activeDeck, currentItem, session],
   );
 
+  const prefetchLiveSwapAsset = useCallback((stemType: string, donorId: string) => {
+    if (session === null || currentItem === null) return;
+    const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
+    const existingStem = sessionDonor?.stems.find((stem) => stem.stemType === stemType);
+    const prefetch = (stemId: string) => {
+      void decksRef.current[activeDeck]?.preloadStemAsset(`/api/assets/${stemId}`).catch(() => undefined);
+    };
+    if (existingStem) {
+      prefetch(existingStem.id);
+      return;
+    }
+    void fetch(`/api/library/tracks/${donorId}`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const body = await response.json() as { track?: { stems?: SessionTrackItem["stems"] } };
+        return body.track?.stems?.find((stem) => stem.stemType === stemType)?.id ?? null;
+      })
+      .then((stemId) => { if (stemId) prefetch(stemId); })
+      .catch(() => {
+        // Prefetch is optional; selection still performs its normal fetch and reports failures.
+      });
+  }, [activeDeck, currentItem, session]);
+
   // ------------------------------------------------------------------ swaps
   const requestSwap = useCallback(
     async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
@@ -3328,6 +3353,7 @@ export default function SessionExperience({
           const source = libraryDonors.find((item) => item.id === donorId);
           if (source) void warmLiveSwap(stemType, { id: source.id, bpm: source.analysis?.bpm ?? null });
         }}
+        onPrefetch={(donorId) => prefetchLiveSwapAsset(stemType, donorId)}
         onChoose={(donorId) => {
           const donor = donors.find((item) => item.track.id === donorId);
           if (donor) {

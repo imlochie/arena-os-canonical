@@ -383,6 +383,9 @@ export function useStemTransport(
     if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
     return liveLayers.current!.preload(url, tempoStretchRatio, selectedAt);
   }, [ensureGraph]);
+  const preloadStemAsset = useCallback((url: string) => {
+    return liveLayers.current!.preloadAsset(url);
+  }, []);
   const setPlaybackRate = useCallback((value: number) => {
     const rate = normalizeSessionPlaybackRate(value);
     playbackRate.current = rate;
@@ -854,6 +857,7 @@ export function useStemTransport(
     register,
     replaceStem,
     preloadStem,
+    preloadStemAsset,
     cancelPendingStem,
     prepareChannels,
     playChannels,

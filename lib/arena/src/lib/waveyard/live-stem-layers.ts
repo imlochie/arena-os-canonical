@@ -62,6 +62,13 @@ type RecentStem = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type PrefetchedAsset = {
+  controller: AbortController;
+  promise: Promise<ArrayBuffer>;
+  timer: ReturnType<typeof setTimeout>;
+  byteLength: number;
+};
+
 type PendingSwap = {
   controller: AbortController;
   key: string;
@@ -80,6 +87,9 @@ const MAX_PREPARED_STEMS = 2;
 const RECENT_STEM_TTL_MS = 30_000;
 const MAX_RECENT_STEMS = 2;
 const MAX_RECENT_STEM_BYTES = 64 * 1024 * 1024;
+const PREFETCHED_ASSET_TTL_MS = 30_000;
+const MAX_PREFETCHED_ASSETS = 2;
+const MAX_PREFETCHED_ASSET_BYTES = 8 * 1024 * 1024;
 const WORKLET_READY_TIMEOUT_MS = 5_000;
 const workletModules = new WeakMap<AudioContext, Promise<void>>();
 
@@ -167,6 +177,8 @@ export class LiveStemLayers {
   private prepared = new Map<string, PreparedStem>();
   private recent = new Map<string, RecentStem>();
   private recentBytes = 0;
+  private prefetchedAssets = new Map<string, PrefetchedAsset>();
+  private prefetchedAssetBytes = 0;
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private playbackRate = 1;
@@ -440,6 +452,81 @@ export class LiveStemLayers {
     this.recentBytes -= recent.bytes;
   }
 
+  private discardPrefetchedAsset(url: string, abort = false) {
+    const asset = this.prefetchedAssets.get(url);
+    if (!asset) return;
+    this.prefetchedAssets.delete(url);
+    clearTimeout(asset.timer);
+    this.prefetchedAssetBytes -= asset.byteLength;
+    if (abort) asset.controller.abort();
+  }
+
+  private async fetchAssetBytes(url: string, signal: AbortSignal) {
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
+    const bytes = await response.arrayBuffer();
+    if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
+    return bytes;
+  }
+
+  private async readAssetBytes(url: string, signal: AbortSignal) {
+    const prefetched = this.prefetchedAssets.get(url);
+    if (prefetched) {
+      // Refresh LRU order but keep the original expiry; repeated reads must not
+      // pin compressed audio in memory indefinitely.
+      this.prefetchedAssets.delete(url);
+      this.prefetchedAssets.set(url, prefetched);
+      try {
+        const bytes = await prefetched.promise;
+        if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
+        // decodeAudioData may detach the input, so cached bytes need a private copy.
+        return bytes.slice(0);
+      } catch (error) {
+        if (signal.aborted) throw error;
+      }
+    }
+    return this.fetchAssetBytes(url, signal);
+  }
+
+  /** Download compressed bytes only for a likely next donor. */
+  preloadAsset(url: string) {
+    const existing = this.prefetchedAssets.get(url);
+    if (existing) return existing.promise.then(() => undefined);
+
+    while (this.prefetchedAssets.size >= MAX_PREFETCHED_ASSETS) {
+      const oldestUrl = this.prefetchedAssets.keys().next().value as string | undefined;
+      if (oldestUrl === undefined) break;
+      this.discardPrefetchedAsset(oldestUrl, true);
+    }
+
+    const controller = new AbortController();
+    let entry!: PrefetchedAsset;
+    const timer = setTimeout(() => {
+      if (this.prefetchedAssets.get(url) === entry) this.discardPrefetchedAsset(url, true);
+    }, PREFETCHED_ASSET_TTL_MS);
+    const promise = this.fetchAssetBytes(url, controller.signal).then((bytes) => {
+      if (this.prefetchedAssets.get(url) !== entry) return bytes;
+      if (bytes.byteLength > MAX_PREFETCHED_ASSET_BYTES) {
+        this.discardPrefetchedAsset(url);
+        return bytes;
+      }
+      while (this.prefetchedAssetBytes + bytes.byteLength > MAX_PREFETCHED_ASSET_BYTES) {
+        const oldestUrl = [...this.prefetchedAssets.keys()].find((candidate) => candidate !== url);
+        if (oldestUrl === undefined) break;
+        this.discardPrefetchedAsset(oldestUrl, true);
+      }
+      entry.byteLength = bytes.byteLength;
+      this.prefetchedAssetBytes += bytes.byteLength;
+      return bytes;
+    }).catch((error: unknown) => {
+      if (this.prefetchedAssets.get(url) === entry) this.discardPrefetchedAsset(url);
+      throw error;
+    });
+    entry = { controller, promise, timer, byteLength: 0 };
+    this.prefetchedAssets.set(url, entry);
+    return promise.then(() => undefined);
+  }
+
   private rememberRecent(layer: Layer) {
     const key = this.preparedKey(layer.url, layer.tempoStretchRatio);
     this.discardRecent(key);
@@ -504,9 +591,7 @@ export class LiveStemLayers {
     selectedAt: number,
   ): Promise<PreparedAudio> {
     const downloadStartedAt = performance.now();
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
-    const bytes = await response.arrayBuffer();
+    const bytes = await this.readAssetBytes(url, signal);
     const downloadMs = performance.now() - downloadStartedAt;
     // decodeAudioData may detach its input buffer, so keep the transfer size
     // before handing the bytes to the browser decoder.
@@ -727,6 +812,7 @@ export class LiveStemLayers {
     for (const id of new Set([...this.layers.keys(), ...this.pending.keys()])) this.remove(id);
     for (const key of this.prepared.keys()) this.discardPrepared(key, true);
     for (const key of this.recent.keys()) this.discardRecent(key);
+    for (const key of this.prefetchedAssets.keys()) this.discardPrefetchedAsset(key, true);
     for (const layer of this.retired) layer.input.disconnect();
     this.retired.clear();
     for (const timer of this.timers) clearTimeout(timer);

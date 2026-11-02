@@ -1457,9 +1457,17 @@ try {
     }, { timeout: 10_000 });
     if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
     const pickerTrigger = viewport === "mobile" ? "quick-open-live-swap-vocals" : "open-live-swap-vocals";
+    await page.evaluate(() => { window.liveStemAssetFetchTrace.length = 0; });
     await current.getByTestId(pickerTrigger).click();
     const candidate = current.getByTestId(`live-swap-candidate-vocals-${donorId}`);
     await candidate.waitFor();
+    const donorAssetPath = `/api/assets/${donorId}-vocals`;
+    if (viewport === "mobile" && donorId === "b") {
+      await page.waitForFunction(path => window.liveStemAssetFetchTrace.includes(path), donorAssetPath);
+      assert.equal(await page.evaluate(path =>
+        window.liveStemAssetFetchTrace.filter(request => request === path).length,
+      donorAssetPath), 1, "the second mobile swap choice is fetched before it is tapped");
+    }
     const before = await page.evaluate(() => ({
       buffers: window.audioProbe.buffers.length,
       timings: window.liveStemTimings.length,
@@ -1517,6 +1525,11 @@ try {
         observedSelectionToAudibleMs: window.liveStemObservedAudibleAt - window.liveStemSelectionStart,
       };
     }, { timingIndex: before.timings });
+    if (viewport === "mobile" && donorId === "b") {
+      assert.equal(await page.evaluate(path =>
+        window.liveStemAssetFetchTrace.filter(request => request === path).length,
+      donorAssetPath), 1, "choosing the prefetched mobile donor reuses its one compressed download");
+    }
     assert.equal(measurement.tempoStretchRatio, expectedRatio,
       `the ${viewport} scenario must use the intended tempo mode: ${JSON.stringify(measurement)}`);
     for (const field of ["selectionToAudibleMs", "observedSelectionToAudibleMs", "downloadMs", "decodeMs", "tempoMatchMs"]) {
@@ -2003,16 +2016,16 @@ try {
     Number.isFinite(source.recipientTimeAtStart) && loopOffsetError(source.offset, source.recipientTimeAtStart, source.duration) < 0.15),
     `all four donors must follow original clock modulo duration: ${JSON.stringify(donorResume)}`);
   const buffersBeforeExternalSwap = await page.evaluate(() => window.audioProbe.buffers.length);
-  await current.getByTestId("open-live-swap-vocals").click();
-  const unknownAnalysisDonor = current.getByTestId("live-swap-candidate-vocals-d");
-  assert.match(await unknownAnalysisDonor.getAttribute("aria-label"), /BPM unknown; Key unknown/,
-    "the picker labels absent donor analysis instead of implying compatibility");
   liveSwapRequestOrder.length = 0;
   await page.evaluate(() => { window.liveAssetFetchTrace.length = 0; });
   let releaseExternalDonorSave;
   externalDonorSaveGate = new Promise(resolve => { releaseExternalDonorSave = resolve; });
   const externalSaveStarted = new Promise(resolve => { signalExternalDonorSave = resolve; });
   const externalWarmStarted = new Promise(resolve => { signalExternalDonorWarm = resolve; });
+  await current.getByTestId("open-live-swap-vocals").click();
+  const unknownAnalysisDonor = current.getByTestId("live-swap-candidate-vocals-d");
+  assert.match(await unknownAnalysisDonor.getAttribute("aria-label"), /BPM unknown; Key unknown/,
+    "the picker labels absent donor analysis instead of implying compatibility");
   await unknownAnalysisDonor.click();
   try {
     await waitForSignal(externalSaveStarted, "the external donor save request");
