@@ -10,7 +10,8 @@ export interface WaveyardTransportSnapshot {
   trackId: string | null;
   positionSeconds: number;
   playing: boolean;
-  action: "state" | "seek";
+  action: "state" | "seek" | "speed";
+  playbackRate?: number;
   priority: "control" | "heartbeat";
   clock: number;
   updatedAt: number;
@@ -72,7 +73,9 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
       || !Number.isFinite(value.positionSeconds)
       || value.positionSeconds < 0
       || typeof value.playing !== "boolean"
-      || (value.action !== "state" && value.action !== "seek")
+      || (value.action !== "state" && value.action !== "seek" && value.action !== "speed")
+      || (value.playbackRate !== undefined && (typeof value.playbackRate !== "number" || !Number.isFinite(value.playbackRate)))
+      || (value.action === "speed" && typeof value.playbackRate !== "number")
       || (value.priority !== "control" && value.priority !== "heartbeat")
       || typeof value.clock !== "number"
       || !Number.isSafeInteger(value.clock)
@@ -86,6 +89,7 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
       positionSeconds: value.positionSeconds,
       playing: value.playing,
       action: value.action,
+      ...(typeof value.playbackRate === "number" ? { playbackRate: value.playbackRate } : {}),
       priority: value.priority,
       clock: value.clock,
       updatedAt: value.updatedAt,

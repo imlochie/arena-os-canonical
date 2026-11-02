@@ -30,6 +30,7 @@ const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
 const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
+const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
 let donorSwapSequence = 0;
 let failNextDonorRestore = false;
 const donorRestoreRequests = [];
@@ -49,6 +50,39 @@ function waitForSignal(signal, label, timeoutMs = 15_000) {
       error => { clearTimeout(timer); reject(error); },
     );
   });
+}
+async function setSessionRateInPage(targetPage, rate) {
+  await targetPage.getByTestId("session-playback-speed").evaluate((element, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(element, String(value));
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, rate);
+  await targetPage.waitForFunction(value =>
+    document.querySelector('[data-testid="session-speed-value"]')?.textContent === `${Number(value).toFixed(2)}×`,
+  rate);
+}
+async function waitForSessionRateInPage(targetPage, rate, bpm) {
+  try {
+    await targetPage.waitForFunction(({ expectedRate, expectedBpm }) => {
+      const slider = document.querySelector('[data-testid="session-playback-speed"]');
+      const text = slider?.getAttribute("aria-valuetext") ?? "";
+      return slider instanceof HTMLInputElement
+        && Math.abs(Number(slider.value) - expectedRate) < 0.001
+        && text.includes(`${expectedBpm} BPM`);
+    }, { expectedRate: rate, expectedBpm: bpm }, { timeout: 8_000 });
+  } catch (error) {
+    const state = await targetPage.evaluate(() => ({
+      current: document.querySelector('[data-role="current"]')?.textContent?.trim(),
+      speed: document.querySelector('[data-testid="session-playback-speed"]')?.getAttribute("aria-valuetext"),
+      outputs: [...document.querySelectorAll('[data-testid="session-speed-value"]')].map(node => node.textContent),
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.paused),
+      rates: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.playbackRate),
+      messages: window.audioProbe.transportMessages.slice(-8),
+    }));
+    console.error("SESSION_RATE_TIMEOUT", JSON.stringify({ rate, bpm, state }));
+    throw error;
+  }
 }
 function wav(seconds, frequency) {
   const n = 22050 * seconds, data = Buffer.alloc(44 + n * 2);
@@ -186,8 +220,17 @@ try {
   await context.addInitScript(({ fixtureSessionId, probeAutoFades }) => {
     window.audioProbe = {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [],
-      workletLoads: [], workletSeeks: [],
+      workletLoads: [], workletSeeks: [], transportMessages: [],
     };
+    if (window.BroadcastChannel) {
+      const nativePostMessage = window.BroadcastChannel.prototype.postMessage;
+      window.BroadcastChannel.prototype.postMessage = function (message, ...args) {
+        if (this.name === "waveyard:queue-sync" && message?.transport) {
+          window.audioProbe.transportMessages.push(JSON.parse(JSON.stringify(message)));
+        }
+        return nativePostMessage.call(this, message, ...args);
+      };
+    }
     window.liveStemTimings = [];
     window.liveStemSelectionStart = null;
     window.liveStemObservedAudibleAt = null;
@@ -1700,7 +1743,103 @@ try {
   await firstPage.getByLabel("Seek current track", { exact: true }).press("Home");
   await secondPage.waitForFunction(() => document.querySelector('[aria-label="Seek current track"]')?.value === "0");
   assert.equal(await firstPage.getByTestId("session-play").getAttribute("aria-pressed"), "true", "remote seek does not pause the active deck");
+
+  await setSessionRateInPage(firstPage, 1.1);
+  await Promise.all([
+    waitForSessionRateInPage(firstPage, 1.1, 132),
+    waitForSessionRateInPage(secondPage, 1.1, 132),
+  ]);
+  let speedOwnership = await Promise.all([
+    firstPage.evaluate(() => ({
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => !audio.paused),
+      rates: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.playbackRate),
+    })),
+    secondPage.evaluate(() => ({
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => !audio.paused),
+      rates: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.playbackRate),
+    })),
+  ]);
+  assert.ok(speedOwnership[0].playing.length === 4 && speedOwnership[0].playing.every(Boolean),
+    "the active tab keeps all four original stems audible after its speed change");
+  assert.ok(speedOwnership[1].playing.length === 4 && speedOwnership[1].playing.every(value => !value),
+    "the mirror tab changes speed without starting a second audio engine");
+  assert.ok([...speedOwnership[0].rates, ...speedOwnership[1].rates].every(rate => Math.abs(rate - 1.1) < 0.001),
+    "both tabs apply the owner-tab speed to every original stem");
+
+  await setSessionRateInPage(secondPage, 0.8);
+  await Promise.all([
+    waitForSessionRateInPage(firstPage, 0.8, 96),
+    waitForSessionRateInPage(secondPage, 0.8, 96),
+  ]);
+  speedOwnership = await Promise.all([
+    firstPage.evaluate(() => ({
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => !audio.paused),
+      rates: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.playbackRate),
+    })),
+    secondPage.evaluate(() => ({
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => !audio.paused),
+      rates: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.playbackRate),
+    })),
+  ]);
+  assert.ok(speedOwnership[0].playing.every(Boolean) &&
+    speedOwnership[1].playing.every(value => !value),
+  "a mirror-tab speed command updates the audible owner without duplicating playback");
+  assert.ok([...speedOwnership[0].rates, ...speedOwnership[1].rates].every(rate => Math.abs(rate - 0.8) < 0.001),
+    "the requested 0.80× rate reaches every original stem in both tabs");
+
+  const ownerSpeedControl = await firstPage.evaluate(rate =>
+    window.audioProbe.transportMessages
+      .filter(message => message.transport?.action === "speed" &&
+        Math.abs(message.transport.playbackRate - rate) < 0.001 &&
+        message.transport.priority === "control")
+      .at(-1) ?? null,
+  0.8);
+  assert.ok(ownerSpeedControl, "the audible owner republishes a mirror-requested speed control");
+  await secondPage.evaluate(control => {
+    const stale = JSON.parse(JSON.stringify(control));
+    stale.id = `stale-heartbeat-${crypto.randomUUID()}`;
+    stale.transport = {
+      ...stale.transport,
+      action: "state",
+      priority: "heartbeat",
+      playbackRate: 1,
+      updatedAt: stale.transport.updatedAt - 1,
+    };
+    const channel = new BroadcastChannel("waveyard:queue-sync");
+    channel.postMessage(stale);
+    channel.close();
+  }, ownerSpeedControl);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  await Promise.all([
+    waitForSessionRateInPage(firstPage, 0.8, 96),
+    waitForSessionRateInPage(secondPage, 0.8, 96),
+  ]);
+  console.log("PASS: speed changes from either tab update both UIs while only the owner plays; stale heartbeat is ignored");
+
   await toggle();
+  await page.getByRole("button", { name: "Next track", exact: true }).click();
+  await Promise.all([
+    page.locator('[data-role="current"]').getByRole("heading", { name: "Test b", exact: true }).waitFor(),
+    secondPage.locator('[data-role="current"]').getByRole("heading", { name: "Test b", exact: true }).waitFor(),
+  ]);
+  await Promise.all([
+    waitForSessionRateInPage(page, 0.8, 99),
+    waitForSessionRateInPage(secondPage, 0.8, 99),
+  ]);
+  await page.getByRole("button", { name: "Previous track", exact: true }).click();
+  await Promise.all([
+    page.locator('[data-role="current"]').getByRole("heading", { name: "Test a", exact: true }).waitFor(),
+    secondPage.locator('[data-role="current"]').getByRole("heading", { name: "Test a", exact: true }).waitFor(),
+  ]);
+  await Promise.all([
+    waitForSessionRateInPage(page, 0.8, 96),
+    waitForSessionRateInPage(secondPage, 0.8, 96),
+  ]);
+  await setSessionRateInPage(page, 1);
+  await Promise.all([
+    waitForSessionRateInPage(page, 1, 120),
+    waitForSessionRateInPage(secondPage, 1, 120),
+  ]);
 
   const quickVocalsPad = current.getByTestId("quick-isolate-vocals");
   await quickVocalsPad.waitFor();
@@ -1956,6 +2095,47 @@ try {
   assert.equal(await page.evaluate(() =>
     window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
   ), 1, "selecting the warmed donor reuses its in-flight or decoded buffer");
+  await setSessionRateInPage(secondPage, 0.9);
+  await Promise.all([
+    waitForSessionRateInPage(page, 0.9, 108),
+    waitForSessionRateInPage(secondPage, 0.9, 108),
+  ]);
+  await page.waitForFunction(rate => {
+    const donor = [...window.audioProbe.buffers].reverse()
+      .find(source => source.buffer && Math.abs(source.buffer.duration - 12) < 0.05);
+    return donor !== undefined && Math.abs(donor.playbackRate.value - rate) < 0.001;
+  }, 0.9);
+  const donorRateOwnership = await Promise.all([
+    page.evaluate(() => ({
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => !audio.paused),
+      rates: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.playbackRate),
+    })),
+    secondPage.evaluate(() => ({
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => !audio.paused),
+      rates: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.playbackRate),
+    })),
+  ]);
+  assert.ok(donorRateOwnership[0].playing.some(Boolean) &&
+    donorRateOwnership[1].playing.every(value => !value),
+  "speed changes reach the live donor without starting playback in the mirror tab");
+  assert.ok([...donorRateOwnership[0].rates, ...donorRateOwnership[1].rates]
+    .every(rate => Math.abs(rate - 0.9) < 0.001),
+  "the live donor and original media stems share the same synchronized playback rate");
+  await setSessionRateInPage(secondPage, 1);
+  await Promise.all([
+    waitForSessionRateInPage(page, 1, 120),
+    waitForSessionRateInPage(secondPage, 1, 120),
+    page.waitForFunction(() => {
+      const donor = [...window.audioProbe.buffers].reverse()
+        .find(source => source.buffer && Math.abs(source.buffer.duration - 12) < 0.05);
+      return donor !== undefined && Math.abs(donor.playbackRate.value - 1) < 0.001;
+    }),
+  ]);
+  console.log("PASS: mirror-tab speed updates original stems and live donors without duplicate audio");
+  if (crossTabSpeedOnly) {
+    await browser.close();
+    process.exit(0);
+  }
   console.log("PASS: focusing or hovering warms one donor silently, then reuses it for the live swap");
 
   session.positionSeconds = 0;

@@ -1162,6 +1162,7 @@ export default function SessionExperience({
   const [temporaryIsolation, setTemporaryIsolation] = useState<TemporaryIsolation | null>(null);
   const [masterLevel, setMasterLevel] = useState(1);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const playbackRateRef = useRef(playbackRate);
   const [pitchModesAvailable] = useState(() => supportsSessionPitchModes());
   const [pitchPreserving, setPitchPreserving] = useState(false);
   const [pitchLockBusy, setPitchLockBusy] = useState(false);
@@ -1431,13 +1432,15 @@ export default function SessionExperience({
     trackId: string | null;
     positionSeconds: number;
     playing: boolean;
-    action: "state" | "seek";
+    action: "state" | "seek" | "speed";
+    playbackRate?: number;
     priority?: "control" | "heartbeat";
   }) => {
     if (applyingRemoteTransportRef.current) return null;
     const published = publishWaveyardTransportChange({
       sessionId,
       ...snapshot,
+      playbackRate: snapshot.playbackRate ?? playbackRateRef.current,
       priority: snapshot.priority ?? "control",
     });
     if (published !== null && published.priority === "control") {
@@ -1450,6 +1453,27 @@ export default function SessionExperience({
     }
     return published;
   }, [sessionId]);
+
+  const changePlaybackRate = useCallback((value: number) => {
+    const rate = normalizeSessionPlaybackRate(value);
+    if (Math.abs(rate - playbackRateRef.current) < 0.001) return;
+    playbackRateRef.current = rate;
+    setPlaybackRate(rate);
+    for (const deck of decksRef.current) deck?.transport.setPlaybackRate(rate);
+
+    const activeApi = decksRef.current[activeDeckRef.current];
+    const remote = remoteTransportRef.current;
+    const useRemoteState = activeApi?.transport.playing !== true && remote?.sessionId === sessionId;
+    publishTransport({
+      trackId: useRemoteState ? remote.trackId : currentIdRef.current,
+      positionSeconds: useRemoteState
+        ? remote.positionSeconds
+        : activeApi?.transport.position ?? 0,
+      playing: useRemoteState ? remote.playing : activeApi?.transport.playing ?? false,
+      action: "speed",
+      playbackRate: rate,
+    });
+  }, [publishTransport, sessionId]);
 
   const clearRemoteTransport = useCallback(() => {
     remoteTransportRef.current = null;
@@ -2062,6 +2086,28 @@ export default function SessionExperience({
       priority: incoming.priority,
       updatedAt: incoming.updatedAt,
     };
+    if (incoming.playbackRate !== undefined) {
+      const rate = normalizeSessionPlaybackRate(incoming.playbackRate);
+      playbackRateRef.current = rate;
+      setPlaybackRate(rate);
+      for (const deck of decksRef.current) deck?.transport.setPlaybackRate(rate);
+    }
+    if (incoming.action === "speed") {
+      // A mirror can request a speed change, but the tab that currently owns
+      // audible playback re-publishes it so future progress heartbeats still
+      // come from the playback owner rather than the mirror that requested it.
+      const activeApi = decksRef.current[activeDeckRef.current];
+      if (activeApi?.transport.playing && incoming.playbackRate !== undefined) {
+        publishTransport({
+          trackId: currentIdRef.current,
+          positionSeconds: activeApi.transport.position,
+          playing: true,
+          action: "speed",
+          playbackRate: playbackRateRef.current,
+        });
+      }
+      return;
+    }
     remoteTransportRef.current = incoming;
     setRemoteTransport(incoming);
     if (fadeRef.current !== null) abortTransition("The other Waveyard tab changed playback.");
@@ -2096,7 +2142,7 @@ export default function SessionExperience({
       return next;
     });
     if (!incoming.playing) void persistState({ id: incoming.trackId, position: incoming.positionSeconds });
-  }, [sessionId, deckItems, abortTransition, persistState]);
+  }, [sessionId, deckItems, abortTransition, persistState, publishTransport]);
 
   useEffect(() => {
     if (remoteTransport === null || remoteTransport.sessionId !== sessionId) return;
@@ -3442,7 +3488,7 @@ export default function SessionExperience({
         ? transitions[item.id]?.performance ?? item.transition.performance ?? defaultPerformance()
         : defaultPerformance(),
       playbackRate,
-      onPlaybackRateChange: (value: number) => setPlaybackRate(normalizeSessionPlaybackRate(value)),
+      onPlaybackRateChange: changePlaybackRate,
       pitchModesAvailable,
       pitchPreserving,
       pitchLockBusy,
