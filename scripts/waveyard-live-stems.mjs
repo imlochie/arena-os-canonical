@@ -2027,8 +2027,13 @@ try {
   await secondPage.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
   await primaryPlayControl.click();
   await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+  // The hidden tab's requestAnimationFrame polling is suspended in Chromium.
+  // Bring it forward after the cross-tab message arrives before asserting its
+  // rendered control state; this tests transport sync rather than RAF throttling.
+  await secondPage.bringToFront();
   await secondPage.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
   await secondPage.getByTestId("session-play").click();
+  await page.bringToFront();
   await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
   await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].every(element => element.paused));
   assert.ok(await page.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.paused)),

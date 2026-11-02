@@ -22,9 +22,12 @@ type Channel = {
 type Layer = {
   url: string;
   tempoStretchRatio: number;
-  buffer: AudioBuffer;
+  buffer: AudioBuffer | null;
+  duration: number;
+  sampleRate: number;
   input: GainNode;
-  source: AudioBufferSourceNode | null;
+  source: AudioBufferSourceNode | AudioWorkletNode | null;
+  sourceMode: "buffer" | "worklet" | null;
   timing: PreparedAudio | null;
 };
 
@@ -77,6 +80,20 @@ const MAX_PREPARED_STEMS = 2;
 const RECENT_STEM_TTL_MS = 30_000;
 const MAX_RECENT_STEMS = 2;
 const MAX_RECENT_STEM_BYTES = 64 * 1024 * 1024;
+const WORKLET_READY_TIMEOUT_MS = 5_000;
+const workletModules = new WeakMap<AudioContext, Promise<void>>();
+
+function ensureLiveStemWorklet(context: AudioContext) {
+  if (!context.audioWorklet || typeof AudioWorkletNode === "undefined") {
+    return Promise.reject(new Error("Pitch lock is unavailable in this browser."));
+  }
+  let loading = workletModules.get(context);
+  if (!loading) {
+    loading = context.audioWorklet.addModule(new URL("./live-stem-worklet.ts", import.meta.url));
+    workletModules.set(context, loading);
+  }
+  return loading;
+}
 
 const stretchBufferInWorker: BufferStretcher = (context, buffer, ratio, signal) => {
   if (typeof Worker === "undefined") {
@@ -147,6 +164,7 @@ export class LiveStemLayers {
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private playbackRate = 1;
+  private pitchPreserving = false;
 
   constructor(
     private context: () => AudioContext,
@@ -161,9 +179,82 @@ export class LiveStemLayers {
     if (!layers.some((layer) => layer.source !== null)) return;
     const now = this.context().currentTime;
     for (const layer of layers) {
-      const parameter = layer.source?.playbackRate;
-      if (parameter) parameter.setValueAtTime(this.playbackRate, now);
+      if (layer.sourceMode === "buffer" && layer.source) {
+        (layer.source as AudioBufferSourceNode).playbackRate.setValueAtTime(this.playbackRate, now);
+      } else if (layer.sourceMode === "worklet" && layer.source) {
+        (layer.source as AudioWorkletNode).port.postMessage({ type: "rate", value: this.playbackRate });
+      }
     }
+  }
+
+  async setPitchPreserving(enabled: boolean) {
+    if (this.pitchPreserving === enabled) return;
+    if (!enabled) {
+      this.pitchPreserving = false;
+      for (const layer of this.layers.values()) {
+        if (layer.sourceMode === "worklet") layer.source?.port.postMessage({ type: "pitch", enabled: false });
+      }
+      return;
+    }
+
+    const context = this.context();
+    await ensureLiveStemWorklet(context);
+    const migrated: Array<{ layer: Layer; source: AudioWorkletNode }> = [];
+    for (const [id, layer] of this.layers) {
+      if (layer.sourceMode === "worklet" && layer.source) {
+        migrated.push({ layer, source: layer.source as AudioWorkletNode });
+        continue;
+      }
+      const channel = this.channel(id);
+      if (!channel || !layer.buffer) continue;
+      const media = channel.source.mediaElement;
+      const offset = layer.duration > 0
+        ? (media.currentTime % layer.duration) * layer.sampleRate
+        : 0;
+      const nextInput = context.createGain();
+      nextInput.gain.value = 0;
+      nextInput.connect(channel.gain);
+      let nextSource: AudioWorkletNode;
+      try {
+        nextSource = await this.createWorkletSource(
+          layer.buffer,
+          nextInput,
+          offset,
+          !media.paused && !media.ended,
+          false,
+        );
+      } catch (error) {
+        nextInput.disconnect();
+        for (const item of migrated) item.source.port.postMessage({ type: "pitch", enabled: false });
+        throw error;
+      }
+
+      const previousSource = layer.source;
+      const previousMode = layer.sourceMode;
+      const previousInput = layer.input;
+      const now = context.currentTime;
+      this.ramp(nextInput, 1);
+      this.ramp(previousInput, 0);
+      layer.input = nextInput;
+      layer.source = nextSource;
+      layer.sourceMode = "worklet";
+      migrated.push({ layer, source: nextSource });
+      const timer = setTimeout(() => {
+        this.stopEngine(previousSource, previousMode);
+        previousInput.disconnect();
+        this.timers.delete(timer);
+      }, 80);
+      this.timers.add(timer);
+      // Let the first replacement become audible before transferring the next
+      // donor, keeping the temporary PCM copy bounded to one stem at a time.
+      await new Promise((resolve) => setTimeout(resolve, 45));
+      if (!layer.buffer) continue;
+      this.discardRecent(this.preparedKey(layer.url, layer.tempoStretchRatio));
+      layer.buffer = null;
+    }
+
+    this.pitchPreserving = true;
+    for (const item of migrated) item.source.port.postMessage({ type: "pitch", enabled: true });
   }
 
   private ramp(gain: GainNode, value: number) {
@@ -177,11 +268,85 @@ export class LiveStemLayers {
     gain.gain.linearRampToValueAtTime(value, now + 0.04);
   }
 
+  private stopEngine(
+    source: AudioBufferSourceNode | AudioWorkletNode | null,
+    mode: "buffer" | "worklet" | null,
+  ) {
+    if (!source) return;
+    if (mode === "buffer") {
+      try { (source as AudioBufferSourceNode).stop(); } catch { /* already stopped */ }
+    } else if (mode === "worklet") {
+      const worklet = source as AudioWorkletNode;
+      worklet.port.postMessage({ type: "dispose" });
+      worklet.port.close();
+    }
+    source.disconnect();
+  }
+
   private stop(layer: Layer) {
-    if (layer.source) {
-      layer.source.stop();
-      layer.source.disconnect();
-      layer.source = null;
+    this.stopEngine(layer.source, layer.sourceMode);
+    layer.source = null;
+    layer.sourceMode = null;
+  }
+
+  private pauseLayer(layer: Layer) {
+    if (!layer.source) return;
+    if (layer.sourceMode === "worklet") {
+      (layer.source as AudioWorkletNode).port.postMessage({ type: "pause" });
+      return;
+    }
+    this.stop(layer);
+  }
+
+  private async createWorkletSource(
+    buffer: AudioBuffer,
+    destination: GainNode,
+    startFrame: number,
+    playing: boolean,
+    pitchPreserving: boolean,
+  ) {
+    const context = this.context();
+    await ensureLiveStemWorklet(context);
+    const node = new AudioWorkletNode(context, "waveyard-live-stem", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+    node.connect(destination);
+    const channels = [
+      Float32Array.from(buffer.getChannelData(0)),
+      buffer.numberOfChannels > 1
+        ? Float32Array.from(buffer.getChannelData(1))
+        : Float32Array.from(buffer.getChannelData(0)),
+    ];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => finish(new Error("Pitch lock did not start in time.")), WORKLET_READY_TIMEOUT_MS);
+        const finish = (error?: Error) => {
+          clearTimeout(timer);
+          node.port.onmessage = null;
+          if (error) reject(error);
+          else resolve();
+        };
+        node.port.onmessage = (event: MessageEvent<{ type?: string; message?: string }>) => {
+          if (event.data.type === "ready") finish();
+          else if (event.data.type === "error") finish(new Error(event.data.message ?? "The live pitch processor failed."));
+        };
+        node.port.postMessage({
+          type: "load",
+          channels: channels.map((channel) => channel.buffer),
+          startFrame,
+          rate: this.playbackRate,
+          pitchPreserving,
+          playing,
+        }, channels.map((channel) => channel.buffer));
+      });
+      return node;
+    } catch (error) {
+      node.port.postMessage({ type: "dispose" });
+      node.port.close();
+      node.disconnect();
+      throw error;
     }
   }
 
@@ -198,10 +363,33 @@ export class LiveStemLayers {
     this.timers.add(timer);
   }
 
-  private start(layer: Layer, channel: Channel) {
+  private async start(layer: Layer, channel: Channel) {
+    if (layer.sourceMode === "worklet" && layer.source) {
+      const media = channel.source.mediaElement;
+      const worklet = layer.source as AudioWorkletNode;
+      worklet.port.postMessage({ type: "rate", value: this.playbackRate });
+      worklet.port.postMessage({
+        type: "seek",
+        frame: layer.duration > 0 ? (media.currentTime % layer.duration) * layer.sampleRate : 0,
+      });
+      worklet.port.postMessage({ type: media.paused || media.ended ? "pause" : "play" });
+      return;
+    }
     this.stop(layer);
     const media = channel.source.mediaElement;
     if (media.paused || media.ended) return;
+    if (!layer.buffer) throw new Error("The prepared live stem audio is no longer available.");
+    if (this.pitchPreserving) {
+      const offset = layer.duration > 0
+        ? (media.currentTime % layer.duration) * layer.sampleRate
+        : 0;
+      const source = await this.createWorkletSource(layer.buffer, layer.input, offset, true, true);
+      layer.source = source;
+      layer.sourceMode = "worklet";
+      this.discardRecent(this.preparedKey(layer.url, layer.tempoStretchRatio));
+      layer.buffer = null;
+      return;
+    }
     const source = this.context().createBufferSource();
     source.buffer = layer.buffer;
     source.playbackRate.setValueAtTime(this.playbackRate, this.context().currentTime);
@@ -210,6 +398,7 @@ export class LiveStemLayers {
     source.connect(layer.input);
     source.start(0, media.currentTime % layer.buffer.duration);
     layer.source = source;
+    layer.sourceMode = "buffer";
   }
 
   private reportAudible(layer: Layer) {
