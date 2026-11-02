@@ -33,7 +33,8 @@ function summarize(values) {
 export function assertQualityReport(run) {
   const evaluation = run.result.referenceEvaluation;
   const metrics = evaluation?.metrics;
-  assert.ok(metrics, `${run.mode} run must include reference-based quality metrics.`);
+  if (!evaluation && !metrics) return null;
+  assert.ok(metrics, `${run.mode} run has incomplete reference-based quality metrics.`);
   assert.ok(
     stems.every((stem) =>
       typeof evaluation.referenceSha256?.[stem] === "string" &&
@@ -57,6 +58,12 @@ export function assertQualityReport(run) {
 
 export function summarizePairedQuality(runs) {
   assert.ok(runs.length > 0 && runs.length % modes.length === 0, "Quality runs must form complete pairs.");
+  const hasReferenceEvaluation = runs.map((run) => Boolean(run.result.referenceEvaluation));
+  assert.ok(
+    hasReferenceEvaluation.every(Boolean) || hasReferenceEvaluation.every((included) => !included),
+    "Reference-based quality data must be present for every paired run or none.",
+  );
+  if (hasReferenceEvaluation.every((included) => !included)) return null;
   const byModeAndRepetition = new Map();
   for (const run of runs) {
     assert.ok(modes.includes(run.mode), `Unexpected execution mode: ${run.mode}.`);

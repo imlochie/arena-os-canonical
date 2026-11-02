@@ -67,6 +67,20 @@ test("quality reports require checksummed references and finite objective metric
   assert.throws(() => assertQualityReport(invalidMetric), /finite drums.siSdrDb/);
 });
 
+test("paired CPU listening comparisons can omit reference-based metrics", () => {
+  const runs = ["sequential", "parallel"].map((mode) => ({
+    mode,
+    repetition: 1,
+    result: {},
+  }));
+  assert.equal(summarizePairedQuality(runs), null);
+  assert.equal(assertQualityReport(runs[0]), null);
+  assert.throws(
+    () => summarizePairedQuality([runs[0], run("parallel", 1)]),
+    /present for every paired run or none/,
+  );
+});
+
 test("paired quality summaries reject incomplete or duplicate run pairs", () => {
   assert.throws(
     () => summarizePairedQuality([run("sequential", 1), run("parallel", 1), run("sequential", 2)]),

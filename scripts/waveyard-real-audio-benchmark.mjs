@@ -5,6 +5,7 @@ import { cpus, release, tmpdir, type as osType } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertQualityReport, summarizePairedQuality } from "./waveyard-quality-comparison.mjs";
+import { createBlindListeningKit } from "./waveyard-blind-listening.mjs";
 import {
   summarize,
   summarizeModelStages,
@@ -26,14 +27,14 @@ const reportPath = resolve(
   process.env.WAVEYARD_REAL_AUDIO_REPORT?.trim() ||
     "generated-artifacts/waveyard-real-audio-benchmark.json",
 );
+const listeningDirectory = resolve(
+  process.env.WAVEYARD_REAL_AUDIO_LISTENING_DIR?.trim() ||
+    join(dirname(reportPath), `${basename(reportPath, ".json")}-blind-listening`),
+);
 const repetitionText = process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS?.trim() || "3";
 const repetitions = Number(repetitionText);
 
 assert.ok(inputPath, "Set WAVEYARD_REAL_AUDIO_INPUT to the audio file for the paired benchmark.");
-assert.ok(
-  referenceManifestPath,
-  "Set WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST to compare objective separation quality.",
-);
 assert.ok(
   Number.isInteger(repetitions) && repetitions >= 2 && repetitions <= 10,
   "WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS must be an integer from 2 to 10.",
@@ -50,6 +51,8 @@ const runs = [];
 async function measure(mode, repetition, order) {
   const reportFile = join(intermediateDirectory, `${repetition}-${mode}.json`);
   const configuration = settings[mode];
+  const auditionDirectory =
+    repetition === 1 ? join(intermediateDirectory, "blind-listening-source", mode) : undefined;
   const env = {
     ...process.env,
     WAVEYARD_REAL_AUDIO_BENCHMARK_CHILD: "1",
@@ -59,6 +62,7 @@ async function measure(mode, repetition, order) {
     WAVEYARD_ORT_INTER_OP_THREADS: String(configuration.interOpThreads),
     WAVEYARD_REAL_AUDIO_REPORT: reportFile,
   };
+  if (auditionDirectory) env.WAVEYARD_REAL_AUDIO_AUDITION_DIR = auditionDirectory;
   delete env.WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS;
 
   console.log(
@@ -97,6 +101,7 @@ async function measure(mode, repetition, order) {
     mode,
     repetition,
     order,
+    ...(auditionDirectory ? { auditionDirectory } : {}),
     ...report,
   };
 }
@@ -111,6 +116,7 @@ try {
 
   validatePairedRuns(runs, modes, repetitions);
 
+  const firstReferenceEvaluation = runs[0].result.referenceEvaluation;
   const inputIdentity = {
     filename: basename(runs[0].input.filename),
     sha256: runs[0].input.sha256,
@@ -120,14 +126,16 @@ try {
     sampleRate: runs[0].input.sampleRate,
     channels: runs[0].input.channels,
     models: runs[0].models,
-    referenceEvaluation: {
-      dataset: runs[0].result.referenceEvaluation.dataset,
-      datasetUrl: runs[0].result.referenceEvaluation.datasetUrl,
-      track: runs[0].result.referenceEvaluation.track,
-      license: runs[0].result.referenceEvaluation.license,
-      attribution: runs[0].result.referenceEvaluation.attribution,
-      referenceSha256: runs[0].result.referenceEvaluation.referenceSha256,
-    },
+    referenceEvaluation: firstReferenceEvaluation
+      ? {
+          dataset: firstReferenceEvaluation.dataset,
+          datasetUrl: firstReferenceEvaluation.datasetUrl,
+          track: firstReferenceEvaluation.track,
+          license: firstReferenceEvaluation.license,
+          attribution: firstReferenceEvaluation.attribution,
+          referenceSha256: firstReferenceEvaluation.referenceSha256,
+        }
+      : null,
   };
   assertQualityReport(runs[0]);
   assert.match(
@@ -147,14 +155,16 @@ try {
         sampleRate: run.input.sampleRate,
         channels: run.input.channels,
         models: run.models,
-        referenceEvaluation: {
-          dataset: referenceEvaluation?.dataset,
-          datasetUrl: referenceEvaluation?.datasetUrl,
-          track: referenceEvaluation?.track,
-          license: referenceEvaluation?.license,
-          attribution: referenceEvaluation?.attribution,
-          referenceSha256: referenceEvaluation?.referenceSha256,
-        },
+        referenceEvaluation: referenceEvaluation
+          ? {
+              dataset: referenceEvaluation.dataset,
+              datasetUrl: referenceEvaluation.datasetUrl,
+              track: referenceEvaluation.track,
+              license: referenceEvaluation.license,
+              attribution: referenceEvaluation.attribution,
+              referenceSha256: referenceEvaluation.referenceSha256,
+            }
+          : null,
       },
       inputIdentity,
       "Every paired run must use the same excerpt and pinned model checksums.",
@@ -200,11 +210,35 @@ try {
     pairedOrder: "Alternates which setting runs first on each repetition.",
     qualityComparison: {
       pairedMetricSummaries: summarizePairedQuality(runs),
-      interpretation:
-        "parallelMinusSequential values are paired by repetition. These observed objective scores do not prove equivalence and do not replace listening review; no score threshold is treated as perceptual equivalence.",
+      interpretation: inputIdentity.referenceEvaluation
+        ? "parallelMinusSequential values are paired by repetition. These observed objective scores do not prove equivalence and do not replace listening review; no score threshold is treated as perceptual equivalence."
+        : "No aligned reference stems were provided, so objective quality scores are omitted. Listening judgments are separate subjective evidence.",
     },
     summary,
     runs,
+  };
+
+  const firstPair = Object.fromEntries(
+    modes.map((mode) => [mode, runs.find((run) => run.mode === mode && run.repetition === 1).auditionDirectory]),
+  );
+  const listeningKit = await createBlindListeningKit({
+    outputDirectory: listeningDirectory,
+    sourceFilesByMode: firstPair,
+    metadata: {
+      input: inputIdentity,
+      settings,
+    },
+  });
+  output.blindListening = {
+    participantPage: listeningKit.participantPage,
+    organizerAnswerKey: listeningKit.answerKey,
+    pairedRepetition: 1,
+    audioSha256: listeningKit.outputChecksums,
+    matchedOutputEquality: listeningKit.matchedOutputEquality,
+    listenerSample: listeningKit.listenerSample,
+    interpretation: listeningKit.matchedOutputEquality.allMatchedOutputsByteIdentical
+      ? "Each matched per-stem pair is byte-for-byte identical by SHA-256, so listeners cannot distinguish the settings in these specific clips. No listener responses were collected; this does not establish equivalence on other inputs or runtimes."
+      : "The outputs differ in at least one matched stem. No listener responses were collected, so no perceptual conclusion is available.",
   };
 
   await mkdir(dirname(reportPath), { recursive: true });

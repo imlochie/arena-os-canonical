@@ -38,9 +38,20 @@ No score threshold is used as a pass/fail signal. A non-silent or readable file 
 4. Exclude the first and last 0.5 seconds from reference SI-SDR to reduce model padding/overlap edge influence. Use the full excerpt to evaluate the unscaled sum of all four estimates against the original mixture. Report both SI-SDR and unscaled residual SDR, plus residual RMS.
 5. Preserve the paired reference and estimated WAV files under `generated-artifacts/waveyard-separation-quality/` for audition. This directory is ignored by Git; the licensed audio is not committed.
 
-The opt-in real-audio benchmark requires `WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST` with dataset/license attribution and four aligned reference-file paths; quality comparisons are not produced without references. `WAVEYARD_REAL_AUDIO_AUDITION_DIR` writes WAVs for listening; `WAVEYARD_REAL_AUDIO_REPORT` writes the report. Set `WAVEYARD_REAL_AUDIO_INPUT` to the audio file and run `node scripts/waveyard-real-audio-benchmark.mjs` for paired sequential 2/1 and bounded-parallel 1/2 CPU runs; `WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS` accepts 2–10 (default 3).
+The opt-in real-audio benchmark accepts `WAVEYARD_REAL_AUDIO_INPUT` and runs paired sequential 2/1 and bounded-parallel 1/2 CPU settings; `WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS` accepts 2–10 (default 3). Set `WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST` with dataset/license attribution and four aligned reference-file paths to include objective quality metrics. Without references, those metrics are omitted while the paired output and listening kit are still produced. `WAVEYARD_REAL_AUDIO_REPORT` selects the report path. `WAVEYARD_REAL_AUDIO_LISTENING_DIR` optionally selects the listening-kit directory; otherwise it is placed alongside the report.
 
-The report checks that every run uses the same source and generated excerpt SHA-256, four pinned model checksums, and reference dataset/track metadata plus all four reference-file SHA-256 values. It includes each run's per-stem reference SI-SDR, mixture baseline and improvement, as well as full-excerpt recombined-mixture SI-SDR, residual SDR, and residual RMS. `qualityComparison.pairedMetricSummaries` reports each mode's median/range and the paired parallel-minus-sequential deltas by repetition. These observed objective scores do not prove equivalence or replace listening review; no score threshold is treated as perceptual equivalence. The report also includes per-run stage timings, elapsed time, playback timer gaps, and measured OS/CPU. Windows runs are CPU-only and do not represent DirectML performance; Linux measurements are not Windows evidence.
+The report checks that every run uses the same source and generated excerpt SHA-256 and four pinned model checksums. If a reference manifest is provided, it also checks dataset/track metadata and all four reference-file checksums, then reports reference SI-SDR, mixture baseline and improvement, recombined-mixture SI-SDR, residual SDR, and residual RMS. `qualityComparison.pairedMetricSummaries` reports per-mode ranges and paired parallel-minus-sequential deltas; these objective scores do not prove equivalence or replace listening review. The report also includes per-run stage timings, elapsed time, playback timer gaps, and measured OS/CPU. Windows runs are CPU-only and do not represent DirectML performance; Linux measurements are not Windows evidence.
+
+Each successful paired benchmark creates a blind listening kit from the first matched repetition. Share only the `participant/index.html` page and its `participant/audio/` files with listeners; keep `organizer/answer-key.json` private until judgments are collected. A/B assignments are randomized independently for each stem, stem order is randomized, and the key maps both labels to the CPU setting and includes the exact output WAV SHA-256 values plus input, excerpt, and model checksums. Each listener rates audible difference (1–5), preference (A/B/no preference), reports headphone use, and may add a note; the page downloads one JSON response file. Responses are not uploaded. Summarize returned files with:
+
+```sh
+node scripts/waveyard-blind-listening-report.mjs \
+  generated-artifacts/<benchmark>-blind-listening/organizer/answer-key.json \
+  generated-artifacts/<benchmark>-blind-listening/organizer/listener-summary.json \
+  generated-artifacts/<response-1>.json [<response-2>.json ...]
+```
+
+The summary reports valid response files and per-stem counts, rating distributions, and setting preferences. It does not claim a verified unique-person count; use an optional anonymous listener code to help an organizer identify repeat submissions.
 
 ## Licensed reference material
 
@@ -52,3 +63,11 @@ The report checks that every run uses the same source and generated excerpt SHA-
 ## Human listening review
 
 Status: **completed with limited notes**. The listener's only observation was that option A was consistently clearer than its comparison. The player orders the reference before the separated estimate; this likely means the references were clearer, but the response did not explicitly define A or identify individual stems. No positive usability claim is made from this review.
+
+## Sequential versus bounded-parallel CPU listening
+
+Status: **matched outputs compared; no listener panel collected**. On 2026-11-02, the paired benchmark separated the same 8-second excerpt (starting at 20 seconds) twice with each setting on Linux x64 CPU. Both settings used the same input checksum, processed-excerpt checksum, and four pinned model checksums. In the first matched repetition, each of the four sequential/parallel WAV pairs had the same SHA-256 checksum, so the files were byte-for-byte identical. Listeners cannot hear a difference between those exact files. This says nothing about other inputs or runtimes. No people submitted judgments (n=0); there is no listener preference or subjective rating result.
+
+The participant kit is written under `generated-artifacts/waveyard-cpu-listening/report-blind-listening/participant/`; the report is `generated-artifacts/waveyard-cpu-listening/report.json`, and the private setting-to-label key is in the sibling `organizer/` folder. Share the participant folder only. This is one excerpt on one Linux CPU runtime; it does not establish universal quality or equivalence.
+
+Any later panel result must state the number of listeners, number of valid judgments per stem, whether listeners used headphones, and that the panel/sample cannot establish a universal quality or equivalence claim. Results from one short excerpt, one machine, one operating system, or a small/self-selected listener group apply only to those conditions.
