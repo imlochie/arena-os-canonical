@@ -336,8 +336,15 @@ test("a library track with no separation job starts once and reports the active 
     enqueueCount += 1;
     assert.equal(payload.sourceAssetId, source.id);
   };
-  const started = await service.startSeparationForTrack(START_OWNER, track.id, { enqueue });
-  assert.equal(started.outcome, "queued");
+  const concurrentStarts = await Promise.all([
+    service.startSeparationForTrack(START_OWNER, track.id, { enqueue }),
+    service.startSeparationForTrack(START_OWNER, track.id, { enqueue }),
+  ]);
+  assert.deepEqual(
+    concurrentStarts.map((result) => result.outcome).sort(),
+    ["already-active", "queued"],
+    "simultaneous starts share one active separation job",
+  );
   assert.equal(enqueueCount, 1);
   const detail = await service.getTrack(START_OWNER, track.id);
   assert.equal(detail?.stemAvailability.status, "processing");
@@ -369,6 +376,40 @@ test("a library track with no separation job starts once and reports the active 
   const duplicate = await service.startSeparationForTrack(START_OWNER, track.id, { enqueue });
   assert.equal(duplicate.outcome, "already-active");
   assert.equal(enqueueCount, 1, "a repeat start must not submit a second worker job");
+
+  await db.db
+    .update(schema.processingJobs)
+    .set({ status: "complete", stage: "complete", completedAt: new Date() })
+    .where(eq(schema.processingJobs.id, job.id));
+  await db.db.insert(schema.stemAssets).values(
+    ["vocals", "drums", "bass", "other"].map((stemType) => ({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      separationJobId: job.id,
+      stemType,
+      engine: "demucs",
+      model: "htdemucs",
+      modelVersion: "test",
+      storageKey: `test/direct-start-${stemType}.wav`,
+      checksumSha256: `direct-start-${stemType}`,
+      durationSeconds: 30,
+      sampleRate: 44100,
+      channels: 2,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: 100,
+    })),
+  );
+  const completed = await service.getTrack(START_OWNER, track.id);
+  assert.deepEqual(completed?.stemAvailability, {
+    status: "separated",
+    stemCount: 4,
+    stemTypes: ["bass", "drums", "other", "vocals"],
+  });
+  assert.equal(completed?.playback.kind, "stems", "completed library playback uses the produced stems");
+  const afterCompletion = await service.startSeparationForTrack(START_OWNER, track.id, { enqueue });
+  assert.deepEqual(afterCompletion, { outcome: "already-separated", stemCount: 4 });
+  assert.equal(enqueueCount, 1, "a completed track does not submit another job");
 });
 
 test("concurrent same-file uploads create one source, track, and separation job", async () => {
