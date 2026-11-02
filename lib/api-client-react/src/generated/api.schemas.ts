@@ -255,9 +255,18 @@ export interface ArcadeRepositoryError {
   error: string;
 }
 
+export type ArcadeRepositoryPreviewProvider = typeof ArcadeRepositoryPreviewProvider[keyof typeof ArcadeRepositoryPreviewProvider];
+
+
+export const ArcadeRepositoryPreviewProvider = {
+  github: 'github',
+  codeberg: 'codeberg',
+} as const;
+
 export type ArcadeRepositoryPreview = ArcadeRepositoryProvenance & {
   token: string;
   expiresAt: number;
+  provider: ArcadeRepositoryPreviewProvider;
   reference: string;
   entryPath: string;
   totalBytes: number;

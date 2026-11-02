@@ -15,24 +15,46 @@ const revision = "b".repeat(40);
 const sources = new Map([
   ["index.html", Buffer.from('<!doctype html><html><head><title>Offline fixture</title></head><body><button id="score">Score point</button><output id="points">0</output><script src="game.js"></script></body></html>')],
   ["game.js", Buffer.from('let points=0;document.getElementById("score").onclick=()=>document.getElementById("points").textContent=String(++points);')],
-  ["LICENSE", Buffer.from("SPDX-License-Identifier: MIT\nCopyright repository-import test fixture")],
+  ["LICENSE", Buffer.from(`MIT License
+
+Copyright (c) 2026 Repository Import Test
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.`)],
 ]);
 const sha = bytes => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
-let rawDownloads = 0;
+let gameFileReads = 0;
 const fixtureRead = async (url, limit) => {
   const parsed = new URL(url);
-  if (parsed.hostname === "raw.githubusercontent.com") {
-    rawDownloads++;
-    assert.ok(parsed.pathname.includes(`/${revision}/`));
-    const bytes = sources.get(parsed.pathname.split(`/${revision}/`)[1]);
-    assert.ok(bytes && bytes.length <= limit);
-    return bytes;
-  }
   const path = parsed.pathname;
-  const body = path.endsWith("/commits/main") ? { sha: revision }
-    : path.endsWith(`/git/trees/${revision}`) ? { tree: [...sources].map(([path, bytes]) => ({ path, sha: sha(bytes), size: bytes.length, type: "blob", mode: "100644" })) }
-    : path.endsWith("/license") ? { path: "LICENSE", encoding: "base64", content: sources.get("LICENSE").toString("base64"), license: { spdx_id: "MIT" } }
-    : { private: false, default_branch: "main" };
+  const repoPath = "/api/v1/repos/fixture/offline-game";
+  assert.equal(parsed.hostname, "codeberg.org");
+  assert.ok(path.startsWith(repoPath));
+  let body;
+  if (path === repoPath) body = { private: false, archived: false, default_branch: "main" };
+  else if (path.endsWith("/branches/main")) body = { commit: { id: revision } };
+  else if (path.endsWith(`/git/commits/${revision}`)) body = { sha: revision };
+  else if (path.endsWith(`/git/trees/${revision}`)) {
+    body = { tree: [...sources].map(([path, bytes]) => ({ path, sha: sha(bytes), size: bytes.length, type: "blob", mode: "100644" })), truncated: false };
+  } else if (path.endsWith("/releases")) body = [];
+  else if (path.includes("/contents/")) {
+    const filePath = decodeURIComponent(path.split("/contents/")[1]);
+    const bytes = sources.get(filePath);
+    assert.ok(bytes && bytes.length <= limit, `unexpected pinned Codeberg file: ${filePath}`);
+    if (filePath !== "LICENSE") gameFileReads++;
+    body = { type: "file", path: filePath, size: bytes.length, sha: sha(bytes), encoding: "base64", content: bytes.toString("base64") };
+  } else assert.fail(`unexpected Codeberg request: ${url}`);
   return Buffer.from(JSON.stringify(body));
 };
 const output = new URL("../generated-artifacts/arcade-repository-import/", import.meta.url);
@@ -67,16 +89,18 @@ try {
   await page.getByRole("tab", { name: "Import and emulate" }).click();
   assert.equal(await page.getByTestId("inspect-repository").isDisabled(), true);
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
-  await page.getByTestId("input-repository-url").fill("https://github.com/fixture/offline-game");
+  await page.getByTestId("input-repository-url").fill("https://codeberg.org/fixture/offline-game");
   await page.getByTestId("inspect-repository").click();
   await page.getByTestId("repository-preview").waitFor();
-  assert.equal(rawDownloads, 0, "preview must not acquire or run the game");
+  assert.equal(gameFileReads, 0, "preview may verify the license but must not acquire or run game files");
   assert.ok((await page.getByTestId("repository-preview").textContent()).includes(revision));
   await page.getByTestId("repository-files").click();
   await page.getByTestId("repository-license").click();
   assert.ok((await page.getByTestId("repository-preview").textContent()).includes("LICENSE"));
   assert.equal(await page.locator('iframe[title^="Playable game:"]').count(), 0);
   await page.getByTestId("repository-preview").screenshot({ path: new URL("preview.png", output).pathname });
+  assert.equal(await page.getByTestId("import-reviewed-repository").isDisabled(), true, "import requires explicit rights approval");
+  await page.getByTestId("confirm-repository-rights").check();
   await page.getByTestId("import-reviewed-repository").click();
   const frame = page.frameLocator('iframe[title^="Playable game:"]');
   await frame.getByRole("button", { name: "Score point" }).click();
@@ -102,7 +126,7 @@ try {
   await frame.getByRole("button", { name: "Score point" }).click();
   assert.equal(await frame.locator("#points").textContent(), "1");
   assert.ok((await page.getByTestId("imported-repository-provenance").textContent()).includes("MIT"));
-  assert.equal(rawDownloads, sources.size);
+  assert.equal(gameFileReads, sources.size - 1);
   await page.getByTestId("imported-repository-provenance").waitFor();
   await page.reload();
   await page.getByRole("tab", { name: "Import and emulate" }).click();
@@ -112,11 +136,9 @@ try {
   assert.equal(await frame.locator("#points").textContent(), "1");
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   await page.getByTestId("input-repository-url").fill("https://localhost/private");
-  await page.getByTestId("inspect-repository").click();
-  await page.getByTestId("repository-error").waitFor();
-  assert.match(await page.getByTestId("repository-error").textContent(), /Only public/i);
+  assert.equal(await page.getByTestId("inspect-repository").isDisabled(), true, "unsupported hosts must be refused before an API request");
   assert.equal(await frame.locator("#points").textContent(), "1", "a refused repository must not restart the retained game");
   assert.deepEqual(errors, []);
-  await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, rawDownloads, checks: ["rights gate", "review before download", "pinned files", "license preview", "sandbox gameplay", "reload provenance", "HTML download retains active game", "HTML reimport/reload retains source and license", "unsafe-link refusal retains game"], modelCallTested: false }, null, 2));
+  await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, provider: "codeberg", gameFileReads, checks: ["rights gate", "review before download", "pinned Codeberg files", "license preview", "sandbox gameplay", "reload provenance", "HTML download retains active game", "HTML reimport/reload retains source and license", "unsafe-link refusal retains game"], modelCallTested: false }, null, 2));
   console.log("PASS: repository import/play/reload and native HTML export/reimport/reload preserve source attribution; refused links retain the current game.");
 } finally { await browser.close(); }

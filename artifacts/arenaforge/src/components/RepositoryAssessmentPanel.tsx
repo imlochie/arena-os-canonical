@@ -140,6 +140,7 @@ export default function RepositoryAssessmentPanel({ assessment, disabled, busy, 
         <p className="mt-0.5 font-mono text-[11px] text-slate-500">{a.revision.slice(0, 12)} · {a.files.length} files · {fmtBytes(a.totalBytes)}</p>
       </div>
       <div className="flex items-center gap-2">
+        <span data-testid="assessment-provider" className="rounded-md bg-white/5 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-300">{a.provider}</span>
         <span data-testid="assessment-type" className="rounded-md bg-emerald-300/15 px-2 py-0.5 font-bold text-emerald-100">{TYPE_LABEL[a.projectType]}</span>
         <span className={`rounded-md border px-2 py-0.5 ${confTone}`}>{a.confidence} confidence</span>
         <button type="button" onClick={onDismiss} aria-label="Close review" className="rounded px-1.5 text-slate-400 hover:text-slate-100 focus-visible:outline focus-visible:outline-emerald-300">×</button>

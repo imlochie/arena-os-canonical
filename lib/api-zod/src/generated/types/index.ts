@@ -28,6 +28,7 @@ export * from './arcadeRepositoryFile';
 export * from './arcadeRepositoryLicense';
 export * from './arcadeRepositoryLinkInput';
 export * from './arcadeRepositoryPreview';
+export * from './arcadeRepositoryPreviewProvider';
 export * from './arcadeRepositoryProvenance';
 export * from './arcadeRepositoryRelease';
 export * from './arcadeRepositoryReleaseAsset';

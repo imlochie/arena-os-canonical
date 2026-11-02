@@ -17,6 +17,7 @@ test("source and edited-source exports keep one inert attribution record without
   assert.equal(withoutRepositoryAttribution(result), source);
   assert.equal((withRepositoryAttribution(result, provenance).match(/id="arena-repository-attribution"/g) ?? []).length, 1);
   assert.equal(isRepositoryProvenance(provenance), true);
+  assert.equal(isRepositoryProvenance({ ...provenance, sourceUrl: `https://codeberg.org/author/game/src/commit/${"a".repeat(40)}` }), true);
   assert.equal(isRepositoryProvenance({ ...provenance, sourceUrl: "javascript:evil()" }), false);
 });
 

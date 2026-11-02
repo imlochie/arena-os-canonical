@@ -839,6 +839,7 @@ components:
           properties:
             token: { type: string }
             expiresAt: { type: integer }
+            provider: { type: string, enum: [github, codeberg] }
             reference: { type: string }
             entryPath: { type: string }
             totalBytes: { type: integer }
@@ -846,7 +847,7 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/ArcadeRepositoryFile"
-          required: [token, expiresAt, reference, entryPath, totalBytes, files]
+          required: [token, expiresAt, provider, reference, entryPath, totalBytes, files]
     ArcadeRepositoryDownloadFile:
       allOf:
         - $ref: "#/components/schemas/ArcadeRepositoryFile"

@@ -6,11 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ArcadeRepositoryFile } from './arcadeRepositoryFile';
+import type { ArcadeRepositoryPreviewProvider } from './arcadeRepositoryPreviewProvider';
 import type { ArcadeRepositoryProvenance } from './arcadeRepositoryProvenance';
 
 export type ArcadeRepositoryPreview = ArcadeRepositoryProvenance & {
   token: string;
   expiresAt: number;
+  provider: ArcadeRepositoryPreviewProvider;
   reference: string;
   entryPath: string;
   totalBytes: number;

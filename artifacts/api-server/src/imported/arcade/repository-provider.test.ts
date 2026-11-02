@@ -1,0 +1,173 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import test from "node:test";
+import type { lookup } from "node:dns/promises";
+import type { request } from "node:https";
+import { assessCodebergRepository, assessSourceForgeRepository } from "./repository-assessment";
+import {
+  acquireRepository, createCodebergReader, createSourceForgeReader, inspectRepository, parseRepositoryLink,
+} from "./repository-source";
+
+const revision = "b".repeat(40);
+const blobSha = (bytes: Buffer) => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+const index = Buffer.from("<!doctype html><html><body><canvas></canvas><script src=\"game.js\"></script></body></html>");
+const game = Buffer.from("document.querySelector('canvas').width = 160;");
+const license = Buffer.from(`MIT License
+
+Copyright (c) 2026 Example Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.`);
+const codebergFiles = new Map([
+  ["index.html", index], ["game.js", game], ["LICENSE", license],
+]);
+function codebergRead(files = codebergFiles) {
+  const calls: string[] = [];
+  const tree = [...files].map(([path, bytes]) =>
+    ({ path, type: "blob", mode: "100644", size: bytes.length, sha: blobSha(bytes) }));
+  const read = async (url: string, limit: number) => {
+    calls.push(url);
+    const parsed = new URL(url);
+    assert.equal(parsed.hostname, "codeberg.org");
+    assert.ok(parsed.pathname.startsWith("/api/v1/repos/"));
+    let data: unknown;
+    if (parsed.pathname === "/api/v1/repos/demo/game") data = { private: false, archived: false, default_branch: "main" };
+    else if (parsed.pathname.endsWith("/branches/main")) data = { commit: { id: revision } };
+    else if (parsed.pathname.endsWith(`/git/commits/${revision}`)) data = { sha: revision };
+    else if (parsed.pathname.endsWith(`/git/trees/${revision}`)) data = { tree, truncated: false };
+    else if (parsed.pathname.endsWith("/releases")) data = [];
+    else if (parsed.pathname.includes("/contents/")) {
+      const path = decodeURIComponent(parsed.pathname.split("/contents/")[1]);
+      const bytes = files.get(path);
+      assert.ok(bytes, `unexpected path ${path}`);
+      data = { type: "file", path, sha: blobSha(bytes), size: bytes.length, encoding: "base64", content: bytes.toString("base64") };
+    } else assert.fail(`unexpected Codeberg request: ${url}`);
+    const bytes = Buffer.from(JSON.stringify(data));
+    assert.ok(bytes.length <= limit, `response exceeded reader limit: ${url}`);
+    return bytes;
+  };
+  return { calls, read };
+}
+
+const signal = () => AbortSignal.timeout(10_000);
+
+test("Codeberg links resolve to immutable commits and verified files enter the offline browser importer", async () => {
+  assert.deepEqual(parseRepositoryLink("https://codeberg.org/demo/game/src/commit/" + revision + "/subgame"), {
+    provider: "codeberg", repository: "demo/game", ref: revision, refType: "commit", folder: "subgame/",
+  });
+  assert.throws(() => parseRepositoryLink("https://codeberg.org.evil/demo/game"), /other hosts/i);
+  assert.throws(() => parseRepositoryLink("https://codeberg.org/demo/game/src/branch/main/%2e%2e/private"), /invalid|supported/i);
+
+  const f = codebergRead();
+  const assessment = await assessCodebergRepository("https://codeberg.org/demo/game", signal(), f.read);
+  assert.equal(assessment.provider, "codeberg");
+  assert.equal(assessment.revision, revision);
+  assert.equal(assessment.sourceUrl, `https://codeberg.org/demo/game/src/commit/${revision}`);
+  assert.equal(assessment.projectType, "browser");
+  assert.equal(assessment.license?.spdx, "MIT");
+  assert.equal(assessment.blockers.length, 0);
+
+  const plan = await inspectRepository("https://codeberg.org/demo/game", signal(), f.read);
+  assert.equal(plan.provider, "codeberg");
+  assert.equal(plan.entryPath, "index.html");
+  const acquired = await acquireRepository(plan, signal(), f.read);
+  assert.equal(acquired.provenance.sourceUrl, `https://codeberg.org/demo/game/src/commit/${revision}`);
+  assert.deepEqual(acquired.files.map(file => file.path).sort(), ["LICENSE", "game.js", "index.html"]);
+  assert.ok(f.calls.every(url => new URL(url).hostname === "codeberg.org"));
+});
+
+test("Codeberg working-state warnings are surfaced during review and stop a bypass import", async () => {
+  const files = new Map(codebergFiles);
+  files.set("README.md", Buffer.from("# Project\nThis repository is currntly NOT in a working state."));
+  const f = codebergRead(files);
+  const assessment = await assessCodebergRepository("https://codeberg.org/demo/game", signal(), f.read);
+  assert.ok(assessment.blockers.some(message => /not in a working state/i.test(message)));
+  assert.ok(assessment.evidence.some(item => item.path === "README.md"));
+  await assert.rejects(inspectRepository("https://codeberg.org/demo/game", signal(), f.read), /not in a working state/i);
+});
+
+test("SourceForge review pins feed file IDs but blocks RSS-only code without verified source and license", async () => {
+  const feed = `<?xml version="1.0"?>
+    <rss><channel><item>
+      <title><![CDATA[/blockout/BlockOut 2.5/bl25-src.tar.gz]]></title>
+      <link>https://sourceforge.net/projects/blockout/files/blockout/BlockOut%202.5/bl25-src.tar.gz/download</link>
+      <pubDate>Tue, 06 May 2014 12:38:30 UT</pubDate>
+      <files:sf-file-id>12530468</files:sf-file-id>
+      <media:content type="application/gzip" filesize="10240">
+        <media:hash algo="md5">f7e0fc24fa04e0d8a343ff2742c92427</media:hash>
+      </media:content>
+    </item></channel></rss>`;
+  let requested = "";
+  const assessment = await assessSourceForgeRepository(
+    "https://sourceforge.net/projects/blockout/files/blockout/BlockOut%202.5",
+    signal(),
+    async (url, limit) => {
+      requested = url;
+      assert.ok(Buffer.byteLength(feed) <= limit);
+      return Buffer.from(feed);
+    },
+  );
+  assert.equal(new URL(requested).searchParams.get("path"), "/blockout/BlockOut 2.5");
+  assert.equal(assessment.provider, "sourceforge");
+  assert.equal(assessment.repository, "sourceforge/blockout");
+  assert.match(assessment.revision, /^sf-rss-[a-f0-9]{64}$/);
+  assert.equal(assessment.reference, "BlockOut 2.5");
+  assert.equal(assessment.license, null);
+  assert.equal(assessment.releases[0].tag, "BlockOut 2.5");
+  assert.equal(assessment.releases[0].assets[0].sha256, null);
+  assert.match(assessment.evidence.map(item => item.detail).join(" "), /MD5/);
+  assert.match(assessment.blockers.join(" "), /SHA-256/);
+  assert.match(assessment.blockers.join(" "), /license text/i);
+  assert.match(assessment.releases[0].reviewUrl, /\/files\/blockout\/BlockOut%202\.5$/);
+
+  let fetched = false;
+  await assert.rejects(assessSourceForgeRepository("https://sourceforge.net.evil/projects/blockout", signal(), async () => {
+    fetched = true;
+    return Buffer.from(feed);
+  }), /sourceforge\.net project and files links/i);
+  assert.equal(fetched, false);
+  await assert.rejects(assessSourceForgeRepository(
+    "https://sourceforge.net/projects/blockout/files/blockout/BlockOut%202.5",
+    signal(),
+    async () => Buffer.from(`<!DOCTYPE rss [<!ENTITY x SYSTEM "file:///etc/passwd">]><rss><channel><item>&x;</item></channel></rss>`),
+  ), /DTD and entity declarations/i);
+});
+
+test("Codeberg and SourceForge readers keep exact provider hosts and reject redirects", async () => {
+  const makeRequest = (status: number): typeof request => ((url: URL, options: any, callback: (response: any) => void) => {
+    options.lookup(url.hostname, { all: true }, (_error: unknown, rows: unknown) =>
+      assert.deepEqual(rows, [{ address: "140.82.112.5", family: 4 }]));
+    const req = new EventEmitter() as any;
+    req.setTimeout = () => req;
+    req.end = () => queueMicrotask(() => {
+      const response = new PassThrough() as any;
+      response.statusCode = status;
+      response.headers = {};
+      callback(response);
+      if (status === 200) response.end(Buffer.from("<rss/>"));
+    });
+    return req;
+  }) as unknown as typeof request;
+  const dns = (async () => [{ address: "140.82.112.5", family: 4 }]) as unknown as typeof lookup;
+
+  const codeberg = createCodebergReader(dns, makeRequest(302));
+  await assert.rejects(codeberg(`https://codeberg.org/api/v1/repos/demo/game`, 100, signal()), /redirect/i);
+  await assert.rejects(codeberg(`https://codeberg.org/demo/game/raw/commit/${revision}/index.html`, 100, signal()), /unsafe/i);
+
+  const sourceforge = createSourceForgeReader(dns, makeRequest(302));
+  await assert.rejects(sourceforge("https://sourceforge.net/projects/demo/rss?path=%2F", 100, signal()), /redirect/i);
+  await assert.rejects(sourceforge("https://downloads.sourceforge.net/project/demo/file.zip", 100, signal()), /unsafe/i);
+});

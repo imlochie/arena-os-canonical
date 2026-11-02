@@ -300,6 +300,7 @@ export const InspectArcadeRepositoryResponse = zod.object({
 }).and(zod.object({
   "token": zod.string(),
   "expiresAt": zod.number().int(),
+  "provider": zod.enum(['github', 'codeberg']),
   "reference": zod.string(),
   "entryPath": zod.string(),
   "totalBytes": zod.number().int(),

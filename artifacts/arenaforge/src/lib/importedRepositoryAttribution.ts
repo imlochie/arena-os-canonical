@@ -53,10 +53,12 @@ export function withRepositoryAttribution(source: string, provenance?: ArcadeRep
 export function isRepositoryProvenance(value: unknown): value is ArcadeRepositoryProvenance {
   if (!value || typeof value !== "object") return false;
   const p = value as ArcadeRepositoryProvenance;
+  const pinnedUrl = p.sourceUrl === `https://github.com/${p.repository}/tree/${p.revision}` ||
+    p.sourceUrl === `https://codeberg.org/${p.repository}/src/commit/${p.revision}`;
   return typeof p.repository === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(p.repository) &&
     ![".", ".."].includes(p.repository.split("/")[1]) &&
     typeof p.revision === "string" && /^[a-f0-9]{40}$/.test(p.revision) &&
-    p.sourceUrl === `https://github.com/${p.repository}/tree/${p.revision}` &&
+    pinnedUrl &&
     typeof p.license?.spdx === "string" && p.license.spdx.length > 0 && p.license.spdx.length <= 64 &&
     typeof p.license?.path === "string" && p.license.path.length > 0 && p.license.path.length <= 1024 &&
     typeof p.license?.text === "string" && p.license.text.trim().length > 0 && p.license.text.length <= 128 * 1024;

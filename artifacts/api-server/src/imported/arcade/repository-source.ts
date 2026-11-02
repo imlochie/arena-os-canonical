@@ -17,33 +17,46 @@ export type RepositoryProvenance = {
   repository: string; revision: string; sourceUrl: string;
   license: { spdx: string; path: string; text: string };
 };
+export type RepositoryProvider = "github" | "codeberg";
 export type RepositoryPlan = RepositoryProvenance & {
-  entryPath: string; files: RepositoryFile[]; totalBytes: number; reference: string;
+  provider: RepositoryProvider; entryPath: string; files: RepositoryFile[]; totalBytes: number; reference: string;
 };
 export type ReadBytes = (url: string, limit: number, signal: AbortSignal) => Promise<Buffer>;
 export type RepositoryNode = { path: string; mode: string; type: string; size: number; sha: string };
 
 export function parseRepositoryLink(value: string) {
+  if (/%(?:2e|2f|5c)/i.test(value) || /\/(?:\.{1,2})(?:\/|[?#]|$)/.test(value)) {
+    throw new RepositoryImportError("Encoded separators and dot-path traversal are not supported.", 400);
+  }
   let url: URL;
-  try { url = new URL(value); } catch { throw new RepositoryImportError("Enter a complete HTTPS GitHub repository or release-tag link.", 400); }
-  if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash) {
-    throw new RepositoryImportError("Only public https://github.com repository, pinned tree, and release-tag links are supported. Queries, credentials and other hosts are not allowed.", 400);
+  try { url = new URL(value); } catch { throw new RepositoryImportError("Enter a complete HTTPS GitHub or Codeberg repository link.", 400); }
+  const provider: RepositoryProvider | null = url.hostname === "github.com" ? "github" : url.hostname === "codeberg.org" ? "codeberg" : null;
+  if (url.protocol !== "https:" || !provider || url.port || url.username || url.password || url.search || url.hash) {
+    throw new RepositoryImportError("Only public GitHub and Codeberg HTTPS repository links are supported. Queries, credentials and other hosts are not allowed.", 400);
   }
   const parts = url.pathname.replace(/\/$/, "").split("/").slice(1);
   const [owner, rawRepo, kind, ref, ...folder] = parts;
   const repo = rawRepo?.replace(/\.git$/, "");
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(owner ?? "") ||
       !/^[A-Za-z0-9_.-]{1,100}$/.test(repo ?? "") || repo === "." || repo === "..") {
-    throw new RepositoryImportError("The GitHub owner or repository name is invalid.", 400);
+    throw new RepositoryImportError("The repository owner or name is invalid.", 400);
   }
-  if (parts.length === 2) return { repository: `${owner}/${repo}`, ref: null, folder: "" };
+  if (parts.length === 2) return { provider, repository: `${owner}/${repo}`, ref: null, refType: null as "commit" | "branch" | "tag" | null, folder: "" };
   if (kind === "releases" && ref === "tag" && folder.length === 1 && /^[A-Za-z0-9_.-]{1,128}$/.test(folder[0])) {
-    return { repository: `${owner}/${repo}`, ref: folder[0], folder: "" };
+    return { provider, repository: `${owner}/${repo}`, ref: folder[0], refType: "tag" as const, folder: "" };
   }
-  if (kind === "tree" && sha.test(ref ?? "") && folder.every(safePathSegment)) {
-    return { repository: `${owner}/${repo}`, ref, folder: folder.length ? `${folder.join("/")}/` : "" };
+  if (provider === "github" && kind === "tree" && sha.test(ref ?? "") && folder.every(safePathSegment)) {
+    return { provider, repository: `${owner}/${repo}`, ref, refType: "commit" as const, folder: folder.length ? `${folder.join("/")}/` : "" };
   }
-  throw new RepositoryImportError("Use a repository link, /releases/tag/TAG, or /tree/40-character-commit/optional-game-folder. Binary release downloads and build-only projects are not supported.", 400);
+  if (provider === "codeberg" && kind === "src" && ["commit", "branch"].includes(ref ?? "") &&
+      folder.length >= 1 && folder.every(safePathSegment)) {
+    const [refName, ...subfolder] = folder;
+    const refType = ref as "commit" | "branch";
+    if (refType === "commit" && !sha.test(refName)) throw new RepositoryImportError("Use a 40-character pinned Codeberg commit.", 400);
+    if (refType === "branch" && (!refName || refName.length > 128)) throw new RepositoryImportError("The Codeberg branch name is invalid.", 400);
+    return { provider, repository: `${owner}/${repo}`, ref: refName, refType, folder: subfolder.length ? `${subfolder.join("/")}/` : "" };
+  }
+  throw new RepositoryImportError("Use a repository link, /releases/tag/TAG, a pinned GitHub tree, or a Codeberg /src/commit/SHA or /src/branch/NAME game folder link.", 400);
 }
 function safePathSegment(value: string) {
   return Boolean(value && value !== "." && value !== ".." && !/[\\%:\u0000-\u001f\u007f]/.test(value));
@@ -57,20 +70,29 @@ export function isPublicV4(address: string) {
     (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
     (a === 203 && b === 0 && c === 113));
 }
-/** Fixed GitHub hosts only; pin a validated address to the TLS connection.
- * No redirects, ambient credentials, proxy URLs, decompression or repo scripts. */
-export function createGithubReader(resolveHost = lookup, openRequest = request): ReadBytes {
+/** Pin a public IPv4 address to the TLS connection. Provider wrappers below
+ * keep separate exact host/path allowlists; redirects and ambient credentials
+ * are never followed. */
+function createPinnedReader(
+  provider: string,
+  allow: (url: URL) => boolean,
+  accept: string,
+  resolveHost = lookup,
+  openRequest = request,
+): ReadBytes {
   return async (rawUrl, limit, signal) => {
-  const url = new URL(rawUrl);
-  if (url.protocol !== "https:" || !["api.github.com", "raw.githubusercontent.com"].includes(url.hostname) ||
-      url.port || url.username || url.password) throw new RepositoryImportError("Unsafe repository download destination.", 400);
+  let url: URL;
+  try { url = new URL(rawUrl); } catch { throw new RepositoryImportError("Unsafe repository download destination.", 400); }
+  if (url.protocol !== "https:" || !allow(url) || url.port || url.username || url.password) {
+    throw new RepositoryImportError("Unsafe repository download destination.", 400);
+  }
   signal.throwIfAborted();
   const addresses = await new Promise<Array<{ address: string; family: number }>>((resolve, reject) => {
     const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); };
     const abort = () => { cleanup(); reject(signal.reason); };
     const timer = setTimeout(() => {
       cleanup();
-      reject(new RepositoryImportError("Public GitHub DNS lookup timed out.", 504));
+      reject(new RepositoryImportError(`Public ${provider} DNS lookup timed out.`, 504));
     }, 3_000);
     signal.addEventListener("abort", abort, { once: true });
     resolveHost(url.hostname, { all: true, family: 4 }).then(
@@ -80,12 +102,12 @@ export function createGithubReader(resolveHost = lookup, openRequest = request):
   });
   signal.throwIfAborted();
   if (!addresses.length || addresses.some(row => !isPublicV4(row.address))) {
-    throw new RepositoryImportError("GitHub resolved to an unsafe or unavailable public address.", 502);
+    throw new RepositoryImportError(`${provider} resolved to an unsafe or unavailable public address.`, 502);
   }
   return new Promise<Buffer>((resolve, reject) => {
     const req = openRequest(url, {
       signal, method: "GET", agent: false,
-      headers: { "User-Agent": "ArenaForge-Repository-Import", Accept: "application/vnd.github+json", "Accept-Encoding": "identity", "X-GitHub-Api-Version": "2022-11-28" },
+      headers: { "User-Agent": "ArenaForge-Repository-Import", Accept: accept, "Accept-Encoding": "identity", ...(provider === "GitHub" ? { "X-GitHub-Api-Version": "2022-11-28" } : {}) },
       lookup: (_hostname: string, options: any, callback: any) => {
         const address = addresses[0].address;
         if (options?.all) callback(null, [{ address, family: 4 }]);
@@ -96,9 +118,9 @@ export function createGithubReader(resolveHost = lookup, openRequest = request):
         response.destroy();
         const status = response.statusCode;
         reject(new RepositoryImportError(status === 403 || status === 429
-          ? "GitHub's public request limit was reached. Try again later; no provider key is required."
+          ? `${provider}'s public request limit was reached. Try again later; no provider key is required.`
           : status === 404 ? "The public repository, revision or file was not found."
-          : `GitHub refused the download (HTTP ${status}); redirects are not followed.`, status === 404 ? 404 : 502));
+          : `${provider} refused the download (HTTP ${status}); redirects are not followed.`, status === 404 ? 404 : 502));
         return;
       }
       if ((response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity") ||
@@ -118,34 +140,58 @@ export function createGithubReader(resolveHost = lookup, openRequest = request):
       response.on("end", () => resolve(Buffer.concat(chunks, length)));
       response.on("error", reject);
     });
-    req.setTimeout(12_000, () => req.destroy(new RepositoryImportError("GitHub download timed out.", 504)));
+    req.setTimeout(12_000, () => req.destroy(new RepositoryImportError(`${provider} download timed out.`, 504)));
     req.on("error", reject);
     req.end();
   });
   };
 }
+export function createGithubReader(resolveHost = lookup, openRequest = request): ReadBytes {
+  return createPinnedReader("GitHub",
+    url => ["api.github.com", "raw.githubusercontent.com"].includes(url.hostname),
+    "application/vnd.github+json", resolveHost, openRequest);
+}
+export function createCodebergReader(resolveHost = lookup, openRequest = request): ReadBytes {
+  return createPinnedReader("Codeberg",
+    url => url.hostname === "codeberg.org" && url.pathname.startsWith("/api/v1/repos/"),
+    "application/json", resolveHost, openRequest);
+}
+export function createSourceForgeReader(resolveHost = lookup, openRequest = request): ReadBytes {
+  return createPinnedReader("SourceForge",
+    url => url.hostname === "sourceforge.net" && /^\/projects\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/rss$/.test(url.pathname),
+    "application/rss+xml, application/xml, text/xml", resolveHost, openRequest);
+}
 export const safeGithubBytes = createGithubReader();
+export const safeCodebergBytes = createCodebergReader();
+export const safeSourceForgeBytes = createSourceForgeReader();
 
 function blobSha(bytes: Buffer) {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
-export async function resolveRepositoryTree(value: string, signal: AbortSignal, read: ReadBytes = safeGithubBytes, allowReleaseFallback = false) {
+const readerFor = (provider: RepositoryProvider) => provider === "codeberg" ? safeCodebergBytes : safeGithubBytes;
+const apiRootFor = (provider: RepositoryProvider, repository: string) =>
+  provider === "codeberg" ? `https://codeberg.org/api/v1/repos/${repository}` : `https://api.github.com/repos/${repository}`;
+
+export async function resolveRepositoryTree(value: string, signal: AbortSignal, readOverride?: ReadBytes, allowReleaseFallback = false) {
   const link = parseRepositoryLink(value);
-  const api = `https://api.github.com/repos/${link.repository}`;
+  const read = readOverride ?? readerFor(link.provider);
+  const api = apiRootFor(link.provider, link.repository);
   const json = async (path: string, limit = 512 * 1024) => {
     try { return JSON.parse((await read(`${api}${path}`, limit, signal)).toString("utf8")); }
     catch (error) {
-      if (error instanceof SyntaxError) throw new RepositoryImportError("GitHub returned invalid repository metadata.", 502);
+      if (error instanceof SyntaxError) throw new RepositoryImportError(`${link.provider} returned invalid repository metadata.`, 502);
       throw error;
     }
   };
   const repo = await json("");
-  if (repo.private !== false || repo.disabled === true) throw new RepositoryImportError("Only public, enabled GitHub repositories can be imported.");
+  if (repo.private !== false || repo.disabled === true || repo.archived === true) {
+    throw new RepositoryImportError(`Only public, enabled ${link.provider} repositories can be imported.`);
+  }
   const reference = link.ref ?? repo.default_branch;
   if (typeof reference !== "string" || reference.length > 256) throw new RepositoryImportError("The repository has no usable default revision.");
   let commitReference = reference;
-  if (value.includes("/releases/tag/")) {
+  if (link.refType === "tag") {
     let object = (await json(`/git/ref/tags/${encodeURIComponent(reference)}`)).object;
     for (let depth = 0; object?.type === "tag" && depth < 4; depth++) {
       if (!sha.test(object.sha ?? "")) throw new RepositoryImportError("Invalid release tag object.", 502);
@@ -153,10 +199,19 @@ export async function resolveRepositoryTree(value: string, signal: AbortSignal, 
     }
     if (object?.type !== "commit" || !sha.test(object.sha ?? "")) throw new RepositoryImportError("The release tag does not resolve to a bounded immutable commit.", 422);
     commitReference = object.sha;
+  } else if (link.provider === "codeberg" && link.refType !== "commit") {
+    const branch = await json(`/branches/${encodeURIComponent(reference)}`);
+    if (!sha.test(branch.commit?.id ?? "")) throw new RepositoryImportError("Codeberg did not resolve this branch to an immutable commit.", 502);
+    commitReference = branch.commit.id;
   }
-  const commit = await json(`/commits/${encodeURIComponent(commitReference)}`);
-  if (!sha.test(commit.sha ?? "")) throw new RepositoryImportError("GitHub did not resolve this link to an immutable commit.", 502);
-  const revision = commit.sha as string;
+  const commit = link.provider === "github"
+    ? await json(`/commits/${encodeURIComponent(commitReference)}`)
+    : await json(`/git/commits/${encodeURIComponent(commitReference)}`);
+  const revisionValue = commit.sha ?? commit.id;
+  if (!sha.test(revisionValue ?? "") || (link.refType === "commit" && revisionValue !== link.ref)) {
+    throw new RepositoryImportError(`${link.provider} did not resolve this link to the requested immutable commit.`, 502);
+  }
+  const revision = revisionValue as string;
   let tree, sourceComplete = true;
   try {
     tree = await json(`/git/trees/${revision}?recursive=1`);
@@ -178,8 +233,48 @@ export async function resolveRepositoryTree(value: string, signal: AbortSignal, 
   return { link, reference, revision, nodes, json, metadata: repo, sourceComplete };
 }
 
-export async function readRepositoryLicense(snapshot: Awaited<ReturnType<typeof resolveRepositoryTree>>) {
+function detectFullLicense(text: string) {
+  const value = text.replace(/\r/g, "");
+  if (/Permission is hereby granted, free of charge[\s\S]{0,2000}THE SOFTWARE IS PROVIDED ["“]AS IS["”]/i.test(value)) return "MIT";
+  if (/Apache License[\s\S]{0,200}Version 2\.0/i.test(value) && /TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION/i.test(value)) return "Apache-2.0";
+  if (/GNU AFFERO GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 3/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "AGPL-3.0";
+  if (/GNU LESSER GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 3/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "LGPL-3.0";
+  if (/GNU LESSER GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 2\.1/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "LGPL-2.1";
+  if (/GNU GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 3/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "GPL-3.0";
+  if (/GNU GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 2/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "GPL-2.0";
+  if (/Mozilla Public License[\s\S]{0,100}Version 2\.0/i.test(value) && /Exhibit A - Source Code Form License/i.test(value)) return "MPL-2.0";
+  if (/Redistribution and use in source and binary forms, with or without modification/i.test(value) &&
+      /THE SOFTWARE IS PROVIDED ["“]AS IS["”]/i.test(value)) {
+    return /Neither the name of the .* nor the names of its contributors may be used/i.test(value) ? "BSD-3-Clause" : "BSD-2-Clause";
+  }
+  if (/Permission to use, copy, modify, and\/or distribute this software for any purpose/i.test(value) &&
+      /THE SOFTWARE IS PROVIDED ["“]AS IS["”]/i.test(value)) return "ISC";
+  if (/This software is provided ["“]as-is["”]/i.test(value)) return "Zlib";
+  if (/Creative Commons Zero v1\.0 Universal/i.test(value) && /No Copyright/i.test(value)) return "CC0-1.0";
+  if (/This is free and unencumbered software released into the public domain/i.test(value)) return "Unlicense";
+  return null;
+}
+
+export async function readRepositoryLicense(
+  snapshot: Awaited<ReturnType<typeof resolveRepositoryTree>>,
+  signal: AbortSignal = AbortSignal.timeout(15_000),
+  readOverride?: ReadBytes,
+) {
   const { json, revision, nodes } = snapshot;
+  const read = readOverride ?? readerFor(snapshot.link.provider);
+  if (snapshot.link.provider === "codeberg") {
+    const candidates = nodes.filter(node => node.type === "blob" && !node.path.includes("/") &&
+      /^(?:license|copying)(?:\.(?:txt|md|rst))?$/i.test(node.path));
+    for (const node of candidates.slice(0, 4)) {
+      if (!Number.isSafeInteger(node.size) || node.size <= 0 || node.size > 128 * 1024) continue;
+      const bytes = await readRepositoryFile(snapshot.link.repository, revision,
+        { path: node.path, size: node.size, sha: node.sha }, signal, read, "codeberg");
+      const text = bytes.toString("utf8");
+      const spdx = detectFullLicense(text);
+      if (spdx && licenses.has(spdx)) return { spdx, path: node.path, text };
+    }
+    throw new RepositoryImportError("No supported full license text could be verified against the pinned Codeberg tree. A catalog label is not enough to import source.");
+  }
   let licenseData;
   try { licenseData = await json(`/license?ref=${revision}`, 256 * 1024); }
   catch (error) {
@@ -202,18 +297,63 @@ export async function readRepositoryLicense(snapshot: Awaited<ReturnType<typeof 
   return { spdx: spdx as string, path: licensePath as string, text: licenseBytes.toString("utf8") };
 }
 
-export async function readRepositoryFile(repository: string, revision: string, file: RepositoryFile, signal: AbortSignal, read: ReadBytes = safeGithubBytes) {
+export async function readRepositoryWorkStateWarning(
+  snapshot: Awaited<ReturnType<typeof resolveRepositoryTree>>,
+  signal: AbortSignal,
+  readOverride?: ReadBytes,
+) {
+  if (snapshot.link.provider !== "codeberg") return null;
+  const node = snapshot.nodes.find(candidate => candidate.type === "blob" &&
+    !candidate.path.includes("/") && /^readme\.md$/i.test(candidate.path));
+  if (!node || !Number.isSafeInteger(node.size) || node.size <= 0 || node.size > 128 * 1024) return null;
+  const bytes = await readRepositoryFile(snapshot.link.repository, snapshot.revision,
+    { path: node.path, size: node.size, sha: node.sha }, signal, readOverride, "codeberg");
+  const text = bytes.toString("utf8");
+  if (!/curr(?:ently|ntly)\s+not\s+in\s+a\s+working\s+state/i.test(text)) return null;
+  return {
+    path: node.path,
+    message: "The pinned upstream README explicitly says this repository is not in a working state; source import is blocked.",
+    detail: "Pinned README warns that this repository is currently not in a working state.",
+  };
+}
+
+export async function readRepositoryFile(
+  repository: string,
+  revision: string,
+  file: RepositoryFile,
+  signal: AbortSignal,
+  readOverride?: ReadBytes,
+  provider: RepositoryProvider = "github",
+) {
   if (!sha.test(revision) || !file.path.split("/").every(safePathSegment) || !Number.isSafeInteger(file.size) || file.size < 0 || !sha.test(file.sha)) {
     throw new RepositoryImportError("Invalid pinned repository file.");
   }
   const encoded = file.path.split("/").map(encodeURIComponent).join("/");
-  const bytes = await read(`https://raw.githubusercontent.com/${repository}/${revision}/${encoded}`, file.size, signal);
+  let bytes: Buffer;
+  if (provider === "codeberg") {
+    const read = readOverride ?? safeCodebergBytes;
+    const url = `https://codeberg.org/api/v1/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(revision)}`;
+    let data: any;
+    try { data = JSON.parse((await read(url, Math.min(3 * 1024 * 1024, Math.ceil(file.size * 1.5) + 2048), signal)).toString("utf8")); }
+    catch (error) {
+      if (error instanceof SyntaxError) throw new RepositoryImportError("Codeberg returned invalid pinned file metadata.", 502);
+      throw error;
+    }
+    if (data.type !== "file" || data.path !== file.path || data.encoding !== "base64" || data.sha !== file.sha ||
+        typeof data.content !== "string" || data.content.length > 2 * 1024 * 1024) {
+      throw new RepositoryImportError(`Codeberg did not return the reviewed pinned file: ${file.path}.`);
+    }
+    bytes = Buffer.from(data.content.replace(/\s/g, ""), "base64");
+  } else {
+    const read = readOverride ?? safeGithubBytes;
+    bytes = await read(`https://raw.githubusercontent.com/${repository}/${revision}/${encoded}`, file.size, signal);
+  }
   if (bytes.length !== file.size || blobSha(bytes) !== file.sha) throw new RepositoryImportError(`Pinned file verification failed: ${file.path}.`);
   if (bytes.subarray(0, 100).toString().startsWith("version https://git-lfs.github.com/spec/")) throw new RepositoryImportError(`Git LFS files are not supported: ${file.path}.`);
   return bytes;
 }
 
-export async function inspectRepository(value: string, signal: AbortSignal, read: ReadBytes = safeGithubBytes): Promise<RepositoryPlan> {
+export async function inspectRepository(value: string, signal: AbortSignal, read?: ReadBytes): Promise<RepositoryPlan> {
   const snapshot = await resolveRepositoryTree(value, signal, read);
   const { link, revision, reference, nodes } = snapshot;
   const pages = nodes.filter(node => node.type === "blob" && node.path.startsWith(link.folder) && /\.html?$/i.test(node.path));
@@ -223,7 +363,9 @@ export async function inspectRepository(value: string, signal: AbortSignal, read
     : "No ready-to-play HTML page was found. This importer does not run build scripts; provide an offline HTML game or built game folder.");
   const entryPath = (indexPage ?? pages[0]).path;
   const gameFolder = entryPath.slice(0, entryPath.lastIndexOf("/") + 1);
-  const license = await readRepositoryLicense(snapshot);
+  const license = await readRepositoryLicense(snapshot, signal, read);
+  const workStateWarning = await readRepositoryWorkStateWarning(snapshot, signal, read);
+  if (workStateWarning) throw new RepositoryImportError(workStateWarning.message, 422);
   const licensePath = license.path;
   const selected = nodes.filter(node => node.path === licensePath ||
     (node.path.startsWith(gameFolder) && node.type !== "tree" && supportedFile.test(node.path) &&
@@ -240,19 +382,23 @@ export async function inspectRepository(value: string, signal: AbortSignal, read
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   if (totalBytes > MAX_BYTES) throw new RepositoryImportError("Repository game packages are limited to 2 MB total, before compression.", 413);
   return {
+    provider: link.provider,
     repository: link.repository, revision, reference,
-    sourceUrl: `https://github.com/${link.repository}/tree/${revision}`,
+    sourceUrl: link.provider === "github"
+      ? `https://github.com/${link.repository}/tree/${revision}`
+      : `https://codeberg.org/${link.repository}/src/commit/${revision}`,
     entryPath, files, totalBytes,
     license,
   };
 }
 
-export async function acquireRepository(plan: RepositoryPlan, signal: AbortSignal, read: ReadBytes = safeGithubBytes) {
+export async function acquireRepository(plan: RepositoryPlan, signal: AbortSignal, read?: ReadBytes) {
   const files: Array<RepositoryFile & { contentBase64: string }> = [];
   // Small sequential batches bound both network concurrency and transient bytes.
   for (let offset = 0; offset < plan.files.length; offset += 4) {
     const batch = await Promise.all(plan.files.slice(offset, offset + 4).map(async file => {
-      const bytes = await readRepositoryFile(plan.repository, plan.revision, file, signal, read);
+      const bytes = await readRepositoryFile(plan.repository, plan.revision, file, signal, read,
+        plan.provider ?? (plan.sourceUrl.includes("codeberg.org") ? "codeberg" : "github"));
       return { ...file, contentBase64: bytes.toString("base64") };
     }));
     files.push(...batch);

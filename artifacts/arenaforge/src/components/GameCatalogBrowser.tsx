@@ -10,7 +10,7 @@ const SOURCES: Record<string, { name: string; url: string }> = {
   bobeff: { name: "bobeff/open-source-games", url: "https://github.com/bobeff/open-source-games" },
   trilarion: { name: "Trilarion OSGL", url: "https://trilarion.github.io/opensourcegames/" },
 };
-const GITHUB_REPO = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/.*)?$/;
+const CATALOG_SOURCE = /^https:\/\/(?:(?:github\.com|codeberg\.org)\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+|sourceforge\.net\/projects\/[A-Za-z0-9_-]+)(?:\/.*)?$/i;
 const safeHref = (u: string | null) => (u && /^https?:\/\//i.test(u) ? u : undefined);
 const errText = (c: unknown, f: string) => {
   const e = c as { data?: { error?: string }; message?: string };
@@ -28,7 +28,7 @@ export default function GameCatalogBrowser({ disabled, onChooseRepository }: {
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [resolving, setResolving] = useState<string | null>(null);
-  const [chosen, setChosen] = useState<{ entry: ArcadeCatalogEntry; github: boolean } | null>(null);
+  const [chosen, setChosen] = useState<{ entry: ArcadeCatalogEntry; supported: boolean } | null>(null);
   const [resolveError, setResolveError] = useState("");
   const seq = useRef(0);
   const ctl = useRef<AbortController | null>(null);
@@ -61,9 +61,9 @@ export default function GameCatalogBrowser({ disabled, onChooseRepository }: {
     try {
       const full = await resolveArcadeCatalogGame({ id: entry.id }, { signal: c.signal });
       if (id !== rseq.current) return;
-      const github = !!full.sourceUrl && GITHUB_REPO.test(full.sourceUrl);
-      setChosen({ entry: full, github });
-      if (github && full.sourceUrl) onChooseRepository(full.sourceUrl);
+      const supported = !!full.sourceUrl && CATALOG_SOURCE.test(full.sourceUrl);
+      setChosen({ entry: full, supported });
+      if (supported && full.sourceUrl) onChooseRepository(full.sourceUrl);
     } catch (cause) {
       if (id !== rseq.current || c.signal.aborted) return;
       setResolveError(errText(cause, "Could not resolve that catalog entry."));
@@ -143,10 +143,10 @@ export default function GameCatalogBrowser({ disabled, onChooseRepository }: {
     {chosen && <div data-testid="catalog-chosen" className="mt-2 rounded-md border border-white/10 bg-white/5 p-2">
       <p><strong className="text-slate-100">{chosen.entry.title}</strong>{" "}
         {safeHref(chosen.entry.detailsUrl) && <a className="underline" href={safeHref(chosen.entry.detailsUrl)} target="_blank" rel="noreferrer noopener">catalog details</a>}</p>
-      {chosen.github
-        ? <p className="mt-1 text-slate-400">GitHub source found. Reviewing it below; the review decides what can be installed.</p>
+      {chosen.supported
+        ? <p className="mt-1 text-slate-400">Provider source found. Its pinned review decides whether anything can be imported; SourceForge downloads stay blocked without verified source and license evidence.</p>
         : <p data-testid="catalog-unsupported" className="mt-1 text-amber-100">
-            {chosen.entry.sourceUrl ? <>Source is hosted at <a className="underline break-all" href={safeHref(chosen.entry.sourceUrl)} target="_blank" rel="noreferrer noopener">{chosen.entry.sourceUrl}</a>, which</> : "No source link is listed, so"} Arcade can't review or install it. Only GitHub repositories are supported.
+            {chosen.entry.sourceUrl ? <>Source is hosted at <a className="underline break-all" href={safeHref(chosen.entry.sourceUrl)} target="_blank" rel="noreferrer noopener">{chosen.entry.sourceUrl}</a>, which</> : "No source link is listed, so"} Arcade can't review or install it. Supported sources are GitHub, Codeberg, and SourceForge project pages.
           </p>}
       <p className="mt-1 text-[11px] text-slate-500">Catalog licenses are unverified hints, not permission to install. Engine code may need game assets you must own separately.</p>
     </div>}

@@ -27,7 +27,9 @@ export async function POST(req: Request) {
     const files: Array<{ path: string; size: number; sha: string; contentBase64: string }> = [];
     for (let index = 0; index < plan.files.length; index += 4) {
       files.push(...await Promise.all(plan.files.slice(index, index + 4).map(async file => ({
-        ...file, contentBase64: (await readRepositoryFile(plan.repository, plan.revision, file, signal)).toString("base64"),
+        ...file, contentBase64: (await readRepositoryFile(
+          plan.repository, plan.revision, file, signal, undefined, plan.provider === "codeberg" ? "codeberg" : "github",
+        )).toString("base64"),
       }))));
     }
     return Response.json({ provenance: { repository: plan.repository, revision: plan.revision, sourceUrl: plan.sourceUrl, license: plan.license },
