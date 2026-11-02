@@ -42,6 +42,7 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
   const pendingStartMs = useRef<number | null>(null);
   const recoveryInFlight = useRef(false);
   const wasBackgrounded = useRef(false);
+  const recoverAudioContext = useRef<() => void>(() => undefined);
   const [playing, setPlaying] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +58,10 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
   }, []);
 
   const ensureContext = useCallback(() => {
-    if (!context.current) context.current = new AudioContext();
+    if (!context.current) {
+      context.current = new AudioContext();
+      context.current.addEventListener("statechange", () => recoverAudioContext.current());
+    }
     return context.current;
   }, []);
   const ensureBuffer = useCallback(async (assetId: string) => {
@@ -251,6 +255,7 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
       const resumeAt =
         origin.current.positionMs +
         (audio.currentTime - origin.current.contextTime) * 1000;
+      setPlaying(false);
       recoveryInFlight.current = true;
       void (async () => {
         try {
@@ -273,6 +278,7 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
         }
       })();
     };
+    recoverAudioContext.current = recover;
     document.addEventListener("visibilitychange", recover);
     window.addEventListener("pageshow", recover);
     window.addEventListener("focus", recover);
@@ -280,6 +286,7 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
       document.removeEventListener("visibilitychange", recover);
       window.removeEventListener("pageshow", recover);
       window.removeEventListener("focus", recover);
+      recoverAudioContext.current = () => undefined;
     };
   }, [failPreview, schedule, startClock]);
 

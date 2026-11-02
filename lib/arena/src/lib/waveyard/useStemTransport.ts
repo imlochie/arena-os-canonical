@@ -286,6 +286,7 @@ export function useStemTransport(
   const wantsPlayback = useRef(false);
   const recoveryInFlight = useRef(false);
   const wasBackgrounded = useRef(false);
+  const recoverAudioContext = useRef<() => void>(() => undefined);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   // Commands such as seek(0); play() run in one event/effect. React state
@@ -307,6 +308,7 @@ export function useStemTransport(
     if (!element) return null;
     if (!context.current) {
       context.current = new AudioContext();
+      context.current.addEventListener("statechange", () => recoverAudioContext.current());
       masterGain.current = context.current.createGain();
       const ctx = context.current;
       masterAnalyser.current = ctx.createAnalyser();
@@ -657,17 +659,23 @@ export function useStemTransport(
       wasBackgrounded.current = false;
       if (!wantsPlayback.current || recoveryInFlight.current) return;
       const elements = currentPlaybackIds.current.map((id) => media.current[id]);
+      const interrupted = context.current?.state !== "running";
       const needsRecovery =
         returnedFromBackground ||
-        context.current?.state !== "running" ||
+        interrupted ||
         elements.some((element) => !element || element.paused);
       if (!needsRecovery) return;
       const current = currentPosition();
       positionRef.current = current;
       setPosition(current);
+      if (interrupted) {
+        elements.forEach((element) => element?.pause());
+        setPlaying(false);
+      }
       recoveryInFlight.current = true;
       void play().finally(() => { recoveryInFlight.current = false; });
     };
+    recoverAudioContext.current = recover;
     document.addEventListener("visibilitychange", recover);
     window.addEventListener("pageshow", recover);
     window.addEventListener("focus", recover);
@@ -675,6 +683,7 @@ export function useStemTransport(
       document.removeEventListener("visibilitychange", recover);
       window.removeEventListener("pageshow", recover);
       window.removeEventListener("focus", recover);
+      recoverAudioContext.current = () => undefined;
     };
   }, [currentPosition, play]);
 

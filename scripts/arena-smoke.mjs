@@ -26,6 +26,17 @@ if (process.argv.includes("--revision-rollback-only")) {
   process.exit(0);
 }
 
+execFileSync(
+  process.execPath,
+  [new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
+  { stdio: "inherit" },
+);
+execFileSync(
+  process.execPath,
+  [new URL("./waveyard-arrangement-preview.mjs", import.meta.url).pathname],
+  { stdio: "inherit" },
+);
+
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
 const arenaRequire = createRequire(new URL("../artifacts/arenaforge/package.json", import.meta.url));
@@ -2632,10 +2643,17 @@ try {
           [...document.querySelectorAll('audio[aria-label$=" audio"]')].some((audio) => !audio.paused && audio.currentTime > before + 0.15),
         stemTimeBefore, { timeout: 5_000 });
         report.push("Stem playback recovers after a simulated phone app switch suspends its audio context and pauses media.");
+        const foregroundStemTime = await page.locator('audio[aria-label$=" audio"]').first().evaluate((audio) => audio.currentTime);
+        await page.evaluate(() => window.__arenaSmokeAudioContexts[0]?.suspend());
+        await page.waitForFunction((before) =>
+          document.visibilityState === "visible" &&
+          window.__arenaSmokeAudioContexts[0]?.state === "running" &&
+          [...document.querySelectorAll('audio[aria-label$=" audio"]')].some((audio) => !audio.paused && audio.currentTime > before + 0.15),
+        foregroundStemTime, { timeout: 10_000 });
+        report.push("Foreground stem playback recovers from an audio-context interruption without losing its playhead.");
       } finally {
         await setSimulatedVisibility(page, "visible");
       }
-      await setSimulatedVisibility(page, "hidden");
       await page.evaluate(() => {
         const audio = [...document.querySelectorAll('audio[aria-label$=" audio"]')].find((element) => !element.paused);
         if (!audio) throw new Error("No active stem audio element is available for interruption testing.");
@@ -2648,10 +2666,11 @@ try {
           }
           return originalPlay();
         };
-        document.querySelectorAll('audio[aria-label$=" audio"]').forEach((element) => element.pause());
+        return window.__arenaSmokeAudioContexts[0]?.suspend();
       });
-      await setSimulatedVisibility(page, "visible");
       await mobileTransport.getByRole("alert").filter({ hasText: "Tap Play stems to resume" }).waitFor({ timeout: 5_000 });
+      assert.equal(await page.evaluate(() => document.visibilityState), "visible",
+        "a blocked foreground audio-context recovery must not depend on a visibility transition");
       await playButton.waitFor({ state: "visible" });
       assert.equal(await page.locator('audio[aria-label$=" audio"]').evaluateAll((audios) => audios.filter((audio) => !audio.paused).length), 0,
         "a denied media restart must stop every stem instead of leaving partial silent playback");
@@ -2688,6 +2707,14 @@ try {
         Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > before + 0.1,
       positionBeforeArrangementInterruption, { timeout: 5_000 });
       report.push("Arrangement preview resumes at its playhead after a suspended audio context is restored.");
+      const foregroundArrangementPosition = Number(await seekSlider.inputValue());
+      await page.evaluate(() => window.__arenaSmokeAudioContexts[1]?.suspend());
+      await page.waitForFunction((before) =>
+        document.visibilityState === "visible" &&
+        window.__arenaSmokeAudioContexts[1]?.state === "running" &&
+        Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > before + 0.1,
+      foregroundArrangementPosition, { timeout: 10_000 });
+      report.push("Foreground arrangement preview recovers from an audio-context interruption and continues at its playhead.");
       await pauseArrangement.evaluate(async () => {
         const audioContext = window.__arenaSmokeAudioContexts[1];
         const originalResume = audioContext.resume.bind(audioContext);
@@ -2701,9 +2728,9 @@ try {
         };
         await audioContext.suspend();
       });
-      await setSimulatedVisibility(page, "hidden");
-      await setSimulatedVisibility(page, "visible");
       await mobileTransport.getByRole("alert").filter({ hasText: "Tap Preview arrangement to try again" }).waitFor({ timeout: 5_000 });
+      assert.equal(await page.evaluate(() => document.visibilityState), "visible",
+        "a blocked foreground arrangement recovery must not depend on a visibility transition");
       await previewButton.waitFor({ state: "visible" });
       assert.equal(await pauseArrangement.count(), 0,
         "blocked arrangement recovery must not leave a playing indicator for silent audio");
@@ -3918,14 +3945,6 @@ try {
   await browser.close();
 }
 
-execFileSync(
-  process.execPath,
-  ["--test", new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
-  { stdio: "inherit" },
-);
-
-// Isolated persistent browser profile: verifies real IndexedDB writes and a
-// complete browser restart without touching the main smoke session's shelf.
 execFileSync(
   process.execPath,
   [new URL("./arcade-shelf-persistence.mjs", import.meta.url).pathname],

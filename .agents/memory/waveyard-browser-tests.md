@@ -21,6 +21,12 @@ For app-background audio recovery tests, this workspace's Chromium build does no
 
 **How to apply:** Use the deterministic document-state shim for lifecycle listeners and keep context/media interruption behavior native; describe this as simulated browser coverage, not physical phone acceptance.
 
+For foreground call or output interruptions, suspend the real `AudioContext` while the document remains visible and assert recovery from its `statechange` event independently of visibility, focus, or page-show events.
+
+**Why:** Some phones interrupt audio without changing document visibility, so lifecycle-only tests cannot prove the Studio transport will recover or expose a retry state.
+
+**How to apply:** Cover both successful automatic recovery and a rejected resume while Studio stays foregrounded; assert the transport playhead continues from the interruption point and manual pause remains respected.
+
 Chromium does support CDP `Page.setWebLifecycleState` with `frozen` and `active` for suspension checks. Freezing alone does not prove missed-notice recovery: queued cross-tab messages can arrive on thaw, and background polling can independently refresh the view.
 
 **Why:** A resume regression must distinguish lifecycle-triggered recovery from delayed notice delivery or ordinary polling.

@@ -362,6 +362,35 @@ test("pause cancels a pending start instead of allowing late audio", { timeout: 
   assert.ok(await page.locator("audio").evaluateAll((elements) => elements.every((element) => element.paused)));
 });
 
+test("foreground audio-context interruption resumes stems at the current playhead", { timeout: 20_000 }, async (t) => {
+  const page = await openFixture(t);
+  await page.evaluate(() => {
+    const contexts = [];
+    const NativeAudioContext = window.AudioContext;
+    Object.defineProperty(window, "__smokeAudioContexts", { configurable: true, value: contexts });
+    window.AudioContext = new Proxy(NativeAudioContext, {
+      construct(target, args, newTarget) {
+        const audioContext = Reflect.construct(target, args, newTarget);
+        contexts.push(audioContext);
+        return audioContext;
+      },
+    });
+  });
+  await start(page);
+  const before = await page.locator("audio").first().evaluate((audio) => audio.currentTime);
+  await page.evaluate(() => window.__smokeAudioContexts[0].suspend());
+  await page.waitForFunction(() =>
+    document.visibilityState === "visible" &&
+    window.__smokeAudioContexts[0]?.state === "running" &&
+    window.transport.playing &&
+    [...document.querySelectorAll("audio")].some((audio) => !audio.paused),
+  null, { timeout: 5_000 });
+  await page.waitForFunction((previousPosition) =>
+    [...document.querySelectorAll("audio")].some((audio) => !audio.paused && audio.currentTime > previousPosition + 0.15),
+  before, { timeout: 5_000 });
+  await waitForEmpty(page, "error");
+});
+
 test("a media failure stops all stems and playback can recover", { timeout: 20_000 }, async (t) => {
   const page = await openFixture(t);
   await start(page);
