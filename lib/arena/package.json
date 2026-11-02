@@ -317,6 +317,7 @@
     "./lib/waveyard/library/audio-restore": "./src/lib/waveyard/library/audio-restore.ts",
     "./lib/waveyard/library/session-logic.test": "./src/lib/waveyard/library/session-logic.test.ts",
     "./lib/waveyard/library/session-logic": "./src/lib/waveyard/library/session-logic.ts",
+    "./lib/waveyard/session-dj-controls": "./src/lib/waveyard/session-dj-controls.ts",
     "./lib/waveyard/library/performance": "./src/lib/waveyard/library/performance.ts",
     "./lib/waveyard/library/camelot-wheel.test": "./src/lib/waveyard/library/camelot-wheel.test.ts",
     "./lib/waveyard/library/camelot-wheel": "./src/lib/waveyard/library/camelot-wheel.ts",

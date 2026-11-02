@@ -17,7 +17,14 @@ function fixture(
     },
   channelIds = ["vocals"],
 ) {
-  const sources: Array<{ offset: number; stopped: boolean; loop: boolean; buffer: AudioBuffer | null; connectedTo: unknown }> = [];
+  const sources: Array<{
+    offset: number;
+    stopped: boolean;
+    loop: boolean;
+    buffer: AudioBuffer | null;
+    connectedTo: unknown;
+    playbackRate: { value: number; setValueAtTime(value: number, time: number): void };
+  }> = [];
   const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }>; connectedTo: unknown }> = [];
   let decodeCount = 0;
   const context = {
@@ -29,6 +36,10 @@ function fixture(
     createBufferSource() {
       const source = {
         offset: -1, stopped: false, loop: false, buffer: null, connectedTo: null as unknown,
+        playbackRate: {
+          value: 1,
+          setValueAtTime(value: number) { this.value = value; },
+        },
         connect(destination: unknown) { this.connectedTo = destination; }, disconnect() {},
         start(_when: number, offset: number) { this.offset = offset; },
         stop() { this.stopped = true; },
@@ -160,6 +171,23 @@ test("preparation leaves original audible; ready donor joins the unchanged recip
     const donorFade = f.gains[2].automation.find(event => event.type === "ramp");
     assert.deepEqual(originalFade, { type: "ramp", value: 0, time: 5.04 });
     assert.deepEqual(donorFade, { type: "ramp", value: 1, time: 5.04 });
+  } finally { f.layers.dispose(); }
+});
+
+test("varispeed updates an audible donor and carries into later live layers", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  try {
+    f.layers.setPlaybackRate(1.1);
+    await f.layers.replace("vocals", "/first");
+    assert.equal(f.sources[0]?.playbackRate.value, 1.1);
+
+    f.layers.setPlaybackRate(0.9);
+    assert.equal(f.sources[0]?.playbackRate.value, 0.9);
+
+    await f.layers.replace("vocals", null);
+    await f.layers.replace("vocals", "/second");
+    assert.equal(f.sources[1]?.playbackRate.value, 0.9);
   } finally { f.layers.dispose(); }
 });
 

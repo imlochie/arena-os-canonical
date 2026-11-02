@@ -10,3 +10,9 @@ Control events are authoritative; progress heartbeats are passive and accepted o
 **Why:** Each browser tab mounts its own audio graph, so independent controls can create duplicate playback or let a delayed playhead overwrite a newer pause, seek, or track change.
 
 **How to apply:** Keep transport synchronization in the shared queue-sync channel. When changing event shapes, retain ordering and mirror-without-autoplay behavior, and test two real browser pages against one session.
+
+An unreported deck starting playback is still a user control and must publish the first play event. An unreported paused state is not a new command and should stay silent.
+
+**Why:** Suppressing a first play when the deck had no prior reported state left the mirror tab's controls showing paused even while the active tab played.
+
+**How to apply:** When gating play-state broadcasts, publish `unknown → playing`, but do not broadcast `unknown → paused`. Test after a fresh mount and after a track change.

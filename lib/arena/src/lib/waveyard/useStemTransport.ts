@@ -1,7 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LiveStemLayers } from "./live-stem-layers";
+import { LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
+export {
+  SESSION_PLAYBACK_RATE_MAX,
+  SESSION_PLAYBACK_RATE_MIN,
+  normalizeSessionPlaybackRate,
+} from "./live-stem-layers";
 export { LiveStemSwitchTimeoutError } from "./live-stem-layers";
 
 export type MixerValues = {
@@ -219,6 +224,14 @@ const DEFAULT_MIXER_VALUES: MixerValues = {
   solo: false,
 };
 
+function applyMediaPlaybackRate(element: HTMLAudioElement, rate: number) {
+  element.playbackRate = rate;
+  const capabilities = element as unknown as Record<string, unknown>;
+  for (const property of ["preservesPitch", "webkitPreservesPitch", "mozPreservesPitch"]) {
+    if (property in capabilities) capabilities[property] = false;
+  }
+}
+
 /** Resolve mixer intent only for the currently loaded audio channels. */
 export function resolveActiveMixerState(
   ids: readonly string[],
@@ -261,6 +274,7 @@ export function useStemTransport(
   const masterRight = useRef<AnalyserNode | null>(null);
   const clipHold = useRef<Record<string, number>>({});
   const mixValues = useRef<Record<string, MixerValues>>({});
+  const playbackRate = useRef(1);
   const masterTap = useRef<MediaStreamAudioDestinationNode | null>(null);
   const clockId = useRef<number | null>(null);
   const lastUiUpdate = useRef(0);
@@ -361,6 +375,14 @@ export function useStemTransport(
     if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
     return liveLayers.current!.preload(url, tempoStretchRatio, selectedAt);
   }, [ensureGraph]);
+  const setPlaybackRate = useCallback((value: number) => {
+    const rate = normalizeSessionPlaybackRate(value);
+    playbackRate.current = rate;
+    for (const element of Object.values(media.current)) {
+      if (element) applyMediaPlaybackRate(element, rate);
+    }
+    liveLayers.current?.setPlaybackRate(rate);
+  }, []);
   const cancelPendingStem = useCallback((id: string) => liveLayers.current!.cancelPending(id), []);
   const prepareChannels = useCallback((channelIds: string[]) => {
     for (const id of channelIds) {
@@ -372,6 +394,7 @@ export function useStemTransport(
     await Promise.all(channelIds.map(async (id) => {
       const element = media.current[id];
       if (!element) throw new Error("A prepared stem audio element is no longer available.");
+      applyMediaPlaybackRate(element, playbackRate.current);
       element.currentTime = Math.max(0, Math.min(at, Number.isFinite(element.duration) ? element.duration - 0.01 : at));
       await element.play();
     }));
@@ -388,6 +411,7 @@ export function useStemTransport(
         delete graphs.current[id];
       }
       media.current[id] = element;
+      if (element) applyMediaPlaybackRate(element, playbackRate.current);
     },
     [],
   );
@@ -547,6 +571,7 @@ export function useStemTransport(
         const element = media.current[id];
         if (!element) throw new Error(`Stem ${id} is not loaded. Reopen this track and retry.`);
         if (element.error) throw new Error(`Stem ${id} could not be loaded. Check its source file and retry.`);
+        applyMediaPlaybackRate(element, playbackRate.current);
         return element;
       });
       for (const id of playbackIds) ensureGraph(id);
@@ -831,6 +856,7 @@ export function useStemTransport(
     masterVolume,
     setMasterVolume,
     applyMasterVolumeRealtime,
+    setPlaybackRate,
     loop,
     setLoop,
     error,

@@ -108,6 +108,9 @@ let abortNextLibraryUpload = false;
 let libraryUploadRequests = 0;
 let heldAssetId = null;
 let heldAssetGate = null;
+let heldSessionSaveGate = null;
+let signalHeldSessionSaveRequest = null;
+let signalHeldSessionSaveFinished = null;
 let signalHeldAssetRequest = null;
 let signalHeldAssetRouteFinished = null;
 let pendingSwapDeleteGate = null;
@@ -391,7 +394,15 @@ try {
         const selected = session.swaps.find(s => s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType);
         if (selected?.id !== body.expectedSwapId) return route.fulfill({ json: { session } });
       }
-      if (body.toTrackId === "b" && body.stemType === "vocals") liveSwapRequestOrder.push("save");
+      if (body.toTrackId === "b" && body.stemType === "vocals") {
+        liveSwapRequestOrder.push("save");
+        signalHeldSessionSaveRequest?.();
+        if (heldSessionSaveGate) {
+          await heldSessionSaveGate;
+          liveSwapRequestOrder.push("save-complete:b");
+          signalHeldSessionSaveFinished?.();
+        }
+      }
       if (body.toTrackId === "d" && body.stemType === "vocals" && externalDonorSaveGate) {
         liveSwapRequestOrder.push("save-start:d");
         signalExternalDonorSave?.();
@@ -1167,6 +1178,62 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].length === 4 &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.readyState === 4));
   let current = page.locator('[data-role="current"]');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const playbackSpeed = page.getByTestId("session-playback-speed");
+  await playbackSpeed.waitFor();
+  for (let step = 0; step < 10; step += 1) await playbackSpeed.press("ArrowRight");
+  assert.equal(await page.getByTestId("session-speed-value").textContent(), "1.10×");
+  assert.match(await playbackSpeed.getAttribute("aria-valuetext"), /132 BPM.*pitch follows speed/);
+  const mediaSpeedEvidence = await page.locator("audio").evaluateAll((elements) =>
+    elements.map((element) => {
+      const audio = element;
+      return {
+        rate: audio.playbackRate,
+        preservesPitch: audio.preservesPitch,
+      };
+    }),
+  );
+  assert.ok(mediaSpeedEvidence.length > 0, "session should load audio elements before changing speed");
+  assert.ok(mediaSpeedEvidence.every((entry) => Math.abs(entry.rate - 1.1) < 0.001),
+    `all loaded stems must share the selected speed: ${JSON.stringify(mediaSpeedEvidence)}`);
+  assert.ok(mediaSpeedEvidence.every((entry) => entry.preservesPitch === false),
+    "speed changes must not preserve pitch on only the original media layers");
+  const speedLayout = await page.evaluate(() => ({
+    viewport: innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    controlWidth: document.querySelector('[data-testid="session-playback-speed"]')?.getBoundingClientRect().width ?? 0,
+  }));
+  assert.ok(speedLayout.documentWidth <= speedLayout.viewport,
+    `session speed control must fit on mobile: ${JSON.stringify(speedLayout)}`);
+  for (let step = 0; step < 10; step += 1) await playbackSpeed.press("ArrowLeft");
+  assert.equal(await page.getByTestId("session-speed-value").textContent(), "1.00×");
+  assert.equal(await page.getByTestId("session-loop-4").isEnabled(), true,
+    "a four-beat loop should be available when the analyzed grid covers it");
+  assert.equal(await page.getByTestId("session-loop-8").isEnabled(), false,
+    "a loop must not guess beyond the analyzed grid");
+  await page.getByTestId("session-loop-4").click();
+  assert.equal(await page.getByTestId("session-loop-4").getAttribute("aria-pressed"), "true");
+  await page.getByTestId("session-loop-off").click();
+  assert.equal(await page.getByTestId("session-loop-4").getAttribute("aria-pressed"), "false");
+  const cueSeek = current.getByTestId("seek-deck-0");
+  await cueSeek.fill("5");
+  await page.getByTestId("session-set-cue").click();
+  await cueSeek.fill("10");
+  await page.getByTestId("session-return-cue").click();
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('[data-role="current"] audio');
+    return audio && Math.abs(audio.currentTime - 5) < 0.1;
+  });
+  const djLayout = await page.evaluate(() => ({
+    viewport: innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    controls: document.querySelector(".wy-dj-controls")?.getBoundingClientRect().width ?? 0,
+  }));
+  assert.ok(djLayout.documentWidth <= djLayout.viewport,
+    `DJ loop and cue buttons must fit on mobile: ${JSON.stringify(djLayout)}`);
+  console.log("PASS: analyzed beat loops refuse unsupported lengths, toggle off, and cue return seeks the active deck on mobile");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  console.log("PASS: mobile session varispeed updates every media stem together, displays effective BPM, and returns to 1.00× without overflow");
   const firstPage = page;
   const toggle = async () => {
     const button = page.getByTestId("session-play");
@@ -1468,6 +1535,12 @@ try {
   heldAssetGate = slowDonorGate;
   signalHeldAssetRequest = signalSlowDonorRequest;
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
+  let releaseSessionSave;
+  let sessionSaveRequested;
+  let sessionSaveFinished;
+  heldSessionSaveGate = new Promise(resolve => { releaseSessionSave = resolve; });
+  sessionSaveRequested = new Promise(resolve => { signalHeldSessionSaveRequest = resolve; });
+  sessionSaveFinished = new Promise(resolve => { signalHeldSessionSaveFinished = resolve; });
   if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
   const playbackBeforeCancel = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
   const buffersBeforeCancel = await page.evaluate(() => window.audioProbe.buffers.length);
@@ -1480,10 +1553,21 @@ try {
     `the swap picker shows compatible BPM/key cues: ${donorBLabel}`);
   assert.match(donorCLabel, /BPM match[\s\S]*Key differs/,
     `the picker distinguishes a key mismatch from a tempo match: ${donorCLabel}`);
+  // Hold the save response open and prove the donor download has started
+  // before it completes; request-start ordering itself is not significant.
+  liveSwapRequestOrder.length = 0;
   await donorBOption.click();
+  await waitForSignal(sessionSaveRequested, "the selected donor session save");
   await waitForSignal(slowDonorRequested, "the live stem donor request");
-  assert.deepEqual(liveSwapRequestOrder.slice(0, 2), ["donor-preload", "save"],
-    "the selected donor starts downloading before the session waits for its save response");
+  assert.ok(liveSwapRequestOrder.includes("save"), "the donor choice should be saved");
+  assert.ok(liveSwapRequestOrder.includes("donor-preload"), "the donor audio should start loading");
+  assert.equal(liveSwapRequestOrder.includes("save-complete:b"), false,
+    "the donor audio should start while the session save is still pending");
+  releaseSessionSave();
+  await waitForSignal(sessionSaveFinished, "the selected donor save response");
+  heldSessionSaveGate = null;
+  signalHeldSessionSaveRequest = null;
+  signalHeldSessionSaveFinished = null;
   const cancelSlowSwap = page.getByTestId("cancel-live-stem-swap-swap-vocals");
   await cancelSlowSwap.waitFor();
   await page.waitForFunction(before => {
@@ -1729,8 +1813,7 @@ try {
   const failedDonorId = session.currentSessionTrackId === "c" ? "a" : "c";
   failAsset = `${failedDonorId}-bass`;
   await chooseLiveSource("bass", failedDonorId);
-  await current.getByRole("alert").waitFor();
-  assert.match(await current.getByRole("alert").textContent(), /previous layer was kept/);
+  await current.getByRole("alert").filter({ hasText: /previous layer was kept/ }).waitFor({ timeout: 10_000 });
   failAsset = null;
   await current.getByText("Retry live stems", { exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('[data-role="current"] [role="alert"]'));

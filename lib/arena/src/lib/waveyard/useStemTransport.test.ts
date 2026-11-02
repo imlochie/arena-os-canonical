@@ -3,9 +3,17 @@ import { test } from "node:test";
 
 import {
   isEffectivelyMuted,
+  normalizeSessionPlaybackRate,
   resolveActiveMixerState,
   type MixerValues,
 } from "./useStemTransport";
+
+test("session playback speed stays within the supported varispeed range", () => {
+  assert.equal(normalizeSessionPlaybackRate(0.5), 0.8);
+  assert.equal(normalizeSessionPlaybackRate(1), 1);
+  assert.equal(normalizeSessionPlaybackRate(1.7), 1.2);
+  assert.equal(normalizeSessionPlaybackRate(Number.NaN), 1);
+});
 
 test("active stem state ignores solo controls left behind by a removed bank", () => {
   const previousMix: Record<string, MixerValues> = {

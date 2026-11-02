@@ -3,7 +3,15 @@
 import Link from "@/routing/Link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { LibraryTrackSummary } from "@workspace/api-client-react";
-import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
+import {
+  useStemTransport,
+  normalizeSessionPlaybackRate,
+  SESSION_PLAYBACK_RATE_MAX,
+  SESSION_PLAYBACK_RATE_MIN,
+  type ChannelMeter,
+  type MixerValues,
+} from "@workspace/arena/lib/waveyard/useStemTransport";
+import { nextSessionBeatLoop, SESSION_DJ_LOOP_LENGTHS } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
@@ -105,8 +113,21 @@ interface PendingLiveSwap {
   sessionTrackId: string;
   stemType: string;
   donorTitle: string;
+  retryDonor: {
+    id: string;
+    title: string;
+    stems?: SessionTrackItem["stems"];
+    bpm?: number | null;
+  };
   previousSwap?: SessionDetail["swaps"][number];
   failed?: boolean;
+}
+
+interface FailedLiveSwap {
+  sessionTrackId: string;
+  stemType: string;
+  message: string;
+  donor: PendingLiveSwap["retryDonor"];
 }
 
 interface SwapMutationScope {
@@ -250,6 +271,8 @@ function SessionDeck({
   levels,
   onLevel,
   performanceSettings,
+  playbackRate,
+  onPlaybackRateChange,
   onPerformanceAction,
   onSnapChange,
   onInstantRestoreChange,
@@ -265,6 +288,8 @@ function SessionDeck({
   onOpenSwapPicker,
   onLiveLayerReady,
   onLiveLayerFailed,
+  liveSwapFailure,
+  onRetryLiveSwap,
   onReturnToSource,
   onApi,
   onPlaying,
@@ -284,6 +309,8 @@ function SessionDeck({
   levels: Record<string, number>;
   onLevel: (stemType: string, value: number) => void;
   performanceSettings: PerformanceSettings;
+  playbackRate: number;
+  onPlaybackRateChange: (value: number) => void;
   onPerformanceAction: (action: PerformanceAction) => void;
   onSnapChange: (snap: PerformanceSnap) => void;
   onInstantRestoreChange: (enabled: boolean) => void;
@@ -299,6 +326,8 @@ function SessionDeck({
   onOpenSwapPicker?: (stemType: string) => void;
   onLiveLayerReady?: (sessionTrackId: string, stemType: string) => void;
   onLiveLayerFailed?: (sessionTrackId: string, stemType: string, message: string) => void;
+  liveSwapFailure?: string | null;
+  onRetryLiveSwap?: () => void;
   onReturnToSource?: () => void;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
@@ -333,6 +362,27 @@ function SessionDeck({
   // the replacement is ready. In particular, a failed donor load must not
   // pause the source that is currently audible.
   const transport = useStemTransport(transportIds, duration, assetIds);
+  const [cuePosition, setCuePosition] = useState(0);
+  const [selectedLoopBeats, setSelectedLoopBeats] = useState<number | null>(null);
+  useEffect(() => {
+    transport.setPlaybackRate(playbackRate);
+  }, [playbackRate, transport.setPlaybackRate]);
+  useEffect(() => {
+    setCuePosition(0);
+    setSelectedLoopBeats(null);
+    transport.setLoop({ enabled: false, start: 0, end: 0 });
+  }, [item?.id, transport.setLoop]);
+  const selectBeatLoop = (beats: number) => {
+    if (transport.loop.enabled && selectedLoopBeats === beats) {
+      transport.setLoop({ ...transport.loop, enabled: false });
+      setSelectedLoopBeats(null);
+      return;
+    }
+    const range = nextSessionBeatLoop(item?.analysis?.beatGridMs, transport.position, beats);
+    if (!range) return;
+    transport.setLoop({ enabled: true, ...range });
+    setSelectedLoopBeats(beats);
+  };
   const mediaElements = useRef<Record<string, HTMLAudioElement | null>>({});
   const pendingHandoff = useRef<{
     target: SessionTrackItem;
@@ -641,7 +691,9 @@ function SessionDeck({
       {stagingTarget?.playback?.kind === "source" && (
         <p className="wy-deck-note" role="status" data-testid="source-handoff-status">Preparing the full track — the stem mix keeps playing.</p>
       )}
-      {mediaError && /previous layer|replacement stem|live stem loading/i.test(mediaError) && (
+      {liveSwapFailure && onRetryLiveSwap ? (
+        <button type="button" className="sess-small-btn" onClick={onRetryLiveSwap}>Retry live stems</button>
+      ) : mediaError && /previous layer|replacement stem|live stem loading/i.test(mediaError) && (
         <button type="button" className="sess-small-btn" onClick={() => setSwapRetry((n) => n + 1)}>Retry live stems</button>
       )}
       {item === null ? (
@@ -661,7 +713,9 @@ function SessionDeck({
               {item.analysis === null ? " · analysis pending" : ""}
             </p>
           </div>
-          {(transport.error || mediaError) && <p role="alert" className="sess-status">{mediaError ?? transport.error}</p>}
+          {(liveSwapFailure || mediaError || transport.error) && (
+            <p role="alert" className="sess-status">{liveSwapFailure ?? mediaError ?? transport.error}</p>
+          )}
           <div className="wy-deck-seek">
             <span>{formatClock(transport.position)}</span>
             <input
@@ -676,6 +730,84 @@ function SessionDeck({
             />
             <span>{formatClock(duration)}</span>
           </div>
+          {active && (
+            <label className="wy-session-speed">
+              <span>Speed</span>
+              <input
+                type="range"
+                aria-label="Session playback speed"
+                aria-valuetext={`${playbackRate.toFixed(2)} times${item.analysis?.bpm == null ? "" : `, ${Math.round(item.analysis.bpm * playbackRate)} BPM`}; pitch follows speed`}
+                min={SESSION_PLAYBACK_RATE_MIN}
+                max={SESSION_PLAYBACK_RATE_MAX}
+                step={0.01}
+                value={playbackRate}
+                onChange={(event) => onPlaybackRateChange(Number(event.target.value))}
+                data-testid="session-playback-speed"
+              />
+              <output data-testid="session-speed-value">{playbackRate.toFixed(2)}×</output>
+              <small>
+                {item.analysis?.bpm == null
+                  ? "Tempo analysis unavailable"
+                  : `${Math.round(item.analysis.bpm * playbackRate)} BPM`}
+                {" · pitch follows speed"}
+              </small>
+            </label>
+          )}
+          {active && (
+            <div className="wy-dj-controls" role="group" aria-label="DJ cue and loop controls">
+              <div className="wy-dj-loop-buttons" role="group" aria-label="Beat loops">
+                <span>Loop</span>
+                {SESSION_DJ_LOOP_LENGTHS.map((beats) => {
+                  const range = nextSessionBeatLoop(item.analysis?.beatGridMs, transport.position, beats);
+                  return (
+                    <button
+                      key={beats}
+                      type="button"
+                      aria-pressed={transport.loop.enabled && selectedLoopBeats === beats}
+                      aria-label={`Loop ${beats} ${beats === 1 ? "beat" : "beats"}`}
+                      disabled={!range}
+                      onClick={() => selectBeatLoop(beats)}
+                      data-testid={`session-loop-${beats}`}
+                    >
+                      {beats}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  disabled={!transport.loop.enabled}
+                  onClick={() => {
+                    transport.setLoop({ ...transport.loop, enabled: false });
+                    setSelectedLoopBeats(null);
+                  }}
+                  data-testid="session-loop-off"
+                >
+                  Off
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCuePosition(transport.position)}
+                aria-label={`Set cue at ${formatClock(transport.position)}`}
+                data-testid="session-set-cue"
+              >
+                Set cue
+              </button>
+              <button
+                type="button"
+                onClick={() => transport.seek(cuePosition)}
+                aria-label={`Jump to cue at ${formatClock(cuePosition)}`}
+                data-testid="session-return-cue"
+              >
+                Cue {formatClock(cuePosition)}
+              </button>
+              <small>
+                {item.analysis?.beatGridMs?.length
+                  ? "Loops enter on the next analyzed beat."
+                  : "Analyze this track to enable beat loops."}
+              </small>
+            </div>
+          )}
           {!active && <p className="wy-deck-note">Seeking here only previews the cue; a beat/bar transition re-cues from the grid.</p>}
           {!separated ? (
             <p className="wy-deck-note">Full source — stem controls unlock once separation finishes.</p>
@@ -973,6 +1105,7 @@ export default function SessionExperience({
     });
   }, []);
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
+  const [failedLiveSwaps, setFailedLiveSwaps] = useState<FailedLiveSwap[]>([]);
   const [cancelledSwapIds, setCancelledSwapIds] = useState<Set<string>>(() => new Set());
   const [swapSelectionTimes, setSwapSelectionTimes] = useState<Record<string, number>>({});
   const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
@@ -981,6 +1114,7 @@ export default function SessionExperience({
   const [pendingPerformance, setPendingPerformance] = useState<PendingPerformance | null>(null);
   const [temporaryIsolation, setTemporaryIsolation] = useState<TemporaryIsolation | null>(null);
   const [masterLevel, setMasterLevel] = useState(1);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const [autoPlayId, setAutoPlayId] = useState<string | null>(null);
   const [autoCrossfadeEnabled, setAutoCrossfadeEnabled] = useState(() => {
     try {
@@ -1259,8 +1393,7 @@ export default function SessionExperience({
       return next;
     });
     if (
-      previousReported !== null
-      && previousReported !== playing
+      (previousReported === null ? playing : previousReported !== playing)
       && deckIndex === activeDeckRef.current
       && !applyingRemoteTransportRef.current
     ) {
@@ -2198,6 +2331,9 @@ export default function SessionExperience({
         setStatus(validation.reason);
         return;
       }
+      setFailedLiveSwaps((previous) => previous.filter(
+        (failed) => failed.sessionTrackId !== currentItem.id || failed.stemType !== stemType,
+      ));
       // Reuse any source warmed while the picker was open; swaps stay silent
       // until the persisted choice is committed and the audio graph replaces it.
       void warmLiveSwap(stemType, donor);
@@ -2227,6 +2363,7 @@ export default function SessionExperience({
               ...previous.filter((pending) => !(pending.sessionTrackId === currentItem.id && pending.stemType === stemType)),
               {
                 swapId: savedSwap.id, sessionTrackId: currentItem.id, stemType, donorTitle: donor.title,
+                retryDonor: { id: donor.id, title: donor.title, stems: donor.stems, bpm: donor.bpm },
                 previousSwap: session.swaps.filter((swap) =>
                   swap.sessionTrackId === currentItem.id && swap.stemType === stemType && !cancelledSwapIds.has(swap.id),
                 ).at(-1),
@@ -2309,7 +2446,13 @@ export default function SessionExperience({
   const liveLayerFailureRef = useRef<(sessionTrackId: string, stemType: string, message: string) => void>(() => {});
   liveLayerFailureRef.current = (sessionTrackId, stemType, message) => {
     const pending = pendingSwaps.find((swap) => swap.sessionTrackId === sessionTrackId && swap.stemType === stemType);
-    if (pending) void revertSwap(pending.swapId, message, true);
+    if (pending) {
+      setFailedLiveSwaps((previous) => [
+        ...previous.filter((failed) => failed.sessionTrackId !== sessionTrackId || failed.stemType !== stemType),
+        { sessionTrackId, stemType, message, donor: pending.retryDonor },
+      ]);
+      void revertSwap(pending.swapId, message, true);
+    }
   };
   const markLiveLayerFailed = useCallback((sessionTrackId: string, stemType: string, message: string) => {
     liveLayerFailureRef.current(sessionTrackId, stemType, message);
@@ -2319,6 +2462,9 @@ export default function SessionExperience({
     setPendingSwaps((previous) => previous.filter(
       (pending) => pending.sessionTrackId !== sessionTrackId || pending.stemType !== stemType,
     ));
+    setFailedLiveSwaps((previous) => previous.filter(
+      (failed) => failed.sessionTrackId !== sessionTrackId || failed.stemType !== stemType,
+    ));
     setSwapSelectionTimes((previous) => {
       const key = `${sessionTrackId}:${stemType}`;
       if (previous[key] === undefined) return previous;
@@ -2327,6 +2473,11 @@ export default function SessionExperience({
       return next;
     });
   }, []);
+
+  const retryFailedLiveSwaps = useCallback(async (sessionTrackId: string) => {
+    const failures = failedLiveSwaps.filter((failed) => failed.sessionTrackId === sessionTrackId);
+    for (const failure of failures) await requestSwap(failure.stemType, failure.donor);
+  }, [failedLiveSwaps, requestSwap]);
 
   useEffect(() => {
     const savedSwapIds = new Set(session?.swaps.map((swap) => swap.id) ?? []);
@@ -3077,6 +3228,7 @@ export default function SessionExperience({
   const deckProps = (deckIndex: 0 | 1) => {
     const item = deckItems[deckIndex];
     const isActive = deckIndex === activeDeck;
+    const liveSwapFailures = failedLiveSwaps.filter((failure) => failure.sessionTrackId === item?.id);
     return {
       deckIndex,
       item,
@@ -3101,6 +3253,8 @@ export default function SessionExperience({
       performanceSettings: item
         ? transitions[item.id]?.performance ?? item.transition.performance ?? defaultPerformance()
         : defaultPerformance(),
+      playbackRate,
+      onPlaybackRateChange: (value: number) => setPlaybackRate(normalizeSessionPlaybackRate(value)),
       onPerformanceAction: item ? actionForItem(item.id, deckIndex) : () => undefined,
       onSnapChange: item ? (snap: PerformanceSnap) => updateSnap(item, snap) : () => undefined,
       onInstantRestoreChange: item
@@ -3122,6 +3276,12 @@ export default function SessionExperience({
       onOpenSwapPicker: isActive ? (stemType: string) => setOpenSwapStem(stemType) : undefined,
       onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
       onLiveLayerFailed: isActive ? markLiveLayerFailed : undefined,
+      liveSwapFailure: isActive && liveSwapFailures.length > 0
+        ? liveSwapFailures.map((failure) => failure.message).join(" ")
+        : null,
+      onRetryLiveSwap: isActive && item !== null && liveSwapFailures.length > 0
+        ? () => { void retryFailedLiveSwaps(item.id); }
+        : undefined,
       onReturnToSource: isActive && item?.playback?.kind === "stems" && item.sourceAssetId !== null
         ? () => void returnToFullTrack(item.id)
         : undefined,

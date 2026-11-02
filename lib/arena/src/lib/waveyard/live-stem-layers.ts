@@ -1,4 +1,11 @@
 export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
+export const SESSION_PLAYBACK_RATE_MIN = 0.8;
+export const SESSION_PLAYBACK_RATE_MAX = 1.2;
+
+export function normalizeSessionPlaybackRate(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(SESSION_PLAYBACK_RATE_MAX, Math.max(SESSION_PLAYBACK_RATE_MIN, value));
+}
 
 export class LiveStemSwitchTimeoutError extends Error {
   constructor() {
@@ -139,6 +146,7 @@ export class LiveStemLayers {
   private recentBytes = 0;
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
+  private playbackRate = 1;
 
   constructor(
     private context: () => AudioContext,
@@ -146,6 +154,17 @@ export class LiveStemLayers {
     private stretchBuffer: BufferStretcher = stretchBufferInWorker,
     private onTiming?: (timing: LiveStemTiming) => void,
   ) {}
+
+  setPlaybackRate(value: number) {
+    this.playbackRate = normalizeSessionPlaybackRate(value);
+    const layers = [...this.layers.values(), ...this.retired];
+    if (!layers.some((layer) => layer.source !== null)) return;
+    const now = this.context().currentTime;
+    for (const layer of layers) {
+      const parameter = layer.source?.playbackRate;
+      if (parameter) parameter.setValueAtTime(this.playbackRate, now);
+    }
+  }
 
   private ramp(gain: GainNode, value: number) {
     const now = gain.context.currentTime;
@@ -185,6 +204,7 @@ export class LiveStemLayers {
     if (media.paused || media.ended) return;
     const source = this.context().createBufferSource();
     source.buffer = layer.buffer;
+    source.playbackRate.setValueAtTime(this.playbackRate, this.context().currentTime);
     // Short donors repeat without ending or resetting the recipient's clock.
     source.loop = true;
     source.connect(layer.input);
