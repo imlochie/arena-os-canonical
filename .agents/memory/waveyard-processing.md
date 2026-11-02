@@ -44,3 +44,9 @@ Live stem swapping must leave the recipient's transport clock independent of its
 **Why:** The user wants stem.fm-style live swapping, not a separate remix step. Replacing a playing media URL interrupts that layer, and using a short donor as the deck clock breaks all-layer swaps.
 
 **How to apply:** Exercise independent donors, all four layers replaced, short donors, failed/late downloads, and pause/seek/resume. Verify actual signal routing and gain changes, not only source labels or saved records.
+
+Use the built API in an isolated child process for whole-stack CPU-load evidence, with private database, storage, models and port settings.
+
+**Why:** Direct database probes and manually invoked handlers bypass production routing, desktop host checks, serialization and worker startup. Those boundaries are part of a usable desktop application.
+
+**How to apply:** Probe valid response bodies throughout each real model pass with explicit deadlines. Retain long-running acceptance logs under the ignored workspace output directory so a workspace restart cannot erase the evidence. Synthetic Linux responsiveness evidence is not full-song throughput, audio quality or Windows proof.

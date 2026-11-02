@@ -1703,3 +1703,17 @@ test("library retry action completes its original job through the real stem work
   });
   t.diagnostic(`Real library retry: ${result.stemCount} stems on ${result.device} in ${result.elapsedMs} ms; one-second synthetic input, not Windows or separation-quality evidence.`);
 });
+
+// Opt-in real CPU load and HTTP latency measurement, using this suite's private
+// PostgreSQL/storage. WAVEYARD_RUN_REAL_API_RESPONSIVENESS=1 enables it.
+test("four-model separation keeps real library and session HTTP routes responsive", {
+  skip: process.env.WAVEYARD_RUN_REAL_API_RESPONSIVENESS !== "1",
+  timeout: 600_000,
+}, async t => {
+  assert.ok(root);
+  const { verifyApiResponsivenessDuringSeparation } = await import("./api-responsiveness.test-helper");
+  const result = await verifyApiResponsivenessDuringSeparation({
+    database: db.db, directory: root, addTrack: service.addTrackFromAudioFile, port: await freePort(),
+  });
+  t.diagnostic(`Real routed HTTP responsiveness: ${JSON.stringify(result)}. Two-second synthetic input on Linux CPU; not Windows throughput or subjective audio-quality evidence.`);
+});
