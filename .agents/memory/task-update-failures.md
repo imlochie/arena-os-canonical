@@ -5,6 +5,6 @@ description: Task content changes can persist even when dependency configuration
 
 Treat a task update that reports a dependency-configuration failure as potentially partially applied, not rolled back.
 
-**Why:** The task service saved title/description edits before returning a dependency error; a dependency-only retry also failed while the content remained updated.
+**Why:** The task service saved title/description edits before returning a dependency error; dependency-only retries have also failed in isolation and sequentially after queue state changed.
 
-**How to apply:** Re-fetch the task before retrying. Retry dependencies separately if appropriate, keep content changes idempotent, and distinguish edited plans from successfully changed dependencies or archived queue cards. Do not claim queue entries were removed by a content update.
+**How to apply:** Re-fetch before retrying. If a dependency-only retry fails, verify the links remain unchanged and stop rather than repeating calls. Keep content edits idempotent, and distinguish edited plans from saved dependencies or archived cards.
