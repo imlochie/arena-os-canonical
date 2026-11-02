@@ -48,6 +48,12 @@ function matchLabel(label: string, known: boolean, compatible: boolean) {
   return compatible ? `${label} match` : `${label} differs`;
 }
 
+function usesCompactPickerViewport() {
+  return window.matchMedia(
+    "(max-width: 640px), (max-width: 1000px) and (max-height: 520px) and (orientation: landscape)",
+  ).matches;
+}
+
 export default function LiveStemSwapPicker({
   stemType,
   currentBpm,
@@ -70,6 +76,7 @@ export default function LiveStemSwapPicker({
   onRestore,
 }: LiveStemSwapPickerProps) {
   const [query, setQuery] = useState("");
+  const pickerRef = useRef<HTMLElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const firstCandidateRef = useRef<HTMLButtonElement>(null);
@@ -119,10 +126,37 @@ export default function LiveStemSwapPicker({
       prefetchedCandidateKeyRef.current = null;
       return;
     }
-    if (sourceCount > 4) searchRef.current?.focus();
+    if (usesCompactPickerViewport()) pickerRef.current?.focus({ preventScroll: true });
+    else if (sourceCount > 4) searchRef.current?.focus();
     else if (candidates.length > 0) firstCandidateRef.current?.focus();
     else firstPreparationRef.current?.focus();
   }, [candidates.length, isOpen, sourceCount]);
+
+  useEffect(() => {
+    if (!isOpen || !usesCompactPickerViewport()) return;
+    const picker = pickerRef.current;
+    if (picker === null) return;
+
+    const visualViewport = window.visualViewport;
+    const updateViewportBounds = () => {
+      const visualHeight = visualViewport?.height ?? window.innerHeight;
+      const visualTop = visualViewport?.offsetTop ?? 0;
+      const layoutHeight = Math.max(document.documentElement.clientHeight, window.innerHeight);
+      const keyboardInset = Math.max(0, layoutHeight - visualTop - visualHeight);
+      picker.style.setProperty("--wy-swap-visual-height", `${Math.round(visualHeight)}px`);
+      picker.style.setProperty("--wy-swap-keyboard-inset", `${Math.round(keyboardInset)}px`);
+    };
+
+    updateViewportBounds();
+    visualViewport?.addEventListener("resize", updateViewportBounds);
+    visualViewport?.addEventListener("scroll", updateViewportBounds);
+    window.addEventListener("resize", updateViewportBounds);
+    return () => {
+      visualViewport?.removeEventListener("resize", updateViewportBounds);
+      visualViewport?.removeEventListener("scroll", updateViewportBounds);
+      window.removeEventListener("resize", updateViewportBounds);
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || prefetchCandidateId === null) return;
@@ -243,9 +277,11 @@ export default function LiveStemSwapPicker({
       </div>
       {isOpen && (
         <section
+          ref={pickerRef}
           id={pickerId}
           className="wy-swap-picker"
           role="region"
+          tabIndex={-1}
           aria-labelledby={`${pickerId}-title`}
           data-testid={`live-swap-picker-${stemType}`}
         >

@@ -25,6 +25,8 @@ if (process.argv.includes("--revision-rollback-only")) {
   await import("./arcade-revision-rollback.mjs");
   process.exit(0);
 }
+const waveyardMobileOnly = process.argv.includes("--waveyard-mobile-only");
+const waveyardMobileOnlyComplete = "WAVEYARD_MOBILE_ONLY_COMPLETE";
 
 execFileSync(
   process.execPath,
@@ -536,6 +538,7 @@ try {
   const liveCurrentTrackId = "arena-smoke-live-current-track";
   const liveNextTrackId = "arena-smoke-live-next-track";
   const liveDonorTrackId = "arena-smoke-live-donor-track";
+  const liveSearchDonorTrackId = "arena-smoke-live-search-donor-track";
   const liveDrumDonorTrackId = "arena-smoke-live-drum-donor-track";
   const liveDrumsOnlyTrackId = "arena-smoke-live-drums-only-track";
   const liveCamelotTrackId = "arena-smoke-live-camelot-track";
@@ -550,6 +553,7 @@ try {
   const liveNextBassAssetId = "arena-smoke-live-next-bass";
   const liveNextOtherAssetId = "arena-smoke-live-next-other";
   const liveDonorVocalsAssetId = "arena-smoke-live-donor-vocals";
+  const liveSearchDonorVocalsAssetId = "arena-smoke-live-search-donor-vocals";
   const liveDrumDonorDrumsAssetId = "arena-smoke-live-drum-donor-drums";
   const liveCamelotSourceAssetId = "arena-smoke-live-camelot-source";
   const liveCurrentItem = {
@@ -631,6 +635,7 @@ try {
       { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 45, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
       { ...recoveryTrack, id: liveNextTrackId, title: "Next source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
       { ...recoveryTrack, id: liveDonorTrackId, title: "Donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["vocals"] } },
+      { ...recoveryTrack, id: liveSearchDonorTrackId, title: "Search donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["vocals"] } },
       { ...recoveryTrack, id: liveDrumDonorTrackId, title: "Drum donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
       { ...recoveryTrack, id: liveDrumsOnlyTrackId, title: "Drums-only separated track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
       { ...recoveryTrack, id: liveCamelotTrackId, title: "Camelot library match", artist: "Smoke test", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "A minor" }, stemAvailability: { status: "source-only", reason: "Separation has not started." } },
@@ -857,7 +862,9 @@ try {
       const request = route.request().postDataJSON();
       assert.equal(request.sessionTrackId, liveSessionTrackId);
       const donor = request.stemType === "vocals"
-        ? { id: liveDonorTrackId, title: "Donor track", stemId: liveDonorVocalsAssetId }
+        ? request.toTrackId === liveSearchDonorTrackId
+          ? { id: liveSearchDonorTrackId, title: "Search donor track", stemId: liveSearchDonorVocalsAssetId }
+          : { id: liveDonorTrackId, title: "Donor track", stemId: liveDonorVocalsAssetId }
         : request.stemType === "drums"
           ? { id: liveDrumDonorTrackId, title: "Drum donor track", stemId: liveDrumDonorDrumsAssetId }
           : null;
@@ -988,6 +995,10 @@ try {
       } catch (error) {
         if (liveDonorFetchCount !== 1) throw error;
       }
+      return;
+    }
+    if (assetId === liveSearchDonorVocalsAssetId) {
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: donorStemWav });
       return;
     }
     if (assetId === liveDrumDonorDrumsAssetId) {
@@ -1987,10 +1998,41 @@ try {
     "the phone donor picker must fit within the viewport");
   assert(mobilePickerBounds.top >= 0 && mobilePickerBounds.bottom <= mobilePickerBounds.viewportHeight,
     "the phone donor picker must remain fully reachable above the safe-area edge");
+  const mobileSearch = mobileSwapPicker.locator(".wy-swap-search input");
+  await mobileSearch.waitFor({ state: "visible", timeout: 3_000 });
+  assert.equal(await mobileSearch.evaluate((input) => document.activeElement === input), false,
+    "opening the phone picker must not raise the keyboard before the user chooses to search");
+  await mobileSearch.focus();
+  await page.setViewportSize({ width: 402, height: 520 });
+  await page.waitForFunction(() => {
+    const picker = document.querySelector(".wy-swap-picker");
+    return picker instanceof HTMLElement
+      && Number.parseFloat(getComputedStyle(picker).getPropertyValue("--wy-swap-visual-height")) > 0;
+  }, null, { timeout: 2_000 });
+  const keyboardPickerLayout = await mobileSwapPicker.evaluate((picker) => {
+    const pickerRect = picker.getBoundingClientRect();
+    const searchRect = picker.querySelector("input[type=search]")?.getBoundingClientRect();
+    const closeRect = picker.querySelector(".wy-swap-close")?.getBoundingClientRect();
+    const candidateRect = picker.querySelector(".wy-swap-candidate")?.getBoundingClientRect();
+    return {
+      viewportHeight: document.documentElement.clientHeight,
+      picker: { top: pickerRect.top, bottom: pickerRect.bottom },
+      search: searchRect === undefined ? null : { top: searchRect.top, bottom: searchRect.bottom },
+      close: closeRect === undefined ? null : { top: closeRect.top, bottom: closeRect.bottom },
+      candidate: candidateRect === undefined ? null : { top: candidateRect.top, bottom: candidateRect.bottom },
+    };
+  });
+  assert(keyboardPickerLayout.picker.top >= 0 && keyboardPickerLayout.picker.bottom <= keyboardPickerLayout.viewportHeight,
+    `the donor sheet must stay within the shortened keyboard viewport: ${JSON.stringify(keyboardPickerLayout)}`);
+  for (const control of [keyboardPickerLayout.search, keyboardPickerLayout.close, keyboardPickerLayout.candidate]) {
+    assert(control !== null && control.top >= keyboardPickerLayout.picker.top && control.bottom <= keyboardPickerLayout.picker.bottom,
+      `search, close, and a donor result must remain reachable above the keyboard: ${JSON.stringify(keyboardPickerLayout)}`);
+  }
   await mobileSwapPicker.getByRole("button", { name: "Close source picker" }).click();
   await page.waitForFunction(() => document.activeElement?.getAttribute("data-live-swap-anchor") === "vocals");
   assert.equal(await mobileSwapTrigger.getAttribute("aria-expanded"), "false",
     "closing the phone picker returns focus to the pad that opened it");
+  await page.setViewportSize({ width: 402, height: 874 });
 
   const mobilePlay = page.getByTestId("session-play");
   const wasPlaying = await mobilePlay.getAttribute("aria-pressed") === "true";
@@ -2087,6 +2129,80 @@ try {
     assert(target.left >= 0 && target.right <= narrowPhoneLayout.viewportWidth,
       "narrow-phone controls must stay within the viewport");
   }
+
+  await page.setViewportSize({ width: 844, height: 390 });
+  await page.getByTestId("quick-open-live-swap-vocals").scrollIntoViewIfNeeded();
+  const landscapeMixerLayout = await page.evaluate(() => {
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    const transport = document.querySelector(".wy-host-full .wy-transport");
+    const transportRect = transport?.getBoundingClientRect();
+    const targets = Array.from(document.querySelectorAll([
+      ".wy-host-full .wy-transport .wy-buttons button",
+      ".wy-host-full .wy-transport .wy-mixbtn",
+      ".wy-host-full .wy-transport .wy-seek input",
+      '[data-testid^="quick-isolate-"]',
+      '[data-testid^="quick-open-live-swap-"]',
+      '[data-testid="quick-restore-mix"]',
+      ".wy-deck.sess-deck-active .wy-stem input[type=range]",
+      ".wy-deck.sess-deck-active .wy-stem .wy-toggle",
+    ].join(", "))).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        label: element.getAttribute("data-testid") ?? element.getAttribute("aria-label") ?? element.className,
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+        height: rect.height,
+      };
+    });
+    return {
+      viewportWidth,
+      viewportHeight,
+      documentWidth: document.documentElement.scrollWidth,
+      transport: transportRect === undefined ? null : {
+        left: transportRect.left,
+        right: transportRect.right,
+        top: transportRect.top,
+        bottom: transportRect.bottom,
+      },
+      targets,
+    };
+  });
+  assert.equal(landscapeMixerLayout.documentWidth, landscapeMixerLayout.viewportWidth,
+    `the mixer must not create horizontal overflow in landscape: ${JSON.stringify(landscapeMixerLayout)}`);
+  assert(landscapeMixerLayout.transport !== null
+    && landscapeMixerLayout.transport.left >= 0
+    && landscapeMixerLayout.transport.right <= landscapeMixerLayout.viewportWidth
+    && landscapeMixerLayout.transport.top >= 0
+    && landscapeMixerLayout.transport.bottom <= landscapeMixerLayout.viewportHeight,
+  `the landscape transport dock must stay fully visible: ${JSON.stringify(landscapeMixerLayout)}`);
+  for (const target of landscapeMixerLayout.targets) {
+    assert(target.width >= 44 && target.height >= 44, `${target.label} must retain a 44px landscape touch target`);
+    assert(target.left >= 0 && target.right <= landscapeMixerLayout.viewportWidth,
+      `${target.label} must stay within the landscape viewport`);
+  }
+  const landscapeSwapTrigger = page.getByTestId("quick-open-live-swap-vocals");
+  await landscapeSwapTrigger.click();
+  const landscapeSwapPicker = page.getByTestId("live-swap-picker-vocals");
+  await landscapeSwapPicker.waitFor({ state: "visible", timeout: 5_000 });
+  const landscapePickerBounds = await landscapeSwapPicker.evaluate((picker) => {
+    const rect = picker.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      viewportWidth: document.documentElement.clientWidth,
+      viewportHeight: document.documentElement.clientHeight,
+    };
+  });
+  assert(landscapePickerBounds.left >= 0 && landscapePickerBounds.right <= landscapePickerBounds.viewportWidth
+    && landscapePickerBounds.top >= 0 && landscapePickerBounds.bottom <= landscapePickerBounds.viewportHeight,
+  `the live donor sheet must stay reachable in landscape: ${JSON.stringify(landscapePickerBounds)}`);
+  await landscapeSwapPicker.getByRole("button", { name: "Close source picker" }).click();
+  report.push("Waveyard mobile live stems pass portrait keyboard-viewport and short landscape layout checks.");
+  if (waveyardMobileOnly) throw new Error(waveyardMobileOnlyComplete);
   await page.setViewportSize(desktopViewport ?? { width: 1280, height: 800 });
   liveSessionTracks.push(liveNextItem);
   liveSessionTracks.forEach((item, index) => { item.position = index; });
@@ -2901,7 +3017,7 @@ try {
   report.push("In Chromium touch emulation at phone widths, touch selects clips without seeking, native horizontal swipes scroll without dragging clips, dedicated controls move and trim clips, and cancelled move/trim gestures restore the arrangement.");
   report.push("At 320px and 402px, the arrangement scrolls internally with no page overflow; touch-sized play, seek, and arrangement preview controls respond to taps.");
   report.push("A session handoff opens a linked, audio-backed Studio arrangement; clips, isolated mix, two distinct donor swaps, and supported crossfades survive reload.");
-  report.push("A slow live stem switch can be cancelled without rewinding playback; later swaps, isolation, Camelot cueing, and mobile stem controls pass.");
+  report.push("A slow live stem switch can be cancelled without rewinding playback; later swaps, isolation, Camelot cueing, portrait keyboard-safe donor search, and landscape mobile controls pass.");
 
   mockLiveSessionActive = false;
   const liveSessionPage = page;
@@ -4058,10 +4174,14 @@ try {
   await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, report }, null, 2));
   console.log(report.join("\n"));
 } catch (error) {
-  console.error("Browser errors:", errors);
-  console.error("Visible page:", (await page.locator("body").innerText()).slice(0, 4000));
-  await page.screenshot({ path: new URL("failure.jpg", output).pathname, fullPage: true });
-  throw error;
+  if (waveyardMobileOnly && error instanceof Error && error.message === waveyardMobileOnlyComplete) {
+    console.log(report.join("\n"));
+  } else {
+    console.error("Browser errors:", errors);
+    console.error("Visible page:", (await page.locator("body").innerText()).slice(0, 4000));
+    await page.screenshot({ path: new URL("failure.jpg", output).pathname, fullPage: true });
+    throw error;
+  }
 } finally {
   if (createdProject) await context.request.delete(`${base}/api/projects/${createdProject}`);
   if (createdSpaceId) await context.request.delete(`${base}/api/spaces/${createdSpaceId}`);
@@ -4084,6 +4204,8 @@ try {
   if (fallbackBattleId) await context.request.delete(`${base}/api/battles/${fallbackBattleId}`);
   await browser.close();
 }
+
+if (waveyardMobileOnly) process.exit(0);
 
 execFileSync(
   process.execPath,
