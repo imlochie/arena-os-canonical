@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clipFadeShapeOrLinear, fadeCurveSamples, fadeGainAt } from "./fades";
-import { effectiveMuted, type RemixTrackInput } from "./remix";
+import { clearArrangementPreviewGraph } from "./arrangement-preview-graph";
+import { selectArrangementPreviewTracks } from "./arrangement-preview-selection";
+import type { RemixTrackInput } from "./remix";
 
 type PreviewClip = RemixTrackInput["clips"][number];
 type PreviewTrack = RemixTrackInput;
@@ -32,6 +34,7 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
   const context = useRef<AudioContext | null>(null);
   const buffers = useRef(new Map<string, AudioBuffer>());
   const scheduled = useRef<ScheduledSource[]>([]);
+  const graphNodes = useRef(new Set<AudioNode>());
   const raf = useRef<number | null>(null);
   const origin = useRef({ contextTime: 0, positionMs: 0 });
   const currentState = useRef<PreviewState | null>(null);
@@ -48,9 +51,8 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     raf.current = null;
     for (const item of scheduled.current) {
       try { item.source.stop(); } catch { /* already finished */ }
-      item.source.disconnect();
-      item.gain.disconnect();
     }
+    clearArrangementPreviewGraph(graphNodes.current);
     scheduled.current = [];
   }, []);
 
@@ -74,16 +76,19 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     pendingStartMs.current = startMs;
     setPending(true);
     const audio = ensureContext();
-    const assetIds = [...new Set(state.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)))];
+    const { audibleTracks, assetIds } = selectArrangementPreviewTracks(state.tracks);
+    const activeAssetIds = new Set(assetIds);
+    for (const assetId of buffers.current.keys()) {
+      if (!activeAssetIds.has(assetId)) buffers.current.delete(assetId);
+    }
     await Promise.all(assetIds.map(ensureBuffer));
     if (generation !== playbackGeneration.current) return false;
     clear();
     const master = audio.createGain();
     master.gain.value = state.masterVolume;
     master.connect(audio.destination);
-    const anySolo = state.tracks.some((track) => track.solo);
-    for (const track of state.tracks) {
-      if (effectiveMuted(track, anySolo)) continue;
+    graphNodes.current.add(master);
+    for (const track of audibleTracks) {
       for (const clip of track.clips) {
         const elapsedMs = Math.max(0, startMs - clip.timelineStartMs);
         if (elapsedMs >= clip.durationMs) continue;
@@ -92,6 +97,9 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
         const source = audio.createBufferSource();
         const gain = audio.createGain();
         const panner = "createStereoPanner" in audio ? audio.createStereoPanner() : null;
+        graphNodes.current.add(source);
+        graphNodes.current.add(gain);
+        if (panner) graphNodes.current.add(panner);
         source.buffer = buffer;
         source.connect(gain);
         if (panner) { gain.connect(panner); panner.pan.value = track.pan; panner.connect(master); }
@@ -135,7 +143,14 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
           }
         }
         source.start(startAt, (clip.sourceOffsetMs + elapsedMs) / 1000, remainingMs / 1000);
-        source.onended = () => { source.disconnect(); gain.disconnect(); };
+        source.onended = () => {
+          source.disconnect();
+          gain.disconnect();
+          panner?.disconnect();
+          graphNodes.current.delete(source);
+          graphNodes.current.delete(gain);
+          if (panner) graphNodes.current.delete(panner);
+        };
         scheduled.current.push({ source, gain });
       }
     }
