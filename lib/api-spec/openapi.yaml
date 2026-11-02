@@ -631,6 +631,50 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LibraryTrackSeparationStartResponse"
+  /jobs/{id}/cancel:
+    post:
+      operationId: cancelSeparationJob
+      tags: [waveyard]
+      summary: Stop an active local separation job
+      description: A running job is terminal only after its isolated native worker exits. A 202 response remains active until then.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Separation stopped or was already stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SeparationCancellationResponse"
+        "202":
+          description: Cancellation was requested; the local worker is still stopping
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SeparationCancellationResponse"
+        "401":
+          description: Authentication required
+        "403":
+          description: Editor access required
+        "404":
+          description: Separation job not found
+        "409":
+          description: Job is not active or its worker cannot be safely stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          description: This runtime cannot control the active worker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /healthz:
     get:
       operationId: healthCheck
@@ -1455,6 +1499,9 @@ components:
               type: string
             progress:
               $ref: "#/components/schemas/StemSeparationProgress"
+            cancelJobId:
+              type: string
+              format: uuid
           required: [status, reason]
         - type: object
           properties:
@@ -1491,4 +1538,20 @@ components:
         error:
           type: [string, "null"]
       required: [state, jobId, stemCount, error]
+    SeparationCancellationResponse:
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [cancelled, stopping]
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        stage:
+          type: string
+        message:
+          type: string
+      required: [state, jobId, status, stage]
 

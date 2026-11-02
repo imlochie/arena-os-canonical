@@ -382,6 +382,7 @@
     "./lib/waveyard/separation/quality": "./src/lib/waveyard/separation/quality.ts",
     "./lib/waveyard/separation/retry.test": "./src/lib/waveyard/separation/retry.test.ts",
     "./lib/waveyard/separation/retry": "./src/lib/waveyard/separation/retry.ts",
+    "./lib/waveyard/separation/cancel": "./src/lib/waveyard/separation/cancel.ts",
     "./lib/waveyard/separation/seed.test": "./src/lib/waveyard/separation/seed.test.ts",
     "./lib/waveyard/separation/seed": "./src/lib/waveyard/separation/seed.ts",
     "./lib/waveyard/separation/selection.test": "./src/lib/waveyard/separation/selection.test.ts",

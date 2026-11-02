@@ -19,6 +19,7 @@ export type StemAvailability = {
   reason: string;
   stage?: string;
   progress?: StemSeparationProgress;
+  cancelJobId?: string;
 } | {
   status: 'rejected' | 'failed';
   reason: string;

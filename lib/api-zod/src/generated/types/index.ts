@@ -88,6 +88,8 @@ export * from './reviewArcadeModRepository200';
 export * from './runArcadeDevelopment200';
 export * from './searchArcadeCatalog200';
 export * from './searchArcadeCatalog200SourcesItem';
+export * from './separationCancellationResponse';
+export * from './separationCancellationResponseState';
 export * from './stemAvailability';
 export * from './stemSeparationProgress';
 export * from './trackAnalysis';

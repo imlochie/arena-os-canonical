@@ -9,7 +9,8 @@
  * stem analyses are the remaining unregistered queues).
  */
 
-export type LocalJobHandler = (
+export type LocalJobHandler = (payload: Record<string, unknown>) => Promise<void>;
+export type CancellableLocalJobHandler = (
   payload: Record<string, unknown>,
   context: { signal: AbortSignal },
 ) => Promise<void>;
@@ -32,19 +33,22 @@ type ActiveJob = {
 export const LOCAL_JOB_CANCEL_WAIT_MS = 5_000;
 
 export class LocalJobBroker {
-  private readonly handlers = new Map<string, LocalJobHandler>();
+  private readonly handlers = new Map<string, CancellableLocalJobHandler>();
   private queue: PendingJob[] = [];
   private running = false;
   /** In-flight jobIds — BullMQ's jobId semantics: no duplicate while active. */
   private readonly activeIds = new Set<string>();
   private readonly activeJobs = new Map<string, ActiveJob>();
-  private draining: Promise<boolean> | null = null;
   private readonly events: BrokerEvent[] = [];
   private readonly listeners = new Set<(event: BrokerEvent) => void>();
   private startedAt: Date | null = null;
   private counts = { submitted: 0, succeeded: 0, cancelled: 0, failed: 0, rejected: 0 };
 
   register(queue: string, handler: LocalJobHandler): void {
+    this.handlers.set(queue, (payload) => handler(payload));
+  }
+
+  registerCancellable(queue: string, handler: CancellableLocalJobHandler): void {
     this.handlers.set(queue, handler);
   }
 
@@ -147,16 +151,14 @@ export class LocalJobBroker {
 
   /** Wait for in-flight + queued jobs (shutdown drain). */
   drain(timeoutMs = 15_000): Promise<boolean> {
-    if (this.draining === null) {
-      this.draining = (async () => {
-        const deadline = Date.now() + timeoutMs;
-        while ((this.queue.length > 0 || this.running) && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        return this.queue.length === 0 && !this.running;
-      })();
-    }
-    return this.draining;
+    const deadline = Date.now() + timeoutMs;
+    return (async () => {
+      while (this.queue.length > 0 || this.running) {
+        if (Date.now() >= deadline) return false;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return true;
+    })();
   }
 
   onEvent(listener: (event: BrokerEvent) => void): () => void {

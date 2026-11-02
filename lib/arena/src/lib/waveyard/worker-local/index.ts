@@ -72,7 +72,9 @@ export function startLocalWorker(cleanupOverrides: LocalWorkerCleanupOverrides =
     console.warn("Source orphan cleanup failed; it will retry after the next worker restart.", error);
   });
   broker.register(WAVEFORM_QUEUE, handleWaveformJob);
-  broker.register(SEPARATION_QUEUE, handleSeparationJob);
+  broker.registerCancellable(SEPARATION_QUEUE, (payload, context) =>
+    handleSeparationJob(payload, { signal: context.signal }),
+  );
   broker.register(SOURCE_ANALYSIS_QUEUE, handleSourceAnalysisJob);
   broker.register(SOURCE_SECTION_ANALYSIS_QUEUE, handleSectionAnalysisJob);
   broker.register(EXPORT_QUEUE, handleExportJob);

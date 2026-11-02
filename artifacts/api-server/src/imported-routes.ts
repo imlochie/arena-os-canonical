@@ -135,6 +135,7 @@ export const importedRoutes = [
   { path: "/foundry/:id/data", methods: ["GET","PUT","DELETE"], load: () => import("./imported/foundry/[id]/data/route.ts") },
   { path: "/internal/chat", methods: ["POST"], load: () => import("./imported/internal/chat/route.ts") },
   { path: "/jobs/:id/retry", methods: ["POST"], load: () => import("./imported/jobs/[id]/retry/route.ts") },
+  { path: "/jobs/:id/cancel", methods: ["POST"], load: () => import("./imported/jobs/[id]/cancel/route.ts") },
   { path: "/library/collections/:id", methods: ["PATCH","DELETE"], load: () => import("./imported/library/collections/[id]/route.ts") },
   { path: "/library/collections", methods: ["GET","POST"], load: () => import("./imported/library/collections/route.ts") },
   { path: "/library/ingest", methods: ["GET","POST"], load: () => import("./imported/library/ingest/route.ts") },

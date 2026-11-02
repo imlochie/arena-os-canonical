@@ -55,6 +55,7 @@ interface TrackSummary {
     stemCount?: number;
     reason?: string;
     retryJobId?: string;
+    cancelJobId?: string;
     stage?: string;
     progress?: { percent: number; phase?: string };
   };
@@ -95,7 +96,9 @@ interface QueueItem {
 }
 
 function StemBadge({ availability }: { availability: TrackSummary["stemAvailability"] }) {
-  const progress = availability.status === "processing" ? availability.progress : undefined;
+  const progress = availability.status === "processing" && availability.stage !== "cancelling"
+    ? availability.progress
+    : undefined;
   const phase = progress?.phase ? ` · ${progress.phase}` : "";
   const progressDetail = progress
     ? progress.phase && isMultiPassSeparationPhase(progress.phase)
@@ -106,6 +109,8 @@ function StemBadge({ availability }: { availability: TrackSummary["stemAvailabil
     (availability.stage === "finalizing" || progress?.percent === 100);
   const stageLabel = availability.stage === "queued"
     ? "QUEUED"
+    : availability.stage === "cancelling"
+      ? "STOPPING…"
     : availability.stage === "preparing"
       ? "PREPARING…"
       : availability.stage === "running"
@@ -145,10 +150,12 @@ function TrackRow({
   onLabels,
   onStartSeparation,
   onRetrySeparation,
+  onCancelSeparation,
   audioBackupSelected,
   onToggleAudioBackup,
   starting,
   retrying,
+  cancelling,
 }: {
   track: TrackSummary;
   onPlay: (track: TrackSummary) => void;
@@ -160,10 +167,12 @@ function TrackRow({
   onLabels: (track: TrackSummary, labels: string[]) => void;
   onStartSeparation: (track: TrackSummary) => void;
   onRetrySeparation: (track: TrackSummary) => void;
+  onCancelSeparation: (track: TrackSummary) => void;
   audioBackupSelected: boolean;
   onToggleAudioBackup: (track: TrackSummary) => void;
   starting: boolean;
   retrying: boolean;
+  cancelling: boolean;
 }) {
   const [addingLabel, setAddingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState("");
@@ -281,6 +290,18 @@ function TrackRow({
             onClick={() => onRetrySeparation(track)}
           >
             {retrying ? "Retrying…" : "Retry separation"}
+          </button>
+        )}
+        {track.stemAvailability.status === "processing" && track.stemAvailability.cancelJobId && (
+          <button
+            type="button"
+            className="button secondary"
+            aria-label={`Stop separation for ${track.title}`}
+            data-testid={`button-cancel-separation-${track.id}`}
+            disabled={cancelling}
+            onClick={() => onCancelSeparation(track)}
+          >
+            {cancelling ? "Stopping…" : track.stemAvailability.stage === "cancelling" ? "Check stop status" : "Stop separation"}
           </button>
         )}
         {playlists.length > 0 && (
@@ -776,6 +797,7 @@ export function MusicHome() {
               stemAvailability: {
                 status: "processing",
                 reason: "Stem separation is running — playback uses the full source until it completes.",
+                ...(typeof body.jobId === "string" ? { cancelJobId: body.jobId } : {}),
               },
             }
           : existing));
@@ -835,6 +857,7 @@ export function MusicHome() {
             stemAvailability: {
               status: "processing",
               reason: "Stem separation is still running — playback uses the full source until it completes.",
+              cancelJobId: jobId,
             },
           }
         : existing));
@@ -849,6 +872,45 @@ export function MusicHome() {
       });
     }
   }, [busySeparationTrackIds]);
+
+  const cancelSeparation = useCallback(async (track: TrackSummary) => {
+    const jobId = track.stemAvailability.cancelJobId;
+    if (!jobId || busySeparationTrackIds.has(track.id)) return;
+    setBusySeparationTrackIds((previous) => new Set(previous).add(track.id));
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+      const body = await response.json().catch(() => ({})) as { error?: string; message?: string };
+      if (response.status === 202) {
+        setTracks((previous) => previous.map((existing) => existing.id === track.id
+          ? {
+              ...existing,
+              stemAvailability: {
+                ...existing.stemAvailability,
+                stage: "cancelling",
+                reason: body.message ?? "The worker is stopping. Existing audio and stems remain available.",
+              },
+            }
+          : existing));
+        setMessage(`${track.title}: the worker is still stopping. You can keep listening; restart is available after it exits.`);
+        return;
+      }
+      if (!response.ok) {
+        setMessage(`${track.title}: ${body.error ?? "The separation worker could not be stopped."}`);
+        return;
+      }
+      await refresh(search);
+      setMessage(`${track.title}: separation stopped. Original audio and existing stems are preserved; start separation to run it again.`);
+    } catch {
+      setMessage(`${track.title}: cancellation could not be confirmed — check the connection.`);
+    } finally {
+      setBusySeparationTrackIds((previous) => {
+        const next = new Set(previous);
+        next.delete(track.id);
+        return next;
+      });
+    }
+  }, [busySeparationTrackIds, refresh, search]);
 
   const collectionTrack = useCallback((track: TrackSummary): CollectionTrack => ({
     id: track.id,
@@ -1669,10 +1731,12 @@ export function MusicHome() {
                 onLabels={setTrackLabels}
                 onStartSeparation={startSeparation}
                 onRetrySeparation={retrySeparation}
+                onCancelSeparation={cancelSeparation}
                 audioBackupSelected={selectedAudioBackupIds.has(track.id)}
                 onToggleAudioBackup={toggleAudioBackupTrack}
                 starting={busySeparationTrackIds.has(track.id) && track.stemAvailability.status === "not-started"}
                 retrying={busySeparationTrackIds.has(track.id) && (track.stemAvailability.status === "rejected" || track.stemAvailability.status === "failed")}
+                cancelling={busySeparationTrackIds.has(track.id)}
               />
             ))}
           </div>

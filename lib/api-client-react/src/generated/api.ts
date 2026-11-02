@@ -56,7 +56,8 @@ import type {
   LibraryTrackSeparationStartResponse,
   ReviewArcadeModRepository200,
   RunArcadeDevelopment200,
-  SearchArcadeCatalog200
+  SearchArcadeCatalog200,
+  SeparationCancellationResponse
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -2005,6 +2006,81 @@ export const useStartLibraryTrackSeparation = <TError = ErrorType<void | Library
         TContext
       > => {
       return useMutation(getStartLibraryTrackSeparationMutationOptions(options));
+    }
+
+export const getCancelSeparationJobUrl = (id: string,) => {
+
+
+
+
+  return `/api/jobs/${id}/cancel`
+}
+
+/**
+ * A running job is terminal only after its isolated native worker exits. A 202 response remains active until then.
+ * @summary Stop an active local separation job
+ */
+export const cancelSeparationJob = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<SeparationCancellationResponse> => {
+
+  return customFetch<SeparationCancellationResponse>(getCancelSeparationJobUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getCancelSeparationJobMutationKey = () => ['cancelSeparationJob'] as const;
+
+export const getCancelSeparationJobMutationOptions = <TError = ErrorType<void | ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof cancelSeparationJob>>, TError,CancelSeparationJobMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof cancelSeparationJob>>, TError,CancelSeparationJobMutationVariables, TContext> => {
+
+const mutationKey = getCancelSeparationJobMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof cancelSeparationJob>>, CancelSeparationJobMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  cancelSeparationJob(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CancelSeparationJobMutationResult = NonNullable<Awaited<ReturnType<typeof cancelSeparationJob>>>
+
+    export type CancelSeparationJobMutationError = ErrorType<void | ApiError>
+    export type CancelSeparationJobMutationVariables = {id: string}
+
+    /**
+ * @summary Stop an active local separation job
+ */
+export const useCancelSeparationJob = <TError = ErrorType<void | ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof cancelSeparationJob>>, TError,CancelSeparationJobMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof cancelSeparationJob>>,
+        TError,
+        CancelSeparationJobMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCancelSeparationJobMutationOptions(options));
     }
 
 export const getHealthCheckUrl = () => {

@@ -391,7 +391,8 @@ export const GetLibraryTracksResponse = zod.object({
   "progress": zod.object({
   "percent": zod.number().int().min(getLibraryTracksResponseTracksItemStemAvailabilityThreeProgressPercentMin).max(getLibraryTracksResponseTracksItemStemAvailabilityThreeProgressPercentMax),
   "phase": zod.string().optional()
-}).optional()
+}).optional(),
+  "cancelJobId": zod.string().uuid().optional()
 }),zod.object({
   "status": zod.enum(['rejected', 'failed']),
   "reason": zod.string(),
@@ -832,7 +833,8 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
   "progress": zod.object({
   "percent": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseTracksItemStemAvailabilityThreeProgressPercentMin).max(importLibraryAudioCaptureRecoveryResponseTracksItemStemAvailabilityThreeProgressPercentMax),
   "phase": zod.string().optional()
-}).optional()
+}).optional(),
+  "cancelJobId": zod.string().uuid().optional()
 }),zod.object({
   "status": zod.enum(['rejected', 'failed']),
   "reason": zod.string(),
@@ -870,7 +872,8 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
   "progress": zod.object({
   "percent": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMin).max(importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMax),
   "phase": zod.string().optional()
-}).optional()
+}).optional(),
+  "cancelJobId": zod.string().uuid().optional()
 }),zod.object({
   "status": zod.enum(['rejected', 'failed']),
   "reason": zod.string(),
@@ -1150,7 +1153,8 @@ export const StopLibraryAudioCaptureResponse = zod.object({
   "progress": zod.object({
   "percent": zod.number().int().min(stopLibraryAudioCaptureResponseTracksItemStemAvailabilityThreeProgressPercentMin).max(stopLibraryAudioCaptureResponseTracksItemStemAvailabilityThreeProgressPercentMax),
   "phase": zod.string().optional()
-}).optional()
+}).optional(),
+  "cancelJobId": zod.string().uuid().optional()
 }),zod.object({
   "status": zod.enum(['rejected', 'failed']),
   "reason": zod.string(),
@@ -1188,7 +1192,8 @@ export const StopLibraryAudioCaptureResponse = zod.object({
   "progress": zod.object({
   "percent": zod.number().int().min(stopLibraryAudioCaptureResponseTrackStemAvailabilityThreeProgressPercentMin).max(stopLibraryAudioCaptureResponseTrackStemAvailabilityThreeProgressPercentMax),
   "phase": zod.string().optional()
-}).optional()
+}).optional(),
+  "cancelJobId": zod.string().uuid().optional()
 }),zod.object({
   "status": zod.enum(['rejected', 'failed']),
   "reason": zod.string(),
@@ -1262,6 +1267,23 @@ export const StartLibraryTrackSeparationResponse = zod.object({
   "jobId": zod.string().uuid().nullable(),
   "stemCount": zod.number().int().nullable(),
   "error": zod.string().nullable()
+})
+
+
+/**
+ * A running job is terminal only after its isolated native worker exits. A 202 response remains active until then.
+ * @summary Stop an active local separation job
+ */
+export const CancelSeparationJobParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const CancelSeparationJobResponse = zod.object({
+  "state": zod.enum(['cancelled', 'stopping']),
+  "jobId": zod.string().uuid(),
+  "status": zod.string(),
+  "stage": zod.string(),
+  "message": zod.string().optional()
 })
 
 

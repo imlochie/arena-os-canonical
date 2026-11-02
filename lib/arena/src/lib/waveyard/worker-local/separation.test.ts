@@ -20,7 +20,10 @@ import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena
 import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@workspace/arena/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@workspace/arena/lib/waveyard/separation/deep-fixtures";
 import { DEEP_STEM_TYPES } from "@workspace/arena/lib/waveyard/separation/modes";
+import { claimProcessingJob } from "@workspace/arena/lib/waveyard/separation/claim";
+import { requestSeparationCancellation } from "@workspace/arena/lib/waveyard/separation/cancel";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
+import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
 import { WAVEFORM_RESOLUTIONS, type WaveformDocument } from "@workspace/arena/lib/waveyard/types";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
@@ -1312,6 +1315,130 @@ test("two-stem mode uses one model session to produce both outputs", async () =>
       "the single demix result persists both requested outputs",
     );
   } finally {
+    await f.close();
+  }
+});
+
+test("queued separation can be stopped, preserve prior audio and stems, then restart from the same source", async () => {
+  const f = await fixture();
+  const broker = new LocalJobBroker();
+  let releaseBlocker!: () => void;
+  const blockerGate = new Promise<void>((resolve) => { releaseBlocker = resolve; });
+  let blockerStarted!: () => void;
+  const started = new Promise<void>((resolve) => { blockerStarted = resolve; });
+  let engineOpens = 0;
+
+  try {
+    const priorCompletedAt = new Date(Date.now() - 60_000);
+    const [priorJob] = await f.database
+      .insert(processingJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        type: "separation",
+        model: f.job.model,
+        requestedDevice: "auto",
+        status: "complete",
+        stage: "complete",
+        idempotencyKey: `prior-complete:${f.source.id}`,
+        createdAt: priorCompletedAt,
+        updatedAt: priorCompletedAt,
+        completedAt: priorCompletedAt,
+      })
+      .returning();
+    const [priorStem] = await f.database
+      .insert(stemAssets)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        separationJobId: priorJob.id,
+        stemType: "vocals",
+        engine: "mdx",
+        model: f.job.model,
+        modelVersion: KIM.sha256,
+        storageKey: f.source.storageKey,
+        checksumSha256: f.source.checksumSha256,
+        durationSeconds: f.source.durationSeconds,
+        sampleRate: f.source.sampleRate,
+        channels: f.source.channels,
+        codec: f.source.codec,
+        format: "wav",
+        fileSizeBytes: f.source.fileSizeBytes,
+      })
+      .returning();
+    const originalChecksum = await checksumFile(f.sourcePath);
+
+    broker.register("test-blocker", async () => {
+      blockerStarted();
+      await blockerGate;
+    });
+    broker.registerCancellable(SEPARATION_QUEUE, async (payload, { signal }) => {
+      await handleSeparationJob(payload, {
+        db: f.database,
+        signal,
+        openEngine: async (spec) => {
+          engineOpens += 1;
+          return identityEngine()(spec);
+        },
+      });
+    });
+    await broker.submit("test-blocker", "blocker", {});
+    await started;
+    await broker.submit(SEPARATION_QUEUE, f.job.id, payloadOf(f));
+    assert.equal(broker.isRunning(f.job.id), false, "the separation is queued behind the blocker");
+
+    const stopped = await requestSeparationCancellation(f.database, f.job.id, broker, true);
+    assert.equal(stopped.kind, "cancelled");
+    assert.equal(stopped.job.status, "cancelled");
+    releaseBlocker();
+    assert.equal(await broker.drain(5_000), true);
+
+    assert.equal(engineOpens, 0, "the queued handler observes cancellation before opening a model");
+    const [cancelledAttempt] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, f.job.id));
+    assert.equal(cancelledAttempt.status, "cancelled");
+    assert.equal(cancelledAttempt.stage, "cancelled");
+    const [retainedPriorStem] = await f.database
+      .select()
+      .from(stemAssets)
+      .where(eq(stemAssets.id, priorStem.id));
+    assert.ok(retainedPriorStem, "a previously usable stem remains referenced");
+    assert.equal(await checksumFile(f.sourcePath), originalChecksum, "the original audio file is unchanged");
+
+    const restart = await claimProcessingJob(f.database, {
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      type: "separation",
+      model: f.job.model,
+      requestedDevice: "auto",
+      idempotencyKey: f.job.idempotencyKey,
+    });
+    assert.equal(restart.created, true, "the cancelled attempt releases its active idempotency key");
+    if (!restart.created) return;
+    await broker.submit(
+      SEPARATION_QUEUE,
+      restart.job.id,
+      payloadOf(f, { processingJobId: restart.job.id }),
+    );
+    assert.equal(await broker.drain(30_000), true);
+
+    const [restartedAttempt] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, restart.job.id));
+    assert.equal(restartedAttempt.status, "complete", "the fresh attempt completes using the saved source");
+    assert.equal(await checksumFile(f.sourcePath), originalChecksum);
+    const restartStems = await f.database
+      .select()
+      .from(stemAssets)
+      .where(eq(stemAssets.separationJobId, restart.job.id));
+    assert.equal(restartStems.length, 2, "the restarted attempt publishes a complete stem set");
+    assert.ok(engineOpens > 0);
+  } finally {
+    releaseBlocker();
+    await broker.drain(5_000);
     await f.close();
   }
 });

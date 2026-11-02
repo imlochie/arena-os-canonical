@@ -52,10 +52,13 @@ import {
   processingJobs,
   sourceAssets,
   stemAssets,
+  tracks,
 } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { evaluateFourStemSeparation, type FourStemSamples } from "@workspace/arena/lib/waveyard/separation/quality";
+import { requestSeparationCancellation } from "@workspace/arena/lib/waveyard/separation/cancel";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
+import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
 import type { OpenedEngine } from "./separation";
 import { demixMdxInWorker, handleSeparationJob } from "./separation";
 import { getLocalJobBroker, resetLocalJobBrokerForTests } from "./broker";
@@ -208,9 +211,10 @@ function createLocalRetryHarness(
   delete process.env.REDIS_URL;
   resetLocalJobBrokerForTests();
   const broker = getLocalJobBroker();
-  broker.register(SEPARATION_QUEUE, (payload) =>
+  broker.registerCancellable(SEPARATION_QUEUE, (payload, { signal }) =>
     handleSeparationJob(payload as Parameters<typeof handleSeparationJob>[0], {
       db: database,
+      signal,
       onInferenceTiming,
     }),
   );
@@ -486,6 +490,128 @@ test("a pinned local Kim model completes a failed separation through the product
   } finally {
     await harness?.restore();
     await f.close();
+  }
+});
+
+test("stopping a running pinned four-model job terminates its native worker and preserves session playback", { timeout: 240_000 }, async (t) => {
+  const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const workspaceRoot = resolve(arenaRoot, "../..");
+  const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
+  for (const spec of FOUR_STEM_MODELS) {
+    const modelPath = join(modelDirectory, spec.file);
+    if (!existsSync(modelPath)) {
+      t.skip(`Pinned ${spec.id} weights are not installed locally.`);
+      return;
+    }
+    assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
+  }
+
+  const source = await createFourStemProbeSource(8);
+  const f = await fixture({ model: "stems_4", sourceWavPath: source.path });
+  let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
+  try {
+    for (const spec of FOUR_STEM_MODELS) {
+      await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
+    }
+    const originalChecksum = await checksumFile(f.sourcePath);
+    const [playbackTrack] = await f.database
+      .insert(tracks)
+      .values({
+        ownerId: f.project.ownerId,
+        sourceChecksumSha256: f.source.checksumSha256,
+        title: "Current track during separation cancellation",
+        artist: "",
+        album: "",
+        sourceAssetId: f.source.id,
+        projectId: f.project.id,
+        durationSeconds: Math.round(f.source.durationSeconds),
+      })
+      .returning();
+    const [playbackSession] = await f.database
+      .insert(listenSessions)
+      .values({ ownerId: f.project.ownerId, name: "Cancellation playback continuity" })
+      .returning();
+    const [playbackEntry] = await f.database
+      .insert(listenSessionTracks)
+      .values({
+        sessionId: playbackSession.id,
+        trackId: playbackTrack.id,
+        position: 0,
+        stemMix: "{}",
+        transition: "{}",
+      })
+      .returning();
+    await f.database
+      .update(listenSessions)
+      .set({ currentTrackId: playbackEntry.id, positionSeconds: 2.25 })
+      .where(eq(listenSessions.id, playbackSession.id));
+    harness = createLocalRetryHarness(f.database);
+    await harness.broker.submit(SEPARATION_QUEUE, f.job.id, payloadOf(f));
+
+    const progressDeadline = Date.now() + 120_000;
+    let observedChunk: { model: string; done: number; total: number } | null = null;
+    while (Date.now() < progressDeadline) {
+      const [job] = await f.database
+        .select()
+        .from(processingJobs)
+        .where(eq(processingJobs.id, f.job.id));
+      if (job?.metadata) {
+        const metadata = typeof job.metadata === "string" ? JSON.parse(job.metadata) : job.metadata;
+        const progress = metadata?.progress;
+        if (
+          progress?.kind === "chunk" &&
+          typeof progress.model === "string" &&
+          typeof progress.done === "number" &&
+          typeof progress.total === "number" &&
+          progress.done < progress.total
+        ) {
+          observedChunk = { model: progress.model, done: progress.done, total: progress.total };
+          break;
+        }
+      }
+      if (!harness.broker.isRunning(f.job.id)) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+    }
+    assert.ok(observedChunk, "the production worker completed a native inference chunk and had more work pending");
+    assert.equal(harness.broker.isRunning(f.job.id), true, "the native worker is still active at cancellation time");
+
+    const stopped = await requestSeparationCancellation(f.database, f.job.id, harness.broker, true);
+    assert.equal(stopped.kind, "cancelled", "cancellation is confirmed only after the worker handler and cleanup settle");
+    assert.equal(await harness.broker.drain(10_000), true);
+    const [cancelledJob] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, f.job.id));
+    assert.equal(cancelledJob.status, "cancelled");
+    assert.equal(cancelledJob.stage, "cancelled");
+    assert.equal(cancelledJob.errorCode, null);
+    const [sessionAfterStop] = await f.database
+      .select()
+      .from(listenSessions)
+      .where(eq(listenSessions.id, playbackSession.id));
+    const [entryAfterStop] = await f.database
+      .select()
+      .from(listenSessionTracks)
+      .where(eq(listenSessionTracks.id, playbackEntry.id));
+    assert.equal(sessionAfterStop.currentTrackId, playbackEntry.id, "the current session entry is unchanged");
+    assert.equal(sessionAfterStop.positionSeconds, 2.25, "the current playback position is unchanged");
+    assert.equal(entryAfterStop.trackId, playbackTrack.id, "the session still resolves the same playable track");
+    assert.deepEqual(
+      await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id)),
+      [],
+      "a partial four-pass result is not published as a complete stem set",
+    );
+    const sourcePath = getStorage().getLocalPath(f.source.storageKey);
+    assert.ok(sourcePath && existsSync(sourcePath), "the original source remains playable from local storage");
+    assert.equal(await checksumFile(sourcePath!), originalChecksum, "the original source bytes are unchanged");
+
+    t.diagnostic(
+      `Stopped after real ${observedChunk.model} inference progress (${observedChunk.done}/${observedChunk.total} chunks); source bytes and the saved session cursor remain unchanged.`,
+    );
+  } finally {
+    await harness?.restore();
+    await f.close();
+    if (source.directory) await rm(source.directory, { recursive: true, force: true });
   }
 });
 

@@ -369,6 +369,7 @@ test("a library track with no separation job starts once and reports the active 
     reason: "Stem separation is running. The full source remains playable.",
     stage: "separating",
     progress: { percent: 36, phase: "pass 2/4 · chunk 2 of 4" },
+    cancelJobId: job.id,
   });
   const [listedTrack] = await service.listTracks({ ownerId: START_OWNER, search: "Unprocessed" });
   assert.deepEqual(listedTrack?.stemAvailability, progressDetail?.stemAvailability);

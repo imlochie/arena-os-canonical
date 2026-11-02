@@ -146,8 +146,8 @@ export async function fixture(options: { model?: string; sourceWavPath?: string 
     sourcePath,
     async close() {
       await rm(sourceDir, { recursive: true, force: true });
-      await rm(storageDir, { recursive: true, force: true });
-      await rm(modelsDir, { recursive: true, force: true });
+      await rm(storageDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await rm(modelsDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       await client.close();
       delete process.env.WAVEYARD_STORAGE_DIR;
       delete process.env.WAVEYARD_MODELS_DIR;

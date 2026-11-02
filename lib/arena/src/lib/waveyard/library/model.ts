@@ -13,6 +13,7 @@
  */
 
 import { isDeepStemModel, stemDisplayName } from "../separation/stem-display";
+import { isDeepSeparationMode } from "../separation/modes";
 
 /** The canonical default stem channels, in player order. `other` is the
  * standard fourth separation stem (melody/instrumental) — displayed as
@@ -66,7 +67,7 @@ export interface SeparationProgress {
 export type StemAvailability =
   | { status: "separated"; stemCount: number; stemTypes: string[] }
   | { status: "source-only"; reason: string }
-  | { status: "processing"; reason: string; stage?: string; progress?: SeparationProgress }
+  | { status: "processing"; reason: string; stage?: string; progress?: SeparationProgress; cancelJobId?: string }
   | { status: "rejected"; reason: string; retryJobId: string }
   | { status: "failed"; reason: string; retryJobId: string }
   | { status: "not-started"; reason: string }
@@ -84,6 +85,7 @@ export interface StemAvailabilityInput {
     errorCode: string | null;
     stage?: string | null;
     metadata?: string | null;
+    model?: string | null;
   };
 }
 
@@ -177,10 +179,16 @@ export function resolveStemAvailability(input: StemAvailabilityInput): StemAvail
   }
   if (input.separationPending === true) {
     const stage = input.separationJob?.stage ?? undefined;
+    const cancelJobId = input.separationJob?.id &&
+      !isDeepSeparationMode(input.separationJob.model ?? "")
+      ? input.separationJob.id
+      : undefined;
     const progress = stage === "separating" || stage === "finalizing"
       ? parseSeparationProgress(input.separationJob?.metadata)
       : undefined;
-    const reason = stage === "queued"
+    const reason = stage === "cancelling"
+      ? "Stopping the separation worker. Your original audio and any existing stems are preserved."
+      : stage === "queued"
       ? "Stem separation is queued. The full source remains playable."
       : stage === "preparing"
         ? "The separation worker is preparing. The full source remains playable."
@@ -190,6 +198,13 @@ export function resolveStemAvailability(input: StemAvailabilityInput): StemAvail
       reason,
       ...(stage ? { stage } : {}),
       ...(progress ? { progress } : {}),
+      ...(cancelJobId ? { cancelJobId } : {}),
+    };
+  }
+  if (input.separationJob?.status === "cancelled") {
+    return {
+      status: "not-started",
+      reason: "Separation was stopped. The original audio and existing stems are preserved; start it again when ready.",
     };
   }
   if (input.separationJob?.status === "failed") {

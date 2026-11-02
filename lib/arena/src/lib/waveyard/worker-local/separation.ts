@@ -188,7 +188,10 @@ export function demixMdxInWorker(
       termination = worker.terminate();
       void termination.then(
         () => settle(() => rejectResult(new SeparationCancelledError())),
-        (error) => settle(() => rejectResult(error instanceof Error ? error : new Error(String(error)))),
+        // A failed terminate request is not evidence of exit. Keep the handler
+        // pending until the worker emits exit; the broker then reports a
+        // timeout instead of freeing the target for a duplicate run.
+        () => undefined,
       );
     };
     const settle = (callback: () => void) => {
@@ -264,12 +267,7 @@ async function updateJobUnlessComplete(
   await database
     .update(processingJobs)
     .set({ ...patch, updatedAt: new Date() })
-    .where(and(
-      eq(processingJobs.id, id),
-      ne(processingJobs.status, "complete"),
-      ne(processingJobs.status, "cancelled"),
-      ne(processingJobs.stage, "cancelling"),
-    ));
+    .where(and(eq(processingJobs.id, id), ne(processingJobs.status, "complete")));
 }
 
 async function markJobCancelled(
@@ -558,6 +556,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
   const flushProgress = () => progressWrite;
 
   try {
+    await assertSeparationNotCancelled(database, job.id, deps.signal);
     await updateJob(database, job.id, {
       status: "preparing",
       stage: "preparing",
@@ -566,7 +565,9 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       errorMessage: null,
       metadata: JSON.stringify({ ...jobMetadata(job.metadata), progress: null }),
     });
+    await assertSeparationNotCancelled(database, job.id, deps.signal);
     await storage.getToFile((parentStem ?? source).storageKey, inputPath);
+    await assertSeparationNotCancelled(database, job.id, deps.signal);
 
     await updateJob(database, job.id, {
       status: "processing",
@@ -576,6 +577,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     // The engine is trained at 44.1 kHz — decode demands exactly that
     // (native WAV at other rates falls through to ffmpeg resampling).
     const decoded = await decode(inputPath, {}, {}, { requireSampleRate: 44_100 });
+    await assertSeparationNotCancelled(database, job.id, deps.signal);
     if (decoded.sampleRate !== 44_100) {
       throw new Error(`Decoder returned ${decoded.sampleRate} Hz — the engine requires 44100 Hz.`);
     }
@@ -669,6 +671,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         // whole GLOBAL percents + the first and last chunk of each run.
         let lastReportedPercent = -1;
         for (let runIndex = 0; runIndex < modelRuns.length; runIndex += 1) {
+          await assertSeparationNotCancelled(database, job.id, deps.signal);
           const modelRun = modelRuns[runIndex]!;
           const passPercent = Math.floor((runIndex / modelRuns.length) * 100);
           persistProgress({
@@ -695,7 +698,8 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
                 model: modelRun.spec.id,
                 kind: "chunk",
               });
-            });
+            }, deps.signal);
+            await assertSeparationNotCancelled(database, job.id, deps.signal);
             deps.onInferenceTiming?.(modelRun.spec.id, separated.timings);
             resolvedDevice = separated.resolvedDevice;
             for (const run of modelRun.outputs) {
@@ -758,6 +762,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
 
     await flushProgress().catch(() => undefined);
+    await assertSeparationNotCancelled(database, job.id, deps.signal);
     await updateJob(database, job.id, {
       status: "finalizing",
       stage: "validating",
@@ -765,6 +770,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     });
     const values: (typeof stemAssets.$inferInsert)[] = [];
     for (const stem of stemOutputs) {
+      await assertSeparationNotCancelled(database, job.id, deps.signal);
       const wav = encodeWav16(interleavePlanar(stem.channels), 44_100);
       // Layered stem types ("other/vocals") must become safe filenames.
       const stemPath = join(temporaryDirectory, `${stem.stemType.replace(/[^a-zA-Z0-9_-]+/g, "-")}.wav`);
@@ -774,6 +780,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       // A storage provider may write the object and then lose its acknowledgement.
       uploadedKeys.push(storageKey);
       await storage.putFile(storageKey, stemPath, "audio/wav");
+      await assertSeparationNotCancelled(database, job.id, deps.signal);
       values.push({
         projectId: job.projectId,
         sourceAssetId: source.id,
@@ -794,6 +801,30 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
 
     const durableWork = await database.transaction(async (tx) => {
+      const [claimed] = await tx
+        .update(processingJobs)
+        .set({
+          status: "complete",
+          stage: "complete",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          metadata: JSON.stringify({
+            engine: engineKind,
+            model: job.model,
+            models: runModels,
+            resolvedDevice,
+            outputCount: values.length,
+            stems: stemOutputs.map((stem) => stem.stemType),
+          }),
+        })
+        .where(and(
+          eq(processingJobs.id, job.id),
+          ne(processingJobs.status, "complete"),
+          ne(processingJobs.status, "cancelled"),
+          ne(processingJobs.stage, "cancelling"),
+        ))
+        .returning({ id: processingJobs.id });
+      if (!claimed) throw new SeparationCancelledError();
       // Retry idempotency: a re-run replaces its stems atomically.
       await tx.delete(stemAssets).where(eq(stemAssets.separationJobId, job.id));
       const storedStems = await tx
@@ -812,23 +843,6 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           })),
         )
         .returning({ id: waveformJobs.id, stemAssetId: waveformJobs.stemAssetId });
-      await tx
-        .update(processingJobs)
-        .set({
-          status: "complete",
-          stage: "complete",
-          completedAt: new Date(),
-          updatedAt: new Date(),
-          metadata: JSON.stringify({
-            engine: engineKind,
-            model: job.model,
-            models: runModels,
-            resolvedDevice,
-            outputCount: values.length,
-            stems: stemOutputs.map((stem) => stem.stemType),
-          }),
-        })
-        .where(eq(processingJobs.id, job.id));
       return waveformWork;
     });
     // Separation is complete even if a later derived-artifact queue needs
@@ -868,12 +882,26 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       completed = true;
       return;
     }
+    const [current] = await database
+      .select({ status: processingJobs.status, stage: processingJobs.stage })
+      .from(processingJobs)
+      .where(eq(processingJobs.id, job.id))
+      .limit(1);
+    if (
+      error instanceof SeparationCancelledError ||
+      deps.signal?.aborted ||
+      current?.status === "cancelled" ||
+      current?.stage === "cancelling"
+    ) {
+      await markJobCancelled(database, job.id);
+      return;
+    }
     let errorCode = "separation_failed";
     if (error instanceof SeparationUnavailableError) errorCode = "separation_unavailable";
     else if (error instanceof DependencyMissingError) errorCode = "dependency_missing";
     else if (error instanceof Error && /44100/.test(error.message)) errorCode = "decode_failed";
     const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown separation failure.";
-    await updateJobUnlessComplete(database, job.id, {
+    await updateJob(database, job.id, {
       status: "failed",
       stage: "failed",
       errorCode,

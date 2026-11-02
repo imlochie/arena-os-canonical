@@ -156,6 +156,7 @@ async function availabilityBySource(
         sourceAssetId: processingJobs.sourceAssetId,
         status: processingJobs.status,
         stage: processingJobs.stage,
+        model: processingJobs.model,
         errorCode: processingJobs.errorCode,
         metadata: processingJobs.metadata,
       })
@@ -564,6 +565,7 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
       id: processingJobs.id,
       status: processingJobs.status,
       stage: processingJobs.stage,
+      model: processingJobs.model,
       errorCode: processingJobs.errorCode,
       metadata: processingJobs.metadata,
     })

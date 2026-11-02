@@ -303,6 +303,7 @@ export type StemAvailability = {
   reason: string;
   stage?: string;
   progress?: StemSeparationProgress;
+  cancelJobId?: string;
 } | {
   status: 'rejected' | 'failed';
   reason: string;
@@ -806,6 +807,22 @@ export interface LibraryTrackSeparationStartResponse {
   stemCount: number | null;
   /** @nullable */
   error: string | null;
+}
+
+export type SeparationCancellationResponseState = typeof SeparationCancellationResponseState[keyof typeof SeparationCancellationResponseState];
+
+
+export const SeparationCancellationResponseState = {
+  cancelled: 'cancelled',
+  stopping: 'stopping',
+} as const;
+
+export interface SeparationCancellationResponse {
+  state: SeparationCancellationResponseState;
+  jobId: string;
+  status: string;
+  stage: string;
+  message?: string;
 }
 
 export type RunArcadeDevelopment200 = { [key: string]: unknown };

@@ -77,6 +77,57 @@ test("broker records failure events and keeps going", async () => {
   assert.ok(events.includes("succeeded"));
 });
 
+test("broker aborts a running handler and waits for its cleanup before releasing the job id", async () => {
+  const broker = new LocalJobBroker();
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  let observedAbort = false;
+  broker.registerCancellable("separation", async (_payload, { signal }) => {
+    markStarted();
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => {
+        observedAbort = true;
+        resolve();
+      }, { once: true });
+    });
+  });
+  await broker.submit("separation", "running-job", {});
+  await started;
+
+  assert.equal(broker.isRunning("running-job"), true);
+  assert.equal(await broker.cancelActive("running-job", 500), "stopped");
+  await broker.drain(500);
+  assert.equal(observedAbort, true);
+  assert.equal(broker.stats().cancelled, 1);
+  assert.equal(broker.stats().succeeded, 0);
+  assert.equal(broker.isRunning("running-job"), false);
+});
+
+test("a queued job is not mistaken for an active cancellation target", async () => {
+  const broker = new LocalJobBroker();
+  const gate = deferred();
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const order: string[] = [];
+  broker.register("separation", async (payload) => {
+    const name = String(payload.name);
+    order.push(name);
+    if (name === "first") {
+      markStarted();
+      await gate.promise;
+    }
+  });
+  await broker.submit("separation", "first", { name: "first" });
+  await started;
+  await broker.submit("separation", "queued", { name: "queued" });
+
+  assert.equal(broker.isRunning("queued"), false);
+  assert.equal(await broker.cancelActive("queued", 50), "not-active");
+  gate.resolve();
+  assert.equal(await broker.drain(500), true);
+  assert.deepEqual(order, ["first", "queued"]);
+});
+
 test("localWorkerActive reflects desktop mode env", async () => {
   const { localWorkerActive, resetLocalJobBrokerForTests } = await import("@workspace/arena/lib/waveyard/worker-local/broker");
   const original = process.env.ARENA_DESKTOP_MODE;
