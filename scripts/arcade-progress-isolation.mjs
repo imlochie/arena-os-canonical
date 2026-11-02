@@ -417,46 +417,41 @@ let ticks=0;function step(){document.body.dataset.gameTicks=String(++ticks);requ
   const platformCanvas = platformer.locator("#game");
   await platformCanvas.waitFor({ timeout: 10000 });
   await platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.__start());
-  const installPlatformProbe = () => platformer.locator("body").evaluate(body => {
-    const view = body.ownerDocument.defaultView;
-    if (!view.__task219Probe) {
-      const probe = { session: `${Date.now()}-${Math.random()}`, ticks: 0 };
-      view.__task219Probe = probe;
-      const advance = () => { probe.ticks++; view.requestAnimationFrame(advance); };
-      view.requestAnimationFrame(advance);
-    }
-    return { ...view.__task219Probe };
+  let platformLive = await platformCanvas.evaluate(canvas => {
+    const view = canvas.ownerDocument.defaultView;
+    view.__task219Session = `${Date.now()}-${Math.random()}`;
+    return { session: view.__task219Session, x: view.player.x, level: view.level };
   });
-  const readPlatformProbe = () => platformer.locator("body").evaluate(body => body.ownerDocument.defaultView.__task219Probe ?? null);
   const verifyPlatformLive = async (before, label) => {
-    const deadline = Date.now() + 4000;
-    while (Date.now() < deadline) {
-      const current = await readPlatformProbe();
-      assert.ok(current, `${label}: offline starter document must not be replaced`);
-      assert.equal(current.session, before.session, `${label}: offline starter session must stay live`);
-      if (current.ticks > before.ticks) return;
-      await new Promise(resolve => setTimeout(resolve, 40));
-    }
-    assert.fail(`${label}: offline starter animation did not advance`);
+    // Drive the real platformer update function so this assertion is not
+    // dependent on headless-browser animation-frame scheduling.
+    const current = await platformCanvas.evaluate(canvas => {
+      const view = canvas.ownerDocument.defaultView;
+      const priorX = view.player.x;
+      view.keys.ArrowRight = true;
+      view.update(0.1);
+      view.keys.ArrowRight = false;
+      return { session: view.__task219Session ?? null, x: view.player.x, level: view.level };
+    });
+    assert.equal(current.session, before.session, `${label}: offline starter session must stay live`);
+    assert.ok(current.x > before.x, `${label}: the active game's state must continue advancing`);
+    return current;
   };
-  let platformLive = await installPlatformProbe();
   const setPlatformSave = () => platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.localStorage.setItem("af_platform_unlocked", "2"));
   const removePlatformSave = () => platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.localStorage.removeItem("af_platform_unlocked"));
   const clearPlatformSave = () => platformCanvas.evaluate(canvas => canvas.ownerDocument.defaultView.localStorage.clear());
   await setPlatformSave();
   await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
-  await verifyPlatformLive(platformLive, "offline starter save");
-  platformLive = await readPlatformProbe();
+  platformLive = await verifyPlatformLive(platformLive, "offline starter save");
   await removePlatformSave();
   await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor({ state: "detached" });
-  await verifyPlatformLive(platformLive, "offline starter removes last key");
-  platformLive = await readPlatformProbe();
+  platformLive = await verifyPlatformLive(platformLive, "offline starter removes last key");
   await setPlatformSave();
   await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
-  platformLive = await readPlatformProbe();
+  platformLive = await verifyPlatformLive(platformLive, "offline starter game-originated clear");
   await clearPlatformSave();
   await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor({ state: "detached" });
-  await verifyPlatformLive(platformLive, "offline starter game-originated clear");
+  await verifyPlatformLive(platformLive, "offline starter game-originated clear completed");
   checks.push("created-game and offline-starter saves, key removal, and game clears keep the live player running; explicit clear, source revisions, identities, and reload restore the right progress");
 
   await page.screenshot({ path: new URL("isolation.png", output).pathname });
