@@ -1139,6 +1139,67 @@ test("waveform does not retry permanent decode failures", async () => {
   }
 });
 
+test("waveform recovery stops immediately when the recovered audio has a permanent decode failure", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let firstBackoffStarted!: () => void;
+    const firstBackoff = new Promise<void>((resolve) => { firstBackoffStarted = resolve; });
+    const stoppedBroker = new LocalJobBroker();
+    stoppedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        throw Object.assign(new Error("Temporary FFmpeg resource failure"), { code: "EAGAIN" });
+      },
+      sleep: async () => {
+        firstBackoffStarted();
+        await new Promise<void>(() => {});
+      },
+    }));
+    await stoppedBroker.submit(
+      "waveyard-waveform",
+      job.id,
+      sourceWaveformPayload(f, job.id),
+    );
+    await firstBackoff;
+
+    let recoveredAttempts = 0;
+    const recoveredDelays: number[] = [];
+    const recoveredBroker = new LocalJobBroker();
+    recoveredBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        recoveredAttempts += 1;
+        throw new Error("Invalid data found when processing input.");
+      },
+      sleep: async (milliseconds) => { recoveredDelays.push(milliseconds); },
+    }));
+    const recovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      (payload) => recoveredBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.equal(await recoveredBroker.drain(10_000), true);
+
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(recoveredAttempts, 1, "only one attempt runs after recovery");
+    assert.deepEqual(recoveredDelays, [], "a permanent decode error does not enter retry backoff");
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.stage, "failed");
+    assert.equal(failed.attempts, 2, "the first transient failure remains counted");
+    assert.equal(failed.errorCode, "waveform_failed");
+    assert.equal(failed.errorMessage, "Invalid data found when processing input.");
+    assert.equal(assets.length, 0, "invalid audio does not create a waveform asset");
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform retry resumes after local worker recovery with the remaining attempt budget", async () => {
   const f = await fixture();
   try {
