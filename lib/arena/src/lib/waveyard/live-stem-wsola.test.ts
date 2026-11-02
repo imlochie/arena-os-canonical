@@ -64,13 +64,26 @@ test("seeking while pitch lock is enabled starts from the requested source frame
 });
 
 test("mono donor PCM is transferred once and rendered to both output channels", () => {
-  const mono = new Float32Array(SAMPLE_RATE);
+  const mono = tone(440);
   const channels = copyPcmChannelsForWorklet({
     numberOfChannels: 1,
     getChannelData: () => mono,
   });
   assert.equal(channels.length, 1);
   assert.equal(channels[0].byteLength, mono.byteLength);
+  const stretcher = new LiveStemWsola(channels, SAMPLE_RATE);
+  stretcher.setPlaying(true);
+  const leftOutput = new Float32Array(128 * 188);
+  const rightOutput = new Float32Array(leftOutput.length);
+  for (let offset = 0; offset < leftOutput.length; offset += 128) {
+    const left = new Float32Array(128);
+    const right = new Float32Array(128);
+    stretcher.process([left, right]);
+    leftOutput.set(left, offset);
+    rightOutput.set(right, offset);
+  }
+  assert.deepEqual(leftOutput, rightOutput);
+  assert.ok(Math.abs(estimateFrequency(leftOutput.subarray(4_800, 19_200)) - 440) < 4);
 });
 
 test("three-minute stereo pitch-lock migration stays within its measured PCM budget", () => {
@@ -92,6 +105,13 @@ test("three-minute stereo pitch-lock migration stays within its measured PCM bud
   const measuredBytes = process.memoryUsage().arrayBuffers - before;
   const pcmBytes = frames * 2 * Float32Array.BYTES_PER_ELEMENT;
   assert.equal(transferred.reduce((total, channel) => total + channel.byteLength, 0), pcmBytes);
+  console.log(`WAVEYARD_PITCH_PCM_BUDGET ${JSON.stringify({
+    durationSeconds: 180,
+    sampleRate: SAMPLE_RATE,
+    channels: 2,
+    measuredMiB: Number((measuredBytes / 1024 / 1024).toFixed(2)),
+    budgetMiB: 140,
+  })}`);
   assert.ok(
     measuredBytes <= 140 * 1024 * 1024,
     `three minutes of 48 kHz stereo PCM, the temporary transfer copy, and WSOLA scratch must stay under 140 MiB (measured ${(measuredBytes / 1024 / 1024).toFixed(2)} MiB)`,

@@ -29,6 +29,7 @@ const automaticFadesOnly = process.argv.includes("--automatic-fades-only");
 const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
 const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
+const pitchModesOnly = process.argv.includes("--pitch-modes-only");
 let donorSwapSequence = 0;
 let failNextDonorRestore = false;
 const donorRestoreRequests = [];
@@ -2029,10 +2030,10 @@ try {
   const speedSlider = current.getByTestId("session-playback-speed");
   const setPlaybackRate = async rate => {
     await speedSlider.evaluate((element, value) => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
       setter.call(element, String(value));
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
     }, rate);
     await page.waitForFunction(value =>
       document.querySelector('[data-testid="session-speed-value"]')?.textContent === `${Number(value).toFixed(2)}×`,
@@ -2062,7 +2063,11 @@ try {
     const masterNext = master.nextNode;
     master.connect(outputAnalyser);
     master.nextNode = masterNext;
-    window.pitchMeters = { originalAnalyser, donorAnalyser, outputAnalyser, context, donorDuration: donor.buffer.duration };
+    window.pitchMeters = {
+      originalAnalyser, donorAnalyser, outputAnalyser, context,
+      donorDuration: donor.buffer.duration,
+      donorChannelCount: donor.buffer.numberOfChannels,
+    };
     window.readPitchMeters = () => {
       const estimate = analyser => {
         const data = new Float32Array(analyser.fftSize);
@@ -2123,7 +2128,7 @@ try {
     return result;
   };
 
-  await pitchLockButton.click();
+  await checkClockAndContinuity(true, 1.1);
   await page.waitForFunction(() => {
     const button = document.querySelector('[data-testid="session-pitch-lock"]');
     return button?.getAttribute("aria-pressed") === "true"
@@ -2149,10 +2154,10 @@ try {
     const worklet = window.audioProbe.worklets.at(-1);
     if (!worklet) return false;
     worklet.connect(window.pitchMeters.donorAnalyser);
-    return window.audioProbe.workletLoads.at(-1)?.channelCount === 1
+    return window.audioProbe.workletLoads.at(-1)?.channelCount === window.pitchMeters.donorChannelCount
       && window.audioProbe.workletLoads.at(-1)?.pcmBytes > 0;
   });
-  assert.equal(donorWorkletAttached, true, "mono live donors transfer one PCM channel and render through the worklet");
+  assert.equal(donorWorkletAttached, true, "the live donor transfers exactly its decoded PCM channels to the worklet");
   await page.waitForTimeout(400);
   const donorAlignment = await page.evaluate(() => {
     const seek = window.audioProbe.workletSeeks.at(-1);
@@ -2196,13 +2201,16 @@ try {
   assert.ok(Math.abs(followSlow.originalHz - originalHz * 0.8) < 10 &&
     Math.abs(followSlow.donorHz - donorHz * 0.8) < 12,
   `pitch-follow lowers with the 0.8× speed for both sources: ${JSON.stringify(followSlow)}`);
-  await setPlaybackRate(1);
+  await current.getByTestId("session-speed-reset").click();
   await page.waitForFunction(() =>
     Array.from(document.querySelectorAll('[data-role="current"] audio')).every(audio => audio.preservesPitch === false),
   );
-  await current.getByTestId("session-speed-reset").click();
   assert.equal(await current.getByTestId("session-speed-value").innerText(), "1.00×");
   console.log("PASS: browser-measured pitch lock/follow, playhead continuity, donor alignment, and mobile control");
+  if (pitchModesOnly) {
+    await browser.close();
+    process.exit(0);
+  }
 
   await current.getByTestId("restore-live-swap-vocals").click();
   await page.waitForTimeout(400);
