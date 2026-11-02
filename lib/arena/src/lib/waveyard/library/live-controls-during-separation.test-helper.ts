@@ -29,11 +29,25 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
 
   await context.addInitScript(() => {
     const target = window as typeof window & {
-      audioProbe?: { sources: Array<{ media: HTMLMediaElement; inputNode?: AudioNode }> };
+      audioProbe?: {
+        sources: Array<{ media: HTMLMediaElement; inputNode?: AudioNode }>;
+        gains: Array<GainNode & { nextNode?: AudioNode }>;
+      };
     };
-    target.audioProbe = { sources: [] };
+    target.audioProbe = { sources: [], gains: [] };
     const NativeAudioContext = window.AudioContext;
     window.AudioContext = class extends NativeAudioContext {
+      createGain() {
+        const gain = super.createGain() as GainNode & { nextNode?: AudioNode };
+        const connect = gain.connect.bind(gain);
+        gain.connect = ((destination: AudioNode, ...args: unknown[]) => {
+          gain.nextNode = destination;
+          return connect(destination, ...(args as [number?, number?, number?]));
+        }) as typeof gain.connect;
+        target.audioProbe!.gains.push(gain);
+        return gain;
+      }
+
       createMediaElementSource(media: HTMLMediaElement) {
         const source = super.createMediaElementSource(media) as MediaElementAudioSourceNode & {
           media?: HTMLMediaElement;
@@ -59,7 +73,8 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
       const source = probe?.sources.find(item => item.media === audio) as
         | (MediaElementAudioSourceNode & { inputNode?: AudioNode })
         | undefined;
-      const gain = source?.inputNode instanceof GainNode ? source.inputNode.gain.value : null;
+      const stemGain = source?.inputNode as (AudioNode & { nextNode?: AudioNode }) | undefined;
+      const gain = stemGain?.nextNode instanceof GainNode ? stemGain.nextNode.gain.value : null;
       return {
         assetId: new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1),
         paused: audio.paused,
@@ -85,7 +100,14 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
       page.on("pageerror", (error: Error) => pageErrors.push(error.message));
       await context.route("**/api/**", async (route: any) => {
         const requested = new URL(route.request().url());
-        const response = await route.fetch({ url: `${apiOrigin}${requested.pathname}${requested.search}` });
+        const headers = { ...route.request().headers() };
+        delete headers.host;
+        headers.origin = apiOrigin;
+        headers.referer = `${apiOrigin}${requested.pathname}${requested.search}`;
+        const response = await route.fetch({
+          url: `${apiOrigin}${requested.pathname}${requested.search}`,
+          headers,
+        });
         await route.fulfill({ response });
       });
       await page.goto(`http://localhost:80/waveyard/session/${nextContext.sessionId}`, {
@@ -100,6 +122,12 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
           && elements.every(audio => audio.readyState >= 2)
           && assetIds.every(id => loadedIds.includes(id));
       }, expectedAssets, { timeout: 30_000 });
+      const playButton = page.getByTestId("session-play");
+      if (await playButton.getAttribute("aria-pressed") !== "true") await playButton.click();
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(item => !item.paused);
+      }, undefined, { timeout: 5_000 });
       await page.waitForFunction(() => {
         const probe = (window as typeof window & { audioProbe?: { sources: unknown[] } }).audioProbe;
         return (probe?.sources.length ?? 0) >= 4;
@@ -109,13 +137,6 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
       assert.ok(initialAudio.every(item => item.sourceCount === 1),
         "each current stem owns one media-element source, with no duplicate playback engine");
       assert.ok(initialAudio.every(item => item.gain !== null), "each stem is connected through a real gain node");
-
-      const playButton = page.getByTestId("session-play");
-      if (await playButton.getAttribute("aria-pressed") !== "true") await playButton.click();
-      await page.waitForFunction(() => {
-        const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
-        return audio.length === 4 && audio.every(item => !item.paused);
-      }, undefined, { timeout: 5_000 });
     },
 
     async onVerifiedPhase(phase, activeContext) {
@@ -180,7 +201,9 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
           const source = probe?.sources.find(item => item.media === audio) as
             | (MediaElementAudioSourceNode & { inputNode?: AudioNode })
             | undefined;
-          return source?.inputNode instanceof GainNode && Math.abs(source.inputNode.gain.value - 0.42) < 0.03;
+          const stemGain = source?.inputNode as (AudioNode & { nextNode?: AudioNode }) | undefined;
+          return stemGain?.nextNode instanceof GainNode
+            && Math.abs(stemGain.nextNode.gain.value - 0.42) < 0.03;
         }, vocalsAssetId);
       } else if (phase === "4/4") {
         await page.getByTestId("quick-isolate-vocals").click();
