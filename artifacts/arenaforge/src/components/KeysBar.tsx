@@ -50,6 +50,7 @@ export default function KeysBar() {
       else localStorage.removeItem("af_key_mistral");
       if (taUrl.trim()) localStorage.setItem("af_url_turboagent", taUrl.trim());
       else localStorage.removeItem("af_url_turboagent");
+      window.dispatchEvent(new Event("af-model-keys-updated"));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {}

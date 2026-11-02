@@ -19,7 +19,7 @@ import {
   saveOfflineSavedGames,
   type SavedOfflineGame,
 } from "../lib/offlineGameStorage";
-import { privacyFlags } from "@workspace/arena/lib/privacyClient";
+import { privacyFlags, usePrivacySettings } from "@workspace/arena/lib/privacyClient";
 import { loadKeys } from "./KeysBar";
 import BrainCard from "@/components/BrainCard";
 import {
@@ -51,13 +51,37 @@ type ArcadeServerModel = {
   name: string;
   provider?: string;
   backend: string;
+  pollinationsId?: string;
   requiresKey?: boolean;
   requiresNetwork?: boolean;
   kind?: string;
 };
 
+type LocalRuntimeProbe = {
+  modelId: string;
+  status: "checking" | "online" | "offline" | "model-missing" | "unknown";
+  detail?: string;
+};
+
 function isServerRoutedLocalModel(model: Pick<ArcadeServerModel, "backend"> | undefined): boolean {
   return model?.backend === "local-server" || model?.backend === "turboagent";
+}
+
+function parseLocalRuntimeTarget(model: ArcadeServerModel | undefined) {
+  const routingId = model?.pollinationsId;
+  const prefix = "__server__:";
+  if (!routingId?.startsWith(prefix)) return null;
+  const encodedTarget = routingId.slice(prefix.length);
+  const separator = encodedTarget.indexOf(":");
+  if (separator < 0) return null;
+  try {
+    return {
+      baseUrl: decodeURIComponent(encodedTarget.slice(0, separator)),
+      model: decodeURIComponent(encodedTarget.slice(separator + 1)),
+    };
+  } catch {
+    return null;
+  }
 }
 
 const SAVE_SLOT_ALIAS_PREFIX = "arenaforge.game-save-slot.v1:";
@@ -177,11 +201,14 @@ const SHOWCASE: { label: string; prompt: string }[] = [
 ];
 
 export default function ArcadeForge() {
+  const privacySettings = usePrivacySettings();
   const [prompt, setPrompt] = useState("");
   const [strategy, setStrategy] = useState<Strategy>("auto");
   const [modelId, setModelId] = useState<string>(WEBLLM_MODELS[0].id);
   const [serverModelId, setServerModelId] = useState("");
   const [serverModels, setServerModels] = useState<ArcadeServerModel[]>([]);
+  const [localRuntimeProbe, setLocalRuntimeProbe] = useState<LocalRuntimeProbe | null>(null);
+  const [providerRouteConfigured, setProviderRouteConfigured] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState("");
@@ -303,6 +330,79 @@ export default function ArcadeForge() {
       })
       .catch(() => {});
   }, [fetchHistory]);
+
+  useEffect(() => {
+    const refreshProviderRoute = () => {
+      setProviderRouteConfigured(
+        Object.values(loadKeys()).some((value) => typeof value === "string" && value.trim().length > 0),
+      );
+    };
+    refreshProviderRoute();
+    window.addEventListener("storage", refreshProviderRoute);
+    window.addEventListener("af-model-keys-updated", refreshProviderRoute);
+    return () => {
+      window.removeEventListener("storage", refreshProviderRoute);
+      window.removeEventListener("af-model-keys-updated", refreshProviderRoute);
+    };
+  }, []);
+
+  useEffect(() => {
+    const selected = serverModels.find((model) => model.id === serverModelId);
+    const target = selected?.backend === "local-server" ? parseLocalRuntimeTarget(selected) : null;
+    if (!selected || selected.backend !== "local-server") {
+      setLocalRuntimeProbe(null);
+      return;
+    }
+    if (!target) {
+      setLocalRuntimeProbe({
+        modelId: selected.id,
+        status: "unknown",
+        detail: "This registered local model has no verifiable Model Hub route.",
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    setLocalRuntimeProbe({ modelId: selected.id, status: "checking" });
+    fetch("/api/model-hub", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "scan", baseUrl: target.baseUrl }),
+      signal: controller.signal,
+    }).then(async (response) => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.probe) {
+        throw new Error(body.error ?? `Model Hub check failed (${response.status}).`);
+      }
+      const probe = body.probe as { online?: boolean; models?: unknown; detail?: string };
+      if (!probe.online) {
+        setLocalRuntimeProbe({
+          modelId: selected.id,
+          status: "offline",
+          detail: typeof probe.detail === "string" ? probe.detail : "The local runtime did not answer.",
+        });
+        return;
+      }
+      const models = Array.isArray(probe.models) ? probe.models.map((name) => String(name).trim().toLowerCase()) : [];
+      const modelAvailable = models.includes(target.model.trim().toLowerCase());
+      setLocalRuntimeProbe({
+        modelId: selected.id,
+        status: modelAvailable ? "online" : "model-missing",
+        detail: modelAvailable
+          ? "The runtime answered and listed the selected model."
+          : `The runtime answered, but did not list ${target.model}.`,
+      });
+    }).catch((error) => {
+      if (!controller.signal.aborted) {
+        setLocalRuntimeProbe({
+          modelId: selected.id,
+          status: "unknown",
+          detail: error instanceof Error ? error.message : "The local runtime could not be checked.",
+        });
+      }
+    });
+    return () => controller.abort();
+  }, [serverModelId, serverModels]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -964,6 +1064,36 @@ export default function ArcadeForge() {
   async function run(p?: string) {
     const q = (p ?? prompt).trim();
     if (!q || busy) return;
+    if (strategy !== "instant" && !engineOn) {
+      const flags = privacyFlags();
+      const savedProvider = Object.values(loadKeys()).some((value) => typeof value === "string" && value.trim().length > 0);
+      const selected = serverModels.find((model) => model.id === serverModelId);
+      const selectedCanRoute = strategy === "auto" &&
+        selected &&
+        (!flags.localOnly || isServerRoutedLocalModel(selected)) &&
+        (!selected.requiresKey || savedProvider);
+      const providerCanRoute = strategy === "auto" && !flags.localOnly && savedProvider;
+      const browserCanRoute = gpu?.ok === true;
+      const selectedProbe = localRuntimeProbe?.modelId === selected?.id ? localRuntimeProbe : null;
+      if (strategy === "auto" && selected?.backend === "local-server" && (!selectedProbe || selectedProbe.status === "checking")) {
+        setError("Arcade is checking the selected local runtime. Wait for the result before sending a custom prompt.");
+        return;
+      }
+      if (strategy === "auto" && selected?.backend === "local-server" && (selectedProbe?.status === "offline" || selectedProbe?.status === "model-missing")) {
+        openModelSetup();
+        setError(`The selected local model is not ready: ${selectedProbe.detail ?? "the runtime or model is unavailable"}. Open Model Hub to start the runtime or install the model.`);
+        return;
+      }
+      if (!selectedCanRoute && !providerCanRoute && !browserCanRoute) {
+        if (gpu === null) {
+          setError("Arcade is still checking whether this browser can run its on-device model. Wait for that check, or select a model source in Model setup.");
+        } else {
+          openModelSetup();
+          setError("No usable game-writing model is ready. This browser has no WebGPU model, and no usable provider or local Model Hub model is selected. Connect one in Model Hub, choose a listed provider, or use a browser with WebGPU.");
+        }
+        return;
+      }
+    }
     setPrompt(q);
     setBusy(true);
     setError(null);
@@ -1225,9 +1355,78 @@ export default function ArcadeForge() {
   const serverModelChoices = serverModels.filter(
     (model) => model.kind === "text" && model.backend !== "arena-local-engine" && model.backend !== "webllm",
   );
+  const localOnlyMode = privacySettings.localMode || !privacySettings.online;
+  const selectedSourceModel = serverModels.find((model) => model.id === serverModelId);
+  const selectedLocalRuntimeProbe = localRuntimeProbe?.modelId === selectedSourceModel?.id ? localRuntimeProbe : null;
   const selectedLocalModel = serverModels.some(
     (model) => model.id === serverModelId && isServerRoutedLocalModel(model),
   );
+  const selectedLocalRuntimeChecking = strategy === "auto" &&
+    selectedSourceModel?.backend === "local-server" &&
+    (!selectedLocalRuntimeProbe || selectedLocalRuntimeProbe.status === "checking");
+  const selectedLocalRuntimeUnavailable = strategy === "auto" &&
+    selectedSourceModel?.backend === "local-server" &&
+    (selectedLocalRuntimeProbe?.status === "offline" || selectedLocalRuntimeProbe?.status === "model-missing");
+  const selectedSourceAllowed = Boolean(
+    strategy === "auto" &&
+    selectedSourceModel &&
+    (!localOnlyMode || isServerRoutedLocalModel(selectedSourceModel)) &&
+    (!selectedSourceModel.requiresKey || providerRouteConfigured),
+  );
+  const configuredProviderAllowed = strategy === "auto" && !localOnlyMode && providerRouteConfigured;
+  const browserModelAllowed = strategy !== "instant" && (engineOn || gpu?.ok === true);
+  const hasGenerationRoute = selectedSourceAllowed || configuredProviderAllowed || browserModelAllowed;
+  const modelPreflightChecking = strategy !== "instant" &&
+    (selectedLocalRuntimeChecking || (
+      !hasGenerationRoute &&
+      !selectedSourceAllowed &&
+      !configuredProviderAllowed &&
+      !engineOn &&
+      gpu === null
+    ));
+  const modelRouteBlocked = strategy !== "instant" &&
+    (selectedLocalRuntimeUnavailable || (
+      !hasGenerationRoute &&
+      !modelPreflightChecking &&
+      gpu?.ok === false
+    ));
+
+  function openModelSetup() {
+    setModelSetupOpen(true);
+    window.requestAnimationFrame(() => {
+      const setup = document.querySelector<HTMLElement>('[data-testid="arcade-model-setup"]');
+      setup?.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.querySelector<HTMLElement>('[data-testid="arcade-model-setup-toggle"]')?.focus();
+    });
+  }
+
+  const modelPreflightMessage = strategy === "instant"
+    ? "Quick cores are fixed offline classics, not prompt-generated games. Choose Automatic or On-device model for custom mechanics."
+    : strategy === "ai" && gpu?.ok === false && !engineOn
+      ? `This browser cannot run the on-device model: ${gpu.reason ?? "WebGPU is unavailable"}. Choose Automatic and connect a Model Hub or remote model, or use a browser with WebGPU.`
+      : selectedSourceModel && strategy === "auto" && localOnlyMode && !isServerRoutedLocalModel(selectedSourceModel)
+        ? "Local Mode blocks the selected remote model. Choose a local Model Hub runtime, or turn off Local Mode to use a remote provider."
+        : selectedSourceModel && strategy === "auto" && selectedSourceModel.requiresKey && !providerRouteConfigured
+          ? `Selected model ${selectedSourceModel.name} needs a provider key. Save the matching key in Arena's provider settings, or choose a keyless/local model.`
+        : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "local-server" && selectedLocalRuntimeUnavailable
+          ? `Selected local model is not ready: ${selectedLocalRuntimeProbe?.detail ?? "the runtime or model is unavailable"}. Start the runtime or install the model in Model Hub; your prompt has not been sent.`
+          : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "local-server" && selectedLocalRuntimeChecking
+            ? "Checking whether the selected Model Hub runtime is online and has this model. No prompt has been sent."
+            : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "local-server" && selectedLocalRuntimeProbe?.status === "online"
+              ? `Model Hub answered and listed ${selectedSourceModel.name} on the Arena API machine. Use “Test selected local model” to verify game generation; results identify the actual runtime and model.`
+              : selectedSourceModel && strategy === "auto" && isServerRoutedLocalModel(selectedSourceModel)
+                ? `Route target: local ${selectedSourceModel.name}, running on the Arena API machine. Selection is not proof the model is answering; use “Test selected local model” to verify before relying on it.`
+          : selectedSourceModel && strategy === "auto"
+              ? `Route target: remote ${selectedSourceModel.name}. Reachability is not verified until inference; the completed game will identify the backend and model actually used.`
+            : engineOn
+              ? `Ready: browser model ${WEBLLM_MODELS.find((model) => model.id === engineModel)?.name ?? engineModel ?? "loaded model"} runs on this device.`
+              : configuredProviderAllowed
+                ? "A provider connection is saved in this browser. Automatic can route through the API server; saved settings do not prove reachability, so check the actual backend/model shown after generation."
+                : modelPreflightChecking
+                  ? "Checking whether this browser can run the on-device model…"
+                  : gpu?.ok
+                    ? "WebGPU is available, but the browser model is not loaded. Load it in Model setup before the first custom prompt to avoid an unexpected model download."
+                    : `No custom-game model route is ready: ${gpu?.reason ?? "WebGPU is unavailable"}, and no provider or local Model Hub model is selected. Choose a model source or add a local runtime. Quick cores remain available for fixed classics.`;
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
@@ -1240,7 +1439,7 @@ export default function ArcadeForge() {
           className="glass rounded-2xl p-4"
         >
           <summary data-testid="arcade-model-setup-toggle" className="cursor-pointer text-sm font-bold text-slate-200">
-            Model setup <span className="ml-2 text-xs font-normal text-slate-400">{engineOn ? "On-device model loaded" : "Model Hub and browser models"}</span>
+            Model setup <span className="ml-2 text-xs font-normal text-slate-400">{engineOn ? "On-device model loaded" : modelRouteBlocked ? "No usable model route" : "Model Hub and browser models"}</span>
           </summary>
           <div className="mt-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -1530,6 +1729,37 @@ export default function ArcadeForge() {
             placeholder="Describe a game or a change you want to make. (Ctrl+Enter)"
             className="mt-3 min-h-[64px] w-full resize-y rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-[15px] text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none"
           />
+          {strategy !== "instant" && (
+          <div
+            data-testid="arcade-model-preflight"
+            role={modelRouteBlocked ? "alert" : "status"}
+            className={`mt-2 rounded-lg border px-2.5 py-2 ${modelRouteBlocked ? "border-amber-300/30 bg-amber-400/10" : "border-white/10 bg-black/20"}`}
+          >
+            <p className={`text-[11px] leading-relaxed ${modelRouteBlocked ? "text-amber-100" : "text-slate-300"}`}>
+              {modelPreflightMessage}
+            </p>
+              {(!engineOn || modelRouteBlocked || selectedLocalModel || (strategy === "auto" && providerRouteConfigured)) && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  data-testid="arcade-open-model-setup"
+                  onClick={openModelSetup}
+                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-white/10"
+                >
+                  Open model setup
+                </button>
+                {(gpu?.ok === false || selectedLocalRuntimeUnavailable) && (
+                  <a
+                    href="/model-hub"
+                    className="rounded-lg border border-violet-300/25 bg-violet-400/10 px-3 py-1.5 text-[11px] font-bold text-violet-100 hover:bg-violet-400/20"
+                  >
+                    Open Model Hub
+                  </a>
+                )}
+              </div>
+              )}
+          </div>
+          )}
           <details className="mt-3">
             <summary className="cursor-pointer text-xs font-bold text-slate-400">Prompt examples (AI-generated)</summary>
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1546,7 +1776,12 @@ export default function ArcadeForge() {
             </div>
           </details>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button onClick={() => run()} disabled={busy || !prompt.trim()} className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white">
+            <button
+              onClick={() => run()}
+              disabled={busy || !prompt.trim() || modelRouteBlocked || modelPreflightChecking}
+              title={modelRouteBlocked ? "Connect or load a game-writing model before generating a custom prompt" : undefined}
+              className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
               {busy ? `🎮 ${phase || "Building…"}` : "🎮 Create & play"}
             </button>
             {(busy || iterating) && abortRef.current && (

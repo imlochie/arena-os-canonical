@@ -3117,6 +3117,7 @@ try {
   assert(taskBeforeManualBrowser, "The mission task should appear before the manual browser control");
   report.push("Spaces navigation is distinct from the room launcher; first-run creates one workspace CTA, focuses the browser task, and puts mission controls before manual browsing.");
   const localHubModelId = "turboagent-smoke-qwen";
+  const unavailableModelHubId = "modelhub-smoke-qwen";
   await page.route("**/api/models", async route => {
     const response = await route.fetch();
     const payload = await response.json();
@@ -3132,9 +3133,41 @@ try {
         requiresNetwork: false,
       });
     }
+    if (!models.some(model => model.id === unavailableModelHubId)) {
+      models.push({
+        id: unavailableModelHubId,
+        name: "qwen2.5:3b (ollama)",
+        provider: "local · offline smoke fixture",
+        backend: "local-server",
+        pollinationsId: "__server__:http%3A%2F%2F127.0.0.1%3A11434:qwen2.5%3A3b",
+        kind: "text",
+        requiresKey: false,
+        requiresNetwork: false,
+      });
+    }
     await route.fulfill({ response, body: JSON.stringify({ ...payload, models }) });
   });
   await page.route("**/api/model-hub", async route => {
+    if (route.request().method() === "POST") {
+      const request = route.request().postDataJSON();
+      if (request.action === "scan") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            probe: {
+              kind: "ollama",
+              baseUrl: request.baseUrl,
+              online: false,
+              models: [],
+              detail: "No local runtime answered.",
+            },
+          }),
+        });
+        return;
+      }
+      return route.fallback();
+    }
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({
       status: 200,
@@ -3313,7 +3346,32 @@ try {
   await localGenerationCheck.waitFor();
   assert(await localGenerationCheck.isDisabled(), "A local generation check must not run until an on-device model is loaded");
   assert.equal(await page.getByTestId("local-generation-result").count(), 0, "An unsupported test browser must never show a local-generation pass");
-  report.push("Local model verification stays unavailable—not falsely passed—until an on-device model is actually loaded.");
+  const modelPreflight = page.getByTestId("arcade-model-preflight");
+  await modelPreflight.waitFor();
+  const preflightText = await modelPreflight.innerText();
+  assert.match(
+    preflightText,
+    /Checking whether this browser|No custom-game model route is ready|WebGPU is available|Ready: browser model|Route target: (local|remote)|provider connection is saved/,
+    "Arcade should state the current model route before custom generation",
+  );
+  if (preflightText.includes("No custom-game model route is ready")) {
+    assert(
+      await page.getByRole("button", { name: "🎮 Create & play" }).isDisabled(),
+      "Custom prompts must not be submitted when WebGPU is unavailable and no provider or local model is selected",
+    );
+    assert(await page.getByRole("link", { name: "Open Model Hub" }).isVisible(), "the blocked preflight must link directly to Model Hub");
+    await page.getByTestId("arcade-open-model-setup").click();
+    assert.equal(await page.getByTestId("arcade-model-setup").getAttribute("open"), "");
+  }
+  await page.getByLabel("Connected model source").selectOption(unavailableModelHubId);
+  await page.getByTestId("arcade-model-preflight").getByText(/Selected local model is not ready/).waitFor();
+  assert(
+    await page.getByRole("button", { name: "🎮 Create & play" }).isDisabled(),
+    "Arcade must block a custom prompt when the selected Model Hub runtime is offline",
+  );
+  assert(await page.getByRole("link", { name: "Open Model Hub" }).isVisible(), "offline Model Hub preflight must offer a direct recovery action");
+  report.push("An offline selected Model Hub runtime is detected before prompt submission and links directly to runtime setup.");
+  report.push("Arcade shows the selected model route or the missing WebGPU/provider/Model Hub requirement before custom prompts; blocked generation links to setup.");
   await page.getByLabel("Connected model source").selectOption("openai");
   let promptGenerationSeen = false;
   let localServerGenerationSeen = false;
