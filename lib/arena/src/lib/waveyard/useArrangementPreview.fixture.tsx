@@ -52,11 +52,11 @@ const previewScenarios: Record<PreviewScenarioName, PreviewInput> = {
   long: stateFor(["preview-long"], [asset("preview-long", 300, 5_000_000)]),
   many: stateFor(
     ["preview-many-vocals", "preview-many-bass", "preview-many-drums", "preview-many-melody"],
-    ["vocals", "bass", "drums", "melody"].map((stem) => asset(`preview-many-${stem}`, 70)),
+    ["vocals", "bass", "drums", "melody"].map((stem) => asset(`preview-many-${stem}`, 80)),
   ),
   muted: stateFor(
     ["preview-muted-vocals", "preview-muted-bass", "preview-muted-drums", "preview-muted-melody"],
-    ["vocals", "bass", "drums", "melody"].map((stem) => asset(`preview-muted-${stem}`, 70)),
+    ["vocals", "bass", "drums", "melody"].map((stem) => asset(`preview-muted-${stem}`, 80)),
     ["preview-muted-bass", "preview-muted-drums", "preview-muted-melody"],
   ),
   switchA: stateFor(["preview-switch-a"], [asset("preview-switch-a", 8, 705_644)]),

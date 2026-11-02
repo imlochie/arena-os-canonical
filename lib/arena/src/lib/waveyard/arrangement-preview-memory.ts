@@ -47,20 +47,27 @@ export function estimateArrangementPreviewMemory(
       !asset ||
       !Number.isFinite(asset.durationSeconds) ||
       asset.durationSeconds <= 0 ||
-      !Number.isFinite(asset.channels) ||
-      asset.channels <= 0
+      !Number.isInteger(asset.channels) ||
+      asset.channels < 1
     ) {
       return { ok: false, reason: "missing-metadata", assetId };
     }
-    decodedBytes += Math.ceil(
+    const assetDecodedBytes = Math.ceil(
       asset.durationSeconds * outputSampleRate * asset.channels * FLOAT32_BYTES_PER_SAMPLE,
     );
+    if (!Number.isFinite(assetDecodedBytes)) {
+      return { ok: false, reason: "missing-metadata", assetId };
+    }
+    decodedBytes += assetDecodedBytes;
     largestEncodedFileBytes = Math.max(
       largestEncodedFileBytes,
       Number.isFinite(asset.fileSizeBytes) && asset.fileSizeBytes! > 0
         ? asset.fileSizeBytes!
         : 0,
     );
+  }
+  if (!Number.isFinite(decodedBytes)) {
+    return { ok: false, reason: "missing-metadata", assetId: uniqueIds[0] ?? "unknown" };
   }
 
   return {

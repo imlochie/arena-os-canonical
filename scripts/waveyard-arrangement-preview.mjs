@@ -202,7 +202,11 @@ test("long and many-stem arrangements are rejected before any full asset is fetc
     pending: window.preview.pending,
     playing: window.preview.playing,
   }));
-  assert.match(longStatus.error ?? "", /estimated to need/i, JSON.stringify(longStatus));
+  assert.match(
+    longStatus.error ?? "",
+    /estimated to need/i,
+    JSON.stringify({ longStatus, requests: assetRequests.slice(before) }),
+  );
   assert.equal(assetRequests.length, before, "a long source is rejected before downloading or decoding");
 
   await page.getByRole("button", { name: "Play many-stem preview" }).click();

@@ -24,6 +24,7 @@ type PreviewState = {
   previewAssets?: ArrangementPreviewAssetMetadata[];
 };
 
+const EMPTY_PREVIEW_ASSETS: ArrangementPreviewAssetMetadata[] = [];
 type ScheduledSource = { source: AudioBufferSourceNode; gain: GainNode };
 
 function clipLevelAt(clip: PreviewClip, offsetMs: number) {
@@ -41,7 +42,7 @@ function clipLevelAt(clip: PreviewClip, offsetMs: number) {
  */
 export function useArrangementPreview(
   onPosition: (milliseconds: number) => void,
-  supplementalAssets: ArrangementPreviewAssetMetadata[] = [],
+  supplementalAssets: ArrangementPreviewAssetMetadata[] = EMPTY_PREVIEW_ASSETS,
 ) {
   const context = useRef<AudioContext | null>(null);
   const buffers = useRef(new Map<string, AudioBuffer>());
@@ -108,9 +109,9 @@ export function useArrangementPreview(
     // Stop the old graph before releasing donor buffers. This prevents old and
     // new arrangements from retaining two sets of AudioBuffers during a switch.
     clear();
+    releaseInactiveArrangementPreviewBuffers(buffers.current, activeAssetIds);
     await decodeQueue.current;
     if (generation !== playbackGeneration.current) return false;
-    releaseInactiveArrangementPreviewBuffers(buffers.current, activeAssetIds);
 
     const metadataById = new Map(
       [...supplementalAssets, ...(state.previewAssets ?? [])].map((asset) => [asset.id, asset]),
@@ -129,7 +130,7 @@ export function useArrangementPreview(
     if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
       buffers.current.clear();
       throw new Error(
-        `This arrangement is estimated to need ${formatArrangementPreviewMiB(estimate.estimatedPeakBytes)} MiB for browser preview, above the ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB safety limit. Mute or solo fewer long stems, or use shorter source files.`,
+        `This arrangement is estimated to need ${formatArrangementPreviewMiB(estimate.estimatedPeakBytes)} MiB for browser preview, above the ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB safety limit. Mute or solo fewer stems, or choose shorter audio source files; Studio decodes each whole source even when a clip uses only a short section.`,
       );
     }
 
@@ -140,7 +141,7 @@ export function useArrangementPreview(
       if (arrangementPreviewBufferBytes(buffers.current) > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
         buffers.current.clear();
         throw new Error(
-          `The decoded audio exceeded Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB preview safety limit. Mute or solo fewer long stems, or use shorter source files.`,
+          `The decoded audio exceeded Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB preview safety limit. Mute or solo fewer stems, or choose shorter audio source files; Studio decodes each whole source even when a clip uses only a short section.`,
         );
       }
     }

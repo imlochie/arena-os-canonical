@@ -40,3 +40,4 @@
 - [Spaces expectations](spaces-product-expectations.md) — persistent AI-operated Linux environments that build and perform real tasks, not browser presets.
 - [Arena Everywhere](arena-everywhere-expectations.md) — one ecosystem with native 3DS, Switch and Wii shells; audit first, offline usefulness and evidence before compatibility claims.
 - [Partial task updates](task-update-failures.md) — task descriptions can persist despite dependency-update errors; verify before retrying and never equate edits with archival.
+- [Waveyard preview memory budgets](waveyard-preview-memory-budget.md) — budget using the live AudioContext rate, and make long-stem fixtures exceed limits at 44.1 and 48 kHz.
