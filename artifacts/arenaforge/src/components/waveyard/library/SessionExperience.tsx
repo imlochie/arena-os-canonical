@@ -109,6 +109,11 @@ interface PendingLiveSwap {
   failed?: boolean;
 }
 
+interface SwapMutationScope {
+  sessionTrackId: string;
+  stemType: string;
+}
+
 interface PendingPerformance {
   itemId: string;
   deckIndex: 0 | 1;
@@ -955,7 +960,18 @@ export default function SessionExperience({
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [activeDeck, setActiveDeck] = useState<0 | 1>(0);
   const [phase, setPhase] = useState<FadePhase>("idle");
-  const [savingSwap, setSavingSwap] = useState(false);
+  const [savingSwapKeys, setSavingSwapKeys] = useState<Set<string>>(() => new Set());
+  const savingSwap = savingSwapKeys.size > 0;
+  const setSwapSaving = useCallback((sessionTrackId: string, stemType: string, saving: boolean) => {
+    const key = `${sessionTrackId}:${stemType}`;
+    setSavingSwapKeys((previous) => {
+      if (previous.has(key) === saving) return previous;
+      const next = new Set(previous);
+      if (saving) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
   const [cancelledSwapIds, setCancelledSwapIds] = useState<Set<string>>(() => new Set());
   const [swapSelectionTimes, setSwapSelectionTimes] = useState<Record<string, number>>({});
@@ -1740,7 +1756,11 @@ export default function SessionExperience({
   );
 
   // ----------------------------------------------------------- queue edits
-  const mutate = useCallback(async (input: RequestInfo, init: RequestInit): Promise<SessionDetail | null> => {
+  const mutate = useCallback(async (
+    input: RequestInfo,
+    init: RequestInit,
+    swapScope?: SwapMutationScope,
+  ): Promise<SessionDetail | null> => {
     try {
       const response = await fetch(input, init);
       if (!response.ok) {
@@ -1750,19 +1770,39 @@ export default function SessionExperience({
       }
       const detail = (await response.json()).session as SessionDetail;
       if (sessionRef.current !== null && sessionRef.current.id !== detail.id) return null;
+      const current = sessionRef.current;
+      const nextDetail = swapScope && current !== null
+        ? {
+          ...detail,
+          // A swap changes one channel only. Keep the latest transport/track
+          // state and merge only that channel so an older response cannot
+          // erase a different stem's newer selection.
+          tracks: current.tracks,
+          currentSessionTrackId: current.currentSessionTrackId,
+          positionSeconds: current.positionSeconds,
+          swaps: [
+            ...current.swaps.filter((swap) =>
+              swap.sessionTrackId !== swapScope.sessionTrackId || swap.stemType !== swapScope.stemType,
+            ),
+            ...detail.swaps.filter((swap) =>
+              swap.sessionTrackId === swapScope.sessionTrackId && swap.stemType === swapScope.stemType,
+            ),
+          ],
+        }
+        : detail;
       setMixes((prev) => {
         const next = { ...prev };
-        for (const item of detail.tracks) if (!(item.id in next)) next[item.id] = { ...item.stemMix };
+        for (const item of nextDetail.tracks) if (!(item.id in next)) next[item.id] = { ...item.stemMix };
         return next;
       });
       setTransitions((prev) => {
         const next = { ...prev };
-        for (const item of detail.tracks) if (!(item.id in next)) next[item.id] = item.transition;
+        for (const item of nextDetail.tracks) if (!(item.id in next)) next[item.id] = item.transition;
         return next;
       });
-      sessionRef.current = detail;
-      setSession(detail);
-      return detail;
+      sessionRef.current = nextDetail;
+      setSession(nextDetail);
+      return nextDetail;
     } catch {
       setStatus("The session change could not be saved — network error.");
       return null;
@@ -2165,7 +2205,7 @@ export default function SessionExperience({
         ...previous,
         [`${currentItem.id}:${stemType}`]: selectedAt,
       }));
-      setSavingSwap(true);
+      setSwapSaving(currentItem.id, stemType, true);
       setStatus(`Saving ${stemType} source from “${donor.title}”… current playback continues.`);
       try {
         const detail = await mutate(`/api/library/sessions/${session.id}/swaps`, {
@@ -2177,7 +2217,7 @@ export default function SessionExperience({
             toTrackId: donor.id,
             atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
           }),
-        });
+        }, { sessionTrackId: currentItem.id, stemType });
         if (detail) {
           const savedSwap = [...detail.swaps].reverse().find((swap) =>
             swap.sessionTrackId === currentItem.id && swap.stemType === stemType && swap.toTrackId === donor.id,
@@ -2198,16 +2238,18 @@ export default function SessionExperience({
           }
         }
       } finally {
-        setSavingSwap(false);
+        setSwapSaving(currentItem.id, stemType, false);
       }
     },
-    [session, currentItem, mutate, activeDeck, warmLiveSwap, cancelledSwapIds],
+    [session, currentItem, mutate, activeDeck, warmLiveSwap, cancelledSwapIds, setSwapSaving],
   );
 
   const revertSwap = useCallback(
     async (swapId: string, successMessage = "Original stem restored.", failed = false) => {
       if (session === null) return;
       const pending = pendingSwaps.find((swap) => swap.swapId === swapId);
+      const savedSwap = session?.swaps.find((swap) => swap.id === swapId);
+      const targetSwap = pending ?? savedSwap;
       const previousSwap = (failed || pending?.failed) ? pending?.previousSwap : undefined;
       if (pending) {
         if (previousSwap) {
@@ -2230,7 +2272,7 @@ export default function SessionExperience({
         }
         setStatus(successMessage);
       }
-      setSavingSwap(true);
+      if (targetSwap) setSwapSaving(targetSwap.sessionTrackId, targetSwap.stemType, true);
       try {
         const detail = previousSwap
           ? await mutate(`/api/library/sessions/${session.id}/swaps`, {
@@ -2244,8 +2286,9 @@ export default function SessionExperience({
               atSeconds: previousSwap.atSeconds,
               expectedSwapId: swapId,
             }),
-          })
-          : await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" });
+          }, { sessionTrackId: previousSwap.sessionTrackId, stemType: previousSwap.stemType })
+          : await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" },
+            targetSwap ? { sessionTrackId: targetSwap.sessionTrackId, stemType: targetSwap.stemType } : undefined);
         if (detail) {
           setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== swapId));
           const restored = !previousSwap || detail.swaps.some((swap) =>
@@ -2257,10 +2300,10 @@ export default function SessionExperience({
           setStatus("The previous audio is still playing, but its saved source could not be restored. Retry saving the previous source before leaving.");
         }
       } finally {
-        setSavingSwap(false);
+        if (targetSwap) setSwapSaving(targetSwap.sessionTrackId, targetSwap.stemType, false);
       }
     },
-    [session, mutate, pendingSwaps],
+    [session, mutate, pendingSwaps, setSwapSaving],
   );
 
   const liveLayerFailureRef = useRef<(sessionTrackId: string, stemType: string, message: string) => void>(() => {});
@@ -2993,7 +3036,7 @@ export default function SessionExperience({
         swapStatus={swapStatus}
         isOpen={openSwapStem === stemType}
         pending={pendingSwap !== undefined}
-        busy={savingSwap}
+        busy={savingSwapKeys.has(`${currentItem.id}:${stemType}`)}
         onToggle={() => setOpenSwapStem((current) => current === stemType ? null : stemType)}
         onClose={() => setOpenSwapStem(null)}
         onWarm={(donorId) => {
