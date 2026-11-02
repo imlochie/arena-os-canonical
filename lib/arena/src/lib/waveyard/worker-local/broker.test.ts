@@ -147,3 +147,66 @@ test("localWorkerActive reflects desktop mode env", async () => {
     resetLocalJobBrokerForTests();
   }
 });
+
+test("local worker keeps handlers registered when orphan cleanup fails and remains idempotent", async () => {
+  const { startLocalWorker } = await import("./index");
+  const { resetLocalJobBrokerForTests } = await import("./broker");
+  const { isStartupCleanupPending } = await import("./startup-cleanup");
+  const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
+  const previousRedisUrl = process.env.REDIS_URL;
+  let waveformCleanupRuns = 0;
+  let sourceCleanupRuns = 0;
+
+  try {
+    process.env.ARENA_DESKTOP_MODE = "1";
+    delete process.env.REDIS_URL;
+    resetLocalJobBrokerForTests();
+
+    const cleanupOverrides = {
+      waveform: async () => {
+        waveformCleanupRuns += 1;
+        throw Object.assign(new Error("waveform storage unavailable"), { code: "EACCES" });
+      },
+      source: async () => {
+        sourceCleanupRuns += 1;
+        throw new Error("source storage unavailable");
+      },
+    };
+    const broker = startLocalWorker(cleanupOverrides);
+
+    assert.ok(broker, "broker starts in desktop mode even when cleanup fails");
+    assert.deepEqual(broker.registeredQueues(), [
+      "waveyard-waveform",
+      "waveyard-separation",
+      "waveyard-source-analysis",
+      "waveyard-source-section-analysis",
+      "waveyard-export",
+    ]);
+    assert.equal(isStartupCleanupPending("waveforms"), true,
+      "waveform orphan cleanup is initiated by worker startup");
+
+    assert.equal(startLocalWorker({
+      waveform: async () => { waveformCleanupRuns += 1; },
+      source: async () => { sourceCleanupRuns += 1; },
+    }), broker, "repeated startup returns the existing broker");
+
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(waveformCleanupRuns, 1, "waveform cleanup runs once despite repeated startup");
+    assert.equal(sourceCleanupRuns, 1, "source cleanup runs once despite repeated startup");
+    assert.equal(isStartupCleanupPending("waveforms"), false,
+      "a failed waveform cleanup is handled and clears its pending state");
+    assert.deepEqual(broker.registeredQueues(), [
+      "waveyard-waveform",
+      "waveyard-separation",
+      "waveyard-source-analysis",
+      "waveyard-source-section-analysis",
+      "waveyard-export",
+    ], "cleanup failures do not prevent or duplicate handler registration");
+  } finally {
+    resetLocalJobBrokerForTests();
+    if (previousDesktopMode === undefined) delete process.env.ARENA_DESKTOP_MODE;
+    else process.env.ARENA_DESKTOP_MODE = previousDesktopMode;
+    if (previousRedisUrl === undefined) delete process.env.REDIS_URL;
+    else process.env.REDIS_URL = previousRedisUrl;
+  }
+});
