@@ -568,6 +568,45 @@ test("waveform recovery retries after its claim transaction loses the database c
   }
 });
 
+test("waveform recovery commits its claim before an immediately started handler updates it", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let handlerStarted = false;
+    let generationCalls = 0;
+    let workerPromise: Promise<void> | undefined;
+
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, (payload) => {
+      workerPromise = handleWaveformJob(payload, {
+        db: f.database,
+        generateWaveform: async () => {
+          generationCalls += 1;
+          return validWaveformDocument();
+        },
+      });
+      handlerStarted = true;
+      // Queue submission acknowledges immediately; the real worker runs
+      // concurrently and may need the recovery claim's row lock to be released.
+      return Promise.resolve(payload.waveformJobId);
+    });
+
+    assert.equal(handlerStarted, true, "enqueue starts the real waveform handler synchronously");
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.ok(workerPromise, "the enqueue callback started the real handler");
+    await workerPromise;
+
+    const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(generationCalls, 1, "the recovered handler generates the waveform once");
+    assert.equal(completed.status, "complete", "the worker does not leave the recovered job queued");
+    assert.equal(assets.length, 1, "the worker stores exactly one waveform asset");
+    assert.equal(await getStorage().exists(assets[0]!.storageKey), true);
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform recovery does not requeue a job completed after its pending read", async () => {
   const f = await fixture();
   try {
