@@ -2171,6 +2171,126 @@ test("audio backup restore creates a playable local library track and skips the 
   }
 });
 
+test("a converted local track appears in the library and downloads with its verified ZIP checksum", async (context) => {
+  const routeOwner = (await import("../local-context")).LOCAL_OWNER_ID;
+  const conversionsRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/conversions/route.ts",
+    import.meta.url,
+  ).href);
+  const tracksRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/tracks/route.ts",
+    import.meta.url,
+  ).href);
+  const backupRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/audio-backup/route.ts",
+    import.meta.url,
+  ).href);
+
+  const options = await conversionsRoute.GET();
+  const formats = (await options.json() as { formats: Array<{ id: string; available: boolean }> }).formats;
+  if (!formats.some((format) => format.id === "flac" && format.available)) {
+    context.skip("FFmpeg and its FLAC encoder are required for the conversion-route integration test.");
+    return;
+  }
+
+  const sourcePath = path.join(root!, "converted-audio-backup-source.wav");
+  writeWav(sourcePath, 1, 440);
+  const originalBytes = readFileSync(sourcePath);
+  const originalChecksum = createHash("sha256").update(originalBytes).digest("hex");
+  const upload = new FormData();
+  upload.append("file", new File([originalBytes], "Backup handoff source.wav", { type: "audio/wav" }));
+  upload.append("title", "Converted Backup Handoff");
+  upload.append("artist", "Integration Artist");
+  upload.append("album", "Integration Album");
+
+  const intakeResponse = await tracksRoute.POST(new Request("http://localhost/api/library/tracks", {
+    method: "POST",
+    body: upload,
+  }));
+  assert.equal(intakeResponse.status, 201, await intakeResponse.clone().text());
+  const intake = await intakeResponse.json() as { track: { id: string } };
+  const originalTrackId = intake.track.id;
+
+  const conversionResponse = await conversionsRoute.POST(new Request("http://localhost/api/library/conversions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      trackId: originalTrackId,
+      format: "flac",
+      bitrate: 192,
+      rightsReviewed: true,
+    }),
+  }));
+  assert.ok([200, 202].includes(conversionResponse.status), await conversionResponse.clone().text());
+  const conversion = await conversionResponse.json() as { id: string };
+
+  const { libraryConversionJobs } = await import("@workspace/db/waveyardSchema");
+  let completedJob: typeof libraryConversionJobs.$inferSelect | undefined;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    [completedJob] = await db.db.select().from(libraryConversionJobs)
+      .where(eq(libraryConversionJobs.id, conversion.id)).limit(1);
+    assert.ok(completedJob, "the conversion route persisted a durable job");
+    if (completedJob.status === "complete" || completedJob.status === "failed") break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(completedJob?.status, "complete", completedJob?.errorMessage ?? "conversion completes before the integration-test deadline");
+  assert.ok(completedJob.convertedTrackId, "the completed job links the converted library track");
+
+  const libraryResponse = await tracksRoute.GET(new Request("http://localhost/api/library/tracks"));
+  assert.equal(libraryResponse.status, 200);
+  const library = await libraryResponse.json() as { tracks: Array<{ id: string }> };
+  assert.ok(library.tracks.some((track) => track.id === completedJob!.convertedTrackId),
+    "the converted track is visible through the authenticated library route");
+  assert.ok(library.tracks.some((track) => track.id === originalTrackId),
+    "the original remains in the library beside its conversion");
+  assert.deepEqual(readFileSync(sourcePath), originalBytes, "conversion leaves the generated source file byte-identical");
+  assert.equal(await checksumFile(sourcePath), originalChecksum);
+
+  const [originalRow] = await db.db.select().from(schema.tracks)
+    .where(eq(schema.tracks.id, originalTrackId)).limit(1);
+  assert.ok(originalRow);
+  const [originalSource] = await db.db.select().from(schema.sourceAssets)
+    .where(eq(schema.sourceAssets.id, originalRow.sourceAssetId)).limit(1);
+  assert.ok(originalSource);
+  const storedOriginalPath = getStorage().getLocalPath(originalSource.storageKey);
+  assert.ok(storedOriginalPath, "the original remains addressable in private local storage");
+  assert.deepEqual(readFileSync(storedOriginalPath), originalBytes, "the original stored asset remains byte-identical");
+
+  const backupResponse = await backupRoute.GET(new Request(
+    `http://localhost/api/library/audio-backup?ids=${completedJob.convertedTrackId}`,
+  ));
+  assert.equal(backupResponse.status, 200, await backupResponse.clone().text());
+  assert.match(backupResponse.headers.get("content-type") ?? "", /application\/zip/i);
+  const archivePath = path.join(root!, "converted-track-audio-backup.zip");
+  writeFileSync(archivePath, Buffer.from(await backupResponse.arrayBuffer()));
+
+  const [convertedRow] = await db.db.select().from(schema.tracks)
+    .where(eq(schema.tracks.id, completedJob.convertedTrackId)).limit(1);
+  assert.ok(convertedRow);
+  const [convertedSource] = await db.db.select().from(schema.sourceAssets)
+    .where(eq(schema.sourceAssets.id, convertedRow.sourceAssetId)).limit(1);
+  assert.ok(convertedSource);
+  const storedConvertedPath = getStorage().getLocalPath(convertedSource.storageKey);
+  assert.ok(storedConvertedPath, "the converted audio is in private local storage");
+  const convertedBytes = readFileSync(storedConvertedPath);
+  const convertedChecksum = createHash("sha256").update(convertedBytes).digest("hex");
+  assert.equal(convertedSource.checksumSha256, convertedChecksum);
+
+  const verifiedBackup = await restoreVerifiedAudioBackupZip(archivePath, async (manifest, extractedPath) => ({
+    manifest,
+    bytes: readFileSync(extractedPath),
+  }));
+  assert.equal(verifiedBackup.results.length, 1);
+  const [backupEntry] = verifiedBackup.results;
+  assert.ok(backupEntry);
+  assert.equal(backupEntry.manifest.trackId, completedJob.convertedTrackId);
+  assert.equal(backupEntry.manifest.codec, "flac");
+  assert.equal(backupEntry.manifest.fileSizeBytes, convertedBytes.length);
+  assert.equal(backupEntry.manifest.sha256, convertedChecksum, "the manifest records the converted file's SHA-256");
+  assert.deepEqual(backupEntry.bytes, convertedBytes, "the downloaded ZIP contains the exact converted file bytes");
+});
+
 // Keep this after the shared-fixture checks, which intentionally count the first
 // intake's rows. Requires the running preview, Chromium and pinned Kim model:
 // WAVEYARD_RUN_REAL_LIBRARY_RETRY=1 pnpm --filter @workspace/scripts exec tsx --test <absolute path to this file>
