@@ -275,6 +275,31 @@ export interface AddTrackResult {
   separationQueued: boolean;
 }
 
+export interface DuplicateTrackRepairResult {
+  mergedTrackCount: number;
+  checksumIdentityCount: number;
+}
+
+/**
+ * Repair tracks created before checksum-locked intake. The migration-owned
+ * database function is also run during desktop upgrades, so calling this is
+ * safe to repeat after an interrupted upgrade or when repairing an existing
+ * library on demand.
+ */
+export async function repairDuplicateLibraryTracks(): Promise<DuplicateTrackRepairResult> {
+  const result = await db.execute(sql`
+    SELECT tracks_merged, checksums_backfilled
+    FROM repair_waveyard_library_track_duplicates()
+  `);
+  const rows = (result as unknown as {
+    rows?: Array<{ tracks_merged: number | string; checksums_backfilled: number | string }>;
+  }).rows ?? [];
+  return {
+    mergedTrackCount: Number(rows[0]?.tracks_merged ?? 0),
+    checksumIdentityCount: Number(rows[0]?.checksums_backfilled ?? 0),
+  };
+}
+
 /**
  * Serialize library intake for the same owner and audio content across API
  * processes. The lock is session-scoped because ingestion uses the shared DB

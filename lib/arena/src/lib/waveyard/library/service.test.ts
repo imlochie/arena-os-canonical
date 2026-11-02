@@ -33,6 +33,7 @@ const OTHER = "22222222-2222-4222-8222-222222222222";
 const RECOVERY_OWNER = "33333333-3333-4333-8333-333333333333";
 const START_OWNER = "44444444-4444-4444-8444-444444444444";
 const RESTORE_OWNER = "55555555-5555-4555-8555-555555555555";
+const REPAIR_OWNER = "66666666-6666-4666-8666-666666666666";
 
 type ServiceModule = typeof import("./service");
 type SessionServiceModule = typeof import("./session-service");
@@ -150,6 +151,10 @@ before(async () => {
   assert.ok(
     appliedMigrations.rows.some((row) => row.name === "0019_session_swap_asset_identity.sql"),
     "exact live-swap stem identities must apply",
+  );
+  assert.ok(
+    appliedMigrations.rows.some((row) => row.name === "0021_repair_legacy_library_track_duplicates.sql"),
+    "legacy duplicate-track repair must apply",
   );
 
   // --- env BEFORE any app module import (db reads DATABASE_URL at load) ---
@@ -430,6 +435,178 @@ test("retry links a committed source without creating a second separation job", 
       eq(schema.processingJobs.type, "separation"),
     ));
   assert.equal(separationJobs.length, 1);
+});
+
+test("legacy duplicate repair backfills identity and preserves every listening reference", async (t) => {
+  const checksum = "a".repeat(64);
+  const legacyTracks: Array<{ id: string; projectId: string; sourceAssetId: string }> = [];
+  for (const [index, title] of ["Original", "Raced upload"].entries()) {
+    const [project] = await db.db
+      .insert(schema.projects)
+      .values({
+        ownerId: REPAIR_OWNER,
+        title: `${title} library`,
+        kind: "library",
+        visibility: "private",
+      })
+      .returning({ id: schema.projects.id });
+    const [source] = await db.db
+      .insert(schema.sourceAssets)
+      .values({
+        projectId: project.id,
+        originalFilename: `${title}.wav`,
+        mimeType: "audio/wav",
+        storageKey: `${project.id}/source/${index}.wav`,
+        checksumSha256: checksum,
+        durationSeconds: 12,
+        sampleRate: 44100,
+        channels: 2,
+        codec: "pcm_s16le",
+        bitrate: 1411200,
+        fileSizeBytes: 2_116_800,
+      })
+      .returning({ id: schema.sourceAssets.id });
+    const [track] = await db.db
+      .insert(schema.tracks)
+      .values({
+        ownerId: REPAIR_OWNER,
+        title,
+        artist: "Legacy Artist",
+        album: "Legacy Album",
+        labels: JSON.stringify([`label-${index}`]),
+        rating: index + 2,
+        playCount: index + 3,
+        sourceAssetId: source.id,
+        projectId: project.id,
+        durationSeconds: 12,
+      })
+      .returning({ id: schema.tracks.id });
+    legacyTracks.push({ id: track.id, projectId: project.id, sourceAssetId: source.id });
+  }
+  const singletonChecksum = "b".repeat(64);
+  const [singletonProject] = await db.db
+    .insert(schema.projects)
+    .values({
+      ownerId: REPAIR_OWNER,
+      title: "Legacy singleton library",
+      kind: "library",
+      visibility: "private",
+    })
+    .returning({ id: schema.projects.id });
+  const [singletonSource] = await db.db
+    .insert(schema.sourceAssets)
+    .values({
+      projectId: singletonProject.id,
+      originalFilename: "Legacy singleton.wav",
+      mimeType: "audio/wav",
+      storageKey: `${singletonProject.id}/source/singleton.wav`,
+      checksumSha256: singletonChecksum,
+      durationSeconds: 12,
+      sampleRate: 44100,
+      channels: 2,
+      codec: "pcm_s16le",
+      bitrate: 1411200,
+      fileSizeBytes: 2_116_800,
+    })
+    .returning({ id: schema.sourceAssets.id });
+  const [singletonTrack] = await db.db
+    .insert(schema.tracks)
+    .values({
+      ownerId: REPAIR_OWNER,
+      title: "Legacy singleton",
+      artist: "Legacy Artist",
+      album: "Legacy Album",
+      sourceAssetId: singletonSource.id,
+      projectId: singletonProject.id,
+      durationSeconds: 12,
+    })
+    .returning({ id: schema.tracks.id });
+
+  const playlist = await service.createPlaylist(REPAIR_OWNER, "Legacy duplicates");
+  await service.addTrackToPlaylist({
+    ownerId: REPAIR_OWNER, playlistId: playlist.id, trackId: legacyTracks[0].id,
+  });
+  await service.addTrackToPlaylist({
+    ownerId: REPAIR_OWNER, playlistId: playlist.id, trackId: legacyTracks[1].id,
+  });
+
+  const queueA = await service.addToQueue({ ownerId: REPAIR_OWNER, trackId: legacyTracks[0].id });
+  const queueB = await service.addToQueue({ ownerId: REPAIR_OWNER, trackId: legacyTracks[1].id });
+  const session = await sessionService.createSession(REPAIR_OWNER, "Legacy references");
+  t.after(() => sessionService.deleteSession(REPAIR_OWNER, session.id));
+  let sessionDetail = await sessionService.addTrackToSession({
+    ownerId: REPAIR_OWNER,
+    sessionId: session.id,
+    trackId: legacyTracks[0].id,
+    queueItemId: queueA.addedQueueItemId,
+  });
+  sessionDetail = await sessionService.addTrackToSession({
+    ownerId: REPAIR_OWNER,
+    sessionId: session.id,
+    trackId: legacyTracks[1].id,
+    queueItemId: queueB.addedQueueItemId,
+  });
+  const currentSessionTrackId = sessionDetail.tracks[1].id;
+  await sessionService.saveSessionState(REPAIR_OWNER, session.id, currentSessionTrackId, 9.5);
+  await service.savePlaybackState(REPAIR_OWNER, { currentTrackId: legacyTracks[1].id, positionSeconds: 9.5 });
+  await db.db.insert(schema.listenSessionSwaps).values({
+    sessionId: session.id,
+    sessionTrackId: sessionDetail.tracks[0].id,
+    stemType: "vocals",
+    fromTrackId: legacyTracks[1].id,
+    toTrackId: legacyTracks[0].id,
+  });
+
+  const originalRows = await db.db
+    .select()
+    .from(schema.tracks)
+    .where(eq(schema.tracks.ownerId, REPAIR_OWNER));
+  const keeper = [...originalRows].sort((left, right) =>
+    left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id),
+  )[0];
+
+  const repair = await service.repairDuplicateLibraryTracks();
+  assert.ok(repair.mergedTrackCount >= 1);
+  assert.ok(repair.checksumIdentityCount >= 1);
+
+  const remainingTracks = await db.db
+    .select()
+    .from(schema.tracks)
+    .where(eq(schema.tracks.ownerId, REPAIR_OWNER));
+  assert.equal(remainingTracks.length, 2);
+  const repairedKeeper = remainingTracks.find((track) => track.id === keeper.id)!;
+  assert.equal(repairedKeeper.sourceChecksumSha256, checksum);
+  assert.equal(repairedKeeper.playCount, 7, "play history is combined");
+  assert.equal(repairedKeeper.rating, 3, "the strongest saved rating is retained");
+  assert.deepEqual(JSON.parse(repairedKeeper.labels!), ["label-0", "label-1"]);
+  assert.equal(
+    remainingTracks.find((track) => track.id === singletonTrack.id)?.sourceChecksumSha256,
+    singletonChecksum,
+    "a legacy track without duplicates still receives its checksum identity",
+  );
+
+  const repairedQueue = await service.listQueue(REPAIR_OWNER);
+  assert.deepEqual(repairedQueue.map((item) => item.id), [queueA.addedQueueItemId, queueB.addedQueueItemId]);
+  assert.deepEqual(repairedQueue.map((item) => item.track.id), [keeper.id, keeper.id]);
+  const repairedPlaylist = await service.getPlaylist(REPAIR_OWNER, playlist.id);
+  assert.equal(repairedPlaylist.items.length, 2);
+  assert.deepEqual(repairedPlaylist.items.map((item) => item.track.id), [keeper.id, keeper.id]);
+
+  const repairedSession = await sessionService.getSession(REPAIR_OWNER, session.id);
+  assert.deepEqual(repairedSession.tracks.map((item) => item.track.id), [keeper.id, keeper.id]);
+  assert.equal(repairedSession.currentSessionTrackId, currentSessionTrackId);
+  assert.equal(repairedSession.positionSeconds, 9.5);
+  assert.equal((await service.getPlaybackState(REPAIR_OWNER)).currentTrackId, keeper.id);
+  const [swap] = await db.db
+    .select()
+    .from(schema.listenSessionSwaps)
+    .where(eq(schema.listenSessionSwaps.sessionId, session.id));
+  assert.equal(swap.fromTrackId, keeper.id);
+  assert.equal(swap.toTrackId, keeper.id);
+
+  const repeatedRepair = await service.repairDuplicateLibraryTracks();
+  assert.equal(repeatedRepair.mergedTrackCount, 0, "repair is safe to run again");
+  assert.equal((await db.db.select().from(schema.tracks).where(eq(schema.tracks.ownerId, REPAIR_OWNER))).length, 2);
 });
 
 test("track detail resolves source, stems, analysis, and the studio handoff project", async () => {

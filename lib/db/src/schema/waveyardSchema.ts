@@ -756,7 +756,8 @@ export const tracks = pgTable("wy_tracks", {
   id: uuid("id").defaultRandom().primaryKey(),
   ownerId: uuid("owner_id").notNull(),
   // Nullable for tracks created before checksum-based intake was enforced.
-  // New library uploads always populate this and are unique per owner.
+  // Desktop migration 0021 repairs eligible legacy duplicates, backfills this
+  // from source_assets, and keeps it unique per owner.
   sourceChecksumSha256: text("source_checksum_sha256"),
   title: text("title").notNull(),
   artist: text("artist").notNull().default(""),
