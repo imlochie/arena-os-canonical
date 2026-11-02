@@ -42,11 +42,25 @@ export async function POST(
     const state = normaliseRemixState(JSON.parse(version.snapshot));
     if (!state)
       return Response.json({ error: "Stored remix version is invalid." }, { status: 422 });
-    const projectStems = await db
-      .select({ id: stemAssets.id, durationSeconds: stemAssets.durationSeconds })
+    const referencedStemIds = [...new Set(state.tracks.flatMap((track) => [
+      track.stemAssetId,
+      ...track.clips.map((clip) => clip.stemAssetId),
+    ]))];
+    const referencedStems = referencedStemIds.length
+      ? await db
+      .select({ id: stemAssets.id, durationSeconds: stemAssets.durationSeconds, projectId: stemAssets.projectId })
       .from(stemAssets)
-      .where(eq(stemAssets.projectId, remix.projectId));
-    const durationByAssetId = new Map(projectStems.map((asset) => [asset.id, asset.durationSeconds * 1000]));
+      .where(inArray(stemAssets.id, referencedStemIds))
+      : [];
+    if (referencedStems.length !== referencedStemIds.length)
+      return Response.json({ error: "This version references a removed asset." }, { status: 409 });
+    const linkedProjectIds = [...new Set(referencedStems
+      .map((stem) => stem.projectId)
+      .filter((projectId) => projectId !== remix.projectId))];
+    await Promise.all(linkedProjectIds.map((projectId) =>
+      requireProjectRole(user.id, projectId, "viewer"),
+    ));
+    const durationByAssetId = new Map(referencedStems.map((asset) => [asset.id, asset.durationSeconds * 1000]));
     if (state.tracks.some((track) => !durationByAssetId.has(track.stemAssetId) || track.clips.some((clip) => !durationByAssetId.has(clip.stemAssetId))))
       return Response.json({ error: "This version references a removed asset." }, { status: 409 });
     if (state.tracks.some((track) => track.clips.some((clip) => !clip.tempoSyncEnabled && clip.sourceOffsetMs + clip.durationMs > durationByAssetId.get(clip.stemAssetId)!)))

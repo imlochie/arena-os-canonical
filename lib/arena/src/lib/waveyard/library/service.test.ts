@@ -1661,6 +1661,37 @@ test("Studio reload routes preserve distinct donors after blocked library deleti
   assert.equal(versionTrack.stemAssetId, drumsStemId);
   assert.equal(versionTrack.clips[0].stemAssetId, clipOnlyDrumsStemId,
     "the immutable export snapshot preserves the clip-specific donor");
+  const temporaryDefaultState = {
+    ...reopened.remix,
+    tracks: reopened.tracks.map((track: { id: string; clips: Array<{ stemAssetId: string }> }) =>
+      track.id === editedTrackId ? {
+        ...track,
+        clips: track.clips.map(clip => ({ ...clip, stemAssetId: drumsStemId })),
+      } : track),
+    automation: reopened.automation,
+  };
+  const changedAgain = await remixRoute.PUT(new Request(
+    `http://localhost/api/remixes/${handoff.remixSessionId}`,
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(temporaryDefaultState) },
+  ), remixParams);
+  assert.equal(changedAgain.status, 200, "a later clip edit can be saved before restoring a version");
+  const restoreRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/remixes/[id]/versions/[versionId]/restore/route.ts", import.meta.url,
+  ).href);
+  const restoreResponse = await restoreRoute.POST(new Request(
+    `http://localhost/api/remixes/${handoff.remixSessionId}/versions/${savedVersion.id}/restore`,
+    { method: "POST" },
+  ), { params: Promise.resolve({ id: handoff.remixSessionId, versionId: savedVersion.id }) });
+  assert.equal(restoreResponse.status, 200, "saved versions can restore clip-only linked donors");
+  const restoredRemix = await (await remixRoute.GET(
+    new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
+  )).json();
+  const restoredDrumLane = restoredRemix.tracks.find((track: { id: string }) => track.id === editedTrackId);
+  assert.equal(restoredDrumLane.stemAssetId, drumsStemId);
+  assert.equal(restoredDrumLane.clips[0].stemAssetId, clipOnlyDrumsStemId,
+    "restoring a saved version keeps its exact clip donor");
+  assert.equal(restoredDrumLane.clips[0].remixTrackId, restoredDrumLane.id,
+    "restored clips remain attached to their original lane identity");
   const [exportJob] = await db.db.insert(schema.exportJobs).values({
     projectId: handoff.projectId,
     remixSessionId: handoff.remixSessionId,

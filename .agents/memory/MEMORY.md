@@ -12,6 +12,7 @@
 - [Windows build resource limits](windows-build-resources.md) — user has seen Windows builds exhaust laptop disk; distinguish RAM, dependencies, staging, installers, and downloaded models.
 - [Windows validation timing](windows-validation-timing.md) — keep preparing Windows checks, but defer asking for user runs until product gaps are nearly cleared.
 - [Waveyard database tests](waveyard-db-tests.md) — separate startup failures from queue evidence; seed real-route acceptance data with the API's actual identity.
+- [Waveyard clip donor provenance](waveyard-clip-donor-provenance.md) — a clip's stem reference can differ from its lane default; loading, permissions, playback, export, and deletion protection must follow clip IDs.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
 - [Waveyard Apple Music backups](waveyard-apple-music-backup.md) — build generic authorized Windows loopback capture and metadata/audio backups without promising protected-stream copies.
 - [Waveyard CPU worker packaging](waveyard-cpu-worker.md) — bundle CPU-intensive worker code separately; source workers can inherit unsupported runtime flags.
