@@ -2,6 +2,7 @@ import { Router } from "express";
 import { Readable } from "node:stream";
 import { importedRoutes } from "../imported-routes";
 import { isLocalMutationAllowed } from "@workspace/arena/lib/security/local-request-gate";
+import { withWaveyardRequestContext } from "@workspace/arena/lib/waveyard/local-context";
 import { publicBattlePayload } from "../lib/blind-battle";
 
 const router = Router();
@@ -40,7 +41,8 @@ for (const route of importedRoutes) {
         ...(body ? { duplex: "half" } : {}),
       } as RequestInit);
       const handlers = await route.load();
-      const response = await (handlers as any)[req.method](request, { params: Promise.resolve(req.params) });
+      const response = await withWaveyardRequestContext(request, () =>
+        (handlers as any)[req.method](request, { params: Promise.resolve(req.params) }));
       const beforeVote = req.path.startsWith("/battles")
         && !/\/(?:vote|reveal)$/.test(req.path)
         && req.method === "POST";
@@ -63,6 +65,11 @@ for (const route of importedRoutes) {
       if (!response.body || req.method === "HEAD") { res.end(); return; }
       Readable.fromWeb(response.body as any).on("error", next).pipe(res);
     } catch (err) {
+      if (err instanceof Response) {
+        const payload = await err.json().catch(() => ({ error: "Request denied." }));
+        res.status(err.status).json(payload);
+        return;
+      }
       req.log.error({ err }, "Imported API handler failed");
       if (!res.headersSent) res.status(500).json({ error: "Request failed" });
       else res.end();

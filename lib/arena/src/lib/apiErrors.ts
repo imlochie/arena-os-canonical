@@ -39,6 +39,7 @@ export function serializeApiError(error: unknown, fallback: ErrorFallback): Erro
 }
 
 export function apiErrorResponse(error: unknown, fallback: ErrorFallback) {
+  if (error instanceof Response) return error;
   const details = serializeApiError(error, fallback);
   return Response.json({ ok: false, error: details }, {
     status: error instanceof ArenaRuntimeError

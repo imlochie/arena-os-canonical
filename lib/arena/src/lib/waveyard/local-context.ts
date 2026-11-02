@@ -1,21 +1,32 @@
 /**
  * Local context shims for the ported Waveyard routes.
  *
- * The original Waveyard app is multi-user with sessions and project roles.
- * Arena OS is a local-first, single-owner app with no auth subsystem, so the
- * ported routes resolve the same call shapes against a fixed local owner who
- * owns every project. Every actor column honestly records LOCAL_OWNER_ID.
+ * Desktop and development requests retain the single local-owner context.
+ * Hosted production requests resolve the owner from a verified WebAuthn
+ * session. The fixed owner ID remains the bootstrap identity for existing
+ * local library data.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { db } from "@workspace/db";
 import { LOCAL_OWNER_ID as SCHEMA_LOCAL_OWNER_ID } from "@workspace/db/schema";
 import { projects } from "@workspace/db/waveyardSchema";
+import { authenticatedRequestIdentity } from "../requestIdentity";
 
 /** Canonical definition lives in @/db/schema (the schema owns its ids);
  *  re-exported here because the ported Waveyard routes import it from this
  *  module. */
 export const LOCAL_OWNER_ID = SCHEMA_LOCAL_OWNER_ID;
+const requestContext = new AsyncLocalStorage<Request>();
+
+/** Keep request identity available to the legacy route signatures. */
+export function withWaveyardRequestContext<T>(
+  request: Request,
+  callback: () => T,
+): T {
+  return requestContext.run(request, callback);
+}
 
 export type LocalUser = {
   id: string;
@@ -25,8 +36,38 @@ export type LocalUser = {
   platformRole: "moderator";
 };
 
-/** Always resolves: the local owner is the single authenticated user. */
+/**
+ * Desktop mode is protected by the API server's loopback-only request gate.
+ * Development keeps the local-owner shim for local iteration. Hosted
+ * production requests must resolve a verified WebAuthn session.
+ */
 export async function requireUser(): Promise<LocalUser> {
+  const trustedLocalMode = process.env.ARENA_DESKTOP_MODE === "1"
+    || process.env.NODE_ENV === "development"
+    || process.env.NODE_ENV === "test";
+  if (!trustedLocalMode) {
+    const request = requestContext.getStore();
+    if (!request) {
+      throw new Response(JSON.stringify({ error: "Authentication required." }), {
+        status: 401,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
+    try {
+      const identity = await authenticatedRequestIdentity(request);
+      return {
+        id: identity.ownerId,
+        username: "owner",
+        displayName: "Private owner",
+        platformRole: "moderator",
+      };
+    } catch {
+      throw new Response(JSON.stringify({ error: "Authentication required." }), {
+        status: 401,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
+  }
   return {
     id: LOCAL_OWNER_ID,
     username: "local-owner",
@@ -42,11 +83,13 @@ export async function requireUser(): Promise<LocalUser> {
  * permissions module; ported routes already route those through.
  */
 export async function requireProjectRole(
-  _userId: string,
+  userId: string,
   projectId: string,
   _minimumRole: "viewer" | "editor" | "owner",
 ): Promise<{ project: typeof projects.$inferSelect; role: string }> {
-  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [project] = await db.select().from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.ownerId, userId)))
+    .limit(1);
   if (!project) {
     throw new Response(JSON.stringify({ error: "Project not found." }), {
       status: 404,
