@@ -1895,6 +1895,12 @@ try {
     `donor resumes from the recipient's live clock: ${JSON.stringify(resumed)}`);
 
   const pitchLockButton = current.getByTestId("session-pitch-lock");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await pitchLockButton.isVisible(), true,
+    "the pitch-lock control must remain reachable in the mobile session layout");
+  const mobilePitchBounds = await pitchLockButton.boundingBox();
+  assert.ok(mobilePitchBounds && mobilePitchBounds.x >= 0 && mobilePitchBounds.x + mobilePitchBounds.width <= 390,
+    `the pitch-lock control must fit the mobile viewport: ${JSON.stringify(mobilePitchBounds)}`);
   const workletsBeforePitchLock = await page.evaluate(() => window.audioProbe.worklets.length);
   const speedSlider = current.getByTestId("session-playback-speed");
   await speedSlider.evaluate(element => {
