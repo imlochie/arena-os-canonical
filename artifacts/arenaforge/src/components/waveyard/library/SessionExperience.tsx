@@ -3202,8 +3202,18 @@ export default function SessionExperience({
       if (session?.tracks.some((item) => item.id === command.itemId)) {
         jumpTo(command.itemId, playingByDeck[activeDeck]);
       }
-    } else {
+    } else if (command.type === "seek") {
       seekCurrent(Math.max(0, Math.min(duration, command.positionSeconds)));
+    } else if (command.type === "set-stem-level") {
+      if (currentItem?.stems.some((stem) => stem.stemType === command.stemType)) {
+        setLevel(currentItem.id)(command.stemType, Math.max(0, Math.min(2, command.level)));
+      }
+    } else if (command.type === "isolate-stem") {
+      if (currentItem?.stems.some((stem) => stem.stemType === command.stemType)) {
+        requestPerformance(currentItem.id, activeDeck, { kind: "isolate", stem: command.stemType });
+      }
+    } else if (command.type === "restore-mix" && currentItem !== null) {
+      requestPerformance(currentItem.id, activeDeck, { kind: "restore" });
     }
   };
 
@@ -3466,6 +3476,20 @@ export default function SessionExperience({
     };
   };
 
+  const localRemoteStems = currentItem === null
+    ? []
+    : (() => {
+        const levels = effectiveMix(currentItem, mixes[currentItem.id] ?? currentItem.stemMix);
+        const performance = transitions[currentItem.id]?.performance
+          ?? currentItem.transition.performance
+          ?? defaultPerformance();
+        return currentItem.stems.map((stem) => ({
+          stemType: stem.stemType,
+          level: Math.max(0, Math.min(2, levels[stem.stemType] ?? 1)),
+          isolated: performance.isolatedStem === stem.stemType,
+        }));
+      })();
+
   const saveLabel =
     saveState === "error" || mixSaveError ? "Not saved" : saveState === "saving" ? "Saving…" : "Saved";
 
@@ -3540,6 +3564,7 @@ export default function SessionExperience({
               artist: item.track.artist.slice(0, 80),
               durationSeconds: item.track.durationSeconds,
             })),
+            stems: localRemoteStems,
             positionSeconds: position,
             durationSeconds: duration,
             playing,

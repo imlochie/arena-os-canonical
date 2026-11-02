@@ -11,7 +11,38 @@ export type LocalRemoteCommand =
   | { type: "next" }
   | { type: "previous" }
   | { type: "select-track"; itemId: string }
-  | { type: "seek"; positionSeconds: number };
+  | { type: "seek"; positionSeconds: number }
+  | { type: "set-stem-level"; stemType: string; level: number }
+  | { type: "isolate-stem"; stemType: string }
+  | { type: "restore-mix" };
+
+export function isLocalRemoteCommand(value: unknown): value is LocalRemoteCommand {
+  if (value === null || typeof value !== "object") return false;
+  const command = value as Record<string, unknown>;
+  switch (command.type) {
+    case "toggle-play":
+    case "next":
+    case "previous":
+    case "restore-mix":
+      return true;
+    case "select-track":
+      return typeof command.itemId === "string" && command.itemId.length > 0 && command.itemId.length <= 160;
+    case "seek":
+      return typeof command.positionSeconds === "number" && Number.isFinite(command.positionSeconds);
+    case "set-stem-level":
+      return typeof command.stemType === "string"
+        && command.stemType.length > 0
+        && command.stemType.length <= 40
+        && typeof command.level === "number"
+        && Number.isFinite(command.level)
+        && command.level >= 0
+        && command.level <= 2;
+    case "isolate-stem":
+      return typeof command.stemType === "string" && command.stemType.length > 0 && command.stemType.length <= 40;
+    default:
+      return false;
+  }
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });

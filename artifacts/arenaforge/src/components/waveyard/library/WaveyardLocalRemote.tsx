@@ -14,6 +14,7 @@ interface LiveState {
   nextTitle: string | null;
   previousTitle: string | null;
   queue: Array<{ id: string; title: string; artist: string; durationSeconds: number }>;
+  stems: Array<{ stemType: string; level: number; isolated: boolean }>;
   positionSeconds: number;
   durationSeconds: number;
   playing: boolean;
@@ -64,6 +65,7 @@ export default function WaveyardLocalRemote() {
   const receivedAtRef = useRef(0);
   const lastHostCounterRef = useRef(0);
   const sequenceRef = useRef(Math.floor(Date.now() * 1000 + Math.random() * 1000));
+  const stemSendTimersRef = useRef(new Map<string, number>());
   const joinStartedRef = useRef(false);
   const deviceTokenRef = useRef<string | null>(credentials?.deviceToken ?? null);
   const deviceIdRef = useRef<string | null>(credentials?.deviceId ?? null);
@@ -116,6 +118,18 @@ export default function WaveyardLocalRemote() {
               || typeof next.sessionName !== "string"
               || typeof next.playing !== "boolean"
               || !Array.isArray(next.queue)
+              || !Array.isArray(next.stems)
+              || next.stems.length > 12
+              || next.stems.some((stem) =>
+                !stem
+                || typeof stem.stemType !== "string"
+                || stem.stemType.length < 1
+                || stem.stemType.length > 40
+                || typeof stem.level !== "number"
+                || !Number.isFinite(stem.level)
+                || stem.level < 0
+                || stem.level > 2
+                || typeof stem.isolated !== "boolean")
             ) return;
             lastHostCounterRef.current = packet.counter;
             receivedAtRef.current = performance.now();
@@ -180,12 +194,44 @@ export default function WaveyardLocalRemote() {
     }
   }, [credentials]);
 
+  const updateStemLevel = useCallback((stemType: string, value: number, flush = false) => {
+    const level = Math.max(0, Math.min(2, Number.isFinite(value) ? value : 1));
+    setState((current) => current === null ? current : {
+      ...current,
+      stems: current.stems.map((stem) => ({
+        ...stem,
+        level: stem.stemType === stemType ? level : stem.level,
+        isolated: false,
+      })),
+    });
+    const pending = stemSendTimersRef.current.get(stemType);
+    if (pending !== undefined) {
+      window.clearTimeout(pending);
+      stemSendTimersRef.current.delete(stemType);
+    }
+    if (flush) {
+      void send({ type: "set-stem-level", stemType, level });
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      stemSendTimersRef.current.delete(stemType);
+      void send({ type: "set-stem-level", stemType, level });
+    }, 120);
+    stemSendTimersRef.current.set(stemType, timer);
+  }, [send]);
+
+  useEffect(() => () => {
+    for (const timer of stemSendTimersRef.current.values()) window.clearTimeout(timer);
+    stemSendTimersRef.current.clear();
+  }, []);
+
   const commitSeek = useCallback(() => {
     if (state === null) return;
     void send({ type: "seek", positionSeconds: Math.max(0, Math.min(state.durationSeconds, position)) });
   }, [position, send, state]);
 
   const connected = connection === "connected" && state !== null;
+  const mixChanged = state?.stems.some((stem) => stem.isolated || Math.abs(stem.level - 1) > 0.001) ?? false;
 
   return (
     <main className="wy-remote">
@@ -210,6 +256,58 @@ export default function WaveyardLocalRemote() {
               <p>{state?.artist ?? "Keep this phone and your laptop on the same Wi-Fi."}</p>
               {state?.nextTitle && <div className="wy-remote-next">UP NEXT <b>{state.nextTitle}</b></div>}
             </section>
+            {(state?.stems.length ?? 0) > 0 && (
+              <section className="wy-remote-stems" aria-label="Live stem controls">
+                <div className="wy-remote-stems-heading">
+                  <div>
+                    <h2>Live stems</h2>
+                    <p>Changes apply to the audio on your laptop.</p>
+                  </div>
+                  {mixChanged && (
+                    <button
+                      type="button"
+                      disabled={!connected}
+                      onClick={() => void send({ type: "restore-mix" })}
+                    >
+                      Restore mix
+                    </button>
+                  )}
+                </div>
+                <div className="wy-remote-stem-list">
+                  {state!.stems.map((stem) => (
+                    <div className="wy-remote-stem" data-stem={stem.stemType} key={stem.stemType}>
+                      <div className="wy-remote-stem-title">
+                        <span>{stem.stemType === "other" ? "Melody" : stem.stemType[0].toUpperCase() + stem.stemType.slice(1)}</span>
+                        <output>{Math.round(stem.level * 100)}%</output>
+                      </div>
+                      <div className="wy-remote-stem-controls">
+                        <input
+                          type="range"
+                          aria-label={`${stem.stemType} level`}
+                          min={0}
+                          max={2}
+                          step={0.01}
+                          value={stem.level}
+                          disabled={!connected}
+                          onChange={(event) => updateStemLevel(stem.stemType, event.currentTarget.valueAsNumber)}
+                          onPointerUp={(event) => updateStemLevel(stem.stemType, event.currentTarget.valueAsNumber, true)}
+                          onKeyUp={(event) => updateStemLevel(stem.stemType, event.currentTarget.valueAsNumber, true)}
+                        />
+                        <button
+                          type="button"
+                          aria-pressed={stem.isolated}
+                          aria-label={stem.isolated ? `Restore ${stem.stemType} isolation` : `Isolate ${stem.stemType}`}
+                          disabled={!connected}
+                          onClick={() => void send({ type: "isolate-stem", stemType: stem.stemType })}
+                        >
+                          {stem.isolated ? "Restore" : "Solo"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
             {(state?.queue.length ?? 0) > 1 && (
               <section className="wy-remote-queue" aria-label="Session queue">
                 <h2>Session queue <span>{state!.queue.length}</span></h2>

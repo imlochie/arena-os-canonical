@@ -4,6 +4,7 @@ import {
   decryptLocalSessionPayload,
   encryptLocalSessionPayload,
   fromBase64Url,
+  isLocalRemoteCommand,
   toBase64Url,
 } from "./local-session-crypto";
 
@@ -35,4 +36,15 @@ test("local session packets reject altered ciphertext", () => {
     () => decryptLocalSessionPayload(key, { ...packet, ciphertext: toBase64Url(bytes) }),
     /authentication failed/,
   );
+});
+
+test("local remote stem controls accept bounded levels and reject malformed commands", () => {
+  assert.equal(isLocalRemoteCommand({ type: "set-stem-level", stemType: "vocals", level: 1.25 }), true);
+  assert.equal(isLocalRemoteCommand({ type: "isolate-stem", stemType: "bass" }), true);
+  assert.equal(isLocalRemoteCommand({ type: "restore-mix" }), true);
+  assert.equal(isLocalRemoteCommand({ type: "set-stem-level", stemType: "vocals", level: 2.01 }), false);
+  assert.equal(isLocalRemoteCommand({ type: "set-stem-level", stemType: "vocals", level: Number.NaN }), false);
+  assert.equal(isLocalRemoteCommand({ type: "isolate-stem", stemType: "x".repeat(41) }), false);
+  assert.equal(isLocalRemoteCommand({ type: "set-stem-level", stemType: "vocals", level: -0.01 }), false);
+  assert.equal(isLocalRemoteCommand({ type: "delete-track", itemId: "track-1" }), false);
 });

@@ -5,6 +5,7 @@ import {
   decryptLocalSessionPayload,
   encryptLocalSessionPayload,
   type EncryptedLocalSessionPacket,
+  isLocalRemoteCommand,
   type LocalRemoteCommand,
 } from "./local-session-crypto";
 
@@ -16,6 +17,7 @@ export interface LocalSessionSnapshot {
   nextTitle: string | null;
   previousTitle: string | null;
   queue: Array<{ id: string; title: string; artist: string; durationSeconds: number }>;
+  stems: Array<{ stemType: string; level: number; isolated: boolean }>;
   positionSeconds: number;
   durationSeconds: number;
   playing: boolean;
@@ -126,10 +128,8 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
         const packet = JSON.parse((event as MessageEvent<string>).data) as EncryptedLocalSessionPacket;
         const last = lastReceivedCounterRef.current.get(packet.senderId) ?? 0;
         if (packet.counter <= last) return;
-        const command = decryptLocalSessionPayload<LocalRemoteCommand>(pairing.key, packet);
-        if (!command || !["toggle-play", "next", "previous", "seek", "select-track"].includes(command.type)) return;
-        if (command.type === "seek" && !Number.isFinite(command.positionSeconds)) return;
-        if (command.type === "select-track" && typeof command.itemId !== "string") return;
+        const command = decryptLocalSessionPayload<unknown>(pairing.key, packet);
+        if (!isLocalRemoteCommand(command)) return;
         lastReceivedCounterRef.current.set(packet.senderId, packet.counter);
         commandRef.current(command);
       } catch {
@@ -241,7 +241,7 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
             <div className="wy-sync-eyebrow">PRIVATE · LOCAL WI-FI</div>
             <h2 id="wy-sync-title">Bring your phone into this session</h2>
             <p className="wy-sync-description">
-              Scan with your phone’s camera. Your laptop keeps playing; the phone gets live controls and session details.
+              Scan with your phone’s camera. Your laptop keeps playing; the phone gets live playback and stem-mix controls.
               The link is end-to-end encrypted and never uses a cloud relay.
             </p>
             {pairing ? (
@@ -277,7 +277,7 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
               </div>
             )}
             {pairing && error && <p className="wy-sync-error" role="status">{error}</p>}
-            <p className="wy-sync-privacy">Use a private Wi-Fi network, not a guest network. If the phone cannot connect, allow Arena through your laptop’s private-network firewall. Only track/queue labels, playhead and controls are shared; audio, recordings and library files stay on this laptop.</p>
+            <p className="wy-sync-privacy">Use a private Wi-Fi network, not a guest network. If the phone cannot connect, allow Arena through your laptop’s private-network firewall. Only track/queue labels, stem levels, isolation, playhead and controls are shared; audio, recordings and library files stay on this laptop.</p>
           </section>
         </div>
       )}
