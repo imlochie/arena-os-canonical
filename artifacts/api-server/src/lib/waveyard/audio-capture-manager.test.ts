@@ -294,6 +294,73 @@ done
   clearRecoveredAudioCapture("capture-priority-owner", current.sessionId);
 });
 
+test("native audio failures stop the recording visibly and preserve recoverable RF64", {
+  skip: originalPlatform?.value === "win32",
+}, async () => {
+  const root = await makeTemporaryRoot();
+  const resources = path.join(root, "resources");
+  const hostDirectory = path.join(resources, "native");
+  await mkdir(hostDirectory, { recursive: true });
+  process.env.ARENA_DATA_DIR = root;
+  process.env.ARENA_RESOURCES_DIR = resources;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+
+  const formatChunk = Buffer.alloc(16);
+  formatChunk.writeUInt16LE(1, 0);
+  formatChunk.writeUInt16LE(2, 2);
+  formatChunk.writeUInt32LE(48_000, 4);
+  formatChunk.writeUInt32LE(192_000, 8);
+  formatChunk.writeUInt16LE(4, 12);
+  formatChunk.writeUInt16LE(16, 14);
+  const ready = JSON.stringify({
+    type: "ready", mode: "system-loopback", deviceId: "default",
+    formatChunkBase64: formatChunk.toString("base64"),
+    sampleRate: 48_000, channels: 2, bitsPerSample: 16, blockAlign: 4,
+  });
+  const hostPath = path.join(hostDirectory, "waveyard-capture-host.exe");
+  await writeFile(hostPath, `#!${process.execPath}
+const emit=(event)=>process.stderr.write(JSON.stringify(event)+"\\n");
+if(process.argv[2]==="devices"){console.log(JSON.stringify({devices:[{id:"default",name:"Default",isDefault:true}]}));process.exit(0);}
+emit(${JSON.stringify(JSON.parse(ready))});
+require("node:readline").createInterface({input:process.stdin}).on("line",(line)=>{
+  if(line==="start"){
+    emit({type:"started"});
+    process.stdout.write(Buffer.alloc(1920, 0));
+    setTimeout(()=>{
+      emit({type:"error",message:"GetNextPacketSize failed (HRESULT 0x88890004)"});
+      process.exit(4);
+    },100);
+  }
+});
+`);
+  await chmod(hostPath, 0o755);
+
+  const started = await startAudioCapture("device-failure-owner", { title: "Device change recovery" });
+  const failureDeadline = Date.now() + 3000;
+  let snapshot = getAudioCaptureStatus("device-failure-owner", started.sessionId);
+  while (snapshot?.status !== "failed" && Date.now() < failureDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    snapshot = getAudioCaptureStatus("device-failure-owner", started.sessionId);
+  }
+  assert.equal(snapshot?.status, "failed", "a dead native host must not remain falsely healthy");
+  assert.match(snapshot?.message ?? "", /Open Preserved recordings/);
+  assert.match(snapshot?.message ?? "", /playback device and Windows audio service/);
+  assert.match(snapshot?.message ?? "", /0x88890004/);
+
+  let recovery = await getRecoverableAudioCapture("device-failure-owner", started.sessionId);
+  const recoveryDeadline = Date.now() + 3000;
+  while (!recovery && Date.now() < recoveryDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    recovery = await getRecoverableAudioCapture("device-failure-owner", started.sessionId);
+  }
+  assert.ok(recovery, "captured audio must remain discoverable after a native failure");
+  const audio = await readFile(recovery.path);
+  assert.equal(audio.toString("ascii", 0, 4), "RF64");
+  assert.ok(audio.length > 80, "recovered RF64 must retain captured PCM");
+  clearRecoveredAudioCapture("device-failure-owner", started.sessionId);
+});
+
 test("requesting process capture rejects a host that silently switches to whole output", {
   skip: originalPlatform?.value === "win32",
 }, async () => {

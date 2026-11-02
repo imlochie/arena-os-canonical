@@ -41,6 +41,51 @@ The machine-readable result is written under
 `generated-artifacts/windows-process-capture/result.json`; scratch tones
 are removed. No Apple Music or DRM-protected playback is used.
 
+## Output and power lifecycle acceptance
+
+The workflow's `lifecycle-resilience` job is separate from the ordinary
+process-isolation job. It runs only when `exercise_lifecycle` is selected and
+requires `confirm_disposable_runner`. Its runner must use the dedicated
+`arena-audio-isolated` label; never attach that label to a developer's
+workstation. The runner account must be able to change the Windows default
+output route, disable and re-enable its test audio endpoint, create a one-shot
+SYSTEM wake task, and request suspend/resume. If any prerequisite is missing,
+the run fails and does not count as evidence.
+
+The lifecycle check needs at least two active render endpoints. It records the
+original default endpoint for all three Windows roles, routes them to an
+alternate endpoint, disables the original endpoint in Device Manager, restores
+the endpoint and all original routes, then requests real Windows suspend and
+waits for the scheduled wake. Cleanup attempts restore the endpoint and every
+saved route even when an assertion fails. The test uses active generated 440 Hz
+and 997 Hz tone processes throughout. Before and after each change it checks
+both tones in whole-output loopback, then confirms selected-process capture
+retains 440 Hz and excludes 997 Hz. Captures spanning each change also verify
+the process capture remains audible on both sides; silence or an exited host is
+a failure, not a healthy recording.
+
+If a lifecycle capture fails after receiving PCM, the acceptance harness writes
+the captured samples as a valid recoverable RF64 `.wav` file under
+`generated-artifacts/windows-process-capture/recovery/`, includes its path and
+next steps in the report, and uploads it with the workflow result. The API
+manager separately marks a native capture failure as failed, preserves the
+partial RF64 for **Preserved recordings**, and tells the user to check the
+playback device and Windows audio service.
+
+The JSON report records Windows edition, version/build, installed Windows SDK
+versions, MSVC toolset version, individual positive controls, isolation
+measurements, and lifecycle action results. A base-only run is marked
+`partial` with lifecycle `not-run`; it is not a lifecycle pass. Only a report
+with overall `status: "passed"` and lifecycle `status: "passed"` is evidence
+that these changes were exercised. A missing report or absent audio/power
+infrastructure is not a pass.
+
+No Windows lifecycle run has been performed in this development workspace:
+the available environment is Linux and has no Windows audio endpoints or
+Windows SDK. Therefore no actual Windows OS/SDK versions or lifecycle results
+are claimed here. The test remains unverified until the opt-in workflow
+produces and retains a passing report from the isolated runner.
+
 Whole-output mode preserves the endpoint mix format. The virtual process
 device uses explicitly requested 48 kHz, stereo, 32-bit float PCM; Windows
 may convert the source. Neither route establishes source-bit-perfect

@@ -4,6 +4,17 @@ name: Windows native audio isolation
 # Hosted headless runners are not evidence of real loopback isolation.
 on:
   workflow_dispatch:
+    inputs:
+      exercise_lifecycle:
+        description: "Run output rerouting, endpoint disable/restore, and Windows suspend/resume"
+        required: true
+        type: boolean
+        default: false
+      confirm_disposable_runner:
+        description: "Confirm the lifecycle runner is isolated and disposable"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,11 +39,51 @@ jobs:
         run: node --input-type=module -e "import path from 'node:path'; import {buildWaveyardCaptureHost} from './desktop/build.mjs'; await buildWaveyardCaptureHost(path.resolve('generated-artifacts/native-audio'));"
       - name: Prove system positive control and process isolation
         run: node desktop/windows-process-capture-acceptance.mjs generated-artifacts/native-audio/waveyard-capture-host.exe
-      - name: Upload actual audio test result
+      - name: Upload base process-isolation result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-process-capture-result
+          name: windows-process-isolation-result
           path: generated-artifacts/windows-process-capture/result.json
           if-no-files-found: warn
           retention-days: 14
+
+  lifecycle-resilience:
+    if: ${{ inputs.exercise_lifecycle }}
+    # Never run device or power-state changes on the ordinary audio runner.
+    runs-on: [self-hosted, Windows, X64, arena-audio-isolated]
+    timeout-minutes: 25
+    steps:
+      - name: Require explicit disposable-runner approval
+        if: ${{ !inputs.confirm_disposable_runner }}
+        run: |
+          Write-Error "Lifecycle acceptance changes output routing, disables and restores an audio endpoint, and suspends Windows. Confirm an isolated disposable runner before retrying."
+          exit 1
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install desktop build tooling
+        run: pnpm install --frozen-lockfile --filter "@workspace/desktop..."
+      - name: Compile current native host with Windows SDK
+        run: node --input-type=module -e "import path from 'node:path'; import {buildWaveyardCaptureHost} from './desktop/build.mjs'; await buildWaveyardCaptureHost(path.resolve('generated-artifacts/native-audio'));"
+      - name: Prove capture through output and power changes
+        env:
+          WAVEYARD_ENABLE_DESTRUCTIVE_AUDIO_TESTS: ${{ inputs.confirm_disposable_runner && '1' || '0' }}
+          WAVEYARD_AUDIO_RUNNER_ISOLATED: ${{ inputs.confirm_disposable_runner && '1' || '0' }}
+        run: node desktop/windows-process-capture-acceptance.mjs generated-artifacts/native-audio/waveyard-capture-host.exe --lifecycle
+      - name: Upload lifecycle test result and recovered audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-audio-lifecycle-result
+          path: |
+            generated-artifacts/windows-process-capture/result.json
+            generated-artifacts/windows-process-capture/recovery/
+          if-no-files-found: warn
+          retention-days: 30

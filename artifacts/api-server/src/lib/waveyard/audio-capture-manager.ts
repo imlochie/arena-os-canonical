@@ -629,7 +629,10 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
     return;
   }
   if (event.type === "error") {
-    throw new Error(event.message || "Windows audio capture failed.");
+    const detail = event.message?.trim();
+    throw new Error(
+      `Windows stopped the recording before it could be finalized. Any audio captured before the failure was preserved for recovery. Open Preserved recordings to recover it. Check the playback device and Windows audio service, then start a new recording.${detail ? ` Details: ${detail}` : ""}`,
+    );
   }
   throw new Error(`Windows capture host sent an unknown protocol event: ${event.type}`);
 }
