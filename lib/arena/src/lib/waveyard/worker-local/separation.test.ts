@@ -305,6 +305,77 @@ test("waveform recovery resumes the persisted retry after a local worker restart
   }
 });
 
+test("waveform recovery retries after its claim transaction loses the database connection", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let enqueueCalls = 0;
+    const interruptedDatabase = new Proxy(f.database, {
+      get(target, property) {
+        if (property === "transaction") {
+          return async (...args: Parameters<typeof target.transaction>) => target.transaction(async (tx) => {
+            await args[0](tx);
+            throw Object.assign(
+              new Error("connection terminated during recovery queue handoff"),
+              { code: "08006" },
+            );
+          });
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as typeof f.database;
+
+    await assert.rejects(
+      recoverPendingLocalWaveformJobs(interruptedDatabase, async () => {
+        enqueueCalls += 1;
+      }),
+      /connection terminated during recovery queue handoff/,
+    );
+    assert.equal(enqueueCalls, 0, "the queue is not called before the failed claim transaction commits");
+
+    const [stillPending] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    assert.equal(stillPending.status, "queued");
+    assert.equal(stillPending.stage, "queued", "the interrupted transaction rolls its claim back");
+
+    const restartedBroker = new LocalJobBroker();
+    restartedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => validWaveformDocument(),
+    }));
+    const recovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      (payload) => restartedBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.equal(restartedBroker.stats().submitted, 1);
+    assert.equal(await restartedBroker.drain(10_000), true);
+
+    const [completed] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    const assets = await f.database
+      .select()
+      .from(waveformAssets)
+      .where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(completed.status, "complete");
+    assert.equal(assets.length, 1, "the recovered waveform is saved exactly once");
+    assert.equal(await getStorage().exists(assets[0]!.storageKey), true);
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform recovery does not requeue a job completed after its pending read", async () => {
   const f = await fixture();
   try {
