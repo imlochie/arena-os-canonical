@@ -15,6 +15,7 @@
 - [Waveyard database tests](waveyard-db-tests.md) — separate startup failures from queue evidence; seed real-route acceptance data with the API's actual identity.
 - [Waveyard clip donor provenance](waveyard-clip-donor-provenance.md) — a clip's stem reference can differ from its lane default; loading, permissions, playback, export, and deletion protection must follow clip IDs.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
+- [Waveyard conversion artwork](waveyard-conversion-artwork.md) — only FFmpeg streams marked `attached_pic` model embedded cover art; ordinary Matroska video does not.
 - [Waveyard Apple Music backups](waveyard-apple-music-backup.md) — build generic authorized Windows loopback capture and metadata/audio backups without promising protected-stream copies.
 - [Waveyard CPU worker packaging](waveyard-cpu-worker.md) — bundle CPU-intensive worker code separately; source workers can inherit unsupported runtime flags.
 - [Capture performance evidence](waveyard-capture-performance.md) — keep signal observation bounded; separate observer cost and retention from disk, HTTP probes and runtime warmup.

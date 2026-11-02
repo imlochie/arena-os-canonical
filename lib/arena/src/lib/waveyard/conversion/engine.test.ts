@@ -8,6 +8,21 @@ import { checksumFile, probeAudio } from "../audio";
 import { execTool } from "../ffmpeg";
 import { conversionCapabilities, convertLocalAudio } from "./engine";
 
+async function embeddedPictureStreams(path: string) {
+  const { stdout } = await execTool("ffprobe", [
+    "-v", "error",
+    "-show_entries", "stream=codec_name:stream_disposition=attached_pic",
+    "-of", "json",
+    path,
+  ]);
+  const report = JSON.parse(stdout) as {
+    streams?: Array<{ codec_name?: string; disposition?: { attached_pic?: number } }>;
+  };
+  return (report.streams ?? []).filter(
+    (stream) => stream.disposition?.attached_pic === 1,
+  );
+}
+
 test("converts and fully verifies a local audio file without changing its original", async (context) => {
   let capabilities;
   try {
@@ -47,6 +62,93 @@ test("converts and fully verifies a local audio file without changing its origin
     assert.equal(verified.durationSeconds, convertedMetadata.durationSeconds);
     assert.equal(verified.checksumSha256, await checksumFile(output));
     assert.equal(verified.warnings.length, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("preserves cover artwork and track tags when the destination supports them", async (context) => {
+  let capabilities;
+  try {
+    capabilities = await conversionCapabilities();
+  } catch {
+    context.skip("FFmpeg is not installed in this test environment.");
+    return;
+  }
+  if (!capabilities.some((format) => format.id === "flac" && format.available)) {
+    context.skip("The FLAC encoder is not available in this test environment.");
+    return;
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), "waveyard-conversion-artwork-test-"));
+  try {
+    const source = join(directory, "tagged-source.mp3");
+    const cover = join(directory, "cover.png");
+    await execTool("ffmpeg", [
+      "-v", "error",
+      "-nostdin",
+      "-f", "lavfi",
+      "-i", "color=c=red:s=32x32:d=0.1",
+      "-frames:v", "1",
+      cover,
+    ]);
+    await execTool("ffmpeg", [
+      "-v", "error",
+      "-nostdin",
+      "-f", "lavfi",
+      "-i", "sine=frequency=440:duration=1",
+      "-i", cover,
+      "-map", "0:a:0",
+      "-map", "1:v:0",
+      "-c:a", "libmp3lame",
+      "-b:a", "192k",
+      "-c:v", "copy",
+      "-disposition:v:0", "attached_pic",
+      "-id3v2_version", "3",
+      "-metadata", "title=Artwork conversion fixture",
+      "-metadata", "artist=Fixture Artist",
+      "-metadata", "album=Fixture Album",
+      source,
+    ]);
+
+    const sourcePictures = await embeddedPictureStreams(source);
+    assert.equal(sourcePictures.length, 1, "fixture should contain one embedded cover");
+    assert.equal(sourcePictures[0]?.codec_name, "png");
+
+    for (const format of ["mp3", "aac", "flac", "alac"] as const) {
+      if (!capabilities.some((item) => item.id === format && item.available)) continue;
+      const output = join(
+        directory,
+        `converted-${format}.${format === "aac" || format === "alac" ? "m4a" : format}`,
+      );
+      const converted = await convertLocalAudio(source, output, { format, bitrate: 192 });
+      const metadata = await probeAudio(output);
+      const pictures = await embeddedPictureStreams(output);
+
+      assert.deepEqual(metadata.tags, {
+        title: "Artwork conversion fixture",
+        artist: "Fixture Artist",
+        album: "Fixture Album",
+      }, `${format} conversion should preserve track tags`);
+      assert.equal(pictures.length, 1, `${format} conversion should retain embedded artwork`);
+      assert.equal(pictures[0]?.codec_name, "png", `${format} conversion should copy the source artwork`);
+      assert.ok(
+        !converted.warnings.some((warning) => /cover artwork/i.test(warning)),
+        `${format} supports artwork and should not warn that it was dropped`,
+      );
+    }
+
+    if (capabilities.some((item) => item.id === "wav" && item.available)) {
+      const output = join(directory, "converted.wav");
+      const converted = await convertLocalAudio(source, output, { format: "wav", bitrate: 192 });
+      assert.equal((await embeddedPictureStreams(output)).length, 0);
+      assert.ok(
+        converted.warnings.some((warning) =>
+          /source includes embedded cover artwork.*WAV.*will not include the artwork/i.test(warning),
+        ),
+        "WAV conversion should clearly report that cover artwork cannot be retained",
+      );
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

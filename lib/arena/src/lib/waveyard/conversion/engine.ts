@@ -49,8 +49,31 @@ export type ConversionOptions = {
 
 export const MAX_CONVERSION_OUTPUT_BYTES = 1024 ** 3;
 
+const ARTWORK_CAPABLE_FORMATS = new Set<ConversionFormat>([
+  "mp3",
+  "aac",
+  "flac",
+  "alac",
+]);
+
 function formatIsAvailable(encoderText: string, encoder: string) {
   return new RegExp(`\\b${encoder}\\b`).test(encoderText);
+}
+
+async function embeddedArtworkStreamIndex(inputPath: string) {
+  const { stdout } = await execTool("ffprobe", [
+    "-v", "error",
+    "-show_entries", "stream=index:stream_disposition=attached_pic",
+    "-of", "json",
+    inputPath,
+  ], { timeoutMs: 15_000, maxOutputBytes: 2 * 1024 * 1024 });
+  const report = JSON.parse(stdout) as {
+    streams?: Array<{ index?: number; disposition?: { attached_pic?: number } }>;
+  };
+  const artwork = report.streams?.find(
+    (stream) => stream.disposition?.attached_pic === 1,
+  );
+  return artwork && Number.isInteger(artwork.index) ? artwork.index : undefined;
 }
 
 export async function conversionCapabilities() {
@@ -85,6 +108,7 @@ export async function convertLocalAudio(
 
   const inputExtension = extname(inputPath).toLowerCase();
   if (!inputExtension) throw new Error("The selected local audio file has no format extension.");
+  const artworkStreamIndex = await embeddedArtworkStreamIndex(inputPath);
 
   const args = [
     "-v", "error",
@@ -94,10 +118,17 @@ export async function convertLocalAudio(
     "-n",
     "-i", inputPath,
     "-map", "0:a:0",
+    ...(artworkStreamIndex === undefined || !ARTWORK_CAPABLE_FORMATS.has(options.format)
+      ? []
+      : ["-map", `0:${artworkStreamIndex}`]),
     "-map_metadata", "0",
     "-map_chapters", "-1",
     "-c:a", format.encoder,
   ];
+  if (artworkStreamIndex !== undefined && ARTWORK_CAPABLE_FORMATS.has(options.format)) {
+    args.push("-c:v", "copy", "-disposition:v:0", "attached_pic");
+    if (options.format === "mp3") args.push("-id3v2_version", "3");
+  }
   if (format.lossy) args.push("-b:a", `${options.bitrate}k`);
   if (options.format === "flac") args.push("-compression_level", "5");
   if (options.format === "aac" || options.format === "alac") args.push("-movflags", "+faststart");
@@ -154,6 +185,11 @@ export async function convertLocalAudio(
   });
 
   const warnings: string[] = [];
+  if (artworkStreamIndex !== undefined && !ARTWORK_CAPABLE_FORMATS.has(options.format)) {
+    warnings.push(
+      `The source includes embedded cover artwork, but ${options.format.toUpperCase()} does not support retaining it; the converted file will not include the artwork.`,
+    );
+  }
   if (format.lossy) {
     warnings.push("This lossy format changes audio quality. Keep the original if you may need it later.");
   } else if (["mp3", "aac", "opus", "vorbis", "ac3", "eac3"].includes(source.codec)) {
