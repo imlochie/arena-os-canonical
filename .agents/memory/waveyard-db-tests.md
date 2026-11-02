@@ -14,3 +14,9 @@ For acceptance that crosses from library service calls into real UI-facing route
 **Why:** A successful intake under a synthetic owner produced an empty real library response. Project-detail checks did not expose the mismatch because local project-role handling and owner-filtered library listing have different boundaries.
 
 **How to apply:** Resolve the route's identity when creating acceptance records, keep the database disposable, and verify the returned library data before interpreting missing UI entries as a worker or frontend failure.
+
+When a test forks a TypeScript worker process from Node's test runner, pass only the TypeScript loader arguments to the child and disconnect its IPC channel when the work ends.
+
+**Why:** Inheriting the test runner's full `process.execArgv` makes the worker launch another test harness; an open IPC channel can also keep a finished child alive.
+
+**How to apply:** Filter inherited arguments to the `tsx` loader and close IPC after completion, while keeping intentionally held worker processes connected until the test releases or terminates them.

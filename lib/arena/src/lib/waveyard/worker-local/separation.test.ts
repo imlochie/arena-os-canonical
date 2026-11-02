@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { spawn } from "node:child_process";
+import test, { type TestContext } from "node:test";
+import { randomUUID } from "node:crypto";
+import { fork, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import path, { basename, join } from "node:path";
+import { createServer } from "node:net";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { eq } from "drizzle-orm";
+import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
-import { processingJobs, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
+import { processingJobs, projects, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@workspace/arena/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@workspace/arena/lib/waveyard/separation/deep-fixtures";
@@ -33,6 +38,183 @@ import { cleanupOrphanedSourceObjects, ORPHAN_SOURCE_GRACE_PERIOD_MS } from "./s
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
+const arenaPackageRoot = fileURLToPath(new URL("../../../..", import.meta.url));
+
+function postgresBinary(name: string): string {
+  const executable = process.platform === "win32" ? `${name}.exe` : name;
+  const packageName = process.platform === "win32" ? "windows-x64" : "linux-x64";
+  const bundled = path.join(arenaPackageRoot, "..", "..", "node_modules", "@embedded-postgres", packageName, "native", "bin", executable);
+  if (existsSync(bundled)) return bundled;
+
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  const located = spawnSync(locator, [executable], { encoding: "utf8" }).stdout?.trim().split(/\r?\n/)[0];
+  if (located && existsSync(located)) return located;
+
+  // Nix-hosted workspaces may expose PostgreSQL in the store without adding
+  // initdb/postgres to PATH.
+  if (process.platform !== "win32" && existsSync("/nix/store")) {
+    const stores = readdirSync("/nix/store")
+      .filter((entry) => entry.includes("postgresql-"))
+      .sort()
+      .reverse();
+    for (const store of stores) {
+      const candidate = path.join("/nix/store", store, "bin", executable);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return bundled;
+}
+
+function availablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+async function independentRecoveryPostgres(t: TestContext) {
+  if (!existsSync(postgresBinary("initdb")) || !existsSync(postgresBinary("postgres"))) {
+    t.skip("a local PostgreSQL server is required to test independent recovery processes");
+    return null;
+  }
+
+  const root = mkdtempSync(join(tmpdir(), "waveform-recovery-processes-"));
+  const dataDirectory = join(root, "data");
+  const port = await availablePort();
+  const passwordFile = join(root, ".password");
+  writeFileSync(passwordFile, "waveform-recovery-test", { mode: 0o600 });
+  const initialize = spawnSync(postgresBinary("initdb"), [
+    "-D", dataDirectory, "-U", "arena", "--pwfile", passwordFile, "-E", "UTF8", "--locale", "C", "-A", "scram-sha-256",
+  ], { encoding: "utf8", timeout: 120_000 });
+  rmSync(passwordFile, { force: true });
+  if (initialize.status !== 0) {
+    rmSync(root, { recursive: true, force: true });
+    throw new Error(`initdb failed (${initialize.status}): ${initialize.stdout ?? ""}${initialize.stderr ?? ""}`.slice(0, 2000));
+  }
+
+  const serverProcess: ChildProcess = spawn(postgresBinary("postgres"), [
+    "-D", dataDirectory, "-p", String(port), "-h", "127.0.0.1", "-F",
+    "-c", "max_connections=30", "-c", "unix_socket_directories=",
+  ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const { Client, Pool } = await import("pg");
+  const { waitForPostgresReady } = await import("../library/pg-readiness");
+  try {
+    await waitForPostgresReady({
+      createClient: () => new Client({ connectionString: `postgresql://arena:waveform-recovery-test@127.0.0.1:${port}/postgres` }),
+      useConnectedClient: async (admin) => { await admin.query("create database waveform_recovery_test"); },
+    });
+    const connectionString = `postgresql://arena:waveform-recovery-test@127.0.0.1:${port}/waveform_recovery_test`;
+    const migrator = new Client({ connectionString });
+    await migrator.connect();
+    const desktop = await import(pathToFileURL(path.resolve(arenaPackageRoot, "../../desktop/database.mjs")).href);
+    await desktop.migrate(migrator, join(arenaPackageRoot, "desktop-migrations"));
+    await migrator.end();
+
+    const pool = new Pool({ connectionString, max: 8 });
+    return {
+      connectionString,
+      database: drizzlePg(pool),
+      async close() {
+        await pool.end().catch(() => undefined);
+        spawnSync(postgresBinary("pg_ctl"), ["-D", dataDirectory, "-m", "fast", "-w", "-t", "20", "stop"], { timeout: 30_000 });
+        if (serverProcess.exitCode === null) serverProcess.kill();
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    spawnSync(postgresBinary("pg_ctl"), ["-D", dataDirectory, "-m", "immediate", "-w", "-t", "20", "stop"], { timeout: 30_000 });
+    if (serverProcess.exitCode === null) serverProcess.kill();
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function startRecoveryProcess(
+  connectionString: string,
+  jobId: string,
+  mode: "hold" | "complete" | "claim-only",
+): ChildProcess & { send(message: unknown): boolean } {
+  const importFlagIndex = process.execArgv.findIndex((arg, index, args) =>
+    arg === "--import" && args[index + 1]?.includes("tsx/dist/loader.mjs"));
+  const tsxImport = process.execArgv.find((arg) =>
+    arg.startsWith("--import=") && arg.includes("tsx/dist/loader.mjs"));
+  const execArgv = importFlagIndex >= 0
+    ? ["--import", process.execArgv[importFlagIndex + 1]!]
+    : tsxImport
+      ? [tsxImport]
+      : [];
+  return fork(fileURLToPath(new URL("./recovery-process.test-helper.ts", import.meta.url)), [], {
+    execArgv,
+    env: {
+      ...process.env,
+      DATABASE_URL: connectionString,
+      WAVEFORM_RECOVERY_TEST_JOB_ID: jobId,
+      WAVEFORM_RECOVERY_TEST_MODE: mode,
+    },
+    stdio: ["ignore", "ignore", "inherit", "ipc"],
+  });
+}
+
+function waitForRecoveryMessage(
+  child: ChildProcess,
+  type: string,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for recovery child message: ${type}`));
+    }, 20_000);
+    const onMessage = (message: unknown) => {
+      if (!message || typeof message !== "object") return;
+      const record = message as Record<string, unknown>;
+      if (record.type === "error") {
+        cleanup();
+        reject(new Error(String(record.message)));
+      } else if (record.type === type) {
+        cleanup();
+        resolve(record);
+      }
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      reject(new Error(`Recovery child exited before ${type} (code=${code}, signal=${signal})`));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.off("message", onMessage);
+      child.off("exit", onExit);
+      child.off("error", onError);
+    };
+    child.on("message", onMessage);
+    child.once("exit", onExit);
+    child.once("error", onError);
+  });
+}
+
+function waitForRecoveryProcessExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return child.exitCode === 0 ? Promise.resolve() : Promise.reject(new Error(
+      `Recovery process exited with code=${child.exitCode}, signal=${child.signalCode}.`,
+    ));
+  }
+  return new Promise((resolve, reject) => {
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Recovery process exited with code=${code}, signal=${signal}.`));
+    });
+    child.once("error", reject);
+  });
+}
 
 function validWaveformDocument(): WaveformDocument {
   return {
@@ -533,6 +715,115 @@ test("waveform recovery records a genuine queue submission failure", async () =>
     assert.match(failed.errorMessage ?? "", /Local waveform queue is unavailable/);
   } finally {
     await f.close();
+  }
+});
+
+test("independent API processes submit a live waveform claim once and reclaim a stopped owner", async (t) => {
+  const pg = await independentRecoveryPostgres(t);
+  if (!pg) return;
+
+  const children: ChildProcess[] = [];
+  try {
+    const [project] = await pg.database
+      .insert(projects)
+      .values({ ownerId: randomUUID(), title: "Independent waveform recovery" })
+      .returning();
+    const [source] = await pg.database
+      .insert(sourceAssets)
+      .values({
+        projectId: project.id,
+        originalFilename: "recovery-source.wav",
+        mimeType: "audio/wav",
+        storageKey: `projects/${project.id}/source/recovery-source.wav`,
+        checksumSha256: "a".repeat(64),
+        durationSeconds: 1,
+        sampleRate: 44_100,
+        channels: 2,
+        codec: "pcm_s16le",
+        fileSizeBytes: 176_400,
+      })
+      .returning();
+
+    const [liveJob] = await pg.database
+      .insert(waveformJobs)
+      .values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `waveform:independent-live:${source.id}`,
+      })
+      .returning();
+
+    const firstApi = startRecoveryProcess(pg.connectionString, liveJob.id, "hold");
+    children.push(firstApi);
+    const firstSubmission = await waitForRecoveryMessage(firstApi, "submitted");
+    const secondApi = startRecoveryProcess(pg.connectionString, liveJob.id, "complete");
+    children.push(secondApi);
+    const secondResult = await waitForRecoveryMessage(secondApi, "done");
+    assert.deepEqual(
+      (secondResult.recovery as { enqueuedJobIds: string[] }).enqueuedJobIds,
+      [],
+      "the second API instance leaves the live owner's claimed waveform alone",
+    );
+    await waitForRecoveryProcessExit(secondApi);
+
+    firstApi.send({ type: "release" });
+    const firstResult = await waitForRecoveryMessage(firstApi, "done");
+    assert.deepEqual((firstResult.recovery as { enqueuedJobIds: string[] }).enqueuedJobIds, [liveJob.id]);
+    await waitForRecoveryProcessExit(firstApi);
+    assert.equal(firstSubmission.jobId, liveJob.id);
+    const [liveCompleted] = await pg.database.select().from(waveformJobs).where(eq(waveformJobs.id, liveJob.id));
+    assert.equal(liveCompleted.status, "complete");
+    assert.equal(liveCompleted.stage, "complete");
+
+    const [abandonedJob] = await pg.database
+      .insert(waveformJobs)
+      .values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `waveform:independent-abandoned:${source.id}`,
+      })
+      .returning();
+    const stoppedOwner = startRecoveryProcess(pg.connectionString, abandonedJob.id, "claim-only");
+    children.push(stoppedOwner);
+    const stoppedClaim = await waitForRecoveryMessage(stoppedOwner, "claimed");
+    assert.match(String(stoppedClaim.stage), new RegExp(`^recovery-submitting:${stoppedClaim.pid}:`));
+    const stoppedOwnerExit = new Promise<void>((resolve, reject) => {
+      stoppedOwner.once("exit", (code, signal) => {
+        if (code === null && signal === "SIGTERM") resolve();
+        else reject(new Error(`Claim owner exited unexpectedly (code=${code}, signal=${signal}).`));
+      });
+    });
+    stoppedOwner.kill("SIGTERM");
+    await stoppedOwnerExit;
+
+    const restartedApi = startRecoveryProcess(pg.connectionString, abandonedJob.id, "complete");
+    children.push(restartedApi);
+    const reclaimedSubmission = await waitForRecoveryMessage(restartedApi, "submitted");
+    const reclaimedResult = await waitForRecoveryMessage(restartedApi, "done");
+    assert.equal(reclaimedSubmission.jobId, abandonedJob.id);
+    assert.deepEqual((reclaimedResult.recovery as { enqueuedJobIds: string[] }).enqueuedJobIds, [abandonedJob.id]);
+    await waitForRecoveryProcessExit(restartedApi);
+
+    const [reclaimedCompleted] = await pg.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, abandonedJob.id));
+    assert.equal(reclaimedCompleted.status, "complete");
+    assert.equal(reclaimedCompleted.stage, "complete");
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        await new Promise<void>((resolve) => {
+          child.once("exit", () => resolve());
+          child.kill("SIGKILL");
+        });
+      }
+    }
+    await pg.close();
   }
 });
 
