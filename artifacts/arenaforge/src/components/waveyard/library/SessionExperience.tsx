@@ -1436,7 +1436,10 @@ export default function SessionExperience({
     playbackRate?: number;
     priority?: "control" | "heartbeat";
   }) => {
-    if (applyingRemoteTransportRef.current) return null;
+    // Speed is a direct user control even while a passive remote heartbeat is
+    // applying its playhead. Suppressing it here makes the mirror's slider
+    // appear to change briefly, then the next owner heartbeat resets it.
+    if (applyingRemoteTransportRef.current && snapshot.action !== "speed") return null;
     const published = publishWaveyardTransportChange({
       sessionId,
       ...snapshot,

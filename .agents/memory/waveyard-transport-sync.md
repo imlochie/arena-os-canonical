@@ -16,3 +16,9 @@ An unreported deck starting playback is still a user control and must publish th
 **Why:** Suppressing a first play when the deck had no prior reported state left the mirror tab's controls showing paused even while the active tab played.
 
 **How to apply:** When gating play-state broadcasts, publish `unknown → playing`, but do not broadcast `unknown → paused`. Test after a fresh mount and after a track change.
+
+Explicit speed controls from a mirror tab must publish even while the tab is applying a passive remote playhead update; only synthetic transport side effects should be suppressed during that brief window.
+
+**Why:** A speed slider could change locally and then snap back on the next owner heartbeat because its control event was blocked by the remote-apply guard.
+
+**How to apply:** Keep explicit user controls authoritative, retain sender/clock ordering for heartbeats, and test a mirror speed change during active playback plus a deliberately stale heartbeat.
