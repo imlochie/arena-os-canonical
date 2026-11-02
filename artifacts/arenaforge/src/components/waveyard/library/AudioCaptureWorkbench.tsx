@@ -41,6 +41,19 @@ type CaptureSession = {
   signal?: LibraryAudioCaptureSignal;
 };
 
+type CaptureTags = {
+  title: string;
+  artist?: string;
+  album?: string;
+  trackNumber?: number;
+  artworkDataUrl?: string;
+};
+
+type MediaTrackSuggestion = {
+  sourceAppId: string;
+  metadata: CaptureTags;
+};
+
 type Recovery = {
   sessionId: string;
   title: string;
@@ -97,6 +110,12 @@ function formatBytes(bytes?: number): string {
     : `${Math.round(bytes / (1024 ** 2))} MiB`;
 }
 
+function mediaTagKey(metadata: CaptureTags): string {
+  return [metadata.title, metadata.artist ?? "", metadata.album ?? ""]
+    .map((value) => value.trim().toLocaleLowerCase().replace(/\s+/g, " "))
+    .join("\u0000");
+}
+
 export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }) {
   const [options, setOptions] = useState<CaptureOptions | null>(null);
   const [session, setSession] = useState<CaptureSession | null>(null);
@@ -109,7 +128,13 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   const [trackNumber, setTrackNumber] = useState("");
   const [artworkDataUrl, setArtworkDataUrl] = useState("");
   const [readingMetadata, setReadingMetadata] = useState(false);
+  const [watchMediaSession, setWatchMediaSession] = useState(false);
+  const [mediaWatchStatus, setMediaWatchStatus] = useState<string | null>(null);
+  const [mediaSuggestion, setMediaSuggestion] = useState<MediaTrackSuggestion | null>(null);
   const metadataRequest = useRef<AbortController | null>(null);
+  const mediaWatchLastKey = useRef("");
+  const mediaWatchInitialTitle = useRef("");
+  const mediaWatchHasBaseline = useRef(false);
   useEffect(() => () => metadataRequest.current?.abort(), []);
   const cancelMetadataRead = () => {
     metadataRequest.current?.abort();
@@ -192,6 +217,62 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     };
   }, [session?.sessionId, session?.status]);
 
+  useEffect(() => {
+    if (!watchMediaSession || session?.status !== "recording") return;
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | null = null;
+    const poll = async () => {
+      controller = new AbortController();
+      try {
+        const response = await fetch("/api/library/audio-capture?mediaMetadata=1", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await readJson(response);
+        if (!response.ok) throw new Error(data.error ?? "Could not read Windows media-session tags.");
+        const media = data.mediaMetadata;
+        const metadata = media?.metadata as CaptureTags | undefined;
+        if (media?.available && metadata && typeof metadata.title === "string" && metadata.title.trim()) {
+          const key = mediaTagKey(metadata);
+          if (!mediaWatchHasBaseline.current) {
+            mediaWatchHasBaseline.current = true;
+            const matchesCurrentTitle = metadata.title.trim().toLocaleLowerCase() ===
+              mediaWatchInitialTitle.current.trim().toLocaleLowerCase();
+            if (!matchesCurrentTitle) {
+              setMediaSuggestion({
+                sourceAppId: typeof media.sourceAppId === "string" ? media.sourceAppId : "",
+                metadata,
+              });
+            }
+          } else if (key !== mediaWatchLastKey.current) {
+            setMediaSuggestion({
+              sourceAppId: typeof media.sourceAppId === "string" ? media.sourceAppId : "",
+              metadata,
+            });
+          }
+          mediaWatchLastKey.current = key;
+          setMediaWatchStatus(`Watching media tags from ${typeof media.sourceAppId === "string" && media.sourceAppId
+            ? media.sourceAppId : "the current Windows session"}.`);
+        } else {
+          setMediaWatchStatus(media?.reason ?? "No Windows media-session tags are available yet; recording continues.");
+        }
+      } catch (error) {
+        if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
+          setMediaWatchStatus(error instanceof Error ? `${error.message} Retrying…` : "Could not read media tags. Retrying…");
+        }
+      } finally {
+        if (!cancelled) timeout = setTimeout(() => void poll(), 2500);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [session?.sessionId, session?.status, watchMediaSession]);
+
   const start = async () => {
     if (!options?.available || !rightsReviewed || !title.trim() || busy) return;
     cancelMetadataRead();
@@ -219,6 +300,17 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       });
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? `Could not start recording (${response.status}).`);
+      const startedTags: CaptureTags = {
+        title: title.trim(),
+        artist: artist.trim() || undefined,
+        album: album.trim() || undefined,
+      };
+      mediaWatchLastKey.current = mediaTagKey(startedTags);
+      mediaWatchInitialTitle.current = startedTags.title;
+      mediaWatchHasBaseline.current = false;
+      setWatchMediaSession(false);
+      setMediaWatchStatus(null);
+      setMediaSuggestion(null);
       setSession({ title: title.trim(), elapsedSeconds: 0, discontinuityCount: 0, ...data } as CaptureSession);
       setTitle("");
       setTrackNumber((value) => value ? String(Number(value) + 1) : "");
@@ -250,6 +342,9 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       setTrackNumber("");
       setArtworkDataUrl("");
       setRightsReviewed(false);
+      setWatchMediaSession(false);
+      setMediaSuggestion(null);
+      setMediaWatchStatus(null);
       await refreshOptions();
       onCaptured();
     } catch (error) {
@@ -307,6 +402,10 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       if (!response.ok || !data.mediaMetadata?.available || !data.mediaMetadata.metadata)
         throw new Error(data.mediaMetadata?.reason ?? data.error ?? "The current Windows player did not publish metadata.");
       const tags = data.mediaMetadata.metadata;
+      mediaWatchLastKey.current = mediaTagKey(tags);
+      mediaWatchInitialTitle.current = tags.title;
+      mediaWatchHasBaseline.current = true;
+      setMediaSuggestion(null);
       setTitle(tags.title);
       setArtist(tags.artist ?? "");
       setAlbum(tags.album ?? "");
@@ -322,22 +421,41 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       }
     }
   };
-  const markNextTrack = async () => {
-    if (!session || busy || !title.trim()) return;
+  const markNextTrack = async (suggestedTags?: CaptureTags) => {
+    const marker: CaptureTags = suggestedTags ?? {
+      title: title.trim(),
+      artist: artist.trim() || undefined,
+      album: album.trim() || undefined,
+      trackNumber: trackNumber ? Number(trackNumber) : undefined,
+      artworkDataUrl: artworkDataUrl || undefined,
+    };
+    if (!session || busy || !marker.title.trim()) return;
     cancelMetadataRead();
     setBusy(true);
     try {
       const response = await fetch(`/api/library/audio-capture/${encodeURIComponent(session.sessionId)}`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: title.trim(), artist: artist.trim() || undefined, album: album.trim() || undefined,
-          trackNumber: trackNumber ? Number(trackNumber) : undefined, artworkDataUrl: artworkDataUrl || undefined }),
+        body: JSON.stringify({
+          title: marker.title.trim(),
+          artist: marker.artist || undefined,
+          album: marker.album || undefined,
+          trackNumber: marker.trackNumber,
+          artworkDataUrl: marker.artworkDataUrl || undefined,
+        }),
       });
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? "Could not confirm the next track.");
       setSession(data as CaptureSession);
-      setMessage(`Boundary saved. “${title.trim()}” starts at this confirmed PCM position; recording continues.`);
+      mediaWatchLastKey.current = mediaTagKey(marker);
+      mediaWatchInitialTitle.current = marker.title;
+      mediaWatchHasBaseline.current = true;
+      setMediaSuggestion(null);
+      setMessage(`Boundary saved. “${marker.title.trim()}” starts at this confirmed PCM position; recording continues.`);
       setTitle("");
-      setTrackNumber((value) => value ? String(Number(value) + 1) : "");
+      setTrackNumber((value) => {
+        const current = marker.trackNumber ?? (value ? Number(value) : NaN);
+        return Number.isFinite(current) && current > 0 ? String(current + 1) : "";
+      });
     } catch (error) { setMessage(error instanceof Error ? error.message : "Could not mark the next track."); }
     finally { setBusy(false); }
   };
@@ -457,7 +575,40 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
           )}
           {session.status === "recording" && <fieldset disabled={busy}>
             <legend>Next track boundary</legend>
-            <p>Enter the next track’s tags, then confirm when it begins. The previous file ends at that captured PCM frame; recording does not stop. Metadata changes alone never split audio.</p>
+            <p>Confirm when the next track is audible. The previous file ends at that captured PCM frame; recording does not stop. Metadata changes alone never split audio.</p>
+            <label className="library-capture-media-watch">
+              <input
+                type="checkbox"
+                checked={watchMediaSession}
+                onChange={(event) => {
+                  setWatchMediaSession(event.target.checked);
+                  setMediaSuggestion(null);
+                  setMediaWatchStatus(event.target.checked ? "Starting optional metadata watch…" : null);
+                  mediaWatchHasBaseline.current = false;
+                }}
+              />
+              Suggest tags when the Windows media session changes
+            </label>
+            {watchMediaSession && (
+              <p className="library-audio-capture-notice" role="status">
+                {mediaWatchStatus ?? "Watching for track metadata."} This may be a different app from the one being recorded. Review the title and confirm at the audible change.
+              </p>
+            )}
+            {watchMediaSession && mediaSuggestion && (
+              <div className="library-capture-media-suggestion" data-testid="media-track-suggestion">
+                <p role="status">
+                  Possible next track: <strong>{mediaSuggestion.metadata.title}</strong>
+                  {mediaSuggestion.metadata.artist ? ` · ${mediaSuggestion.metadata.artist}` : ""}
+                  {" · session source: "}{mediaSuggestion.sourceAppId || "unknown"}
+                </p>
+                <button type="button" onClick={() => void markNextTrack(mediaSuggestion.metadata)} disabled={busy}>
+                  Confirm boundary at current audio frame
+                </button>
+                <button type="button" className="button secondary" onClick={() => setMediaSuggestion(null)} disabled={busy}>
+                  Ignore suggestion
+                </button>
+              </div>
+            )}
             {metadataFields}
             <button type="button" onClick={() => void markNextTrack()} disabled={busy || !title.trim()}>Confirm next track boundary</button>
             <ol aria-label="Confirmed track boundaries">{session.markers?.map((marker) => <li key={marker.id}>

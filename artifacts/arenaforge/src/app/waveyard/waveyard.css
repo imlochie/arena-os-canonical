@@ -548,6 +548,11 @@
 .library-audio-capture-form>label:not(.track-backup-choice){display:grid;gap:5px;color:var(--muted);font-size:11px}
 .library-audio-capture-form input:not([type=checkbox]),.library-audio-capture-form select{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit}
 .library-audio-capture-form .track-backup-choice{grid-column:1/-1}
+.library-capture-media-watch{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:11px}
+.library-capture-media-watch input{accent-color:var(--acid)}
+.library-capture-media-suggestion{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px;border:1px solid color-mix(in srgb,var(--acid),var(--line) 65%);border-radius:9px;background:color-mix(in srgb,var(--acid),transparent 94%)}
+.library-capture-media-suggestion p{flex:1 1 100%;margin:0;color:var(--text);font-size:11px}
+.library-capture-media-suggestion button.button.secondary{background:transparent;color:var(--text)}
 .library-audio-capture-form>button,.library-audio-capture-session button,.library-audio-capture-recovery button{min-height:36px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--acid);color:var(--ink);font-weight:700;cursor:pointer}
 .library-audio-capture-form>button:disabled,.library-audio-capture-session button:disabled,.library-audio-capture-recovery button:disabled{opacity:.5;cursor:not-allowed}
 .library-audio-capture-unavailable{grid-column:1/-1;color:var(--muted)}
