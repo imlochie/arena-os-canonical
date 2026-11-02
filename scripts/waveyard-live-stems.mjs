@@ -2096,7 +2096,21 @@ try {
   // Bring it forward after the cross-tab message arrives before asserting its
   // rendered control state; this tests transport sync rather than RAF throttling.
   await secondPage.bringToFront();
-  await secondPage.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+  try {
+    await secondPage.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+  } catch (error) {
+    const mirrorState = await secondPage.evaluate(() => ({
+      pressed: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
+      currentTrack: document.querySelector('[data-role="current"]')?.textContent?.trim(),
+      audio: [...document.querySelectorAll('[data-role="current"] audio')].map(element => ({
+        paused: element.paused,
+        currentTime: element.currentTime,
+      })),
+      bodyText: document.body.innerText.slice(-1200),
+    }));
+    console.error("CROSS_TAB_MIRROR_STATE", JSON.stringify(mirrorState));
+    throw error;
+  }
   await secondPage.getByTestId("session-play").click();
   await page.bringToFront();
   await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");

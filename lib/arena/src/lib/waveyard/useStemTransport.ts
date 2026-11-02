@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
 import { LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
 export {
   SESSION_PLAYBACK_RATE_MAX,
@@ -368,6 +369,7 @@ export function useStemTransport(
           window.dispatchEvent(new CustomEvent("waveyard:live-stem-timing", { detail: timing }));
         }
       },
+      liveStemWorkletUrl,
     );
     if (pitchPreserving.current) {
       void liveLayers.current.setPitchPreserving(true).catch(() => undefined);

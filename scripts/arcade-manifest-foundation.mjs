@@ -22,7 +22,7 @@ const old = { id: "legacy-manifest-fixture", name: "legacy.html", kind: "html", 
   revisionRollback: { source: source.replace("Original local game", "Older local game"), savedAt: 122, label: "Original copy" },
   revisionHistory: [{ source: source.replace("Original local game", "Oldest local game"), savedAt: 121, label: "Earlier copy" }] };
 const readDb = (database, store) => page.evaluate(({ database, store }) => new Promise((resolve, reject) => {
-  const request = indexedDB.open(database, 1);
+  const request = indexedDB.open(database);
   request.onsuccess = () => { const db = request.result; const tx = db.transaction(store); const get = tx.objectStore(store).getAll(); get.onsuccess = () => resolve(get.result); tx.oncomplete = () => db.close(); tx.onerror = () => reject(tx.error); };
   request.onerror = () => reject(request.error);
 }), { database, store });
@@ -30,12 +30,20 @@ const metadata = () => readDb("arenaforge-arcade-management", "manifests");
 const records = () => readDb("arenaforge-imported-games", "games");
 const imports = async () => { await page.goto(`${base}/arcade`); await page.getByRole("tab", { name: "Import and emulate" }).click(); };
 const frame = () => page.frameLocator('iframe[title="Playable game: legacy.html"]');
-const waitCount = async count => { await frame().locator("#count").filter({ hasText: new RegExp(`^${count}$`) }).waitFor(); };
+const waitCount = async count => {
+  const value = frame().locator("#count");
+  try {
+    await value.filter({ hasText: new RegExp(`^${count}$`) }).waitFor();
+  } catch (error) {
+    const actual = await value.textContent().catch(() => null);
+    throw new Error(`Expected legacy game progress ${count}; its visible value was ${JSON.stringify(actual)}. ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
 const panel = () => page.getByTestId("arcade-game-management");
 const openPanel = async () => { if (!await panel().evaluate(el => el.open)) await panel().locator(":scope > summary").click(); };
 const mutateMetadata = async mutate => {
   await page.evaluate(async ({ id, mutation }) => {
-    const db = await new Promise(resolve => { const request = indexedDB.open("arenaforge-arcade-management", 1); request.onsuccess = () => resolve(request.result); });
+    const db = await new Promise(resolve => { const request = indexedDB.open("arenaforge-arcade-management"); request.onsuccess = () => resolve(request.result); });
     await new Promise((resolve, reject) => {
       const tx = db.transaction("manifests", "readwrite"); const store = tx.objectStore("manifests");
       const get = store.getAll(); get.onsuccess = () => {
@@ -52,8 +60,12 @@ try {
   await page.goto(`${base}/arcade`);
   await page.evaluate(async ({ old, source }) => {
     const seed = (name, row) => new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 1);
-      request.onupgradeneeded = () => request.result.createObjectStore("games", { keyPath: "id" });
+      const request = indexedDB.open(name);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("games")) {
+          request.result.createObjectStore("games", { keyPath: "id" });
+        }
+      };
       request.onsuccess = () => { const db = request.result; const tx = db.transaction("games", "readwrite"); tx.objectStore("games").put(row); tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error); };
     });
     await seed("arenaforge-imported-games", old);

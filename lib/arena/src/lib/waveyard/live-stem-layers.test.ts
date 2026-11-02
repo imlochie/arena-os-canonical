@@ -84,6 +84,7 @@ function fixture(
     id => (channels.get(id) ?? null) as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
     stretchBuffer,
     onTiming,
+    "/test/live-stem-worklet.js",
   );
   return {
     layers,

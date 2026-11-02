@@ -1,5 +1,3 @@
-import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
-
 export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
 export const SESSION_PLAYBACK_RATE_MIN = 0.8;
 export const SESSION_PLAYBACK_RATE_MAX = 1.2;
@@ -85,13 +83,16 @@ const MAX_RECENT_STEM_BYTES = 64 * 1024 * 1024;
 const WORKLET_READY_TIMEOUT_MS = 5_000;
 const workletModules = new WeakMap<AudioContext, Promise<void>>();
 
-function ensureLiveStemWorklet(context: AudioContext) {
+function ensureLiveStemWorklet(context: AudioContext, workletUrl: string) {
   if (!context.audioWorklet || typeof AudioWorkletNode === "undefined") {
     return Promise.reject(new Error("Pitch lock is unavailable in this browser."));
   }
+  if (!workletUrl) {
+    return Promise.reject(new Error("Pitch lock is unavailable in this playback surface."));
+  }
   let loading = workletModules.get(context);
   if (!loading) {
-    loading = context.audioWorklet.addModule(liveStemWorkletUrl).catch((error) => {
+    loading = context.audioWorklet.addModule(workletUrl).catch((error) => {
       workletModules.delete(context);
       throw error;
     });
@@ -176,6 +177,7 @@ export class LiveStemLayers {
     private channel: (id: string) => Channel | null,
     private stretchBuffer: BufferStretcher = stretchBufferInWorker,
     private onTiming?: (timing: LiveStemTiming) => void,
+    private workletUrl = "",
   ) {}
 
   setPlaybackRate(value: number) {
@@ -209,7 +211,7 @@ export class LiveStemLayers {
       return;
     }
     const context = this.context();
-    await ensureLiveStemWorklet(context);
+    await ensureLiveStemWorklet(context, this.workletUrl);
     const migrated: Array<{ layer: Layer; source: AudioWorkletNode }> = [];
     for (const [id, layer] of this.layers) {
       if (layer.sourceMode === "worklet" && layer.source) {
@@ -317,7 +319,7 @@ export class LiveStemLayers {
     pitchPreserving: boolean,
   ) {
     const context = this.context();
-    await ensureLiveStemWorklet(context);
+    await ensureLiveStemWorklet(context, this.workletUrl);
     const node = new AudioWorkletNode(context, "waveyard-live-stem", {
       numberOfInputs: 0,
       numberOfOutputs: 1,

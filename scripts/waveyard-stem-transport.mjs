@@ -64,6 +64,19 @@ before(async () => {
     jsx: "automatic",
     nodePaths: [frontendNodeModules],
     define: { "process.env.NODE_ENV": '"development"' },
+    plugins: [{
+      name: "waveyard-worklet-url-fixture",
+      setup(build) {
+        build.onResolve({ filter: /live-stem-worklet\.ts\?worker&url$/ }, () => ({
+          path: "waveyard-live-stem-worklet-fixture",
+          namespace: "waveyard-worklet-url",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "waveyard-worklet-url" }, () => ({
+          contents: 'export default "/test/live-stem-worklet.js";',
+          loader: "js",
+        }));
+      },
+    }],
   });
   server = createServer((request, response) => {
     if (request.url === "/fixture.js") {

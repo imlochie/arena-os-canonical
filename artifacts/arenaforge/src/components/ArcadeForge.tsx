@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
-import ImportedGameWorkspace from "./ImportedGameWorkspace";
-import NativeGamesWorkspace from "./NativeGamesWorkspace";
-import ModWorkshop from "./ModWorkshop";
-import ArcadeDevelopmentWorkspace from "./ArcadeDevelopmentWorkspace";
+const ImportedGameWorkspace = lazy(() => import("./ImportedGameWorkspace"));
+const NativeGamesWorkspace = lazy(() => import("./NativeGamesWorkspace"));
+const ModWorkshop = lazy(() => import("./ModWorkshop"));
+const ArcadeDevelopmentWorkspace = lazy(() => import("./ArcadeDevelopmentWorkspace"));
 import type { WorkshopPlayback } from "../lib/modWorkshopTypes";
 import { useArcadeGameSave } from "../lib/arcadeGameSave";
 import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
@@ -1471,18 +1471,26 @@ export default function ArcadeForge() {
           </button>
         </div>
 
-        <button type="button" aria-selected={workspace === "develop"} onClick={() => setWorkspace("develop")}
+        <button type="button" role="tab" aria-selected={workspace === "develop"} onClick={() => setWorkspace("develop")}
           className={`mt-2 rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "develop" ? "bg-amber-300 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}>
           Develop mods
         </button>
         {workspace === "develop" ? (
-          <ArcadeDevelopmentWorkspace onPlay={playback => { setWorkshopLaunch(playback); setWorkspace("imports"); }} />
+          <Suspense fallback={<p className="mt-4 text-sm text-slate-400" role="status">Loading mod development tools…</p>}>
+            <ArcadeDevelopmentWorkspace onPlay={playback => { setWorkshopLaunch(playback); setWorkspace("imports"); }} />
+          </Suspense>
         ) : workspace === "mods" ? (
-          <ModWorkshop activePlayback={workshopLaunch} onPlay={playback => { setWorkshopLaunch(playback); setWorkspace("imports"); }} />
+          <Suspense fallback={<p className="mt-4 text-sm text-slate-400" role="status">Loading Mod Workshop…</p>}>
+            <ModWorkshop activePlayback={workshopLaunch} onPlay={playback => { setWorkshopLaunch(playback); setWorkspace("imports"); }} />
+          </Suspense>
         ) : workspace === "native" ? (
-          <NativeGamesWorkspace />
+          <Suspense fallback={<p className="mt-4 text-sm text-slate-400" role="status">Loading native game tools…</p>}>
+            <NativeGamesWorkspace />
+          </Suspense>
         ) : workspace === "imports" ? (
-          <ImportedGameWorkspace workshopLaunch={workshopLaunch} onExitWorkshop={() => setWorkshopLaunch(null)} onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} onNativeInstalled={() => setWorkspace("native")} />
+          <Suspense fallback={<p className="mt-4 text-sm text-slate-400" role="status">Loading import and emulator tools…</p>}>
+            <ImportedGameWorkspace workshopLaunch={workshopLaunch} onExitWorkshop={() => setWorkshopLaunch(null)} onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} onNativeInstalled={() => setWorkspace("native")} />
+          </Suspense>
         ) : (
           <>
         {/* Composer */}

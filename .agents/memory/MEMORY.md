@@ -24,6 +24,7 @@
 - [Arena product expectations](arena-product-expectations.md) — prioritize demonstrable local tools and open-source alternatives over claims, presets, and page-load checks.
 - [Arena baseline reconciliation](arena-baseline-reconciliation.md) — recover branch intent as user outcomes, then verify current end-to-end workflows; code similarity is not proof.
 - [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, disable caching for failures, and wait for the intended track before asserting queue-switch playback.
+- [Waveyard worklet test boundary](waveyard-worklet-boundary.md) — keep Vite-only worklet URLs at the browser adapter so Node tests can import the DSP core.
 - [Waveyard touch gesture tests](waveyard-touch-tests.md) — preflight visible touch coordinates so offscreen clip bounds do not turn gesture failures into misleading scroll results.
 - [Waveyard startup recovery](waveyard-startup-recovery.md) — retry transient database outages at boot within bounds; fail fast on schema errors.
 - [Playwright touch evidence](playwright-touch-emulation.md) — native pan needs touch input; Chromium emulation is not proof of iOS Safari or physical Android behavior.
