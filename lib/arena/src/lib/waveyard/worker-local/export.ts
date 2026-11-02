@@ -260,8 +260,8 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
 
     const stemIds = [...new Set(clips.map((clip) => clip.stemAssetId))];
     const stems = await db.select().from(stemAssets).where(inArray(stemAssets.id, stemIds));
-    if (stems.length !== stemIds.length || stems.some((stem) => stem.projectId !== job.projectId))
-      throw new ExportFailure("asset_missing", "The persisted remix references an unavailable project stem.");
+    if (stems.length !== stemIds.length)
+      throw new ExportFailure("asset_missing", "The persisted remix references unavailable audio.");
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
     const transformedSourceIds = [...new Set(clips.filter((clip) => clip.tempoSyncEnabled || clip.keySyncEnabled).map((clip) => stemById.get(clip.stemAssetId)!.sourceAssetId))];
     const analyses = transformedSourceIds.length ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, transformedSourceIds)) : [];
@@ -273,7 +273,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       let sourceDurationMs = clip.durationMs;
       if (clip.tempoSyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        if (!analysis || analysis.projectId !== job.projectId || analysis.status !== "complete") throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
+        if (!analysis || analysis.projectId !== stem.projectId || analysis.status !== "complete") throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
         if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300) throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
         const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
         sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
@@ -281,7 +281,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       }
       if (clip.keySyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        const resolution = resolveKeySync(analysis?.projectId === job.projectId ? analysis.status : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
+        const resolution = resolveKeySync(analysis?.projectId === stem.projectId ? analysis.status : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
         if ("errorCode" in resolution)
           throw new ExportFailure(
             resolution.errorCode,

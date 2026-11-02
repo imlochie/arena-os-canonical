@@ -1,6 +1,6 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   drumAnalyses,
@@ -13,6 +13,7 @@ import {
   vocalAnalyses,
 } from "@workspace/db/waveyardSchema";
 import { enqueueExport } from "@workspace/arena/lib/waveyard/queue";
+import { normaliseRemixState } from "@workspace/arena/lib/waveyard/remix";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 
@@ -102,6 +103,32 @@ export async function POST(
           return Response.json({ error: "Complete current stem analysis is required for MIDI export." }, { status: 409 });
         midi = { kind, sourceAssetId, stemAssetId, analysisId: analysis.id, sourceChecksumSha256: source.checksumSha256, analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion };
       }
+    }
+    if (format === "wav") {
+      let savedState: unknown;
+      try {
+        savedState = JSON.parse(version.snapshot);
+      } catch {
+        return Response.json({ error: "Saved remix version is invalid." }, { status: 422 });
+      }
+      const state = normaliseRemixState(savedState);
+      if (!state) return Response.json({ error: "Saved remix version is invalid." }, { status: 422 });
+      const clipStemIds = [...new Set(state.tracks.flatMap((track) =>
+        track.clips.map((clip) => clip.stemAssetId),
+      ))];
+      const clipStems = clipStemIds.length
+        ? await db.select({ id: stemAssets.id, projectId: stemAssets.projectId })
+          .from(stemAssets)
+          .where(inArray(stemAssets.id, clipStemIds))
+        : [];
+      if (clipStems.length !== clipStemIds.length)
+        return Response.json({ error: "A saved clip references unavailable audio." }, { status: 409 });
+      const donorProjectIds = [...new Set(clipStems
+        .map((stem) => stem.projectId)
+        .filter((projectId) => projectId !== session.projectId))];
+      await Promise.all(donorProjectIds.map((projectId) =>
+        requireProjectRole(user.id, projectId, "viewer"),
+      ));
     }
     const idempotencyKey = midi
       ? `export:${version.id}:midi:${midi.kind}:${midi.sourceAssetId}:${midi.stemAssetId ?? "source"}:${midi.analysisId}:480`

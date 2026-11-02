@@ -38,12 +38,20 @@ async function getRemixAccess(
     .limit(1);
   if (!remix) throw new Response("Remix session not found.", { status: 404 });
   await requireProjectRole(userId, remix.projectId, minimum);
-  const linkedProjectRows = await db
-    .select({ projectId: stemAssets.projectId })
-    .from(remixTracks)
-    .innerJoin(stemAssets, eq(remixTracks.stemAssetId, stemAssets.id))
-    .where(eq(remixTracks.remixSessionId, remix.id));
-  const linkedProjectIds = [...new Set(linkedProjectRows
+  const [linkedProjectRows, linkedClipProjectRows] = await Promise.all([
+    db
+      .select({ projectId: stemAssets.projectId })
+      .from(remixTracks)
+      .innerJoin(stemAssets, eq(remixTracks.stemAssetId, stemAssets.id))
+      .where(eq(remixTracks.remixSessionId, remix.id)),
+    db
+      .select({ projectId: stemAssets.projectId })
+      .from(remixClips)
+      .innerJoin(remixTracks, eq(remixClips.remixTrackId, remixTracks.id))
+      .innerJoin(stemAssets, eq(remixClips.stemAssetId, stemAssets.id))
+      .where(eq(remixTracks.remixSessionId, remix.id)),
+  ]);
+  const linkedProjectIds = [...new Set([...linkedProjectRows, ...linkedClipProjectRows]
     .map((row) => row.projectId)
     .filter((projectId) => projectId !== remix.projectId))];
   await Promise.all(linkedProjectIds.map((projectId) =>
@@ -81,7 +89,11 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
     .from(automaticRemixGenerations)
     .where(eq(automaticRemixGenerations.remixSessionId, remix.id))
     .limit(1);
-  const stems = tracks.length
+  const referencedStemIds = [...new Set([
+    ...tracks.map((track) => track.stemAssetId),
+    ...clips.map((clip) => clip.stemAssetId),
+  ])];
+  const stems = referencedStemIds.length
     ? await db
         .select({
           id: stemAssets.id,
@@ -99,7 +111,7 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
         .where(
           inArray(
             stemAssets.id,
-            tracks.map((track) => track.stemAssetId),
+            referencedStemIds,
           ),
         )
     : [];
@@ -194,13 +206,17 @@ export async function PUT(
       })
       .from(stemAssets)
       .where(eq(stemAssets.projectId, remix.projectId));
-    const linkedStemRows = existingTracks.length
+    const referencedStemIds = [...new Set([
+      ...existingTracks.map((track) => track.stemAssetId),
+      ...input.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)),
+    ])];
+    const linkedStemRows = referencedStemIds.length
       ? await db.select({
           id: stemAssets.id,
           sourceAssetId: stemAssets.sourceAssetId,
           durationSeconds: stemAssets.durationSeconds,
           projectId: stemAssets.projectId,
-        }).from(stemAssets).where(inArray(stemAssets.id, existingTracks.map((track) => track.stemAssetId)))
+      }).from(stemAssets).where(inArray(stemAssets.id, referencedStemIds))
       : [];
     const linkedProjectIds = [...new Set(linkedStemRows
       .map((stem) => stem.projectId)

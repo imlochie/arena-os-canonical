@@ -99,6 +99,50 @@ function writeWav(filePath: string, seconds: number, frequency = 220): void {
   writeFileSync(filePath, buffer);
 }
 
+function pcmWavToneMagnitude(filePath: string, frequency: number, startMs: number, endMs: number): number {
+  const wav = readFileSync(filePath);
+  let sampleRate = 0;
+  let channels = 0;
+  let bitsPerSample = 0;
+  let dataOffset = -1;
+  let dataBytes = 0;
+  for (let offset = 12; offset + 8 <= wav.length;) {
+    const chunkName = wav.toString("ascii", offset, offset + 4);
+    const chunkBytes = wav.readUInt32LE(offset + 4);
+    const body = offset + 8;
+    if (chunkName === "fmt ") {
+      channels = wav.readUInt16LE(body + 2);
+      sampleRate = wav.readUInt32LE(body + 4);
+      bitsPerSample = wav.readUInt16LE(body + 14);
+    } else if (chunkName === "data") {
+      dataOffset = body;
+      dataBytes = chunkBytes;
+      break;
+    }
+    offset = body + chunkBytes + (chunkBytes % 2);
+  }
+  assert.ok(dataOffset >= 0, "rendered WAV has a data chunk");
+  assert.equal(bitsPerSample, 16, "rendered WAV uses the expected PCM test format");
+  const frameBytes = channels * 2;
+  const firstFrame = Math.max(0, Math.floor((startMs / 1000) * sampleRate));
+  const lastFrame = Math.min(Math.floor(dataBytes / frameBytes), Math.floor((endMs / 1000) * sampleRate));
+  const frameCount = lastFrame - firstFrame;
+  assert.ok(frameCount > 0, "tone window is inside the rendered audio");
+  let real = 0;
+  let imaginary = 0;
+  let windowSum = 0;
+  for (let index = 0; index < frameCount; index += 1) {
+    const window = 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / Math.max(1, frameCount - 1));
+    const frame = firstFrame + index;
+    const sample = wav.readInt16LE(dataOffset + frame * frameBytes) / 32768;
+    const phase = (2 * Math.PI * frequency * frame) / sampleRate;
+    real += sample * window * Math.cos(phase);
+    imaginary += sample * window * Math.sin(phase);
+    windowSum += window;
+  }
+  return (2 * Math.hypot(real, imaginary)) / windowSum;
+}
+
 before(async () => {
   root = mkdtempSync(path.join(tmpdir(), "waveyard-library-test-"));
   dataDir = path.join(root, "pgdata");
@@ -1382,7 +1426,9 @@ test("Studio reload routes preserve distinct donors after blocked library deleti
   const base = await seed("Studio route base", 311, ["vocals", "drums"]);
   const vocals = await seed("Studio route vocal donor", 523, ["vocals"]);
   const drums = await seed("Studio route drum donor", 733, ["drums"]);
+  const clipOnlyDrums = await seed("Studio route clip-only drum donor", 997, ["drums"]);
   assert.notEqual(vocals.sourceId, drums.sourceId);
+  assert.notEqual(drums.sourceId, clipOnlyDrums.sourceId);
   const session = await sessions.createSession(routeOwner, "Distinct donor route reload");
   const detail = await sessions.addTrackToSession({
     ownerId: routeOwner, sessionId: session.id, trackId: base.track.id,
