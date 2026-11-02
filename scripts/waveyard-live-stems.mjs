@@ -4,8 +4,26 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { runAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
+const timingOnly = process.argv.includes("--live-stem-timing-only");
+if (process.argv.includes("--live-stem-timing-matrix")) {
+  const { spawnSync } = await import("node:child_process");
+  for (const engine of ["chromium", "webkit", "firefox"]) {
+    console.log(`LIVE_STEM_TIMING_ENGINE ${engine}`);
+    const result = spawnSync(process.execPath, [process.argv[1], "--live-stem-timing-only", `--engine=${engine}`], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) process.exit(result.status ?? 1);
+  }
+  process.exit(0);
+}
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
-const { chromium } = require("playwright-core");
+const { chromium, firefox, webkit } = require("playwright-core");
+const engineName = process.argv.find(argument => argument.startsWith("--engine="))?.slice("--engine=".length) ?? "chromium";
+const browserTypes = { chromium, firefox, webkit };
+const browserType = browserTypes[engineName];
+if (!browserType) throw new Error(`Unknown browser engine "${engineName}". Choose chromium, firefox, or webkit.`);
 const sessionId = "00000000-0000-4000-8000-000000000007";
 const automaticFadesOnly = process.argv.includes("--automatic-fades-only");
 const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
@@ -146,8 +164,19 @@ let failNextModelCheck = false;
 const assetSnapshot = () => [...assets.entries()]
   .map(([id, bytes]) => [id, createHash("sha256").update(bytes).digest("hex")])
   .sort(([left], [right]) => left.localeCompare(right));
-const browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium",
-  args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] });
+let browser;
+try {
+  browser = await browserType.launch(engineName === "chromium"
+    ? { executablePath: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium",
+      args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] }
+    : { headless: true });
+} catch (error) {
+  if (timingOnly && engineName !== "chromium") {
+    console.log(`SKIP: ${engineName} timing coverage is unavailable here: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+    process.exit(0);
+  }
+  throw error;
+}
 try {
   const context = await browser.newContext({ serviceWorkers: "block" });
   let page = await context.newPage();
@@ -788,7 +817,104 @@ try {
     return reloaded;
   }
 
-  if (process.argv.includes("--studio-persistence-only")) {
+  if (timingOnly) {
+    session.tracks = tracks;
+    session.swaps = [];
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    const timings = {};
+    const scenarios = [
+      { name: "nativeTempo", donorId: "c", ratio: 1 },
+      { name: "tempoMatched", donorId: "b", ratio: 124 / 120 },
+      { name: "delayedDownload", donorId: "d", ratio: 1, delayMs: 450 },
+    ];
+
+    for (const scenario of scenarios) {
+      session.swaps = [];
+      session.currentSessionTrackId = "a";
+      session.positionSeconds = 0;
+      await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(element =>
+          element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+        );
+      }, null, { timeout: 15_000 });
+      const deck = page.locator('[data-role="current"]');
+      const play = page.getByTestId("session-play");
+      if (await play.getAttribute("aria-pressed") !== "true") await play.click();
+      await page.waitForFunction(() =>
+        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+      );
+      await deck.getByTestId("open-live-swap-vocals").click();
+      const candidate = deck.getByTestId(`live-swap-candidate-vocals-${scenario.donorId}`);
+      await candidate.waitFor();
+      const before = await page.evaluate(() => ({
+        buffers: window.audioProbe.buffers.length,
+        timings: window.liveStemTimings.length,
+      }));
+      timedAssetId = `${scenario.donorId}-vocals`;
+      timedAssetDelayMs = scenario.delayMs ?? 0;
+      await candidate.evaluate(button => {
+        window.liveStemSelectionStart = null;
+        window.liveStemObservedAudibleAt = null;
+        button.addEventListener("click", () => {
+          window.liveStemSelectionStart = performance.now();
+        }, { once: true });
+      });
+      await candidate.click();
+      try {
+        await page.waitForFunction(({ bufferCount }) => {
+          const source = window.audioProbe.buffers.slice(bufferCount)
+            .find(item => item.inputNode?.gain?.value > 0.03);
+          if (!source) return false;
+          window.liveStemObservedAudibleAt = performance.now();
+          return true;
+        }, { bufferCount: before.buffers }, { timeout: 20_000 });
+        await page.waitForFunction(timingCount => window.liveStemTimings.length > timingCount,
+          before.timings, { timeout: 20_000 });
+      } finally {
+        timedAssetId = null;
+        timedAssetDelayMs = 0;
+      }
+      const measurement = await page.evaluate(({ timingIndex }) => {
+        const timing = window.liveStemTimings[timingIndex];
+        return {
+          ...timing,
+          observedSelectionToAudibleMs: window.liveStemObservedAudibleAt - window.liveStemSelectionStart,
+        };
+      }, { timingIndex: before.timings });
+      assert.equal(measurement.tempoStretchRatio, scenario.ratio,
+        `${engineName} ${scenario.name} must use the intended tempo mode: ${JSON.stringify(measurement)}`);
+      for (const field of ["selectionToAudibleMs", "observedSelectionToAudibleMs", "downloadMs", "decodeMs", "tempoMatchMs"]) {
+        assert.ok(Number.isFinite(measurement[field]) && measurement[field] >= 0,
+          `${engineName} timing must report a finite ${field}: ${JSON.stringify(measurement)}`);
+      }
+      assert.ok(measurement.transferBytes > 0,
+        `${engineName} timing must report the downloaded donor size: ${JSON.stringify(measurement)}`);
+      if (scenario.ratio === 1) {
+        assert.equal(measurement.tempoMatchMs, 0, `${engineName} native-tempo swaps skip tempo matching`);
+      } else {
+        assert.ok(measurement.tempoMatchMs > 0,
+          `${engineName} tempo-matched swaps report the matching stage`);
+      }
+      if (scenario.delayMs) {
+        assert.ok(measurement.downloadMs >= scenario.delayMs,
+          `${engineName} download timing must include the injected ${scenario.delayMs}ms response delay: ${JSON.stringify(measurement)}`);
+      }
+      timings[scenario.name] = measurement;
+
+      const restore = deck.getByTestId("restore-live-swap-vocals");
+      await restore.waitFor();
+      await restore.click();
+      await page.waitForFunction(() => {
+        const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-vocals"));
+        return source?.inputNode?.gain?.value > 0.9;
+      });
+    }
+    console.log("LIVE_STEM_SWAP_TIMINGS", JSON.stringify({ browserEngine: engineName, timings }));
+    console.log(`PASS: ${engineName} native-tempo, tempo-matched, and injected-delay live stem timings`);
+  } else if (process.argv.includes("--studio-persistence-only")) {
     tracks[0].stemMix = { vocals: 0.42 };
     const originalAssets = assetSnapshot();
     await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
