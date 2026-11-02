@@ -110,6 +110,8 @@ let heldAssetId = null;
 let heldAssetGate = null;
 let signalHeldAssetRequest = null;
 let signalHeldAssetRouteFinished = null;
+let pendingSwapSaveGate = null;
+let signalPendingSwapSaveStarted = null;
 let pendingSwapDeleteGate = null;
 let timedAssetId = null;
 let timedAssetDelayMs = 0;
@@ -393,6 +395,10 @@ try {
         if (selected?.id !== body.expectedSwapId) return route.fulfill({ json: { session } });
       }
       if (body.toTrackId === "b" && body.stemType === "vocals") liveSwapRequestOrder.push("save");
+      if (body.toTrackId === "b" && body.stemType === "vocals" && pendingSwapSaveGate) {
+        signalPendingSwapSaveStarted?.();
+        await pendingSwapSaveGate;
+      }
       if (body.toTrackId === "d" && body.stemType === "vocals" && externalDonorSaveGate) {
         liveSwapRequestOrder.push("save-start:d");
         signalExternalDonorSave?.();
@@ -1528,6 +1534,10 @@ try {
 
   let signalSlowDonorRequest;
   const slowDonorRequested = new Promise(resolve => { signalSlowDonorRequest = resolve; });
+  let releaseSlowSwapSave;
+  const slowSwapSaveGate = new Promise(resolve => { releaseSlowSwapSave = resolve; });
+  let signalSlowSwapSaveStarted;
+  const slowSwapSaveStarted = new Promise(resolve => { signalSlowSwapSaveStarted = resolve; });
   let releaseSlowDonor;
   const slowDonorGate = new Promise(resolve => { releaseSlowDonor = resolve; });
   let finishSlowDonorRoute;
@@ -1535,6 +1545,8 @@ try {
   heldAssetId = "b-vocals";
   liveSwapRequestOrder.length = 0;
   heldAssetGate = slowDonorGate;
+  pendingSwapSaveGate = slowSwapSaveGate;
+  signalPendingSwapSaveStarted = signalSlowSwapSaveStarted;
   signalHeldAssetRequest = signalSlowDonorRequest;
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
   await current.getByTestId("seek-deck-0").fill("0");
@@ -1556,11 +1568,23 @@ try {
   // the donor starts both its save request and its audio preparation.
   liveSwapRequestOrder.length = 0;
   await donorBOption.click();
+  const pendingSlowSwap = current.getByTestId("live-swap-pending-vocals");
+  await pendingSlowSwap.waitFor();
+  assert.match(await pendingSlowSwap.innerText(), /Saving vocals source/,
+    "the cancel action must appear while the donor selection is still being saved");
+  const cancelSlowSwap = current.locator('[data-testid^="cancel-live-stem-swap-"]').first();
+  assert.equal(await cancelSlowSwap.isDisabled(), false, "a pending save must remain cancellable");
+  await cancelSlowSwap.click();
+  assert.match(await pendingSlowSwap.innerText(), /Stopping vocals switch/,
+    "the UI acknowledges cancellation while the save response is still held");
   await waitForSignal(slowDonorRequested, "the live stem donor request");
+  await waitForSignal(slowSwapSaveStarted, "the live stem save request");
   assert.ok(liveSwapRequestOrder.includes("save"), "the donor choice should be saved");
   assert.ok(liveSwapRequestOrder.includes("donor-preload"), "the donor audio should start loading");
-  const cancelSlowSwap = current.locator('[data-testid^="cancel-live-stem-swap-"]').first();
-  await cancelSlowSwap.waitFor();
+  releaseSlowSwapSave();
+  pendingSwapSaveGate = null;
+  signalPendingSwapSaveStarted = null;
+  await page.getByTestId("session-status").filter({ hasText: /vocals switch cancelled/i }).waitFor();
   await page.waitForFunction(before => {
     const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.25;
@@ -1569,8 +1593,6 @@ try {
     window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0,
   ) - 1) < 0.01, "the original vocal layer remains audible while the donor is slow");
   const playbackAtCancel = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
-  await cancelSlowSwap.click();
-  await page.getByTestId("session-status").filter({ hasText: /vocals switch cancelled/i }).waitFor();
   await page.waitForFunction(before => {
     const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
@@ -1583,6 +1605,8 @@ try {
   if (await current.locator("audio").first().evaluate(audio => !audio.paused)) await toggle();
   heldAssetId = null;
   heldAssetGate = null;
+  pendingSwapSaveGate = null;
+  signalPendingSwapSaveStarted = null;
   signalHeldAssetRequest = null;
   releaseSlowDonor();
   await waitForSignal(slowDonorRouteFinished, "the live stem donor response");

@@ -113,6 +113,8 @@ interface PendingLiveSwap {
   sessionTrackId: string;
   stemType: string;
   donorTitle: string;
+  savePending?: boolean;
+  cancelRequested?: boolean;
   retryDonor: {
     id: string;
     title: string;
@@ -1107,6 +1109,8 @@ export default function SessionExperience({
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
   const [failedLiveSwaps, setFailedLiveSwaps] = useState<FailedLiveSwap[]>([]);
   const [cancelledSwapIds, setCancelledSwapIds] = useState<Set<string>>(() => new Set());
+  const pendingSwapRequestSequenceRef = useRef(0);
+  const pendingSwapCancelRequestsRef = useRef(new Set<string>());
   const [swapSelectionTimes, setSwapSelectionTimes] = useState<Record<string, number>>({});
   const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
@@ -2326,6 +2330,7 @@ export default function SessionExperience({
     async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
       if (session === null || currentItem === null) return;
       const selectedAt = performance.now();
+      const localSwapId = `pending-${++pendingSwapRequestSequenceRef.current}`;
       const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
       if (validation && !validation.ok) {
         setStatus(validation.reason);
@@ -2341,6 +2346,22 @@ export default function SessionExperience({
         ...previous,
         [`${currentItem.id}:${stemType}`]: selectedAt,
       }));
+      const previousSwap = session.swaps.filter((swap) =>
+        swap.sessionTrackId === currentItem.id && swap.stemType === stemType && !cancelledSwapIds.has(swap.id),
+      ).at(-1);
+      pendingSwapCancelRequestsRef.current.delete(localSwapId);
+      setPendingSwaps((previous) => [
+        ...previous.filter((pending) => !(pending.sessionTrackId === currentItem.id && pending.stemType === stemType)),
+        {
+          swapId: localSwapId,
+          sessionTrackId: currentItem.id,
+          stemType,
+          donorTitle: donor.title,
+          retryDonor: { id: donor.id, title: donor.title, stems: donor.stems, bpm: donor.bpm },
+          previousSwap,
+          savePending: true,
+        },
+      ]);
       setSwapSaving(currentItem.id, stemType, true);
       setStatus(`Saving ${stemType} source from “${donor.title}”… current playback continues.`);
       try {
@@ -2359,22 +2380,48 @@ export default function SessionExperience({
             swap.sessionTrackId === currentItem.id && swap.stemType === stemType && swap.toTrackId === donor.id,
           );
           if (savedSwap) {
-            setPendingSwaps((previous) => [
-              ...previous.filter((pending) => !(pending.sessionTrackId === currentItem.id && pending.stemType === stemType)),
-              {
-                swapId: savedSwap.id, sessionTrackId: currentItem.id, stemType, donorTitle: donor.title,
-                retryDonor: { id: donor.id, title: donor.title, stems: donor.stems, bpm: donor.bpm },
-                previousSwap: session.swaps.filter((swap) =>
-                  swap.sessionTrackId === currentItem.id && swap.stemType === stemType && !cancelledSwapIds.has(swap.id),
-                ).at(-1),
-              },
-            ]);
-            setStatus(`${stemType} source saved: “${donor.title}”. Playback continues while the layer loads.`);
+            const cancelRequested = pendingSwapCancelRequestsRef.current.delete(localSwapId);
+            setPendingSwaps((previous) => previous.map((pending) =>
+              pending.swapId === localSwapId
+                ? { ...pending, swapId: savedSwap.id, savePending: false, cancelRequested }
+                : pending,
+            ));
+            if (cancelRequested) {
+              setCancelledSwapIds((previous) => new Set([...previous, savedSwap.id]));
+              for (const deck of decksRef.current) {
+                if (deck?.itemId !== currentItem.id) continue;
+                const stemId = currentItem.stems.find((stem) => stem.stemType === stemType)?.id;
+                if (stemId) deck.transport.cancelPendingStem(stemId);
+              }
+              const removal = await mutate(
+                `/api/library/sessions/${session.id}/swaps?swapId=${savedSwap.id}`,
+                { method: "DELETE" },
+                { sessionTrackId: currentItem.id, stemType },
+              );
+              if (removal) {
+                setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== savedSwap.id));
+                setCancelledSwapIds((previous) => {
+                  const next = new Set(previous);
+                  next.delete(savedSwap.id);
+                  return next;
+                });
+                setStatus(`${stemType} switch cancelled; the previous audio continues.`);
+              } else {
+                setStatus(`The ${stemType} switch is stopped locally, but its saved choice could not be removed. Retry removing it before leaving.`);
+              }
+            } else {
+              setStatus(`${stemType} source saved: “${donor.title}”. Playback continues while the layer loads.`);
+            }
           } else {
-            setStatus(`${stemType} source saved: “${donor.title}”.`);
+            setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== localSwapId));
+            setStatus(`${stemType} source saved, but the selected source could not be confirmed.`);
           }
+        } else {
+          setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== localSwapId));
+          pendingSwapCancelRequestsRef.current.delete(localSwapId);
         }
       } finally {
+        pendingSwapCancelRequestsRef.current.delete(localSwapId);
         setSwapSaving(currentItem.id, stemType, false);
       }
     },
@@ -2386,6 +2433,22 @@ export default function SessionExperience({
       if (session === null) return;
       const pending = pendingSwaps.find((swap) => swap.swapId === swapId);
       const savedSwap = session?.swaps.find((swap) => swap.id === swapId);
+      if (pending?.savePending) {
+        if (!pending.cancelRequested) {
+          pendingSwapCancelRequestsRef.current.add(swapId);
+          setPendingSwaps((previous) => previous.map((swap) =>
+            swap.swapId === swapId ? { ...swap, cancelRequested: true } : swap,
+          ));
+          for (const deck of decksRef.current) {
+            if (deck?.itemId !== pending.sessionTrackId) continue;
+            const item = session.tracks.find((track) => track.id === pending.sessionTrackId);
+            const stemId = item?.stems.find((stem) => stem.stemType === pending.stemType)?.id;
+            if (stemId) deck.transport.cancelPendingStem(stemId);
+          }
+          setStatus(`${pending.stemType} switch cancellation queued; current playback continues.`);
+        }
+        return;
+      }
       const targetSwap = pending ?? savedSwap;
       const previousSwap = (failed || pending?.failed) ? pending?.previousSwap : undefined;
       if (pending) {
@@ -3357,18 +3420,34 @@ export default function SessionExperience({
         <p key={pending.swapId} className="sess-status wy-ready" role="status" data-testid={`live-swap-pending-${pending.stemType}`}>
           {pending.failed
             ? `${pending.stemType} switch failed; the previous audio continues. Its saved source still needs restoring. `
+            : pending.cancelRequested && pending.savePending
+            ? `Stopping ${pending.stemType} switch to “${pending.donorTitle}”; current playback continues. `
+            : pending.savePending
+            ? `Saving ${pending.stemType} source from “${pending.donorTitle}”; current playback continues. `
             : cancelledSwapIds.has(pending.swapId)
             ? `${pending.stemType} switch stopped; current playback continues. `
             : `Preparing ${pending.stemType} from “${pending.donorTitle}”; current playback continues. `}
           <button
             type="button"
             className="button tiny"
-            aria-label={pending.failed ? `Retry saving previous ${pending.stemType} source` : `Cancel ${pending.stemType} switch to ${pending.donorTitle}`}
+            aria-label={pending.cancelRequested && pending.savePending
+              ? `Wait for cancellation of ${pending.stemType} switch`
+              : pending.failed
+                ? `Retry saving previous ${pending.stemType} source`
+                : cancelledSwapIds.has(pending.swapId)
+                  ? `Retry removing ${pending.stemType} switch`
+                  : `Cancel ${pending.stemType} switch to ${pending.donorTitle}`}
             data-testid={`cancel-live-stem-swap-${pending.swapId}`}
-            disabled={savingSwapKeys.has(`${pending.sessionTrackId}:${pending.stemType}`)}
+            disabled={pending.cancelRequested || (
+              savingSwapKeys.has(`${pending.sessionTrackId}:${pending.stemType}`) && !pending.savePending
+            )}
             onClick={() => void revertSwap(pending.swapId, `${pending.stemType} switch cancelled; the previous audio continues.`)}
           >
-            {savingSwapKeys.has(`${pending.sessionTrackId}:${pending.stemType}`)
+            {pending.cancelRequested && pending.savePending
+              ? "Stopping…"
+              : pending.savePending
+                ? "Cancel switch"
+                : savingSwapKeys.has(`${pending.sessionTrackId}:${pending.stemType}`)
               ? "Saving…"
               : pending.failed
                 ? "Retry saving previous source"
