@@ -2319,3 +2319,28 @@ test("four-model separation keeps real library and session HTTP routes responsiv
   });
   t.diagnostic(`Real routed HTTP responsiveness: ${JSON.stringify(result)}. Two-second synthetic input on Linux CPU; not Windows throughput or subjective audio-quality evidence.`);
 });
+
+// End-to-end control check: a prepared, audible session track stays usable
+// while a different library track runs all four pinned CPU models.
+test("live session controls remain usable during real four-model separation", {
+  skip: process.env.WAVEYARD_RUN_REAL_LIVE_CONTROLS !== "1",
+  timeout: 600_000,
+}, async t => {
+  assert.ok(root);
+  const { createLiveControlsBrowserDriver } = await import("./live-controls-during-separation.test-helper");
+  const { verifyApiResponsivenessDuringSeparation } = await import("./api-responsiveness.test-helper");
+  const browserDriver = await createLiveControlsBrowserDriver();
+  try {
+    const result = await verifyApiResponsivenessDuringSeparation({
+      database: db.db, directory: root, addTrack: service.addTrackFromAudioFile, port: await freePort(),
+      liveSeparationHooks: {
+        onPrepared: browserDriver.onPrepared,
+        onVerifiedPhase: browserDriver.onVerifiedPhase,
+        onCompleted: browserDriver.onCompleted,
+      },
+    });
+    t.diagnostic(`Real worker/browser controls on Linux CPU: ${JSON.stringify(result)}. The playing track uses prepared test stems; the other track runs the pinned stems_4 worker. Not Windows throughput or separation-quality evidence.`);
+  } finally {
+    await browserDriver.close();
+  }
+});

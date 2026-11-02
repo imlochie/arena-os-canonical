@@ -11,26 +11,41 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
-import { processingJobs, stemAssets } from "@workspace/db/waveyardSchema";
+import { LOCAL_OWNER_ID } from "@workspace/db/schema";
+import { processingJobs, sourceAssets, stemAssets, tracks } from "@workspace/db/waveyardSchema";
 import type { db as workspaceDb } from "@workspace/db";
 import { checksumFile } from "../audio";
 import { encodeWav16 } from "../mixer/synth";
-import { requireUser } from "../local-context";
 import { findMdxModel } from "../separation/mdx";
 import { resetLocalJobBrokerForTests } from "../worker-local/broker";
 import { stemMachineSource } from "../worker-local/separation-fixtures";
 import type { addTrackFromAudioFile } from "./service";
-import { createSession, addTrackToSession } from "./session-service";
+import { createSession, addTrackToSession, saveSessionState } from "./session-service";
 
 const REQUEST_BUDGET_MS = 1_000;
 const MODEL_IDS = ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"];
 type PhaseMetrics = { rounds: number; libraryMaxMs: number; sessionMaxMs: number };
+export type LiveSeparationContext = {
+  origin: string;
+  sessionId: string;
+  playbackSessionTrackId: string;
+  playbackTrackId: string;
+  playbackStemAssets: Array<{ stemType: string; id: string }>;
+  separatingTrackId: string;
+  jobId: string;
+};
+export type LiveSeparationHooks = {
+  onPrepared?: (context: LiveSeparationContext) => Promise<void>;
+  onVerifiedPhase?: (phase: string, context: LiveSeparationContext) => Promise<void>;
+  onCompleted?: (context: LiveSeparationContext) => Promise<void>;
+};
 
 export async function verifyApiResponsivenessDuringSeparation(options: {
   database: typeof workspaceDb;
   directory: string;
   addTrack: typeof addTrackFromAudioFile;
   port: number;
+  liveSeparationHooks?: LiveSeparationHooks;
 }) {
   const { database, directory, addTrack } = options;
   const environmentKeys = ["ARENA_DESKTOP_MODE", "REDIS_URL", "WAVEYARD_MODELS_DIR"];
@@ -42,7 +57,6 @@ export async function verifyApiResponsivenessDuringSeparation(options: {
   const metrics = new Map<string, PhaseMetrics>();
   const startedAt = performance.now();
   try {
-    process.env.ARENA_DESKTOP_MODE = "0";
     delete process.env.REDIS_URL;
     resetLocalJobBrokerForTests();
     const modelsDirectory = join(directory, "api-responsiveness-models");
@@ -90,7 +104,47 @@ export async function verifyApiResponsivenessDuringSeparation(options: {
     }
     assert.ok(ready, `the isolated built API becomes ready; see ${logFile}`);
 
-    const { id: ownerId } = await requireUser();
+    // The isolated HTTP process runs in desktop mode and resolves this same
+    // canonical owner for unauthenticated loopback requests.
+    const ownerId = LOCAL_OWNER_ID;
+    const playbackInputPath = join(directory, "api-responsiveness-current.wav");
+    const playbackBytes = encodeWav16(stemMachineSource(60 * 44_100), 44_100);
+    await writeFile(playbackInputPath, playbackBytes);
+    const playbackIntake = await addTrack({
+      ownerId, filePath: playbackInputPath, filename: "Fixture - Current playback.wav",
+      mimeType: "audio/wav", model: "stems_4", requestedDevice: "cpu",
+    });
+    assert.equal(playbackIntake.track.stemAvailability.status, "rejected");
+    const playbackJobId = playbackIntake.track.stemAvailability.retryJobId;
+    assert.ok(playbackJobId, "the prepared playback fixture has a persistent separation record");
+    const [playbackTrackRow] = await database.select().from(tracks)
+      .where(eq(tracks.id, playbackIntake.track.id)).limit(1);
+    assert.ok(playbackTrackRow);
+    const [playbackSource] = await database.select().from(sourceAssets)
+      .where(eq(sourceAssets.id, playbackTrackRow.sourceAssetId)).limit(1);
+    assert.ok(playbackSource);
+    await database.update(processingJobs)
+      .set({ status: "complete", stage: "complete", completedAt: new Date(), errorMessage: null })
+      .where(eq(processingJobs.id, playbackJobId));
+    const playbackStemAssets = await database.insert(stemAssets).values(
+      ["vocals", "drums", "bass", "other"].map(stemType => ({
+        projectId: playbackTrackRow.projectId,
+        sourceAssetId: playbackSource.id,
+        separationJobId: playbackJobId,
+        stemType,
+        engine: "demucs",
+        model: "prepared-browser-fixture",
+        modelVersion: "1",
+        storageKey: playbackSource.storageKey,
+        checksumSha256: `${stemType.padEnd(64, "0")}`.slice(0, 64),
+        durationSeconds: playbackSource.durationSeconds,
+        sampleRate: playbackSource.sampleRate,
+        channels: playbackSource.channels,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: playbackBytes.length,
+      })),
+    ).returning({ id: stemAssets.id, stemType: stemAssets.stemType });
     const inputPath = join(directory, "api-responsiveness.wav");
     await writeFile(inputPath, encodeWav16(stemMachineSource(88_200), 44_100));
     const intake = await addTrack({
@@ -100,8 +154,25 @@ export async function verifyApiResponsivenessDuringSeparation(options: {
     assert.equal(intake.track.stemAvailability.status, "rejected");
     const jobId = intake.track.stemAvailability.retryJobId;
     assert.ok(jobId);
-    const session = await createSession(ownerId, "Real API responsiveness probe");
-    await addTrackToSession({ ownerId, sessionId: session.id, trackId: intake.track.id });
+    const session = await createSession(ownerId, "Live controls during separation");
+    const playbackSession = await addTrackToSession({
+      ownerId, sessionId: session.id, trackId: playbackIntake.track.id,
+    });
+    const playbackSessionTrackId = playbackSession.tracks[0]?.id;
+    assert.ok(playbackSessionTrackId);
+    await addTrackToSession({
+      ownerId, sessionId: session.id, trackId: intake.track.id, position: 1,
+    });
+    await saveSessionState(ownerId, session.id, playbackSessionTrackId, 0);
+    const liveContext: LiveSeparationContext = {
+      origin,
+      sessionId: session.id,
+      playbackSessionTrackId,
+      playbackTrackId: playbackIntake.track.id,
+      playbackStemAssets,
+      separatingTrackId: intake.track.id,
+      jobId,
+    };
 
     const readPhase = async () => {
       const [job] = await database.select().from(processingJobs).where(eq(processingJobs.id, jobId));
@@ -136,7 +207,9 @@ export async function verifyApiResponsivenessDuringSeparation(options: {
       return elapsedMs;
     };
     await Promise.all([probe("library"), probe("session")]);
+    await options.liveSeparationHooks?.onPrepared?.(liveContext);
     sampler = (async () => {
+      const exercisedPhases = new Set<string>();
       while (!stop) {
         try {
           const phaseBefore = await readPhase();
@@ -150,6 +223,12 @@ export async function verifyApiResponsivenessDuringSeparation(options: {
             sample.libraryMaxMs = Math.max(sample.libraryMaxMs, libraryMs);
             sample.sessionMaxMs = Math.max(sample.sessionMaxMs, sessionMs);
             metrics.set(phaseBefore, sample);
+            if (sample.rounds >= 2 && !exercisedPhases.has(phaseBefore)) {
+              exercisedPhases.add(phaseBefore);
+              await options.liveSeparationHooks?.onVerifiedPhase?.(phaseBefore, liveContext);
+              assert.equal(await readPhase(), phaseBefore,
+                `model pass ${phaseBefore} remains active across the browser-control exercise`);
+            }
           }
         } catch (error) { samplingError = error; return; }
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -182,6 +261,7 @@ export async function verifyApiResponsivenessDuringSeparation(options: {
         `both HTTP endpoints are repeatedly checked inside model pass ${pass}/4`);
     }
     await Promise.all([probe("library"), probe("session")]);
+    await options.liveSeparationHooks?.onCompleted?.(liveContext);
     return {
       requestBudgetMs: REQUEST_BUDGET_MS, intervalMs: 100,
       elapsedMs: Math.round(performance.now() - startedAt),
