@@ -1314,7 +1314,15 @@ export function MusicHome() {
             >
               Apple Music catalog backup
             </button>
-            <small>Metadata only; local-file audio ZIP stays separate.</small>
+            <a
+              className="button secondary library-audio-capture-link"
+              href="#waveyard-audio-capture"
+            >
+              Record playback audio
+            </a>
+            <small>
+              Catalog export is metadata only. Windows may block some playback; recordable audio is stored as WAV and can be downloaded with a CSV manifest.
+            </small>
           </div>
           <label className="add-music" id="waveyard-add-music">
             <input

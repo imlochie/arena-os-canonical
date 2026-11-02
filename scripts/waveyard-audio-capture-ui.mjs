@@ -115,6 +115,11 @@ try {
   });
 
   await page.goto(`${base}/waveyard`, { waitUntil: "domcontentloaded" });
+  const captureShortcut = page.getByRole("link", { name: "Record playback audio", exact: true });
+  assert.equal(await captureShortcut.getAttribute("href"), "#waveyard-audio-capture");
+  await captureShortcut.click();
+  await page.waitForFunction(() => window.location.hash === "#waveyard-audio-capture");
+  assert.equal(await page.locator("#waveyard-audio-capture").getAttribute("aria-label"), "Record Windows playback");
   const deviceSelect = page.getByLabel("Windows playback device");
   await deviceSelect.waitFor({ state: "visible", timeout: 15000 });
   await page.waitForFunction(() => document.querySelector('select[aria-label="Windows playback device"]')?.value === "speakers-a");
@@ -153,7 +158,9 @@ try {
   assert(sourceBounds && sourceBounds.x >= 0 && sourceBounds.x + sourceBounds.width <= 390,
     "application selection fits the mobile viewport");
   await page.setViewportSize({ width: 1280, height: 1000 });
+  await page.getByLabel("Track title").fill("Application capture test");
   await page.getByRole("button", { name: "Start recording" }).click();
+  assert.equal(startPayload.title, "Application capture test");
   assert.equal(startPayload.processId, 4242);
   assert.equal(startPayload.processStartTime, "123456789");
   assert.equal("deviceId" in startPayload, false, "isolated capture must never send an output endpoint");

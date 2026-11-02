@@ -366,7 +366,12 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     ? options?.processLoopbackSupported && !!applicationKey : !!deviceId;
 
   return (
-    <section className="library-audio-backup library-audio-capture" aria-label="Record Windows playback">
+    <section
+      id="waveyard-audio-capture"
+      className="library-audio-backup library-audio-capture"
+      aria-label="Record Windows playback"
+      tabIndex={-1}
+    >
       <div className="library-audio-capture-heading">
         <div>
           <strong>Record Windows playback</strong>
