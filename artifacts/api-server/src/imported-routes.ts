@@ -6,6 +6,7 @@ export const importedRoutes = [
   { path: "/waveyard/projects/:id/vocal-chops/auto-sequence", methods: ["POST"], load: () => import("./imported/waveyard/projects/[id]/vocal-chops/auto-sequence/route.ts") },
   { path: "/waveyard/projects/:id/vocal-chops/render", methods: ["POST"], load: () => import("./imported/waveyard/projects/[id]/vocal-chops/render/route.ts") },
   { path: "/waveyard/separation/models/:id/seed", methods: ["POST"], load: () => import("./imported/waveyard/separation/models/[id]/seed/route.ts") },
+  { path: "/waveyard/local-sync", methods: ["POST"], load: () => import("./imported/waveyard/local-sync/route.ts") },
   { path: "/archive/findings/:reviewItemId/lineage", methods: ["GET"], load: () => import("./imported/archive/findings/[reviewItemId]/lineage/route.ts") },
   { path: "/identity/authentication/options", methods: ["POST"], load: () => import("./imported/identity/authentication/options/route.ts") },
   { path: "/identity/authentication/verify", methods: ["POST"], load: () => import("./imported/identity/authentication/verify/route.ts") },

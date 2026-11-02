@@ -15,8 +15,8 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **How to apply:** Any streaming tempo-match optimization must verify BPM alignment and both speed pitch modes independently before replacing the existing path.
 
-**Device-sync privacy rule:** Cross-device sessions and library state must be isolated to the user's authenticated or cryptographically paired devices; the fixed local-owner identity is not an access-control boundary.
+**Device-sync privacy rule:** Prefer QR-paired, direct laptop-to-device live-session sync; do not depend on paid cloud storage. Any optional cloud relay must be free and end-to-end encrypted. The fixed local-owner identity is not an access-control boundary.
 
-**Why:** The user explicitly requires multi-device session sync while protecting personal privacy.
+**Why:** The user wants to scan a QR code to sync the live session, with the laptop hosting it or a free service as fallback, and prioritizes personal privacy.
 
-**How to apply:** Establish real identity or secure device pairing before syncing. Never expose owner-scoped library or playback data through an unauthenticated shared endpoint.
+**How to apply:** Default to direct, local pairing and minimum live-session data. Require secure pairing before exposing control, and never expose owner-scoped library or playback data through an unauthenticated endpoint.

@@ -20,6 +20,8 @@ import LiveStemSwapPicker, {
   type LiveStemDonorOption,
   type LiveStemPreparationOption,
 } from "./LiveStemSwapPicker";
+import LocalSessionPairing from "./LocalSessionPairing";
+import type { LocalRemoteCommand } from "./local-session-crypto";
 import {
   automaticCueTiming,
   automaticTransitionCue,
@@ -3188,6 +3190,23 @@ export default function SessionExperience({
     if (!shouldRemainPlaying) void persistState({ id: trackId, position: value });
   };
 
+  const handleLocalRemoteCommand = (command: LocalRemoteCommand) => {
+    if (command.type === "toggle-play") {
+      void togglePlay();
+    } else if (command.type === "next") {
+      if (phase === "fading") finishTransition();
+      else if (nextItem !== null) jumpTo(nextItem.id, playingByDeck[activeDeck]);
+    } else if (command.type === "previous") {
+      if (previousItem !== null) jumpTo(previousItem.id, playingByDeck[activeDeck]);
+    } else if (command.type === "select-track") {
+      if (session?.tracks.some((item) => item.id === command.itemId)) {
+        jumpTo(command.itemId, playingByDeck[activeDeck]);
+      }
+    } else {
+      seekCurrent(Math.max(0, Math.min(duration, command.positionSeconds)));
+    }
+  };
+
   const startSessionTrackSeparation = async (trackId: string) => {
     const track = library.find((item) => item.id === trackId);
     if (track === undefined || preparingSeparationTrackIds.has(trackId) || track.stemAvailability.status === "processing") return;
@@ -3503,6 +3522,30 @@ export default function SessionExperience({
         >
           {saveLabel === "Not saved" ? "Not saved · retry" : saveLabel}
         </button>
+        <LocalSessionPairing
+          key={session.id}
+          snapshot={{
+            sessionName: session.name.slice(0, 120),
+            trackId: currentItem?.id ?? null,
+            title: currentItem?.track.title.slice(0, 120) ?? "",
+            artist: currentItem?.track.artist.slice(0, 80) ?? "",
+            nextTitle: nextItem?.track.title.slice(0, 120) ?? null,
+            previousTitle: previousItem?.track.title.slice(0, 120) ?? null,
+            queue: session.tracks.slice(
+              Math.max(0, currentIndex - 1),
+              Math.min(session.tracks.length, currentIndex + 9),
+            ).map((item) => ({
+              id: item.id,
+              title: item.track.title.slice(0, 120),
+              artist: item.track.artist.slice(0, 80),
+              durationSeconds: item.track.durationSeconds,
+            })),
+            positionSeconds: position,
+            durationSeconds: duration,
+            playing,
+          }}
+          onCommand={handleLocalRemoteCommand}
+        />
         {variant === "compact" && (
           <Link className="wy-open" href={`/waveyard/session/${session.id}`}>Open mixer</Link>
         )}

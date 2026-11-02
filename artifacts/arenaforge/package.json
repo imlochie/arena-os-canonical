@@ -82,6 +82,8 @@
   },
   "dependencies": {
     "acorn": "^8.19.0",
-    "jszip": "3.10.2"
+    "jszip": "3.10.2",
+    "qrcode.react": "^4.2.0",
+    "tweetnacl": "^1.0.3"
   }
 }

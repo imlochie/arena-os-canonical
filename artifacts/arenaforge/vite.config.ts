@@ -63,6 +63,12 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, 'dist/public'),
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        app: path.resolve(import.meta.dirname, 'index.html'),
+        waveyardRemote: path.resolve(import.meta.dirname, 'waveyard-remote.html'),
+      },
+    },
   },
   server: {
     port,
