@@ -1,4 +1,5 @@
 import type { Remix } from "./types";
+import type { ArrangementPreviewAssetMetadata } from "@workspace/arena/lib/waveyard/arrangement-preview-memory";
 
 /**
  * The persisted remix endpoint always returns all three pieces of editable
@@ -7,9 +8,10 @@ import type { Remix } from "./types";
  * than dropping the field altogether.
  */
 export type PersistedRemixResponse = {
-  remix: Omit<Remix, "tracks" | "automation">;
+  remix: Omit<Remix, "tracks" | "automation" | "previewAssets">;
   tracks: Remix["tracks"];
   automation: Remix["automation"];
+  stems?: ArrangementPreviewAssetMetadata[];
 };
 
 export function remixFromResponse(response: PersistedRemixResponse): Remix {
@@ -30,5 +32,6 @@ export function remixFromResponse(response: PersistedRemixResponse): Remix {
     ...(masterInserts !== undefined ? { masterInserts } : {}),
     tracks: response.tracks,
     automation: response.automation,
+    previewAssets: Array.isArray(response.stems) ? response.stems : [],
   };
 }

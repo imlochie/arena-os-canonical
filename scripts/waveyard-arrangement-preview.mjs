@@ -44,6 +44,7 @@ function tone() {
 let server;
 let browser;
 let url;
+const assetRequests = [];
 
 async function openFixture(t) {
   const page = await browser.newPage();
@@ -84,7 +85,9 @@ before(async () => {
       response.end(bundled.outputFiles[0].contents);
       return;
     }
-    if (request.url === "/api/assets/fixture-stem") {
+    if (request.url?.startsWith("/api/assets/")) {
+      const assetId = new URL(request.url, "http://localhost").pathname.split("/").at(-1);
+      assetRequests.push(assetId);
       response.setHeader("Content-Type", "audio/wav");
       response.setHeader("Content-Length", audio.length);
       response.end(audio);
@@ -187,4 +190,58 @@ test("blocked foreground arrangement recovery exposes a working retry", { timeou
   await waitForOutput(page, "playing", "true");
   await waitForOutput(page, "error", "");
   assert.equal(await page.evaluate(() => document.visibilityState), "visible");
+});
+
+test("long and many-stem arrangements are rejected before any full asset is fetched", { timeout: 20_000 }, async (t) => {
+  const page = await openFixture(t);
+  const before = assetRequests.length;
+  await page.getByRole("button", { name: "Play long preview" }).click();
+  await page.waitForFunction(
+    () => Boolean(document.querySelector('[data-testid="error"]')?.textContent),
+    null,
+    { timeout: 5_000 },
+  );
+  const longError = await page.locator('[data-testid="error"]').innerText();
+  assert.match(longError, /estimated to need/i);
+  assert.equal(assetRequests.length, before, "a long source is rejected before downloading or decoding");
+
+  await page.getByRole("button", { name: "Play many-stem preview" }).click();
+  await page.waitForFunction(
+    () => Boolean(document.querySelector('[data-testid="error"]')?.textContent),
+    null,
+    { timeout: 5_000 },
+  );
+  const manyError = await page.locator('[data-testid="error"]').innerText();
+  assert.match(manyError, /estimated to need/i);
+  assert.equal(assetRequests.length, before, "many audible long stems are rejected before any decode");
+});
+
+test("muted stems are excluded from both preview fetches and the memory estimate", { timeout: 10_000 }, async (t) => {
+  const page = await openFixture(t);
+  const before = assetRequests.length;
+  await page.getByRole("button", { name: "Play muted arrangement" }).click();
+  await waitForOutput(page, "playing", "true");
+
+  assert.deepEqual(
+    assetRequests.slice(before),
+    ["preview-muted-vocals"],
+    "only the audible donor is fetched and decoded",
+  );
+});
+
+test("switching arrangements releases inactive decoded donors before loading the next one", { timeout: 15_000 }, async (t) => {
+  const page = await openFixture(t);
+  const before = assetRequests.length;
+  await page.getByRole("button", { name: "Play switch arrangement A" }).click();
+  await waitForOutput(page, "playing", "true");
+  await page.getByRole("button", { name: "Play switch arrangement B" }).click();
+  await waitForOutput(page, "playing", "true");
+  await page.getByRole("button", { name: "Play switch arrangement A" }).click();
+  await waitForOutput(page, "playing", "true");
+
+  assert.deepEqual(
+    assetRequests.slice(before),
+    ["preview-switch-a", "preview-switch-b", "preview-switch-a"],
+    "switching away releases the previous arrangement's cached donor",
+  );
 });

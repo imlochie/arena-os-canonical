@@ -465,6 +465,7 @@
     "./lib/waveyard/types/source-sections": "./src/lib/waveyard/types/source-sections.ts",
     "./lib/waveyard/types/visual-state": "./src/lib/waveyard/types/visual-state.ts",
     "./lib/waveyard/types/vocal-analysis": "./src/lib/waveyard/types/vocal-analysis.ts",
+    "./lib/waveyard/arrangement-preview-memory": "./src/lib/waveyard/arrangement-preview-memory.ts",
     "./lib/waveyard/useArrangementPreview": "./src/lib/waveyard/useArrangementPreview.ts",
     "./lib/waveyard/useReducedMotion": "./src/lib/waveyard/useReducedMotion.ts",
     "./lib/waveyard/useStemTransport": "./src/lib/waveyard/useStemTransport.ts",

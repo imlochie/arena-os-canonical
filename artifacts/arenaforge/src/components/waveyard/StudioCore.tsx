@@ -98,6 +98,12 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const ids = useMemo(() => stems.map((stem) => stem.id), [stems]);
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
   const sourceDurationById = useMemo(() => new Map(stems.map((stem) => [stem.id, Math.round(stem.durationSeconds * 1000)])), [stems]);
+  const previewAssets = useMemo(
+    () => stems.map(({ id, durationSeconds, sampleRate, channels, fileSizeBytes }) => ({
+      id, durationSeconds, sampleRate, channels, fileSizeBytes,
+    })),
+    [stems],
+  );
   const [controls, setControls] = useState<Record<string, MixerValues>>(() => controlsFor(stems));
   const [selectedId, setSelectedId] = useState(stems[0]?.id ?? "");
   // Project polling can add a completed source while Studio is open. Derive a
@@ -176,7 +182,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const transport = useStemTransport(ids, duration);
   const { setLoop, seek: seekTransport } = transport;
   const seekArrangementPosition = useCallback((milliseconds: number) => seekTransport(milliseconds / 1000), [seekTransport]);
-  const arrangementPreview = useArrangementPreview(seekArrangementPosition);
+  const arrangementPreview = useArrangementPreview(seekArrangementPosition, previewAssets);
   const sourceById = useMemo(
     () => new Map(sources.map((source) => [source.id, source])),
     [sources],

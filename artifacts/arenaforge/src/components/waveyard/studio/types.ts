@@ -1,4 +1,5 @@
 import type { RemixStateInput, RemixTrackInput } from "@workspace/arena/lib/waveyard/remix";
+import type { ArrangementPreviewAssetMetadata } from "@workspace/arena/lib/waveyard/arrangement-preview-memory";
 import type { RemixAutomationLane } from "@workspace/arena/lib/waveyard/types";
 import type { GridDivision } from "@workspace/arena/lib/waveyard/timing";
 
@@ -201,6 +202,8 @@ export type Remix = {
   targetKey: string | null;
   tracks: PersistedTrack[];
   automation: RemixAutomationLane[];
+  /** Read-only asset metadata used to keep browser arrangement previews bounded. */
+  previewAssets?: ArrangementPreviewAssetMetadata[];
 };
 
 export type RemixVersionSummary = { id: string; name: string; createdAt: string };

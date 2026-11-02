@@ -4,6 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { clipFadeShapeOrLinear, fadeCurveSamples, fadeGainAt } from "./fades";
 import { clearArrangementPreviewGraph } from "./arrangement-preview-graph";
 import { selectArrangementPreviewTracks } from "./arrangement-preview-selection";
+import {
+  ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
+  arrangementPreviewBufferBytes,
+  estimateArrangementPreviewMemory,
+  formatArrangementPreviewMiB,
+  releaseInactiveArrangementPreviewBuffers,
+  type ArrangementPreviewAssetMetadata,
+} from "./arrangement-preview-memory";
 import type { RemixTrackInput } from "./remix";
 
 type PreviewClip = RemixTrackInput["clips"][number];
@@ -13,6 +21,7 @@ type PreviewState = {
   loopStartMs: number;
   loopEndMs: number | null;
   tracks: PreviewTrack[];
+  previewAssets?: ArrangementPreviewAssetMetadata[];
 };
 
 type ScheduledSource = { source: AudioBufferSourceNode; gain: GainNode };
@@ -30,9 +39,13 @@ function clipLevelAt(clip: PreviewClip, offsetMs: number) {
  * route as the stem inspector but never writes audio or becomes an export
  * source; persisted clips and the worker snapshot remain authoritative.
  */
-export function useArrangementPreview(onPosition: (milliseconds: number) => void) {
+export function useArrangementPreview(
+  onPosition: (milliseconds: number) => void,
+  supplementalAssets: ArrangementPreviewAssetMetadata[] = [],
+) {
   const context = useRef<AudioContext | null>(null);
   const buffers = useRef(new Map<string, AudioBuffer>());
+  const decodeQueue = useRef<Promise<void>>(Promise.resolve());
   const scheduled = useRef<ScheduledSource[]>([]);
   const graphNodes = useRef(new Set<AudioNode>());
   const raf = useRef<number | null>(null);
@@ -64,15 +77,25 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     }
     return context.current;
   }, []);
-  const ensureBuffer = useCallback(async (assetId: string) => {
+  const ensureBuffer = useCallback((assetId: string, generation: number) => {
     const existing = buffers.current.get(assetId);
-    if (existing) return existing;
-    const response = await fetch(`/api/assets/${assetId}`);
-    if (!response.ok) throw new Error("A stem could not be loaded for arrangement preview.");
-    const data = await response.arrayBuffer();
-    const decoded = await ensureContext().decodeAudioData(data);
-    buffers.current.set(assetId, decoded);
-    return decoded;
+    if (existing) return Promise.resolve(existing);
+    const pending = decodeQueue.current.then(async () => {
+      if (generation !== playbackGeneration.current) return null;
+      const cached = buffers.current.get(assetId);
+      if (cached) return cached;
+      const response = await fetch(`/api/assets/${assetId}`);
+      if (!response.ok) throw new Error("A stem could not be loaded for arrangement preview.");
+      const data = await response.arrayBuffer();
+      const decoded = await ensureContext().decodeAudioData(data);
+      if (generation !== playbackGeneration.current) return null;
+      buffers.current.set(assetId, decoded);
+      return decoded;
+    });
+    // Keep a rejected decode from poisoning the queue, and serialize future
+    // decodes so fast arrangement switches cannot decode two large files at once.
+    decodeQueue.current = pending.then(() => undefined, () => undefined);
+    return pending;
   }, [ensureContext]);
 
   const schedule = useCallback(async (state: PreviewState, startMs: number, generation: number) => {
@@ -82,12 +105,46 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     const audio = ensureContext();
     const { audibleTracks, assetIds } = selectArrangementPreviewTracks(state.tracks);
     const activeAssetIds = new Set(assetIds);
-    for (const assetId of buffers.current.keys()) {
-      if (!activeAssetIds.has(assetId)) buffers.current.delete(assetId);
-    }
-    await Promise.all(assetIds.map(ensureBuffer));
-    if (generation !== playbackGeneration.current) return false;
+    // Stop the old graph before releasing donor buffers. This prevents old and
+    // new arrangements from retaining two sets of AudioBuffers during a switch.
     clear();
+    await decodeQueue.current;
+    if (generation !== playbackGeneration.current) return false;
+    releaseInactiveArrangementPreviewBuffers(buffers.current, activeAssetIds);
+
+    const metadataById = new Map(
+      [...supplementalAssets, ...(state.previewAssets ?? [])].map((asset) => [asset.id, asset]),
+    );
+    const estimate = estimateArrangementPreviewMemory(
+      assetIds,
+      [...metadataById.values()],
+      audio.sampleRate,
+    );
+    if (!estimate.ok) {
+      buffers.current.clear();
+      throw new Error(
+        "Studio can't safely estimate the memory needed for this arrangement. Reopen the session to refresh its audio details, then try again.",
+      );
+    }
+    if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
+      buffers.current.clear();
+      throw new Error(
+        `This arrangement is estimated to need ${formatArrangementPreviewMiB(estimate.estimatedPeakBytes)} MiB for browser preview, above the ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB safety limit. Mute or solo fewer long stems, or use shorter source files.`,
+      );
+    }
+
+    for (const assetId of assetIds) {
+      if (generation !== playbackGeneration.current) return false;
+      const buffer = await ensureBuffer(assetId, generation);
+      if (generation !== playbackGeneration.current || !buffer) return false;
+      if (arrangementPreviewBufferBytes(buffers.current) > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
+        buffers.current.clear();
+        throw new Error(
+          `The decoded audio exceeded Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB preview safety limit. Mute or solo fewer long stems, or use shorter source files.`,
+        );
+      }
+    }
+    if (generation !== playbackGeneration.current) return false;
     const master = audio.createGain();
     master.gain.value = state.masterVolume;
     master.connect(audio.destination);
@@ -162,7 +219,7 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     pendingStartMs.current = null;
     setPending(false);
     return true;
-  }, [clear, ensureBuffer, ensureContext]);
+  }, [clear, ensureBuffer, ensureContext, supplementalAssets]);
 
   const failPreview = useCallback((cause: unknown, generation: number) => {
     if (generation !== playbackGeneration.current) return;
