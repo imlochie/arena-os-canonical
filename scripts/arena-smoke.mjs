@@ -1224,9 +1224,16 @@ try {
     waveformCanvasRequests += 1;
     if (!waveformCanvasAvailable) {
       await route.fulfill({
-        status: 503,
+        status: 404,
         contentType: "application/json",
-        body: JSON.stringify({ error: "The waveform queue is temporarily unavailable." }),
+        body: JSON.stringify({
+          error: "Waveform is not available for this asset yet.",
+          waveformJob: {
+            id: waveformRetryJobId,
+            status: "failed",
+            errorCode: "queue_unavailable",
+          },
+        }),
       });
       return;
     }
@@ -1287,6 +1294,7 @@ try {
           id: waveformRetryJobId,
           status: waveformRetryStatus,
           stage: waveformRetryStatus === "failed" ? "queue-unavailable" : "queued",
+          errorCode: waveformRetryStatus === "failed" ? "queue_unavailable" : null,
           errorMessage: waveformRetryStatus === "failed" ? "The local waveform queue is unavailable." : null,
         }],
         jobs: [{
@@ -1343,6 +1351,7 @@ try {
       return;
     }
     waveformRetryStatus = "queued";
+    waveformCanvasAvailable = true;
     await route.fulfill({
       status: 202,
       contentType: "application/json",
@@ -1420,6 +1429,7 @@ try {
   report.push("Project separation retry recovers, and automatic CPU fallback is identified as slower.");
   const retryWaveformButton = page.getByRole("button", { name: "Retry waveform", exact: true });
   await retryWaveformButton.waitFor();
+  await page.getByText("Waveform generation could not be queued because processing is unavailable. Audio playback and downloads remain available; no substitute peaks are drawn.").waitFor();
   await retryWaveformButton.click();
   await page.getByText(/Waveform retry could not reach the server/).waitFor();
   assert.equal(await retryWaveformButton.innerText(), "Retry waveform", "network failure resets the waveform retry button");
@@ -1435,12 +1445,12 @@ try {
   const studioWaveform = page.locator(".main-waveform");
   const retryCanvasWaveform = studioWaveform.getByTestId("waveform-canvas-retry");
   await retryCanvasWaveform.waitFor();
-  await studioWaveform.getByRole("alert").getByText("The waveform queue is temporarily unavailable.").waitFor();
-  waveformCanvasAvailable = true;
+  await studioWaveform.getByRole("alert").getByText(/could not be queued because processing is unavailable/).waitFor();
   await retryCanvasWaveform.click();
   await studioWaveform.getByRole("button", { name: "Seek project waveform" }).waitFor();
   assert(waveformCanvasRequests >= 2, "the Studio waveform retry must issue a new request for the selected asset");
-  report.push("Studio waveform fetch failures show an inline retry and recover without reloading the project.");
+  assert.equal(waveformRetryAttempts, 4, "the listener waveform retry must submit the failed job to the queue");
+  report.push("Studio surfaces queue outages in plain language, retries the failed waveform job, and displays real peaks after recovery.");
   await page.goto("http://localhost:80/waveyard");
   await page.getByRole("navigation", { name: "Waveyard" }).getByRole("link", { name: "Music", exact: true }).click();
   const emptyMixerAddMusic = page.getByRole("link", { name: "Add music", exact: true });

@@ -1,12 +1,13 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { validateWaveform } from "@workspace/arena/lib/waveyard/audio";
 import { db } from "@workspace/db";
 import {
   sourceAssets,
   stemAssets,
   waveformAssets,
+  waveformJobs,
 } from "@workspace/db/waveyardSchema";
 import type { WaveformDocument } from "@workspace/arena/lib/waveyard/types";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
@@ -30,7 +31,24 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const [waveform] = stem
       ? await db.select().from(waveformAssets).where(eq(waveformAssets.stemAssetId, stem.id)).limit(1)
       : await db.select().from(waveformAssets).where(eq(waveformAssets.sourceAssetId, source!.id)).limit(1);
-    if (!waveform) return Response.json({ error: "Waveform is not available for this asset yet." }, { status: 404 });
+    if (!waveform) {
+      const [job] = await db
+        .select({
+          id: waveformJobs.id,
+          status: waveformJobs.status,
+          errorCode: waveformJobs.errorCode,
+        })
+        .from(waveformJobs)
+        .where(stem
+          ? eq(waveformJobs.stemAssetId, stem.id)
+          : eq(waveformJobs.sourceAssetId, source!.id))
+        .orderBy(desc(waveformJobs.updatedAt))
+        .limit(1);
+      return Response.json({
+        error: "Waveform is not available for this asset yet.",
+        waveformJob: job ?? null,
+      }, { status: 404 });
+    }
     const document = JSON.parse((await getStorage().getBuffer(waveform.storageKey, MAX_WAVEFORM_BYTES)).toString("utf8")) as WaveformDocument;
     validateWaveform(document);
     return Response.json({ waveform: document, format: waveform.format, checksumSha256: waveform.checksumSha256 }, { headers: { "Cache-Control": "private, no-store" } });

@@ -39,7 +39,7 @@ export function ArtworkHero({ title, seed, compact = false }: { title: string; s
   </div>;
 }
 
-export function PlayerTimeline({ source, duration, position, onSeek }: { source?: Source; duration: number; position: number; onSeek: (seconds: number) => void }) {
+export function PlayerTimeline({ source, duration, position, onSeek, onRetryWaveformJob }: { source?: Source; duration: number; position: number; onSeek: (seconds: number) => void; onRetryWaveformJob?: (jobId: string) => Promise<{ ok: boolean; message?: string }> }) {
   const sections = source?.sections ?? [];
   const widths = sectionWidths(sections, duration);
   return <section className="player-timeline" aria-label="Playback timeline">
@@ -47,12 +47,12 @@ export function PlayerTimeline({ source, duration, position, onSeek }: { source?
     <div className="player-section-strip" aria-label="Detected source sections">
       {widths.length ? widths.map((section, index) => <i key={sections[index]?.id ?? index} style={{ width: `${Math.max(3, section.widthPercent)}%` }} title={`Section ${(sections[index]?.sectionIndex ?? index) + 1}`} />) : <i className="unknown" />}
     </div>
-    {source ? <WaveformCanvas assetId={source.id} label={`${source.originalFilename} player waveform`} position={position} duration={duration} onSeek={onSeek} /> : <div className="waveform-empty">Audio source is loading.</div>}
+    {source ? <WaveformCanvas assetId={source.id} label={`${source.originalFilename} player waveform`} position={position} duration={duration} onSeek={onSeek} onRetryJob={onRetryWaveformJob} /> : <div className="waveform-empty">Audio source is loading.</div>}
   </section>;
 }
 
 export function LivingPlayer({
-  source, stems, selectedId, controls, duration, transport, visualState, onSelectStem, onControl, onOpenStudio, fullscreen, onToggleFullscreen,
+  source, stems, selectedId, controls, duration, transport, visualState, onSelectStem, onControl, onOpenStudio, fullscreen, onToggleFullscreen, onRetryWaveformJob,
 }: {
   source?: Source;
   stems: Stem[];
@@ -66,6 +66,7 @@ export function LivingPlayer({
   onOpenStudio: () => void;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
+  onRetryWaveformJob?: (jobId: string) => Promise<{ ok: boolean; message?: string }>;
 }) {
   const section = currentSection(source, visualState);
   const [seeking, setSeeking] = useState(false);
@@ -100,7 +101,7 @@ export function LivingPlayer({
       })}
       {!orderedStems.length && <p className="player-empty">Validated stems will appear here.</p>}
     </div>
-    <PlayerTimeline source={source} duration={duration} position={transport.position} onSeek={(seconds) => { setSeeking(true); transport.seek(seconds); }} />
+    <PlayerTimeline source={source} duration={duration} position={transport.position} onSeek={(seconds) => { setSeeking(true); transport.seek(seconds); }} onRetryWaveformJob={onRetryWaveformJob} />
     <div className="player-transport"><button className="player-play" disabled={loading} onClick={() => transport.playing ? transport.pause() : void transport.play()} aria-label={transport.playing ? "Pause playback" : "Play playback"}>{transport.playing ? "Ⅱ" : "▶"}</button><output>{formatPlayerTime(transport.position)} <span>/</span> {formatPlayerTime(duration)}</output><button className="button secondary" disabled={loading} onClick={onToggleFullscreen}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div>
     {transport.error && <p className="error">{transport.error}</p>}
   </section>;

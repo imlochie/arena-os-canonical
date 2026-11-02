@@ -35,6 +35,7 @@ type ProjectData = {
     id: string;
     status: string;
     stage: string;
+    errorCode?: string | null;
     errorMessage: string | null;
   }>;
   jobs: Array<{
@@ -277,16 +278,22 @@ async function prepareEngine(model: string, jobId: string) {
     }
   }
 
-  async function postRetry(path: string, fallbackError: string, networkError: string) {
+  async function postRetry(path: string, fallbackError: string, networkError: string): Promise<{ ok: boolean; message?: string }> {
     setRetrying(true);
     setError(null);
     try {
       const response = await fetch(path, { method: "POST" });
       const json = await response.json().catch(() => ({}));
-      if (!response.ok) setError(json.error ?? fallbackError);
-      else setRefresh((value) => value + 1);
+      if (!response.ok) {
+        const message = json.error ?? fallbackError;
+        setError(message);
+        return { ok: false, message };
+      }
+      setRefresh((value) => value + 1);
+      return { ok: true };
     } catch {
       setError(networkError);
+      return { ok: false, message: networkError };
     } finally {
       setRetrying(false);
     }
@@ -301,11 +308,17 @@ async function prepareEngine(model: string, jobId: string) {
   }
 
   async function retryWaveform(jobId: string) {
-    await postRetry(
+    const result = await postRetry(
       `/api/waveform-jobs/${jobId}/retry`,
       "Waveform retry could not be started.",
       "Waveform retry could not reach the server. Audio remains available; check your connection and try again.",
     );
+    if (!result.ok && /Waveform retry could not be (started|queued)\./.test(result.message ?? "")) {
+      const message = "Waveform processing is still unavailable. Audio playback remains available; try again later.";
+      setError(message);
+      return { ok: false, message };
+    }
+    return result;
   }
 
   async function retryAnalysis(analysis: SourceAnalysis) {
@@ -549,6 +562,7 @@ async function prepareEngine(model: string, jobId: string) {
           sources={data.studioSources ?? data.sources}
           initialPresentation={openStudio ? "studio" : undefined}
           onDerivedAnalysisRequested={() => setRefresh((value) => value + 1)}
+          onRetryWaveformJob={retryWaveform}
         />
       ) : (
         <div className="hero-card">
@@ -572,10 +586,12 @@ async function prepareEngine(model: string, jobId: string) {
         .map((job) => (
           <div key={job.id}>
             <p className="error" role="alert">
-              Waveform generation failed at {job.stage}:{" "}
-              {job.errorMessage || "No safe error detail was recorded."} Audio
-              playback/download remains available; no substitute peaks are
-              drawn.
+              {job.errorCode === "queue_unavailable" || job.stage === "queue-unavailable"
+                ? "Waveform generation could not be queued because processing is unavailable. Audio playback and downloads remain available; no substitute peaks are drawn."
+                : <>Waveform generation failed at {job.stage}:{" "}
+                  {job.errorMessage || "No safe error detail was recorded."} Audio
+                  playback/download remains available; no substitute peaks are
+                  drawn.</>}
             </p>
             {editable && <button
               type="button"

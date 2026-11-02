@@ -94,7 +94,7 @@ function StudioDisclosure({ title, children }: { title: string; children: ReactN
   );
 }
 
-export function StudioCore({ editorId, projectId, remixSessionId, stems, sources, initialPresentation, onDerivedAnalysisRequested }: { editorId?: string; projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; initialPresentation?: "studio"; onDerivedAnalysisRequested?: () => void }) {
+export function StudioCore({ editorId, projectId, remixSessionId, stems, sources, initialPresentation, onDerivedAnalysisRequested, onRetryWaveformJob }: { editorId?: string; projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; initialPresentation?: "studio"; onDerivedAnalysisRequested?: () => void; onRetryWaveformJob?: (jobId: string) => Promise<{ ok: boolean; message?: string }> }) {
   const ids = useMemo(() => stems.map((stem) => stem.id), [stems]);
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
   const sourceDurationById = useMemo(() => new Map(stems.map((stem) => [stem.id, Math.round(stem.durationSeconds * 1000)])), [stems]);
@@ -942,6 +942,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       onOpenStudio={() => setPresentation("studio")}
       fullscreen={playerFullscreen}
       onToggleFullscreen={() => setPlayerFullscreen((current) => !current)}
+      onRetryWaveformJob={onRetryWaveformJob}
     />
     </> : presentation === "visual" ? <CinematicVisual
       source={source}
@@ -1052,7 +1053,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
           />
         </StudioDisclosure>
       )}
-      <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
+      <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} onRetryJob={onRetryWaveformJob} /></div>
       <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
       <StudioDisclosure title="Sound design">
         <SoundDesignStudio projectId={projectId} />
