@@ -28,6 +28,7 @@ const sessionId = "00000000-0000-4000-8000-000000000007";
 const automaticFadesOnly = process.argv.includes("--automatic-fades-only");
 const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
 const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only");
+const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
 let donorSwapSequence = 0;
 let failNextDonorRestore = false;
 const donorRestoreRequests = [];
@@ -961,6 +962,97 @@ try {
       comparisonMs: report.comparison.tempoMatchedMinusNativeMedianMs,
     }));
     console.log("PASS: device benchmark collects comparative native and tempo-matched measurements and environment metadata");
+  } else if (stemControlsReopenOnly) {
+    session.tracks = tracks;
+    session.swaps = [];
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    tracks[0].stemMix = {};
+    tracks[0].transition = { mode: "manual", crossfadeSeconds: 2, keepStems: [] };
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    const deck = page.locator('[data-role="current"]');
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element => element.readyState === 4);
+    });
+    const play = page.getByTestId("session-play");
+    if (await play.getAttribute("aria-pressed") !== "true") await play.click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+    );
+    const setFader = async (stem, level) => {
+      const input = deck.getByLabel(`${stem} level, current deck`, { exact: true });
+      await input.evaluate((element, value) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        setter.call(element, value);
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      }, String(level));
+      assert.equal(await input.inputValue(), String(level), `${stem} fader accepts its chosen level`);
+    };
+    const assertStemGains = async ({ vocals, drums }) => {
+      await page.waitForFunction(({ vocals: targetVocals, drums: targetDrums }) => {
+        const gain = type => window.audioProbe.sources
+          .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
+          .at(-1)?.inputNode?.nextNode?.gain?.value;
+        return Math.abs(gain("vocals") - targetVocals) < 0.01
+          && Math.abs(gain("drums") - targetDrums) < 0.01;
+      }, { vocals, drums }, { timeout: 5_000 });
+    };
+    await setFader("vocals", 0.37);
+    await setFader("drums", 0.61);
+    await deck.getByLabel("Mute drums", { exact: true }).click();
+    await assertStemGains({ vocals: 0.37, drums: 0 });
+    await page.getByTestId("button-return-full-track-a").click();
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 1 && audio[0].src.endsWith("/a-source") && !audio[0].paused;
+    });
+    await page.getByTestId("button-switch-stems-a").click();
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element => !element.paused && element.src.includes("/a-"));
+    });
+    assert.equal(await deck.getByLabel("vocals level, current deck", { exact: true }).inputValue(), "0.37");
+    assert.equal(await deck.getByLabel("drums level, current deck", { exact: true }).inputValue(), "0");
+    assert.equal(await deck.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true");
+    await assertStemGains({ vocals: 0.37, drums: 0 });
+    for (let attempt = 0; attempt < 40 && session.tracks[0].transition.performance?.recall?.drums !== 0.61; attempt += 1) {
+      await page.waitForTimeout(50);
+    }
+    assert.equal(session.tracks[0].stemMix.vocals, 0.37, "the session saves the non-default vocals level");
+    assert.equal(session.tracks[0].stemMix.drums, 0, "the session saves drums as muted");
+    assert.equal(session.tracks[0].transition.performance.recall.drums, 0.61,
+      "the session saves the muted drums fader's previous level");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element => element.readyState === 4);
+    });
+    const reloadedPlay = page.getByTestId("session-play");
+    if (await reloadedPlay.getAttribute("aria-pressed") !== "true") await reloadedPlay.click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+    );
+    const reloadedDeck = page.locator('[data-role="current"]');
+    assert.equal(await reloadedDeck.getByLabel("vocals level, current deck", { exact: true }).inputValue(), "0.37",
+      "reopening restores the distinctive vocals fader");
+    assert.equal(await reloadedDeck.getByLabel("drums level, current deck", { exact: true }).inputValue(), "0",
+      "reopening restores the muted drums fader");
+    assert.equal(await reloadedDeck.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
+      "reopening restores the drums mute control");
+    await assertStemGains({ vocals: 0.37, drums: 0 });
+    await reloadedDeck.getByLabel("Mute drums", { exact: true }).click();
+    await assertStemGains({ vocals: 0.37, drums: 0.61 });
+    assert.equal(await reloadedDeck.getByLabel("drums level, current deck", { exact: true }).inputValue(), "0.61",
+      "unmuting restores the prior drums fader value after reopening");
+    for (let attempt = 0; attempt < 40 && session.tracks[0].stemMix.drums !== 0.61; attempt += 1) {
+      await page.waitForTimeout(50);
+    }
+    assert.equal(session.tracks[0].stemMix.drums, 0.61,
+      "the restored drums level is saved back to the session");
+    console.log("PASS: stem levels and mute state survive a full-track round trip and session reload; unmuting recalls the prior fader level");
   } else if (process.argv.includes("--studio-persistence-only")) {
     tracks[0].stemMix = { vocals: 0.42 };
     const originalAssets = assetSnapshot();
@@ -2261,6 +2353,14 @@ try {
     element.dispatchEvent(new Event("change", { bubbles: true }));
   });
   assert.equal(await vocalsLevel.inputValue(), "0.37", "the distinctive vocals level is set before returning");
+  const drumsLevel = current.getByLabel("drums level, current deck", { exact: true });
+  await drumsLevel.evaluate(element => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(element, "0.61");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await drumsLevel.inputValue(), "0.61", "the distinctive drums level is set before muting");
   await current.getByLabel("Mute drums", { exact: true }).click();
   await page.waitForFunction(() => {
     const gain = type => window.audioProbe.sources
@@ -2330,6 +2430,8 @@ try {
     `switching back to stems preserves the live playhead; expected ${expectedStemsPosition}, received ${afterStemsSwitch}`);
   assert.equal(await current.getByLabel("vocals level, current deck", { exact: true }).inputValue(), "0.37",
     "switching back to stems restores the vocals fader");
+  assert.equal(await current.getByLabel("drums level, current deck", { exact: true }).inputValue(), "0",
+    "the muted drums fader remains at zero after switching back to stems");
   assert.equal(await current.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
     "switching back to stems restores the muted drums state");
   assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
@@ -2345,6 +2447,58 @@ try {
     "the distinctive vocals level remains saved on the session track");
   assert.equal(session.tracks.find(item => item.id === "a").stemMix.drums, 0,
     "the muted drums level remains saved on the session track");
+  for (let attempt = 0; attempt < 40 && session.tracks.find(item => item.id === "a")?.transition.performance?.recall?.drums !== 0.61; attempt += 1) {
+    await page.waitForTimeout(50);
+  }
+  assert.equal(session.tracks.find(item => item.id === "a").transition.performance.recall.drums, 0.61,
+    "the muted drums fader's prior level is saved for recall");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  current = page.locator('[data-role="current"]');
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 4 && audio.every(element => element.readyState === 4);
+  });
+  if (await page.getByTestId("session-play").getAttribute("aria-pressed") !== "true") {
+    await page.getByTestId("session-play").click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+  }
+  const reloadedVocalsLevel = current.getByLabel("vocals level, current deck", { exact: true });
+  const reloadedDrumsLevel = current.getByLabel("drums level, current deck", { exact: true });
+  await page.waitForFunction(() => {
+    const gain = type => window.audioProbe.sources
+      .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
+      .at(-1)?.inputNode?.nextNode?.gain?.value;
+    return Math.abs(gain("vocals") - 0.37) < 0.01 && gain("drums") < 0.01;
+  });
+  assert.equal(await reloadedVocalsLevel.inputValue(), "0.37",
+    "reopening the session restores the distinctive vocals fader");
+  assert.equal(await reloadedDrumsLevel.inputValue(), "0",
+    "reopening the session restores the muted drums fader");
+  assert.equal(await current.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
+    "reopening the session restores the drums mute state");
+  assert.equal(session.tracks.find(item => item.id === "a").stemMix.vocals, 0.37,
+    "the reopened session retains the saved vocals level");
+  assert.equal(session.tracks.find(item => item.id === "a").stemMix.drums, 0,
+    "the reopened session retains the saved drums mute");
+
+  await current.getByLabel("Mute drums", { exact: true }).click();
+  await page.waitForFunction(() => {
+    const gain = window.audioProbe.sources
+      .filter(source => source.mediaElement.src.endsWith("/a-drums"))
+      .at(-1)?.inputNode?.nextNode?.gain?.value;
+    return Math.abs(gain - 0.61) < 0.01;
+  });
+  assert.equal(await reloadedDrumsLevel.inputValue(), "0.61",
+    "unmuting after reopening recalls the prior drums fader level");
+  assert.equal(await current.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "false",
+    "the drums mute control clears after restoring its saved level");
+  for (let attempt = 0; attempt < 40 && session.tracks.find(item => item.id === "a")?.stemMix.drums !== 0.61; attempt += 1) {
+    await page.waitForTimeout(50);
+  }
+  assert.equal(session.tracks.find(item => item.id === "a").stemMix.drums, 0.61,
+    "unmuting saves the recalled drums level back to the session track");
+
   const beforeFailedReturn = await current.locator("audio").evaluateAll(elements => Math.max(...elements.map(element => element.currentTime)));
   failedAssetRequests = 0;
   failAsset = "a-source";
