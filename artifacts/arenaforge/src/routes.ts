@@ -4,6 +4,7 @@ export const routes = [
   { path: "/waveyard/projects/:id", Component: lazy(() => import("./app/waveyard/projects/[id]/page.tsx")) },
   { path: "/waveyard/studio", Component: lazy(() => import("./app/waveyard/studio/page.tsx")) },
   { path: "/waveyard/session/:id", Component: lazy(() => import("./app/waveyard/session/[id]/page.tsx")) },
+  { path: "/waveyard/stem-device-benchmark", Component: lazy(() => import("./app/waveyard/stem-device-benchmark/page.tsx")) },
   { path: "/waveyard/moderation", Component: lazy(() => import("./app/waveyard/moderation/page.tsx")) },
   { path: "/college/curriculum", Component: lazy(() => import("./app/college/curriculum/page.tsx")) },
   { path: "/college/governance", Component: lazy(() => import("./app/college/governance/page.tsx")) },
