@@ -72,6 +72,7 @@ export async function convertLocalAudio(
   outputPath: string,
   options: ConversionOptions,
   signal?: AbortSignal,
+  onProgress?: (percent: number) => void,
 ) {
   const source = await probeAudio(inputPath);
   const format = CONVERSION_FORMATS[options.format];
@@ -88,6 +89,8 @@ export async function convertLocalAudio(
   const args = [
     "-v", "error",
     "-nostdin",
+    "-progress", "pipe:1",
+    "-nostats",
     "-n",
     "-i", inputPath,
     "-map", "0:a:0",
@@ -100,10 +103,29 @@ export async function convertLocalAudio(
   if (options.format === "aac" || options.format === "alac") args.push("-movflags", "+faststart");
   args.push("-fs", String(MAX_CONVERSION_OUTPUT_BYTES), outputPath);
 
+  let progressOutput = "";
+  let lastProgress = 0;
   await execTool("ffmpeg", args, {
     timeoutMs: 10 * 60_000,
     signal,
     maxOutputBytes: 2 * 1024 * 1024,
+    onStdout: (chunk) => {
+      progressOutput += chunk;
+      const lines = progressOutput.split(/\r?\n/);
+      progressOutput = lines.pop() ?? "";
+      const reversedLines = [...lines].reverse();
+      const timeLine = reversedLines.find((line) => line.startsWith("out_time_us="))
+        ?? reversedLines.find((line) => line.startsWith("out_time_ms="));
+      const duration = source.durationSeconds;
+      const match = timeLine && /^out_time_(?:us|ms)=(\d+)$/.exec(timeLine);
+      if (!match || duration <= 0) return;
+      const divisor = timeLine.startsWith("out_time_us=") ? 1_000_000 : 1_000_000;
+      const percent = Math.max(0, Math.min(100, Math.floor((Number(match[1]) / divisor / duration) * 100)));
+      if (percent > lastProgress) {
+        lastProgress = percent;
+        onProgress?.(percent);
+      }
+    },
   });
 
   const converted = await probeAudio(outputPath);

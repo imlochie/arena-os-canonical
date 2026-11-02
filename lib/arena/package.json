@@ -289,6 +289,8 @@
     "./lib/waveyard/capture/segments": "./src/lib/waveyard/capture/segments.ts",
     "./lib/waveyard/capture/pcm-signal": "./src/lib/waveyard/capture/pcm-signal.ts",
     "./lib/waveyard/conversion/engine": "./src/lib/waveyard/conversion/engine.ts",
+    "./lib/waveyard/conversion/idempotency": "./src/lib/waveyard/conversion/idempotency.ts",
+    "./lib/waveyard/conversion/jobs": "./src/lib/waveyard/conversion/jobs.ts",
     "./lib/waveyard/authorized-source-resolver": "./src/lib/waveyard/authorized-source-resolver.ts",
     "./lib/waveyard/automatic-build-finalization": "./src/lib/waveyard/automatic-build-finalization.ts",
     "./lib/waveyard/browser-waveform": "./src/lib/waveyard/browser-waveform.ts",

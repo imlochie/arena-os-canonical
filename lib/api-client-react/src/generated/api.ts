@@ -49,8 +49,9 @@ import type {
   LibraryAudioCaptureStopResponse,
   LibraryAudioCaptureTags,
   LibraryConversionInput,
+  LibraryConversionJob,
+  LibraryConversionJobsResponse,
   LibraryConversionOptionsResponse,
-  LibraryConversionResponse,
   LibraryTrackListResponse,
   LibraryTrackSeparationStartResponse,
   ReviewArcadeModRepository200,
@@ -1050,7 +1051,7 @@ export const getCreateLibraryConversionUrl = () => {
  * Converts only a device-uploaded local file after an explicit rights review. Protected subscription audio is not accessed.
  * @summary Convert an owner-uploaded local audio track
  */
-export const createLibraryConversion = async (libraryConversionInput: LibraryConversionInput, options?: Parameters<typeof customFetch>[1]): Promise<LibraryConversionResponse> => {
+export const createLibraryConversion = async (libraryConversionInput: LibraryConversionInput, options?: Parameters<typeof customFetch>[1]): Promise<LibraryConversionJob> => {
 
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
@@ -1066,7 +1067,7 @@ export const createLibraryConversion = async (libraryConversionInput: LibraryCon
     }
     return headers;
   };
-return customFetch<LibraryConversionResponse>(getCreateLibraryConversionUrl(),
+return customFetch<LibraryConversionJob>(getCreateLibraryConversionUrl(),
   {
     ...options,
     method: 'POST',
@@ -1126,6 +1127,160 @@ export const useCreateLibraryConversion = <TError = ErrorType<ApiError>,
       > => {
       return useMutation(getCreateLibraryConversionMutationOptions(options));
     }
+
+export const getListLibraryConversionJobsUrl = () => {
+
+
+
+
+  return `/api/library/conversions/jobs`
+}
+
+/**
+ * @summary List durable local audio conversion jobs
+ */
+export const listLibraryConversionJobs = async ( options?: Parameters<typeof customFetch>[1]): Promise<LibraryConversionJobsResponse> => {
+
+  return customFetch<LibraryConversionJobsResponse>(getListLibraryConversionJobsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListLibraryConversionJobsQueryKey = () => {
+    return [
+    `/api/library/conversions/jobs`
+    ] as const;
+    }
+
+
+export const getListLibraryConversionJobsQueryOptions = <TData = Awaited<ReturnType<typeof listLibraryConversionJobs>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listLibraryConversionJobs>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListLibraryConversionJobsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listLibraryConversionJobs>>> = ({ signal }) => listLibraryConversionJobs({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listLibraryConversionJobs>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListLibraryConversionJobsQueryResult = NonNullable<Awaited<ReturnType<typeof listLibraryConversionJobs>>>
+export type ListLibraryConversionJobsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List durable local audio conversion jobs
+ */
+
+export function useListLibraryConversionJobs<TData = Awaited<ReturnType<typeof listLibraryConversionJobs>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listLibraryConversionJobs>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListLibraryConversionJobsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetLibraryConversionJobUrl = (id: string,) => {
+
+
+
+
+  return `/api/library/conversions/jobs/${id}`
+}
+
+/**
+ * @summary Get a durable local audio conversion job
+ */
+export const getLibraryConversionJob = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<LibraryConversionJob> => {
+
+  return customFetch<LibraryConversionJob>(getGetLibraryConversionJobUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLibraryConversionJobQueryKey = (id: string,) => {
+    return [
+    `/api/library/conversions/jobs/${id}`
+    ] as const;
+    }
+
+
+export const getGetLibraryConversionJobQueryOptions = <TData = Awaited<ReturnType<typeof getLibraryConversionJob>>, TError = ErrorType<ApiError>>(id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryConversionJob>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLibraryConversionJobQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLibraryConversionJob>>> = ({ signal }) => getLibraryConversionJob(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLibraryConversionJob>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLibraryConversionJobQueryResult = NonNullable<Awaited<ReturnType<typeof getLibraryConversionJob>>>
+export type GetLibraryConversionJobQueryError = ErrorType<ApiError>
+
+
+/**
+ * @summary Get a durable local audio conversion job
+ */
+
+export function useGetLibraryConversionJob<TData = Awaited<ReturnType<typeof getLibraryConversionJob>>, TError = ErrorType<ApiError>>(
+ id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryConversionJob>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLibraryConversionJobQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getGetLibraryAudioCaptureOptionsUrl = (params?: GetLibraryAudioCaptureOptionsParams,) => {
   const normalizedParams = new URLSearchParams();

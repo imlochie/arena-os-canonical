@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type TrackOption = {
   id: string;
@@ -14,6 +14,22 @@ type FormatOption = {
   extension: string;
   lossy: boolean;
   available: boolean;
+};
+
+type ConversionJob = {
+  id: string;
+  originalTrackId: string;
+  format: string;
+  bitrate: number;
+  status: "queued" | "running" | "complete" | "failed";
+  stage: string;
+  progress: number;
+  attempts: number;
+  convertedTrackId: string | null;
+  verification: { warnings?: string[] } | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export function ConversionWorkbench({
@@ -30,6 +46,11 @@ export function ConversionWorkbench({
   const [rightsReviewed, setRightsReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<ConversionJob[]>([]);
+  const knownJobStatuses = useRef(new Map<string, ConversionJob["status"]>());
+  const onConvertedRef = useRef(onConverted);
+  const refreshJobsRef = useRef<() => void>(() => {});
+  onConvertedRef.current = onConverted;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -56,11 +77,64 @@ export function ConversionWorkbench({
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    let loading = false;
+    const refreshJobs = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const response = await fetch("/api/library/conversions/jobs", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? "Saved conversions could not be loaded.");
+        if (!Array.isArray(data.jobs)) throw new Error("The conversion service returned an invalid job list.");
+        const nextJobs = data.jobs as ConversionJob[];
+        let completedNewJob = false;
+        for (const job of nextJobs) {
+          if (job.status === "complete" && knownJobStatuses.current.get(job.id) !== "complete") {
+            completedNewJob = true;
+          }
+          knownJobStatuses.current.set(job.id, job.status);
+        }
+        setJobs((previous) => {
+          const fetchedIds = new Set(nextJobs.map((job) => job.id));
+          const recentActive = previous.filter((job) =>
+            (job.status === "queued" || job.status === "running") && !fetchedIds.has(job.id),
+          );
+          return [...recentActive, ...nextJobs];
+        });
+        if (completedNewJob) onConvertedRef.current();
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setMessage(error instanceof Error ? error.message : "Saved conversions could not be loaded.");
+        }
+      } finally {
+        loading = false;
+      }
+    };
+    refreshJobsRef.current = () => void refreshJobs();
+    void refreshJobs();
+    return () => {
+      controller.abort();
+      refreshJobsRef.current = () => {};
+    };
+  }, []);
+
+  const hasActiveJobs = jobs.some((job) => job.status === "queued" || job.status === "running");
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    const timer = window.setInterval(() => refreshJobsRef.current(), 2_000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveJobs]);
+
   const selectedFormat = formats.find((item) => item.id === format);
   const eligibleTracks = tracks.filter((track) => track.sourceAssetId);
 
-  const convert = async () => {
-    if (!selectedTrackId || !selectedFormat?.available || !rightsReviewed || busy) return;
+  const startConversion = async (trackId: string, selectedFormatId: string, selectedBitrate: number) => {
+    if (busy || !rightsReviewed) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -68,23 +142,33 @@ export function ConversionWorkbench({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          trackId: selectedTrackId,
-          format,
-          bitrate,
+          trackId,
+          format: selectedFormatId,
+          bitrate: selectedBitrate,
           rightsReviewed: true,
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error ?? `Conversion failed (${response.status}).`);
-      const warnings = Array.isArray(data.verification?.warnings) ? data.verification.warnings : [];
-      const warningText = warnings.length ? ` ${warnings.join(" ")}` : "";
-      setMessage(`${data.track?.title ?? "Converted audio"} was added to your library as ${String(format).toUpperCase()}.${warningText} Use “Back up local audio” to include it in a ZIP.`);
-      onConverted();
+      if (!response.ok) throw new Error(data.error ?? `Conversion could not be queued (${response.status}).`);
+      const job = data as ConversionJob;
+      knownJobStatuses.current.set(job.id, job.status);
+      setJobs((previous) => [job, ...previous.filter((item) => item.id !== job.id)]);
+      setMessage(job.status === "complete"
+        ? "This conversion is already complete and its track is in your library."
+        : job.status === "failed"
+          ? job.errorMessage ?? "This conversion failed. You can retry it below."
+          : "Conversion saved. You can leave this page and return while it runs.");
+      if (job.status === "complete") onConvertedRef.current();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Local audio conversion failed.");
+      setMessage(error instanceof Error ? error.message : "Local audio conversion could not be queued.");
     } finally {
       setBusy(false);
     }
+  };
+
+  const convert = async () => {
+    if (!selectedTrackId || !selectedFormat?.available || !rightsReviewed || busy) return;
+    await startConversion(selectedTrackId, format, bitrate);
   };
 
   return (
@@ -153,11 +237,49 @@ export function ConversionWorkbench({
           onClick={() => void convert()}
           disabled={busy || !selectedTrackId || !selectedFormat?.available || !rightsReviewed}
         >
-          {busy ? "Converting and verifying…" : "Convert local track"}
+          {busy ? "Saving conversion…" : "Convert local track"}
         </button>
       </div>
       <small>Only files uploaded from this device can be converted. Apple Music metadata snapshots contain catalog details only; protected subscription audio is not downloaded, decrypted, or converted.</small>
       {eligibleTracks.length === 0 && <small>Add an audio file to your library first.</small>}
+      {jobs.length > 0 && (
+        <div className="library-conversion-jobs" aria-label="Saved audio conversions">
+          <strong>Saved conversions</strong>
+          {jobs.map((job) => (
+            <article className="library-conversion-job" key={job.id}>
+              <div>
+                <strong>{tracks.find((track) => track.id === job.originalTrackId)?.title ?? "Local track"} → {job.format.toUpperCase()}</strong>
+                <span>{job.status === "running" ? `In progress · ${job.progress}% · ${job.stage}` : job.status === "queued" ? "Waiting to start" : job.status === "complete" ? "Complete · added to your library" : "Failed"}</span>
+              </div>
+              {(job.status === "queued" || job.status === "running") && (
+                <progress aria-label={`${job.format.toUpperCase()} conversion progress`} max={100} value={job.progress} />
+              )}
+              {job.status === "failed" && (
+                <>
+                  <small role="alert">{job.errorMessage ?? "Conversion failed."}</small>
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={busy || !rightsReviewed}
+                    onClick={() => {
+                      setSelectedTrackId(job.originalTrackId);
+                      setFormat(job.format);
+                      setBitrate(job.bitrate);
+                      void startConversion(job.originalTrackId, job.format, job.bitrate);
+                    }}
+                  >
+                    Retry conversion
+                  </button>
+                  {!rightsReviewed && <small>Confirm the authorization checkbox above before retrying.</small>}
+                </>
+              )}
+              {job.status === "complete" && job.verification?.warnings?.map((warning) => (
+                <small key={warning}>{warning}</small>
+              ))}
+            </article>
+          ))}
+        </div>
+      )}
       {message && <p className="library-message" role="status" aria-live="polite">{message}</p>}
     </section>
   );

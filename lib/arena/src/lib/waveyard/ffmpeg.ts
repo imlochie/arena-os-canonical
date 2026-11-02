@@ -134,7 +134,12 @@ export type ExecResult = { stdout: string; stderr: string };
 export async function execTool(
   tool: FfmpegTool,
   args: string[],
-  options: { timeoutMs?: number; signal?: AbortSignal; maxOutputBytes?: number } = {},
+  options: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    maxOutputBytes?: number;
+    onStdout?: (chunk: string) => void;
+  } = {},
 ): Promise<ExecResult> {
   const binary = await requireTool(tool);
   return new Promise<ExecResult>((resolve, reject) => {
@@ -166,7 +171,11 @@ export async function execTool(
         fail(new Error(`${tool} exceeded its diagnostic output limit.`));
         return;
       }
-      if (destination === "stdout") stdout += String(chunk);
+      if (destination === "stdout") {
+        const text = String(chunk);
+        stdout += text;
+        options.onStdout?.(text);
+      }
       else stderr += String(chunk);
     };
     const abort = () => fail(

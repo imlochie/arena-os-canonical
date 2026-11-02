@@ -35,10 +35,13 @@ test("converts and fully verifies a local audio file without changing its origin
       source,
     ]);
     const originalChecksum = await checksumFile(source);
-    const verified = await convertLocalAudio(source, output, { format: "flac", bitrate: 192 });
+    const reportedProgress: number[] = [];
+    const verified = await convertLocalAudio(source, output, { format: "flac", bitrate: 192 }, undefined, (percent) => reportedProgress.push(percent));
     const originalAfter = await checksumFile(source);
     const convertedMetadata = await probeAudio(output);
 
+    assert.ok(reportedProgress.length > 0, "FFmpeg progress should be reported while converting");
+    assert.deepEqual(reportedProgress, [...reportedProgress].sort((a, b) => a - b));
     assert.equal(originalAfter, originalChecksum, "the user's original must remain byte-identical");
     assert.equal(verified.codec, "flac");
     assert.equal(verified.durationSeconds, convertedMetadata.durationSeconds);

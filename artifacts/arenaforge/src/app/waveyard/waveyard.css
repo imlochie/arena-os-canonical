@@ -522,6 +522,12 @@
 .library-audio-backup p,.library-backup-note{color:var(--muted);font-size:11.5px;line-height:1.5;margin:4px 0 0}
 .library-audio-backup small{color:var(--muted);font-size:10.5px;line-height:1.5}
 .library-audio-backup-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.library-conversion-jobs{display:grid;gap:8px;padding-top:10px;border-top:1px solid var(--line)}
+.library-conversion-job{display:grid;gap:6px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.library-conversion-job>div{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.library-conversion-job>div span{color:var(--muted);font-size:11px}
+.library-conversion-job progress{width:100%;height:8px;accent-color:var(--acid)}
+.library-conversion-job .button{justify-self:start}
 .library-audio-restore{display:grid;gap:8px;padding-top:10px;border-top:1px solid var(--line)}
 .library-audio-restore-confirm{display:flex;align-items:flex-start;gap:8px;color:var(--muted);font-size:11px;line-height:1.45}
 .library-audio-restore-confirm input{margin:2px 0 0;accent-color:var(--acid)}

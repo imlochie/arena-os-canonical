@@ -434,6 +434,76 @@ export interface LibraryConversionResponse {
   notice: string;
 }
 
+export type LibraryConversionJobFormat = typeof LibraryConversionJobFormat[keyof typeof LibraryConversionJobFormat];
+
+
+export const LibraryConversionJobFormat = {
+  mp3: 'mp3',
+  aac: 'aac',
+  wav: 'wav',
+  flac: 'flac',
+  alac: 'alac',
+} as const;
+
+export type LibraryConversionJobBitrate = typeof LibraryConversionJobBitrate[keyof typeof LibraryConversionJobBitrate];
+
+
+export const LibraryConversionJobBitrate = {
+  NUMBER_128: 128,
+  NUMBER_192: 192,
+  NUMBER_256: 256,
+  NUMBER_320: 320,
+} as const;
+
+export type LibraryConversionJobStatus = typeof LibraryConversionJobStatus[keyof typeof LibraryConversionJobStatus];
+
+
+export const LibraryConversionJobStatus = {
+  queued: 'queued',
+  running: 'running',
+  complete: 'complete',
+  failed: 'failed',
+} as const;
+
+export type LibraryConversionJobStage = typeof LibraryConversionJobStage[keyof typeof LibraryConversionJobStage];
+
+
+export const LibraryConversionJobStage = {
+  queued: 'queued',
+  preparing: 'preparing',
+  converting: 'converting',
+  importing: 'importing',
+  complete: 'complete',
+  failed: 'failed',
+} as const;
+
+export interface LibraryConversionJob {
+  id: string;
+  originalTrackId: string;
+  format: LibraryConversionJobFormat;
+  bitrate: LibraryConversionJobBitrate;
+  status: LibraryConversionJobStatus;
+  stage: LibraryConversionJobStage;
+  /**
+     * @minimum 0
+     * @maximum 100
+     */
+  progress: number;
+  /** @minimum 0 */
+  attempts: number;
+  /** @nullable */
+  convertedTrackId: string | null;
+  verification: LibraryConversionVerification | null;
+  /** @nullable */
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LibraryConversionJobsResponse {
+  jobs: LibraryConversionJob[];
+}
+
 export interface LibraryAudioCaptureDevice {
   id: string;
   name: string;

@@ -782,6 +782,32 @@ export const tracks = pgTable("wy_tracks", {
   index("wy_tracks_project_id_idx").on(table.projectId),
 ]);
 
+/** Durable status for a local-audio conversion. The output bytes stay in
+ * private object storage through the normal library intake path. */
+export const libraryConversionJobs = pgTable("wy_library_conversion_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  originalTrackId: uuid("original_track_id").notNull(),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  format: text("format").notNull(),
+  bitrate: integer("bitrate").notNull().default(192),
+  idempotencyKey: text("idempotency_key").notNull(),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  progress: integer("progress").notNull().default(0),
+  attempts: integer("attempts").notNull().default(0),
+  convertedTrackId: uuid("converted_track_id").references(() => tracks.id, { onDelete: "set null" }),
+  verification: text("verification"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("wy_library_conversion_jobs_idempotency_unique").on(table.idempotencyKey),
+  index("wy_library_conversion_jobs_owner_updated_idx").on(table.ownerId, table.updatedAt),
+  index("wy_library_conversion_jobs_status_idx").on(table.status),
+]);
+
 /** Persistent smart collection: a saved rule set evaluated live against the
  * library (lightcraft-style). Rules are stored as JSON in the
  * waveyard-collections-v1 rule vocabulary. */

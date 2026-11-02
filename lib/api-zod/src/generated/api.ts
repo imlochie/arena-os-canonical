@@ -435,57 +435,24 @@ export const CreateLibraryConversionBody = zod.object({
   "rightsReviewed": zod.literal(true)
 })
 
-export const createLibraryConversionResponseTrackRatingMin = 0;
-export const createLibraryConversionResponseTrackRatingMax = 5;
+export const createLibraryConversionResponseProgressMin = 0;
+export const createLibraryConversionResponseProgressMax = 100;
 
-export const createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMin = 0;
-export const createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMax = 100;
+export const createLibraryConversionResponseAttemptsMin = 0;
 
 
 
 export const CreateLibraryConversionResponse = zod.object({
-  "track": zod.object({
   "id": zod.string().uuid(),
-  "title": zod.string(),
-  "artist": zod.string(),
-  "album": zod.string(),
-  "durationSeconds": zod.number(),
-  "playCount": zod.number().int(),
-  "rating": zod.number().int().min(createLibraryConversionResponseTrackRatingMin).max(createLibraryConversionResponseTrackRatingMax),
-  "labels": zod.array(zod.string()),
-  "lastPlayedAt": zod.coerce.date().nullable(),
-  "addedAt": zod.coerce.date(),
-  "stemAvailability": zod.union([zod.object({
-  "status": zod.enum(['separated']),
-  "stemCount": zod.number().int(),
-  "stemTypes": zod.array(zod.string())
-}),zod.object({
-  "status": zod.enum(['source-only', 'not-started', 'unavailable']),
-  "reason": zod.string()
-}),zod.object({
-  "status": zod.enum(['processing']),
-  "reason": zod.string(),
-  "stage": zod.string().optional(),
-  "progress": zod.object({
-  "percent": zod.number().int().min(createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMin).max(createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMax),
-  "phase": zod.string().optional()
-}).optional()
-}),zod.object({
-  "status": zod.enum(['rejected', 'failed']),
-  "reason": zod.string(),
-  "retryJobId": zod.string().uuid()
-})]),
-  "analysis": zod.object({
-  "status": zod.string(),
-  "bpm": zod.number().nullable(),
-  "musicalKey": zod.string().nullable()
-}).nullish(),
-  "studioProjectId": zod.string().uuid()
-}),
-  "created": zod.boolean(),
   "originalTrackId": zod.string().uuid(),
   "format": zod.enum(['mp3', 'aac', 'wav', 'flac', 'alac']),
-  "verification": zod.object({
+  "bitrate": zod.union([zod.literal(128),zod.literal(192),zod.literal(256),zod.literal(320)]),
+  "status": zod.enum(['queued', 'running', 'complete', 'failed']),
+  "stage": zod.enum(['queued', 'preparing', 'converting', 'importing', 'complete', 'failed']),
+  "progress": zod.number().int().min(createLibraryConversionResponseProgressMin).max(createLibraryConversionResponseProgressMax),
+  "attempts": zod.number().int().min(createLibraryConversionResponseAttemptsMin),
+  "convertedTrackId": zod.string().uuid().nullable(),
+  "verification": zod.union([zod.object({
   "checksumSha256": zod.string(),
   "fileSizeBytes": zod.number().int(),
   "durationSeconds": zod.number(),
@@ -493,8 +460,86 @@ export const CreateLibraryConversionResponse = zod.object({
   "sampleRate": zod.number().int(),
   "channels": zod.number().int(),
   "warnings": zod.array(zod.string())
-}),
-  "notice": zod.string()
+}),zod.null()]),
+  "errorMessage": zod.string().nullable(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary List durable local audio conversion jobs
+ */
+export const listLibraryConversionJobsResponseJobsItemProgressMin = 0;
+export const listLibraryConversionJobsResponseJobsItemProgressMax = 100;
+
+export const listLibraryConversionJobsResponseJobsItemAttemptsMin = 0;
+
+
+
+export const ListLibraryConversionJobsResponse = zod.object({
+  "jobs": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "originalTrackId": zod.string().uuid(),
+  "format": zod.enum(['mp3', 'aac', 'wav', 'flac', 'alac']),
+  "bitrate": zod.union([zod.literal(128),zod.literal(192),zod.literal(256),zod.literal(320)]),
+  "status": zod.enum(['queued', 'running', 'complete', 'failed']),
+  "stage": zod.enum(['queued', 'preparing', 'converting', 'importing', 'complete', 'failed']),
+  "progress": zod.number().int().min(listLibraryConversionJobsResponseJobsItemProgressMin).max(listLibraryConversionJobsResponseJobsItemProgressMax),
+  "attempts": zod.number().int().min(listLibraryConversionJobsResponseJobsItemAttemptsMin),
+  "convertedTrackId": zod.string().uuid().nullable(),
+  "verification": zod.union([zod.object({
+  "checksumSha256": zod.string(),
+  "fileSizeBytes": zod.number().int(),
+  "durationSeconds": zod.number(),
+  "codec": zod.string(),
+  "sampleRate": zod.number().int(),
+  "channels": zod.number().int(),
+  "warnings": zod.array(zod.string())
+}),zod.null()]),
+  "errorMessage": zod.string().nullable(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+}))
+})
+
+
+/**
+ * @summary Get a durable local audio conversion job
+ */
+export const GetLibraryConversionJobParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const getLibraryConversionJobResponseProgressMin = 0;
+export const getLibraryConversionJobResponseProgressMax = 100;
+
+export const getLibraryConversionJobResponseAttemptsMin = 0;
+
+
+
+export const GetLibraryConversionJobResponse = zod.object({
+  "id": zod.string().uuid(),
+  "originalTrackId": zod.string().uuid(),
+  "format": zod.enum(['mp3', 'aac', 'wav', 'flac', 'alac']),
+  "bitrate": zod.union([zod.literal(128),zod.literal(192),zod.literal(256),zod.literal(320)]),
+  "status": zod.enum(['queued', 'running', 'complete', 'failed']),
+  "stage": zod.enum(['queued', 'preparing', 'converting', 'importing', 'complete', 'failed']),
+  "progress": zod.number().int().min(getLibraryConversionJobResponseProgressMin).max(getLibraryConversionJobResponseProgressMax),
+  "attempts": zod.number().int().min(getLibraryConversionJobResponseAttemptsMin),
+  "convertedTrackId": zod.string().uuid().nullable(),
+  "verification": zod.union([zod.object({
+  "checksumSha256": zod.string(),
+  "fileSizeBytes": zod.number().int(),
+  "durationSeconds": zod.number(),
+  "codec": zod.string(),
+  "sampleRate": zod.number().int(),
+  "channels": zod.number().int(),
+  "warnings": zod.array(zod.string())
+}),zod.null()]),
+  "errorMessage": zod.string().nullable(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
 })
 
 

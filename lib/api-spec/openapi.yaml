@@ -276,17 +276,17 @@ paths:
               $ref: "#/components/schemas/LibraryConversionInput"
       responses:
         "200":
-          description: Existing matching converted track returned
+          description: Existing matching conversion job returned
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LibraryConversionResponse"
-        "201":
-          description: Converted and verified copy added to the library
+                $ref: "#/components/schemas/LibraryConversionJob"
+        "202":
+          description: Conversion job accepted or already in progress
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LibraryConversionResponse"
+                $ref: "#/components/schemas/LibraryConversionJob"
         "403":
           description: Source is not a device-uploaded local audio file
           content:
@@ -295,6 +295,43 @@ paths:
                 $ref: "#/components/schemas/ApiError"
         "404":
           description: Track not found for the current owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /library/conversions/jobs:
+    get:
+      operationId: listLibraryConversionJobs
+      tags: [waveyard]
+      summary: List durable local audio conversion jobs
+      responses:
+        "200":
+          description: Conversion jobs owned by the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryConversionJobsResponse"
+  /library/conversions/jobs/{id}:
+    get:
+      operationId: getLibraryConversionJob
+      tags: [waveyard]
+      summary: Get a durable local audio conversion job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Conversion job owned by the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryConversionJob"
+        "404":
+          description: Job not found for the current owner
           content:
             application/json:
               schema:
@@ -940,6 +977,60 @@ components:
         notice:
           type: string
       required: [track, created, originalTrackId, format, verification, notice]
+    LibraryConversionJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        originalTrackId:
+          type: string
+          format: uuid
+        format:
+          type: string
+          enum: [mp3, aac, wav, flac, alac]
+        bitrate:
+          type: integer
+          enum: [128, 192, 256, 320]
+        status:
+          type: string
+          enum: [queued, running, complete, failed]
+        stage:
+          type: string
+          enum: [queued, preparing, converting, importing, complete, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        attempts:
+          type: integer
+          minimum: 0
+        convertedTrackId:
+          type: string
+          format: uuid
+          nullable: true
+        verification:
+          allOf:
+            - $ref: "#/components/schemas/LibraryConversionVerification"
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, originalTrackId, format, bitrate, status, stage, progress, attempts, convertedTrackId, verification, errorMessage, createdAt, updatedAt]
+    LibraryConversionJobsResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryConversionJob"
+      required: [jobs]
     LibraryAudioCaptureDevice:
       type: object
       properties:

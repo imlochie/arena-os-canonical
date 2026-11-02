@@ -11,6 +11,10 @@ import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
 import { runWaveyardStartupRecovery, waitForServerListening } from "./lib/waveyard-startup-recovery";
 import { shutdownAudioCaptures } from "./lib/waveyard/audio-capture-manager";
+import {
+  startLocalLibraryConversionWorker,
+  stopLocalLibraryConversionWorker,
+} from "@workspace/arena/lib/waveyard/conversion/jobs";
 
 const rawPort = process.env["PORT"];
 
@@ -57,6 +61,7 @@ if (worker) {
     waveformQueueFailures: waveformRecovery.failedJobIds.length,
   }, "Waveyard local processors ready");
 }
+await startLocalLibraryConversionWorker();
 
 
 if (Number.isNaN(port) || port <= 0) {
@@ -120,6 +125,7 @@ async function shutdown() {
       logger.warn(captureShutdown, "A Waveyard capture host required forced shutdown");
     }
 
+    await stopLocalLibraryConversionWorker();
     let serverCloseTimer: NodeJS.Timeout | undefined;
     const requestsDrained = await Promise.race([
       serverClosed.then(() => true),

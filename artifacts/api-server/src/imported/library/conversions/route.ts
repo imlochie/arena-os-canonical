@@ -1,26 +1,24 @@
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { extname, join } from "node:path";
-import { tmpdir } from "node:os";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
 import {
   CreateLibraryConversionBody,
-  CreateLibraryConversionResponse,
   GetLibraryConversionOptionsResponse,
 } from "@workspace/api-zod";
-import { projects, sourceAcquisitions, sourceAssets, tracks } from "@workspace/db/waveyardSchema";
+import { libraryConversionJobs, projects, sourceAcquisitions, sourceAssets, tracks } from "@workspace/db/waveyardSchema";
 import {
   CONVERSION_FORMATS,
   conversionCapabilities,
-  convertLocalAudio,
   type ConversionFormat,
 } from "@workspace/arena/lib/waveyard/conversion/engine";
-import { addTrackFromAudioFile } from "@workspace/arena/lib/waveyard/library/service";
-import { acceptedAudioFilename, checksumFile, MAX_UPLOAD_BYTES, sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
+import {
+  wakeLocalLibraryConversionWorker,
+} from "@workspace/arena/lib/waveyard/conversion/jobs";
+import { libraryConversionIdempotencyKey } from "@workspace/arena/lib/waveyard/conversion/idempotency";
+import { acceptedAudioFilename, MAX_UPLOAD_BYTES } from "@workspace/arena/lib/waveyard/audio";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
+import { serializeLibraryConversionJob } from "./job-response";
 
 export const runtime = "nodejs";
 
@@ -28,7 +26,7 @@ export async function GET() {
   try {
     return Response.json(GetLibraryConversionOptionsResponse.parse({
       formats: await conversionCapabilities(),
-      sourcePolicy: "Only audio files uploaded from this device can be converted. Protected subscription streams are not available.",
+      sourcePolicy: "Only files uploaded from this device can be converted. Protected subscription audio is not available.",
     }));
   } catch (error) {
     return Response.json(GetLibraryConversionOptionsResponse.parse({
@@ -43,14 +41,10 @@ export async function GET() {
     }));
   }
 }
-
 export async function POST(request: Request) {
-  let temporaryDirectory: string | undefined;
   try {
     const parsed = CreateLibraryConversionBody.safeParse(await request.json());
-    if (!parsed.success) {
-      return Response.json({ error: parsed.error.message }, { status: 400 });
-    }
+    if (!parsed.success) return Response.json({ error: parsed.error.message }, { status: 400 });
     const input = parsed.data;
     const user = await requireUser();
     const [row] = await db
@@ -82,7 +76,7 @@ export async function POST(request: Request) {
       .limit(1);
     if (acquisition?.method !== "local-upload") {
       return Response.json({
-        error: "Conversion is limited to audio files uploaded from this device. Authorized links and protected subscription streams are not converted.",
+        error: "Conversion is limited to files uploaded from this device. Authorized links and protected subscription streams are not converted.",
       }, { status: 403 });
     }
     if (
@@ -94,52 +88,64 @@ export async function POST(request: Request) {
     ) {
       return Response.json({ error: "The stored original is not a supported, verified local audio file." }, { status: 415 });
     }
-
-    const storage = getStorage();
-    if (!(await storage.exists(row.source.storageKey))) {
+    if (!(await getStorage().exists(row.source.storageKey))) {
       return Response.json({ error: "The original audio is missing from private storage; no conversion was started." }, { status: 410 });
     }
 
-    temporaryDirectory = await mkdtemp(join(tmpdir(), "waveyard-conversion-"));
-    const sourcePath = join(temporaryDirectory, `${randomUUID()}${extname(row.source.originalFilename).toLowerCase()}`);
-    const format = CONVERSION_FORMATS[input.format];
-    const outputPath = join(temporaryDirectory, `${randomUUID()}.${format.extension}`);
-    await storage.getToFile(row.source.storageKey, sourcePath);
-    if (await checksumFile(sourcePath) !== row.source.checksumSha256.toLowerCase()) {
-      return Response.json({ error: "The stored original failed its checksum check; no conversion was started." }, { status: 409 });
+    const format = input.format as ConversionFormat;
+    const idempotencyKey = libraryConversionIdempotencyKey({
+      ownerId: user.id,
+      originalTrackId: row.trackId,
+      sourceAssetId: row.source.id,
+      checksumSha256: row.source.checksumSha256,
+      format,
+      bitrate: input.bitrate,
+    });
+    let [job] = await db.insert(libraryConversionJobs).values({
+      ownerId: user.id,
+      originalTrackId: row.trackId,
+      sourceAssetId: row.source.id,
+      format,
+      bitrate: input.bitrate,
+      idempotencyKey,
+    }).onConflictDoNothing({ target: libraryConversionJobs.idempotencyKey }).returning();
+
+    if (!job) {
+      [job] = await db.select().from(libraryConversionJobs)
+        .where(and(
+          eq(libraryConversionJobs.idempotencyKey, idempotencyKey),
+          eq(libraryConversionJobs.ownerId, user.id),
+        )).limit(1);
+      if (!job) throw new Error("The conversion job could not be recovered after submission.");
+      if (job.status === "failed") {
+        [job] = await db.update(libraryConversionJobs).set({
+          status: "queued",
+          stage: "queued",
+          progress: 0,
+          errorMessage: null,
+          completedAt: null,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(libraryConversionJobs.id, job.id),
+          eq(libraryConversionJobs.status, "failed"),
+        )).returning();
+        if (!job) {
+          [job] = await db.select().from(libraryConversionJobs)
+            .where(and(
+              eq(libraryConversionJobs.idempotencyKey, idempotencyKey),
+              eq(libraryConversionJobs.ownerId, user.id),
+            )).limit(1);
+        }
+      }
     }
 
-    const verification = await convertLocalAudio(
-      sourcePath,
-      outputPath,
-      { format: input.format as ConversionFormat, bitrate: input.bitrate },
-      request.signal,
-    );
-    const outputName = `${sanitizedFilename(row.title)}.converted.${format.extension}`;
-    const result = await addTrackFromAudioFile({
-      ownerId: user.id,
-      filePath: outputPath,
-      filename: outputName,
-      mimeType: format.mimeType,
-      title: row.title,
-      artist: row.artist,
-      album: row.album,
-      prepareSeparation: false,
-    });
-
-    return Response.json(CreateLibraryConversionResponse.parse({
-      track: result.track,
-      created: result.created,
-      originalTrackId: row.trackId,
-      format: input.format,
-      verification,
-      notice: "The verified converted copy is in your library. The original was not changed. You can include the new track in a local-audio ZIP backup.",
-    }), { status: result.created ? 201 : 200 });
+    if (!job) throw new Error("The conversion job was not saved.");
+    if (job.status === "queued") wakeLocalLibraryConversionWorker();
+    return Response.json(serializeLibraryConversionJob(job), { status: job.status === "complete" ? 200 : 202 });
   } catch (error) {
     if (error instanceof Response) return error;
-    const message = error instanceof Error ? error.message : "Local audio conversion failed.";
-    return Response.json({ error: message }, { status: 422 });
-  } finally {
-    if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
+    return Response.json({
+      error: error instanceof Error ? error.message : "Local audio conversion could not be queued.",
+    }, { status: 422 });
   }
 }
