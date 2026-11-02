@@ -182,7 +182,7 @@ try {
   let page = await context.newPage();
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
   await context.addInitScript(({ fixtureSessionId, probeAutoFades }) => {
-    window.audioProbe = { sources: [], buffers: [], masterGains: [], outputAnalyzers: [] };
+    window.audioProbe = { sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [] };
     window.liveStemTimings = [];
     window.liveStemSelectionStart = null;
     window.liveStemObservedAudibleAt = null;
@@ -260,6 +260,21 @@ try {
         window.audioProbe.buffers.push(node); return node;
       }
     };
+    if (window.AudioWorkletNode) {
+      const NativeAudioWorkletNode = window.AudioWorkletNode;
+      window.AudioWorkletNode = class extends NativeAudioWorkletNode {
+        constructor(...args) {
+          super(...args);
+          this.probeConnections = [];
+          const connect = this.connect.bind(this);
+          this.connect = (target, ...connectArgs) => {
+            this.probeConnections.push(target);
+            return connect(target, ...connectArgs);
+          };
+          window.audioProbe.worklets.push(this);
+        }
+      };
+    }
   }, { fixtureSessionId: sessionId, probeAutoFades: automaticFadesOnly });
   let failAsset = null;
   let failedAssetRequests = 0;
@@ -1878,6 +1893,50 @@ try {
   const resumedOffsetError = Math.abs(resumed.offset - ((resumed.recipientTimeAtStart ?? 0) % resumed.duration));
   assert.ok(Number.isFinite(resumed.recipientTimeAtStart) && resumedOffsetError < 0.15,
     `donor resumes from the recipient's live clock: ${JSON.stringify(resumed)}`);
+
+  const pitchLockButton = current.getByTestId("session-pitch-lock");
+  const workletsBeforePitchLock = await page.evaluate(() => window.audioProbe.worklets.length);
+  const speedSlider = current.getByTestId("session-playback-speed");
+  await speedSlider.evaluate(element => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(element, "1.1");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="session-speed-value"]')?.textContent === "1.10×",
+  );
+  await pitchLockButton.click();
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="session-pitch-lock"]');
+    return button?.getAttribute("aria-pressed") === "true"
+      && window.audioProbe.worklets.some(node => node.probeConnections.length > 0)
+      && Array.from(document.querySelectorAll('[data-role="current"] audio'))
+        .every(audio => audio.preservesPitch === true);
+  });
+  const pitchLockState = await page.evaluate(() => ({
+    pressed: document.querySelector('[data-testid="session-pitch-lock"]')?.getAttribute("aria-pressed"),
+    speed: document.querySelector('[data-testid="session-speed-value"]')?.textContent,
+    activeWorklets: window.audioProbe.worklets.filter(node => node.probeConnections.length > 0).length,
+    originalPitchPreserving: Array.from(document.querySelectorAll('[data-role="current"] audio'))
+      .every(audio => audio.preservesPitch === true),
+  }));
+  assert.equal(pitchLockState.pressed, "true");
+  assert.equal(pitchLockState.speed, "1.10×");
+  assert.ok(pitchLockState.activeWorklets > workletsBeforePitchLock,
+    `the live donor moved into the worklet pitch-preserving graph: ${JSON.stringify(pitchLockState)}`);
+  assert.ok(pitchLockState.originalPitchPreserving,
+    "the original media stems also keep their pitch at non-unit playback speed");
+  await pitchLockButton.click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="session-pitch-lock"]')?.getAttribute("aria-pressed") === "false"
+    && Array.from(document.querySelectorAll('[data-role="current"] audio'))
+      .every(audio => audio.preservesPitch === false),
+  );
+  await current.getByTestId("session-speed-reset").click();
+  assert.equal(await current.getByTestId("session-speed-value").innerText(), "1.00×");
+  console.log("PASS: pitch lock preserves original and live-swapped stem pitch while speed changes");
+
   await current.getByTestId("restore-live-swap-vocals").click();
   await page.waitForTimeout(400);
   const originalGain = await page.evaluate((trackId) =>

@@ -1,3 +1,5 @@
+import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
+
 export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
 export const SESSION_PLAYBACK_RATE_MIN = 0.8;
 export const SESSION_PLAYBACK_RATE_MAX = 1.2;
@@ -89,7 +91,10 @@ function ensureLiveStemWorklet(context: AudioContext) {
   }
   let loading = workletModules.get(context);
   if (!loading) {
-    loading = context.audioWorklet.addModule(new URL("./live-stem-worklet.ts", import.meta.url));
+    loading = context.audioWorklet.addModule(liveStemWorkletUrl).catch((error) => {
+      workletModules.delete(context);
+      throw error;
+    });
     workletModules.set(context, loading);
   }
   return loading;
@@ -192,11 +197,17 @@ export class LiveStemLayers {
     if (!enabled) {
       this.pitchPreserving = false;
       for (const layer of this.layers.values()) {
-        if (layer.sourceMode === "worklet") layer.source?.port.postMessage({ type: "pitch", enabled: false });
+        if (layer.sourceMode === "worklet" && layer.source) {
+          (layer.source as AudioWorkletNode).port.postMessage({ type: "pitch", enabled: false });
+        }
       }
       return;
     }
 
+    if (this.layers.size === 0) {
+      this.pitchPreserving = true;
+      return;
+    }
     const context = this.context();
     await ensureLiveStemWorklet(context);
     const migrated: Array<{ layer: Layer; source: AudioWorkletNode }> = [];
@@ -221,7 +232,7 @@ export class LiveStemLayers {
           nextInput,
           offset,
           !media.paused && !media.ended,
-          false,
+          true,
         );
       } catch (error) {
         nextInput.disconnect();
@@ -312,14 +323,14 @@ export class LiveStemLayers {
       numberOfOutputs: 1,
       outputChannelCount: [2],
     });
-    node.connect(destination);
-    const channels = [
-      Float32Array.from(buffer.getChannelData(0)),
-      buffer.numberOfChannels > 1
-        ? Float32Array.from(buffer.getChannelData(1))
-        : Float32Array.from(buffer.getChannelData(0)),
-    ];
     try {
+      node.connect(destination);
+      const channels = [
+        Float32Array.from(buffer.getChannelData(0)),
+        buffer.numberOfChannels > 1
+          ? Float32Array.from(buffer.getChannelData(1))
+          : Float32Array.from(buffer.getChannelData(0)),
+      ];
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => finish(new Error("Pitch lock did not start in time.")), WORKLET_READY_TIMEOUT_MS);
         const finish = (error?: Error) => {
@@ -430,6 +441,7 @@ export class LiveStemLayers {
   private rememberRecent(layer: Layer) {
     const key = this.preparedKey(layer.url, layer.tempoStretchRatio);
     this.discardRecent(key);
+    if (!layer.buffer) return;
     const bytes = layer.buffer.length * layer.buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT;
     // Keep oversized audio available to its live layer, but don't retain it
     // after that layer is replaced.
@@ -628,6 +640,7 @@ export class LiveStemLayers {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
+    let replacementInput: GainNode | null = null;
     try {
       const deadline = new Promise<never>((_resolve, reject) => {
         onAbort = () => reject(new DOMException("Live stem preparation was cancelled.", "AbortError"));
@@ -647,10 +660,21 @@ export class LiveStemLayers {
       const channel = this.channel(id);
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
       const input = ctx.createGain();
+      replacementInput = input;
       input.gain.value = 0;
       input.connect(channel.gain);
-      const layer: Layer = { url, tempoStretchRatio, buffer: prepared.buffer, input, source: null, timing: prepared };
-      this.start(layer, channel);
+      const layer: Layer = {
+        url,
+        tempoStretchRatio,
+        buffer: prepared.buffer,
+        duration: prepared.buffer.duration,
+        sampleRate: prepared.buffer.sampleRate,
+        input,
+        source: null,
+        sourceMode: null,
+        timing: prepared,
+      };
+      await this.start(layer, channel);
       this.layers.set(id, layer);
       this.ramp(input, 1);
       this.ramp(channel.inputGain, 0);
@@ -658,6 +682,7 @@ export class LiveStemLayers {
       if (previous) this.retire(previous);
       return undefined;
     } catch (error) {
+      replacementInput?.disconnect();
       if (timedOut) throw new LiveStemSwitchTimeoutError();
       if (!operation.controller.signal.aborted) throw error;
       return false;
@@ -673,14 +698,15 @@ export class LiveStemLayers {
       const layer = this.layers.get(id);
       const channel = layer && this.channel(id);
       if (layer && channel) {
-        this.start(layer, channel);
-        if (layer.source) this.reportAudible(layer);
+        void this.start(layer, channel).then(() => {
+          if (layer.source) this.reportAudible(layer);
+        }).catch(() => undefined);
       }
     }
   }
 
   pause() {
-    for (const layer of [...this.layers.values(), ...this.retired]) this.stop(layer);
+    for (const layer of [...this.layers.values(), ...this.retired]) this.pauseLayer(layer);
   }
 
   remove(id: string) {
