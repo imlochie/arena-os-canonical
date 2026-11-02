@@ -1164,14 +1164,15 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   await sessions.deleteSession(OWNER, created.id);
 });
 
-test("Studio reload routes keep vocals and drums linked to distinct donor sources", async () => {
+test("Studio reload routes preserve distinct donors after blocked library deletion", async () => {
   // Real database, private WAV fixtures, service mutations, and production GET
   // handlers. These tones test routing/persistence, not separation quality.
+  const routeOwner = (await import("../local-context")).LOCAL_OWNER_ID;
   const seed = async (name: string, frequency: number, types: string[]) => {
     const filePath = path.join(root!, `${name}.wav`);
     writeWav(filePath, 1, frequency);
     const { track } = await service.addTrackFromAudioFile({
-      ownerId: OWNER, filePath, filename: `${name}.wav`, mimeType: "audio/wav",
+      ownerId: routeOwner, filePath, filename: `${name}.wav`, mimeType: "audio/wav",
     });
     const [row] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id));
     const [job] = await db.db.select().from(schema.processingJobs)
@@ -1205,9 +1206,9 @@ test("Studio reload routes keep vocals and drums linked to distinct donor source
   const vocals = await seed("Studio route vocal donor", 523, ["vocals"]);
   const drums = await seed("Studio route drum donor", 733, ["drums"]);
   assert.notEqual(vocals.sourceId, drums.sourceId);
-  const session = await sessions.createSession(OWNER, "Distinct donor route reload");
+  const session = await sessions.createSession(routeOwner, "Distinct donor route reload");
   const detail = await sessions.addTrackToSession({
-    ownerId: OWNER, sessionId: session.id, trackId: base.track.id,
+    ownerId: routeOwner, sessionId: session.id, trackId: base.track.id,
   });
   const sessionTrackId = detail.tracks[0].id;
   const expected = [
@@ -1216,11 +1217,11 @@ test("Studio reload routes keep vocals and drums linked to distinct donor source
   ];
   for (const { type, donor } of expected) {
     await sessions.recordStemSwap({
-      ownerId: OWNER, sessionId: session.id, sessionTrackId,
+      ownerId: routeOwner, sessionId: session.id, sessionTrackId,
       stemType: type as "vocals" | "drums", toTrackId: donor.track.id, atSeconds: 0,
     });
   }
-  const handoff = await sessions.sendSessionToStudio(OWNER, session.id, [sessionTrackId], [
+  const handoff = await sessions.sendSessionToStudio(routeOwner, session.id, [sessionTrackId], [
     { sessionTrackId, stemMix: { vocals: 0.72, drums: 0.37 } },
   ]);
   assert.equal(handoff.preservedSwapCount, 2);
@@ -1299,9 +1300,58 @@ test("Studio reload routes keep vocals and drums linked to distinct donor source
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
   }), remixParams);
   assert.equal(saveResponse.status, 200, "a handed-off arrangement remains editable through the real API");
+  const savedBeforeDeletion = await (await remixRoute.GET(
+    new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
+  )).json();
+  const tracksBeforeDeletion = await db.db.select().from(schema.tracks);
+  const deletionRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/library/tracks/[id]/route.ts", import.meta.url,
+  ).href);
+  for (const { donor, type } of expected) {
+    const response = await deletionRoute.DELETE(
+      new Request(`http://localhost/api/library/tracks/${donor.track.id}`, { method: "DELETE" }),
+      { params: Promise.resolve({ id: donor.track.id }) },
+    );
+    assert.equal(response.status, 409, `${type} donor deletion is blocked explicitly`);
+    const refusal = await response.json();
+    assert.equal(refusal.errorCode, "LIBRARY_AUDIO_IN_USE");
+    assert.equal(refusal.audioPreserved, true);
+    assert.match(refusal.error, /Open Studio/);
+    assert.ok(refusal.studioProjects.some((project: { id: string; name: string }) =>
+      project.id === handoff.projectId && project.name.length > 0),
+    "the refusal identifies the saved mix that requires this song");
+    assert.equal(await service.getTrackDeletionProtection(OTHER, donor.track.id), null,
+      "another owner cannot inspect this song's dependencies");
+    const stem = stemsBefore.find(row => row.id === donor.stemIds.get(type))!;
+    const restored = path.join(root!, `retained-${type}.wav`);
+    await getStorage().getToFile(stem.storageKey, restored);
+    assert.equal(await checksumFile(restored), stem.checksumSha256, "the exact donor WAV bytes survive");
+  }
+  const unsupported = await deletionRoute.DELETE(
+    new Request(`http://localhost/api/library/tracks/${base.track.id}`, { method: "DELETE" }),
+    { params: Promise.resolve({ id: base.track.id }) },
+  );
+  assert.equal(unsupported.status, 405, "do not invent destructive deletion for an unreferenced song");
+  assert.equal((await unsupported.json()).errorCode, "LIBRARY_AUDIO_DELETION_UNAVAILABLE");
+  assert.equal(unsupported.headers.get("allow"), "GET, PATCH");
+  const missing = await deletionRoute.DELETE(
+    new Request("http://localhost/api/library/tracks/missing", { method: "DELETE" }),
+    { params: Promise.resolve({ id: randomUUID() }) },
+  );
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await db.db.select().from(schema.tracks), tracksBeforeDeletion,
+    "both referenced donors and every unrelated library song remain unchanged");
   const reopened = await (await remixRoute.GET(
     new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
   )).json();
+  assert.deepEqual(reopened.tracks, savedBeforeDeletion.tracks, "neither saved lane nor its clips silently disappears");
+  const projectAfterDeletion = await (await projectRoute.GET(
+    new Request(`http://localhost/api/waveyard/projects/${handoff.projectId}`),
+    { params: Promise.resolve({ id: handoff.projectId }) },
+  )).json();
+  assert.deepEqual(new Set(projectAfterDeletion.stems.map((stem: { id: string }) => stem.id)),
+    new Set(expected.map(({ donor, type }) => donor.stemIds.get(type))),
+    "the project reload still resolves both distinct donor assets");
   const editedTrack = reopened.tracks.find((track: { id: string }) => track.id === editedTrackId);
   assert.equal(editedTrack.volume, 0.61, "track level survives a fresh database-backed read");
   assert.equal(editedTrack.clips[0].timelineStartMs, beforeEdit.tracks[0].clips[0].timelineStartMs + 250,
@@ -1309,7 +1359,28 @@ test("Studio reload routes keep vocals and drums linked to distinct donor source
   assert.equal(editedTrack.stemAssetId, beforeEdit.tracks[0].stemAssetId, "editing keeps the exact donor asset");
   assert.deepEqual(await db.db.select().from(schema.sourceAssets), sourcesBefore, "Studio edits do not mutate original source rows");
   assert.deepEqual(await db.db.select().from(schema.stemAssets), stemsBefore, "Studio edits do not mutate original stem rows");
-  await sessions.deleteSession(OWNER, session.id);
+  // A clip may use a different asset from its lane's default. Such a donor
+  // remains protected even when no remix_tracks row points directly to it.
+  const drumLane = reopened.tracks.find((lane: { stemAssetId: string }) =>
+    lane.stemAssetId === drums.stemIds.get("drums"))!;
+  await db.db.update(schema.remixTracks).set({ stemAssetId: vocals.stemIds.get("vocals")! })
+    .where(eq(schema.remixTracks.id, drumLane.id));
+  try {
+    assert.equal((await service.getTrackDeletionProtection(routeOwner, drums.track.id))?.inUse, true,
+      "clip-only donor references also block deletion");
+    const clipOnlyReload = await (await projectRoute.GET(
+      new Request(`http://localhost/api/waveyard/projects/${handoff.projectId}`),
+      { params: Promise.resolve({ id: handoff.projectId }) },
+    )).json();
+    assert.ok(clipOnlyReload.stems.some((stem: { id: string }) => stem.id === drums.stemIds.get("drums")),
+      "the project reload retains a clip donor even when no lane-default stem references it");
+    assert.ok(clipOnlyReload.studioSources.some((source: { id: string }) => source.id === drums.sourceId),
+      "the exact clip donor's source remains available in Studio after reload");
+  } finally {
+    await db.db.update(schema.remixTracks).set({ stemAssetId: drums.stemIds.get("drums")! })
+      .where(eq(schema.remixTracks.id, drumLane.id));
+  }
+  await sessions.deleteSession(routeOwner, session.id);
 });
 
 test("session stem swap: a donor without the requested stem is refused", async () => {

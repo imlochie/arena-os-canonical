@@ -11,9 +11,40 @@
 
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
-import { getTrack, updateTrackCuration } from "@workspace/arena/lib/waveyard/library/service";
+import { getTrack, getTrackDeletionProtection, updateTrackCuration } from "@workspace/arena/lib/waveyard/library/service";
 
 export const runtime = "nodejs";
+
+/**
+ * There is deliberately no destructive library-audio workflow yet. Fail
+ * explicitly, identifying saved dependencies rather than leaking a generic
+ * foreign-key error or silently cascading away a Studio arrangement.
+ */
+export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id } = await params;
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
+    const protection = await getTrackDeletionProtection(user.id, id);
+    if (!protection) return Response.json({ error: "Track not found." }, { status: 404 });
+    if (protection.inUse) {
+      return Response.json({
+        error: "This song supplies audio to saved Studio mixes. Nothing was deleted. Open Studio to manage the mixes listed below; library audio deletion is not available.",
+        errorCode: "LIBRARY_AUDIO_IN_USE",
+        studioProjects: protection.studioProjects,
+        audioPreserved: true,
+      }, { status: 409 });
+    }
+    return Response.json({
+      error: "Library audio deletion is not available. You can remove songs from a queue or playlist without deleting their audio.",
+      errorCode: "LIBRARY_AUDIO_DELETION_UNAVAILABLE",
+      audioPreserved: true,
+    }, { status: 405, headers: { Allow: "GET, PATCH" } });
+  } catch (error) {
+    if (error instanceof Response) return error;
+    throw error;
+  }
+}
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {

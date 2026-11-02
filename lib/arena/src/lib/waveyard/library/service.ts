@@ -32,6 +32,9 @@ import {
   processingJobs,
   projects,
   queueItems,
+  remixClips,
+  remixSessions,
+  remixTracks,
   smartCollections,
   sourceAnalyses,
   sourceAssets,
@@ -468,6 +471,36 @@ export async function listRecentlyPlayed(ownerId: string, limit = 12): Promise<T
     .orderBy(desc(tracks.lastPlayedAt))
     .limit(Math.min(Math.max(limit, 1), 100));
   return summariesFor(rows);
+}
+
+/**
+ * Read-only deletion protection. Library audio removal is not implemented;
+ * callers must not turn a missing deletion workflow into a source/project
+ * cascade. Include clip-only references as well as each lane's default stem.
+ */
+export async function getTrackDeletionProtection(ownerId: string, trackId: string) {
+  const [track] = await db.select({ sourceAssetId: tracks.sourceAssetId })
+    .from(tracks).where(and(eq(tracks.id, trackId), eq(tracks.ownerId, ownerId))).limit(1);
+  if (!track) return null;
+  const references = track.sourceAssetId
+    ? await db.selectDistinct({
+      id: projects.id, name: projects.title, ownerId: projects.ownerId,
+    }).from(remixSessions)
+      .innerJoin(projects, eq(projects.id, remixSessions.projectId))
+      .innerJoin(remixTracks, eq(remixTracks.remixSessionId, remixSessions.id))
+      .leftJoin(remixClips, eq(remixClips.remixTrackId, remixTracks.id))
+      .innerJoin(stemAssets, or(
+        eq(stemAssets.id, remixTracks.stemAssetId),
+        eq(stemAssets.id, remixClips.stemAssetId),
+      ))
+      .where(eq(stemAssets.sourceAssetId, track.sourceAssetId))
+    : [];
+  return {
+    inUse: references.length > 0,
+    // Do not reveal another owner's project names through an owned song.
+    studioProjects: references.filter(project => project.ownerId === ownerId)
+      .map(({ id, name }) => ({ id, name })),
+  };
 }
 
 export async function getTrack(ownerId: string, trackId: string): Promise<TrackDetail | null> {

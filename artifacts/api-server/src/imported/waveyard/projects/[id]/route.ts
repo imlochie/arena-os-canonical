@@ -9,6 +9,7 @@ import {
   harmonyEvents,
   processingJobs,
   projectBuilds,
+  remixClips,
   remixSessions,
   remixTracks,
   sourceAcquisitions,
@@ -71,10 +72,22 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       .from(remixSessions)
       .where(eq(remixSessions.projectId, id));
     const linkedStemIds = projectRemixes.length
-      ? [...new Set((await db.select({ stemAssetId: remixTracks.stemAssetId })
-        .from(remixTracks)
-        .where(inArray(remixTracks.remixSessionId, projectRemixes.map((remix) => remix.id))))
-        .map((track) => track.stemAssetId))]
+      ? await (async () => {
+        const remixSessionIds = projectRemixes.map((remix) => remix.id);
+        const [laneStems, clipStems] = await Promise.all([
+          db.select({ stemAssetId: remixTracks.stemAssetId })
+            .from(remixTracks)
+            .where(inArray(remixTracks.remixSessionId, remixSessionIds)),
+          db.select({ stemAssetId: remixClips.stemAssetId })
+            .from(remixClips)
+            .innerJoin(remixTracks, eq(remixTracks.id, remixClips.remixTrackId))
+            .where(inArray(remixTracks.remixSessionId, remixSessionIds)),
+        ]);
+        return [...new Set([
+          ...laneStems.map((track) => track.stemAssetId),
+          ...clipStems.map((clip) => clip.stemAssetId),
+        ])];
+      })()
       : [];
     const projectStemIds = new Set(stems.map((stem) => stem.id));
     const externalStemRows = linkedStemIds.length
