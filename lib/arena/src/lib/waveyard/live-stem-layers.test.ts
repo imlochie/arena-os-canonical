@@ -556,6 +556,104 @@ test("expired recent donors are fetched again instead of served from cache", asy
   }
 });
 
+test("idle tempo-matched donors expire without interrupting a different active replacement", async () => {
+  let stretchCount = 0;
+  const f = fixture(async (_context, buffer) => {
+    stretchCount += 1;
+    return buffer;
+  });
+  const fetches: string[] = [];
+  globalThis.fetch = async url => {
+    fetches.push(String(url));
+    return response();
+  };
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await f.layers.replace("vocals", "/tempo-donor", 0.8);
+    const firstBuffer = f.sources[0].buffer;
+    await f.layers.replace("vocals", "/active-replacement");
+
+    await f.layers.replace("vocals", "/tempo-donor", 0.8);
+    assert.equal(fetches.filter(url => url === "/tempo-donor").length, 1,
+      "a tempo-matched donor is initially reused from the recent cache");
+    assert.equal(stretchCount, 1, "reusing the cached donor skips tempo preparation");
+    assert.equal(f.sources[2].buffer, firstBuffer);
+
+    await f.layers.replace("vocals", "/active-replacement");
+    const activeReplacement = f.sources.at(-1)!;
+    mock.timers.tick(30_000);
+
+    assert.equal(activeReplacement.stopped, false, "cache expiry does not stop another active layer");
+    await f.layers.replace("vocals", "/tempo-donor", 0.8);
+    assert.equal(fetches.filter(url => url === "/tempo-donor").length, 2,
+      "the expired tempo-matched donor is downloaded again");
+    assert.equal(stretchCount, 2, "the expired donor is tempo-matched again");
+    assert.equal(activeReplacement.stopped, false, "preparing the expired donor leaves playback running");
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
+});
+
+test("an older donor expiry does not remove a newer copy before its own expiry", async () => {
+  const f = fixture(undefined, undefined, undefined, ["vocals", "drums"]);
+  const fetches: string[] = [];
+  globalThis.fetch = async url => {
+    fetches.push(String(url));
+    return response();
+  };
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await f.layers.replace("vocals", "/same-donor");
+    await f.layers.replace("vocals", "/first-replacement");
+    mock.timers.tick(15_000);
+
+    await f.layers.replace("vocals", "/same-donor");
+    await f.layers.replace("vocals", "/second-replacement");
+    mock.timers.tick(15_000);
+
+    await f.layers.replace("drums", "/same-donor");
+    assert.equal(fetches.filter(url => url === "/same-donor").length, 1,
+      "the renewed entry remains reusable after the original entry's expiry deadline");
+    const activeSecondReplacement = f.sources[3];
+    assert.equal(activeSecondReplacement.stopped, false);
+
+    mock.timers.tick(15_000);
+    await f.layers.replace("vocals", "/same-donor");
+    assert.equal(fetches.filter(url => url === "/same-donor").length, 2,
+      "the newer retained copy is prepared again after its own expiry");
+    assert.equal(f.sources[4].stopped, false, "expiry and re-preparation do not stop the other channel");
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
+});
+
+test("disposing a live layer owner releases retained donors and stops playback immediately", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await f.layers.replace("vocals", "/retained-donor");
+    await f.layers.replace("vocals", "/active-donor");
+    mock.timers.tick(80);
+    const activeSource = f.sources[1];
+    const recent = (f.layers as unknown as { recent: Map<string, unknown> }).recent;
+    assert.equal(recent.size, 1, "the replaced donor is retained before session close");
+    assert.equal(activeSource.stopped, false);
+
+    f.layers.dispose();
+
+    assert.equal(recent.size, 0, "disposal releases retained donor buffers immediately");
+    assert.equal(activeSource.stopped, true, "disposal stops the active playback source");
+    mock.timers.tick(30_000);
+    assert.equal(recent.size, 0, "advancing beyond the former expiry does not restore retained audio");
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
+});
+
 test("expiration releases byte accounting so later donors within budget remain reusable", async () => {
   const decodedBuffers = [
     { duration: 4_194_304 / 48_000, length: 4_194_304, numberOfChannels: 2 }, // 32 MiB
