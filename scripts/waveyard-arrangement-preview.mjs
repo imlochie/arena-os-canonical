@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const apiRequire = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
@@ -15,6 +19,7 @@ const frontendNodeModules = fileURLToPath(new URL(
   "../artifacts/arenaforge/node_modules",
   import.meta.url,
 ));
+const LONG_AUDIO_SECONDS = 90;
 
 function tone() {
   const rate = 44_100;
@@ -41,9 +46,41 @@ function tone() {
   return wav;
 }
 
+async function chromiumProcessMemory() {
+  if (process.platform !== "linux") {
+    throw new Error("Chromium process memory measurement requires Linux /proc.");
+  }
+  const { processInfo } = await browserCdpSession.send("SystemInfo.getProcessInfo");
+  const memory = await Promise.all(processInfo.map(async (process) => {
+    try {
+      const rollup = await readFile(`/proc/${process.id}/smaps_rollup`, "utf8");
+      const match = /^Pss:\s+(\d+)\s+kB$/m.exec(rollup);
+      return { type: process.type, pid: process.id, pssBytes: match ? Number(match[1]) * 1_024 : 0 };
+    } catch {
+      return { type: process.type, pid: process.id, pssBytes: 0 };
+    }
+  }));
+  const pssByType = Object.fromEntries([...new Set(memory.map((entry) => entry.type))]
+    .map((type) => [type, memory.filter((entry) => entry.type === type)
+      .reduce((sum, entry) => sum + entry.pssBytes, 0)]));
+  return {
+    processCount: processInfo.length,
+    pssBytes: memory.reduce((sum, entry) => sum + entry.pssBytes, 0),
+    rendererPssBytes: pssByType.renderer ?? 0,
+    pssByType,
+  };
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 let server;
 let browser;
+let browserCdpSession;
 let url;
+let tempRoot;
+let longEncodedAudio;
 const assetRequests = [];
 
 async function openFixture(t) {
@@ -68,6 +105,21 @@ async function waitForOutput(page, testId, value, timeout = 5_000) {
 }
 
 before(async () => {
+  tempRoot = await mkdtemp(join(tmpdir(), "waveyard-arrangement-preview-"));
+  const encodedAudioPath = join(tempRoot, "realistic-long-preview.mp3");
+  execFileSync("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-f", "lavfi",
+    "-i", `aevalsrc=0.16*sin(2*PI*110*t)+0.08*sin(2*PI*220*t)+0.05*sin(2*PI*440*t)+0.02*sin(2*PI*880*t):s=44100:d=${LONG_AUDIO_SECONDS}`,
+    "-ac", "2",
+    "-ar", "44100",
+    "-c:a", "libmp3lame",
+    "-b:a", "128k",
+    "-write_xing", "0",
+    "-y", encodedAudioPath,
+  ]);
+  longEncodedAudio = await readFile(encodedAudioPath);
   const bundled = await build({
     entryPoints: [fixtureEntry],
     bundle: true,
@@ -88,13 +140,24 @@ before(async () => {
     if (request.url?.startsWith("/api/assets/")) {
       const assetId = new URL(request.url, "http://localhost").pathname.split("/").at(-1);
       assetRequests.push(assetId);
+      response.setHeader("Cache-Control", "no-store");
+      if (assetId === "preview-long-encoded") {
+        response.setHeader("Content-Type", "audio/mpeg");
+        response.setHeader("Content-Length", longEncodedAudio.length);
+        response.end(longEncodedAudio);
+        return;
+      }
       response.setHeader("Content-Type", "audio/wav");
       response.setHeader("Content-Length", audio.length);
       response.end(audio);
       return;
     }
     response.setHeader("Content-Type", "text/html");
-    response.end('<!doctype html><div id="root"></div><script type="module" src="/fixture.js"></script>');
+    const fixtureConfig = JSON.stringify({
+      longAudioSeconds: LONG_AUDIO_SECONDS,
+      longAudioFileSizeBytes: longEncodedAudio.length,
+    });
+    response.end(`<!doctype html><div id="root"></div><script>window.__previewFixtureConfig=${fixtureConfig};</script><script type="module" src="/fixture.js"></script>`);
   });
   await new Promise((resolve) => server.listen(0, "0.0.0.0", resolve));
   url = `http://127.0.0.1:${server.address().port}`;
@@ -103,11 +166,14 @@ before(async () => {
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
+  browserCdpSession = await browser.newBrowserCDPSession();
 });
 
 after(async () => {
+  await browserCdpSession?.detach();
   await browser?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
+  if (tempRoot) await rm(tempRoot, { recursive: true, force: true });
 });
 
 test("foreground arrangement interruption resumes from its playhead and manual pause stays paused", { timeout: 20_000 }, async (t) => {
@@ -218,6 +284,174 @@ test("long and many-stem arrangements are rejected before any full asset is fetc
   }));
   assert.match(manyStatus.error ?? "", /estimated to need/i, JSON.stringify(manyStatus));
   assert.equal(assetRequests.length, before, "many audible long stems are rejected before any decode");
+});
+
+test("realistic long encoded preview reports browser memory and releases its buffer after a switch", {
+  timeout: 60_000,
+  skip: process.platform !== "linux" ? "requires Linux Chromium process-tree memory reporting" : false,
+}, async (t) => {
+  const page = await openFixture(t);
+  await page.evaluate(() => {
+    const contexts = [];
+    const decoded = [];
+    const NativeAudioContext = window.AudioContext;
+    const originalDecode = NativeAudioContext.prototype.decodeAudioData;
+    NativeAudioContext.prototype.decodeAudioData = function (data) {
+      return originalDecode.call(this, data).then((buffer) => {
+        decoded.push({
+          ref: new WeakRef(buffer),
+          bytes: buffer.length * buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT,
+          durationSeconds: buffer.duration,
+          sampleRate: buffer.sampleRate,
+          channels: buffer.numberOfChannels,
+        });
+        return buffer;
+      });
+    };
+    Object.defineProperty(window, "__previewMemoryProbe", {
+      configurable: true,
+      value: { contexts, decoded },
+    });
+    Object.defineProperty(window, "AudioContext", {
+      configurable: true,
+      value: new Proxy(NativeAudioContext, {
+        construct(target, args, newTarget) {
+          const audioContext = Reflect.construct(target, args, newTarget);
+          contexts.push(audioContext);
+          return audioContext;
+        },
+      }),
+    });
+  });
+
+  await page.getByRole("button", { name: "Play preview" }).click();
+  await waitForOutput(page, "playing", "true");
+  await page.getByRole("button", { name: "Stop preview" }).click();
+  await waitForOutput(page, "playing", "false");
+  const longBufferIndex = await page.evaluate(() => window.__previewMemoryProbe.decoded.length);
+  assert.equal(longBufferIndex, 1, "warm-up initializes the audio pipeline before the memory baseline");
+  await page.waitForTimeout(250);
+  const baseline = await chromiumProcessMemory();
+  const samples = [baseline];
+  let sampling = true;
+  let sampleError;
+  const sampler = (async () => {
+    while (sampling) {
+      await sleep(100);
+      if (!sampling) break;
+      try {
+        samples.push(await chromiumProcessMemory());
+      } catch (error) {
+        sampleError = error;
+        return;
+      }
+    }
+  })();
+  let cdp;
+  try {
+    const requestStart = assetRequests.length;
+    await page.getByRole("button", { name: "Play realistic long encoded preview" }).click();
+    await waitForOutput(page, "playing", "true", 20_000);
+    await page.waitForFunction(
+      (expectedCount) => window.__previewMemoryProbe?.decoded.length === expectedCount,
+      longBufferIndex + 1,
+      { timeout: 20_000 },
+    );
+
+    const activeAudio = await page.evaluate((index) => ({
+      sampleRate: window.__previewMemoryProbe.contexts[0]?.sampleRate,
+      memoryBudget: window.__previewMemoryBudget,
+      decoded: {
+        bytes: window.__previewMemoryProbe.decoded[index].bytes,
+        durationSeconds: window.__previewMemoryProbe.decoded[index].durationSeconds,
+        sampleRate: window.__previewMemoryProbe.decoded[index].sampleRate,
+        channels: window.__previewMemoryProbe.decoded[index].channels,
+      },
+      error: window.preview.error,
+    }), longBufferIndex);
+    assert.equal(activeAudio.error, null);
+    assert.equal(activeAudio.sampleRate, activeAudio.decoded.sampleRate);
+    assert.equal(activeAudio.decoded.channels, 2);
+    assert.ok(Math.abs(activeAudio.decoded.durationSeconds - LONG_AUDIO_SECONDS) < 1,
+      JSON.stringify(activeAudio.decoded));
+
+    const estimateBytes = Math.ceil(
+      LONG_AUDIO_SECONDS * activeAudio.sampleRate * activeAudio.decoded.channels
+        * Float32Array.BYTES_PER_ELEMENT * activeAudio.memoryBudget.decodeHeadroomFactor,
+    ) + longEncodedAudio.length;
+    assert.ok(
+      estimateBytes < activeAudio.memoryBudget.limitBytes,
+      JSON.stringify({ estimateBytes, memoryLimitBytes: activeAudio.memoryBudget.limitBytes, sampleRate: activeAudio.sampleRate }),
+    );
+
+    samples.push(await chromiumProcessMemory());
+    await page.getByRole("button", { name: "Play switch arrangement B" }).click();
+    await waitForOutput(page, "playing", "true");
+    cdp = await page.context().newCDPSession(page);
+    await cdp.send("HeapProfiler.enable");
+    await cdp.send("HeapProfiler.collectGarbage");
+    await page.waitForTimeout(100);
+    await cdp.send("HeapProfiler.collectGarbage");
+
+    const bufferReleased = await page.evaluate((index) =>
+      window.__previewMemoryProbe.decoded[index].ref.deref() === undefined,
+    longBufferIndex);
+    assert.equal(bufferReleased, true, "switching away releases the decoded long AudioBuffer");
+    const afterSwitch = await chromiumProcessMemory();
+    samples.push(afterSwitch);
+    assert.deepEqual(
+      assetRequests.slice(requestStart),
+      ["preview-long-encoded", "preview-switch-b"],
+      "the long MP3 used the real fetch path before the arrangement switch",
+    );
+
+    sampling = false;
+    await sampler;
+    if (sampleError) throw sampleError;
+    const peak = samples.reduce((largest, sample) =>
+      sample.pssBytes > largest.pssBytes ? sample : largest, baseline);
+    const rendererPeak = samples.reduce((largest, sample) =>
+      sample.rendererPssBytes > largest.rendererPssBytes ? sample : largest, baseline);
+    const peakDeltaBytes = peak.pssBytes - baseline.pssBytes;
+    const rendererPeakDeltaBytes = rendererPeak.rendererPssBytes - baseline.rendererPssBytes;
+    const rendererAfterSwitchDeltaBytes = afterSwitch.rendererPssBytes - baseline.rendererPssBytes;
+    const afterSwitchDeltaBytes = Math.max(0, afterSwitch.pssBytes - baseline.pssBytes);
+    const memoryReport = {
+      measurement: "Chromium process proportional set size (PSS)",
+      activeSampleRate: activeAudio.sampleRate,
+      encodedFormat: "MP3",
+      durationSeconds: activeAudio.decoded.durationSeconds,
+      encodedBytes: longEncodedAudio.length,
+      decodedPcmBytes: activeAudio.decoded.bytes,
+      estimatedPeakBytes: estimateBytes,
+      memoryLimitBytes: activeAudio.memoryBudget.limitBytes,
+      processCount: peak.processCount,
+      baselinePssBytes: baseline.pssBytes,
+      peakPssBytes: peak.pssBytes,
+      allChromiumProcessPeakDeltaBytes: peakDeltaBytes,
+      rendererPeakPssBytes: rendererPeak.rendererPssBytes,
+      rendererPeakDeltaBytes,
+      rendererPeakPssByType: rendererPeak.pssByType,
+      postSwitchPssBytes: afterSwitch.pssBytes,
+      allChromiumProcessPostSwitchDeltaBytes: afterSwitchDeltaBytes,
+      rendererAfterSwitchDeltaBytes,
+      postSwitchPssByType: afterSwitch.pssByType,
+      decodedBufferReleased: bufferReleased,
+    };
+    t.diagnostic(JSON.stringify(memoryReport));
+    assert.ok(peakDeltaBytes > activeAudio.decoded.bytes * 0.5,
+      JSON.stringify({ peakDeltaBytes, decodedPcmBytes: activeAudio.decoded.bytes, samples: samples.length }));
+    assert.ok(rendererPeakDeltaBytes < activeAudio.memoryBudget.limitBytes,
+      JSON.stringify(memoryReport));
+    assert.ok(rendererAfterSwitchDeltaBytes < activeAudio.memoryBudget.limitBytes,
+      JSON.stringify(memoryReport));
+    assert.ok(rendererAfterSwitchDeltaBytes < rendererPeakDeltaBytes,
+      JSON.stringify(memoryReport));
+  } finally {
+    sampling = false;
+    await sampler;
+    await cdp?.detach();
+  }
 });
 
 test("muted stems are excluded from both preview fetches and the memory estimate", { timeout: 10_000 }, async (t) => {

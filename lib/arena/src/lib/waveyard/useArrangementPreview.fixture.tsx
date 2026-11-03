@@ -1,6 +1,10 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import {
+  ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR,
+  ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
+} from "./arrangement-preview-memory";
 import { useArrangementPreview } from "./useArrangementPreview";
 
 function asset(id: string, durationSeconds: number, fileSizeBytes = 1_000_000) {
@@ -11,6 +15,7 @@ function stateFor(
   assetIds: string[],
   previewAssets: ReturnType<typeof asset>[],
   mutedAssetIds: string[] = [],
+  clipDurationMs = 8_000,
 ) {
   return {
     masterVolume: 1,
@@ -30,7 +35,7 @@ function stateFor(
         stemAssetId: assetId,
         timelineStartMs: 0,
         // Web Audio decodes the full source even when the clip uses only part.
-        durationMs: 8_000,
+        durationMs: clipDurationMs,
         sourceOffsetMs: 0,
         gain: 1,
         fadeInMs: 0,
@@ -44,12 +49,36 @@ function stateFor(
   };
 }
 
-type PreviewScenarioName = "normal" | "long" | "many" | "muted" | "switchA" | "switchB";
+type PreviewScenarioName = "normal" | "long" | "longEncoded" | "many" | "muted" | "switchA" | "switchB";
 type PreviewInput = Parameters<ReturnType<typeof useArrangementPreview>["play"]>[0];
+
+declare global {
+  interface Window {
+    __previewFixtureConfig?: {
+      longAudioSeconds: number;
+      longAudioFileSizeBytes: number;
+    };
+    __previewMemoryBudget?: {
+      limitBytes: number;
+      decodeHeadroomFactor: number;
+    };
+  }
+}
+
+const longAudioConfig = window.__previewFixtureConfig ?? {
+  longAudioSeconds: 240,
+  longAudioFileSizeBytes: 4_000_000,
+};
 
 const previewScenarios: Record<PreviewScenarioName, PreviewInput> = {
   normal: stateFor(["fixture-stem"], [asset("fixture-stem", 8, 705_644)]),
   long: stateFor(["preview-long"], [asset("preview-long", 300, 5_000_000)]),
+  longEncoded: stateFor(
+    ["preview-long-encoded"],
+    [asset("preview-long-encoded", longAudioConfig.longAudioSeconds, longAudioConfig.longAudioFileSizeBytes)],
+    [],
+    longAudioConfig.longAudioSeconds * 1_000,
+  ),
   many: stateFor(
     ["preview-many-vocals", "preview-many-bass", "preview-many-drums", "preview-many-melody"],
     ["vocals", "bass", "drums", "melody"].map((stem) => asset(`preview-many-${stem}`, 80)),
@@ -78,6 +107,10 @@ function Fixture() {
   Object.assign(window, {
     preview,
     previewPosition: position,
+    __previewMemoryBudget: {
+      limitBytes: ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
+      decodeHeadroomFactor: ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR,
+    },
     playPreview: () => void preview.play(previewScenarios.normal, position),
     playPreviewScenario: (scenario: keyof typeof previewScenarios) =>
       preview.play(previewScenarios[scenario], 0),
@@ -87,6 +120,7 @@ function Fixture() {
     <main>
       <button onClick={() => void preview.play(previewScenarios.normal, position)}>Play preview</button>
       <button onClick={() => void preview.play(previewScenarios.long, 0)}>Play long preview</button>
+      <button onClick={() => void preview.play(previewScenarios.longEncoded, 0)}>Play realistic long encoded preview</button>
       <button onClick={() => void preview.play(previewScenarios.many, 0)}>Play many-stem preview</button>
       <button onClick={() => void preview.play(previewScenarios.muted, 0)}>Play muted arrangement</button>
       <button onClick={() => void preview.play(previewScenarios.switchA, 0)}>Play switch arrangement A</button>

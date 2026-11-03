@@ -8,7 +8,7 @@ export type ArrangementPreviewAssetMetadata = {
 
 export const ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES = 128 * 1024 * 1024;
 
-const DECODE_HEADROOM_FACTOR = 1.25;
+export const ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR = 3.5;
 const FLOAT32_BYTES_PER_SAMPLE = Float32Array.BYTES_PER_ELEMENT;
 
 export type ArrangementPreviewMemoryEstimate =
@@ -25,8 +25,9 @@ export type ArrangementPreviewMemoryEstimate =
 
 /**
  * decodeAudioData creates float32 PCM at the AudioContext's sample rate.
- * Reserve extra room for decoder working memory and the largest encoded file
- * that is fetched while the retained PCM buffers are live.
+ * Chromium's measured renderer peak for a long encoded preview exceeded 3x
+ * the retained PCM size, so reserve 3.5x plus the largest encoded file fetched
+ * while retained PCM buffers are live.
  */
 export function estimateArrangementPreviewMemory(
   assetIds: readonly string[],
@@ -73,7 +74,8 @@ export function estimateArrangementPreviewMemory(
   return {
     ok: true,
     decodedBytes,
-    estimatedPeakBytes: Math.ceil(decodedBytes * DECODE_HEADROOM_FACTOR) + largestEncodedFileBytes,
+    estimatedPeakBytes: Math.ceil(decodedBytes * ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR)
+      + largestEncodedFileBytes,
   };
 }
 

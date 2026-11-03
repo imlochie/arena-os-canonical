@@ -29,6 +29,36 @@ test("long stereo previews reserve decoder headroom and are rejected before deco
   assert.ok(estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES);
 });
 
+test("a 90-second encoded stereo preview stays within budget at 44.1 and 48 kHz", () => {
+  for (const outputSampleRate of [44_100, 48_000]) {
+    const estimate = estimateArrangementPreviewMemory(
+      ["long-mp3"],
+      [asset("long-mp3", 90, 1_800_000)],
+      outputSampleRate,
+    );
+
+    assert.equal(estimate.ok, true);
+    if (!estimate.ok) continue;
+    assert.ok(estimate.decodedBytes > 30_000_000);
+    assert.ok(estimate.estimatedPeakBytes < ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES);
+  }
+});
+
+test("a four-minute encoded stereo preview is rejected before decode at 44.1 and 48 kHz", () => {
+  for (const outputSampleRate of [44_100, 48_000]) {
+    const estimate = estimateArrangementPreviewMemory(
+      ["oversized-mp3"],
+      [asset("oversized-mp3", 240, 4_000_000)],
+      outputSampleRate,
+    );
+
+    assert.equal(estimate.ok, true);
+    if (!estimate.ok) continue;
+    assert.ok(estimate.decodedBytes > 80_000_000);
+    assert.ok(estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES);
+  }
+});
+
 test("many audible long stems exceed the bounded preview budget", () => {
   const ids = ["vocals", "bass", "drums", "melody"];
   const estimate = estimateArrangementPreviewMemory(
