@@ -43,6 +43,20 @@ test("native API serves the built SPA, blocks cross-site reads and shuts down th
     created_at timestamptz,
     updated_at timestamptz
   )`);
+  // API startup recovers interrupted conversion jobs and immediately drains
+  // the queue, so the contract schema needs the worker's startup/query columns.
+  await admin.query(`create table "${schema}".wy_library_conversion_jobs (
+    id uuid,
+    status text,
+    stage text,
+    progress integer,
+    attempts integer,
+    error_message text,
+    started_at timestamptz,
+    completed_at timestamptz,
+    created_at timestamptz,
+    updated_at timestamptz
+  )`);
   const child = spawn(process.execPath, [script], {
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     env: { ...process.env, PGOPTIONS: `-c search_path=${schema}`, NODE_ENV: "production", PORT: String(port), ARENA_DESKTOP_MODE: "1", ARENA_DATA_DIR: root, ARENA_WEB_ROOT: web },
