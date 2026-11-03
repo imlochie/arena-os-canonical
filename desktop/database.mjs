@@ -46,16 +46,39 @@ export async function migrate(client, directory) {
   for (const file of files) {
     if (applied.has(file)) continue;
     await client.query("begin");
+    let commitAttempted = false;
     try {
       const sql = await readFile(path.join(directory, file), "utf8");
       for (const statement of sql.split("--> statement-breakpoint").map(s => s.trim()).filter(Boolean)) {
         await client.query(statement);
       }
       await client.query("insert into arena_schema_migrations (name) values ($1)", [file]);
+      commitAttempted = true;
       await client.query("commit");
     } catch (error) {
-      await client.query("rollback");
-      throw new Error(`Migration ${file} failed; existing data was retained: ${error.message}`);
+      let rollbackError;
+      try {
+        await client.query("rollback");
+      } catch (failure) {
+        rollbackError = failure;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (rollbackError) {
+        throw new Error(
+          `Migration ${file} failed and rollback could not be confirmed. Do not reset or delete Arena data before recovery. ${message}`,
+          { cause: new AggregateError([error, rollbackError], "Migration and rollback both failed.") },
+        );
+      }
+      if (commitAttempted) {
+        throw new Error(
+          `Migration ${file} failed while committing; its final status could not be confirmed. Keep Arena data intact and inspect migration status before retrying. ${message}`,
+          { cause: error },
+        );
+      }
+      throw new Error(
+        `Migration ${file} failed; its uncommitted changes were rolled back and existing data was retained: ${message}`,
+        { cause: error },
+      );
     }
   }
 }
