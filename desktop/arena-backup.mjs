@@ -8,6 +8,7 @@ const FORMAT = "arena-data-backup";
 const VERSION = 1;
 const SCRYPT = { N: 32_768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const PASS_PHRASE_MIN_LENGTH = 12;
+const WAVEYARD_BACKUP_DIRS = ["storage", "capture"];
 
 const sha256 = value => createHash("sha256").update(value).digest("hex");
 const isWithin = (parent, child) => {
@@ -87,6 +88,37 @@ function assertTreeMatches(expected, actual, label) {
   if (mismatches.length) throw new Error(`${label} verification failed: ${mismatches.slice(0, 5).join("; ")}`);
 }
 
+async function copyVerifiedDirectory(source, destination, label) {
+  let sourceStat;
+  try {
+    sourceStat = await lstat(source);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { files: {}, present: false };
+    throw error;
+  }
+  if (!sourceStat.isDirectory()) throw new Error(`${label} must be a real directory; refusing links or special files.`);
+  const expected = await hashTree(source);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await cp(source, destination, { recursive: true, errorOnExist: true, force: false });
+  assertTreeMatches(expected, await hashTree(destination), label);
+  return { files: expected, present: true };
+}
+
+function validateManifestFilePaths(manifest) {
+  if (manifest.includesWaveyardFiles !== undefined && typeof manifest.includesWaveyardFiles !== "boolean") {
+    throw new Error("This Arena backup has an invalid Waveyard-file selection.");
+  }
+  for (const relative of Object.keys(manifest.files)) {
+    if (relative === "credential.enc" || relative.startsWith("database/")) continue;
+    const waveyardFile = WAVEYARD_BACKUP_DIRS.some((directory) =>
+      relative.startsWith(`waveyard/${directory}/`),
+    );
+    if (!waveyardFile || manifest.includesWaveyardFiles !== true) {
+      throw new Error(`This Arena backup contains an unsupported or unselected file: ${relative}`);
+    }
+  }
+}
+
 function encryptedCredential(credential, passphrase) {
   const salt = randomBytes(16);
   const iv = randomBytes(12);
@@ -146,6 +178,7 @@ async function readManifest(backupDir) {
   if (manifest.format !== FORMAT || manifest.version !== VERSION || !manifest.files || typeof manifest.files !== "object") {
     throw new Error("This Arena backup uses an unsupported format.");
   }
+  validateManifestFilePaths(manifest);
   return manifest;
 }
 
@@ -164,8 +197,19 @@ export async function verifyArenaBackup(backupDir) {
   return { ok: mismatches.length === 0, manifest, mismatches };
 }
 
-export async function createArenaBackup({ root, parentDir, passphrase, databaseStopped, now = () => new Date(), processExists: exists = processExists }) {
+export async function createArenaBackup({
+  root,
+  parentDir,
+  passphrase,
+  databaseStopped,
+  includeWaveyardFiles = false,
+  now = () => new Date(),
+  processExists: exists = processExists,
+}) {
   assertNewPassphrase(passphrase);
+  if (typeof includeWaveyardFiles !== "boolean") {
+    throw new Error("Choose whether Waveyard files should be included in the Arena backup.");
+  }
   if (databaseStopped !== true) {
     throw new Error("Arena has not confirmed a clean database shutdown; refusing the backup.");
   }
@@ -190,6 +234,15 @@ export async function createArenaBackup({ root, parentDir, passphrase, databaseS
   try {
     await cp(dataDir, path.join(backupDir, "database"), { recursive: true, errorOnExist: true, force: false });
     await writeFile(path.join(backupDir, "credential.enc"), encryptedCredential(credential, passphrase), { flag: "wx", mode: 0o600 });
+    if (includeWaveyardFiles) {
+      for (const directory of WAVEYARD_BACKUP_DIRS) {
+        await copyVerifiedDirectory(
+          path.join(sourceRoot, "waveyard", directory),
+          path.join(backupDir, "waveyard", directory),
+          `Waveyard ${directory}`,
+        );
+      }
+    }
     const files = await hashTree(backupDir);
     const copiedDatabaseFiles = Object.fromEntries(
       Object.entries(files)
@@ -202,7 +255,10 @@ export async function createArenaBackup({ root, parentDir, passphrase, databaseS
       version: VERSION,
       createdAt: now().toISOString(),
       pgVersion: version,
-      scope: "PostgreSQL database and its encrypted matching credential only. Waveyard files, downloaded models, browser profiles, and other files are excluded.",
+      includesWaveyardFiles: includeWaveyardFiles,
+      scope: includeWaveyardFiles
+        ? "PostgreSQL database, its encrypted matching credential, and Waveyard storage/capture files. Database and Waveyard media files are not encrypted by the backup passphrase. Downloaded models, browser profiles, and other files are excluded."
+        : "PostgreSQL database and its encrypted matching credential only. Waveyard files, downloaded models, browser profiles, and other files are excluded.",
       credentialSha256: sha256(credential),
       files,
     };
@@ -240,6 +296,28 @@ export async function restoreArenaBackup({ backupDir, targetRoot, passphrase }) 
   const postgresDir = path.join(target, "data/postgres");
   await mkdir(path.dirname(postgresDir), { recursive: true });
   await cp(path.join(source, "database"), postgresDir, { recursive: true, errorOnExist: true, force: false });
+  let waveyardFileCount = 0;
+  let waveyardBytes = 0;
+  if (verified.manifest.includesWaveyardFiles === true) {
+    for (const directory of WAVEYARD_BACKUP_DIRS) {
+      await copyVerifiedDirectory(
+        path.join(source, "waveyard", directory),
+        path.join(target, "waveyard", directory),
+        `Restored Waveyard ${directory}`,
+      );
+    }
+    const restoredWaveyard = existsSync(path.join(target, "waveyard"))
+      ? await hashTree(path.join(target, "waveyard"))
+      : {};
+    const expectedWaveyard = Object.fromEntries(
+      Object.entries(verified.manifest.files)
+        .filter(([relative]) => relative.startsWith("waveyard/"))
+        .map(([relative, entry]) => [relative.slice("waveyard/".length), entry]),
+    );
+    assertTreeMatches(expectedWaveyard, restoredWaveyard, "Restored Waveyard files");
+    waveyardFileCount = Object.keys(expectedWaveyard).length;
+    waveyardBytes = Object.values(expectedWaveyard).reduce((total, entry) => total + entry.bytes, 0);
+  }
   const runtimeDir = path.join(target, "runtime");
   await mkdir(runtimeDir, { recursive: true });
   await writeFile(path.join(runtimeDir, "db-password.json"), credential, { flag: "wx", mode: 0o600 });
@@ -258,5 +336,11 @@ export async function restoreArenaBackup({ backupDir, targetRoot, passphrase }) 
   }
   const restoredVersion = (await readFile(path.join(postgresDir, "PG_VERSION"), "utf8")).trim();
   if (restoredVersion !== verified.manifest.pgVersion) throw new Error("Restored PostgreSQL version does not match the backup.");
-  return { targetRoot: target, pgVersion: restoredVersion, fileCount: Object.keys(restored).length };
+  return {
+    targetRoot: target,
+    pgVersion: restoredVersion,
+    fileCount: Object.keys(restored).length,
+    waveyardFileCount,
+    waveyardBytes,
+  };
 }

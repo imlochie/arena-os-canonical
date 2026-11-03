@@ -36,6 +36,8 @@ test("process state fails closed for malformed or uncheckable PostgreSQL pid", a
 test("backup requires confirmed shutdown, encrypts the credential, verifies every file, and restores to a new root", async () => {
   const { parent, root } = await fixture();
   try {
+    await mkdir(path.join(root, "waveyard/storage"), { recursive: true });
+    await writeFile(path.join(root, "waveyard/storage/private-original.wav"), "must stay out of database-only backups");
     await assert.rejects(
       createArenaBackup({ root, parentDir: parent, passphrase }),
       /not confirmed a clean database shutdown/,
@@ -48,7 +50,9 @@ test("backup requires confirmed shutdown, encrypts the credential, verifies ever
       now: () => new Date("2026-10-31T12:00:00.000Z"),
     });
     assert.equal(manifest.pgVersion, "16");
+    assert.equal(manifest.includesWaveyardFiles, false);
     assert.match(manifest.scope, /Waveyard files.*browser profiles.*excluded/);
+    assert.equal(Object.keys(manifest.files).some((relative) => relative.startsWith("waveyard/")), false);
     assert.equal(await readFile(path.join(backupDir, "credential.enc"), "utf8").then(text => text.includes("matching-database-password")), false);
     assert.deepEqual((await verifyArenaBackup(backupDir)).mismatches, []);
 
@@ -65,8 +69,55 @@ test("backup requires confirmed shutdown, encrypts the credential, verifies ever
       { password: "matching-database-password-123" },
     );
     await assert.rejects(
+      readFile(path.join(restoredRoot, "waveyard/storage/private-original.wav")),
+      { code: "ENOENT" },
+    );
+    await assert.rejects(
       restoreArenaBackup({ backupDir, targetRoot: restoredRoot, passphrase }),
       /new, empty/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("optional Waveyard storage and captures are verified and restored without model caches", async () => {
+  const { parent, root } = await fixture();
+  const audio = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x10, 0x20, 0x30, 0x40]);
+  const capture = Buffer.from([0x00, 0x01, 0x02, 0x7f, 0x80, 0xff]);
+  try {
+    await mkdir(path.join(root, "waveyard/storage/library"), { recursive: true });
+    await mkdir(path.join(root, "waveyard/capture/session"), { recursive: true });
+    await mkdir(path.join(root, "waveyard/models"), { recursive: true });
+    await writeFile(path.join(root, "waveyard/storage/library/track.wav"), audio);
+    await writeFile(path.join(root, "waveyard/capture/session/take.pcm"), capture);
+    await writeFile(path.join(root, "waveyard/models/large-model.bin"), "not part of a user-media backup");
+
+    const { backupDir, manifest } = await createArenaBackup({
+      root,
+      parentDir: parent,
+      passphrase,
+      databaseStopped: true,
+      includeWaveyardFiles: true,
+      now: () => new Date("2026-11-01T12:00:00.000Z"),
+    });
+    assert.equal(manifest.includesWaveyardFiles, true);
+    assert.match(manifest.scope, /storage\/capture files.*not encrypted/);
+    assert.deepEqual((await verifyArenaBackup(backupDir)).mismatches, []);
+
+    const restoredRoot = path.join(parent, "waveyard-restored");
+    const restored = await restoreArenaBackup({ backupDir, targetRoot: restoredRoot, passphrase });
+    assert.equal(restored.waveyardFileCount, 2);
+    assert.equal(restored.waveyardBytes, audio.byteLength + capture.byteLength);
+    assert.deepEqual(await readFile(path.join(restoredRoot, "waveyard/storage/library/track.wav")), audio);
+    assert.deepEqual(await readFile(path.join(restoredRoot, "waveyard/capture/session/take.pcm")), capture);
+    await assert.rejects(readFile(path.join(restoredRoot, "waveyard/models/large-model.bin")), { code: "ENOENT" });
+
+    await writeFile(path.join(backupDir, "waveyard/storage/library/track.wav"), "tampered");
+    assert.equal((await verifyArenaBackup(backupDir)).ok, false);
+    await assert.rejects(
+      restoreArenaBackup({ backupDir, targetRoot: path.join(parent, "tampered-restore"), passphrase }),
+      /Backup verification failed/,
     );
   } finally {
     await rm(parent, { recursive: true, force: true });

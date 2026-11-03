@@ -190,24 +190,26 @@ port fails explicitly instead of silently changing the app's browser origin.
 Existing databases are never deleted or reinitialised to fix startup errors.
 The bundled PostgreSQL major remains 16 to match the retained desktop runtime.
 
-### Arena database backup and restore
+### Arena data backup and restore
 
-Use the desktop app's **Data** menu to create or restore an Arena database
-backup. Creating a backup pauses Arena, confirms a clean PostgreSQL shutdown,
-copies the database cluster, and verifies every copied file before restarting.
-If PostgreSQL's process state cannot be confirmed, the backup is refused.
+Use the desktop app's **Data** menu to create or restore an Arena data backup.
+When creating one, choose **Database only** (the default) or opt in to include
+Waveyard storage and local capture recordings. Creating a backup pauses Arena,
+confirms a clean PostgreSQL shutdown, copies the selected files, and verifies
+every copied file before restarting. If PostgreSQL's process state cannot be
+confirmed, the backup is refused.
 
-The backup contains Arena's PostgreSQL records and the matching database
-credential encrypted with a passphrase you choose (minimum 12 characters).
-Arena does not save that passphrase; it is required for restore. Store the
+The database and any included Waveyard files are copied as readable files. The
+chosen passphrase (minimum 12 characters) encrypts only the matching database
+credential. Arena does not save it; it is required for restore. Store the
 backup and passphrase separately and securely. Restore verifies the backup and
 credential, requires a new empty data folder, and starts Arena from that folder;
 the existing data folder is left in place.
 
-This is a database backup only. It does **not** include Waveyard audio/storage,
-downloaded models, browser profiles, workspace files, or other local files.
-Those folders need their own backup if they must be preserved. The app states
-this scope in both backup and restore dialogs.
+When selected, Waveyard backup includes the files in `waveyard/storage` and
+`waveyard/capture`. Downloaded models, browser profiles, workspace files, and
+other local folders remain excluded. The backup and restore dialogs state the
+selected contents and that media files are not encrypted.
 
 The package includes ONNX Runtime's CPU engine and the Windows x64 DirectML
 runtime dependencies (`DirectML.dll`, DXCompiler, and DXIL) for Waveyard's local

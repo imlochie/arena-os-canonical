@@ -179,13 +179,21 @@ async function run() {
   assert(sentinel?.id);
   await desktop.close();
   desktop = null;
+  const waveyardAudio = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x11, 0x22, 0x33, 0x44]);
+  const waveyardCapture = Buffer.from([0x00, 0x10, 0x20, 0x7f, 0x80, 0xff]);
+  await mkdir(path.join(dataRoot, "waveyard/storage/acceptance"), { recursive: true });
+  await mkdir(path.join(dataRoot, "waveyard/capture/acceptance"), { recursive: true });
+  await writeFile(path.join(dataRoot, "waveyard/storage/acceptance/source.wav"), waveyardAudio);
+  await writeFile(path.join(dataRoot, "waveyard/capture/acceptance/take.pcm"), waveyardCapture);
   const databaseCredential = JSON.parse(await readFile(path.join(dataRoot, "runtime/db-password.json"), "utf8"));
   const backup = await createArenaBackup({
     root: dataRoot,
     parentDir: path.dirname(dataRoot),
     passphrase: "Windows package smoke backup passphrase",
     databaseStopped: true,
+    includeWaveyardFiles: true,
   });
+  assert.equal(backup.manifest.includesWaveyardFiles, true);
   backupDir = backup.backupDir;
   restoreRoot = await mkdtemp(path.join(os.tmpdir(), "arenaforge-package-restore-"));
   await rm(restoreRoot, { recursive: true, force: true });
@@ -194,6 +202,8 @@ async function run() {
     targetRoot: restoreRoot,
     passphrase: "Windows package smoke backup passphrase",
   });
+  assert.deepEqual(await readFile(path.join(restoreRoot, "waveyard/storage/acceptance/source.wav")), waveyardAudio);
+  assert.deepEqual(await readFile(path.join(restoreRoot, "waveyard/capture/acceptance/take.pcm")), waveyardCapture);
   assert.equal(
     JSON.parse(await readFile(path.join(restoreRoot, "runtime/db-password.json"), "utf8")).password,
     databaseCredential.password,
