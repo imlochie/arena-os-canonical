@@ -96,6 +96,12 @@ try {
   await importGame();
   const first = (await records())[0];
   await frame().locator("#version").evaluate(element => { element.dataset.livePlayer = "first-live-player"; });
+  await frame().locator("body").evaluate(() => localStorage.setItem("progress", "x".repeat(65537)));
+  await page.getByTestId("arcade-save-warning").waitFor();
+  await page.getByRole("button", { name: "Clear progress", exact: true }).click();
+  await page.getByTestId("arcade-save-warning").waitFor({ state: "detached" });
+  assert.equal((await saves())[first.id], undefined, "a rejected first checkpoint must be explicitly discardable without a committed slot");
+  assert.equal(await frame().locator("#version").getAttribute("data-live-player"), "first-live-player");
   await save(first.id, "private-progress-red-11");
   await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
   assert.equal(await frame().locator("#version").getAttribute("data-live-player"), "first-live-player", "first save must not restart the active game");
@@ -113,6 +119,177 @@ try {
   await select(first.id, "private-progress-red-11");
   await save(first.id, "private-progress-red-13");
   const beforeReload = await saves();
+  // Bounded real-player fault injection: only the selected game's parent storage fails.
+  const installFault = id => page.evaluate(id => {
+    const key = `arenaforge.game-save.v1:${id}`;
+    window.__saveFault = { key, mode: "" };
+    window.__saveSnapshotCount = 0;
+    window.__saveStorage = Object.fromEntries(["getItem", "setItem", "removeItem"].map(name => [name, Storage.prototype[name]]));
+    for (const name of ["getItem", "setItem", "removeItem"]) {
+      Storage.prototype[name] = function(candidate, ...args) {
+        const mode = window.__saveFault.mode;
+        if (candidate === key && ((mode === "quota" && name === "setItem") ||
+          mode === "blocked" || (mode === "remove" && name === "removeItem"))) {
+          throw new DOMException("Injected bounded storage failure", mode === "quota" ? "QuotaExceededError" : "SecurityError");
+        }
+        return window.__saveStorage[name].call(this, candidate, ...args);
+      };
+    }
+    window.addEventListener("message", event => {
+      if (event.source === document.querySelector('iframe[title="Playable game: same-name.html"]')?.contentWindow &&
+        event.data?.channel === "arenaforge-game-save") {
+        window.__lastSaveSession = event.data.sessionId;
+        if (event.data.op === "snapshot") window.__saveSnapshotCount++;
+      }
+    });
+  }, id);
+  await installFault(first.id);
+  const warning = page.getByTestId("arcade-save-warning");
+  const fault = mode => page.evaluate(value => { window.__saveFault.mode = value; }, mode);
+  const committed = () => page.evaluate(id => window.__saveStorage.getItem.call(localStorage, `arenaforge.game-save.v1:${id}`), first.id);
+  const attempt = async value => {
+    await frame().getByLabel("Progress value").fill(value);
+    await frame().getByRole("button", { name: "Save progress", exact: true }).click();
+  };
+  await frame().locator("body").evaluate(body => { body.dataset.failureLiveMarker = "same-running-game"; });
+  for (const mode of ["quota", "blocked"]) {
+    const previous = await committed();
+    await fault(mode);
+    await attempt(`pending-${mode}`);
+    await warning.waitFor();
+    if (mode === "quota") {
+      await warning.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: new URL("save-warning.png", output).pathname });
+    }
+    assert.equal(await committed(), previous, `${mode}: committed bytes must survive`);
+    await frame().locator("body").evaluate(async () => {
+      for (let i = 0; i < 100 && window.__arenaGameSave.status?.ok !== false; i++) await new Promise(resolve => setTimeout(resolve, 10));
+      if (window.__arenaGameSave.status?.ok !== false) throw new Error("Player did not receive rejection");
+    });
+    const snapshots = await page.evaluate(() => window.__saveSnapshotCount);
+    await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
+    await page.waitForFunction(before => window.__saveSnapshotCount > before, snapshots);
+    await warning.waitFor();
+    assert.equal(await committed(), previous, "a blocked retry cannot report success");
+    await fault("");
+    if (mode === "quota") {
+      await frame().locator("body").evaluate(() => localStorage.setItem("other", "a-later-valid-key"));
+      await page.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`)).other === "a-later-valid-key", first.id);
+      await warning.waitFor();
+    }
+    await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
+    await warning.waitFor({ state: "detached" });
+    assert.equal(JSON.parse(await committed()).progress, `pending-${mode}`);
+    assert.equal(await frame().locator("body").getAttribute("data-failure-live-marker"), "same-running-game");
+    assert.equal((await saves())[second.id], blue);
+    await frame().locator("body").evaluate(() => localStorage.removeItem("other"));
+  }
+  for (const action of ["Remove key", "Clear game data"]) {
+    await save(first.id, "before-rejected-removal");
+    const previous = await committed();
+    await fault("remove");
+    await frame().getByRole("button", { name: action, exact: true }).click();
+    await warning.waitFor();
+    assert.equal(await committed(), previous);
+    await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+    await fault("");
+    await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
+    await warning.waitFor({ state: "detached" });
+    assert.equal(await committed(), null);
+    assert.equal(await frame().locator("body").getAttribute("data-failure-live-marker"), "same-running-game");
+  }
+  await save(first.id, "before-ui-clear");
+  const beforeUiClear = await committed();
+  await fault("remove");
+  await page.getByRole("button", { name: "Clear progress", exact: true }).click();
+  await warning.waitFor();
+  assert.equal(await committed(), beforeUiClear);
+  assert.equal(await frame().locator("body").evaluate(() => localStorage.getItem("progress")), "before-ui-clear");
+  await frame().locator("body").evaluate(() => localStorage.setItem("ordinary", "a-later-autosave"));
+  await page.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`)).ordinary === "a-later-autosave", first.id);
+  await warning.waitFor();
+  assert.match(await warning.innerText(), /could not be removed/, "an unrelated autosave cannot confirm a failed UI removal");
+  await fault("");
+  await page.getByRole("button", { name: "Clear progress", exact: true }).click();
+  await warning.waitFor({ state: "detached" });
+  await frame().locator("body").evaluate(async () => {
+    for (let i = 0; i < 100 && localStorage.getItem("progress") !== null; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    if (localStorage.getItem("progress") !== null) throw new Error("Successful clear did not reach player");
+  });
+  assert.equal(await frame().locator("body").getAttribute("data-failure-live-marker"), "same-running-game");
+  await save(first.id, "before-oversized-save");
+  const beforeOversized = await committed();
+  const assertUnrelatedWriteKeepsWarning = async checkpoint => {
+    const checkpointValue = JSON.parse(await committed())[checkpoint] ?? null;
+    await frame().locator("body").evaluate(() => localStorage.setItem("unrelated", "ordinary-settings-write"));
+    await page.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`)).unrelated === "ordinary-settings-write", first.id);
+    await warning.waitFor();
+    assert.equal(JSON.parse(await committed())[checkpoint] ?? null, checkpointValue, "an unrelated write must not replace the rejected checkpoint");
+    await frame().locator("body").evaluate(() => localStorage.removeItem("unrelated"));
+    await page.waitForFunction(id => !Object.hasOwn(JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`)), "unrelated"), first.id);
+    await warning.waitFor();
+  };
+  for (const value of ["x".repeat(65537), "🎮".repeat(17000)]) {
+    await frame().locator("body").evaluate((_, value) => localStorage.setItem("progress", value), value);
+    await warning.waitFor();
+    assert.equal(await committed(), beforeOversized);
+    assert.equal(await frame().locator("body").evaluate(() => localStorage.getItem("progress")), "before-oversized-save");
+    await assertUnrelatedWriteKeepsWarning("progress");
+  }
+  await fault("quota");
+  await frame().locator("body").evaluate(() => localStorage.setItem("pending-settings", "retry-this-key-only"));
+  await page.getByRole("button", { name: "Retry saving live progress", exact: true }).waitFor();
+  await fault("");
+  await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
+  await page.getByRole("button", { name: "Retry saving live progress", exact: true }).waitFor({ state: "detached" });
+  await warning.waitFor();
+  assert.equal(JSON.parse(await committed()).progress, "before-oversized-save", "retrying another key cannot replace an oversized checkpoint");
+  assert.equal(JSON.parse(await committed())["pending-settings"], "retry-this-key-only");
+  await frame().locator("body").evaluate(() => localStorage.removeItem("pending-settings"));
+  await warning.waitFor();
+  // A valid replacement that itself hits quota may resolve the size warning only
+  // once retry has actually committed that replacement.
+  await fault("quota");
+  await frame().locator("body").evaluate(() => localStorage.setItem("progress", "smaller-valid-progress"));
+  await page.getByRole("button", { name: "Retry saving live progress", exact: true }).waitFor();
+  await fault("");
+  await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
+  await warning.waitFor({ state: "detached" });
+  assert.equal(JSON.parse(await committed()).progress, "smaller-valid-progress");
+  await frame().locator("body").evaluate(() => localStorage.setItem("progress", "before-oversized-save"));
+  await frame().locator("body").evaluate(() => localStorage.setItem("one", "x".repeat(40000)));
+  await warning.waitFor({ state: "detached" });
+  const beforeAggregate = await committed();
+  await frame().locator("body").evaluate(() => localStorage.setItem("two", "y".repeat(40000)));
+  await warning.waitFor();
+  assert.equal(await committed(), beforeAggregate, "aggregate overflow retains the last committed snapshot");
+  assert.equal(await frame().locator("body").evaluate(() => localStorage.getItem("two")), null);
+  await assertUnrelatedWriteKeepsWarning("two");
+  await frame().locator("body").evaluate(() => localStorage.setItem("two", "smaller-checkpoint"));
+  await warning.waitFor({ state: "detached" });
+  await frame().locator("body").evaluate(() => localStorage.removeItem("one"));
+  await frame().locator("body").evaluate(() => localStorage.removeItem("two"));
+  await warning.waitFor({ state: "detached" });
+  await page.waitForFunction(({ id, expected }) => localStorage.getItem(`arenaforge.game-save.v1:${id}`) === expected, { id: first.id, expected: beforeOversized });
+  // Exercise the parent's limit too, not only the injected runtime's early refusal.
+  const session = await page.evaluate(() => window.__lastSaveSession);
+  await frame().locator("body").evaluate((_, { gameId, sessionId }) => {
+    parent.postMessage({ channel: "arenaforge-game-save", gameId, sessionId, op: "set", key: "progress", value: "x".repeat(65537) }, "*");
+  }, { gameId: first.id, sessionId: session });
+  await warning.waitFor();
+  assert.equal(await committed(), beforeOversized);
+  await assertUnrelatedWriteKeepsWarning("progress");
+  await page.getByRole("button", { name: "Clear progress", exact: true }).click();
+  await warning.waitFor({ state: "detached" });
+  assert.equal(await committed(), null, "an explicit clear resolves the rejected checkpoint without pretending to save it");
+  await save(first.id, "private-progress-red-13");
+  await warning.waitFor({ state: "detached" });
+  assert.deepEqual(await saves(), beforeReload);
+  assert.equal(await frame().locator("body").getAttribute("data-failure-live-marker"), "same-running-game");
+  await page.evaluate(() => {
+    for (const [name, method] of Object.entries(window.__saveStorage)) Storage.prototype[name] = method;
+  });
+  checks.push("quota, blocked storage, rejected remove/clear, UI clear and UTF-8 oversized saves warn visibly; unrelated writes cannot dismiss single-key or aggregate rejections; retries commit live data without remounts, preserve prior bytes and isolate the other game");
   await page.evaluate(() => {
     const frame = document.querySelector('iframe[title="Playable game: same-name.html"]');
     window.__outgoingSaveWindow = frame.contentWindow;
@@ -212,7 +389,10 @@ try {
   assert.equal((await saves())[second.id], blue);
   await save(first.id, "private-progress-red-16");
   await page.getByRole("button", { name: "Clear progress", exact: true }).click();
-  await expectStored("unset");
+  await frame().locator("body").evaluate(async () => {
+    for (let i = 0; i < 100 && localStorage.getItem("progress") !== null; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    if (localStorage.getItem("progress") !== null) throw new Error("Player did not clear progress");
+  });
   await page.waitForFunction(id => localStorage.getItem(`arenaforge.game-save.v1:${id}`) === null, first.id);
   await select(second.id, "private-progress-blue-22");
   await reopen();
@@ -393,12 +573,33 @@ let ticks=0;function step(){document.body.dataset.gameTicks=String(++ticks);requ
   await createdPlayer.locator("#progress").fill("source-compatible-progress");
   await createdPlayer.getByRole("button", { name: "Save checkpoint" }).click();
   await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
+  await installFault(createdGames[0].saveSlotId);
+  const createdCommitted = await page.evaluate(id => localStorage.getItem(`arenaforge.game-save.v1:${id}`), createdGames[0].saveSlotId);
+  live = await playerState(createdPlayer);
+  await fault("quota");
+  await createdPlayer.locator("#progress").fill("created-pending-checkpoint");
+  await createdPlayer.getByRole("button", { name: "Save checkpoint" }).click();
+  await warning.waitFor();
+  assert.equal(await page.evaluate(id => localStorage.getItem(`arenaforge.game-save.v1:${id}`), createdGames[0].saveSlotId), createdCommitted);
+  await fault("");
+  await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
+  await warning.waitFor({ state: "detached" });
+  assert.equal(JSON.parse(await page.evaluate(id => localStorage.getItem(`arenaforge.game-save.v1:${id}`), createdGames[0].saveSlotId)).checkpoint, "created-pending-checkpoint");
+  await waitForLiveProgress(createdPlayer, live.session, live.ticks, "created-player rejected save and retry");
+  await page.evaluate(() => {
+    for (const [name, method] of Object.entries(window.__saveStorage)) Storage.prototype[name] = method;
+  });
+  checks.push("created-game player exposes the same warning and live-checkpoint recovery without interrupting animation");
   live = await playerState(createdPlayer);
   await page.getByRole("button", { name: "Clear progress", exact: true }).click();
   await createdPlayer.locator("#fixture-title").waitFor();
   const cleared = await playerState(createdPlayer);
-  assert.notEqual(cleared.session, live.session, "explicit Clear progress should intentionally reload the player");
-  assert.equal(cleared.loaded, "unset", "the reloaded player must not receive explicitly cleared progress");
+  assert.equal(cleared.session, live.session, "explicit Clear progress must not restart live gameplay");
+  await waitForLiveProgress(createdPlayer, live.session, live.ticks, "explicit clear keeps the created game running");
+  await createdPlayer.locator("body").evaluate(async () => {
+    for (let i = 0; i < 100 && localStorage.getItem("checkpoint") !== null; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    if (localStorage.getItem("checkpoint") !== null) throw new Error("Explicit clear did not reach created player");
+  });
   assert.equal((await saves())[createdGames[0].saveSlotId], undefined);
   await createdPlayer.locator("#progress").fill("source-compatible-progress");
   await createdPlayer.getByRole("button", { name: "Save checkpoint" }).click();

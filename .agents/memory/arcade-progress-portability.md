@@ -26,3 +26,9 @@ For a continuously running emulator, pause execution and new input during a vali
 **Why:** Machine state changes continuously even without an explicit save. A paused review is more usable than repeatedly invalidating its confirmation as the emulator advances.
 
 **How to apply:** Keep inspection non-destructive, preserve the live run on storage failure, and retire the old runtime before its cleanup can autosave over a successful restore. Full machine snapshots contain program memory; describe them as local snapshots, not ROM-free progress files.
+
+Keep live gameplay running during checkpoint deletion and failed-save recovery.
+
+**Why:** Reloading as a storage-recovery mechanism discards the very in-memory progress that could not be saved. The requested behavior is to fix persistence without resetting the current run.
+
+**How to apply:** Treat deleting a saved checkpoint and restarting a game as separate actions. A persistence warning must remain until the relevant live progress is durably committed or explicitly cleared, not merely until some unrelated key writes successfully. An oversized checkpoint remains unresolved even if its in-memory write was rolled back: recommitting the old, smaller state is not proof that the rejected checkpoint was saved.

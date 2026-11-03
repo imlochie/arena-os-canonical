@@ -8,6 +8,7 @@ const ModWorkshop = lazy(() => import("./ModWorkshop"));
 const ArcadeDevelopmentWorkspace = lazy(() => import("./ArcadeDevelopmentWorkspace"));
 import type { WorkshopPlayback } from "../lib/modWorkshopTypes";
 import { useArcadeGameSave } from "../lib/arcadeGameSave";
+import { ArcadeSaveWarning } from "./ArcadeSaveWarning";
 import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
 import ArcadeGameManagement from "./ArcadeGameManagement";
@@ -1934,14 +1935,15 @@ export default function ArcadeForge() {
                 />
                 <div className="flex items-center justify-between gap-3 border-t border-white/5 px-3 py-2">
                   <p className="text-[10px] text-slate-500">
-                    Progress saves in this browser{gameSaves.hasSavedProgress ? " · save data found" : ""}.
+                    {gameSaves.persistenceWarning ? "Progress persistence needs attention." : `Progress saves in this browser${gameSaves.hasSavedProgress ? " · save data found" : ""}.`}
                   </p>
-                  {gameSaves.hasSavedProgress && (
+                  {(gameSaves.hasSavedProgress || gameSaves.persistenceWarning) && (
                     <button type="button" onClick={gameSaves.clearSavedProgress} className="text-[10px] font-bold text-slate-400 hover:text-red-200">
                       Clear progress
                     </button>
                   )}
                 </div>
+                <ArcadeSaveWarning warning={gameSaves.persistenceWarning} canRetry={gameSaves.canRetrySave} onRetry={gameSaves.retrySaving} />
               </div>
             ) : (
               <div className="glass mt-2 overflow-hidden rounded-2xl">

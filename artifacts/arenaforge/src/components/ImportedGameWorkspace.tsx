@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Copy, Download, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { useArcadeGameSave } from "../lib/arcadeGameSave";
+import { ArcadeSaveWarning } from "./ArcadeSaveWarning";
 import { browserHtmlAdapter, browserNesAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
 import ArcadeGameManagement from "./ArcadeGameManagement";
@@ -1325,14 +1326,15 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                 />
                 <div className="flex items-center justify-between gap-3 px-1 pt-2">
                   <p className="text-[10px] text-slate-500">
-                    Progress saves in this browser{gameSaves.hasSavedProgress ? " · save data found" : ""}.
+                    {gameSaves.persistenceWarning ? "Progress persistence needs attention." : `Progress saves in this browser${gameSaves.hasSavedProgress ? " · save data found" : ""}.`}
                   </p>
-                  {gameSaves.hasSavedProgress && (
+                  {(gameSaves.hasSavedProgress || gameSaves.persistenceWarning) && (
                     <button type="button" onClick={gameSaves.clearSavedProgress} className="text-[10px] font-bold text-slate-400 hover:text-red-200">
                       Clear progress
                     </button>
                   )}
                 </div>
+                <ArcadeSaveWarning warning={gameSaves.persistenceWarning} canRetry={gameSaves.canRetrySave} onRetry={gameSaves.retrySaving} />
                 <ImportedGameProgressBackup key={runtimeSaveId} game={workshopActive && runtimeGame ? { ...runtimeGame, id: runtimeSaveId } : selected} hasProgress={gameSaves.hasSavedProgress} disabled={busy || savingShelf > 0} onRestore={gameSaves.restoreSavedProgress} />
               </div>
             ) : selected.kind === "emulator" && selected.system && selectedEmulatorRom ? (
