@@ -7,6 +7,7 @@ import { anchoredClipRange, clipRangeSelection, orderedClipIds, toggleClipSelect
 import { effectiveMuted, type RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
 import { barMs, beatMs, formatMusicalPosition, snapIncrementMs, snapTimelineMs, type MusicalTiming } from "@workspace/arena/lib/waveyard/timing";
 import { clock, type Remix } from "./types";
+import { AutomationEditor, type AutomationTarget } from "./AutomationEditor";
 
 export type ClipSelection = { trackId: string; clipIndex: number } | null;
 type DragMode = "move" | "trim-left" | "trim-right";
@@ -95,6 +96,8 @@ export function ArrangementTimeline({
   const lanePointerStart = useRef<LanePointerStart | null>(null);
   const automationDrag = useRef<AutomationDragState | null>(null);
   const [selectedAutomationPointId, setSelectedAutomationPointId] = useState<string | null>(null);
+  const [automationTarget, setAutomationTarget] = useState<AutomationTarget>({ trackId: remix.tracks[0]?.id ?? "", parameter: "volume", timelineMs: null });
+  const automationEditorRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const focusedClip = useRef<{ element: HTMLElement; trackId: string; index: number } | null>(null);
   const rangeAnchor = useRef<string | null>(null);
@@ -422,6 +425,9 @@ export function ArrangementTimeline({
       </div>
       <span className="timeline-selection-status" role="status" aria-live="polite" aria-atomic="true">{selectedClipIds.length} {selectedClipIds.length === 1 ? "clip selected" : "clips selected"}</span>
       <span className="timeline-edit-status" role="status">{editMessage}</span>
+      <div ref={automationEditorRef}>
+        <AutomationEditor key={remix.id} remix={remix} positionMs={positionMs} target={automationTarget} onTarget={setAutomationTarget} onEdit={onAutomationEdit} />
+      </div>
       <div className="timeline-axis">
         0s <span>{clock(timelineEndMs / 1000)}</span>
         <em>{timing.tempoBpm} BPM · {timing.timeSignatureNumerator}/{timing.timeSignatureDenominator} · {timing.gridDivision}</em>
@@ -548,12 +554,18 @@ export function ArrangementTimeline({
                           type="button"
                           className={`automation-point ${selectedAutomationPointId === key ? "selected" : ""}`}
                           aria-label={`${track.name} ${parameter} point at ${point.timelineMs} milliseconds`}
+                          aria-pressed={automationTarget.trackId === track.id && automationTarget.parameter === parameter && automationTarget.timelineMs === point.timelineMs}
                           key={key}
                           style={{ left: `${(point.timelineMs / 1000) * zoom}px`, bottom: `${automationPosition(parameter, point.value) * 100}%` }}
                           onPointerDown={(event) => beginAutomationDrag(event, track.id, parameter, point)}
                           onPointerMove={moveAutomationDrag}
                           onPointerUp={endAutomationDrag}
                           onPointerCancel={endAutomationDrag}
+                          onClick={() => {
+                            setSelectedAutomationPointId(key);
+                            setAutomationTarget({ trackId: track.id, parameter, timelineMs: point.timelineMs });
+                            automationEditorRef.current?.querySelector<HTMLInputElement>('input[type="number"]')?.focus();
+                          }}
                           onContextMenu={(event) => {
                             event.preventDefault();
                             event.stopPropagation();

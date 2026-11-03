@@ -1,3 +1,4 @@
+.automation-editor fieldset{min-width:0;border:1px solid var(--border,#3a4147);border-radius:8px;padding:12px}.automation-editor p{font-size:12px;margin:4px 0 10px}.automation-editor-controls{display:flex;flex-wrap:wrap;align-items:end;gap:10px}.automation-editor-controls label{display:grid;gap:4px;font-size:12px}.automation-editor-controls input{width:140px}.automation-editor-controls select{max-width:240px}.automation-editor :focus-visible{outline:2px solid #d6fb54;outline-offset:3px}
 /* Waveyard room styles — ported verbatim from the original Waveyard app
  * (apps/web/src/app/styles.css + arena.css). Class names do not collide with
  * Arena's global styles; this sheet is loaded only on /waveyard routes. */
