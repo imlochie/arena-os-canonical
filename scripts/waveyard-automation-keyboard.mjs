@@ -140,13 +140,18 @@ export async function verifyAutomationKeyboard({ page, base, makePcmWav }) {
     1200,
     "undo must restore the previous automation point without discarding the intervening mixer edit",
   );
+  await page.getByRole("button", { name: /volume point at 1200 milliseconds$/ }).focus();
+  await page.keyboard.press("Space");
+  await assertFocus(time);
+  assert.equal(await point.inputValue(), "1200");
+  const requestsBeforeInvalid = requests.length;
   await typeNumber(time, "86400001");
   await activate(editor.getByRole("button", { name: "Save point", exact: true }));
-  assert.equal(requests.length, 1, "Out-of-bounds time must not reach the API");
+  assert.equal(requests.length, requestsBeforeInvalid, "Out-of-bounds time must not reach the API");
   await typeNumber(time, "2400");
   await typeNumber(value, "2.1");
   await activate(editor.getByRole("button", { name: "Save point", exact: true }));
-  assert.equal(requests.length, 1, "Out-of-bounds volume must not reach the API");
+  assert.equal(requests.length, requestsBeforeInvalid, "Out-of-bounds volume must not reach the API");
   await typeNumber(value, "2");
   failNext = true;
   await activate(editor.getByRole("button", { name: "Save point", exact: true }));
@@ -194,5 +199,5 @@ export async function verifyAutomationKeyboard({ page, base, makePcmWav }) {
   await waitMessage("deleted");
   await assertFocus(point);
   assert.equal(await status.textContent(), "pan point deleted. Choose another point or create a new one.");
-  console.log("AUTOMATION_KEYBOARD_ONLY_COMPLETE: create, select, move, bounds, failed save/retry, and delete with focus recovery for volume and pan.");
+  console.log("AUTOMATION_KEYBOARD_ONLY_COMPLETE: create, select, delayed-save reconciliation/undo, bounds, failed save/retry, and delete for volume and pan.");
 }

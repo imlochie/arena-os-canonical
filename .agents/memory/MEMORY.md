@@ -46,4 +46,5 @@
 - [Waveyard preview memory budgets](waveyard-preview-memory-budget.md) — budget using the live AudioContext rate, and make long-stem fixtures exceed limits at 44.1 and 48 kHz.
 - [Waveyard broker drain lifecycle](waveyard-broker-drain.md) — each drain call must observe newly submitted work, not reuse a fulfilled wait.
 - [Waveyard compact listener](waveyard-compact-listener.md) — keep compact controls in the shared session engine; do not mount a second deck for dock-only actions.
+- [Waveyard Studio async edits](waveyard-studio-async-edits.md) — merge delayed mutation responses into the latest same-session remix and test canonical state through undo, not just visible controls.
 - [Waveyard keyboard selection](waveyard-keyboard-selection.md) — separate focus from membership so arbitrary clip groups do not require hijacking browser shortcuts.
