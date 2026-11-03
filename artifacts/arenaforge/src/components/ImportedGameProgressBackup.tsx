@@ -64,7 +64,7 @@ export default function ImportedGameProgressBackup({ game, hasProgress, disabled
   return (
     <details className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3" data-testid="imported-progress-backup">
       <summary className="cursor-pointer text-xs font-bold text-slate-200">Progress backup and restore</summary>
-      <p className="mt-2 text-[11px] leading-relaxed text-slate-400">Private progress files stay on your device. Source and media are not included; keep your HTML download too when clearing browser data or moving browsers.</p>
+      <p className="mt-2 text-[11px] leading-relaxed text-slate-400">Private progress files stay on your device. Source and media are not included; keep a separate HTML source backup with rollback copies too when clearing browser data or moving browsers.</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button type="button" disabled={busy || disabled || !hasProgress} onClick={() => void exportProgress()} className="min-h-11 rounded-lg border border-sky-300/25 px-3 py-2 text-[11px] font-bold text-sky-100 disabled:opacity-40" data-testid="button-export-imported-progress">Export progress</button>
         <label className="text-[11px] font-semibold text-slate-300">Choose progress backup

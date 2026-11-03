@@ -3,6 +3,12 @@ name: Arcade progress portability
 description: Identity and confirmation rules when moving progress between imported copies.
 ---
 
+Keep portable HTML-source backups separate from gameplay-progress backups.
+
+**Why:** The user wants active source, retained rollback copies, provenance and stable identity recoverable after browser data is cleared, without automatically replacing gameplay progress or uploading private bytes.
+
+**How to apply:** Source restores require explicit collision/overwrite confirmation and must leave gameplay saves alone. Do not expand this source-backup feature into native/runtime packaging.
+
 An exact source match makes a progress backup eligible for an explicitly confirmed new import; it does not make two imports the same game identity.
 
 **Why:** Identical filenames and source can represent separate playthroughs whose progress must remain isolated. Automatically aliasing them by content would undo that separation.

@@ -24,6 +24,8 @@ import EmulatorJsPlayer from "./EmulatorJsPlayer";
 import Chip8Player from "./Chip8Player";
 import ImportedGameSourceComparison from "./ImportedGameSourceComparison";
 import ImportedGameProgressBackup from "./ImportedGameProgressBackup";
+import ImportedGameSourceBackup from "./ImportedGameSourceBackup";
+import type { SourceBackupGame } from "../lib/importedGameSourceBackup";
 import { keepImportedRevision, undoImportedRevision, restoreImportedRevision, getImportedRevisionHistory, importedRevisionMetadataValid, MAX_IMPORTED_REVISION_COPIES, MAX_IMPORTED_REVISION_BYTES, type ImportedRevisionRollback } from "../lib/importedGameRevision";
 import { CHIP8_MAX_ROM_BYTES, chip8DialectForFile, chip8DialectLabel, isChip8Dialect, type Chip8Dialect } from "../lib/chip8Runtime";
 import type { ButtonKey, NES } from "jsnes";
@@ -677,6 +679,28 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     }
   };
 
+  const restoreSourceBackup = async (game: SourceBackupGame, expected: { id: string; name: string } | undefined) => {
+    if (!loaded || !rightsAccepted || busy || removing || refreshingShelf || savingShelf || workshopActive) return false;
+    const existing = currentGames.current.find(record => record.id === game.id);
+    if (existing !== expected) {
+      setError("This game changed since the backup preview. Choose the backup again before restoring.");
+      return false;
+    }
+    if (!existing && currentGames.current.length >= 12) {
+      setError("Your local shelf is full. Remove a game before restoring another.");
+      return false;
+    }
+    if (unsavedIds.length || externalShelfChange) {
+      setError("Save your unsaved games or refresh the saved shelf before restoring source.");
+      return false;
+    }
+    const next = existing ? currentGames.current.map(record => record.id === game.id ? game : record) : [game, ...currentGames.current];
+    if (!await saveGames(next, false, "Source backup could not be saved. Active source and rollback copies are unchanged.")) return false;
+    setError("");
+    setSelectedId(game.id);
+    return true;
+  };
+
   const reloadSavedShelf = async () => {
     if (savingShelf || busy || removing || refreshingShelf) return;
     const dirty = importedGameStorageChanges(persistedGames.current, currentGames.current);
@@ -1264,6 +1288,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
 
         {error && <div role="alert" className="flex items-start gap-2 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2.5 text-xs leading-relaxed text-red-200"><AlertTriangle size={15} className="mt-0.5 shrink-0" />{error}</div>}
         {notice && !error && <div role="status" className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2.5 text-xs text-emerald-100">{notice}</div>}
+        <ImportedGameSourceBackup selected={selected?.kind === "html" ? selected as SourceBackupGame : null}
+          games={games} authorized={rightsAccepted}
+          disabled={!loaded || busy || removing || refreshingShelf || savingShelf > 0 || workshopActive}
+          onRestore={restoreSourceBackup} />
         <RepositoryGameImport disabled={!rightsAccepted || !loaded || busy || removing || games.length >= 12}
           onBuildSource={getNativeBridge()?.buildRepositorySource ? async token => {
             await getNativeBridge()!.buildRepositorySource!(token);
