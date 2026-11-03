@@ -113,8 +113,37 @@ try {
   await select(first.id, "private-progress-red-11");
   await save(first.id, "private-progress-red-13");
   const beforeReload = await saves();
+  await page.evaluate(() => {
+    const frame = document.querySelector('iframe[title="Playable game: same-name.html"]');
+    window.__outgoingSaveWindow = frame.contentWindow;
+    window.__heldOutgoingSave = null;
+    window.__holdOutgoingSave = event => {
+      if (event.source !== window.__outgoingSaveWindow || event.data?.channel !== "arenaforge-game-save") return;
+      event.stopImmediatePropagation();
+      window.__heldOutgoingSave = { source: event.source, data: event.data };
+    };
+    window.addEventListener("message", window.__holdOutgoingSave, true);
+  });
+  await frame().locator("body").evaluate((_, gameId) => {
+    parent.postMessage({
+      channel: "arenaforge-game-save", gameId, op: "set",
+      key: "progress", value: "late-outgoing-save",
+    }, "*");
+  }, first.id);
+  await page.waitForFunction(() => window.__heldOutgoingSave?.data?.value === "late-outgoing-save");
   await select(second.id, "private-progress-blue-22");
   assert.equal((await saves())[second.id], blue);
+  assert.notEqual(await page.evaluate(() =>
+    window.__outgoingSaveWindow === document.querySelector('iframe[title="Playable game: same-name.html"]')?.contentWindow),
+  true, "switching games must replace the active player window");
+  await page.evaluate(() => {
+    const held = window.__heldOutgoingSave;
+    window.removeEventListener("message", window.__holdOutgoingSave, true);
+    window.dispatchEvent(new MessageEvent("message", { data: held.data, source: held.source, origin: "null" }));
+  });
+  assert.deepEqual(await saves(), beforeReload, "a delayed message from the outgoing game must not overwrite either game's save");
+  await expectStored("private-progress-blue-22");
+  checks.push("a real outgoing-frame save message held until after switching games is ignored; both game save slots remain unchanged");
   await reopen();
   await select(first.id, "private-progress-red-13");
   await select(second.id, "private-progress-blue-22");
