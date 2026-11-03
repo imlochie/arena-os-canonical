@@ -1727,6 +1727,49 @@ try {
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
   await page.getByTestId("session-play").click();
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`${base}/arcade`, { waitUntil: "domcontentloaded" });
+  const compactDock = page.locator(".wy-host-compact");
+  await compactDock.waitFor({ timeout: 20_000 });
+  const compactMissingOriginal = compactDock.getByTestId(`compact-full-track-unavailable-${liveSessionTrackId}`);
+  const compactPlay = compactDock.getByTestId("session-play");
+  const compactIsolateVocals = compactDock.getByTestId("compact-isolate-vocals");
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await compactMissingOriginal.waitFor({ state: "visible" });
+    assert.equal(await compactPlay.isVisible(), true, `${width}px compact dock keeps playback visible`);
+    assert.equal(await compactIsolateVocals.isVisible(), true, `${width}px compact dock keeps stem controls visible`);
+    assert.equal(await page.evaluate((testIds) => testIds.every((testId) => {
+      const element = document.querySelector(`[data-testid="${testId}"]`);
+      if (!(element instanceof HTMLElement)) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= window.innerHeight
+        && rect.left >= 0 && rect.right <= window.innerWidth;
+    }), [
+      `compact-full-track-unavailable-${liveSessionTrackId}`,
+      "session-play",
+      "compact-isolate-vocals",
+    ]), true, `${width}px compact status and controls fit in the phone viewport`);
+    assert.equal(await compactDock.getByTestId(`button-return-full-track-${liveSessionTrackId}`).count(), 0,
+      `${width}px compact dock must not offer a return to an absent original`);
+    assert.equal(await compactDock.getByTestId(`button-retry-full-track-${liveSessionTrackId}`).count(), 0,
+      `${width}px compact dock must not offer a retry for an absent original`);
+  }
+  assert.equal(await compactIsolateVocals.isEnabled(), true,
+    "stem isolation remains enabled in compact mode when the original asset is missing");
+  await compactIsolateVocals.click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "true");
+  await compactDock.getByTestId("compact-restore-stems").click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "false");
+  await compactPlay.click();
+  await page.waitForFunction((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
+  }, liveVocalsAssetId, { timeout: 12_000 });
+  await compactPlay.click();
+  report.push("Compact listening keeps the missing-original status visible, hides full-track recovery actions, and plays/isolate stems at 320px and 390px.");
+  await page.goto(`${base}/waveyard/session/${liveSessionId}`, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
   liveCurrentItem.sourceAssetId = liveCurrentSourceAssetId;
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
@@ -2467,15 +2510,15 @@ try {
   assert.equal(await donorVocalsTrack.count(), 1, "the vocal lane must identify the vocal donor");
   assert.equal(await donorDrumsTrack.count(), 1, "the drum lane must identify the drum donor");
   const outgoingVocalsTrack = donorVocalsTrack;
-  await outgoingVocalsTrack.locator(".clip").click();
+  await outgoingVocalsTrack.locator(".clip").focus();
   await page.getByLabel("Fade out (ms)").waitFor();
   assert.equal(await page.getByLabel("Fade out (ms)").inputValue(), "1000",
     "the outgoing clip must restore its supported crossfade fade-out");
-  await donorDrumsTrack.locator(".clip").click();
+  await donorDrumsTrack.locator(".clip").focus();
   assert.equal(await page.getByLabel("Fade out (ms)").inputValue(), "0",
     "the swapped drum lane must retain the session's keep-drums transition setting");
   const incomingVocalsTrack = page.locator(".timeline-track").filter({ hasText: "Next source track.wav — Vocals" });
-  await incomingVocalsTrack.locator(".clip").click();
+  await incomingVocalsTrack.locator(".clip").focus();
   assert.equal(await page.getByLabel("Fade in (ms)").inputValue(), "1000",
     "the incoming clip must restore its supported crossfade fade-in");
   assert.equal(await incomingVocalsTrack.getByLabel("Next source track.wav — Vocals arrangement volume").inputValue(), "1");
@@ -2517,10 +2560,10 @@ try {
     "the reloaded vocal lane must still identify its matching donor");
   assert.equal(await page.locator(".timeline-track").filter({ hasText: "Drum donor track.wav — Drums" }).count(), 1,
     "the reloaded drum lane must still identify its matching donor");
-  await page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" }).locator(".clip").click();
+  await page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" }).locator(".clip").focus();
   assert.equal(await page.getByLabel("Fade out (ms)").inputValue(), "1000",
     "the outgoing supported transition must survive reload");
-  await page.locator(".timeline-track").filter({ hasText: "Next source track.wav — Vocals" }).locator(".clip").click();
+  await page.locator(".timeline-track").filter({ hasText: "Next source track.wav — Vocals" }).locator(".clip").focus();
   assert.equal(await page.getByLabel("Fade in (ms)").inputValue(), "1000",
     "the incoming supported transition must survive reload");
   const keyboardTimeline = page.getByRole("region", { name: "Arrangement timeline" });

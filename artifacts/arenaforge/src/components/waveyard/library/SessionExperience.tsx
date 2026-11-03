@@ -3631,6 +3631,14 @@ export default function SessionExperience({
 
   const saveLabel =
     saveState === "error" || mixSaveError ? "Not saved" : saveState === "saving" ? "Saving…" : "Saved";
+  const compactStemItem = variant === "compact" && currentItem?.playback?.kind === "stems"
+    ? currentItem
+    : null;
+  const compactPerformance = compactStemItem === null
+    ? defaultPerformance()
+    : transitions[compactStemItem.id]?.performance
+      ?? compactStemItem.transition.performance
+      ?? defaultPerformance();
 
   return (
     <section className={`wy-workspace wy-${variant}`} aria-label={`Listening · ${session.name}`} data-testid="listening-workspace">
@@ -3714,6 +3722,39 @@ export default function SessionExperience({
           <Link className="wy-open" href={`/waveyard/session/${session.id}`}>Open mixer</Link>
         )}
       </div>
+      {compactStemItem !== null && compactStemItem.stems.length > 0 && (
+        <section className="wy-compact-stems" aria-label="Compact stem controls" data-testid="compact-stem-controls">
+          {compactStemItem.sourceAssetId === null && (
+            <p role="status" data-testid={`compact-full-track-unavailable-${compactStemItem.id}`}>
+              Original audio unavailable · stem playback and controls remain available
+            </p>
+          )}
+          <div className="wy-compact-stem-actions" role="group" aria-label="Quick stem isolation">
+            {compactStemItem.stems.map((stem) => (
+              <button
+                key={stem.id}
+                type="button"
+                aria-label={`Isolate ${stem.stemType}`}
+                aria-pressed={compactPerformance.isolatedStem === stem.stemType}
+                data-testid={`compact-isolate-${stem.stemType}`}
+                disabled={phase !== "idle"}
+                onClick={() => requestPerformance(compactStemItem.id, activeDeck, { kind: "isolate", stem: stem.stemType })}
+              >
+                {stem.stemType}
+              </button>
+            ))}
+            <button
+              type="button"
+              aria-label="Restore all stems"
+              data-testid="compact-restore-stems"
+              disabled={phase !== "idle"}
+              onClick={() => requestPerformance(compactStemItem.id, activeDeck, { kind: "restore" })}
+            >
+              Restore
+            </button>
+          </div>
+        </section>
+      )}
 
       {pendingSwaps.map((pending) => (
         <p key={pending.swapId} className="sess-status wy-ready" role="status" data-testid={`live-swap-pending-${pending.stemType}`}>
