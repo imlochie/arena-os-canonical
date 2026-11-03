@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { ARCADE_SAVE_PREFIX, MAX_ARCADE_SAVE_BYTES, MAX_ARCADE_SAVE_KEY_LENGTH, commitHtmlProgressRestore, type GameSaveData } from "./arcadeGameProgressBackup";
 
 const STORAGE_PREFIX = ARCADE_SAVE_PREFIX;
@@ -37,12 +37,13 @@ function safelyEmbedJson(value: unknown) {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function saveRuntimeScript(gameId: string, saved: GameSaveData) {
+function saveRuntimeScript(gameId: string, sessionId: string, saved: GameSaveData) {
   const safeId = safelyEmbedJson(gameId);
+  const safeSessionId = safelyEmbedJson(sessionId);
   const safeSaved = safelyEmbedJson(JSON.stringify(saved));
   return `<script data-arenaforge-save-runtime>(function(){` +
-    `var gameId=${safeId},data=Object.assign(Object.create(null),JSON.parse(${safeSaved})),channel=${safelyEmbedJson(MESSAGE_CHANNEL)};` +
-    `function send(op,key,value){try{parent.postMessage({channel:channel,gameId:gameId,op:op,key:key,value:value},"*")}catch(e){}}` +
+    `var gameId=${safeId},sessionId=${safeSessionId},data=Object.assign(Object.create(null),JSON.parse(${safeSaved})),channel=${safelyEmbedJson(MESSAGE_CHANNEL)};` +
+    `function send(op,key,value){try{parent.postMessage({channel:channel,gameId:gameId,sessionId:sessionId,op:op,key:key,value:value},"*")}catch(e){}}` +
     `function write(key,value){key=String(key);value=String(value);if(!key||key.length>${MAX_KEY_LENGTH}||value.length>${MAX_SAVE_BYTES})return;` +
     `var old=data[key];data[key]=value;if(JSON.stringify(data).length>${MAX_SAVE_BYTES}){if(old===undefined)delete data[key];else data[key]=old;return}send("set",key,value)}` +
     `var store={getItem:function(key){key=String(key);return Object.prototype.hasOwnProperty.call(data,key)?data[key]:null},setItem:write,` +
@@ -52,13 +53,13 @@ function saveRuntimeScript(gameId: string, saved: GameSaveData) {
     `try{Object.defineProperty(window,"localStorage",{configurable:true,value:store})}catch(e){}` +
     `window.__arenaGameSave={get:function(key,fallback){var raw=store.getItem(key);if(raw===null)return fallback;try{return JSON.parse(raw)}catch(e){return raw}},` +
     `set:function(key,value){write(key,JSON.stringify(value))},remove:function(key){store.removeItem(key)},clear:function(){store.clear()}};` +
-    `window.addEventListener("message",function(event){var m=event.data;if(event.source===parent&&m&&m.channel===channel&&m.gameId===gameId&&m.op==="clear"){data=Object.create(null)}});` +
+    `window.addEventListener("message",function(event){var m=event.data;if(event.source===parent&&m&&m.channel===channel&&m.gameId===gameId&&m.sessionId===sessionId&&m.op==="clear"){data=Object.create(null)}});` +
     `})();</script>`;
 }
 
-export function createGameSandboxDocument(source: string, gameId: string) {
+export function createGameSandboxDocument(source: string, gameId: string, sessionId = crypto.randomUUID()) {
   const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' data: blob:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; media-src data: blob:; font-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">`;
-  const runtime = saveRuntimeScript(gameId, readSaveData(gameId));
+  const runtime = saveRuntimeScript(gameId, sessionId, readSaveData(gameId));
   if (/<head\b[^>]*>/i.test(source)) {
     return source.replace(/<head\b[^>]*>/i, (head) => `${head}${csp}${runtime}`);
   }
@@ -77,6 +78,7 @@ export function useArcadeGameSave(
 ) {
   const [hasSavedProgress, setHasSavedProgress] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const sessionId = useMemo(() => crypto.randomUUID(), [gameId, reloadKey]);
   const retiredSaveWindow = useRef<Window | null>(null);
 
   useEffect(() => {
@@ -86,7 +88,7 @@ export function useArcadeGameSave(
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frameRef.current?.contentWindow || event.source === retiredSaveWindow.current) return;
       const message = event.data;
-      if (!message || message.channel !== MESSAGE_CHANNEL || message.gameId !== gameId) return;
+       if (!message || message.channel !== MESSAGE_CHANNEL || message.gameId !== gameId || message.sessionId !== sessionId) return;
 
       const current = readSaveData(gameId);
       if (message.op === "clear") {
@@ -117,7 +119,7 @@ export function useArcadeGameSave(
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [frameRef, gameId]);
+  }, [frameRef, gameId, sessionId]);
 
   const clearSavedProgress = useCallback(() => {
     if (!gameId) return;
@@ -125,12 +127,12 @@ export function useArcadeGameSave(
       localStorage.removeItem(storageKey(gameId));
     } catch {}
     frameRef.current?.contentWindow?.postMessage(
-      { channel: MESSAGE_CHANNEL, gameId, op: "clear" },
+      { channel: MESSAGE_CHANNEL, gameId, sessionId, op: "clear" },
       "*",
     );
     setHasSavedProgress(false);
     setReloadKey((key) => key + 1);
-  }, [frameRef, gameId]);
+  }, [frameRef, gameId, sessionId]);
 
   const reloadGame = useCallback(() => {
     setReloadKey((key) => key + 1);
@@ -145,5 +147,5 @@ export function useArcadeGameSave(
     setReloadKey(key => key + 1);
   }, [gameId, frameRef]);
 
-  return { hasSavedProgress, reloadKey, clearSavedProgress, reloadGame, restoreSavedProgress };
+  return { hasSavedProgress, reloadKey, sessionId, clearSavedProgress, reloadGame, restoreSavedProgress };
 }
