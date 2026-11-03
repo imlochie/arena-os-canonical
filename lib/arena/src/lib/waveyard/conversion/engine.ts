@@ -60,7 +60,7 @@ function formatIsAvailable(encoderText: string, encoder: string) {
   return new RegExp(`\\b${encoder}\\b`).test(encoderText);
 }
 
-async function embeddedArtworkStreamIndex(inputPath: string) {
+async function embeddedArtworkStreamIndexes(inputPath: string) {
   const { stdout } = await execTool("ffprobe", [
     "-v", "error",
     "-show_entries", "stream=index:stream_disposition=attached_pic",
@@ -70,10 +70,9 @@ async function embeddedArtworkStreamIndex(inputPath: string) {
   const report = JSON.parse(stdout) as {
     streams?: Array<{ index?: number; disposition?: { attached_pic?: number } }>;
   };
-  const artwork = report.streams?.find(
-    (stream) => stream.disposition?.attached_pic === 1,
-  );
-  return artwork && Number.isInteger(artwork.index) ? artwork.index : undefined;
+  return (report.streams ?? [])
+    .filter((stream) => stream.disposition?.attached_pic === 1 && Number.isInteger(stream.index))
+    .map((stream) => stream.index as number);
 }
 
 export async function conversionCapabilities() {
@@ -108,7 +107,8 @@ export async function convertLocalAudio(
 
   const inputExtension = extname(inputPath).toLowerCase();
   if (!inputExtension) throw new Error("The selected local audio file has no format extension.");
-  const artworkStreamIndex = await embeddedArtworkStreamIndex(inputPath);
+  const artworkStreamIndexes = await embeddedArtworkStreamIndexes(inputPath);
+  const retainsArtwork = artworkStreamIndexes.length > 0 && ARTWORK_CAPABLE_FORMATS.has(options.format);
 
   const args = [
     "-v", "error",
@@ -118,15 +118,18 @@ export async function convertLocalAudio(
     "-n",
     "-i", inputPath,
     "-map", "0:a:0",
-    ...(artworkStreamIndex === undefined || !ARTWORK_CAPABLE_FORMATS.has(options.format)
-      ? []
-      : ["-map", `0:${artworkStreamIndex}`]),
+    ...(retainsArtwork
+      ? artworkStreamIndexes.flatMap((index) => ["-map", `0:${index}`])
+      : []),
     "-map_metadata", "0",
     "-map_chapters", "-1",
     "-c:a", format.encoder,
   ];
-  if (artworkStreamIndex !== undefined && ARTWORK_CAPABLE_FORMATS.has(options.format)) {
-    args.push("-c:v", "copy", "-disposition:v:0", "attached_pic");
+  if (retainsArtwork) {
+    args.push("-c:v", "copy");
+    artworkStreamIndexes.forEach((_, outputVideoIndex) => {
+      args.push(`-disposition:v:${outputVideoIndex}`, "attached_pic");
+    });
     if (options.format === "mp3") args.push("-id3v2_version", "3");
   }
   if (format.lossy) args.push("-b:a", `${options.bitrate}k`);
@@ -170,6 +173,15 @@ export async function convertLocalAudio(
     throw new Error("The converted file failed format, duration, or size verification. No result was added to the library.");
   }
 
+  if (retainsArtwork) {
+    const convertedArtworkStreamIndexes = await embeddedArtworkStreamIndexes(outputPath);
+    if (convertedArtworkStreamIndexes.length !== artworkStreamIndexes.length) {
+      throw new Error(
+        `The converted file retained ${convertedArtworkStreamIndexes.length} of ${artworkStreamIndexes.length} embedded cover images. No result was added to the library.`,
+      );
+    }
+  }
+
   await execTool("ffmpeg", [
     "-v", "error",
     "-xerror",
@@ -185,9 +197,10 @@ export async function convertLocalAudio(
   });
 
   const warnings: string[] = [];
-  if (artworkStreamIndex !== undefined && !ARTWORK_CAPABLE_FORMATS.has(options.format)) {
+  if (artworkStreamIndexes.length > 0 && !ARTWORK_CAPABLE_FORMATS.has(options.format)) {
+    const count = artworkStreamIndexes.length;
     warnings.push(
-      `The source includes embedded cover artwork, but ${options.format.toUpperCase()} does not support retaining it; the converted file will not include the artwork.`,
+      `The source includes ${count} embedded cover image${count === 1 ? "" : "s"}, but ${options.format.toUpperCase()} cannot retain embedded artwork; all embedded artwork will be omitted from the converted file.`,
     );
   }
   if (format.lossy) {
