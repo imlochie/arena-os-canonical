@@ -220,11 +220,29 @@ function decryptBuffer(contents, key, ivText, tagText, label) {
 async function decryptFileToFile(source, destination, key, ivText, tagText) {
   const decipher = createDecipheriv("aes-256-gcm", key, decodeBase64(ivText, 12, "file IV"));
   decipher.setAuthTag(decodeBase64(tagText, 16, "file authentication tag"));
+  const authenticatedDecrypt = new Transform({
+    transform(chunk, encoding, callback) {
+      try {
+        callback(null, decipher.update(chunk));
+      } catch (error) {
+        callback(error);
+      }
+    },
+    flush(callback) {
+      try {
+        callback(null, decipher.final());
+      } catch (error) {
+        const authenticationError = new Error("AES-GCM file authentication failed.", { cause: error });
+        authenticationError.code = "ARENA_BACKUP_AUTHENTICATION_FAILED";
+        callback(authenticationError);
+      }
+    },
+  });
   const plainHash = createHash("sha256");
   const plainCount = { bytes: 0 };
   await pipeline(
     createReadStream(source),
-    decipher,
+    authenticatedDecrypt,
     makeMeter(plainHash, plainCount),
     createWriteStream(destination, { flags: "wx", mode: 0o600 }),
   );
@@ -274,7 +292,7 @@ function summarizeEntries(entries) {
 }
 
 export function backupContentSummary(manifest) {
-  if (manifest?.version === VERSION && manifest.summary) return manifest.summary;
+  if (manifest?.version === VERSION) return null;
   const entries = Object.entries(manifest?.files ?? {}).map(([relative, entry]) => ({
     path: relative,
     plainBytes: entry.bytes,
@@ -305,12 +323,6 @@ function validateV2Manifest(manifest) {
     if (relative !== "payload/index.enc" && !/^payload\/[a-f0-9]{32}\.enc$/.test(relative)) {
       throw new Error(`This Arena backup contains an unsupported file: ${relative}`);
     }
-  }
-  const summary = manifest.summary;
-  if (!summary || ["databaseFileCount", "databaseBytes", "waveyardFileCount", "waveyardBytes"].some(key =>
-    !Number.isSafeInteger(summary[key]) || summary[key] < 0,
-  )) {
-    throw new Error("This Arena backup has invalid summary metadata.");
   }
 }
 
@@ -359,7 +371,8 @@ function validateEncryptedIndex(index, manifest) {
     throw new Error("The encrypted Arena backup is missing its database credential or version marker.");
   }
   const summary = summarizeEntries(index.entries);
-  if (Object.keys(summary).some(key => summary[key] !== manifest.summary[key])) {
+  if (!index.summary ||
+    Object.keys(summary).some(key => !Number.isSafeInteger(index.summary[key]) || index.summary[key] !== summary[key])) {
     throw new Error("The encrypted Arena backup summary does not match its file index.");
   }
   return index.entries;
@@ -406,7 +419,10 @@ async function readManifest(backupDir) {
   } catch (error) {
     throw new Error("This folder does not contain a readable Arena backup manifest.", { cause: error });
   }
-  if (manifest.format !== FORMAT ||
+  if (!manifest ||
+    typeof manifest !== "object" ||
+    Array.isArray(manifest) ||
+    manifest.format !== FORMAT ||
     ![LEGACY_VERSION, VERSION].includes(manifest.version) ||
     !manifest.files ||
     typeof manifest.files !== "object" ||
@@ -416,6 +432,10 @@ async function readManifest(backupDir) {
   if (manifest.version === LEGACY_VERSION) validateLegacyManifestFilePaths(manifest);
   else validateV2Manifest(manifest);
   return manifest;
+}
+
+export async function readArenaBackupManifest(backupDir) {
+  return readManifest(backupDir);
 }
 
 export async function verifyArenaBackup(backupDir) {
@@ -534,24 +554,42 @@ async function restoreLegacyV1(source, staging, manifest, credential) {
   };
 }
 
+function restoreDestinationPath(staging, logicalPath) {
+  const segments = logicalPath.split("/");
+  if (segments[0] === "database") return path.join(staging, "data", "postgres", ...segments.slice(1));
+  return path.join(staging, ...segments);
+}
+
 async function restoreEncryptedV2(source, staging, manifest, entries, key) {
   for (const entry of entries) {
-    const destination = path.join(staging, ...entry.path.split("/"));
+    const destination = restoreDestinationPath(staging, entry.path);
     await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-    const decrypted = await decryptFileToFile(
-      path.join(source, entry.encryptedPath),
-      destination,
-      key,
-      entry.iv,
-      entry.tag,
-    );
+    let decrypted;
+    try {
+      decrypted = await decryptFileToFile(
+        path.join(source, entry.encryptedPath),
+        destination,
+        key,
+        entry.iv,
+        entry.tag,
+      );
+    } catch (error) {
+      if (error?.code === "ARENA_BACKUP_AUTHENTICATION_FAILED") {
+        throw new Error(`The backup passphrase is incorrect or encrypted file ${entry.encryptedPath} is damaged.`, { cause: error });
+      }
+      throw error;
+    }
     if (decrypted.bytes !== entry.plainBytes || decrypted.sha256 !== entry.plainSha256) {
       throw new Error(`Restored file verification failed: ${entry.path}`);
     }
   }
   const credentialPath = path.join(staging, "runtime/db-password.json");
   const credential = await readFile(credentialPath);
-  validateCredential(credential);
+  try {
+    validateCredential(credential);
+  } finally {
+    credential.fill(0);
+  }
   const postgresDir = path.join(staging, "data/postgres");
   const restoredDatabase = await hashTree(postgresDir);
   const expectedDatabase = Object.fromEntries(
@@ -644,9 +682,16 @@ export async function createArenaBackup({
     for (const file of sourceFiles) {
       const encryptedPath = `payload/${randomBytes(16).toString("hex")}.enc`;
       const destination = path.join(backupDir, encryptedPath);
-      const encrypted = file.buffer
-        ? await encryptBufferToFile(file.buffer, destination, key)
-        : await encryptFileToFile(file.source, destination, key);
+      let encrypted;
+      if (file.buffer) {
+        try {
+          encrypted = await encryptBufferToFile(file.buffer, destination, key);
+        } finally {
+          file.buffer.fill(0);
+        }
+      } else {
+        encrypted = await encryptFileToFile(file.source, destination, key);
+      }
       entries.push({
         path: file.relative,
         encryptedPath,
@@ -661,18 +706,27 @@ export async function createArenaBackup({
       };
     }
     const summary = summarizeEntries(entries);
-    const encryptedIndex = await encryptBufferToFile(
-      Buffer.from(JSON.stringify({
-        format: FORMAT,
-        version: VERSION,
-        pgVersion: version,
-        includesWaveyardFiles: includeWaveyardFiles,
-        summary,
-        entries,
-      })),
-      path.join(payloadDir, "index.enc"),
-      key,
-    );
+    const indexContents = Buffer.from(JSON.stringify({
+      format: FORMAT,
+      version: VERSION,
+      pgVersion: version,
+      includesWaveyardFiles: includeWaveyardFiles,
+      summary,
+      entries,
+    }));
+    if (indexContents.byteLength > MAX_INDEX_BYTES) {
+      throw new Error("The backup file list is too large to encrypt safely.");
+    }
+    let encryptedIndex;
+    try {
+      encryptedIndex = await encryptBufferToFile(
+        indexContents,
+        path.join(payloadDir, "index.enc"),
+        key,
+      );
+    } finally {
+      indexContents.fill(0);
+    }
     files["payload/index.enc"] = {
       bytes: encryptedIndex.encryptedBytes,
       sha256: encryptedIndex.encryptedSha256,
@@ -701,18 +755,18 @@ export async function createArenaBackup({
           tag: encryptedIndex.tag,
         },
       },
-      summary,
       files,
     };
     await writeFile(path.join(backupDir, "backup-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     const verified = await verifyArenaBackup(backupDir);
     if (!verified.ok) throw new Error(`Backup verification failed: ${verified.mismatches.slice(0, 5).join("; ")}`);
-    return { backupDir, manifest };
+    return { backupDir, manifest, summary };
   } catch (error) {
     await rm(backupDir, { recursive: true, force: true }).catch(() => {});
     throw error;
   } finally {
     key?.fill(0);
+    credential.fill(0);
   }
 }
 

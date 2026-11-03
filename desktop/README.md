@@ -199,17 +199,23 @@ confirms a clean PostgreSQL shutdown, copies the selected files, and verifies
 every copied file before restarting. If PostgreSQL's process state cannot be
 confirmed, the backup is refused.
 
-The database and any included Waveyard files are copied as readable files. The
-chosen passphrase (minimum 12 characters) encrypts only the matching database
-credential. Arena does not save it; it is required for restore. Store the
-backup and passphrase separately and securely. Restore verifies the backup and
-credential, requires a new empty data folder, and starts Arena from that folder;
-the existing data folder is left in place.
+The current backup format encrypts payload files with AES-256-GCM, using a key
+derived from the chosen passphrase with scrypt. Database and media files are
+processed as streams; the bounded-size encrypted index protects their original
+relative names. The passphrase must be at least 12 characters; Arena does not
+save it, and a lost passphrase cannot be recovered. Keep it separate from the
+backup. The public manifest still shows the creation time, PostgreSQL major
+version, whether Waveyard files were selected, and opaque encrypted-file sizes
+and hashes.
 
 When selected, Waveyard backup includes the files in `waveyard/storage` and
 `waveyard/capture`. Downloaded models, browser profiles, workspace files, and
-other local folders remain excluded. The backup and restore dialogs state the
-selected contents and that media files are not encrypted.
+other local folders remain excluded. Restore authenticates and verifies the
+encrypted files in a temporary sibling folder, then promotes the verified
+result into the new empty data folder; the existing data folder is left in
+place. Earlier version-1 backups remain restorable, but their database and
+media files are readable; version 1 encrypted only the matching database
+credential.
 
 The package includes ONNX Runtime's CPU engine and the Windows x64 DirectML
 runtime dependencies (`DirectML.dll`, DXCompiler, and DXIL) for Waveyard's local

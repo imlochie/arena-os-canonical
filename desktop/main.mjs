@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { dataRoot } from "./data-paths.mjs";
 import { DesktopDatabase } from "./database.mjs";
-import { backupContentSummary, createArenaBackup, restoreArenaBackup, verifyArenaBackup } from "./arena-backup.mjs";
+import { backupContentSummary, createArenaBackup, readArenaBackupManifest, restoreArenaBackup } from "./arena-backup.mjs";
 import { killProcessTree } from "./process-tree.mjs";
 import { stopBeforeQuit, stopDesktopServices } from "./shutdown.mjs";
 import { createArcadeControl } from "./arcade/control.mjs";
@@ -200,7 +200,7 @@ function setDataMenu(root) {
         databaseStopped: true,
         includeWaveyardFiles,
       });
-      const summary = backupContentSummary(result.manifest);
+      const summary = result.summary;
       await dialog.showMessageBox({
         type: "info",
         title: "Arena backup verified",
@@ -220,15 +220,15 @@ function setDataMenu(root) {
 
   const restore = async () => {
     const selected = await dialog.showOpenDialog(window, {
-      title: "Select a verified Arena backup folder",
+      title: "Select an Arena backup folder",
       properties: ["openDirectory"],
     });
     if (selected.canceled || !selected.filePaths[0]) return;
+    let manifest;
     try {
-      const check = await verifyArenaBackup(selected.filePaths[0]);
-      if (!check.ok) throw new Error(`Backup verification failed: ${check.mismatches.slice(0, 5).join("; ")}`);
+      manifest = await readArenaBackupManifest(selected.filePaths[0]);
     } catch (error) {
-      dialog.showErrorBox("Arena backup could not be verified", error.message);
+      dialog.showErrorBox("Arena backup could not be opened", error.message);
       return;
     }
     const target = await dialog.showOpenDialog(window, {
@@ -236,11 +236,18 @@ function setDataMenu(root) {
       properties: ["openDirectory", "createDirectory"],
     });
     if (target.canceled || !target.filePaths[0]) return;
-    const summary = backupContentSummary(check.manifest);
-    const includesWaveyardFiles = check.manifest.includesWaveyardFiles === true;
-    const waveyardFileCount = summary.waveyardFileCount;
-    const hasWaveyardFiles = includesWaveyardFiles && waveyardFileCount > 0;
-    const legacyReadableBackup = check.manifest.version === 1;
+    const summary = backupContentSummary(manifest);
+    const includesWaveyardFiles = manifest.includesWaveyardFiles === true;
+    const waveyardFileCount = summary?.waveyardFileCount ?? null;
+    const hasWaveyardFiles = includesWaveyardFiles && (waveyardFileCount === null || waveyardFileCount > 0);
+    const legacyReadableBackup = manifest.version === 1;
+    const waveyardRestoreDetail = !includesWaveyardFiles
+      ? "This backup does not contain Waveyard files."
+      : legacyReadableBackup
+        ? waveyardFileCount === 0
+          ? "No Waveyard files were present."
+          : "Waveyard audio, stems, and capture recordings are included."
+        : "Waveyard files were selected; any files present will be restored.";
     const passphrase = await passphraseDialog({
       title: "Unlock the Arena backup",
       description: legacyReadableBackup
@@ -252,7 +259,7 @@ function setDataMenu(root) {
       type: "warning",
       title: "Restore into a new data folder",
       message: "Arena will stop and restart using the selected folder.",
-        detail: `Restore target: ${target.filePaths[0]}\n${legacyReadableBackup ? "This older backup contains readable database files and may contain readable media." : "The backup is encrypted; restored files are decrypted locally into the new folder."}\n${hasWaveyardFiles ? "Waveyard audio, stems, and capture recordings are included." : includesWaveyardFiles ? "Waveyard files were selected, but none were present in the backup." : "This backup does not contain Waveyard files."}\nThe current Arena data folder will not be overwritten. The destination must be empty.`,
+      detail: `Restore target: ${target.filePaths[0]}\n${legacyReadableBackup ? "This older backup contains readable database files and may contain readable media." : "The backup is encrypted; restored files are decrypted locally and authenticated before the new folder is installed."}\n${waveyardRestoreDetail}\nThe current Arena data folder will not be overwritten. The destination must be empty.`,
       buttons: ["Restore and restart", "Cancel"],
       defaultId: 0,
       cancelId: 1,
@@ -267,10 +274,11 @@ function setDataMenu(root) {
         targetRoot: target.filePaths[0],
         passphrase,
       });
+      const hasRestoredWaveyardFiles = result.waveyardFileCount > 0;
       await dialog.showMessageBox({
         type: "info",
         title: "Arena data restored",
-        message: hasWaveyardFiles
+        message: hasRestoredWaveyardFiles
           ? "The database and Waveyard files were restored and verified."
           : includesWaveyardFiles
             ? "The database was restored and verified; this backup contained no Waveyard files."

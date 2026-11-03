@@ -193,7 +193,15 @@ async function run() {
     databaseStopped: true,
     includeWaveyardFiles: true,
   });
+  assert.equal(backup.manifest.version, 2, "new backups must use the encrypted format");
   assert.equal(backup.manifest.includesWaveyardFiles, true);
+  assert(
+    Object.keys(backup.manifest.files).every(relative => relative.startsWith("payload/")),
+    "the public file list must not reveal original database or media paths",
+  );
+  const publicManifest = await readFile(path.join(backup.backupDir, "backup-manifest.json"), "utf8");
+  assert(!publicManifest.includes("source.wav"));
+  assert(!publicManifest.includes("take.pcm"));
   backupDir = backup.backupDir;
   restoreRoot = await mkdtemp(path.join(os.tmpdir(), "arenaforge-package-restore-"));
   await rm(restoreRoot, { recursive: true, force: true });
