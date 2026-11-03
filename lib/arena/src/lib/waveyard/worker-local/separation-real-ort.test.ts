@@ -36,7 +36,7 @@ import test from "node:test";
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { cpus, release, tmpdir, type as osType } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { count, eq } from "drizzle-orm";
@@ -919,6 +919,13 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
     });
     const baseline = await sampleMemory();
     const samples: Awaited<ReturnType<typeof sampleMemory>>[] = [];
+    const jobReports: {
+      repetition: number;
+      requestedDevice: string;
+      resolvedDevice: string;
+      chunkCounts: Record<string, number>;
+      memory: Awaited<ReturnType<typeof sampleMemory>>;
+    }[] = [];
     const startedAt = Date.now();
     for (let run = 0; run < repetitions; run += 1) {
       const firstPassIndex = completedModelPasses.length;
@@ -963,7 +970,15 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       assert.equal(job.status, "complete", `repetition ${run + 1} completes`);
       const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
       assert.equal(stems.length, 4, `repetition ${run + 1} persists all four stems`);
-      samples.push(await sampleMemory());
+      const memory = await sampleMemory();
+      samples.push(memory);
+      jobReports.push({
+        repetition: run + 1,
+        requestedDevice: job.requestedDevice ?? "unknown",
+        resolvedDevice: job.resolvedDevice ?? "unknown",
+        chunkCounts: Object.fromEntries(runPasses.map(({ model, chunkCount }) => [model, chunkCount])),
+        memory,
+      });
     }
 
     // ONNX Runtime and worker-thread allocators can take several jobs to reach
@@ -988,9 +1003,77 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         `allowed ${toMiB(maxContinuedGrowthBytes)} MiB across ${postWarmSamples.length - 1} further jobs. ` +
         `Samples: ${samples.map(({ rss }) => `${toMiB(rss)} MiB`).join(" → ")}`,
     );
+    const resolvedDevices = [...new Set(jobReports.map(({ resolvedDevice }) => resolvedDevice))];
+    assert.equal(
+      resolvedDevices.length,
+      1,
+      `all repetitions must use the same selected provider; observed ${resolvedDevices.join(", ")}`,
+    );
+    assert.ok(
+      resolvedDevices[0] && resolvedDevices[0] !== "unknown",
+      "the completed jobs must report their selected execution provider",
+    );
+    const requestedDevices = [...new Set(jobReports.map(({ requestedDevice }) => requestedDevice))];
+    assert.equal(
+      requestedDevices.length,
+      1,
+      `all repetitions must use the same requested provider; observed ${requestedDevices.join(", ")}`,
+    );
+    assert.ok(
+      requestedDevices[0] && requestedDevices[0] !== "unknown",
+      "the completed jobs must report their requested execution provider",
+    );
+    if (process.platform === "win32") {
+      assert.ok(
+        ["dml", "cpu"].includes(resolvedDevices[0]!),
+        `Windows automatic selection must resolve to DirectML or CPU, not ${resolvedDevices[0]}`,
+      );
+    }
+
+    const memoryReportPath = process.env.WAVEYARD_REAL_ORT_MEMORY_REPORT?.trim();
+    if (memoryReportPath) {
+      const memoryReport = {
+        schemaVersion: 1,
+        benchmark: "repeated pinned four-model multi-chunk process memory",
+        measuredMachine: {
+          platform: process.platform,
+          osType: osType(),
+          osRelease: release(),
+          architecture: process.arch,
+          nodeVersion: process.version,
+          cpuModel: cpus()[0]?.model ?? null,
+          logicalCpuCount: cpus().length,
+        },
+        requestedProvider: requestedDevices[0],
+        selectedProvider: resolvedDevices[0],
+        models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
+        input: {
+          kind: source.kind,
+          sampleCount: source.sampleCount,
+          durationSeconds: Number((source.sampleCount / 44_100).toFixed(2)),
+          sha256: source.checksum,
+        },
+        repetitions,
+        warmupJobs,
+        baselineMemoryBytes: baseline,
+        jobs: jobReports,
+        summary: {
+          firstSteadyRssBytes: firstSteadySample.rss,
+          finalHalfMedianRssBytes: tailMedianRss,
+          continuedRssGrowthBytes: continuedRssGrowth,
+          allowedContinuedGrowthBytes: maxContinuedGrowthBytes,
+          continuedGrowthBounded: continuedRssGrowth <= maxContinuedGrowthBytes,
+          samplingMethod: "process.memoryUsage after optional explicit GC and a 150 ms teardown settle",
+          explicitGcAvailable: Boolean(forceGc),
+        },
+      };
+      const reportPath = resolve(memoryReportPath);
+      await mkdir(dirname(reportPath), { recursive: true });
+      await writeFile(reportPath, `${JSON.stringify(memoryReport, null, 2)}\n`);
+    }
 
     t.diagnostic(
-      `Pinned four-model memory run: ${repetitions} completed jobs in ${Date.now() - startedAt} ms; ` +
+      `Pinned four-model memory run on ${resolvedDevices[0]}: ${repetitions} completed jobs in ${Date.now() - startedAt} ms; ` +
         `input ${source.kind} ${source.sampleCount / 44_100}s${source.checksum ? ` sha256=${source.checksum}` : ""}; ` +
         `RSS baseline ${toMiB(baseline.rss)} MiB; post-job RSS ${samples.map(({ rss }) => toMiB(rss)).join(" → ")} MiB; ` +
         `${warmupJobs} warm-up jobs retained ${toMiB(samples[warmupJobs - 1]!.rss - baseline.rss)} MiB; ` +
