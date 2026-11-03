@@ -41,6 +41,7 @@ const waveyardMobileOnlyComplete = "WAVEYARD_MOBILE_ONLY_COMPLETE";
 const sessionModeRacesOnly = process.argv.includes("--session-mode-races-only");
 const automationKeyboardOnly = process.argv.includes("--automation-keyboard-only");
 const fullscreenKeyboardOnly = process.argv.includes("--fullscreen-keyboard-only");
+const viewAudioOnly = process.argv.includes("--view-audio-only");
 const liveDonorRecoveryOnly = process.argv.includes("--live-donor-recovery-only");
 const liveDonorRecoveryOnlyComplete = "LIVE_DONOR_RECOVERY_ONLY_COMPLETE";
 
@@ -50,7 +51,7 @@ if (process.argv.includes("--automation-persistence-only")) {
   process.exit(0);
 }
 
-if (!sessionModeRacesOnly && !liveDonorRecoveryOnly && !automationKeyboardOnly && !fullscreenKeyboardOnly) {
+if (!sessionModeRacesOnly && !liveDonorRecoveryOnly && !automationKeyboardOnly && !fullscreenKeyboardOnly && !viewAudioOnly) {
   execFileSync("pnpm", ["--filter", "@workspace/scripts", "exec", "tsx", "--test",
     `${process.cwd()}/lib/arena/src/lib/waveyard/types/__tests__/multi-clip-operations.test.ts`], { stdio: "inherit" });
   execFileSync(
@@ -61,6 +62,11 @@ if (!sessionModeRacesOnly && !liveDonorRecoveryOnly && !automationKeyboardOnly &
   execFileSync(
     process.execPath,
     [new URL("./waveyard-arrangement-preview.mjs", import.meta.url).pathname],
+    { stdio: "inherit" },
+  );
+  execFileSync(
+    process.execPath,
+    [new URL("./arena-smoke.mjs", import.meta.url).pathname, "--view-audio-only"],
     { stdio: "inherit" },
   );
 }
@@ -92,6 +98,16 @@ const errors = [];
 page.on("pageerror", err => errors.push(err.message));
 const report = [];
 let touchSession = null;
+if (viewAudioOnly) {
+  try {
+    const { verifyViewAudio } = await import("./waveyard-view-audio.mjs");
+    await verifyViewAudio({ page, base, makePcmWav, output });
+    assert.deepEqual(errors, [], "View switching must not raise browser errors");
+  } finally {
+    await browser.close();
+  }
+  process.exit(0);
+}
 if (fullscreenKeyboardOnly) {
   try {
     const { verifyFullscreenKeyboard } = await import("./waveyard-fullscreen-keyboard.mjs");

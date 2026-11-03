@@ -945,6 +945,14 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     aria-label="Waveyard Studio"
     style={{ "--art-hue": environment.hue, "--art-accent-hue": environment.accentHue, "--art-shadow-hue": environment.shadowHue, "--beat-pulse": visualState.beatPulse, "--bar-pulse": visualState.barPulse, "--motion-ms": `${visualMotion.transitionMs}ms` } as CSSProperties}
   >
+    {/* Media belongs to the shared transport, not a presentation or focus tab.
+        Keeping the same elements mounted preserves clocks and native sources. */}
+    <div hidden aria-hidden="true">
+      {stems.map((stem) => <audio key={stem.id}
+        aria-label={`${sourceStemLabel(sourceById.get(stem.sourceAssetId), stem.stemType)} audio`}
+        ref={(element) => transport.register(stem.id, element)}
+        src={`/api/assets/${stem.id}`} preload="auto" />)}
+    </div>
     <header className="studio-head"><div><span className="eyebrow">{presentation === "studio" ? "Studio" : presentation === "play" ? "Play" : "Visual"} · one musical state</span><h2>{presentation === "studio" ? "Real stems, one transport." : presentation === "play" ? "Music in motion." : "Music, made visible."}</h2></div><div className="presentation-nav" role="tablist" aria-label="Waveyard presentation mode"><button type="button" role="tab" aria-selected={presentation === "play"} data-testid="waveyard-mode-play" className={presentation === "play" ? "active" : ""} onClick={() => { setPresentation("play"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Play</button><button type="button" role="tab" aria-selected={presentation === "studio"} data-testid="waveyard-mode-studio" className={presentation === "studio" ? "active" : ""} onClick={() => { setPresentation("studio"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Studio</button><button type="button" role="tab" aria-selected={presentation === "visual"} data-testid="waveyard-mode-visual" className={presentation === "visual" ? "active" : ""} onClick={() => { setPresentation("visual"); setPlayerFullscreen(false); }}>Visual</button></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
     {presentation === "play" ? <>
       {!remix && <AutomaticRemixPrompt building={buildingAutomaticRemix} message={automaticRemixMessage} onBuild={createAutomaticRemix} />}

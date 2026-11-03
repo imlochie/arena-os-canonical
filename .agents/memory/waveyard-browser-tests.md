@@ -53,6 +53,18 @@ For live source-to-stems handoffs, distinguish registered/staged audio elements 
 
 For live-stem performance browser tests, report download, decode, tempo-match, and audible-start timings; use a controlled network delay instead of machine-specific latency gates.
 
+An audio observation tap must follow native graph rewiring; a disconnected probe reporting zero is not evidence that the destination is silent.
+
+**Why:** Studio insert application can reroute an already-created master node. A probe attached only at first connection then incorrectly reports silence while the native media clocks and destination continue playing.
+
+**How to apply:** Keep native graph instrumentation narrow, observe reconnections as well as initial connections, and check probe connectivity before interpreting a silence assertion.
+
+Establish an advancing native clock before taking continuity baselines; a running context plus a nonzero analyser frame is insufficient during browser audio-device startup.
+
+**Why:** Headless Chromium can expose an initial signal frame while native context and media clocks remain stationary until its output device finishes warming up. Counting that delay as a view-switch interruption produces a false failure.
+
+**How to apply:** Wait for a measurable native clock advance before starting the switch sequence. Keep the strict continuity checks during the sequence rather than relaxing them to accommodate startup.
+
 **Why:** Headless Chromium varied by hundreds of milliseconds between download and decode stages on the same fixture, so a smaller injected delay could be obscured by normal scheduling noise.
 
 **How to apply:** Compare the phase breakdowns and verify the measured download includes the injected delay. A mobile-sized Chromium viewport is useful layout and flow coverage, but it is not real-device or mobile-engine performance evidence.

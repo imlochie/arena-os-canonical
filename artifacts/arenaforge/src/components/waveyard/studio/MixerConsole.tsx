@@ -197,7 +197,6 @@ export function MixerConsole({
                     chain={inserts[stem.id] ?? []}
                     onChange={(chain) => onInserts(stem.id, chain)}
                   />
-                  <audio aria-label={`${label} audio`} ref={(element) => transport.register(stem.id, element)} src={`/api/assets/${stem.id}`} preload="auto" />
                 </article>
               );
             })}
