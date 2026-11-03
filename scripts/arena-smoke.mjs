@@ -143,6 +143,17 @@ async function dragTouch(locator, deltaX, deltaY, cancel = false, xFraction = 0.
   }
   const startX = Math.round(bounds.x + bounds.width * xFraction);
   const startY = Math.round(bounds.y + bounds.height * yFraction);
+  const hit = await locator.evaluate((element, point) => {
+    const target = document.elementFromPoint(point.x, point.y);
+    return {
+      visible: point.x >= 0 && point.x < document.documentElement.clientWidth
+        && point.y >= 0 && point.y < document.documentElement.clientHeight,
+      onTarget: target === element || element.contains(target),
+      hit: target instanceof HTMLElement ? `${target.tagName}.${target.className}` : target?.nodeName,
+      viewport: { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight },
+    };
+  }, { x: startX, y: startY });
+  assert(hit.visible && hit.onTarget, `Touch drag must start on the visible control: ${JSON.stringify(hit)}`);
   await touchSession.send("Input.dispatchTouchEvent", {
     type: "touchStart",
     touchPoints: [{ x: startX, y: startY, id: 1, radiusX: 1, radiusY: 1, force: 1 }],
@@ -2755,42 +2766,16 @@ try {
         const visibleRight = Math.min(window.innerWidth, bounds.right);
         return { x: visibleLeft + (visibleRight - visibleLeft) / 2, y: bounds.top + Math.min(20, bounds.height / 2) };
       });
-      const touchScrollBefore = await page.evaluate(({ x, y }) => {
-        const hit = document.elementFromPoint(x, y);
-        const scroller = document.querySelector(".timeline-scroll");
-        const ancestry = [];
-        for (let node = hit; node instanceof HTMLElement && ancestry.length < 5; node = node.parentElement) {
-          const style = getComputedStyle(node);
-          ancestry.push({ tag: node.tagName, className: node.className, touchAction: style.touchAction,
-            overflowX: style.overflowX, width: Math.round(node.getBoundingClientRect().width) });
-        }
-        return { hit: hit?.tagName, ancestry, scrollLeft: scroller?.scrollLeft,
-          scrollWidth: scroller?.scrollWidth, clientWidth: scroller?.clientWidth };
-      }, swipePoint);
       assert(swipePoint.x >= 0 && swipePoint.x < width,
         "The native-scroll touch must start on the visible portion of the clip");
-      console.log("STUDIO_TOUCH_SCROLL_START", JSON.stringify(touchScrollBefore));
       const swipeX = swipePoint.x;
       const swipeFraction = (swipeX - swipeBounds.x) / swipeBounds.width;
       const swipeYFraction = (swipePoint.y - swipeBounds.y) / swipeBounds.height;
       await swipeTouch(touchClip, -76, 0, swipeFraction, swipeYFraction);
-      try {
-        await page.waitForFunction(({ before }) => {
-          const scroller = document.querySelector(".timeline-scroll");
-          return scroller instanceof HTMLElement && scroller.scrollLeft > before;
-        }, { before: scrollBeforeTouchSwipe }, { timeout: 3_000 });
-      } catch (error) {
-        console.log("STUDIO_TOUCH_SCROLL_AFTER", JSON.stringify(await page.evaluate(() => ({
-          timeline: (() => {
-            const node = document.querySelector(".timeline-scroll");
-            return node ? { left: node.scrollLeft, top: node.scrollTop, width: node.clientWidth,
-              scrollWidth: node.scrollWidth, action: getComputedStyle(node).touchAction } : null;
-          })(),
-          page: { x: window.scrollX, y: window.scrollY, width: document.documentElement.scrollWidth,
-            viewport: document.documentElement.clientWidth },
-        }))));
-        throw error;
-      }
+      await page.waitForFunction(({ before }) => {
+        const scroller = document.querySelector(".timeline-scroll");
+        return scroller instanceof HTMLElement && scroller.scrollLeft > before;
+      }, { before: scrollBeforeTouchSwipe }, { timeout: 3_000 });
       assert.equal(await seekSlider.inputValue(), touchSeekBefore,
         "a native horizontal touch swipe beginning on a clip must not seek the playback position");
       assert(await timelineScroller.evaluate((element, before) => element.scrollLeft > before, scrollBeforeTouchSwipe),

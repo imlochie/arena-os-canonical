@@ -1340,6 +1340,7 @@
 .wy-ready{border-left:2px solid var(--wy-a)}
 /* Compact dock: same tree, full-only parts hidden; audio elements keep playing. */
 .wy-host-compact{position:fixed;left:12px;right:12px;bottom:12px;z-index:60;max-width:980px;margin:0 auto}
+.wy-host-compact.wy-host-editor-flow{position:relative;inset:auto;z-index:auto;margin:0 auto 14px}
 .wy-host-compact .wy-workspace{margin:0;padding:10px 14px;background:var(--wy-glass);backdrop-filter:blur(16px);box-shadow:0 18px 50px rgba(0,0,0,.4)}
 .wy-host-compact .wy-full-only{display:none}
 .wy-host-compact .wy-master{display:none}
