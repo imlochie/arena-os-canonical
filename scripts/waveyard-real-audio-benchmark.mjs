@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 import { assertQualityReport, summarizePairedQuality } from "./waveyard-quality-comparison.mjs";
 import { createBlindListeningKit } from "./waveyard-blind-listening.mjs";
 import {
+  buildPairedBenchmarkReportContract,
   summarize,
   summarizeModelStages,
-  progressSamplingIntervalsByRun,
   summarizeStageTotals,
   validatePairedRuns,
 } from "./waveyard-benchmark-summary.mjs";
@@ -378,15 +378,8 @@ try {
     }),
   );
   const output = {
-    schemaVersion: 4,
+    ...buildPairedBenchmarkReportContract(runs),
     benchmark: "paired multi-track four-stem sequential and bounded-parallel CPU comparison",
-    timingEvidence: {
-      completePerModelTimings:
-        "Each run's timings.modelInferenceStages comes from the authoritative inference callback and is validated against every pinned model.",
-      sampledProgressTimings:
-        "Each run's timings.sampledProgressModelPasses is approximate polling data; its interval is recorded per run below and in runs[].timings.progressSamplingIntervalMs. A shorter pass may be absent and does not invalidate a run.",
-      progressSamplingIntervalsByRun: progressSamplingIntervalsByRun(runs),
-    },
     measuredMachine: {
       platform: process.platform,
       osType: osType(),

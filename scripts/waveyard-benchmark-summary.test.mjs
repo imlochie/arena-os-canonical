@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildPairedBenchmarkReportContract,
   summarize,
   summarizeModelStages,
   progressSamplingIntervalsByRun,
@@ -26,6 +27,17 @@ function run(mode, repetition, value, model = "vocal", intervalMs = 500, trackId
   };
 }
 
+function runWithPinnedModels(mode, repetition, value) {
+  const measurement = run(mode, repetition, value);
+  const modelIds = ["vocals", "drums", "bass", "other"];
+  measurement.models = modelIds.map((id) => ({ id, sha256: "a".repeat(64) }));
+  measurement.timings.modelInferenceStages = modelIds.map((model, index) => ({
+    model,
+    timings: { inferenceMs: value + index, stftMs: value * 2 + index, chunkCount: 1 },
+  }));
+  return measurement;
+}
+
 test("paired timing metadata retains each run's recorded progress polling interval", () => {
   const runs = [
     run("sequential", 1, 1, "vocal", 250, "track-a"),
@@ -41,6 +53,54 @@ test("paired timing metadata retains each run's recorded progress polling interv
   assert.throws(
     () => progressSamplingIntervalsByRun([run("sequential", 1, 1, "vocal", 0)]),
     /progressSamplingIntervalMs must be a positive integer/,
+  );
+});
+
+test("paired report contract pins schema version and timing-source labels", () => {
+  const contract = buildPairedBenchmarkReportContract([
+    run("sequential", 1, 1, "vocal", 250, "track-a"),
+    run("parallel", 1, 2, "vocal", 500, "track-b"),
+  ]);
+
+  assert.equal(contract.schemaVersion, 4);
+  assert.equal(
+    contract.timingEvidence.completePerModelTimings,
+    "Each run's timings.modelInferenceStages comes from the authoritative inference callback and is validated against every pinned model.",
+  );
+  assert.equal(
+    contract.timingEvidence.sampledProgressTimings,
+    "Each run's timings.sampledProgressModelPasses is approximate polling data; its interval is recorded per run below and in runs[].timings.progressSamplingIntervalMs. A shorter pass may be absent and does not invalidate a run.",
+  );
+  assert.deepEqual(contract.timingEvidence.progressSamplingIntervalsByRun, [
+    { trackId: "track-a", mode: "sequential", repetition: 1, intervalMs: 250 },
+    { trackId: "track-b", mode: "parallel", repetition: 1, intervalMs: 500 },
+  ]);
+});
+
+test("paired comparison accepts incomplete sampled passes but requires every pinned model timing", () => {
+  const incompleteProgressRuns = [
+    runWithPinnedModels("sequential", 1, 1),
+    runWithPinnedModels("sequential", 2, 2),
+    runWithPinnedModels("parallel", 1, 3),
+    runWithPinnedModels("parallel", 2, 4),
+  ];
+  incompleteProgressRuns[0].timings.sampledProgressModelPasses = [{ model: "vocals", elapsedMs: 5 }];
+  incompleteProgressRuns[1].timings.sampledProgressModelPasses = [];
+  incompleteProgressRuns[2].timings.sampledProgressModelPasses = [{ model: "bass", elapsedMs: 3 }];
+  incompleteProgressRuns[3].timings.sampledProgressModelPasses = [];
+  assert.doesNotThrow(() => validatePairedRuns(incompleteProgressRuns, ["sequential", "parallel"], 2));
+
+  const missingAuthoritativePasses = [
+    runWithPinnedModels("sequential", 1, 1),
+    runWithPinnedModels("sequential", 2, 2),
+    runWithPinnedModels("parallel", 1, 3),
+    runWithPinnedModels("parallel", 2, 4),
+  ];
+  missingAuthoritativePasses[0].timings.modelInferenceStages =
+    missingAuthoritativePasses[0].timings.modelInferenceStages.filter((entry) => entry.model !== "other");
+  assert.throws(
+    () => validatePairedRuns(missingAuthoritativePasses, ["sequential", "parallel"], 2),
+    /model timing passes must match the pinned model list/,
   );
 });
 

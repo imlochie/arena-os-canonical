@@ -158,6 +158,19 @@ export function progressSamplingIntervalsByRun(runs) {
   });
 }
 
+export function buildPairedBenchmarkReportContract(runs) {
+  return {
+    schemaVersion: 4,
+    timingEvidence: {
+      completePerModelTimings:
+        "Each run's timings.modelInferenceStages comes from the authoritative inference callback and is validated against every pinned model.",
+      sampledProgressTimings:
+        "Each run's timings.sampledProgressModelPasses is approximate polling data; its interval is recorded per run below and in runs[].timings.progressSamplingIntervalMs. A shorter pass may be absent and does not invalidate a run.",
+      progressSamplingIntervalsByRun: progressSamplingIntervalsByRun(runs),
+    },
+  };
+}
+
 export function summarizeStageTotals(modeRuns) {
   const stages = sortedKeys(modeRuns[0].timings.inferenceStageTotals);
   return Object.fromEntries(
