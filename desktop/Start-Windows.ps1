@@ -43,9 +43,7 @@ if ($Action -eq "Build") {
     "--include-pnpm-store" "--include-npm-cache" @spaceLocations
   if ($LASTEXITCODE -ne 0) { throw "Could not inspect build disk space or resolve the pnpm store and npm cache offline. See the error above. No dependency installation has started." }
   $spaceReport = $spaceOutput | ConvertFrom-Json
-  # Include paths discovered by the preflight (custom pnpm or npm drives) in
-  # the exact same list used by the background disk-usage sampler.
-  $spaceLocations = @($spaceReport.locations | ForEach-Object { "$($_.label)=$($_.path)" })
+  # The sampler receives preflight's resolved paths, not their lexical drive roots.
   foreach ($location in $spaceReport.locations) {
     if ($null -eq $location.availableGiB) {
       Write-Host ("{0}: could not inspect this volume; the build will stop safely." -f $location.label)
@@ -66,23 +64,14 @@ if ($Action -eq "Build") {
   ConvertTo-Json -InputObject @($spaceReport.locations) -Depth 5 |
     Set-Content -LiteralPath $initialFile -Encoding UTF8
   [IO.File]::WriteAllText($phaseLog, "", [Text.UTF8Encoding]::new($false))
-  $monitorLocationsJson = ConvertTo-Json -InputObject @($spaceLocations) -Compress
-  $monitor = Start-Job -ArgumentList @($monitorLocationsJson, $sampleFile, $phaseLog) -ScriptBlock {
-    param($locationsJson, $samplePath, $phasePath)
-    $locations = ConvertFrom-Json $locationsJson
-    function Save-Snapshot($samplePath, $locations, $phase, $checkpoint) {
-      $measurements = foreach ($entry in $locations) {
-        $separator = $entry.IndexOf("=")
-        $label = $entry.Substring(0, $separator)
-        $target = $entry.Substring($separator + 1)
-        try {
-          $driveRoot = [IO.Path]::GetPathRoot($target)
-          $drive = [IO.DriveInfo]::new($driveRoot)
-          if ($drive.IsReady) {
-            [pscustomobject]@{ label = $label; freeBytes = $drive.AvailableFreeSpace }
-          }
-        } catch {}
-      }
+  $measurementScript = Join-Path $PSScriptRoot "build-space-measurement.mjs"
+  $nodeExecutable = (Get-Command node).Source
+  $monitor = Start-Job -ArgumentList @($initialFile, $sampleFile, $phaseLog, $measurementScript, $nodeExecutable) -ScriptBlock {
+    param($initialPath, $samplePath, $phasePath, $measurementScript, $nodeExecutable)
+    function Save-Snapshot($samplePath, $phase, $checkpoint) {
+      $measurementOutput = & $nodeExecutable $measurementScript "--sample" $initialPath
+      if ($LASTEXITCODE -ne 0) { throw "Could not sample the preflight storage paths." }
+      $measurements = ConvertFrom-Json -InputObject ($measurementOutput -join "`n")
       $record = [pscustomobject]@{
         atUtc = [DateTime]::UtcNow.ToString("o")
         phase = $phase
@@ -101,12 +90,12 @@ if ($Action -eq "Build") {
           try {
             $event = $phaseLines[$i] | ConvertFrom-Json
             $activePhase = [string]$event.phase
-            Save-Snapshot $samplePath $locations $activePhase $true
+            Save-Snapshot $samplePath $activePhase $true
           } catch {}
         }
         $phaseLineCount = $phaseLines.Count
       }
-      Save-Snapshot $samplePath $locations $activePhase $false
+      Save-Snapshot $samplePath $activePhase $false
       Start-Sleep -Seconds 2
     }
   }
@@ -163,6 +152,11 @@ if ($Action -eq "Build") {
         ([string]$spaceReport.minimumFreeGiB) ([string]$spaceReport.configuredMinimumGiB)
       if ($LASTEXITCODE -eq 0 -and (Test-Path $reportPath)) {
         $summary = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        foreach ($location in $summary.locations) {
+          if ($location.failedSampleCount -gt 0) {
+            Write-Warning ("{0}: {1} disk-space samples failed; peak usage may be understated." -f $location.label, $location.failedSampleCount)
+          }
+        }
         if ($null -ne $summary.measuredPeakConsumptionGiB) {
           Write-Host ("Measured peak disk consumption: {0} GiB across {1} samples and {2} phase checkpoints." -f $summary.measuredPeakConsumptionGiB, $summary.sampleCount, $summary.phases.Count)
           if ($null -ne $summary.retryComparison) {

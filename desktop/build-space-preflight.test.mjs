@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { statfsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +14,7 @@ import {
   resolveNpmCachePath,
   resolvePnpmStorePath,
 } from "./build-space-preflight.mjs";
-import { summarizeBuildSpaceMeasurement } from "./build-space-measurement.mjs";
+import { sampleBuildSpace, summarizeBuildSpaceMeasurement } from "./build-space-measurement.mjs";
 
 const GiB = 1024 ** 3;
 
@@ -76,6 +77,7 @@ test("a custom npm cache checks its own drive before the cache directory exists"
   ], {
     pathApi: path.win32,
     exists: (target) => ["C:\\", "E:\\"].includes(target),
+    realpath: (target) => target,
     statfs: (target) => {
       checked.push(target);
       return { bsize: 1, bavail: (target === "E:\\" ? 5 : 40) * GiB };
@@ -95,6 +97,7 @@ test("an unavailable npm cache volume blocks the build instead of checking the w
     ], {
       pathApi: path.win32,
       exists,
+      realpath: (target) => target,
       statfs: () => { throw new Error("cache volume unavailable"); },
     });
     assert.equal(cache.availableBytes, null);
@@ -110,6 +113,7 @@ test("sampled reports retain npm cache drive consumption and its build phase", (
   ], {
     pathApi: path.win32,
     exists: () => true,
+    realpath: (target) => target,
     statfs: () => ({ bsize: 1, bavail: 40 * GiB }),
   });
   const report = summarizeBuildSpaceMeasurement({
@@ -194,6 +198,7 @@ test("a custom store on another drive is checked even before the store exists", 
   ], {
     pathApi: path.win32,
     exists: (target) => ["C:\\", "D:\\"].includes(target),
+    realpath: (target) => target,
     statfs: (target) => {
       checked.push(target);
       return { bsize: 1, bavail: (target === "D:\\" ? 7 : 30) * GiB };
@@ -217,6 +222,164 @@ test("an unavailable store drive is not silently replaced by the workspace drive
   assert.equal(store.availableBytes, null);
   assert.equal(store.belowMinimumFreeSpace, true);
   assert.match(store.inspectionError, /No existing parent/);
+});
+
+test("cross-drive links use the same resolved storage for preflight and sampling", () => {
+  for (const label of ["pnpm dependency store", "desktop staging"]) {
+    const checked = [];
+    const initialLocations = inspectBuildSpace([
+      { label, path: "C:\\Arena\\linked\\not-created-yet" },
+    ], {
+      pathApi: path.win32,
+      exists: (target) => target === "C:\\Arena\\linked",
+      realpath: (target) => {
+        assert.equal(target, "C:\\Arena\\linked");
+        return "E:\\Actual storage";
+      },
+      statfs: (target) => {
+        checked.push(target);
+        return { bsize: 1, bavail: 40 * GiB };
+      },
+    });
+    assert.equal(initialLocations[0].checkedPath, "E:\\Actual storage");
+    const locations = sampleBuildSpace(initialLocations, {
+      statfs: (target) => {
+        checked.push(target);
+        return { bsize: 1, bavail: 34 * GiB };
+      },
+    });
+    assert.deepEqual(checked, ["E:\\Actual storage", "E:\\Actual storage"]);
+    const report = summarizeBuildSpaceMeasurement({
+      initialLocations,
+      samples: [{ locations, phase: "staging-ready" }],
+    });
+    assert.equal(report.measuredPeakConsumptionGiB, 6);
+    assert.equal(report.locations[0].failedSampleCount, 0);
+    assert.doesNotMatch(JSON.stringify(report), /Actual storage|checkedPath/);
+  }
+});
+
+test("mounted folders are sampled as folders, not collapsed to a drive root", () => {
+  const mount = "C:\\Mounted data";
+  const checked = [];
+  const statfs = (target) => {
+    checked.push(target);
+    assert.equal(target, mount);
+    return { bsize: 1, bavail: 30 * GiB };
+  };
+  const initial = inspectBuildSpace([{ label: "build", path: mount }], {
+    pathApi: path.win32,
+    exists: () => true,
+    realpath: (target) => target,
+    statfs,
+  });
+  assert.equal(sampleBuildSpace(initial, { statfs })[0].freeBytes, 30 * GiB);
+  assert.deepEqual(checked, [mount, mount]);
+});
+
+test("a native link to another storage volume is checked and sampled on that volume", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-space-cross-volume-"));
+  let target;
+  try {
+    const sourceDevice = (await stat(root)).dev;
+    const candidates = process.platform === "win32"
+      ? Array.from("CDEFGHIJKLMNOPQRSTUVWXYZ", (letter) => `${letter}:\\`)
+      : ["/dev/shm", "/Volumes"];
+    for (const candidate of candidates) {
+      try {
+        if ((await stat(candidate)).dev === sourceDevice) continue;
+        target = await mkdtemp(path.join(candidate, "arena-space-target-"));
+        break;
+      } catch {
+        // Only a writable second filesystem can host this optional fixture.
+      }
+    }
+    if (!target) {
+      t.skip("No writable second storage volume is available for a native cross-volume fixture.");
+      return;
+    }
+    const link = path.join(root, "linked build folder");
+    await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+    const checked = [];
+    const statfs = (candidate) => {
+      checked.push(candidate);
+      return statfsSync(candidate);
+    };
+    const initial = inspectBuildSpace([
+      { label: "desktop staging", path: path.join(link, "not-created-yet") },
+    ], { statfs });
+    assert.equal(initial[0].checkedPath, await realpath(target));
+    assert.notEqual((await stat(initial[0].checkedPath)).dev, sourceDevice);
+    const sampled = sampleBuildSpace(initial, { statfs });
+    assert.ok(Number.isFinite(sampled[0].freeBytes));
+    assert.deepEqual(checked, [initial[0].checkedPath, initial[0].checkedPath]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    if (target) await rm(target, { recursive: true, force: true });
+  }
+});
+
+test("native directory links resolve even with missing descendants, and broken links fail closed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-space-links-"));
+  try {
+    const target = path.join(root, "actual storage");
+    const link = path.join(root, "linked store");
+    await mkdir(target);
+    // Junction creation on Windows does not require symlink privileges.
+    await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+    const resolvedTarget = await realpath(target);
+    const location = { label: "pnpm dependency store", path: path.join(link, "v10", "new") };
+    const initial = inspectBuildSpace([location]);
+    assert.equal(initial[0].checkedPath, resolvedTarget);
+    assert.ok(Number.isFinite(initial[0].availableBytes));
+    assert.ok(Number.isFinite(sampleBuildSpace(initial)[0].freeBytes));
+    await rm(target, { recursive: true });
+    const sampled = sampleBuildSpace(initial);
+    assert.equal(sampled[0].freeBytes, null);
+    assert.match(sampled[0].inspectionError, /ENOENT/);
+    for (const brokenPath of [link, location.path]) {
+      const [broken] = inspectBuildSpace([{ label: location.label, path: brokenPath }], {
+        statfs: () => assert.fail("Must not fall back to the parent of a broken link"),
+      });
+      assert.equal(broken.availableBytes, null);
+      assert.equal(broken.checkedPath, null);
+      assert.equal(broken.belowMinimumFreeSpace, true);
+      assert.match(broken.inspectionError, /ENOENT/);
+    }
+    const report = summarizeBuildSpaceMeasurement({
+      initialLocations: initial,
+      samples: [{ locations: sampled }],
+    });
+    assert.equal(report.locations[0].failedSampleCount, 1);
+    assert.equal(report.measuredPeakConsumptionGiB, null);
+    assert.doesNotMatch(JSON.stringify(report), /actual storage|ENOENT|inspectionError/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("link resolution errors block preflight without checking another drive", () => {
+  for (const message of ["broken junction target", "access denied", "link cycle"]) {
+    const [location] = inspectBuildSpace([{ label: "build", path: "C:\\Arena\\link" }], {
+      pathApi: path.win32,
+      exists: () => true,
+      realpath: () => { throw new Error(message); },
+      statfs: () => assert.fail("A failed resolution must never inspect a fallback"),
+    });
+    assert.equal(location.inspectionError, message);
+    assert.equal(location.belowMinimumFreeSpace, true);
+  }
+});
+
+test("sampling requires preflight's resolved path and reports invalid measurements", () => {
+  assert.equal(sampleBuildSpace([{ label: "build", path: "C:\\Arena" }], {
+    statfs: () => assert.fail("An unresolved location must never be sampled"),
+  })[0].freeBytes, null);
+  const [invalid] = sampleBuildSpace([{ label: "build", checkedPath: "E:\\storage" }], {
+    statfs: () => ({ bsize: 0, bavail: 1 }),
+  });
+  assert.equal(invalid.freeBytes, null);
+  assert.match(invalid.inspectionError, /invalid free-space measurement/);
 });
 
 test("sampled reports retain consumption on the custom dependency-store drive", () => {
@@ -312,9 +475,11 @@ test("the Windows installer fails closed before installing dependencies", async 
   assert.match(script, /if \(\$spaceReport\.insufficientSpace\)/);
   assert.match(script, /ARENA_BUILD_MIN_FREE_GIB/);
   assert.match(script, /"--include-pnpm-store" "--include-npm-cache" @spaceLocations/);
-  assert.ok(script.indexOf("$spaceReport.locations | ForEach-Object") < script.indexOf("$monitorLocationsJson ="));
-  assert.match(script, /ConvertTo-Json -InputObject @\(\$spaceLocations\) -Compress/);
-  assert.match(script, /Start-Job -ArgumentList @\(\$monitorLocationsJson,/);
+  assert.match(script, /ConvertTo-Json -InputObject @\(\$spaceReport.locations\) -Depth 5/);
+  assert.match(script, /Start-Job -ArgumentList @\(\$initialFile,/);
+  assert.match(script, /& \$nodeExecutable \$measurementScript "--sample" \$initialPath/);
+  assert.doesNotMatch(script, /GetPathRoot|DriveInfo/);
+  assert.match(script, /failedSampleCount -gt 0/);
   assert.doesNotMatch(script, /Read-Host "To continue anyway/);
 });
 
@@ -552,6 +717,29 @@ test("measurement CLI accepts PowerShell UTF-8 input and writes a sanitized repo
     assert.equal(report.measuredPeakConsumptionGiB, 1);
     assert.equal(report.phases[0].name, "postgresql-ready");
     assert.doesNotMatch(JSON.stringify(report), /Private Name|inspectionError|checkedPath/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("sampling CLI reads preflight's PowerShell JSON and reports missing storage explicitly", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-space-sampler-"));
+  const initialPath = path.join(root, "initial.json");
+  const scriptPath = fileURLToPath(new URL("./build-space-measurement.mjs", import.meta.url));
+  try {
+    const initial = inspectBuildSpace([{ label: "build", path: root }]);
+    await writeFile(initialPath, `\uFEFF${JSON.stringify([
+      ...initial,
+      { label: "offline store", checkedPath: path.join(root, "missing") },
+    ])}`);
+    const result = spawnSync(process.execPath, [scriptPath, "--sample", initialPath], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const samples = JSON.parse(result.stdout);
+    assert.ok(Number.isFinite(samples[0].freeBytes));
+    assert.equal(samples[1].freeBytes, null);
+    assert.match(samples[1].inspectionError, /ENOENT/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

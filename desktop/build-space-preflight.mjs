@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statfsSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statfsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,6 +119,18 @@ export function minimumFreeGiBForPreviousBuild(
   );
 }
 
+function pathEntryExists(candidate) {
+  try {
+    // Unlike existsSync, lstat sees dangling links. Never walk past one and
+    // accidentally inspect its containing drive instead of its missing target.
+    lstatSync(candidate);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function existingAncestor(locationPath, exists, pathApi) {
   let candidate = pathApi.resolve(locationPath);
   while (!exists(candidate)) {
@@ -129,12 +141,26 @@ function existingAncestor(locationPath, exists, pathApi) {
   return candidate;
 }
 
+export function availableBuildSpaceBytes(checkedPath, statfs = statfsSync) {
+  const stats = statfs(checkedPath);
+  const freeBlocks = Number.isFinite(stats.bavail) ? stats.bavail : stats.bfree;
+  if (!Number.isFinite(freeBlocks) || !Number.isFinite(stats.bsize) || stats.bsize <= 0) {
+    throw new Error("The filesystem returned an invalid free-space measurement.");
+  }
+  const availableBytes = freeBlocks * stats.bsize;
+  if (!Number.isFinite(availableBytes) || availableBytes < 0) {
+    throw new Error("The filesystem returned an invalid free-space measurement.");
+  }
+  return availableBytes;
+}
+
 export function inspectBuildSpace(
   locations,
   {
     statfs = statfsSync,
     minimumFreeGiB = DEFAULT_BUILD_MIN_FREE_GIB,
-    exists = existsSync,
+    exists = pathEntryExists,
+    realpath = realpathSync.native,
     pathApi = path,
   } = {},
 ) {
@@ -144,16 +170,8 @@ export function inspectBuildSpace(
   const thresholdBytes = minimumFreeGiB * 1024 ** 3;
   return locations.map(({ label, path: locationPath }) => {
     try {
-      const checkedPath = existingAncestor(locationPath, exists, pathApi);
-      const stats = statfs(checkedPath);
-      const freeBlocks = Number.isFinite(stats.bavail) ? stats.bavail : stats.bfree;
-      if (!Number.isFinite(freeBlocks) || !Number.isFinite(stats.bsize) || stats.bsize <= 0) {
-        throw new Error("The filesystem returned an invalid free-space measurement.");
-      }
-      const availableBytes = freeBlocks * stats.bsize;
-      if (!Number.isFinite(availableBytes) || availableBytes < 0) {
-        throw new Error("The filesystem returned an invalid free-space measurement.");
-      }
+      const checkedPath = realpath(existingAncestor(locationPath, exists, pathApi));
+      const availableBytes = availableBuildSpaceBytes(checkedPath, statfs);
       return {
         label,
         path: locationPath,

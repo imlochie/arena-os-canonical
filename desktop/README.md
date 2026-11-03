@@ -49,6 +49,19 @@ of the measured peak, or the configured minimum if larger. Two-second sampling
 can miss brief peaks. This report is local and ignored by version control. No
 disk cleanup is performed automatically beyond generated build files after a
 failed or successful package.
+
+Linked build folders and dependency caches are resolved before checking space.
+Both preflight and sampling query that same resolved directory, not its drive
+letter, so junctions and mounted folders can use another volume. Missing output
+folders use their nearest existing ancestor; a broken link or an inaccessible
+target stops preflight rather than using the containing drive. If a checked
+target becomes unavailable while sampling, the report records failed sample
+counts and the script warns that measured peaks may be understated. Machine
+paths and error details remain excluded from the saved report.
+The portable checks include a native cross-volume link fixture when a second
+writable volume is available. Windows junction and PowerShell execution remain
+pending the final Windows acceptance pass; Linux results are not Windows proof.
+
 Do not build from `.migration-backup`; the new path does not depend on it.
 The build script installs only the desktop app, API, web app and their workspace
 dependencies. This changes which packages are linked in `node_modules` for that
