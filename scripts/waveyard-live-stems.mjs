@@ -247,7 +247,7 @@ try {
     window.audioProbe = {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [], decodedAudio: [],
       combinedInputs: [], combinedOutputs: [], playStarts: [],
-      workletLoads: [], workletSeeks: [], transportMessages: [],
+      workletLoads: [], workletSeeks: [], transportMessages: [], contexts: [],
     };
     if (probeAutoFades) {
       const nativePlay = HTMLMediaElement.prototype.play;
@@ -309,6 +309,7 @@ try {
     window.AudioContext = class extends Base {
       constructor(...args) {
         super(...args);
+        window.audioProbe.contexts.push(this);
       }
       decodeAudioData(...args) {
         return super.decodeAudioData(...args).then(buffer => {
@@ -1410,6 +1411,18 @@ try {
     assert.equal(await page.locator(".timeline-track").count(), 4, "Studio opens with the selected track and no unselected tracks");
     await verifyStudioSaveReload();
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => {
+      const prototype = window.AudioContext.prototype;
+      const originalAddEventListener = prototype.addEventListener;
+      window.audioProbe.suppressedStateChangeListeners = 0;
+      prototype.addEventListener = function (type, listener, ...options) {
+        if (type === "statechange") {
+          window.audioProbe.suppressedStateChangeListeners += 1;
+          return;
+        }
+        return originalAddEventListener.call(this, type, listener, ...options);
+      };
+    });
     const blockNextResume = () => page.evaluate(() => {
       const prototype = window.AudioContext.prototype;
       const originalResume = prototype.resume;
@@ -1436,30 +1449,94 @@ try {
         `${name} is keyboard-focusable after the alert`);
       return button;
     };
+    const position = async () => Number(await page.getByRole("slider", { name: "Seek project", exact: true }).inputValue());
+    const waitForAudioContext = async (previousCount) => {
+      await page.waitForFunction(count => window.audioProbe.contexts.length > count, previousCount);
+      const index = await page.evaluate(() => window.audioProbe.contexts.length - 1);
+      assert.ok(index >= previousCount, "Studio creates an audio context for each preview engine");
+      return index;
+    };
+    const suspendContext = async (index) => {
+      await page.evaluate(async (contextIndex) => {
+        if (document.visibilityState !== "visible") throw new Error("Output-switch simulation must stay in the foreground.");
+        const audio = window.audioProbe.contexts[contextIndex];
+        if (!audio) throw new Error(`No audio context exists at index ${contextIndex}.`);
+        await audio.suspend();
+        if (audio.state !== "suspended") throw new Error("The output-switch fixture did not suspend its audio context.");
+      }, index);
+    };
+    const notifyOutputChange = async () => page.evaluate(() => {
+      if (!navigator.mediaDevices?.dispatchEvent) {
+        throw new Error("The browser cannot simulate a media-device output change.");
+      }
+      navigator.mediaDevices.dispatchEvent(new Event("devicechange"));
+    });
+    const assertRecoveredOutput = async ({ contextIndex, playingButton, before }) => {
+      await page.waitForFunction(({ index, buttonName }) =>
+        document.visibilityState === "visible"
+        && window.audioProbe.contexts[index]?.state === "running"
+        && [...document.querySelectorAll("button")].some(button => button.getAttribute("aria-label") === buttonName),
+      { index: contextIndex, buttonName: playingButton }, { timeout: 10_000 });
+      await page.waitForFunction((previousPosition) =>
+        Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > previousPosition + 0.1,
+      before, { timeout: 10_000 });
+    };
+    const assertBlockedOutputRecovery = async ({ contextIndex, retryButton, playingButton, message }) => {
+      const before = await position();
+      await suspendContext(contextIndex);
+      await blockNextResume();
+      await notifyOutputChange();
+      const action = await assertRecoveryControl(retryButton, message);
+      assert.equal(await page.getByRole("button", { name: playingButton, exact: true }).count(), 0,
+        `${retryButton} is not left in a false-playing state while output recovery is blocked`);
+      assert(await position() >= before - 0.15,
+        `${retryButton} recovery preserves the playhead instead of restarting from zero`);
+      await action.click();
+      await page.getByRole("button", { name: playingButton, exact: true }).waitFor({ timeout: 10_000 });
+      await page.waitForFunction((previousPosition) =>
+        Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > previousPosition + 0.1,
+      before, { timeout: 10_000 });
+    };
 
-    await blockNextResume();
-    let recoveryButton = page.getByRole("button", { name: "Play stems", exact: true });
-    await recoveryButton.click();
-    recoveryButton = await assertRecoveryControl(
-      "Play stems",
-      "Audio playback was interrupted. Activate Play stems to resume.",
-    );
-    await recoveryButton.click();
+    let contextCount = await page.evaluate(() => window.audioProbe.contexts.length);
+    await page.getByRole("button", { name: "Play stems", exact: true }).click();
     await page.getByRole("button", { name: "Pause stems", exact: true }).waitFor();
+    const stemContextIndex = await waitForAudioContext(contextCount);
+    assert.equal(await page.evaluate(() => window.audioProbe.suppressedStateChangeListeners > 0), true,
+      "the route-switch test isolates the media-device event from AudioContext statechange recovery");
+    let previousPosition = await position();
+    await suspendContext(stemContextIndex);
+    await notifyOutputChange();
+    await assertRecoveredOutput({ contextIndex: stemContextIndex, playingButton: "Pause stems", before: previousPosition });
+    await assertBlockedOutputRecovery({
+      contextIndex: stemContextIndex,
+      retryButton: "Play stems",
+      playingButton: "Pause stems",
+      message: "Audio playback was interrupted. Activate Play stems to resume.",
+    });
     await page.getByRole("button", { name: "Pause stems", exact: true }).click();
 
-    await blockNextResume();
-    recoveryButton = page.getByRole("button", { name: "Preview arrangement", exact: true });
-    await recoveryButton.click();
-    recoveryButton = await assertRecoveryControl(
-      "Preview arrangement",
-      "Audio playback was interrupted. Activate Preview arrangement to resume.",
-    );
-    await recoveryButton.click();
+    contextCount = await page.evaluate(() => window.audioProbe.contexts.length);
+    await page.getByRole("button", { name: "Preview arrangement", exact: true }).click();
     await page.getByRole("button", { name: "Pause arrangement", exact: true }).waitFor();
+    const arrangementContextIndex = await waitForAudioContext(contextCount);
+    previousPosition = await position();
+    await suspendContext(arrangementContextIndex);
+    await notifyOutputChange();
+    await assertRecoveredOutput({
+      contextIndex: arrangementContextIndex,
+      playingButton: "Pause arrangement",
+      before: previousPosition,
+    });
+    await assertBlockedOutputRecovery({
+      contextIndex: arrangementContextIndex,
+      retryButton: "Preview arrangement",
+      playingButton: "Pause arrangement",
+      message: "Audio couldn't resume automatically. Activate Preview arrangement to try again.",
+    });
     await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
     assert.deepEqual(assetSnapshot(), originalAssets, "handoff and editing preserve original audio");
-    console.log("PASS: Studio handoff preserves edits and audio; mobile-sized blocked stem and arrangement recovery prompts name, describe, focus, and retry the correct controls");
+    console.log("PASS: mobile-sized Bluetooth output-switch simulation resumes stem and arrangement playback at their current positions; blocked resumes expose linked, focusable retry controls");
   } else if (parallelStemSwapsOnly) {
     const gate = () => {
       let release;

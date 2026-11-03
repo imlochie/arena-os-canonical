@@ -23,6 +23,12 @@ For app-background audio recovery tests, this workspace's Chromium build does no
 
 For foreground call or output interruptions, suspend the real `AudioContext` while the document remains visible and assert recovery from its `statechange` event independently of visibility, focus, or page-show events.
 
+For simulated Bluetooth route switches, suppress only the fixture's `AudioContext` `statechange` listener, suspend the real context, and dispatch `devicechange` on `navigator.mediaDevices`. Assert the context resumes, the transport returns to its playing state, and the playhead advances without resetting.
+
+**Why:** A `statechange`-only test can pass while the media-device route-change path is missing; the two browser signals are independent. Synthetic `devicechange` proves event wiring, not that a physical phone reports the event or that Bluetooth audio is audible.
+
+**How to apply:** Use the device-change simulation for fast browser regression coverage, then separately record actual iPhone Safari and Android Chrome behavior, OS/browser versions, audibility, error prompts, and playhead continuity.
+
 **Why:** Some phones interrupt audio without changing document visibility, so lifecycle-only tests cannot prove the Studio transport will recover or expose a retry state.
 
 **How to apply:** Cover both successful automatic recovery and a rejected resume while Studio stays foregrounded; assert the transport playhead continues from the interruption point and manual pause remains respected.

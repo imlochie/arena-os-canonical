@@ -767,10 +767,13 @@ export function useStemTransport(
     document.addEventListener("visibilitychange", recover);
     window.addEventListener("pageshow", recover);
     window.addEventListener("focus", recover);
+    const mediaDevices = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    mediaDevices?.addEventListener("devicechange", recover);
     return () => {
       document.removeEventListener("visibilitychange", recover);
       window.removeEventListener("pageshow", recover);
       window.removeEventListener("focus", recover);
+      mediaDevices?.removeEventListener("devicechange", recover);
       recoverAudioContext.current = () => undefined;
     };
   }, [currentPosition, play]);
