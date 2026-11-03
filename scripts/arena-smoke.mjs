@@ -43,6 +43,8 @@ const liveDonorRecoveryOnly = process.argv.includes("--live-donor-recovery-only"
 const liveDonorRecoveryOnlyComplete = "LIVE_DONOR_RECOVERY_ONLY_COMPLETE";
 
 if (!sessionModeRacesOnly && !liveDonorRecoveryOnly) {
+  execFileSync("pnpm", ["--filter", "@workspace/scripts", "exec", "tsx", "--test",
+    `${process.cwd()}/lib/arena/src/lib/waveyard/types/__tests__/multi-clip-operations.test.ts`], { stdio: "inherit" });
   execFileSync(
     process.execPath,
     [new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
@@ -2691,6 +2693,93 @@ try {
   await pressAndSave("Space");
   assert.equal(await keyboardFirstLane.locator(".clip").count(), 2,
     "Space must activate the focused Duplicate button rather than the global playback shortcut");
+  const selectionStatus = page.locator(".timeline-selection-status");
+  const assertClipCount = async (count) => {
+    assert.equal(await page.locator(".clip.multi-selected").count(), count);
+    assert.equal(await selectionStatus.innerText(), `${count} ${count === 1 ? "clip selected" : "clips selected"}`);
+    assert.equal(await selectionStatus.getAttribute("role"), "status");
+  };
+  await keyboardFirstClip.focus();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("Shift+End");
+  await assertClipCount(2);
+  await page.keyboard.press("Shift+Home");
+  await assertClipCount(1);
+  await page.keyboard.press("Shift+ArrowDown");
+  await assertClipCount(3);
+  await page.keyboard.press("Shift+ArrowUp");
+  await assertClipCount(1);
+  await page.keyboard.press("Shift+ArrowRight");
+  await assertClipCount(2);
+  await page.keyboard.press("Shift+ArrowLeft");
+  await assertClipCount(1);
+  await page.keyboard.press("Shift+Space");
+  await assertClipCount(0);
+  assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element),
+    "removing the last selection must retain visible clip focus");
+  await page.keyboard.press("Shift+Space");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await assertClipCount(1);
+  await page.keyboard.press("Shift+Space");
+  await assertClipCount(2);
+  const arbitraryClipIds = [studioRemixResponse.tracks[0].clips[0].id, studioRemixResponse.tracks[2].clips[0].id];
+  const assertArbitraryRequest = (operation) => {
+    assert.equal(studioKeyboardEdits.at(-1).operation, operation);
+    assert.deepEqual([...studioKeyboardEdits.at(-1).clipIds].sort(), [...arbitraryClipIds].sort(),
+      "group edits must use exactly the keyboard-composed cross-lane selection");
+  };
+  await page.keyboard.press("Shift+Space");
+  await assertClipCount(1);
+  await page.keyboard.press("Shift+Space");
+  await pressAndSave("Alt+ArrowRight");
+  assertArbitraryRequest("move");
+  await assertClipCount(2);
+  await pressAndSave("Alt+ArrowLeft");
+  assertArbitraryRequest("move");
+  await page.locator(".multi-clip-actions").getByRole("button", { name: "Duplicate", exact: true }).focus();
+  await assertClipCount(2);
+  await pressAndSave("Space");
+  assertArbitraryRequest("duplicate");
+  assert.equal(await page.locator(".clip").count(), 11);
+  await pressAndSave("Control+z", "PUT", "");
+  assert.equal(await page.locator(".clip").count(), 9);
+  await keyboardFirstClip.focus();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Shift+Space");
+  await pressAndSave("Delete");
+  assertArbitraryRequest("delete");
+  assert.equal(await page.locator(".clip").count(), 7);
+  await assertClipCount(0);
+  await pressAndSave("Control+z", "PUT", "");
+  assert.equal(await page.locator(".clip").count(), 9);
+  await keyboardFirstClip.focus();
+  await page.keyboard.press("Space");
+  const selectedBeforeShortcuts = await page.locator(".clip.multi-selected").count();
+  const shortcutResults = await keyboardFirstClip.evaluate((element) => {
+    const cases = [
+      { key: "ArrowLeft", ctrlKey: true }, { key: "ArrowRight", metaKey: true },
+      { key: "Home", ctrlKey: true }, { key: "a", metaKey: true },
+      { key: " ", code: "Space", ctrlKey: true }, { key: " ", code: "Space", metaKey: true },
+    ];
+    return cases.map((options) => {
+      const event = new KeyboardEvent("keydown", { ...options, bubbles: true, cancelable: true });
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+  });
+  assert(shortcutResults.every((prevented) => !prevented), "browser-modified keys must not be intercepted");
+  const inputResults = await keyboardFirstClip.locator("input").evaluate((element) =>
+    ["ArrowRight", "Home", " ", "Delete"].map((key) => {
+      const event = new KeyboardEvent("keydown", { key, shiftKey: true, bubbles: true, cancelable: true });
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    }));
+  assert(inputResults.every((prevented) => !prevented), "clip selection keys must leave input fields alone");
+  assert.equal(await page.locator(".clip.multi-selected").count(), selectedBeforeShortcuts);
+  report.push("Keyboard clip ranges extend and shrink from a fixed anchor; Shift+Space composes nonadjacent cross-lane groups with announced counts; move, duplicate, delete and undo use the chosen group without intercepting fields or browser shortcuts.");
   await keyboardFirstClip.focus();
   await page.keyboard.press("End");
   assert(await keyboardFirstLane.locator(".clip").nth(1).evaluate((element) => document.activeElement === element),
@@ -2698,10 +2787,12 @@ try {
   await page.keyboard.press("Home");
   assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element), "Home must reach the first clip");
   await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Space");
   await pressAndSave("Delete");
   assert.equal(await keyboardFirstLane.locator(".clip").count(), 1);
   assert(await keyboardFirstClip.evaluate((element) => document.activeElement === element),
     "deleting the focused clip must focus the remaining clip rather than the page body");
+  await page.keyboard.press("Space");
   await pressAndSave("Delete");
   const emptyKeyboardLane = keyboardFirstLane.locator(".clip-lane");
   assert(await emptyKeyboardLane.evaluate((element) => document.activeElement === element),

@@ -6,7 +6,9 @@ import {
   moveEditableClips,
 } from "../index";
 import {
+  anchoredClipRange,
   clipRangeSelection,
+  orderedClipIds,
   toggleClipSelection,
   trackClipSelection,
 } from "../../clip-selection";
@@ -14,7 +16,7 @@ import {
   redoArrangementHistory,
   recordArrangementHistory,
   undoArrangementHistory,
-} from "../../../../components/waveyard/studio/useArrangementHistory";
+} from "../../../../../../../artifacts/arenaforge/src/components/waveyard/studio/useArrangementHistory";
 
 const makeClip = (id: string, timelineStartMs: number, durationMs = 500) => ({
   id,
@@ -36,6 +38,30 @@ describe("UI-only multi-clip selection", () => {
     expect(toggleClipSelection(["a", "b"], "a")).toEqual(["b"]);
     expect(clipRangeSelection(["a", "b", "c", "d"], 3, 1)).toEqual(["b", "c", "d"]);
     expect(trackClipSelection(["a", "b", "a"]).sort()).toEqual(["a", "b"]);
+  });
+
+  it("orders ranges by lane then time, with stable ties and empty lanes", () => {
+    const ids = orderedClipIds([
+      { clips: [makeClip("late", 900), makeClip("early", 0), makeClip("tie", 0)] },
+      { clips: [] },
+      { clips: [makeClip("other-lane", 0), { timelineStartMs: 100 }] },
+    ]);
+    expect(ids).toEqual(["early", "tie", "late", "other-lane"]);
+    expect(anchoredClipRange(ids, "early", "other-lane")).toEqual(ids);
+    expect(anchoredClipRange(ids, "early", "tie")).toEqual(["early", "tie"]);
+    expect(anchoredClipRange(ids, "late", "early")).toEqual(["early", "tie", "late"]);
+    expect(anchoredClipRange(ids, "late", "late")).toEqual(["late"]);
+    expect(anchoredClipRange(ids, "deleted-anchor", "tie")).toEqual(["tie"]);
+    expect(anchoredClipRange(ids, "early", "deleted-target")).toEqual([]);
+    expect(anchoredClipRange([], "early", "late")).toEqual([]);
+  });
+
+  it("toggles nonadjacent clips without removing the rest, including the final member", () => {
+    const selection = ["early", "other-lane"];
+    expect(toggleClipSelection(selection, "late")).toEqual(["early", "other-lane", "late"]);
+    expect(toggleClipSelection(selection, "early")).toEqual(["other-lane"]);
+    expect(toggleClipSelection(["other-lane"], "other-lane")).toEqual([]);
+    expect(selection).toEqual(["early", "other-lane"]);
   });
 });
 

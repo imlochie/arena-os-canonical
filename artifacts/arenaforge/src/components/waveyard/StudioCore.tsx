@@ -902,6 +902,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       if (event.defaultPrevented || !remix || !canHandleShortcut(event.target)) return;
       const command = event.ctrlKey || event.metaKey;
       if (event.code === "Space") {
+        if (command || event.altKey || event.shiftKey) return;
         if (event.target instanceof HTMLElement && event.target.closest("button,a,[role='button']")) return;
         event.preventDefault(); toggleStemPreview(); return;
       }

@@ -3,7 +3,7 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { evaluateAutomation, snapSourceWindowToBeats, tempoRatioForBpm, type AutomationParameter, type AutomationPoint } from "@workspace/arena/lib/waveyard/types";
 import { moveClip, trimClipLeft, trimClipRight } from "@workspace/arena/lib/waveyard/arrangement";
-import { clipRangeSelection, toggleClipSelection, trackClipSelection } from "@workspace/arena/lib/waveyard/clip-selection";
+import { anchoredClipRange, clipRangeSelection, orderedClipIds, toggleClipSelection, trackClipSelection } from "@workspace/arena/lib/waveyard/clip-selection";
 import { effectiveMuted, type RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
 import { barMs, beatMs, formatMusicalPosition, snapIncrementMs, snapTimelineMs, type MusicalTiming } from "@workspace/arena/lib/waveyard/timing";
 import { clock, type Remix } from "./types";
@@ -97,6 +97,8 @@ export function ArrangementTimeline({
   const [selectedAutomationPointId, setSelectedAutomationPointId] = useState<string | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const focusedClip = useRef<{ element: HTMLElement; trackId: string; index: number } | null>(null);
+  const rangeAnchor = useRef<string | null>(null);
+  const navigating = useRef(false);
   const batchBusy = useRef(false);
   const [editMessage, setEditMessage] = useState("");
   const keyboardHelpId = useId();
@@ -107,7 +109,12 @@ export function ArrangementTimeline({
     const target = clipIndex === null
       ? track?.querySelector<HTMLElement>(".clip-lane")
       : track?.querySelector<HTMLElement>(`.clip[data-clip-index="${clipIndex}"]`);
-    target?.focus({ preventScroll: true });
+    navigating.current = true;
+    try {
+      target?.focus({ preventScroll: true });
+    } finally {
+      navigating.current = false;
+    }
     target?.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
   useLayoutEffect(() => {
@@ -121,38 +128,78 @@ export function ArrangementTimeline({
     const index = selection?.trackId === track.id ? selection.clipIndex : previous.index;
     focusAt(Math.max(0, trackIndex), track.clips.length ? Math.min(index, track.clips.length - 1) : null);
   }, [remix, selection]);
+  useLayoutEffect(() => {
+    // Undo/reload can remove duplicated clips without a batch-delete response.
+    // Do not announce or submit IDs that no longer belong to this arrangement.
+    const ids = new Set(orderedClipIds(remix.tracks));
+    const remaining = selectedClipIds.filter((id) => ids.has(id));
+    if (remaining.length !== selectedClipIds.length) onSelectedClipIds(remaining);
+    if (rangeAnchor.current && !ids.has(rangeAnchor.current)) rangeAnchor.current = null;
+  }, [remix, selectedClipIds, onSelectedClipIds]);
 
   const selectClip = (trackId: string, index: number, element?: HTMLElement) => {
     const clip = remix.tracks.find((track) => track.id === trackId)?.clips[index];
     if (element) focusedClip.current = { element, trackId, index };
     onSelection({ trackId, clipIndex: index });
     onSelectedClipIds(clip?.id ? [clip.id] : []);
+    rangeAnchor.current = clip?.id ?? null;
   };
   const navigate = (event: React.KeyboardEvent<HTMLElement>, trackIndex: number, clipIndex: number | null) => {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     const track = remix.tracks[trackIndex];
-    if (event.key === "Enter" || event.key === " ") {
+    if (!track) return;
+    if (event.shiftKey && event.key === " " && clipIndex !== null) {
+      const id = track.clips[clipIndex]?.id;
+      if (!id) return;
       event.preventDefault();
       event.stopPropagation();
-      if (clipIndex === null) focusAt(trackIndex, track.clips.length ? 0 : null);
+      onSelectedClipIds(toggleClipSelection(selectedClipIds, id));
+      rangeAnchor.current = id;
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      if (event.shiftKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (clipIndex === null) {
+        focusAt(trackIndex, track.clips.length ? 0 : null);
+        if (track.clips.length) selectClip(track.id, 0);
+      }
       else selectClip(track.id, clipIndex, event.currentTarget);
       return;
     }
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
+    let targetTrack = trackIndex;
+    let targetClip: number | null = clipIndex;
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       const nextTrack = Math.max(0, Math.min(remix.tracks.length - 1, trackIndex + (event.key === "ArrowDown" ? 1 : -1)));
       const clips = remix.tracks[nextTrack].clips;
-      focusAt(nextTrack, clips.length ? Math.min(clipIndex ?? 0, clips.length - 1) : null);
+      targetTrack = nextTrack;
+      targetClip = clips.length ? Math.min(clipIndex ?? 0, clips.length - 1) : null;
     } else {
       const order = track.clips.map((clip, index) => ({ index, start: clip.timelineStartMs }))
         .sort((a, b) => a.start - b.start || a.index - b.index);
       const current = order.findIndex((clip) => clip.index === clipIndex);
       const next = event.key === "Home" ? 0 : event.key === "End" ? order.length - 1
         : Math.max(0, Math.min(order.length - 1, current + (event.key === "ArrowRight" ? 1 : -1)));
-      if (order[next]) focusAt(trackIndex, order[next].index);
+      targetClip = order[next]?.index ?? null;
     }
+    const currentId = clipIndex === null ? null : track.clips[clipIndex]?.id;
+    const targetId = targetClip === null ? null : remix.tracks[targetTrack].clips[targetClip]?.id;
+    if (event.shiftKey) {
+      const order = orderedClipIds(remix.tracks);
+      if (!rangeAnchor.current || !order.includes(rangeAnchor.current))
+        rangeAnchor.current = currentId ?? targetId ?? null;
+      if (targetId && rangeAnchor.current)
+        onSelectedClipIds(anchoredClipRange(order, rangeAnchor.current, targetId));
+    } else {
+      // Navigation moves focus, not membership. Space replaces the selection;
+      // Shift+Space can therefore compose arbitrary selections across lanes.
+      rangeAnchor.current = targetId ?? null;
+    }
+    focusAt(targetTrack, targetClip);
   };
   const timelineEndMs = useMemo(
     () => Math.max(
@@ -175,6 +222,7 @@ export function ArrangementTimeline({
     event.stopPropagation();
     const clipId = clip.id;
     if (!clipId) return;
+    rangeAnchor.current = clipId;
     // Touching a clip body selects it, while leaving horizontal movement to
     // the scrollable timeline. The dedicated move control starts a drag.
     if (event.pointerType === "touch" && mode === "move" && !touchMove) {
@@ -293,10 +341,12 @@ export function ArrangementTimeline({
       .finally(() => { batchBusy.current = false; });
   };
   const moveByKeyboard = (event: React.KeyboardEvent<HTMLElement>, clip: RemixClipInput) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return;
     if (!clip.id || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
-    const ids = selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id];
+    const ids = selectedClipIds;
+    if (!ids.length) return;
     const earliest = Math.min(...remix.tracks.flatMap((track) => track.clips)
       .filter((candidate) => ids.includes(candidate.id ?? "")).map((candidate) => candidate.timelineStartMs));
     const target = snapTimelineMs(clip.timelineStartMs + (event.key === "ArrowLeft" ? -1 : 1) * keyboardStepMs, timing);
@@ -304,6 +354,7 @@ export function ArrangementTimeline({
     if (delta !== 0) runGroup("move", { timelineDeltaMs: delta }, ids);
   };
   const trimByKeyboard = (event: React.KeyboardEvent<HTMLElement>, trackId: string, index: number, side: "left" | "right") => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     if (!["ArrowLeft", "ArrowRight", "Enter", " "].includes(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -363,21 +414,23 @@ export function ArrangementTimeline({
 
   return (
     <>
-      <p className="timeline-keyboard-help" id={keyboardHelpId}>Arrow keys navigate · Alt + Left/Right moves · Tab to a trim handle, then Left/Right resizes · Delete removes selected clips · Space selects</p>
+      <p className="timeline-keyboard-help" id={keyboardHelpId}>Arrow keys move focus · Shift + Arrow/Home/End selects a range in lane order, then start-time order · Shift + Space toggles a clip · Space selects only this clip · Alt + Left/Right moves · Tab to a trim handle, then Left/Right resizes · Delete removes selected clips</p>
       <div className="timeline-toolbar">
         <span className="snap-indicator">{timing.snapEnabled ? `Snap: ${timing.gridDivision}` : "Snap: off"}</span>
         <span>{formatMusicalPosition(positionMs, timing)}</span>
         <span className="multi-clip-actions" aria-label="Selected clip actions">{selectedClipIds.length ? `${selectedClipIds.length} selected` : "Select clips"}<button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("nudge", { amount: "1ms", direction: "back" })}>Nudge −</button><button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("nudge", { amount: "1ms", direction: "forward" })}>Nudge +</button><button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("duplicate")}>Duplicate</button><button className="button danger" disabled={!selectedClipIds.length} onClick={() => runGroup("delete")}>Delete</button></span>
       </div>
+      <span className="timeline-selection-status" role="status" aria-live="polite" aria-atomic="true">{selectedClipIds.length} {selectedClipIds.length === 1 ? "clip selected" : "clips selected"}</span>
       <span className="timeline-edit-status" role="status">{editMessage}</span>
       <div className="timeline-axis">
         0s <span>{clock(timelineEndMs / 1000)}</span>
         <em>{timing.tempoBpm} BPM · {timing.timeSignatureNumerator}/{timing.timeSignatureDenominator} · {timing.gridDivision}</em>
       </div>
       <div className="timeline-scroll" ref={timelineRef} role="region" aria-label="Arrangement timeline" aria-describedby={keyboardHelpId} tabIndex={0} onKeyDown={(event) => {
-        if (event.target === event.currentTarget && ["Enter", "ArrowDown"].includes(event.key)) {
+        if (event.target === event.currentTarget && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && ["Enter", "ArrowDown"].includes(event.key)) {
           event.preventDefault();
           focusAt(0, remix.tracks[0]?.clips.length ? 0 : null);
+          if (remix.tracks[0]?.clips.length) selectClip(remix.tracks[0].id, 0);
         }
       }}>
         <div className="timeline timeline-direct" style={{ width: timelineWidth }}>
@@ -431,10 +484,9 @@ export function ArrangementTimeline({
                 onPointerCancel={() => { lanePointerStart.current = null; }}
               >
                 {track.clips.map((clip, index) => {
-                  const selected = selection?.trackId === track.id && selection.clipIndex === index;
                   const groupSelected = Boolean(clip.id && selectedClipIds.includes(clip.id));
                   return <article
-                    className={`clip ${selected || groupSelected ? "selected" : ""} ${groupSelected ? "multi-selected" : ""}`}
+                    className={`clip ${groupSelected ? "selected multi-selected" : ""}`}
                     key={clip.id ?? `new-${index}`}
                     data-clip-index={index}
                     tabIndex={0}
@@ -442,16 +494,19 @@ export function ArrangementTimeline({
                     aria-label={`${track.name} clip ${index + 1}${groupSelected ? ", selected" : ""}`}
                     aria-describedby={keyboardHelpId}
                     onFocus={(event) => {
-                      if (event.target === event.currentTarget || (event.target as HTMLElement).closest(".trim-handle,.clip-move-handle"))
-                        selectClip(track.id, index, event.currentTarget);
+                      if (event.target === event.currentTarget || (event.target as HTMLElement).closest(".trim-handle,.clip-move-handle")) {
+                        focusedClip.current = { element: event.currentTarget, trackId: track.id, index };
+                        if (!navigating.current) rangeAnchor.current = clip.id ?? null;
+                        onSelection({ trackId: track.id, clipIndex: index });
+                      }
                     }}
                     onKeyDown={(event) => {
                       if (event.target !== event.currentTarget) return;
                       if (event.altKey && !event.ctrlKey && !event.metaKey) moveByKeyboard(event, clip);
-                      else if (event.key === "Delete" && !event.ctrlKey && !event.metaKey && clip.id) {
+                      else if (event.key === "Delete" && !event.shiftKey && !event.ctrlKey && !event.metaKey && clip.id) {
                         event.preventDefault();
                         event.stopPropagation();
-                        runGroup("delete", {}, selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id]);
+                        runGroup("delete");
                       } else navigate(event, trackIndex, index);
                     }}
                     style={{ left: `${(clip.timelineStartMs / 1000) * zoom}px`, width: `${Math.max(18, (clip.durationMs / 1000) * zoom)}px` }}
