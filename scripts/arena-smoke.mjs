@@ -7,6 +7,12 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { makeHomebrewNesRom, checkNesInputs, runNesInputSmoke } from "./arcade-nes-input-checks.mjs";
+
+if (process.argv.includes("--nes-input-only")) {
+  await runNesInputSmoke();
+  process.exit(0);
+}
 
 if (process.argv.includes("--arcade-manifest-only")) {
   await import("./arcade-manifest-foundation.mjs");
@@ -109,25 +115,6 @@ async function tapCenter(locator) {
   const bounds = await locator.boundingBox();
   assert(bounds, "Touch target must have visible bounds");
   await touchAt(locator, bounds.width / 2, bounds.height / 2);
-}
-async function beginTouchAt(locator) {
-  await locator.scrollIntoViewIfNeeded();
-  const bounds = await locator.boundingBox();
-  assert(bounds, "Touch target must have visible bounds");
-  if (!touchSession) {
-    touchSession = await context.newCDPSession(page);
-    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
-  }
-  const x = Math.round(bounds.x + bounds.width / 2);
-  const y = Math.round(bounds.y + bounds.height / 2);
-  assert(await locator.evaluate((element, point) =>
-    element === document.elementFromPoint(point.x, point.y), { x, y }
-  ), "The touch coordinate must hit the intended control");
-  await touchSession.send("Input.dispatchTouchEvent", {
-    type: "touchStart",
-    touchPoints: [{ x, y, id: 1, radiusX: 1, radiusY: 1, force: 1 }],
-  });
-  return () => touchSession.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 async function dragTouch(locator, deltaX, deltaY, cancel = false, xFraction = 0.5, yFraction = 0.5) {
   const bounds = await locator.boundingBox();
@@ -239,30 +226,6 @@ function assertBlind(payload) {
     if (key === "assistantAId" || key === "assistantBId") assert.equal(value, null);
     assertBlind(value);
   }
-}
-function makeHomebrewNesRom() {
-  // Original test-only NROM: changes its background color while A is pressed.
-  // This is generated from hand-authored 6502 opcodes; it contains no game
-  // assets or copyrighted code.
-  const header = Buffer.alloc(16);
-  Buffer.from([0x4e, 0x45, 0x53, 0x1a, 1, 1, 0, 0]).copy(header);
-  const prg = Buffer.alloc(0x4000, 0xea);
-  Buffer.from([
-    0x78, 0xd8, 0xa2, 0x40, 0x8e, 0x17, 0x40, 0xa2, 0xff, 0x9a, 0xe8,
-    0x8e, 0x00, 0x20, 0x8e, 0x01, 0x20, 0x2c, 0x02, 0x20, 0x10, 0xfb,
-    0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20, 0xa9,
-    0x21, 0x8d, 0x07, 0x20, 0xa9, 0x08, 0x8d, 0x01, 0x20,
-    // Poll controller A, show a different background while pressed, then loop.
-    0xa9, 0x01, 0x8d, 0x16, 0x40, 0xa9, 0x00, 0x8d, 0x16, 0x40,
-    0xad, 0x16, 0x40, 0x29, 0x01, 0xf0, 0x12,
-    0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20,
-    0xa9, 0x30, 0x8d, 0x07, 0x20, 0x4c, 0x2a, 0x80,
-    0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20,
-    0xa9, 0x21, 0x8d, 0x07, 0x20, 0x4c, 0x2a, 0x80,
-  ]).copy(prg);
-  Buffer.from([0x00, 0x80, 0x00, 0x80, 0x00, 0x80]).copy(prg, 0x3ffa);
-  const chr = Buffer.alloc(0x2000);
-  return Buffer.concat([header, prg, chr]);
 }
 function makeUnsupportedMapperRom(mapper) {
   const header = Buffer.alloc(16);
@@ -4051,43 +4014,7 @@ try {
     mimeType: "application/octet-stream",
     buffer: makeHomebrewNesRom(),
   });
-  const nesCanvas = page.locator('canvas[aria-label="NES game screen"]');
-  await nesCanvas.waitFor({ timeout: 10000 });
-  // JSNES frame entries are packed 0xBBGGRR, copied to a Uint32Array by
-  // ImportedGameWorkspace. Decode the little-endian canvas RGB bytes, not
-  // the usual 0xRRGGBB notation. Palette $21 is 0xFFAB3C; $30 is 0xFFFFFF
-  // (0xFFF2BE belongs to $31, not $30).
-  // Wait for the actual idle frame, not an intermediate non-black boot frame.
-  const nesPaletteRgb = (packed) => [packed & 0xff, (packed >>> 8) & 0xff, (packed >>> 16) & 0xff];
-  const idleNesBackground = nesPaletteRgb(0xffab3c);
-  const pressedNesBackground = nesPaletteRgb(0xffffff);
-  const waitForNesBackground = async (expected, message) => {
-    await page.waitForFunction((color) => {
-      const canvas = document.querySelector('canvas[aria-label="NES game screen"]');
-      const pixel = canvas?.getContext("2d")?.getImageData(128, 120, 1, 1).data;
-      return pixel && pixel[0] === color[0] && pixel[1] === color[1] && pixel[2] === color[2];
-    }, expected, { timeout: 5000 }).catch(() => assert.fail(message));
-  };
-  await waitForNesBackground(idleNesBackground, "The homebrew ROM must finish booting to its idle color");
-  await nesCanvas.click();
-  await page.keyboard.down("z");
-  try {
-    await waitForNesBackground(pressedNesBackground, "Keyboard A input must visibly change the homebrew game's screen");
-  } finally {
-    await page.keyboard.up("z");
-  }
-  await waitForNesBackground(idleNesBackground, "Releasing keyboard A must restore the idle screen");
-  const touchButton = page.getByRole("button", { name: "A", exact: true });
-  const releaseTouch = await beginTouchAt(touchButton);
-  try {
-    await waitForNesBackground(pressedNesBackground, "Touch A input must visibly change the homebrew game's screen");
-  } finally {
-    await releaseTouch();
-    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: false });
-    await touchSession.detach();
-    touchSession = null;
-  }
-  await waitForNesBackground(idleNesBackground, "Releasing touch A must restore the idle screen");
+  report.push(...await checkNesInputs(page));
   await page.getByRole("button", { name: "Save progress" }).click();
   await page.getByText("Progress saved on this browser.").waitFor({ timeout: 10000 });
   assert((await page.locator("body").innerText()).includes("mapper IDs 0–5"));

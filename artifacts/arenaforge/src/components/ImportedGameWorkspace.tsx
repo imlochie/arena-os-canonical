@@ -1078,18 +1078,27 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     return `Create a new, original browser game inspired only by this user description. The reference filename is ${selected.name}. Do not reproduce copyrighted names, characters, music, levels, graphics, or code. User description: ${description.trim()}`;
   }, [description, selected]);
 
-  const setNesButton = (key: string, button: ButtonKey, pressed: boolean) => {
+  const setNesButton = useCallback((key: string, button: ButtonKey, pressed: boolean) => {
     const nes = nesRef.current;
     if (!nes) return;
     if (pressed) {
       if (buttonsRef.current.get(key) === button) return;
+      const alreadyHeld = [...buttonsRef.current.values()].includes(button);
       buttonsRef.current.set(key, button);
-      nes.buttonDown(1, button);
+      if (!alreadyHeld) nes.buttonDown(1, button);
     } else {
-      buttonsRef.current.delete(key);
-      nes.buttonUp(1, button);
+      if (!buttonsRef.current.delete(key)) return;
+      if (![...buttonsRef.current.values()].includes(button)) nes.buttonUp(1, button);
     }
-  };
+  }, []);
+
+  const releaseNesButtons = useCallback(() => {
+    // Only release on lifecycle boundaries, never on a timer: an intentional
+    // long hold must keep working. At most eight controller buttons are sent.
+    const held = new Set(buttonsRef.current.values());
+    buttonsRef.current.clear();
+    for (const button of held) nesRef.current?.buttonUp(1, button);
+  }, []);
 
   useEffect(() => {
     if (!selected || selected.kind !== "nes") return;
@@ -1105,19 +1114,29 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       const button = keyMap[event.key] ?? keyMap[event.key.toLowerCase()];
       if (button === undefined) return;
       event.preventDefault();
-      setNesButton(`key:${event.key}`, button, true);
+      setNesButton(`key:${button}`, button, true);
     };
     const onKeyUp = (event: KeyboardEvent) => {
       const button = keyMap[event.key] ?? keyMap[event.key.toLowerCase()];
-      if (button !== undefined) setNesButton(`key:${event.key}`, button, false);
+      if (button !== undefined) setNesButton(`key:${button}`, button, false);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") releaseNesButtons();
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", releaseNesButtons);
+    window.addEventListener("pagehide", releaseNesButtons);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", releaseNesButtons);
+      window.removeEventListener("pagehide", releaseNesButtons);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      releaseNesButtons();
     };
-  }, [selected]);
+  }, [selected?.id, selected?.kind, setNesButton, releaseNesButtons]);
 
   const controls = [
     ["Up", BUTTON.UP], ["Down", BUTTON.DOWN],
@@ -1343,10 +1362,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                     <button
                       key={label}
                       type="button"
-                      onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setNesButton(`touch:${label}`, button, true); }}
-                      onPointerUp={() => setNesButton(`touch:${label}`, button, false)}
-                      onPointerCancel={() => setNesButton(`touch:${label}`, button, false)}
-                      onLostPointerCapture={() => setNesButton(`touch:${label}`, button, false)}
+                      onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setNesButton(`pointer:${event.pointerId}`, button, true); }}
+                      onPointerUp={(event) => setNesButton(`pointer:${event.pointerId}`, button, false)}
+                      onPointerCancel={(event) => setNesButton(`pointer:${event.pointerId}`, button, false)}
+                      onLostPointerCapture={(event) => setNesButton(`pointer:${event.pointerId}`, button, false)}
                       className={`touch-none rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-wide active:translate-y-px ${label === "A" || label === "B" ? "border-rose-300/25 bg-rose-300/10 text-rose-100" : "border-white/10 bg-white/5 text-slate-200"}`}
                     >
                       {label}
