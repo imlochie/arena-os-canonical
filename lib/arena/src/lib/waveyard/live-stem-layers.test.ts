@@ -492,6 +492,68 @@ test("preloading decodes and tempo-matches a chosen donor before replacement wit
   } finally { f.layers.dispose(); }
 });
 
+test("overlapping live and compressed requests share one transfer and a cancelled swap can retry from it", async () => {
+  const f = fixture();
+  let fetchCount = 0;
+  let fetchSignal: AbortSignal | undefined;
+  let releaseResponse!: (value: Response) => void;
+  globalThis.fetch = (_url, init) => {
+    fetchCount += 1;
+    fetchSignal = init?.signal as AbortSignal;
+    return new Promise<Response>((resolve) => { releaseResponse = resolve; });
+  };
+  try {
+    const cancelledSwap = f.layers.replace("vocals", "/shared-donor");
+    const prefetch = f.layers.preloadAsset("/shared-donor");
+    assert.equal(fetchCount, 1, "the compressed prefetch joins the live transfer already in progress");
+
+    f.layers.cancelPending("vocals");
+    assert.equal(fetchSignal?.aborted, false,
+      "cancelling the live swap does not abort a transfer still needed by the prefetch");
+    releaseResponse(response());
+    assert.equal(await cancelledSwap, false, "the cancelled selection never becomes audible");
+    await prefetch;
+
+    await f.layers.replace("vocals", "/shared-donor");
+    assert.equal(fetchCount, 1, "retry consumes the cached bytes instead of transferring the stem again");
+    assert.equal(f.sources.length, 1, "the retry installs the selected donor");
+    assert.equal(f.channel.inputGain.gain.value, 0, "the donor is audible after it is ready");
+  } finally {
+    f.layers.dispose();
+  }
+});
+
+test("coalesced decoding cannot detach the bytes retained for another stem channel", async () => {
+  const f = fixture(undefined, undefined, undefined, ["vocals", "drums"]);
+  const decodedByteLengths: number[] = [];
+  f.context.decodeAudioData = async (input: ArrayBuffer) => {
+    decodedByteLengths.push(input.byteLength);
+    structuredClone(input, { transfer: [input] });
+    return { duration: 3, length: 144_000, numberOfChannels: 2 } as AudioBuffer;
+  };
+  let fetchCount = 0;
+  let releaseResponse!: (value: Response) => void;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Promise<Response>((resolve) => { releaseResponse = resolve; });
+  };
+  try {
+    const vocals = f.layers.replace("vocals", "/shared-donor");
+    const prefetch = f.layers.preloadAsset("/shared-donor");
+    assert.equal(fetchCount, 1, "the prefetch and live replacement share the transfer");
+    releaseResponse(response());
+    await Promise.all([vocals, prefetch]);
+
+    await f.layers.replace("drums", "/shared-donor");
+    assert.deepEqual(decodedByteLengths, [4, 4],
+      "each decoder receives intact bytes despite detaching its private input");
+    assert.equal(fetchCount, 1, "the second channel reuses the retained compressed asset");
+    assert.equal(f.sources.length, 2, "both channels install the shared donor independently");
+  } finally {
+    f.layers.dispose();
+  }
+});
+
 test("a warmed donor's audible timing starts when the user selects it, not when warming began", async () => {
   const f = fixture(undefined, timing => timings.push(timing));
   const timings: Array<{ selectionToAudibleMs: number }> = [];

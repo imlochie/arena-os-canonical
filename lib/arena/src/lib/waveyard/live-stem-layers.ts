@@ -78,6 +78,14 @@ type PrefetchedAsset = {
   byteLength: number;
 };
 
+type InFlightAsset = {
+  controller: AbortController;
+  promise: Promise<ArrayBuffer>;
+  consumers: number;
+  shared: boolean;
+  settled: boolean;
+};
+
 type PendingSwap = {
   controller: AbortController;
   key: string;
@@ -188,6 +196,7 @@ export class LiveStemLayers {
   private recentBytes = 0;
   private prefetchedAssets = new Map<string, PrefetchedAsset>();
   private prefetchedAssetBytes = 0;
+  private inFlightAssets = new Map<string, InFlightAsset>();
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private pendingEngineCleanups = new Set<() => void>();
@@ -494,11 +503,56 @@ export class LiveStemLayers {
   }
 
   private async fetchAssetBytes(url: string, signal: AbortSignal) {
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
-    const bytes = await response.arrayBuffer();
     if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
-    return bytes;
+
+    let request = this.inFlightAssets.get(url);
+    if (!request) {
+      const controller = new AbortController();
+      const entry: InFlightAsset = {
+        controller,
+        promise: Promise.resolve(new ArrayBuffer(0)),
+        consumers: 0,
+        shared: false,
+        settled: false,
+      };
+      entry.promise = fetch(url, { signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
+          const bytes = await response.arrayBuffer();
+          if (controller.signal.aborted) {
+            throw new DOMException("Stem preparation was cancelled.", "AbortError");
+          }
+          return bytes;
+        })
+        .finally(() => {
+          entry.settled = true;
+          if (this.inFlightAssets.get(url) === entry) this.inFlightAssets.delete(url);
+        });
+      this.inFlightAssets.set(url, entry);
+      request = entry;
+    }
+
+    request.consumers += 1;
+    if (request.consumers > 1) request.shared = true;
+    let onAbort: (() => void) | undefined;
+    try {
+      const bytes = await new Promise<ArrayBuffer>((resolve, reject) => {
+        onAbort = () => reject(new DOMException("Stem preparation was cancelled.", "AbortError"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+        request!.promise.then(resolve, reject);
+      });
+      if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
+      // decodeAudioData may detach its input. Coalesced consumers need private
+      // copies so a decode cannot corrupt bytes retained by the prefetch cache.
+      return request.shared ? bytes.slice(0) : bytes;
+    } finally {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+      request.consumers -= 1;
+      if (request.consumers === 0 && !request.settled && this.inFlightAssets.get(url) === request) {
+        request.controller.abort();
+      }
+    }
   }
 
   private async readAssetBytes(url: string, signal: AbortSignal) {
@@ -857,6 +911,8 @@ export class LiveStemLayers {
     for (const key of this.prepared.keys()) this.discardPrepared(key, true);
     for (const key of this.recent.keys()) this.discardRecent(key);
     for (const key of this.prefetchedAssets.keys()) this.discardPrefetchedAsset(key, true);
+    for (const request of this.inFlightAssets.values()) request.controller.abort();
+    this.inFlightAssets.clear();
     for (const layer of this.retired) {
       this.stop(layer);
       layer.input.disconnect();

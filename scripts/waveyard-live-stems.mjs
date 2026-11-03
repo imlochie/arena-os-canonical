@@ -450,7 +450,11 @@ try {
       liveSwapRequestOrder.push("donor-preload:d-vocals");
       signalExternalDonorWarm?.();
     }
-    const parallelDonor = parallelDonorResponses?.get(id);
+    // Hold the live-swap fetch, not the separate <audio> request used to preload
+    // the same song for upcoming playback.
+    const parallelDonor = route.request().resourceType() === "fetch"
+      ? parallelDonorResponses?.get(id)
+      : null;
     if (parallelDonor) {
       parallelDonorRequestOrder.push(id);
       parallelDonor.signalStarted();
@@ -1899,6 +1903,7 @@ try {
         const clocksBefore = await deck.locator("audio").evaluateAll(audio =>
           audio.map(element => element.currentTime),
         );
+        await page.evaluate(() => { window.liveStemAssetFetchTrace.length = 0; });
         await chooseDonor("b");
         await Promise.all([
           waitForSignal(saveA.started, "first vocals save"),
@@ -1940,6 +1945,17 @@ try {
           `donor downloads complete in the requested order: ${JSON.stringify(parallelDonorResponseOrder)}`,
         );
         await assertLatestDonor();
+        const selectedDonorTransfers = await page.evaluate(() => window.liveStemAssetFetchTrace
+          .filter(path => path === "/api/assets/b-vocals" || path === "/api/assets/c-vocals")
+          .reduce((counts, path) => ({ ...counts, [path]: (counts[path] ?? 0) + 1 }), {}));
+        assert.equal(selectedDonorTransfers["/api/assets/b-vocals"] ?? 0, 1,
+          "the first selected donor is transferred once even when superseded during its warm-up");
+        assert.equal(selectedDonorTransfers["/api/assets/c-vocals"] ?? 0, 1,
+          "the final audible donor reuses its warm-up transfer");
+        assert.equal(parallelDonorRequestOrder.filter(id => id === "b-vocals").length, 1,
+          "the superseded donor uses one live-swap fetch; its upcoming-track media preload is separate");
+        assert.equal(parallelDonorRequestOrder.filter(id => id === "c-vocals").length, 1,
+          "the final audible donor uses one live-swap fetch");
         sameStemSaveResponses = null;
         parallelDonorResponses = null;
         await verifyReopen();
