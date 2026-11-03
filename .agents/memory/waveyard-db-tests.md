@@ -20,3 +20,9 @@ When a test forks a TypeScript worker process from Node's test runner, pass only
 **Why:** Inheriting the test runner's full `process.execArgv` makes the worker launch another test harness; an open IPC channel can also keep a finished child alive.
 
 **How to apply:** Filter inherited arguments to the `tsx` loader and close IPC after completion, while keeping intentionally held worker processes connected until the test releases or terminates them.
+
+For browser persistence checks against real Waveyard route handlers, use a disposable PostgreSQL database and import database modules only after setting `DATABASE_URL`. From the scripts workspace, resolve the DB source modules relatively when runtime alias resolution is unavailable; let browser API calls invoke the real handlers and inspect committed rows directly.
+
+**Why:** The database pool captures its connection URL at module load, and a mocked route can make browser state look correct while the database remains stale.
+
+**How to apply:** Start PostgreSQL in a temporary directory, migrate it, set test-mode identity and storage paths, then dynamically import the DB and route handlers before driving the UI. Close all pools and remove the fixture directory afterward.

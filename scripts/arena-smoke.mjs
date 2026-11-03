@@ -44,6 +44,12 @@ const fullscreenKeyboardOnly = process.argv.includes("--fullscreen-keyboard-only
 const liveDonorRecoveryOnly = process.argv.includes("--live-donor-recovery-only");
 const liveDonorRecoveryOnlyComplete = "LIVE_DONOR_RECOVERY_ONLY_COMPLETE";
 
+if (process.argv.includes("--automation-persistence-only")) {
+  execFileSync("pnpm", ["--filter", "@workspace/scripts", "exec", "tsx", "--test",
+    `${process.cwd()}/scripts/waveyard-automation-persistence.test.ts`], { stdio: "inherit" });
+  process.exit(0);
+}
+
 if (!sessionModeRacesOnly && !liveDonorRecoveryOnly && !automationKeyboardOnly && !fullscreenKeyboardOnly) {
   execFileSync("pnpm", ["--filter", "@workspace/scripts", "exec", "tsx", "--test",
     `${process.cwd()}/lib/arena/src/lib/waveyard/types/__tests__/multi-clip-operations.test.ts`], { stdio: "inherit" });
