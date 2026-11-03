@@ -19,7 +19,7 @@ Treat restore previews as snapshots, not permission to overwrite subsequently ch
 
 **Why:** Gameplay can continue while the player selects a backup. Silently overwriting newer progress would hide the consequence of an old preview.
 
-**How to apply:** Recheck committed progress before the restore write and invalidate stale previews. A same-tab check is not cross-tab transaction protection; other already-running players need separate stale-writer handling.
+**How to apply:** Recheck both committed bytes and the per-game revision under the write lock before restoring. The HTML save bridge advances that revision on writes, removes, clears, and restores; older tabs keep running but must explicitly reload or reconcile. Web Locks serialize cooperating tabs. Since localStorage has no compare-and-swap, browsers without Web Locks can only use best-effort checks; say so instead of claiming strict transaction guarantees.
 
 Do not use an iframe `WindowProxy` alone to identify the active game document; the proxy can remain the same when that browsing context navigates to a new document.
 

@@ -518,8 +518,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   // Save-indicator updates must not regenerate srcDoc with newly saved bytes:
   // changing that attribute navigates the iframe and resets live gameplay.
   const selectedHtmlDocument = useMemo(
-    () => runtimeGame?.kind === "html" ? browserHtmlAdapter.launch({ source: runtimeGame.source, saveId: runtimeSaveId, sessionId: gameSaves.sessionId }) : "",
-    [runtimeGame?.kind, runtimeSaveId, runtimeGame?.source, gameSaves.reloadKey, gameSaves.sessionId],
+    () => runtimeGame?.kind === "html" ? browserHtmlAdapter.launch({
+      source: runtimeGame.source, saveId: runtimeSaveId, sessionId: gameSaves.sessionId, revision: gameSaves.initialRevision,
+    }) : "",
+    [runtimeGame?.kind, runtimeSaveId, runtimeGame?.source, gameSaves.reloadKey, gameSaves.sessionId, gameSaves.initialRevision],
   );
 
   useEffect(() => () => revisionAbortRef.current?.abort(), []);
@@ -1362,7 +1364,14 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                     </button>
                   )}
                 </div>
-                <ArcadeSaveWarning warning={gameSaves.persistenceWarning} canRetry={gameSaves.canRetrySave} onRetry={gameSaves.retrySaving} />
+                <ArcadeSaveWarning
+                  warning={gameSaves.persistenceWarning}
+                  canRetry={gameSaves.canRetrySave}
+                  conflict={gameSaves.hasRevisionConflict}
+                  onRetry={gameSaves.retrySaving}
+                  onReload={gameSaves.reloadGame}
+                  onReconcile={gameSaves.reconcileStaleProgress}
+                />
                 <ImportedGameProgressBackup key={runtimeSaveId} game={workshopActive && runtimeGame ? { ...runtimeGame, id: runtimeSaveId } : selected} hasProgress={gameSaves.hasSavedProgress} disabled={busy || savingShelf > 0} onRestore={gameSaves.restoreSavedProgress} />
               </div>
             ) : selected.kind === "emulator" && selected.system && selectedEmulatorRom ? (

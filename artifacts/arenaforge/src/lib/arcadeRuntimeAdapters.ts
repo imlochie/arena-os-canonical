@@ -59,7 +59,8 @@ export const browserHtmlAdapter = contract(
     mods: "Authorized HTML source revisions; native mod loaders unavailable",
   }),
   game => game.format === "html",
-  ({ source, saveId, sessionId }: { source: string; saveId: string; sessionId?: string }) => createGameSandboxDocument(source, saveId, sessionId),
+  ({ source, saveId, sessionId, revision }: { source: string; saveId: string; sessionId?: string; revision?: string | null }) =>
+    createGameSandboxDocument(source, saveId, sessionId, revision),
   () => { /* srcDoc owns no external resources; the owner removes its iframe. */ },
 );
 export const browserNesAdapter = contract(

@@ -77,7 +77,7 @@ const select = async (id, value, version = "Original") => {
 };
 const save = async (id, value) => {
   await frame().getByLabel("Progress value").fill(value);
-  await frame().getByRole("button", { name: "Save progress", exact: true }).click();
+  await frame().locator("#save").evaluate(button => button.click());
   await expectStored(value);
   await page.waitForFunction(({ id, value }) => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`) || "{}").progress === value, { id, value });
 };
@@ -148,8 +148,9 @@ try {
   const fault = mode => page.evaluate(value => { window.__saveFault.mode = value; }, mode);
   const committed = () => page.evaluate(id => window.__saveStorage.getItem.call(localStorage, `arenaforge.game-save.v1:${id}`), first.id);
   const attempt = async value => {
+    await frame().locator("body").evaluate(body => { body.ownerDocument.defaultView.__arenaGameSave.status = null; });
     await frame().getByLabel("Progress value").fill(value);
-    await frame().getByRole("button", { name: "Save progress", exact: true }).click();
+    await frame().locator("#save").evaluate(button => button.click());
   };
   await frame().locator("body").evaluate(body => { body.dataset.failureLiveMarker = "same-running-game"; });
   for (const mode of ["quota", "blocked"]) {
@@ -167,9 +168,16 @@ try {
       if (window.__arenaGameSave.status?.ok !== false) throw new Error("Player did not receive rejection");
     });
     const snapshots = await page.evaluate(() => window.__saveSnapshotCount);
+    await frame().locator("body").evaluate(body => { body.ownerDocument.defaultView.__arenaGameSave.status = null; });
     await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
     await page.waitForFunction(before => window.__saveSnapshotCount > before, snapshots);
-    await warning.waitFor();
+    await frame().locator("body").evaluate(async body => {
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== false) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      if (body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== false) throw new Error("Retry rejection was not confirmed");
+    });
     assert.equal(await committed(), previous, "a blocked retry cannot report success");
     await fault("");
     if (mode === "quota") {
@@ -177,18 +185,27 @@ try {
       await page.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`)).other === "a-later-valid-key", first.id);
       await warning.waitFor();
     }
+    await frame().locator("body").evaluate(body => { body.ownerDocument.defaultView.__arenaGameSave.status = null; });
     await page.getByRole("button", { name: "Retry saving live progress", exact: true }).click();
+    await frame().locator("body").evaluate(async body => {
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== true) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      if (body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== true) throw new Error("Successful retry was not confirmed");
+    });
     await warning.waitFor({ state: "detached" });
     assert.equal(JSON.parse(await committed()).progress, `pending-${mode}`);
     assert.equal(await frame().locator("body").getAttribute("data-failure-live-marker"), "same-running-game");
     assert.equal((await saves())[second.id], blue);
     await frame().locator("body").evaluate(() => localStorage.removeItem("other"));
+    await page.waitForFunction(id => !Object.hasOwn(JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`) || "{}"), "other"), first.id);
   }
   for (const action of ["Remove key", "Clear game data"]) {
     await save(first.id, "before-rejected-removal");
     const previous = await committed();
     await fault("remove");
-    await frame().getByRole("button", { name: action, exact: true }).click();
+    await frame().locator(action === "Remove key" ? "#remove" : "#clear").evaluate(button => button.click());
     await warning.waitFor();
     assert.equal(await committed(), previous);
     await page.getByRole("button", { name: "Clear progress", exact: true }).waitFor();
@@ -257,22 +274,34 @@ try {
   await warning.waitFor({ state: "detached" });
   assert.equal(JSON.parse(await committed()).progress, "smaller-valid-progress");
   await frame().locator("body").evaluate(() => localStorage.setItem("progress", "before-oversized-save"));
+  await page.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`) || "{}").progress === "before-oversized-save", first.id);
   await frame().locator("body").evaluate(() => localStorage.setItem("one", "x".repeat(40000)));
   await warning.waitFor({ state: "detached" });
+  await page.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`) || "{}").one?.length === 40000, first.id);
   const beforeAggregate = await committed();
+  await frame().locator("body").evaluate(body => { body.ownerDocument.defaultView.__arenaGameSave.status = null; });
   await frame().locator("body").evaluate(() => localStorage.setItem("two", "y".repeat(40000)));
   await warning.waitFor();
+  await frame().locator("body").evaluate(async body => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && body.ownerDocument.defaultView.__arenaGameSave.status?.reason !== "too-large") {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    if (body.ownerDocument.defaultView.__arenaGameSave.status?.reason !== "too-large") throw new Error("Aggregate overflow was not rejected");
+  });
   assert.equal(await committed(), beforeAggregate, "aggregate overflow retains the last committed snapshot");
   assert.equal(await frame().locator("body").evaluate(() => localStorage.getItem("two")), null);
   await assertUnrelatedWriteKeepsWarning("two");
   await frame().locator("body").evaluate(() => localStorage.setItem("two", "smaller-checkpoint"));
   await warning.waitFor({ state: "detached" });
+  await page.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`) || "{}").two === "smaller-checkpoint", first.id);
   await frame().locator("body").evaluate(() => localStorage.removeItem("one"));
   await frame().locator("body").evaluate(() => localStorage.removeItem("two"));
   await warning.waitFor({ state: "detached" });
   await page.waitForFunction(({ id, expected }) => localStorage.getItem(`arenaforge.game-save.v1:${id}`) === expected, { id: first.id, expected: beforeOversized });
   // Exercise the parent's limit too, not only the injected runtime's early refusal.
   const session = await page.evaluate(() => window.__lastSaveSession);
+  await frame().locator("body").evaluate(body => { body.ownerDocument.defaultView.__arenaGameSave.status = null; });
   await frame().locator("body").evaluate((_, { gameId, sessionId }) => {
     parent.postMessage({ channel: "arenaforge-game-save", gameId, sessionId, op: "set", key: "progress", value: "x".repeat(65537) }, "*");
   }, { gameId: first.id, sessionId: session });
@@ -469,6 +498,82 @@ try {
     await select(second.id, "private-progress-blue-22");
     assert.deepEqual(await records(), sourcesBefore);
     checks.push("changed progress invalidates an old preview; a confirmed fresh restore survives page reload without changing source or history");
+
+    const staleTab = await context.newPage();
+    staleTab.on("pageerror", error => errors.push(error.message));
+    const staleFrame = () => staleTab.frameLocator('iframe[title="Playable game: same-name.html"]');
+    const attemptStaleOperation = async selector => {
+      await staleFrame().locator("body").evaluate(body => { body.ownerDocument.defaultView.__arenaGameSave.status = null; });
+      await staleFrame().locator(selector).evaluate(button => button.click());
+      await staleFrame().locator("body").evaluate(async body => {
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline && body.ownerDocument.defaultView.__arenaGameSave.status?.reason !== "revision-conflict") {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        if (body.ownerDocument.defaultView.__arenaGameSave.status?.reason !== "revision-conflict") {
+          throw new Error("The stale player operation was not rejected by its revision fence.");
+        }
+      });
+    };
+    await staleTab.goto(`${base}/arcade`);
+    await staleTab.getByRole("tab", { name: "Import and emulate" }).click();
+    await staleTab.getByTestId(`button-select-imported-game-${second.id}`).click();
+    await staleFrame().locator("#stored").filter({ hasText: /^private-progress-blue-22$/ }).waitFor();
+
+    await save(second.id, "private-progress-blue-23");
+    await staleTab.getByTestId("arcade-save-warning").getByText(/changed in another tab/).waitFor();
+    await staleTab.getByTestId("button-reload-latest-progress").click();
+    await staleFrame().locator("#stored").filter({ hasText: /^private-progress-blue-23$/ }).waitFor();
+    await panel.locator("summary").click();
+    const newerDownloadEvent = page.waitForEvent("download");
+    await panel.getByTestId("button-export-imported-progress").click();
+    const newerDownload = await newerDownloadEvent;
+    const newerBackupText = await readFile(await newerDownload.path(), "utf8");
+    assert.equal(JSON.parse(newerBackupText).data.progress, "private-progress-blue-23");
+
+    // Hold the preview while another current tab commits a newer save.
+    await upload(backupText);
+    await panel.getByTestId("imported-progress-restore-preview").waitFor();
+    await staleFrame().locator("#value").fill("private-progress-blue-24");
+    await staleFrame().locator("#save").evaluate(button => button.click());
+    await staleFrame().locator("#stored").filter({ hasText: /^private-progress-blue-24$/ }).waitFor();
+    await confirm();
+    await panel.getByRole("alert").getByText(/Progress changed/).waitFor();
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-24",
+      "a write after preview validation must invalidate the restore rather than be replaced");
+
+    await upload(backupText);
+    await panel.getByTestId("imported-progress-restore-preview").waitFor();
+    await confirm();
+    await panel.getByText(/Progress restored locally/).waitFor();
+    await staleFrame().locator("#value").fill("stale-tab-overwrite");
+    await attemptStaleOperation("#save");
+    await staleFrame().locator("#stored").filter({ hasText: /^stale-tab-overwrite$/ }).waitFor();
+    await staleTab.getByTestId("arcade-save-warning").getByText(/changed in another tab/).waitFor();
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-22",
+      "a stale tab cannot silently replace the restored save");
+    await attemptStaleOperation("#remove");
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-22",
+      "a stale tab cannot remove a save restored in another tab");
+    await attemptStaleOperation("#clear");
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-22",
+      "a stale tab cannot clear a save restored in another tab");
+    await staleTab.getByTestId("button-reload-latest-progress").click();
+    await staleFrame().locator("#stored").filter({ hasText: /^private-progress-blue-22$/ }).waitFor();
+
+    // Reconciliation is explicit and preserves the still-running tab's state.
+    await save(second.id, "private-progress-blue-25");
+    await staleFrame().locator("#value").fill("recoverable-local-branch");
+    await staleFrame().locator("body").evaluate(body => { body.ownerDocument.defaultView.__arenaGameSave.status = null; });
+    await staleFrame().locator("#save").evaluate(button => button.click());
+    await staleTab.getByTestId("arcade-save-warning").getByText(/changed in another tab/).waitFor();
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-25");
+    await staleTab.getByTestId("button-reconcile-tab-progress").click();
+    await staleTab.waitForFunction(id => JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`) || "{}").progress === "recoverable-local-branch", second.id);
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "recoverable-local-branch");
+    await staleTab.close();
+    checks.push("two open tabs reject stale saves, reject restore previews raced by another write, and preserve live progress only after explicit reconciliation");
+
     const otherContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
     const other = await otherContext.newPage();
     other.on("pageerror", error => errors.push(error.message));
@@ -494,7 +599,7 @@ try {
     await other.getByRole("tab", { name: "Import and emulate" }).click();
     await otherFrame.locator("#stored").filter({ hasText: /^private-progress-blue-22$/ }).waitFor();
     assert.equal((await records(other))[0].source, original);
-    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-22");
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "recoverable-local-branch");
     await other.getByTestId("imported-progress-backup").locator("summary").click();
     await other.screenshot({ path: new URL("backup-mobile.png", output).pathname });
     await otherContext.close();

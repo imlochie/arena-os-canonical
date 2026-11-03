@@ -6,7 +6,7 @@ export default function ImportedGameProgressBackup({ game, hasProgress, disabled
   game: ProgressBackupTarget;
   hasProgress: boolean;
   disabled: boolean;
-  onRestore: (data: GameSaveData, expectedRaw: string | null) => void;
+  onRestore: (data: GameSaveData, expectedRaw: string | null, expectedRevision: string | null) => void | Promise<void>;
 }) {
   const [candidate, setCandidate] = useState<PreparedBackup | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -52,19 +52,20 @@ export default function ImportedGameProgressBackup({ game, hasProgress, disabled
     } catch (cause) { if (token === generation.current) report(cause); }
     finally { if (token === generation.current) setBusy(false); }
   };
-  const restore = () => {
+  const restore = async () => {
     if (!candidate || !confirmed || busy || disabled) return;
-    setError(""); setNotice("");
+    setError(""); setNotice(""); setBusy(true);
     try {
-      onRestore(candidate.backup.data, candidate.expectedRaw);
+      await onRestore(candidate.backup.data, candidate.expectedRaw, candidate.expectedRevision);
       setCandidate(null); setConfirmed(false);
       setNotice("Progress restored locally. The game restarted with this save; source and other games are unchanged.");
     } catch (cause) { report(cause); }
+    finally { setBusy(false); }
   };
   return (
     <details className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3" data-testid="imported-progress-backup">
       <summary className="cursor-pointer text-xs font-bold text-slate-200">Progress backup and restore</summary>
-      <p className="mt-2 text-[11px] leading-relaxed text-slate-400">Private progress files stay on your device. Source and media are not included; keep a separate HTML source backup with rollback copies too when clearing browser data or moving browsers.</p>
+      <p className="mt-2 text-[11px] leading-relaxed text-slate-400">Private progress files stay on your device. Source and media are not included; keep a separate HTML source backup with rollback copies too when clearing browser data or moving browsers. Browsers with Web Locks serialize tabs; without it, localStorage cannot guarantee atomic cross-tab writes.</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button type="button" disabled={busy || disabled || !hasProgress} onClick={() => void exportProgress()} className="min-h-11 rounded-lg border border-sky-300/25 px-3 py-2 text-[11px] font-bold text-sky-100 disabled:opacity-40" data-testid="button-export-imported-progress">Export progress</button>
         <label className="text-[11px] font-semibold text-slate-300">Choose progress backup

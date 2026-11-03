@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ARCADE_SAVE_PREFIX, MAX_PROGRESS_BACKUP_BYTES, createHtmlProgressBackup, parseHtmlProgressBackup, inspectHtmlProgressBackup, commitHtmlProgressRestore, validateGameSaveData } from "./arcadeGameProgressBackup";
+import {
+  ARCADE_SAVE_PREFIX, MAX_PROGRESS_BACKUP_BYTES, createHtmlProgressBackup, parseHtmlProgressBackup,
+  inspectHtmlProgressBackup, commitHtmlProgressRestoreWithRevision,
+  progressRevisionKey, validateGameSaveData,
+} from "./arcadeGameProgressBackup";
 
 function storage() {
   const values = new Map<string, string>();
-  return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  return {
+    values,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
 }
 const target = { id: "game-a", name: "A.html", source: "<html>Original</html>" };
 async function fixture() {
@@ -38,19 +47,64 @@ test("restore writes only the selected namespace and preserves exact text data",
   const { backup, store } = await fixture();
   store.setItem(`${ARCADE_SAVE_PREFIX}other`, '{"progress":"untouched"}');
   const preview = await inspectHtmlProgressBackup(JSON.stringify(backup), target, store);
-  commitHtmlProgressRestore(target.id, backup.data, preview.expectedRaw, store);
+  commitHtmlProgressRestoreWithRevision(target.id, backup.data, preview.expectedRaw, preview.expectedRevision, store);
   assert.equal(store.getItem(`${ARCADE_SAVE_PREFIX}other`), '{"progress":"untouched"}');
   assert.equal(JSON.parse(store.getItem(`${ARCADE_SAVE_PREFIX}game-a`)!).progress, "42");
-  assert.equal(store.values.size, 2);
+  assert.equal(store.values.size, 3);
 });
 test("stale preview and failed write leave the committed progress unchanged", async () => {
   const { backup, store } = await fixture();
   const expected = store.getItem(`${ARCADE_SAVE_PREFIX}game-a`);
+  const expectedRevision = store.getItem(progressRevisionKey(target.id));
   store.setItem(`${ARCADE_SAVE_PREFIX}game-a`, '{"progress":"newer"}');
-  assert.throws(() => commitHtmlProgressRestore(target.id, backup.data, expected, store), /Progress changed/);
+  assert.throws(() => commitHtmlProgressRestoreWithRevision(target.id, backup.data, expected, expectedRevision, store), /Progress changed/);
   const current = store.getItem(`${ARCADE_SAVE_PREFIX}game-a`);
-  assert.throws(() => commitHtmlProgressRestore(target.id, backup.data, current, { getItem: store.getItem, setItem: () => { throw new Error("Quota failure"); } }), /Quota failure/);
+  assert.throws(() => commitHtmlProgressRestoreWithRevision(target.id, backup.data, current, store.getItem(progressRevisionKey(target.id)), {
+    getItem: store.getItem,
+    setItem: (key, value) => {
+      if (key === `${ARCADE_SAVE_PREFIX}game-a`) throw new Error("Quota failure");
+      store.setItem(key, value);
+    },
+    removeItem: store.removeItem,
+  }), /Quota failure/);
   assert.equal(store.getItem(`${ARCADE_SAVE_PREFIX}game-a`), current);
+});
+test("restore fences stale tabs and rejects a preview whose revision changed", async () => {
+  const { backup, store } = await fixture();
+  const preview = await inspectHtmlProgressBackup(JSON.stringify(backup), target, store);
+  const priorRevision = preview.expectedRevision;
+  store.setItem(progressRevisionKey(target.id), "newer-tab-revision");
+  assert.throws(
+    () => commitHtmlProgressRestoreWithRevision(target.id, backup.data, preview.expectedRaw, preview.expectedRevision, store),
+    /Progress changed/,
+  );
+  assert.equal(JSON.parse(store.getItem(`${ARCADE_SAVE_PREFIX}${target.id}`)!).progress, "42");
+  assert.equal(store.getItem(progressRevisionKey(target.id)), "newer-tab-revision");
+
+  const latest = await inspectHtmlProgressBackup(JSON.stringify(backup), target, store);
+  const revision = commitHtmlProgressRestoreWithRevision(target.id, { progress: "restored" }, latest.expectedRaw, latest.expectedRevision, store);
+  assert.notEqual(revision, priorRevision);
+  assert.equal(store.getItem(progressRevisionKey(target.id)), revision);
+  assert.equal(JSON.parse(store.getItem(`${ARCADE_SAVE_PREFIX}${target.id}`)!).progress, "restored");
+});
+test("failed restore rolls its revision fence back without changing saved progress", async () => {
+  const { backup, store } = await fixture();
+  store.setItem(progressRevisionKey(target.id), "stable-revision");
+  const preview = await inspectHtmlProgressBackup(JSON.stringify(backup), target, store);
+  const failingStore = {
+    getItem: store.getItem,
+    setItem: (key: string, value: string) => {
+      if (key === `${ARCADE_SAVE_PREFIX}${target.id}`) throw new Error("Quota failure");
+      store.setItem(key, value);
+    },
+    removeItem: store.removeItem,
+  };
+  assert.throws(
+    () => commitHtmlProgressRestoreWithRevision(target.id, { progress: "replacement" }, preview.expectedRaw, preview.expectedRevision, failingStore),
+    /Quota failure/,
+  );
+  assert.equal(store.getItem(`${ARCADE_SAVE_PREFIX}${target.id}`), preview.expectedRaw);
+  assert.equal(store.getItem(progressRevisionKey(target.id)), preview.expectedRevision);
 });
 test("malformed, unsupported, oversize and incorrectly typed backups are rejected", async () => {
   const { backup } = await fixture();

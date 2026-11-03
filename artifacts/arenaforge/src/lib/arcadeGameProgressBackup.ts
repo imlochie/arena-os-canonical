@@ -1,9 +1,10 @@
 export const ARCADE_SAVE_PREFIX = "arenaforge.game-save.v1:";
+export const ARCADE_SAVE_REVISION_PREFIX = "arenaforge.game-save-revision.v1:";
 export const MAX_ARCADE_SAVE_BYTES = 64 * 1024;
 export const MAX_ARCADE_SAVE_KEY_LENGTH = 256;
 export const MAX_PROGRESS_BACKUP_BYTES = 256 * 1024;
 export type GameSaveData = Record<string, string>;
-type ProgressStorage = Pick<Storage, "getItem" | "setItem">;
+type ProgressStorage = Pick<Storage, "getItem" | "setItem"> & Partial<Pick<Storage, "removeItem">>;
 export type ProgressBackupTarget = { id: string; name: string; source: string };
 export type HtmlProgressBackup = {
   format: "arenaforge-html-progress";
@@ -15,6 +16,60 @@ export type HtmlProgressBackup = {
   data: GameSaveData;
 };
 const bytes = (value: string) => new TextEncoder().encode(value).byteLength;
+
+export function progressRevisionKey(id: string) {
+  return `${ARCADE_SAVE_REVISION_PREFIX}${id}`;
+}
+
+export function readProgressRevision(id: string, storage: Pick<Storage, "getItem"> = localStorage) {
+  return storage.getItem(progressRevisionKey(id));
+}
+
+export function supportsAtomicProgressLocks() {
+  return typeof navigator !== "undefined" && !!navigator.locks;
+}
+
+/**
+ * Serializes all cooperating same-origin writers for one game. localStorage
+ * itself has no compare-and-swap; callers must still compare the revision
+ * while holding this lock. The fallback is intentionally best-effort.
+ */
+export async function withProgressWriteLock<T>(id: string, operation: () => Promise<T> | T): Promise<T> {
+  if (supportsAtomicProgressLocks()) {
+    return navigator.locks.request(`arenaforge-progress:${id}`, { mode: "exclusive" }, operation);
+  }
+  return operation();
+}
+
+export function commitHtmlProgressRestoreWithRevision(
+  id: string,
+  data: GameSaveData,
+  expectedRaw: string | null,
+  expectedRevision: string | null,
+  storage: ProgressStorage = localStorage,
+) {
+  const serialized = JSON.stringify(validateGameSaveData(data));
+  const key = `${ARCADE_SAVE_PREFIX}${id}`;
+  if (storage.getItem(key) !== expectedRaw || storage.getItem(progressRevisionKey(id)) !== expectedRevision) {
+    throw new Error("Progress changed after this backup was opened. Choose the file again before replacing it.");
+  }
+  const revision = crypto.randomUUID();
+  const revisionKey = progressRevisionKey(id);
+  storage.setItem(revisionKey, revision);
+  try {
+    storage.setItem(key, serialized);
+    if (storage.getItem(key) !== serialized || storage.getItem(revisionKey) !== revision) {
+      throw new Error("Progress restore did not commit.");
+    }
+  } catch (error) {
+    if (storage.getItem(key) === expectedRaw && storage.getItem(revisionKey) === revision) {
+      if (expectedRevision === null) storage.removeItem?.(revisionKey);
+      else storage.setItem(revisionKey, expectedRevision);
+    }
+    throw error;
+  }
+  return revision;
+}
 
 export function validateGameSaveData(value: unknown): GameSaveData {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Backup progress must be a map of text keys and values.");
@@ -67,13 +122,9 @@ export async function inspectHtmlProgressBackup(text: string, target: ProgressBa
   const sameIdentity = backup.gameId === target.id;
   const sameSource = backup.sourceSha256 === await progressSourceDigest(target.source);
   if (!sameIdentity && !sameSource) throw new Error("This backup belongs to a different game. Its identity and source do not match the selected game.");
-  return { backup, sameIdentity, sameSource, expectedRaw: storage.getItem(`${ARCADE_SAVE_PREFIX}${target.id}`) };
-}
-
-/** One atomic localStorage write; reject stale previews and never touch source. */
-export function commitHtmlProgressRestore(id: string, data: GameSaveData, expectedRaw: string | null, storage: ProgressStorage = localStorage) {
-  const serialized = JSON.stringify(validateGameSaveData(data));
-  const key = `${ARCADE_SAVE_PREFIX}${id}`;
-  if (storage.getItem(key) !== expectedRaw) throw new Error("Progress changed after this backup was opened. Choose the file again before replacing it.");
-  storage.setItem(key, serialized); // Quota/security failures propagate; no false success.
+  return {
+    backup, sameIdentity, sameSource,
+    expectedRaw: storage.getItem(`${ARCADE_SAVE_PREFIX}${target.id}`),
+    expectedRevision: storage.getItem(progressRevisionKey(target.id)),
+  };
 }
