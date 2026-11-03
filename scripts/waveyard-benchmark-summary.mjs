@@ -83,6 +83,10 @@ export function validatePairedRuns(runs, modes, repetitions) {
       Number.isFinite(run.timings?.maxPlaybackTimerGapMs) && run.timings.maxPlaybackTimerGapMs >= 0,
       `${runKey} maxPlaybackTimerGapMs must be finite.`,
     );
+    assert.ok(
+      Number.isSafeInteger(run.timings?.progressSamplingIntervalMs) && run.timings.progressSamplingIntervalMs > 0,
+      `${runKey} progressSamplingIntervalMs must be a positive integer.`,
+    );
     const stageKeys = assertFiniteTimings(run.timings?.inferenceStageTotals, `${runKey} inferenceStageTotals`);
     const modelEntries = run.timings?.modelInferenceStages;
     assert.ok(Array.isArray(modelEntries) && modelEntries.length > 0, `${runKey} must include model timing passes.`);
@@ -134,6 +138,24 @@ export function validatePairedRuns(runs, modes, repetitions) {
       assert.ok(runKeys.has(`${mode}:${repetition}`), `Missing benchmark run ${mode}:${repetition}.`);
     }
   }
+}
+
+export function progressSamplingIntervalsByRun(runs) {
+  assert.ok(Array.isArray(runs), "Benchmark runs must be an array.");
+  return runs.map((run) => {
+    const intervalMs = run.timings?.progressSamplingIntervalMs;
+    assert.ok(
+      Number.isSafeInteger(intervalMs) && intervalMs > 0,
+      `${run.mode}:${run.repetition} progressSamplingIntervalMs must be a positive integer.`,
+    );
+    assert.ok(typeof run.trackId === "string" && run.trackId.length > 0, "Each run must identify its track.");
+    return {
+      trackId: run.trackId,
+      mode: run.mode,
+      repetition: run.repetition,
+      intervalMs,
+    };
+  });
 }
 
 export function summarizeStageTotals(modeRuns) {

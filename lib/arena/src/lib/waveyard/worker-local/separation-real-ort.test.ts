@@ -94,6 +94,8 @@ function audioMetrics(samples: Float32Array) {
   };
 }
 
+const PROGRESS_SAMPLING_INTERVAL_MS = 500;
+
 function createProgressPassSampler() {
   const passes: { phase: string; model: string; elapsedMs: number }[] = [];
   let activePass: { phase: string; model: string; startedAt: number } | null = null;
@@ -129,10 +131,11 @@ function createProgressPassSampler() {
 
 test("progress sampling can miss a fast model pass without losing authoritative timings", () => {
   const sampler = createProgressPassSampler();
+  const intervalMs = PROGRESS_SAMPLING_INTERVAL_MS;
   sampler.observe({ phase: "1/4", model: FOUR_STEM_MODELS[0]!.id }, 0);
-  // The second pass runs from 100–200 ms, entirely between 500 ms polls.
-  sampler.observe({ phase: "3/4", model: FOUR_STEM_MODELS[2]!.id }, 500);
-  const sampledProgressPasses = sampler.finish(1_000);
+  // A fast intermediate pass can start and finish between these observations.
+  sampler.observe({ phase: "3/4", model: FOUR_STEM_MODELS[2]!.id }, intervalMs);
+  const sampledProgressPasses = sampler.finish(intervalMs * 2);
   const authoritativeTimings = FOUR_STEM_MODELS.map(({ id }) => ({
     model: id,
     timings: { totalMs: 100, chunkCount: 1 },
@@ -731,7 +734,7 @@ test("the pinned four-model recipe completes through the production worker on re
           samplingError = error instanceof Error ? error.message : String(error);
           return;
         }
-        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 500));
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, PROGRESS_SAMPLING_INTERVAL_MS));
       }
     })();
     let retryPromise: Promise<{ queued: boolean }> | undefined;
@@ -1414,7 +1417,7 @@ if (realAudioInputPath) {
             progressSamplingError = error instanceof Error ? error.message : String(error);
             return;
           }
-          await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 500));
+          await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, PROGRESS_SAMPLING_INTERVAL_MS));
         }
       })();
       const startedAt = Date.now();
@@ -1601,10 +1604,10 @@ if (realAudioInputPath) {
           inferenceTimeSharePercent: Number((stageTotals.inferenceMs / Math.max(1, stageTotals.totalMs) * 100).toFixed(1)),
           modelInferenceStages: inferenceStageTimings,
           sampledProgressModelPasses: sampledProgressPasses,
-          progressSamplingIntervalMs: 500,
+          progressSamplingIntervalMs: PROGRESS_SAMPLING_INTERVAL_MS,
           modelTimingInterpretation: {
             modelInferenceStages: "Complete per-model timings from the authoritative inference callback; required for all pinned models.",
-            sampledProgressModelPasses: "Approximate durations inferred from progress snapshots every 500 ms; short passes may be omitted and this list is not a completeness check.",
+            sampledProgressModelPasses: `Approximate durations inferred from progress snapshots with a ${PROGRESS_SAMPLING_INTERVAL_MS} ms poll delay; short passes may be omitted and this list is not a completeness check.`,
           },
           ...(progressSamplingError ? { progressSamplingError } : {}),
           excludes: "PGlite fixture setup, model copying, library import/upload, and subjective separation quality",

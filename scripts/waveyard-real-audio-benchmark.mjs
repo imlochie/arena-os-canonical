@@ -9,6 +9,7 @@ import { createBlindListeningKit } from "./waveyard-blind-listening.mjs";
 import {
   summarize,
   summarizeModelStages,
+  progressSamplingIntervalsByRun,
   summarizeStageTotals,
   validatePairedRuns,
 } from "./waveyard-benchmark-summary.mjs";
@@ -205,6 +206,10 @@ async function measure(track, mode, repetition, order) {
     configuration.interOpThreads,
     "The requested inter-op setting must not be clamped.",
   );
+  assert.ok(
+    Number.isSafeInteger(report.timings?.progressSamplingIntervalMs) && report.timings.progressSamplingIntervalMs > 0,
+    "Each real-audio run must report the progress polling interval it used.",
+  );
   return {
     trackId: track.id,
     trackLabel: track.label,
@@ -373,14 +378,14 @@ try {
     }),
   );
   const output = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     benchmark: "paired multi-track four-stem sequential and bounded-parallel CPU comparison",
     timingEvidence: {
       completePerModelTimings:
         "Each run's timings.modelInferenceStages comes from the authoritative inference callback and is validated against every pinned model.",
       sampledProgressTimings:
-        "Each run's timings.sampledProgressModelPasses is approximate polling data; a pass shorter than the sampling interval may be absent and does not invalidate a run.",
-      progressSamplingIntervalMs: 500,
+        "Each run's timings.sampledProgressModelPasses is approximate polling data; its interval is recorded per run below and in runs[].timings.progressSamplingIntervalMs. A shorter pass may be absent and does not invalidate a run.",
+      progressSamplingIntervalsByRun: progressSamplingIntervalsByRun(runs),
     },
     measuredMachine: {
       platform: process.platform,

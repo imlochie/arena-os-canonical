@@ -3,18 +3,21 @@ import test from "node:test";
 import {
   summarize,
   summarizeModelStages,
+  progressSamplingIntervalsByRun,
   summarizeStageTotals,
   validatePairedRuns,
 } from "./waveyard-benchmark-summary.mjs";
 
-function run(mode, repetition, value, model = "vocal") {
+function run(mode, repetition, value, model = "vocal", intervalMs = 500, trackId = "fixture-track") {
   return {
+    trackId,
     mode,
     repetition,
     models: [{ id: model, sha256: "a".repeat(64) }],
     result: { elapsedMs: value * 10 },
     timings: {
       maxPlaybackTimerGapMs: value,
+      progressSamplingIntervalMs: intervalMs,
       inferenceStageTotals: { inferenceMs: value, stftMs: value * 2 },
       modelInferenceStages: [
         { model, timings: { inferenceMs: value, stftMs: value * 2, chunkCount: 1 } },
@@ -22,6 +25,24 @@ function run(mode, repetition, value, model = "vocal") {
     },
   };
 }
+
+test("paired timing metadata retains each run's recorded progress polling interval", () => {
+  const runs = [
+    run("sequential", 1, 1, "vocal", 250, "track-a"),
+    run("sequential", 2, 2, "vocal", 500, "track-a"),
+    run("parallel", 1, 3, "vocal", 750, "track-b"),
+  ];
+
+  assert.deepEqual(progressSamplingIntervalsByRun(runs), [
+    { trackId: "track-a", mode: "sequential", repetition: 1, intervalMs: 250 },
+    { trackId: "track-a", mode: "sequential", repetition: 2, intervalMs: 500 },
+    { trackId: "track-b", mode: "parallel", repetition: 1, intervalMs: 750 },
+  ]);
+  assert.throws(
+    () => progressSamplingIntervalsByRun([run("sequential", 1, 1, "vocal", 0)]),
+    /progressSamplingIntervalMs must be a positive integer/,
+  );
+});
 
 test("summaries calculate median, minimum, maximum, and range from repeated values", () => {
   assert.deepEqual(summarize([3, 1, 5]), {
