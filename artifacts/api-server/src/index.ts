@@ -81,6 +81,8 @@ if (process.env.ARENA_DESKTOP_MODE === "1") {
 }
 
 let sourceCleanupTask: Promise<void> | undefined;
+// Restore uploads can be abandoned in every API mode, so keep this cleanup
+// before listen and outside the local-worker conditional.
 const server = await startApiServerAfterBestEffortRestoreUploadCleanup(
   () => cleanupAbandonedAudioRestoreUploadDirectories(),
   () => app.listen(port, process.env.ARENA_DESKTOP_MODE === "1" ? "127.0.0.1" : "0.0.0.0", () => {
