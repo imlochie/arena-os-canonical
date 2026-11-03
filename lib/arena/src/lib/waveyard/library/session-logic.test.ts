@@ -338,6 +338,21 @@ test("automatic cue timing waits before the cue and refuses a late off-beat star
   assert.equal(automaticCueTiming(10101, 9750), "missed");
 });
 
+test("live fade edits recompute safe cues without moving a late clock onto a beat", () => {
+  const grid = Array.from({ length: 24 }, (_, i) => 250 + i * 500);
+  for (const [mode, length, cueMs] of [
+    ["beat", 2, 9750], ["beat", 3, 8750], ["bar", 2, 8250], ["bar", 4, 6250],
+  ] as const) {
+    const cue = automaticTransitionCue({ ...defaultTransitionConfig(), mode, crossfadeSeconds: length }, 12, grid, grid);
+    assert.equal(cue.startInCurrentMs, cueMs);
+    assert.equal(automaticCueTiming(cueMs - 1, cue.startInCurrentMs!), "wait", "a pre-cue edit waits instead of seeking forward");
+    assert.equal(automaticCueTiming(cueMs + 200, cue.startInCurrentMs!), "start", "a slightly late callback stays within the control window");
+    assert.equal(automaticCueTiming(cueMs + 351, cue.startInCurrentMs!), "missed", "a post-cue edit cannot cause an off-beat start");
+    assert.equal(automaticCueTiming(11200, cue.startInCurrentMs!), "missed", "backgrounded clocks must not start a guessed fade");
+    assert.ok(cue.startInCurrentMs! + length * 1000 <= 12000);
+  }
+});
+
 test("session advancement: ordered, stops at the end, no wrap", () => {
   const order = [
     { id: "st-1", trackId: "t-a" },

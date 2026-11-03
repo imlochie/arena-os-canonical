@@ -1270,7 +1270,7 @@ export default function SessionExperience({
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
   const sessionRef = useRef<SessionDetail | null>(null);
   const currentIdRef = useRef<string | null>(null);
-  const autoCrossfadeStartedForRef = useRef<string | null>(null);
+  const autoCrossfadeStartedForRef = useRef<{ trackId: string; cueMs: number } | null>(null);
   const activeDeckRef = useRef<0 | 1>(0);
   const masterRef = useRef(1);
   const playingRef = useRef(false);
@@ -3190,19 +3190,21 @@ export default function SessionExperience({
 
     const cfg = transitions[currentItem.id] ?? currentItem.transition;
     if (cfg.crossfadeSeconds <= 0) return;
-    const currentPosition = fromApi.transport.position;
+    const currentPosition = fromApi.transport.currentPosition();
     const duration = currentItem.track.durationSeconds;
     const cue = automaticTransitionCue(cfg, duration, currentItem.analysis?.beatGridMs ?? null, nextItem.analysis?.beatGridMs ?? null);
     const triggerMs = cue.startInCurrentMs ?? Math.max(0, duration - cfg.crossfadeSeconds) * 1000;
-    if (autoCrossfadeStartedForRef.current === currentItem.id) {
+    const attempted = autoCrossfadeStartedForRef.current;
+    if (attempted?.trackId === currentItem.id) {
       // Rearm only after a genuine rewind, not while the clock is still
-      // approaching the duration-based fallback after a skipped aligned cue.
-      if (currentPosition * 1000 >= triggerMs - 1000) return;
+      // approaching the fallback after a skipped cue. Changing settings must
+      // not move this threshold and make forward playback look like a rewind.
+      if (currentPosition * 1000 >= attempted.cueMs - 1000) return;
       autoCrossfadeStartedForRef.current = null;
     }
     const timing = automaticCueTiming(currentPosition * 1000, triggerMs);
     if (timing === "wait") return;
-    autoCrossfadeStartedForRef.current = currentItem.id;
+    autoCrossfadeStartedForRef.current = { trackId: currentItem.id, cueMs: triggerMs };
     if (!cue.ok || cue.startInCurrentMs === null || cue.incomingOffsetMs === null) {
       setStatus(`${cue.reason} Automatic fade skipped; the next track will start at the end.`);
       return;

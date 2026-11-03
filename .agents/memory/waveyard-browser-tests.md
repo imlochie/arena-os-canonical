@@ -122,3 +122,9 @@ When a browser scenario temporarily reorders tracks or seeds donor swaps, restor
 **Why:** Resetting only the current track and queue can erase saved donor swaps that a subsequent live-swap check expects.
 
 **How to apply:** Snapshot all route-backed fields before fixture mutation and preserve shared array references where later fixture handlers depend on them. Restore the session and any separate-source mode before later scenarios.
+
+For repeated-warning regressions, observing unchanged status text alone does not prove the warning was consumed: React can discard repeated identical state updates.
+
+**Why:** A continuously repeated warning can look stable until another action clears or replaces status, at which point it interrupts that action.
+
+**How to apply:** After the first warning, clear status through a real control without rewinding playback, change the relevant live settings, and advance beyond the revised trigger. Assert the warning stays absent as well as checking that no guessed fade starts.
