@@ -21,6 +21,17 @@ export async function verifyAutomationKeyboard({ page, base, makePcmWav }) {
   const requests = [];
   let failNext = false;
   let nextId = 0;
+  let holdNextAutomationResponse = false;
+  let automationResponseHeld = () => {};
+  let releaseAutomationResponse = null;
+  const respondToAutomation = (json, body) => {
+    if (!holdNextAutomationResponse) return json(body);
+    holdNextAutomationResponse = false;
+    return new Promise((resolve) => {
+      releaseAutomationResponse = () => { void json(body).then(resolve); };
+      automationResponseHeld();
+    });
+  };
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -31,7 +42,7 @@ export async function verifyAutomationKeyboard({ page, base, makePcmWav }) {
       role: "owner", build: null, sources: [], studioSources: sources, stems, waveforms: [], waveformJobs: [], jobs: [],
     });
     if (path === `/api/waveyard/projects/${projectId}/remixes`) return json({ remixes: [{ id: remixId }] });
-    if (path === `/api/remixes/${remixId}`) return json(fixture);
+    if (path === `/api/remixes/${remixId}` && route.request().method() === "GET") return json(fixture);
     if (path === `/api/remixes/${remixId}/automation`) {
       const request = route.request().postDataJSON();
       requests.push(request);
@@ -40,10 +51,17 @@ export async function verifyAutomationKeyboard({ page, base, makePcmWav }) {
       if (!lane) { lane = { remixTrackId: trackId, parameter: request.parameter, points: [] }; fixture.automation.push(lane); }
       const removedPointIds = lane.points.filter((point) => point.id === request.pointId || point.timelineMs === request.timelineMs).map((point) => point.id);
       lane.points = lane.points.filter((point) => !removedPointIds.includes(point.id));
-      if (request.operation === "delete") return json({ removedPointIds });
+      if (request.operation === "delete") return respondToAutomation(json, { removedPointIds });
       const point = { id: request.pointId ?? `point-${++nextId}`, remixTrackId: trackId, parameter: request.parameter, timelineMs: request.timelineMs, value: request.value };
       lane.points.push(point);
-      return json({ point, removedPointIds });
+      return respondToAutomation(json, { point, removedPointIds });
+    }
+    if (path === `/api/remixes/${remixId}` && route.request().method() === "PUT") {
+      const state = route.request().postDataJSON();
+      fixture.remix = { ...fixture.remix, ...state };
+      if (Array.isArray(state.tracks)) fixture.tracks = state.tracks;
+      if (Array.isArray(state.automation)) fixture.automation = state.automation;
+      return json(fixture);
     }
     if (path.endsWith("/publication")) return json({ publication: { visibility: "private", publicationStatus: "draft", tags: [] }, exports: [], exportJobs: [] });
     if (path.endsWith("/arena-handoff")) return json({ linked: false });
@@ -83,6 +101,45 @@ export async function verifyAutomationKeyboard({ page, base, makePcmWav }) {
   await assertFocus(time);
   assert.deepEqual(requests.at(-1), { operation: "upsert", remixTrackId: trackId, parameter: "volume", timelineMs: 1200, value: 1.5 });
 
+  // Hold the automation response while a different Studio control changes.
+  // Undo must revert only the automation edit and retain the intervening fader change.
+  let signalAutomationResponseHeld;
+  const automationResponseIsHeld = new Promise((resolve) => { signalAutomationResponseHeld = resolve; });
+  automationResponseHeld = () => signalAutomationResponseHeld();
+  holdNextAutomationResponse = true;
+  await typeNumber(time, "1800");
+  await typeNumber(value, "1.4");
+  await activate(editor.getByRole("button", { name: "Save point", exact: true }));
+  await Promise.race([
+    automationResponseIsHeld,
+    page.waitForTimeout(8000).then(() => { throw new Error("Automation response was not held for the race regression."); }),
+  ]);
+  const fader = page.getByRole("slider", { name: /Vocals fader/ });
+  await fader.focus();
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await fader.inputValue(), "0.99");
+  assert.equal(typeof releaseAutomationResponse, "function");
+  releaseAutomationResponse();
+  releaseAutomationResponse = null;
+  await waitMessage("saved at 1800");
+
+  const undoSave = page.waitForRequest((request) =>
+    request.method() === "PUT" && new URL(request.url()).pathname === `/api/remixes/${remixId}`,
+  );
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "z", code: "KeyZ", ctrlKey: true, bubbles: true, cancelable: true,
+  })));
+  const undoPayload = (await undoSave).postDataJSON();
+  assert.equal(
+    undoPayload.tracks.find((track) => track.id === trackId)?.volume,
+    0.99,
+    "undoing the automation response must retain the mixer change made while it was pending",
+  );
+  assert.equal(
+    undoPayload.automation.find((lane) => lane.parameter === "volume")?.points[0]?.timelineMs,
+    1200,
+    "undo must restore the previous automation point without discarding the intervening mixer edit",
+  );
   await typeNumber(time, "86400001");
   await activate(editor.getByRole("button", { name: "Save point", exact: true }));
   assert.equal(requests.length, 1, "Out-of-bounds time must not reach the API");

@@ -780,6 +780,8 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     operation: "upsert" | "delete",
     payload: Record<string, unknown>,
   ) => {
+    const sessionId = before.id;
+    const saveRevisionAtStart = saveRevision.current;
     const response = await fetch(`/api/remixes/${before.id}/automation`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -787,13 +789,20 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setSaveState("failed");
+      if (remixRef.current?.id === sessionId) setSaveState("failed");
       return body.error ?? "Could not apply the automation point edit.";
     }
-    record(before);
+    const current = remixRef.current;
+    // The response belongs to the session that started the request. Do not
+    // write it into a newly selected session if the user switched while waiting.
+    if (!current || current.id !== sessionId) return null;
+    // Other controls can change while the endpoint is pending. Record and
+    // reconcile from that latest state so undo removes only this automation
+    // edit and retains those intervening changes.
+    record(current);
     const removed = new Set<string>(body.removedPointIds ?? []);
     const point = body.point as { id?: string; remixTrackId: string; parameter: "volume" | "pan"; timelineMs: number; value: number } | undefined;
-    let automation = before.automation.map((lane) => ({
+    let automation = current.automation.map((lane) => ({
       ...lane,
       points: lane.points.filter((item) => !item.id || !removed.has(item.id)),
     }));
@@ -811,8 +820,10 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         automation = [...automation, { remixTrackId: point.remixTrackId, parameter: point.parameter, points: [pointValue] }];
       }
     }
-    setRemix({ ...before, automation });
-    setSaveState("saved");
+    const next = { ...current, automation };
+    remixRef.current = next;
+    setRemix(next);
+    if (saveRevision.current === saveRevisionAtStart && !saveTimer.current) setSaveState("saved");
     return null;
   }, [record]);
 
