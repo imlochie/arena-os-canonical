@@ -4,7 +4,7 @@
  * never supplied success-shaped fake job data. Library reads use the DB.
  */
 import assert from "node:assert/strict";
-import { copyFile, link, mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -21,12 +21,14 @@ import { getStorage } from "../storage";
 import { getLocalJobBroker, resetLocalJobBrokerForTests } from "../worker-local/broker";
 import { handleSeparationJob } from "../worker-local/separation";
 import { stemMachineSource } from "../worker-local/separation-fixtures";
+import { FOUR_STEM_MODELS, stagePinnedModels } from "../worker-local/pinned-models.test-helper";
 import type { addTrackFromAudioFile } from "./service";
 import { requireUser } from "../local-context";
+import { installLiveAudioProbe, readLiveAudioState } from "./live-controls-during-separation.test-helper";
 
 type BrowserRoute = {
-  request(): { url(): string; method(): string; postData(): string | null };
-  fulfill(input: { status?: number; json?: unknown; headers?: Record<string, string>; body?: string }): Promise<void>;
+  request(): { url(): string; method(): string; postData(): string | null; headers(): Record<string, string> };
+  fulfill(input: { status?: number; json?: unknown; headers?: Record<string, string>; body?: string | Buffer }): Promise<void>;
 };
 
 export async function verifyLibraryRetryWithRealWorker(options: {
@@ -34,8 +36,11 @@ export async function verifyLibraryRetryWithRealWorker(options: {
   client: Client;
   directory: string;
   addTrack: typeof addTrackFromAudioFile;
+  recipe?: "kim_vocal_2" | "default-four-stem";
 }) {
   const { database, client, directory, addTrack } = options;
+  const fourStem = options.recipe === "default-four-stem";
+  const workerTimeout = fourStem ? 570_000 : 150_000;
   // Service-only fixtures use synthetic owners; actual library routes filter
   // by the canonical local user. Seed the identity the real UI will read.
   const { id: ownerId } = await requireUser();
@@ -43,6 +48,8 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     ARENA_DESKTOP_MODE: process.env.ARENA_DESKTOP_MODE,
     REDIS_URL: process.env.REDIS_URL,
     WAVEYARD_MODELS_DIR: process.env.WAVEYARD_MODELS_DIR,
+    SEPARATION_MODEL: process.env.SEPARATION_MODEL,
+    WAVEYARD_LOCAL_WORKER: process.env.WAVEYARD_LOCAL_WORKER,
   };
   const requireBrowser = createRequire(new URL("../../../../../../artifacts/api-server/package.json", import.meta.url));
   const { chromium } = requireBrowser("playwright-core");
@@ -51,26 +58,28 @@ export async function verifyLibraryRetryWithRealWorker(options: {
   const started = Date.now();
   try {
     // Reproduce an actual rejected queue handoff, not a fabricated failed row.
-    process.env.ARENA_DESKTOP_MODE = "0";
+    process.env.ARENA_DESKTOP_MODE = "1";
+    process.env.WAVEYARD_LOCAL_WORKER = "1";
     delete process.env.REDIS_URL;
+    delete process.env.SEPARATION_MODEL;
     resetLocalJobBrokerForTests();
     const model = findMdxModel("kim_vocal_2")!;
-    const installed = fileURLToPath(new URL(
-      `../../../../../../artifacts/api-server/.data/waveyard-models/${model.file}`, import.meta.url,
+    const installedDirectory = fileURLToPath(new URL(
+      "../../../../../../artifacts/api-server/.data/waveyard-models/", import.meta.url,
     ));
-    assert.ok(existsSync(installed), "install the registry-pinned Kim model before running this opt-in acceptance");
-    assert.equal(await checksumFile(installed), model.sha256, "real inference uses only the checksum-pinned model");
-    const modelsDirectory = join(directory, "retry-acceptance-models");
-    await mkdir(modelsDirectory, { recursive: true });
-    try { await link(installed, join(modelsDirectory, model.file)); }
-    catch { await copyFile(installed, join(modelsDirectory, model.file)); }
+    const modelsDirectory = join(directory, `retry-acceptance-models-${fourStem ? "four" : "kim"}`);
+    await stagePinnedModels(installedDirectory, modelsDirectory, fourStem ? FOUR_STEM_MODELS : [model]);
     process.env.WAVEYARD_MODELS_DIR = modelsDirectory;
-    const inputPath = join(directory, "retry-acceptance.wav");
-    await writeFile(inputPath, encodeWav16(stemMachineSource(44_100), 44_100));
+    const inputPath = join(directory, `retry-acceptance-${fourStem ? "four" : "kim"}.wav`);
+    const sourcePcm = stemMachineSource(44_100);
+    // Both opt-in cases share one disposable DB; distinct PCM avoids making
+    // the second intake an intentional checksum-deduplication hit.
+    if (fourStem) for (let index = 0; index < sourcePcm.length; index++) sourcePcm[index] *= 0.9;
+    await writeFile(inputPath, encodeWav16(sourcePcm, 44_100));
     const originalChecksum = await checksumFile(inputPath);
     const intake = await addTrack({
       ownerId, filePath: inputPath, filename: "Fixture - Library retry acceptance.wav",
-      mimeType: "audio/wav", model: model.id, requestedDevice: "cpu",
+      mimeType: "audio/wav", ...(fourStem ? {} : { model: model.id }), device: "cpu",
     });
     assert.equal(intake.separationQueued, false);
     assert.equal(intake.track.stemAvailability.status, "rejected");
@@ -80,6 +89,9 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     const jobsBefore = await database.select().from(processingJobs)
       .where(eq(processingJobs.sourceAssetId, intake.track.sourceAssetId));
     assert.equal(jobsBefore.find(job => job.id === jobId)?.status, "failed");
+    assert.equal(jobsBefore.find(job => job.id === jobId)?.model, fourStem ? "stems_4" : model.id,
+      "desktop intake with no model override selects the actual default four-stem recipe");
+    assert.ok(getLocalJobBroker().stats().rejected > 0, "missing registered executors reject the original handoff");
 
     // Record durable transitions, so a fast worker cannot evade a polling assertion.
     await client.query(`
@@ -94,7 +106,13 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     `);
     process.env.ARENA_DESKTOP_MODE = "1";
     const activeBroker = getLocalJobBroker();
-    activeBroker.register(SEPARATION_QUEUE, payload => handleSeparationJob(payload, { db: database }));
+    const completedPasses: string[] = [];
+    activeBroker.register(SEPARATION_QUEUE, payload => handleSeparationJob(payload, {
+      db: database,
+      // As in the real four-model acceptance, this fires after the native
+      // worker exits and releases its session, before the next pass starts.
+      onInferenceTiming: (modelId) => completedPasses.push(modelId),
+    }));
     const retryRoute = await import(new URL(
       "../../../../../../artifacts/api-server/src/imported/jobs/[id]/retry/route.ts", import.meta.url,
     ).href);
@@ -106,12 +124,25 @@ export async function verifyLibraryRetryWithRealWorker(options: {
         return [`/api/library/${name}`, handler.GET] as const;
       }),
     ));
-    browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium", headless: true, args: ["--no-sandbox"] });
-    const context = await browser.newContext();
+    const sessionsRoute = await import(new URL(
+      "../../../../../../artifacts/api-server/src/imported/library/sessions/route.ts", import.meta.url,
+    ).href);
+    const assetsRoute = await import(new URL(
+      "../../../../../../artifacts/api-server/src/imported/assets/[id]/route.ts", import.meta.url,
+    ).href);
+    browser = await chromium.launch({
+      executablePath: "/repl/tools/bin/chromium", headless: true,
+      args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
+    });
+    const context = await browser.newContext({ serviceWorkers: "block" });
+    await installLiveAudioProbe(context);
     let retryRequests = 0;
+    const servedAudioAssets = new Set<string>();
     await context.route("**/api/**", async (route: BrowserRoute) => {
       const request = route.request();
       const url = new URL(request.url());
+      const sessionPath = url.pathname.match(/^\/api\/library\/sessions\/([^/]+)(?:\/(state|tracks)(?:\/([^/]+))?)?$/);
+      const assetPath = url.pathname.match(/^\/api\/assets\/([^/]+)$/);
       let response: Response | undefined;
       if (libraryReads.has(url.pathname) && request.method() === "GET") {
         response = await libraryReads.get(url.pathname)(new Request(url));
@@ -120,10 +151,30 @@ export async function verifyLibraryRetryWithRealWorker(options: {
         response = await retryRoute.POST(new Request(url, { method: "POST" }), {
           params: Promise.resolve({ id: jobId }),
         });
+      } else if (fourStem && url.pathname === "/api/library/sessions" && request.method() === "POST") {
+        response = await sessionsRoute.POST(new Request(url, {
+          method: "POST", headers: request.headers(), body: request.postData(),
+        }));
+      } else if (fourStem && sessionPath) {
+        const [, id, kind, itemId] = sessionPath;
+        const suffix = kind ? `/${kind}${itemId ? "/[itemId]" : ""}` : "";
+        const handler = await import(new URL(
+          `../../../../../../artifacts/api-server/src/imported/library/sessions/[id]${suffix}/route.ts`, import.meta.url,
+        ).href);
+        const method = request.method();
+        if (handler[method]) response = await handler[method](new Request(url, {
+          method, headers: request.headers(), ...(method === "GET" ? {} : { body: request.postData() }),
+        }), { params: Promise.resolve({ id, itemId }) });
+      } else if (fourStem && assetPath && request.method() === "GET") {
+        response = await assetsRoute.GET(new Request(url, { headers: request.headers() }), {
+          params: Promise.resolve({ id: assetPath[1] }),
+        });
+        if (response.ok) servedAudioAssets.add(assetPath[1]);
       }
       if (response) {
         await route.fulfill({
-          status: response.status, headers: Object.fromEntries(response.headers), body: await response.text(),
+          status: response.status, headers: Object.fromEntries(response.headers),
+          body: assetPath ? Buffer.from(await response.arrayBuffer()) : await response.text(),
         });
       } else if (request.method() === "GET") {
         await route.fulfill({ status: 503, json: { error: "Unrelated panel unavailable in isolated acceptance." } });
@@ -157,11 +208,13 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       throw error;
     });
     assert.equal(retried.status(), 200, "the actual retry route accepts the library action");
-    assert.equal(await activeBroker.drain(150_000), true, "the real CPU worker finishes the retried job");
+    assert.equal(await activeBroker.drain(workerTimeout), true, "the real CPU worker finishes the retried job");
     const [completed] = await database.select().from(processingJobs).where(eq(processingJobs.id, jobId));
     assert.equal(completed.status, "complete", completed.errorMessage ?? "the original job completes");
     assert.equal(completed.errorCode, null);
     assert.equal(completed.resolvedDevice, "cpu");
+    assert.deepEqual(completedPasses, (fourStem ? FOUR_STEM_MODELS : [model]).map(spec => spec.id),
+      "every pinned model pass releases sequentially through the production worker");
     const transitions = await client.query<{ status: string }>(
       "SELECT status FROM retry_acceptance_transitions WHERE job_id = $1", [jobId],
     );
@@ -175,8 +228,14 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     assert.equal(activeBroker.stats().succeeded, 1, "the broker executes exactly one retry");
     assert.equal(retryRequests, 1, "the library submits exactly one retry request");
     const stems = await database.select().from(stemAssets).where(eq(stemAssets.separationJobId, jobId));
-    assert.equal(stems.length, 2, "the real Kim model persists vocals and instrumental outputs");
+    assert.equal(stems.length, fourStem ? 4 : 2);
+    assert.deepEqual(stems.map(stem => stem.stemType).sort(),
+      (fourStem ? ["vocals", "drums", "bass", "other"] : ["vocals", "instrumental"]).sort(),
+      "exactly one output exists for every required stem type");
     for (const stem of stems) {
+      const spec = (fourStem ? FOUR_STEM_MODELS : [model]).find(item => item.id === stem.model);
+      assert.ok(spec);
+      assert.equal(stem.modelVersion, spec.sha256, "persisted output identifies its pinned model");
       const filename = getStorage().getLocalPath(stem.storageKey);
       assert.ok(filename && existsSync(filename), "each output exists in private storage");
       const { readFile } = await import("node:fs/promises");
@@ -185,15 +244,51 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     }
     // The existing processing poll must discover real completed state, not a
     // test-supplied success response or a forced page reload.
-    await card.getByText("2 STEMS", { exact: true }).waitFor({ timeout: 30_000 });
+    await card.getByText(`${stems.length} STEMS`, { exact: true }).waitFor({ timeout: 30_000 });
     assert.equal(await card.getByRole("button", { name: /^Retry separation for/ }).count(), 0);
+    if (fourStem) {
+      await card.getByTestId(`button-play-${intake.track.id}`).click();
+      const expectedAssets = stems.map(stem => stem.id);
+      await page.waitForFunction((ids: string[]) => {
+        const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(item => item.readyState >= 2)
+          && ids.every(id => audio.some(item => new URL(item.currentSrc || item.src).pathname.endsWith(`/${id}`)));
+      }, expectedAssets, { timeout: 30_000 });
+      const play = page.getByTestId("session-play");
+      if (await play.getAttribute("aria-pressed") === "true") await play.click();
+      const loaded = await readLiveAudioState(page);
+      assert.deepEqual(loaded.map(item => item.assetId).sort(), expectedAssets.sort(),
+        "live playback uses the four persisted model outputs, never a passthrough/full-source substitute");
+      assert.ok(expectedAssets.every(id => servedAudioAssets.has(id)),
+        "every real stem was read through the production private asset route");
+      for (const stem of stems) {
+        const isolate = page.getByTestId(`quick-isolate-${stem.stemType}`);
+        await isolate.click();
+        await page.waitForFunction((id: string) =>
+          document.querySelector(`[data-testid="quick-isolate-${id}"]`)?.getAttribute("aria-pressed") === "true",
+        stem.stemType);
+        const state = await readLiveAudioState(page);
+        assert.ok(state.find(item => item.assetId === stem.id)?.gain! > 0, `${stem.stemType} has a real audible gain route`);
+        assert.ok(state.filter(item => item.assetId !== stem.id).every(item => item.gain === 0),
+          `isolating ${stem.stemType} mutes the other three real stem routes`);
+        await isolate.click();
+      }
+      await play.click();
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(item => !item.paused && item.currentTime > 0.03);
+      }, undefined, { timeout: 5_000 });
+      await play.click();
+      assert.ok((await readLiveAudioState(page)).every(item => item.gain! > 0),
+        "restoring all stems keeps every actual stem connected");
+    }
     assert.deepEqual(pageErrors, [], "the completed library view has no browser exceptions");
     assert.equal(await checksumFile(inputPath), originalChecksum, "the input audio remains unchanged");
     return { jobId, device: completed.resolvedDevice, elapsedMs: Date.now() - started, stemCount: stems.length };
   } finally {
     await browser?.close();
-    await broker.drain(150_000);
-    await getLocalJobBroker().drain(150_000);
+    await broker.drain(workerTimeout);
+    await getLocalJobBroker().drain(workerTimeout);
     resetLocalJobBrokerForTests();
     await client.query(`
       DROP TRIGGER IF EXISTS retry_acceptance_transition ON processing_jobs;

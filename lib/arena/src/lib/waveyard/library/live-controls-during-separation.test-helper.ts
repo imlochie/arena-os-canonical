@@ -10,23 +10,7 @@ type BrowserDriver = {
   close(): Promise<void>;
 };
 
-export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> {
-  const apiPackage = fileURLToPath(new URL(
-    "../../../../../../artifacts/api-server/package.json",
-    import.meta.url,
-  ));
-  const require = createRequire(apiPackage);
-  const { chromium } = require("playwright-core") as { chromium: any };
-  const browser = await chromium.launch({
-    executablePath: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium",
-    args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
-  });
-  const context = await browser.newContext({ serviceWorkers: "block" });
-  let page: any;
-  let apiOrigin = "";
-  let currentContext: LiveSeparationContext | undefined;
-  const pageErrors: string[] = [];
-
+export async function installLiveAudioProbe(context: any) {
   await context.addInitScript(() => {
     const target = window as typeof window & {
       audioProbe?: {
@@ -64,8 +48,17 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
       }
     };
   });
+}
 
-  const currentAudioState = async () => page.evaluate(() => {
+export async function readLiveAudioState(page: any): Promise<Array<{
+  assetId: string | undefined;
+  paused: boolean;
+  currentTime: number;
+  readyState: number;
+  gain: number | null;
+  sourceCount: number;
+}>> {
+  return page.evaluate(() => {
     const probe = (window as typeof window & {
       audioProbe?: { sources: Array<{ media: HTMLMediaElement; inputNode?: AudioNode }> };
     }).audioProbe;
@@ -85,7 +78,26 @@ export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> 
       };
     });
   });
+}
 
+export async function createLiveControlsBrowserDriver(): Promise<BrowserDriver> {
+  const apiPackage = fileURLToPath(new URL(
+    "../../../../../../artifacts/api-server/package.json",
+    import.meta.url,
+  ));
+  const require = createRequire(apiPackage);
+  const { chromium } = require("playwright-core") as { chromium: any };
+  const browser = await chromium.launch({
+    executablePath: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium",
+    args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
+  });
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  let page: any;
+  let apiOrigin = "";
+  let currentContext: LiveSeparationContext | undefined;
+  const pageErrors: string[] = [];
+  await installLiveAudioProbe(context);
+  const currentAudioState = () => readLiveAudioState(page);
   const readSession = async () => page.evaluate(async (sessionId: string) => {
     const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`Session refresh failed: HTTP ${response.status}`);

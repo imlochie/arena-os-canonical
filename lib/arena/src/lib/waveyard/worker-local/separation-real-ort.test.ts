@@ -58,7 +58,6 @@ import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { evaluateFourStemSeparation, type FourStemSamples } from "@workspace/arena/lib/waveyard/separation/quality";
 import { requestSeparationCancellation } from "@workspace/arena/lib/waveyard/separation/cancel";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
-import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
 import type { OpenedEngine } from "./separation";
 import { demixMdxInWorker, handleSeparationJob } from "./separation";
 import { getLocalJobBroker, resetLocalJobBrokerForTests } from "./broker";
@@ -73,14 +72,9 @@ import {
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
+import { FOUR_STEM_MODELS, stagePinnedModels } from "./pinned-models.test-helper";
 
 const KIM = findMdxModel("kim_vocal_2")!;
-const FOUR_STEM_MODELS = [
-  "kim_vocal_2",
-  "kuielab_b_drums",
-  "kuielab_b_bass",
-  "kuielab_b_other",
-].map((id) => findMdxModel(id)!);
 
 function audioMetrics(samples: Float32Array) {
   let sumSquares = 0;
@@ -510,9 +504,7 @@ test("stopping a running pinned four-model job terminates its native worker and 
   const f = await fixture({ model: "stems_4", sourceWavPath: source.path });
   let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
   try {
-    for (const spec of FOUR_STEM_MODELS) {
-      await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
-    }
+    await stagePinnedModels(modelDirectory, f.modelsDir);
     const originalChecksum = await checksumFile(f.sourcePath);
     const [playbackTrack] = await f.database
       .insert(tracks)
