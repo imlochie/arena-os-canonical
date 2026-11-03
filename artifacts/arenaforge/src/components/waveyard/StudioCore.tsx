@@ -164,7 +164,9 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     const selector = previous.presentation !== presentation
       ? ".presentation-nav [aria-selected='true']"
       : ".studio-tabs [aria-selected='true']";
-    studioElement.current?.querySelector<HTMLButtonElement>(selector)?.focus({ preventScroll: true });
+    const target = studioElement.current?.querySelector<HTMLButtonElement>(selector);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "center" });
   }, [presentation, studioTab]);
   // Visual preferences are browser-only presentation choices; they never
   // mutate the project, RemixVersion, or transport's musical state.

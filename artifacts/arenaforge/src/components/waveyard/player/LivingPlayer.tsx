@@ -7,6 +7,7 @@ import type { MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport
 import type { Source, Stem } from "../studio/types";
 import { laneDisplayName } from "@workspace/arena/lib/waveyard/separation/stem-display";
 import { derivePlayerPhase, formatPlayerTime, playerPhaseLabel, sectionWidths } from "./player-state";
+import { useFullscreenFocus } from "./useFullscreenFocus";
 
 const stemOrder = ["vocals", "melody", "other", "bass", "drums", "percussion"];
 
@@ -68,6 +69,7 @@ export function LivingPlayer({
   onToggleFullscreen: () => void;
   onRetryWaveformJob?: (jobId: string) => Promise<{ ok: boolean; message?: string }>;
 }) {
+  const surface = useFullscreenFocus(fullscreen);
   const section = currentSection(source, visualState);
   const [seeking, setSeeking] = useState(false);
   // Seeking is a short-lived interaction acknowledgement; the underlying
@@ -82,7 +84,7 @@ export function LivingPlayer({
   const phase = derivePlayerPhase({ hasSource: Boolean(source), duration, playing: transport.playing, seeking, analysisStatus: source?.analysis?.status, error: transport.error });
   const analysisState = source?.analysis?.status === "complete" ? "analysis complete" : source?.analysis?.status === "failed" ? "analysis unavailable" : "analysis pending";
   const phaseDescription = phase === "paused" && source?.analysis?.status === "complete" ? `${analysisState} · ${playerPhaseLabel(phase)}` : phase === "analysis" ? `${playerPhaseLabel(phase)} · ${analysisState}` : playerPhaseLabel(phase);
-  return <section className={`living-player ${fullscreen ? "fullscreen" : ""}`} data-testid="living-player" data-player-state={phase}>
+  return <section ref={surface} className={`living-player ${fullscreen ? "fullscreen" : ""}`} data-testid="living-player" data-player-state={phase}>
     <div className="player-topline"><span className="eyebrow">Waveyard Play</span><span aria-live="polite">{phaseDescription}</span><button className="button secondary" onClick={onOpenStudio}>Open Studio</button></div>
     <div className="player-identity">
       <ArtworkHero title={source?.originalFilename ?? "Preparing source"} seed={source?.checksumSha256 ?? "waveyard-fallback"} />
@@ -102,7 +104,7 @@ export function LivingPlayer({
       {!orderedStems.length && <p className="player-empty">Validated stems will appear here.</p>}
     </div>
     <PlayerTimeline source={source} duration={duration} position={transport.position} onSeek={(seconds) => { setSeeking(true); transport.seek(seconds); }} onRetryWaveformJob={onRetryWaveformJob} />
-    <div className="player-transport"><button className="player-play" disabled={loading} onClick={() => transport.playing ? transport.pause() : void transport.play()} aria-label={transport.playing ? "Pause playback" : "Play playback"}>{transport.playing ? "Ⅱ" : "▶"}</button><output>{formatPlayerTime(transport.position)} <span>/</span> {formatPlayerTime(duration)}</output><button className="button secondary" disabled={loading} onClick={onToggleFullscreen}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div>
+    <div className="player-transport"><button className="player-play" disabled={loading} onClick={() => transport.playing ? transport.pause() : void transport.play()} aria-label={transport.playing ? "Pause playback" : "Play playback"}>{transport.playing ? "Ⅱ" : "▶"}</button><output>{formatPlayerTime(transport.position)} <span>/</span> {formatPlayerTime(duration)}</output><button className="button secondary" data-fullscreen-toggle disabled={loading} onClick={onToggleFullscreen}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div>
     {transport.error && <p className="error">{transport.error}</p>}
   </section>;
 }

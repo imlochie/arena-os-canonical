@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { CINEMATIC_VISUAL_PRESETS, deriveCinematicVisualScene, motionPolicy, type CinematicVisualPreset, type WaveyardVisualState } from "@workspace/arena/lib/waveyard/types";
 import type { MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import type { Source, Stem } from "../studio/types";
+import { useFullscreenFocus } from "../player/useFullscreenFocus";
 
 type Transport = {
   playing: boolean;
@@ -39,6 +40,8 @@ export function CinematicVisual({
   onToggleFullscreen: () => void;
   onOpenStudio: () => void;
 }) {
+  const surface = useFullscreenFocus(fullscreen);
+  const [focusWithin, setFocusWithin] = useState(false);
   const scene = useMemo(() => deriveCinematicVisualScene({ visualState, preset, reducedMotion }), [preset, reducedMotion, visualState]);
   const section = source?.sections?.find((candidate) => candidate.id === visualState.sectionId);
   const [overlaysVisible, setOverlaysVisible] = useState(true);
@@ -49,7 +52,7 @@ export function CinematicVisual({
     const timer = window.setTimeout(() => setOverlaysVisible(false), policy.overlayDelayMs);
     return () => window.clearTimeout(timer);
   }, [interaction, policy.overlayDelayMs, reducedMotion, transport.playing]);
-  const controlsVisible = !transport.playing || reducedMotion || overlaysVisible;
+  const controlsVisible = focusWithin || !transport.playing || reducedMotion || overlaysVisible;
   const reveal = () => {
     if (!overlaysVisible) setOverlaysVisible(true);
     setInteraction((count) => count + 1);
@@ -64,6 +67,7 @@ export function CinematicVisual({
     "--visual-motion": `${policy.transitionMs}ms`,
   } as CSSProperties;
   return <section
+    ref={surface}
     className={`cinematic-visual ${fullscreen ? "fullscreen" : ""}`}
     data-testid="cinematic-visual"
     data-preset={preset}
@@ -74,6 +78,10 @@ export function CinematicVisual({
     style={style}
     onPointerMove={reveal}
     onKeyDown={reveal}
+    onFocusCapture={() => { setFocusWithin(true); reveal(); }}
+    onBlurCapture={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) { setFocusWithin(false); reveal(); }
+    }}
   >
     <div className="visual-recording-frame">
       <div className="visual-atmosphere" aria-hidden="true"><i /><i /><i /></div>
@@ -100,7 +108,7 @@ export function CinematicVisual({
         <div className="visual-actions">
           <button type="button" className="visual-play" onClick={() => { reveal(); transport.playing ? transport.pause() : void transport.play(); }} aria-label={`${playLabel} transport`}>{transport.playing ? "Ⅱ" : "▶"}</button>
           <button type="button" onClick={() => { reveal(); onToggleMetadata(); }} aria-pressed={metadataVisible}>Info</button>
-          <button type="button" onClick={() => { reveal(); onToggleFullscreen(); }}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+          <button type="button" data-fullscreen-toggle onClick={() => { reveal(); onToggleFullscreen(); }}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
           <button type="button" onClick={onOpenStudio}>Studio</button>
         </div>
       </div>
