@@ -81,8 +81,8 @@ When a Studio gesture times out, inspect the actual element under the touch poin
 
 **How to apply:** Use `document.elementFromPoint` at the intended control coordinates to distinguish an intercepted gesture from a control regression. Resolve the originating render error rather than bypassing the overlay.
 
-A reloaded paused session may have prepared donor buffers without creating playback sources. Resume the transport before asserting that donor `AudioBufferSourceNode`s exist.
+A reloaded paused session may have prepared donor buffers without creating playback sources. Resume the transport before asserting that donor `AudioBufferSourceNode`s exist. A silent mirror can also create its first media graph lazily during donor preparation; snapshot graph counts after preparation starts when checking late responses.
 
-**Why:** A recovery check timed out looking for donor sources after reload even though the saved donor had been restored correctly; the transport was intentionally paused.
+**Why:** A recovery check timed out looking for donor sources after reload even though the saved donor had been restored correctly; the transport was intentionally paused. Comparing a mirror's pre-preparation graph count with its post-cancellation count falsely reported duplicate audio.
 
 **How to apply:** Separate saved-selection assertions from audible-playback assertions. For uninterrupted recovery, compare the existing sources' identity, stop counts and gains alongside the advancing recipient clock; a missing pending indicator alone can precede asynchronous save/render completion.

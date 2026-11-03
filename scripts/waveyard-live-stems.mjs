@@ -365,7 +365,7 @@ try {
     }
     const isHeldAssetRequest = id === heldAssetId && heldAssetGate !== null;
     if (isHeldAssetRequest) {
-      signalHeldAssetRequest?.();
+      signalHeldAssetRequest?.(route.request());
       await heldAssetGate;
     }
     if (id === failAsset) {
@@ -388,7 +388,7 @@ try {
     } catch {
       // The application may abort this deliberately held request when the user cancels.
     } finally {
-      signalHeldAssetRouteFinished?.();
+      signalHeldAssetRouteFinished?.(route.request());
     }
   });
   await context.route("**/api/library/tracks", route => {
@@ -872,6 +872,139 @@ try {
       }
     }
     console.log("PASS: cancellation and the real preparation timeout keep original audio audible and aligned; late donors stay silent even while cancellation persistence stalls");
+  }
+
+  async function verifyCrossTabStemSwitchRecovery() {
+    for (const scenario of ["cancel", "timeout"]) {
+      session.currentSessionTrackId = "a";
+      session.positionSeconds = 0;
+      session.swaps = [];
+      await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+      const mirror = await context.newPage();
+      mirror.on("pageerror", error => { throw error; });
+      const pages = [page, mirror];
+      const releases = [];
+      let holdDonor;
+      try {
+        await mirror.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+        for (const target of pages) {
+          await target.waitForFunction(() => {
+            const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+            return audio.length === 4 && audio.every(element =>
+              element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+            );
+          });
+        }
+        const requestedPages = new Set();
+        const finishedPages = new Set();
+        let signalBothRequested, signalBothFinished;
+        const bothRequested = new Promise(resolve => { signalBothRequested = resolve; });
+        const bothFinished = new Promise(resolve => { signalBothFinished = resolve; });
+        // Use one gate per page: each late response is released and checked
+        // independently, so a single successful request cannot stand in for two.
+        const gates = new Map(pages.map(target => [target, new Promise(resolve => { releases.push(resolve); })]));
+        heldAssetId = "b-vocals";
+        heldAssetGate = Promise.resolve();
+        signalHeldAssetRequest = request => {
+          requestedPages.add(request.frame().page());
+          if (pages.every(target => requestedPages.has(target))) signalBothRequested();
+        };
+        signalHeldAssetRouteFinished = request => {
+          finishedPages.add(request.frame().page());
+          if (pages.every(target => finishedPages.has(target))) signalBothFinished();
+        };
+        holdDonor = async route => {
+          const target = route.request().frame().page();
+          signalHeldAssetRequest(route.request());
+          await gates.get(target);
+          await route.fallback();
+        };
+        await context.route("**/api/assets/b-vocals", holdDonor);
+        // Keep HTTP responses in flight even when the layer is cancelled. This
+        // exercises the generation guard, not just successful fetch abortion.
+        await Promise.all(pages.map(target => target.evaluate(() => {
+          const nativeFetch = window.fetch;
+          window.fetch = (input, init) => {
+            const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+            return nativeFetch(input, url.pathname === "/api/assets/b-vocals"
+              ? { ...init, signal: undefined } : init);
+          };
+        })));
+        await page.bringToFront();
+        await page.getByTestId("session-play").click();
+        await mirror.waitForFunction(() =>
+          document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+        );
+        await page.locator('[data-role="current"]').getByTestId("open-live-swap-vocals").click();
+        await page.getByTestId("live-swap-candidate-vocals-b").click();
+        // The save notification must reach the mirror without a focus/reload.
+        // Observe requests before releasing either page's response.
+        await mirror.getByTestId("restore-live-swap-vocals").waitFor();
+        await waitForSignal(bothRequested, `both stalled ${scenario} donor requests`);
+        assert.equal(session.swaps.length, 1, "both tabs prepare the same persisted donor");
+        // A silent mirror creates its first media graph lazily when preparing.
+        // Snapshot after that preparation begins, before either response arrives.
+        const baseline = await Promise.all(pages.map(target => target.evaluate(() => ({
+          buffers: window.audioProbe.buffers.length,
+          workletLoads: window.audioProbe.workletLoads.length,
+          sources: window.audioProbe.sources.length,
+        }))));
+        if (scenario === "cancel") await page.getByTestId("cancel-live-stem-swap-swap-vocals").click();
+        await page.getByTestId("session-status")
+          .filter({ hasText: scenario === "cancel" ? /vocals switch cancelled/i : /stem switch timed out after 15 seconds/i })
+          .waitFor({ timeout: 20_000 });
+        for (const target of pages) {
+          await target.getByTestId("restore-live-swap-vocals").waitFor({ state: "detached" });
+          await target.getByTestId("live-swap-pending-vocals").waitFor({ state: "detached" });
+        }
+        assert.equal(session.swaps.length, 0, `${scenario} removes the saved choice in both tabs`);
+        const clock = await page.locator('[data-role="current"] audio').first().evaluate(audio => audio.currentTime);
+        for (const [index, release] of releases.entries()) {
+          const responseFinished = pages[index].waitForResponse(response =>
+            new URL(response.url()).pathname === "/api/assets/b-vocals" && response.ok(),
+          );
+          release();
+          await responseFinished;
+        }
+        await waitForSignal(bothFinished, `both late ${scenario} donor responses`);
+        await context.unroute("**/api/assets/b-vocals", holdDonor);
+        await page.waitForFunction(before => {
+          const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
+          return audio && !audio.paused && audio.currentTime > before + 0.3;
+        }, clock);
+        for (const [index, target] of pages.entries()) {
+          const state = await target.evaluate(() => ({
+            buffers: window.audioProbe.buffers.length,
+            workletLoads: window.audioProbe.workletLoads.length,
+            sources: window.audioProbe.sources.length,
+            playing: [...document.querySelectorAll("audio")].filter(audio => !audio.paused).length,
+            current: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => ({
+              time: audio.currentTime, paused: audio.paused,
+              gain: window.audioProbe.sources.find(source => source.mediaElement === audio)?.inputNode?.gain.value,
+            })),
+          }));
+          assert.equal(state.buffers, baseline[index].buffers, `${scenario}: late response creates no donor source in tab ${index}`);
+          assert.equal(state.workletLoads, baseline[index].workletLoads, `${scenario}: late response loads no worklet in tab ${index}`);
+          assert.equal(state.sources, baseline[index].sources, `${scenario}: original audio graph remains intact in tab ${index}`);
+          assert.equal(state.playing, index === 0 ? 4 : 0, `${scenario}: only the owner plays`);
+          if (index === 0) {
+            assert.ok(state.current.every(audio => !audio.paused && audio.gain > 0.99), "all original channels stay audible");
+            assert.ok(Math.max(...state.current.map(audio => audio.time)) - Math.min(...state.current.map(audio => audio.time)) < 0.2,
+              "original channels stay aligned");
+          }
+        }
+        await page.getByTestId("session-play").click();
+        console.log(`PASS: cross-tab ${scenario} clears both saved choices; both late responses stay silent and only the original owner clock advances`);
+      } finally {
+        releases.forEach(release => release());
+        if (holdDonor) await context.unroute("**/api/assets/b-vocals", holdDonor);
+        heldAssetId = null;
+        heldAssetGate = null;
+        signalHeldAssetRequest = null;
+        signalHeldAssetRouteFinished = null;
+        await mirror.close();
+      }
+    }
   }
 
   async function verifyStudioSaveReload() {
@@ -1433,8 +1566,11 @@ try {
     assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "b", "a real retry installs B");
     assert.equal(session.swaps.find(s => s.stemType === "drums").toTrackId, "d");
     console.log("PASS: failed donor B preserves audible and saved A, other donors and the recipient clock; recovery save retries, reload and a real B retry work");
+  } else if (process.argv.includes("--cross-tab-switch-recovery-only")) {
+    await verifyCrossTabStemSwitchRecovery();
   } else if (process.argv.includes("--switch-recovery-only")) {
     await verifyStemSwitchRecovery();
+    await verifyCrossTabStemSwitchRecovery();
   } else if (automaticFadesOnly) {
     const toggleForFade = async () => {
       const button = page.getByTestId("session-play");
@@ -2600,6 +2736,7 @@ try {
 
   // Keep the long deadline's reload/wait independent of the mirror fixture.
   await verifyStemSwitchRecovery();
+  await verifyCrossTabStemSwitchRecovery();
 
   // Auto-crossfade must start from the configured end window, preserve the
   // equal-power incoming level, and advance without a manual Mix/Finish click.

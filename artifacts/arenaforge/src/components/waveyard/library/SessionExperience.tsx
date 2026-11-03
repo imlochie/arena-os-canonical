@@ -2038,6 +2038,7 @@ export default function SessionExperience({
       });
       sessionRef.current = nextDetail;
       setSession(nextDetail);
+      if (swapScope) publishWaveyardQueueChange([detail.id]);
       return nextDetail;
     } catch {
       setStatus("The session change could not be saved — network error.");
