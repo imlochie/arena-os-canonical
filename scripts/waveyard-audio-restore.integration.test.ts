@@ -35,6 +35,7 @@ let trackPlayedRoute: { POST: (request: Request, context: { params: Promise<{ id
 let localOwnerId = "";
 const apiRequests: Array<{ method: string; path: string }> = [];
 const servedAssets: string[] = [];
+const servedAssetResponses = new Map<string, { status: number; contentType: string | null }>();
 
 function embeddedBinary(name: string) {
   const platform = process.platform === "win32" ? "windows-x64" : "linux-x64";
@@ -59,32 +60,50 @@ function freePort() {
   });
 }
 
-function makeWav(filePath: string, seconds = 6, frequency = 440) {
-  const sampleRate = 44_100;
-  const frames = Math.floor(seconds * sampleRate);
-  const dataBytes = frames * 2;
-  const wav = Buffer.alloc(44 + dataBytes);
-  wav.write("RIFF", 0);
-  wav.writeUInt32LE(36 + dataBytes, 4);
-  wav.write("WAVEfmt ", 8);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(1, 22);
-  wav.writeUInt32LE(sampleRate, 24);
-  wav.writeUInt32LE(sampleRate * 2, 28);
-  wav.writeUInt16LE(2, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write("data", 36);
-  wav.writeUInt32LE(dataBytes, 40);
-  for (let frame = 0; frame < frames; frame += 1) {
-    wav.writeInt16LE(
-      Math.round(12_000 * Math.sin((2 * Math.PI * frequency * frame) / sampleRate)),
-      44 + frame * 2,
-    );
-  }
-  writeFileSync(filePath, wav);
-  return wav;
+async function makeCompressedFixture(filePath: string, encoderArgs: string[]) {
+  const { execTool } = await import("../lib/arena/src/lib/waveyard/ffmpeg.ts");
+  await execTool("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-y",
+    "-f", "lavfi",
+    "-i", "sine=frequency=523:sample_rate=44100:duration=3.5",
+    "-vn",
+    "-ar", "44100",
+    "-ac", "1",
+    ...encoderArgs,
+    filePath,
+  ], { timeoutMs: 30_000 });
+  const bytes = readFileSync(filePath);
+  assert.ok(bytes.length > 1_000, `FFmpeg produced a non-empty fixture at ${filePath}`);
+  return bytes;
 }
+
+type RestoreAudioFixture = {
+  extension: string;
+  codec: string;
+  mimeType: string;
+  encoderArgs: readonly string[];
+  trackId: string;
+  title: string;
+  originalFilename: string;
+  fixturePath: string;
+  bytes: Buffer;
+  checksumSha256: string;
+  archivePath: string;
+  manifest: {
+    trackId: string;
+    title: string;
+    artist: string;
+    album: string;
+    durationSeconds: number;
+    codec: string;
+    originalFilename: string;
+    archivePath: string;
+    fileSizeBytes: number;
+    checksumSha256: string;
+  };
+};
 
 async function collectBody(request: import("node:http").IncomingMessage) {
   const chunks: Buffer[] = [];
@@ -126,7 +145,13 @@ async function dispatchApiRequest(request: Request) {
   const asset = pathname.match(/^\/assets\/([0-9a-f-]+)$/i);
   if (asset && method === "GET") {
     const response = await assetRoute.GET(request, { params: Promise.resolve({ id: asset[1] }) });
-    if (response.ok) servedAssets.push(asset[1]);
+    if (response.ok) {
+      servedAssets.push(asset[1]);
+      servedAssetResponses.set(asset[1], {
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+      });
+    }
     return response;
   }
 
@@ -254,36 +279,56 @@ after(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-test("a real restore route populates Waveyard and the player advances on the restored WAV", { timeout: 120_000 }, async () => {
+test("a real restore route serves playable MP3, FLAC, and M4A files in an isolated Waveyard library", { timeout: 180_000 }, async () => {
   assert.ok(root);
-  const fixturePath = path.join(root, "restored-audio.wav");
-  const wavBytes = makeWav(fixturePath);
-  const checksum = createHash("sha256").update(wavBytes).digest("hex");
-  const trackId = randomUUID();
-  const archivePath = `audio/Restore Artist/Restore Album/${trackId} - Restored Audio.wav`;
-  const audioManifest = {
-    trackId,
-    title: "Restored Audio",
-    artist: "Restore Artist",
-    album: "Restore Album",
-    durationSeconds: 6,
-    codec: "pcm_s16le",
-    originalFilename: "restored-audio.wav",
-    archivePath,
-    fileSizeBytes: wavBytes.length,
-    checksumSha256: checksum,
-  };
+  const audioFormats = [
+    { extension: "mp3", codec: "mp3", mimeType: "audio/mpeg", encoderArgs: ["-c:a", "libmp3lame", "-b:a", "96k"] },
+    { extension: "flac", codec: "flac", mimeType: "audio/flac", encoderArgs: ["-c:a", "flac", "-compression_level", "0"] },
+    { extension: "m4a", codec: "aac", mimeType: "audio/mp4", encoderArgs: ["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"] },
+  ] as const;
+  const audioFixtures: RestoreAudioFixture[] = [];
+  for (const format of audioFormats) {
+    const trackId = randomUUID();
+    const title = `Restored ${format.extension.toUpperCase()}`;
+    const originalFilename = `restored-${format.extension}.${format.extension}`;
+    const fixturePath = path.join(root, originalFilename);
+    const bytes = await makeCompressedFixture(fixturePath, [...format.encoderArgs]);
+    const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+    const archivePath = `audio/Restore Artist/Restore Album/${trackId} - ${title}.${format.extension}`;
+    audioFixtures.push({
+      ...format,
+      trackId,
+      title,
+      originalFilename,
+      fixturePath,
+      bytes,
+      checksumSha256,
+      archivePath,
+      manifest: {
+        trackId,
+        title,
+        artist: "Restore Artist",
+        album: "Restore Album",
+        durationSeconds: 3.5,
+        codec: format.codec,
+        originalFilename,
+        archivePath,
+        fileSizeBytes: bytes.length,
+        checksumSha256,
+      },
+    });
+  }
   const { createAudioBackupCsv, createVerifiedAudioBackupZip } = await import(
     "../lib/arena/src/lib/waveyard/library/audio-backup.ts"
   );
-  const csv = Buffer.from(createAudioBackupCsv([audioManifest]));
+  const csv = Buffer.from(createAudioBackupCsv(audioFixtures.map((fixture) => fixture.manifest)));
   const archive = await createVerifiedAudioBackupZip([
-    {
-      name: archivePath,
-      bytes: wavBytes.length,
-      sha256: checksum,
-      open: async () => createReadStream(fixturePath),
-    },
+    ...audioFixtures.map((fixture) => ({
+      name: fixture.archivePath,
+      bytes: fixture.bytes.length,
+      sha256: fixture.checksumSha256,
+      open: async () => createReadStream(fixture.fixturePath),
+    })),
     {
       name: "manifest.csv",
       bytes: csv.length,
@@ -298,7 +343,7 @@ test("a real restore route populates Waveyard and the player advances on the res
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
   const pageErrors: string[] = [];
-  const browserApiRequests: string[] = [];
+  const browserApiRequests: Array<{ origin: string; method: string; path: string }> = [];
   try {
     const browserContext = await browser.newContext({
       viewport: { width: 1280, height: 900 },
@@ -312,7 +357,11 @@ test("a real restore route populates Waveyard and the player advances on the res
     await browserContext.route("**/api/**", async (route) => {
       const browserRequest = route.request();
       const requestUrl = new URL(browserRequest.url());
-      browserApiRequests.push(`${browserRequest.method()} ${requestUrl.pathname}`);
+      browserApiRequests.push({
+        origin: requestUrl.origin,
+        method: browserRequest.method(),
+        path: requestUrl.pathname,
+      });
       const headers = browserRequest.headers();
       delete headers.host;
       delete headers["content-length"];
@@ -356,57 +405,88 @@ test("a real restore route populates Waveyard and the player advances on the res
     const restored = await restoreResponse.json();
     assert.deepEqual(
       { totalTracks: restored.totalTracks, restored: restored.restored, duplicates: restored.duplicates, failed: restored.failed },
-      { totalTracks: 1, restored: 1, duplicates: 0, failed: 0 },
+      { totalTracks: audioFormats.length, restored: audioFormats.length, duplicates: 0, failed: 0 },
     );
-    const restoredTrackId = restored.results[0].trackId as string;
-    assert.match(restoredTrackId, /^[0-9a-f-]{36}$/i);
-    await page.getByRole("status").filter({ hasText: "Restored 1 original" }).waitFor({ timeout: 10_000 });
-
-    // The card comes from the real library GET route backed by the isolated DB.
-    const playRestoredTrack = page.getByTestId(`button-play-${restoredTrackId}`);
-    await playRestoredTrack.waitFor({ state: "visible", timeout: 10_000 });
-    await playRestoredTrack.click();
-    const playButton = page.getByTestId("session-play");
-    await playButton.waitFor({ state: "visible", timeout: 15_000 });
-    await page.waitForFunction(() => {
-      const button = document.querySelector('[data-testid="session-play"]');
-      const audio = document.querySelector('audio[aria-label="source audio"]') as HTMLAudioElement | null;
-      return button?.getAttribute("aria-pressed") === "true"
-        && audio !== null
-        && !audio.paused
-        && audio.currentTime > 0.25;
-    }, null, { timeout: 20_000 });
-    const startingPosition = await page.locator('audio[aria-label="source audio"]').evaluate((audio) =>
-      (audio as HTMLAudioElement).currentTime,
+    assert.deepEqual(
+      restored.results.map((result: { title: string }) => result.title),
+      audioFixtures.map((fixture) => fixture.title),
     );
-    await page.waitForFunction((start) => {
-      const audio = document.querySelector('audio[aria-label="source audio"]') as HTMLAudioElement | null;
-      return audio !== null && !audio.paused && audio.currentTime > start + 0.25;
-    }, startingPosition, { timeout: 10_000 });
+    const restoredTrackIds = restored.results.map((result: { trackId: string }) => result.trackId);
+    assert.ok(restoredTrackIds.every((id: string) => /^[0-9a-f-]{36}$/i.test(id)));
+    await page.getByRole("status").filter({ hasText: /Restored 3 originals/ }).waitFor({ timeout: 10_000 });
 
-    assert.ok(servedAssets.length > 0, "the browser fetched audio from the real asset route backed by temporary storage");
-    assert.ok(browserApiRequests.some((entry) => entry === "POST /api/library/audio-backup/restore"));
-    assert.ok(browserApiRequests.some((entry) => entry === `GET /api/assets/${servedAssets.at(-1)}`));
+    const libraryService = await import("../lib/arena/src/lib/waveyard/library/service.ts");
+    const restoredOwnerTracks = await libraryService.listTracks({ ownerId: localOwnerId });
+    assert.equal(restoredOwnerTracks.length, audioFormats.length, "all restored rows are in the disposable library");
+    const tracksByTitle = new Map(restoredOwnerTracks.map((track) => [track.title, track]));
+    const expectedApiOrigin = new URL(base).origin;
+    for (const fixture of audioFixtures) {
+      const track = tracksByTitle.get(fixture.title);
+      assert.ok(track, `${fixture.title} appears in the Waveyard library`);
+      const playButton = page.getByTestId(`button-play-${track.id}`);
+      await playButton.waitFor({ state: "visible", timeout: 10_000 });
+
+      const assetResponsePromise = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.origin === expectedApiOrigin && url.pathname === `/api/assets/${track.sourceAssetId}`;
+      }, { timeout: 20_000 });
+      await playButton.click();
+      const assetResponse = await assetResponsePromise;
+      assert.ok([200, 206].includes(assetResponse.status()), `${fixture.title} asset is served`);
+      assert.equal(assetResponse.headers()["content-type"], fixture.mimeType, `${fixture.title} MIME is correct`);
+
+      await page.getByTestId("session-play").waitFor({ state: "visible", timeout: 15_000 });
+      await page.waitForFunction((assetId) => {
+        const button = document.querySelector('[data-testid="session-play"]');
+        const audio = document.querySelector('audio[aria-label="source audio"]') as HTMLAudioElement | null;
+        return button?.getAttribute("aria-pressed") === "true"
+          && audio !== null
+          && audio.currentSrc.includes(`/api/assets/${assetId}`)
+          && !audio.paused
+          && audio.currentTime > 0.25;
+      }, track.sourceAssetId, { timeout: 20_000 });
+      const startingPosition = await page.locator('audio[aria-label="source audio"]').evaluate((audio) =>
+        (audio as HTMLAudioElement).currentTime,
+      );
+      await page.waitForFunction(({ assetId, start }) => {
+        const audio = document.querySelector('audio[aria-label="source audio"]') as HTMLAudioElement | null;
+        return audio !== null
+          && audio.currentSrc.includes(`/api/assets/${assetId}`)
+          && !audio.paused
+          && audio.currentTime > start + 0.2;
+      }, { assetId: track.sourceAssetId, start: startingPosition }, { timeout: 10_000 });
+      assert.ok(servedAssets.includes(track.sourceAssetId), `${fixture.title} was served by the actual asset route`);
+      assert.deepEqual(
+        servedAssetResponses.get(track.sourceAssetId),
+        { status: assetResponse.status(), contentType: fixture.mimeType },
+        `${fixture.title} response is tracked from the isolated route`,
+      );
+      assert.ok(track.durationSeconds >= 2.5 && track.durationSeconds <= 4.5, `${fixture.title} duration was probed`);
+    }
+
+    assert.ok(browserApiRequests.some((entry) => entry.method === "POST" && entry.path === "/api/library/audio-backup/restore"));
+    for (const track of restoredOwnerTracks) {
+      assert.ok(browserApiRequests.some((entry) => entry.method === "GET" && entry.path === `/api/assets/${track.sourceAssetId}`));
+    }
     assert.deepEqual(pageErrors, [], "the real restore-and-play flow has no browser exceptions");
 
     const [finalLibrary, ownerTracks] = await Promise.all([
       fetch(`${apiBase}/api/library/tracks`).then((response) => response.json()),
-      (await import("../lib/arena/src/lib/waveyard/library/service.ts")).listTracks({ ownerId: localOwnerId }),
+      libraryService.listTracks({ ownerId: localOwnerId }),
     ]);
-    assert.deepEqual(finalLibrary.tracks.map((track: { id: string }) => track.id), [restoredTrackId]);
-    assert.equal(ownerTracks.length, 1, "only the generated restore fixture exists in the isolated library");
-    assert.equal(ownerTracks[0].title, "Restored Audio");
-    assert.ok(servedAssets.includes(ownerTracks[0].sourceAssetId), "the fetched file is the restored track's source asset");
-    assert.equal(ownerTracks[0].durationSeconds, 6);
+    assert.deepEqual(
+      finalLibrary.tracks.map((track: { id: string }) => track.id).sort(),
+      [...restoredTrackIds].sort(),
+    );
+    assert.equal(ownerTracks.length, audioFormats.length, "only generated restore fixtures exist in the isolated library");
     assert.ok(apiRequests.some((request) => request.path === "/api/library/audio-backup/restore"));
     assert.ok(apiRequests.some((request) => request.path === "/api/library/tracks"));
     assert.ok(apiRequests.some((request) => request.path.startsWith("/api/library/sessions/")));
     assert.ok(apiRequests.some((request) => request.path.startsWith("/api/assets/")));
-    assert.equal(browserApiRequests.some((entry) => entry.includes("/api/library/audio-backup/restore") && !entry.startsWith("POST ")), false);
     for (const entry of browserApiRequests) {
-      const [method, requestPath] = entry.split(" ");
-      assert.ok(apiRequests.some((request) => request.method === method && request.path === requestPath),
-        `browser API request ${entry} was served by the isolated route harness`);
+      assert.equal(entry.origin, expectedApiOrigin, `browser API ${entry.path} stayed on the app origin`);
+      assert.ok(apiRequests.some((request) => request.method === entry.method && request.path === entry.path),
+        `browser API request ${entry.method} ${entry.path} was served by the isolated route harness`);
     }
     await browserContext.close();
   } finally {
