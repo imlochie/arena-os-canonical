@@ -38,17 +38,20 @@ if (process.argv.includes("--revision-rollback-only")) {
 }
 const waveyardMobileOnly = process.argv.includes("--waveyard-mobile-only");
 const waveyardMobileOnlyComplete = "WAVEYARD_MOBILE_ONLY_COMPLETE";
+const sessionModeRacesOnly = process.argv.includes("--session-mode-races-only");
 
-execFileSync(
-  process.execPath,
-  [new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
-  { stdio: "inherit" },
-);
-execFileSync(
-  process.execPath,
-  [new URL("./waveyard-arrangement-preview.mjs", import.meta.url).pathname],
-  { stdio: "inherit" },
-);
+if (!sessionModeRacesOnly) {
+  execFileSync(
+    process.execPath,
+    [new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
+    { stdio: "inherit" },
+  );
+  execFileSync(
+    process.execPath,
+    [new URL("./waveyard-arrangement-preview.mjs", import.meta.url).pathname],
+    { stdio: "inherit" },
+  );
+}
 
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
@@ -100,6 +103,16 @@ function makePcmWav(frequency, amplitude, durationSeconds = 8) {
   header.write("data", 36);
   header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
+}
+if (sessionModeRacesOnly) {
+  try {
+    const { verifySessionModeRaces } = await import("./waveyard-session-mode-races.mjs");
+    await verifySessionModeRaces({ page, context, base, makePcmWav, output });
+    assert.deepEqual(errors, [], "Mode-save races must not raise browser errors");
+  } finally {
+    await browser.close();
+  }
+  process.exit(0);
 }
 async function touchAt(locator, offsetX, offsetY) {
   const bounds = await locator.boundingBox();

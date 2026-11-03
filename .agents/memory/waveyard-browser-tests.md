@@ -71,9 +71,9 @@ Verify combined automatic fades against the live gain relationships, not the tim
 
 Serve seek-sensitive WAV fixtures with real byte-range responses, including `Accept-Ranges`, `Content-Length`, and `Content-Range` on 206 responses.
 
-**Why:** Chromium accepted decoded duration from a mocked WAV but kept returning a zero media position after nonzero seeks when the fixture did not support byte ranges. This falsely looked like a transport clock reset and an incorrect incoming beat offset.
+**Why:** Chromium accepted decoded duration from a mocked WAV but kept returning a zero media position after nonzero seeks when the fixture did not support byte ranges. This falsely looked like a transport clock reset and an incorrect incoming beat offset. After queue jumps, drift correction can also keep some stems near zero while others advance when range support is missing.
 
-**How to apply:** Implement requested byte slices in intercepted audio responses before diagnosing beat-offset failures. Seek through the visible transport control so its internal clock and the media element agree.
+**How to apply:** Implement requested byte slices in intercepted audio responses before diagnosing beat-offset or multi-stem clock failures. Seek through the visible transport control so its internal clock and the media element agree.
 
 When a Studio gesture times out, inspect the actual element under the touch point and the browser's earlier errors before changing timeline behavior.
 
