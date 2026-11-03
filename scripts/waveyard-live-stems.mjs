@@ -324,6 +324,20 @@ try {
           this.port.postMessage = (message, ...postArgs) => {
             if (message?.type === "load") {
               const channelCount = message.channels?.length ?? 0;
+              const firstChannel = channelCount > 0 ? new Float32Array(message.channels[0]) : new Float32Array();
+              let firstCrossing = null;
+              let lastCrossing = null;
+              let crossingCount = 0;
+              const sampleLimit = Math.min(firstChannel.length, Math.round(this.context.sampleRate * 0.25));
+              for (let index = 1; index < sampleLimit; index += 1) {
+                const previous = firstChannel[index - 1], current = firstChannel[index];
+                if (previous <= 0 && current > 0) {
+                  const crossing = index - 1 + (-previous / (current - previous));
+                  firstCrossing ??= crossing;
+                  lastCrossing = crossing;
+                  crossingCount += 1;
+                }
+              }
               window.audioProbe.workletLoads.push({
                 node: this,
                 context: this.context,
@@ -335,6 +349,9 @@ try {
                 startFrame: message.startFrame,
                 rate: message.rate,
                 pitchPreserving: message.pitchPreserving,
+                inputHz: crossingCount > 1 && lastCrossing !== firstCrossing
+                  ? this.context.sampleRate * (crossingCount - 1) / (lastCrossing - firstCrossing)
+                  : 0,
                 at: performance.now(),
               });
             } else if (message?.type === "seek") {
@@ -2565,12 +2582,22 @@ try {
   );
   assert.equal(await current.getByTestId("session-speed-value").innerText(), "1.00×");
   console.log("PASS: browser-measured pitch lock/follow, playhead continuity, donor alignment, and mobile control");
+  const pitchTransitionBaseline = { ...session };
+  const pitchTransitionExposeSeparatedSource = exposeSeparatedSource;
   const firstSessionTrack = session.tracks.find(item => item.id === "a");
   assert.ok(firstSessionTrack, "the transition pitch fixture has a first session track");
   const originalFirstTransition = firstSessionTrack.transition;
+  session.tracks = ["a", "b", "c"].map((id, position) => {
+    const item = tracks.find(track => track.id === id);
+    assert.ok(item, `the pitch transition fixture contains track ${id}`);
+    return { ...item, position, stemMix: { ...item.stemMix }, transition: { ...item.transition } };
+  });
+  const pitchFirstSessionTrack = session.tracks.find(item => item.id === "a");
+  assert.ok(pitchFirstSessionTrack);
   session.currentSessionTrackId = "a";
   session.positionSeconds = 0;
-  firstSessionTrack.transition = { ...originalFirstTransition, crossfadeSeconds: 6 };
+  pitchFirstSessionTrack.transition = { ...originalFirstTransition, crossfadeSeconds: 6 };
+  exposeSeparatedSource = false;
   session.swaps = [
     {
       id: "pitch-current-vocals",
@@ -2677,8 +2704,6 @@ try {
       originalB: analyserFor(sourceB, 16_384),
       outputA: analyserFor(masterA, 2_048),
       outputB: analyserFor(masterB, 2_048),
-      donorA: null,
-      donorB: null,
       outputRms: [],
     };
     window.transitionPitchProbe = probe;
@@ -2718,6 +2743,7 @@ try {
       && [...document.querySelectorAll('[data-testid="session-deck-a"] audio, [data-testid="session-deck-b"] audio')]
         .every(audio => audio.preservesPitch === true);
   });
+  await page.waitForTimeout(450);
   const transitionPitchState = await page.evaluate(() => {
     const probe = window.transitionPitchProbe;
     const activeWorkletFor = context => [...window.audioProbe.worklets].reverse().find(node =>
@@ -2725,14 +2751,6 @@ try {
     const workletA = activeWorkletFor(probe.contextA);
     const workletB = activeWorkletFor(probe.contextB);
     if (!workletA || !workletB) return null;
-    const analyserFor = (node, fftSize) => {
-      const analyser = node.context.createAnalyser();
-      analyser.fftSize = fftSize;
-      node.connect(analyser);
-      return analyser;
-    };
-    probe.donorA = analyserFor(workletA, 16_384);
-    probe.donorB = analyserFor(workletB, 16_384);
     const frequency = analyser => {
       const data = new Float32Array(analyser.fftSize);
       analyser.getFloatTimeDomainData(data);
@@ -2770,8 +2788,6 @@ try {
       )].map(audio => audio.playbackRate),
       sourceHzA: frequency(probe.originalA),
       sourceHzB: frequency(probe.originalB),
-      donorHzA: frequency(probe.donorA),
-      donorHzB: frequency(probe.donorB),
       alignmentA: alignment(workletA, "a-vocals", durationFor(workletA)),
       alignmentB: alignment(workletB, "b-drums", durationFor(workletB)),
       clocks: {
@@ -2784,9 +2800,15 @@ try {
       decksPlaying: ["a", "b"].map(deck => [...document.querySelectorAll(
         `[data-testid="session-deck-${deck}"] audio`,
       )].every(audio => !audio.paused)),
+      worklets: window.audioProbe.workletLoads.map(entry => ({
+        deck: entry.context === probe.contextA ? "a" : entry.context === probe.contextB ? "b" : "other",
+        duration: entry.duration,
+        channelCount: entry.channelCount,
+        pitchPreserving: entry.pitchPreserving,
+        inputHz: entry.inputHz,
+      })),
     };
   });
-  await page.waitForTimeout(450);
   await page.evaluate(() => window.stopTransitionOutputSampling());
   const transitionPitchElapsed = (Date.now() - pitchTransitionStartedAt) / 1000;
   assert.equal(transitionPitchState.pressed, "true", "pitch mode stays enabled through the live fade");
@@ -2799,9 +2821,14 @@ try {
   assert.ok(Math.abs(transitionPitchState.sourceHzA - 170) < 8
     && Math.abs(transitionPitchState.sourceHzB - 270) < 8,
   `both original decks retain source-frequency behavior: ${JSON.stringify(transitionPitchState)}`);
-  assert.ok(Math.abs(transitionPitchState.donorHzA - 230) < 12
-    && Math.abs(transitionPitchState.donorHzB - 370) < 12,
-  `live donors on both decks retain source pitch: ${JSON.stringify(transitionPitchState)}`);
+  const donorPcmEvidence = transitionPitchState.worklets.filter(worklet =>
+    worklet.deck === "a" || worklet.deck === "b");
+  assert.equal(donorPcmEvidence.length, 2, "each deck loads its own live donor into a pitch-preserving worklet");
+  assert.ok(donorPcmEvidence.every(worklet => worklet.pitchPreserving),
+    `pitch-preserving processing is enabled for both donors: ${JSON.stringify(donorPcmEvidence)}`);
+  assert.ok(Math.abs(donorPcmEvidence.find(worklet => worklet.deck === "a").inputHz - 230) < 4
+    && Math.abs(donorPcmEvidence.find(worklet => worklet.deck === "b").inputHz - 370) < 4,
+  `both donor inputs retain their selected source frequencies: ${JSON.stringify(donorPcmEvidence)}`);
   assert.ok(transitionPitchState.alignmentA !== null && transitionPitchState.alignmentA < 0.18
     && transitionPitchState.alignmentB !== null && transitionPitchState.alignmentB < 0.18,
   `both prepared donors remain aligned to their own deck clocks: ${JSON.stringify({
@@ -2848,10 +2875,8 @@ try {
   }),
   "the incoming track's prepared donor stays in its pitch-preserving live graph");
   console.log("PASS: pitch mode, donor clocks, source frequencies, and audible output stay aligned across a live deck transition");
-  session.currentSessionTrackId = "a";
-  session.positionSeconds = 0;
-  session.swaps = [];
-  firstSessionTrack.transition = originalFirstTransition;
+  Object.assign(session, pitchTransitionBaseline);
+  exposeSeparatedSource = pitchTransitionExposeSeparatedSource;
   if (pitchModesOnly) {
     await browser.close();
     process.exit(0);
@@ -2859,6 +2884,11 @@ try {
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   current = page.locator('[data-role="current"]');
   await current.getByText("Test a", { exact: true }).waitFor();
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 4 && audio.every(element => element.readyState === 4);
+  });
+  if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
 
   await current.getByTestId("restore-live-swap-vocals").click();
   await page.waitForTimeout(400);
@@ -2990,6 +3020,13 @@ try {
     await current.getByText(previousItem.track.title, { exact: true }).waitFor();
   }
   assert.equal(session.currentSessionTrackId, "a", "the cross-tab transition check starts from the first session entry");
+  await secondPage.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await secondPage.waitForFunction(() =>
+    document.querySelector('[data-role="current"] h3')?.textContent?.trim() === "Test a");
+  await secondPage.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 4 && audio.every(element => element.paused);
+  });
   await page.getByTestId("session-transition").click();
   const transitionMode = page.getByLabel("Mode");
   assert.deepEqual(

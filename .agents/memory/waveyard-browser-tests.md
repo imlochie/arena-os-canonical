@@ -86,3 +86,15 @@ A reloaded paused session may have prepared donor buffers without creating playb
 **Why:** A recovery check timed out looking for donor sources after reload even though the saved donor had been restored correctly; the transport was intentionally paused. Comparing a mirror's pre-preparation graph count with its post-cancellation count falsely reported duplicate audio.
 
 **How to apply:** Separate saved-selection assertions from audible-playback assertions. For uninterrupted recovery, compare the existing sources' identity, stop counts and gains alongside the advancing recipient clock; a missing pending indicator alone can precede asynchronous save/render completion.
+
+For pitch-mode transitions, keep assertions tied to physical deck identity while roles change from current/next. Confirm the standby donor is decoded but has no source before the fade, then verify both deck clocks, native pitch flags, donor worklet inputs, and combined master output during the fade before completing the handoff.
+
+**Why:** A single-deck pitch test and a passing WSOLA unit test do not prove that saved standby donors are prepared, that pitch mode reaches both transports, or that playback continues through a deck-role swap.
+
+**How to apply:** Map audio and worklet nodes to deck contexts rather than querying only `[data-role="current"]`. If measuring donor output pitch, tap the active donor gain after worklet migration and old-source retirement; source-media frequency, donor PCM input, and audible donor output are separate evidence.
+
+When a browser scenario temporarily reorders tracks or seeds donor swaps, restore the complete prior session fixture and source mode before later scenarios.
+
+**Why:** Resetting only the current track and queue can erase saved donor swaps that a subsequent live-swap check expects.
+
+**How to apply:** Snapshot all route-backed fields before fixture mutation and preserve shared array references where later fixture handlers depend on them. Restore the session and any separate-source mode before later scenarios.

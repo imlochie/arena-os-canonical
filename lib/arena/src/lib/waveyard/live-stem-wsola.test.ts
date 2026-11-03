@@ -44,6 +44,16 @@ test("live WSOLA keeps a donor tone's pitch at both session speed limits", () =>
   }
 });
 
+test("live WSOLA keeps lower donor pitches at an intermediate session speed", () => {
+  for (const frequency of [230, 370]) {
+    const output = render(frequency, 1.1, true);
+    assert.ok(
+      Math.abs(estimateFrequency(output) - frequency) < 4,
+      `1.1× should keep a ${frequency} Hz donor near its source pitch`,
+    );
+  }
+});
+
 test("live WSOLA pitch-follow mode changes tone frequency with session speed", () => {
   const slow = render(440, 0.8, false);
   const fast = render(440, 1.2, false);
