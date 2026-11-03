@@ -437,6 +437,40 @@ try {
     "conflicted UI removal preserves the newer committed source");
   report.push("UI stale removal was held at IndexedDB open while A committed an edit; release produced a visible conflict, retained the selected item, and preserved A's exact saved source.");
 
+  // Reopen after the UI conflict with both notification transports unavailable.
+  await pageB.addInitScript(() => {
+    window.BroadcastChannel = class {
+      constructor() { throw new Error("Injected unavailable notification channel"); }
+    };
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (key) {
+      return key === "arenaforge.imported-games.changed" ? null : getItem.call(this, key);
+    };
+  });
+  await pageB.reload();
+  await shelfTabOn(pageB);
+  await shelfRow(pageB, /remote-live\.html/).waitFor();
+  await clearOpsOn(pageB);
+  await page.evaluate(async moduleUrl => {
+    const storage = await import(moduleUrl);
+    const previous = await storage.loadImportedGames();
+    const target = previous.find(row => row.name === "ui-conflict-target.html");
+    await storage.saveImportedGameChanges(previous, [
+      ...previous.filter(row => row.name !== "remote-live.html" && row.id !== target.id),
+      { ...target, name: "focus-recovered.html", source: `${target.source}\n<!-- focus recovery -->` },
+    ]);
+  }, moduleImport);
+  // A background tab receives neither BroadcastChannel messages nor a readable
+  // localStorage token. Its lifecycle refresh must not depend on either one.
+  await shelfRow(pageB, /remote-live\.html/).waitFor();
+  assert.equal(await shelfRow(pageB, /focus-recovered\.html/).count(), 0);
+  await pageB.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await shelfRow(pageB, /focus-recovered\.html/).waitFor();
+  await shelfRow(pageB, /remote-live\.html/).waitFor({ state: "detached" });
+  assert(!(await opsOn(pageB)).some(op => ["put", "delete", "clear"].includes(op.method)),
+    "focus recovery must only read saved records, never clear or rewrite unrelated ROMs");
+  report.push("After reopening the conflicted tab with unavailable BroadcastChannel and unreadable storage notifications, a missed edit and removal reconciled on focus without any shelf mutation.");
+
   // Exercise real Vite-served storage module: synchronous clone error must abort clear+put transaction.
   const baseline = await records();
   await page.evaluate(async () => {

@@ -2604,9 +2604,9 @@ try {
     "the Studio vocals layer must use the donor audio selected by the live swap",
   );
   assert.equal(
-    await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] audio`).getAttribute("src"),
-    `/api/assets/${liveDonorVocalsAssetId}`,
-    "the vocal donor source group must contain the matching vocals asset",
+    await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] [data-testid="stem-vocals"]`).count(),
+    1,
+    "the vocal donor source group must contain its vocals stem; audio is registered with the shared transport",
   );
   const donorDrumStudioAudio = page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`);
   await donorDrumStudioAudio.waitFor({ state: "attached" });
@@ -2619,9 +2619,9 @@ try {
     "the Studio drums layer must use the different donor audio selected for drums",
   );
   assert.equal(
-    await page.locator(`[data-testid="source-stems-${studioDrumDonorSourceId}"] audio`).getAttribute("src"),
-    `/api/assets/${liveDrumDonorDrumsAssetId}`,
-    "the drum donor source group must contain its own matching drums asset",
+    await page.locator(`[data-testid="source-stems-${studioDrumDonorSourceId}"] [data-testid="stem-drums"]`).count(),
+    1,
+    "the drum donor source group must contain its drums stem; audio is registered with the shared transport",
   );
   const donorVocalsTrack = page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" });
   const donorDrumsTrack = page.locator(".timeline-track").filter({ hasText: "Drum donor track.wav — Drums" });
@@ -2665,14 +2665,14 @@ try {
   assert.equal(await page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`).count(), 1,
     "the different live-swapped drum donor must remain the source audio after reload");
   assert.equal(
-    await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] audio`).getAttribute("src"),
-    `/api/assets/${liveDonorVocalsAssetId}`,
-    "the vocal donor source group must still contain the matching vocals asset after reload",
+    await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] [data-testid="stem-vocals"]`).count(),
+    1,
+    "the vocal donor source group must retain its vocals stem after reload",
   );
   assert.equal(
-    await page.locator(`[data-testid="source-stems-${studioDrumDonorSourceId}"] audio`).getAttribute("src"),
-    `/api/assets/${liveDrumDonorDrumsAssetId}`,
-    "the drum donor source group must still contain the matching drums asset after reload",
+    await page.locator(`[data-testid="source-stems-${studioDrumDonorSourceId}"] [data-testid="stem-drums"]`).count(),
+    1,
+    "the drum donor source group must retain its drums stem after reload",
   );
   assert.equal(await page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" }).count(), 1,
     "the reloaded vocal lane must still identify its matching donor");

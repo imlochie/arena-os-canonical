@@ -15,6 +15,12 @@ Refresh changed records and preserve unchanged game-object identities rather tha
 
 **How to apply:** Ignore self-notifications, read announced IDs for ordinary peer updates, and reconcile missed background events when needed. Serialize partial refreshes so one notification cannot cancel another changed ID. Preserve the existing object for an unchanged record.
 
+Focus recovery must not depend on a readable notification token.
+
+**Why:** Browser notification transports can be unavailable or suspended, and a tab's own later write can mask an earlier peer change in the last-signal slot. A matching or absent token does not prove the shelf is current.
+
+**How to apply:** Treat returning to the tab as a separate reconciliation trigger, retaining the same dirty-work protections as notification refreshes.
+
 Concurrency metadata alone does not justify a destructive browser-database migration.
 
 **Why:** Existing shelf clients and regression tools share the established database contract; a version bump requires coordinated legacy-client handling.

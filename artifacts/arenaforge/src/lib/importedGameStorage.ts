@@ -47,7 +47,6 @@ export function subscribeImportedGamesChanged(notify: (ids?: string[]) => void):
     try { return JSON.parse(localStorage.getItem(SIGNAL_KEY) ?? "null"); } catch { return null; }
   };
   seenToken = readSignal()?.token;
-  let focusedToken = seenToken;
   const receive = (signal: unknown) => {
     if (!signal || typeof signal !== "object") return;
     const value = signal as { writer?: unknown; token?: unknown; ids?: unknown };
@@ -70,10 +69,10 @@ export function subscribeImportedGamesChanged(notify: (ids?: string[]) => void):
     }
   };
   const onFocus = () => {
-    const signal = readSignal();
-    if (!signal || signal.token === focusedToken) return;
-    focusedToken = signal.token;
-    if (signal.writer !== writerId) notify(); // Reconcile any missed background events.
+    // Signals are advisory: storage can be unavailable, a suspended channel can
+    // miss messages, or our own later write can mask an earlier peer signal.
+    // Reconcile on return even when there is no readable notification token.
+    notify();
   };
   window.addEventListener("storage", onStorage);
   window.addEventListener("focus", onFocus);
