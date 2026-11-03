@@ -201,6 +201,10 @@ before(async () => {
     appliedMigrations.rows.some((row) => row.name === "0021_repair_legacy_library_track_duplicates.sql"),
     "legacy duplicate-track repair must apply",
   );
+  assert.ok(
+    appliedMigrations.rows.some((row) => row.name === "0023_duplicate_track_metadata_preference.sql"),
+    "the forward metadata-preference update must apply after the original duplicate repair",
+  );
 
   // --- env BEFORE any app module import (db reads DATABASE_URL at load) ---
   process.env.DATABASE_URL = `postgresql://arena:arena-test@127.0.0.1:${port}/arena_library_test`;
@@ -557,9 +561,9 @@ test("legacy duplicate repair backfills identity and preserves every listening r
       .insert(schema.tracks)
       .values({
         ownerId: REPAIR_OWNER,
-        title,
-        artist: "Legacy Artist",
-        album: "Legacy Album",
+        title: index === 0 ? "Original keeper title" : "Tagged upload title",
+        artist: index === 0 ? "Legacy Artist" : "Tagged artist",
+        album: index === 0 ? "" : "Tagged album",
         labels: JSON.stringify([`label-${index}`]),
         rating: index + 2,
         playCount: index + 3,
@@ -663,6 +667,9 @@ test("legacy duplicate repair backfills identity and preserves every listening r
   assert.equal(remainingTracks.length, 2);
   const repairedKeeper = remainingTracks.find((track) => track.id === keeper.id)!;
   assert.equal(repairedKeeper.sourceChecksumSha256, checksum);
+  assert.equal(repairedKeeper.title, "Tagged upload title", "richer conflicting tags win without changing the keeper ID");
+  assert.equal(repairedKeeper.artist, "Tagged artist");
+  assert.equal(repairedKeeper.album, "Tagged album", "a blank keeper album is filled from the richer duplicate");
   assert.equal(repairedKeeper.playCount, 7, "play history is combined");
   assert.equal(repairedKeeper.rating, 3, "the strongest saved rating is retained");
   assert.deepEqual(JSON.parse(repairedKeeper.labels!), ["label-0", "label-1"]);
@@ -694,6 +701,113 @@ test("legacy duplicate repair backfills identity and preserves every listening r
   const repeatedRepair = await service.repairDuplicateLibraryTracks();
   assert.equal(repeatedRepair.mergedTrackCount, 0, "repair is safe to run again");
   assert.equal((await db.db.select().from(schema.tracks).where(eq(schema.tracks.ownerId, REPAIR_OWNER))).length, 2);
+});
+
+test("duplicate metadata keeps populated keeper values over blanks and resolves matching ties deterministically", async () => {
+  const ownerId = randomUUID();
+  const groups = [
+    {
+      checksum: "c".repeat(64),
+      rows: [
+        { title: "Known song", artist: "Known artist", album: "Known album" },
+        { title: "  ", artist: "", album: "\t" },
+      ],
+      expected: { title: "Known song", artist: "Known artist", album: "Known album" },
+    },
+    {
+      checksum: "d".repeat(64),
+      rows: [
+        { title: "Same title", artist: "Same artist", album: "Keeper album" },
+        { title: "Same title", artist: "Same artist", album: "Conflicting album" },
+      ],
+      expected: { title: "Same title", artist: "Same artist", album: "Keeper album" },
+    },
+  ];
+  const keepers: Array<{ id: string; checksum: string; expected: { title: string; artist: string; album: string } }> = [];
+  for (const group of groups) {
+    let keeperId = "";
+    for (const [index, metadata] of group.rows.entries()) {
+      const [project] = await db.db.insert(schema.projects).values({
+        ownerId, title: `Metadata fixture ${group.checksum[0]} ${index}`,
+        kind: "library", visibility: "private",
+      }).returning({ id: schema.projects.id });
+      const [source] = await db.db.insert(schema.sourceAssets).values({
+        projectId: project.id, originalFilename: `metadata-${group.checksum[0]}-${index}.wav`,
+        mimeType: "audio/wav", storageKey: `${project.id}/source.wav`,
+        checksumSha256: group.checksum, durationSeconds: 12, sampleRate: 44_100,
+        channels: 2, codec: "pcm_s16le", bitrate: 1_411_200, fileSizeBytes: 2_116_800,
+      }).returning({ id: schema.sourceAssets.id });
+      const [track] = await db.db.insert(schema.tracks).values({
+        ownerId, title: metadata.title, artist: metadata.artist, album: metadata.album,
+        sourceAssetId: source.id, projectId: project.id, durationSeconds: 12,
+        createdAt: new Date(Date.UTC(2024 + index, 0, 1)),
+      }).returning({ id: schema.tracks.id });
+      if (index === 0) keeperId = track.id;
+    }
+    keepers.push({ id: keeperId, checksum: group.checksum, expected: group.expected });
+  }
+
+  const repair = await service.repairDuplicateLibraryTracks();
+  assert.ok(repair.mergedTrackCount >= groups.length);
+  const repaired = await db.db.select().from(schema.tracks)
+    .where(eq(schema.tracks.ownerId, ownerId));
+  assert.equal(repaired.length, groups.length, "each matching-checksum pair resolves to one stable track");
+  for (const keeper of keepers) {
+    const row = repaired.find(track => track.id === keeper.id);
+    assert.ok(row, "the oldest track identity survives metadata consolidation");
+    assert.equal(row.sourceChecksumSha256, keeper.checksum);
+    assert.deepEqual(
+      { title: row.title, artist: row.artist, album: row.album },
+      keeper.expected,
+    );
+  }
+});
+
+test("forward metadata migration repairs duplicates in an already-migrated desktop", async () => {
+  const ownerId = randomUUID();
+  const checksum = "e".repeat(64);
+  const entries = [
+    { title: "Old title", artist: "Old artist", album: "" },
+    { title: "Tagged title", artist: "Tagged artist", album: "Tagged album" },
+  ];
+  let keeperId = "";
+  for (const [index, metadata] of entries.entries()) {
+    const [project] = await db.db.insert(schema.projects).values({
+      ownerId, title: `Upgrade metadata fixture ${index}`,
+      kind: "library", visibility: "private",
+    }).returning({ id: schema.projects.id });
+    const [source] = await db.db.insert(schema.sourceAssets).values({
+      projectId: project.id, originalFilename: `upgrade-metadata-${index}.wav`,
+      mimeType: "audio/wav", storageKey: `${project.id}/source.wav`,
+      checksumSha256: checksum, durationSeconds: 12, sampleRate: 44_100,
+      channels: 2, codec: "pcm_s16le", bitrate: 1_411_200, fileSizeBytes: 2_116_800,
+    }).returning({ id: schema.sourceAssets.id });
+    const [track] = await db.db.insert(schema.tracks).values({
+      ownerId, ...metadata, sourceAssetId: source.id, projectId: project.id,
+      durationSeconds: 12, createdAt: new Date(Date.UTC(2023 + index, 0, 1)),
+    }).returning({ id: schema.tracks.id });
+    if (index === 0) keeperId = track.id;
+  }
+
+  assert.equal(
+    (await db.db.select().from(schema.tracks).where(eq(schema.tracks.ownerId, ownerId))).length,
+    2,
+  );
+  await client!.query(
+    "delete from arena_schema_migrations where name = $1",
+    ["0023_duplicate_track_metadata_preference.sql"],
+  );
+  const { migrate } = await import("../../../../../../desktop/database.mjs");
+  await migrate(client!, path.join(repoRoot, "desktop-migrations"));
+
+  const repaired = await db.db.select().from(schema.tracks)
+    .where(eq(schema.tracks.ownerId, ownerId));
+  assert.equal(repaired.length, 1, "the forward migration consolidates existing duplicate rows");
+  assert.equal(repaired[0].id, keeperId, "the oldest track ID remains stable");
+  assert.deepEqual(
+    { title: repaired[0].title, artist: repaired[0].artist, album: repaired[0].album },
+    { title: "Tagged title", artist: "Tagged artist", album: "Tagged album" },
+  );
 });
 
 test("track detail resolves source, stems, analysis, and the studio handoff project", async () => {

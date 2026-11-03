@@ -287,7 +287,10 @@ export interface DuplicateTrackRepairResult {
  * Repair tracks created before checksum-locked intake. The migration-owned
  * database function is also run during desktop upgrades, so calling this is
  * safe to repeat after an interrupted upgrade or when repairing an existing
- * library on demand.
+ * library on demand. Migration 0023 keeps the oldest track identity, prefers
+ * the most complete nonblank title/artist/album candidate, and breaks ties in
+ * favor of the keeper before older candidates. Blank candidates never erase
+ * populated metadata.
  */
 export async function repairDuplicateLibraryTracks(): Promise<DuplicateTrackRepairResult> {
   const result = await db.execute(sql`
