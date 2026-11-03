@@ -638,7 +638,10 @@ try {
       }
       session.swaps = session.swaps.filter(s => !(s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType));
       session.swaps.push({ ...body, id: donorReplacementOnly || sameStemSwapsOnly ? `swap-${++donorSwapSequence}` : `swap-${body.stemType}`,
-        toStemAssetId: body.toStemAssetId ?? `${body.toTrackId}-${body.stemType}`,
+        toStemAssetId: body.toStemAssetId
+          ?? (body.toTrackId === "d"
+            ? externalStemKeys.find(stem => stem.stemType === body.stemType)?.id
+            : `${body.toTrackId}-${body.stemType}`),
         fromTrackId: "a", createdAt: new Date().toISOString(),
         donorTrack: body.toTrackId === "d" ? { id: "d", title: "Test D", stems: externalStemKeys } : undefined });
       if (sameStemSave) {
@@ -3073,6 +3076,7 @@ try {
       originalAnalyser, donorAnalyser, outputAnalyser, context,
       donorDuration: donor.buffer.duration,
       donorChannelCount: donor.buffer.numberOfChannels,
+      donorChannel: donorInput?.nextNode,
     };
     window.readPitchMeters = () => {
       const estimate = analyser => {
@@ -3213,6 +3217,136 @@ try {
   );
   assert.equal(await current.getByTestId("session-speed-value").innerText(), "1.00×");
   console.log("PASS: browser-measured pitch lock/follow, playhead continuity, donor alignment, and mobile control");
+
+  const pitchModeSwapBaseline = session.swaps.map(swap => ({ ...swap }));
+  await current.getByTestId("seek-deck-0").fill("1");
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')]
+      .find(element => new URL(element.src).pathname.endsWith("/a-drums"));
+    return audio && audio.currentTime < 1.5;
+  });
+  await setPlaybackRate(1.2);
+  await pitchLockButton.click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="session-pitch-lock"]')?.getAttribute("aria-pressed") === "true"
+      && Array.from(document.querySelectorAll('[data-role="current"] audio')).every(audio => audio.preservesPitch === true),
+  );
+  const lockedDonorWorkletCount = await page.evaluate(() => window.audioProbe.workletLoads.length);
+  const captureLockedLiveAction = async (action) => {
+    const start = await page.evaluate(() => {
+      window.startPitchOutputSampling();
+      return {
+        playhead: document.querySelector('[data-role="current"] audio')?.currentTime ?? 0,
+        at: performance.now(),
+      };
+    });
+    try {
+      await action();
+      await page.waitForTimeout(350);
+      const result = await page.evaluate(startedAt => {
+        const elapsed = (performance.now() - startedAt) / 1000;
+        window.stopPitchOutputSampling();
+        return {
+          ...window.readPitchMeters(),
+          playhead: document.querySelector('[data-role="current"] audio')?.currentTime ?? 0,
+          outputRms: [...window.pitchOutputSamples],
+          pitchLock: document.querySelector('[data-testid="session-pitch-lock"]')?.getAttribute("aria-pressed"),
+          speed: document.querySelector('[data-testid="session-speed-value"]')?.textContent,
+          elapsed,
+        };
+      }, start.at);
+      assert.equal(result.pitchLock, "true");
+      assert.equal(result.speed, "1.20×");
+      assert.ok(Math.abs((result.playhead - start.playhead) - result.elapsed * 1.2) < 0.35,
+        `the shared session playhead continues at 1.2×: ${JSON.stringify({ before: start.playhead, ...result })}`);
+      assert.ok(result.outputRms.length >= 8 && Math.min(...result.outputRms) > 0.0001,
+        `the current mix remains audible through live preparation: ${JSON.stringify(result.outputRms)}`);
+      assert.ok(Math.abs(result.originalHz - originalHz) < 10,
+        `the original layer retains its source pitch during preparation: ${JSON.stringify(result)}`);
+      return result;
+    } finally {
+      await page.evaluate(() => window.stopPitchOutputSampling());
+    }
+  };
+
+  const replacementPitch = await captureLockedLiveAction(async () => {
+    await chooseLiveSource("vocals", "c");
+    await page.waitForFunction(beforeLoads => {
+      const channel = window.pitchMeters.donorChannel;
+      const worklet = [...window.audioProbe.worklets].reverse().find(node =>
+        node.probeConnections.some(input => input.nextNode === channel));
+      return window.audioProbe.workletLoads.length > beforeLoads
+        && worklet
+        && !document.querySelector('[data-testid="live-swap-pending-vocals"]');
+    }, lockedDonorWorkletCount);
+    const measured = await page.evaluate(() => {
+      const worklet = [...window.audioProbe.worklets].reverse().find(node =>
+        node.probeConnections.some(input => input.nextNode === window.pitchMeters.donorChannel));
+      if (worklet && !worklet.probeConnections.includes(window.pitchMeters.donorAnalyser)) {
+        worklet.connect(window.pitchMeters.donorAnalyser);
+      }
+      return {
+        activeWorklet: Boolean(worklet),
+        ...window.readPitchMeters(),
+      };
+    });
+    assert.equal(measured.activeWorklet, true, "the replacement donor is attached to the live pitch-preserving graph");
+    assert.equal(typeof measured.donorHz, "number");
+  });
+  assert.ok(Math.abs(replacementPitch.donorHz - 330) < 12,
+    `the replacement donor remains at its 330 Hz source pitch at 1.2×: ${JSON.stringify(replacementPitch)}`);
+  assert.equal(session.swaps.find(swap =>
+    swap.sessionTrackId === tempoCurrentTrack.id && swap.stemType === "vocals")?.toTrackId, "c",
+  "the replacement donor is committed before the failure check");
+
+  const donorLoadsBeforeFailedReplacement = await page.evaluate(() => window.audioProbe.workletLoads.length);
+  const failedAssetsBeforePitchLock = failedAssetRequests;
+  const pitchFailureAssetId = "d-vocals-pitch-failure";
+  const failedDonorStem = externalStemKeys.find(stem => stem.stemType === "vocals");
+  assert.ok(failedDonorStem, "the external failure fixture has a vocal stem");
+  const originalFailedDonorStemId = failedDonorStem.id;
+  failedDonorStem.id = pitchFailureAssetId;
+  failAsset = pitchFailureAssetId;
+  let failedPreparationPitch;
+  try {
+    failedPreparationPitch = await captureLockedLiveAction(async () => {
+      await chooseLiveSource("vocals", "d");
+      await page.waitForFunction(assetId =>
+        window.liveStemAssetFetchTrace.includes(`/api/assets/${assetId}`),
+      pitchFailureAssetId, { timeout: 4_000 });
+      await current.getByRole("alert").filter({ hasText: /previous layer was kept/ }).waitFor({ timeout: 4_000 });
+      failAsset = null;
+      await page.waitForTimeout(100);
+      assert.ok(failedAssetRequests > failedAssetsBeforePitchLock,
+        "the failed-preparation route actually rejected the new donor request");
+      assert.equal(await page.evaluate(() => window.audioProbe.workletLoads.length), donorLoadsBeforeFailedReplacement,
+        "a failed preparation does not install a new donor worklet");
+      const measured = await page.evaluate(() => window.readPitchMeters());
+      assert.ok(Math.abs(measured.donorHz - 330) < 12,
+        `the previously audible donor keeps its pitch after preparation fails: ${JSON.stringify(measured)}`);
+    });
+  } finally {
+    failAsset = null;
+    failedDonorStem.id = originalFailedDonorStemId;
+  }
+  assert.ok(replacementPitch.outputRms.length >= 8);
+  assert.ok(Math.abs(failedPreparationPitch.originalHz - originalHz) < 10
+    && Math.abs(failedPreparationPitch.donorHz - 330) < 12,
+  `the retained mix keeps both source pitches after donor preparation fails: ${JSON.stringify(failedPreparationPitch)}`);
+  assert.equal(session.swaps.find(swap =>
+    swap.sessionTrackId === tempoCurrentTrack.id && swap.stemType === "vocals")?.toTrackId, "c",
+  "a failed replacement keeps the previously saved donor");
+  await current.getByTestId("session-speed-reset").click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="session-speed-value"]')?.textContent === "1.00×",
+  );
+  await pitchLockButton.click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="session-pitch-lock"]')?.getAttribute("aria-pressed") === "false"
+      && Array.from(document.querySelectorAll('[data-role="current"] audio')).every(audio => audio.preservesPitch === false),
+  );
+  session.swaps = pitchModeSwapBaseline;
+  console.log("PASS: pitch-locked donor replacement and failed preparation preserve source pitch, audible output, and the shared playhead");
 
   const pitchTransitionBaseline = { ...session };
   const pitchTransitionExposeSeparatedSource = exposeSeparatedSource;
