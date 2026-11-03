@@ -4033,6 +4033,11 @@ export default function SessionExperience({
                   <input id="sess-fade" type="range" min={0} max={15} step={0.5} value={transition.crossfadeSeconds} onChange={(event) => setTransition({ crossfadeSeconds: Number(event.target.value) })} />
                   <span>{transition.crossfadeSeconds === 0 ? "cut" : `${transition.crossfadeSeconds.toFixed(1)}s`}</span>
                 </div>
+                {phase === "fading" && (
+                  <small className="sess-transition-note" data-testid="session-fade-change-note" role="status">
+                    This fade keeps its starting settings. Changes save with this track.
+                  </small>
+                )}
                 <label className="sess-keep-option" title="Uses the selected transition mode and length at the end of each song.">
                   <input
                     type="checkbox"

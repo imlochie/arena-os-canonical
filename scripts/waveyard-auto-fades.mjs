@@ -156,8 +156,9 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
 
   for (const mode of ["source-to-stems", "stems-to-stems"]) {
     const from = mode === "source-to-stems" ? sourceOnlyTrack : tracks[0];
+    const initialFadeSeconds = mode === "source-to-stems" ? 5 : 2;
     const outgoing = { ...from, analysis: { ...from.analysis, bpm: 128, beatGridMs: null },
-      transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
+      transition: { mode: "manual", crossfadeSeconds: initialFadeSeconds, keepStems: [] },
       stemMix: { ...MIX } };
     const incoming = { ...tracks[1], analysis: { ...tracks[1].analysis, bpm: 128, beatGridMs: null },
       transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
@@ -200,8 +201,21 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
       await swapAndVerify(current, "vocals", `${mode} outgoing pre-fade swap`);
     }
     await installSamples(mode);
-    await current.getByTestId("seek-deck-0").fill("17.5");
-    await page.getByRole("button", { name: "Finish", exact: true }).waitFor({ timeout: 8000 });
+    await current.getByTestId("seek-deck-0").fill(String(from.track.durationSeconds - initialFadeSeconds - 0.5));
+    const finishFade = page.getByRole("button", { name: "Finish", exact: true });
+    await finishFade.waitFor({ timeout: 8000 });
+    if (mode === "source-to-stems") {
+      const fadeLength = page.locator("#sess-fade");
+      assert.equal(await page.getByTestId("session-fade-change-note").innerText(),
+        "This fade keeps its starting settings. Changes save with this track.");
+      await fadeLength.fill("0.5");
+      assert.equal(await fadeLength.inputValue(), "0.5", "the edited value is visible during the active fade");
+      await page.waitForTimeout(1250);
+      assert.ok(await finishFade.isVisible(), "a shorter saved value must not truncate the fade already in progress");
+      assert.match(await current.innerText(), /Test a/, "the outgoing track remains current until its original fade completes");
+      assert.equal(session.tracks.find(item => item.id === "a")?.transition.crossfadeSeconds, 0.5,
+        "the changed per-track setting is saved while the current fade keeps running");
+    }
     const configuredFaders = await page.evaluate(({ toDeck }) => {
       const fader = asset => {
         const source = window.audioProbe.sources.find(s => new URL(s.mediaElement.src).pathname.endsWith(`/${asset}`));
@@ -257,6 +271,11 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
       gains: window.audioProbe.masterGains.map(g => g.gain.value),
     }));
     assert.match(handoff.current, /Test b/, `${mode}: automatic fade hands off to queued b without manual Finish`);
+    if (mode === "source-to-stems") {
+      await page.waitForFunction(() => document.querySelector("#sess-fade")?.value === "2", null, { timeout: 3000 });
+      assert.equal(await page.locator("#sess-fade").inputValue(), "2",
+        "after handoff, the incoming track shows its own saved fade length");
+    }
     const outgoingBase = stats(samples, fromDeck, fadeStart - 500, fadeStart - 100);
     const steadyRows = samples.slice(sampleCountAtHandoff)
       .map(s => s.rows.find(r => r.deck === toDeck))
@@ -286,6 +305,10 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
     await page.screenshot({ path: `${artifacts}/${mode}.png`, fullPage: true });
     report.scenarios.push({
       mode, outgoing: "Test a", incoming: "Test b", bpm: 128, beatGrid: null, master: 0.63,
+      configuredFadeSeconds: initialFadeSeconds,
+      ...(mode === "source-to-stems" ? {
+        midFadeSettingEdit: { savedSeconds: 0.5, activeFadeKeptStartingLength: true, incomingTrackLengthSeconds: 2 },
+      } : {}),
       persistedUnequalStemMix: MIX, fade: fadeMetrics,
       steadyPcm: { outgoing: outgoingBase, incoming: incomingSteady },
       postHandoff: handoff, postHandoffSwap: afterSwap,

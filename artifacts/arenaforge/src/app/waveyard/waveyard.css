@@ -738,6 +738,7 @@
 .sess-transition{border:1px solid var(--line);background:var(--panel);padding:14px;display:grid;gap:10px}
 .sess-transition-row{display:grid;grid-template-columns:70px 1fr auto;gap:8px;align-items:center;font-size:13px;color:var(--muted)}
 .sess-transition-row select{background:#11130e;border:1px solid var(--line);color:var(--ink);padding:6px 8px;font-size:13px}
+.sess-transition-note{margin:0;color:var(--muted);font-size:11px;line-height:1.4}
 .sess-transition-actions{display:flex;gap:8px;flex-wrap:wrap}
 .sess-keep{border:1px dashed var(--line);padding:8px 10px;display:flex;flex-wrap:wrap;gap:10px}
 .sess-keep legend{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;padding:0 4px}

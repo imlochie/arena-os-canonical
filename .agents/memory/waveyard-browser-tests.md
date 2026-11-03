@@ -87,6 +87,12 @@ Verify combined automatic fades against the live gain relationships, not the tim
 
 **How to apply:** Normalize outgoing channel gains by their saved faders and compare their effective envelope with the live incoming deck gain. Measure per-deck PCM and compare quadrature energy against each deck's own steady baseline, with explicit window tolerances. Check incoming faders again after handoff and confirm a fresh donor actually starts through nonzero channel and master gains. Describe summed per-deck peak bounds and synthetic-fixture evidence accurately; neither proves arbitrary loud music or physical-device audio behavior.
 
+For configured fade-duration checks, place the cue far enough before the track end to leave time for the full fade after browser scheduling delay.
+
+**Why:** Automatic fades are intentionally clamped to the remaining track duration when the cue callback arrives late. A cue placed only half a second before its nominal start can therefore produce a shorter, valid fade and make a duration-regression assertion misleading.
+
+**How to apply:** Give the fixture ample track-time headroom, change the saved fade length during the active transition, and verify the current fade continues independently while the edited value persists for that track.
+
 Serve seek-sensitive WAV fixtures with real byte-range responses, including `Accept-Ranges`, `Content-Length`, and `Content-Range` on 206 responses.
 
 **Why:** Chromium accepted decoded duration from a mocked WAV but kept returning a zero media position after nonzero seeks when the fixture did not support byte ranges. This falsely looked like a transport clock reset and an incorrect incoming beat offset. After queue jumps, drift correction can also keep some stems near zero while others advance when range support is missing.
