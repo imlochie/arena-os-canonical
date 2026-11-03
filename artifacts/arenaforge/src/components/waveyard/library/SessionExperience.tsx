@@ -6,6 +6,7 @@ import type { LibraryTrackSummary } from "@workspace/api-client-react";
 import {
   useStemTransport,
   normalizeSessionPlaybackRate,
+  supportsLiveKeyMatching,
   supportsSessionPitchModes,
   SESSION_PLAYBACK_RATE_MAX,
   SESSION_PLAYBACK_RATE_MIN,
@@ -17,6 +18,7 @@ import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import CamelotWheel from "./CamelotWheel";
+import SessionKeyMatchingControls from "./SessionKeyMatchingControls";
 import LiveStemSwapPicker, {
   type LiveStemDonorOption,
   type LiveStemPreparationOption,
@@ -39,6 +41,11 @@ import {
   type TransitionConfig,
   type TransitionMode,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
+import {
+  resolveSessionKeyMatch,
+  shiftMusicalKey,
+  type SessionKeyMode,
+} from "@workspace/arena/lib/waveyard/library/session-key-matching";
 import {
   defaultPerformance,
   PERFORMANCE_MINIMUM_LEAD_SECONDS,
@@ -320,6 +327,8 @@ function SessionDeck({
   pitchLockBusy,
   pitchLockMessage,
   onPitchPreservingChange,
+  keyShiftSemitones,
+  onKeyShiftFailure,
   onPerformanceAction,
   onSnapChange,
   onInstantRestoreChange,
@@ -366,6 +375,8 @@ function SessionDeck({
   pitchLockBusy: boolean;
   pitchLockMessage: string | null;
   onPitchPreservingChange: (enabled: boolean) => void;
+  keyShiftSemitones: number;
+  onKeyShiftFailure: (itemId: string | null, message: string) => void;
   onPerformanceAction: (action: PerformanceAction) => void;
   onSnapChange: (snap: PerformanceSnap) => void;
   onInstantRestoreChange: (enabled: boolean) => void;
@@ -424,6 +435,22 @@ function SessionDeck({
   useEffect(() => {
     transport.setPlaybackRate(playbackRate);
   }, [playbackRate, transport.setPlaybackRate]);
+  useEffect(() => {
+    let stale = false;
+    const applyKeyShift = async () => {
+      try {
+        if (keyShiftSemitones !== 0 && assetIds.length > 0) transport.prepareChannels(assetIds);
+        await transport.setKeyShiftSemitones(keyShiftSemitones);
+      } catch (error) {
+        if (!stale) onKeyShiftFailure(
+          item?.id ?? null,
+          error instanceof Error ? error.message : "Live key matching could not be applied.",
+        );
+      }
+    };
+    void applyKeyShift();
+    return () => { stale = true; };
+  }, [assetIds, item?.id, keyShiftSemitones, onKeyShiftFailure, transport.prepareChannels, transport.setKeyShiftSemitones]);
   useEffect(() => {
     setCuePosition(0);
     setSelectedLoopBeats(null);
@@ -1228,9 +1255,20 @@ export default function SessionExperience({
   const [playbackRate, setPlaybackRate] = useState(1);
   const playbackRateRef = useRef(playbackRate);
   const [pitchModesAvailable] = useState(() => supportsSessionPitchModes());
+  const [liveKeyMatchingAvailable] = useState(() => supportsLiveKeyMatching());
   const [pitchPreserving, setPitchPreserving] = useState(false);
   const [pitchLockBusy, setPitchLockBusy] = useState(false);
   const [pitchLockMessage, setPitchLockMessage] = useState<string | null>(null);
+  const [keyMode, setKeyMode] = useState<SessionKeyMode>("off");
+  const [keyShiftByTrack, setKeyShiftByTrack] = useState<Record<string, number>>({});
+  const [keyMatchBusy, setKeyMatchBusy] = useState(false);
+  const [keyMatchError, setKeyMatchError] = useState<string | null>(null);
+  useEffect(() => {
+    setKeyMode("off");
+    setKeyShiftByTrack({});
+    setKeyMatchBusy(false);
+    setKeyMatchError(null);
+  }, [sessionId]);
   const [autoPlayId, setAutoPlayId] = useState<string | null>(null);
   const [autoCrossfadeEnabled, setAutoCrossfadeEnabled] = useState(() => {
     try {
@@ -1271,6 +1309,9 @@ export default function SessionExperience({
       setPitchLockBusy(false);
     }
   }, [activeDeck, pitchLockBusy, pitchModesAvailable, pitchPreserving]);
+  const reportKeyShiftFailure = useCallback((_itemId: string | null, message: string) => {
+    setKeyMatchError(`${message} The current mix and playhead were kept.`);
+  }, []);
   const pendingPerformanceRef = useRef<PendingPerformance | null>(null);
   const mixesRef = useRef(mixes);
   const transitionsRef = useRef(transitions);
@@ -1458,6 +1499,82 @@ export default function SessionExperience({
     () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds),
     [session, nextItem, library, cancelledSwapIds],
   );
+  const currentKeyShift = currentItem ? keyShiftByTrack[currentItem.id] ?? 0 : 0;
+  const leadEffectiveKey = currentItem
+    ? shiftMusicalKey(currentItem.analysis?.musicalKey, currentKeyShift)
+    : null;
+  const nextKeyMatch = nextItem
+    ? resolveSessionKeyMatch(keyMode, leadEffectiveKey, nextItem.analysis?.musicalKey)
+    : {
+        semitones: null,
+        sourceKey: null,
+        targetKey: null,
+        reason: "Choose a next track to calculate a key match.",
+      };
+  const nextKeyShift = nextKeyMatch.semitones ?? 0;
+  useEffect(() => {
+    if (!nextItem || nextKeyMatch.semitones === null) return;
+    setKeyShiftByTrack((previous) => previous[nextItem.id] === nextKeyMatch.semitones
+      ? previous
+      : { ...previous, [nextItem.id]: nextKeyMatch.semitones! });
+  }, [nextItem, nextKeyMatch.semitones]);
+  const changeKeyMatchingMode = useCallback(async (requestedMode: SessionKeyMode) => {
+    if (keyMatchBusy) return;
+    if (!currentItem || !nextItem) {
+      setKeyMatchError("Choose a current and next track before changing key modes.");
+      return;
+    }
+    const matchingMode = requestedMode === "camelot" || requestedMode === "match";
+    const requestedMatch = resolveSessionKeyMatch(
+      requestedMode,
+      currentItem.analysis?.musicalKey,
+      nextItem.analysis?.musicalKey,
+    );
+    if (matchingMode && (!liveKeyMatchingAvailable || requestedMatch.semitones === null)) {
+      setKeyMatchError(!liveKeyMatchingAvailable
+        ? "Live key matching needs AudioWorklet support in a secure browser context."
+        : requestedMatch.reason);
+      return;
+    }
+
+    const otherDeck = activeDeck === 0 ? 1 : 0;
+    const previousShifts = [
+      { deck: activeDeck, item: currentItem, semitones: keyShiftByTrack[currentItem.id] ?? 0 },
+      { deck: otherDeck, item: nextItem, semitones: keyShiftByTrack[nextItem.id] ?? 0 },
+    ] as const;
+    const requestedShifts = [
+      { deck: activeDeck, item: currentItem, semitones: 0 },
+      { deck: otherDeck, item: nextItem, semitones: requestedMatch.semitones ?? 0 },
+    ] as const;
+    setKeyMatchBusy(true);
+    setKeyMatchError(null);
+    try {
+      for (const request of requestedShifts) {
+        const api = decksRef.current[request.deck];
+        if (!api || api.itemId !== request.item.id) {
+          throw new Error("A session deck is changing tracks. Try the key mode again in a moment.");
+        }
+        const assetIds = request.item.playback?.assetIds ?? [];
+        if (request.semitones !== 0 && assetIds.length > 0) api.transport.prepareChannels(assetIds);
+        await api.transport.setKeyShiftSemitones(request.semitones);
+      }
+      setKeyShiftByTrack({
+        [currentItem.id]: 0,
+        [nextItem.id]: requestedMatch.semitones ?? 0,
+      });
+      setKeyMode(requestedMode);
+    } catch (error) {
+      await Promise.all(previousShifts.map(async (previous) => {
+        const api = decksRef.current[previous.deck];
+        if (api?.itemId === previous.item.id) {
+          await api.transport.setKeyShiftSemitones(previous.semitones).catch(() => undefined);
+        }
+      }));
+      setKeyMatchError(`${error instanceof Error ? error.message : "Live key matching failed."} The previous mix and playhead were kept.`);
+    } finally {
+      setKeyMatchBusy(false);
+    }
+  }, [activeDeck, currentItem, keyMatchBusy, keyShiftByTrack, liveKeyMatchingAvailable, nextItem]);
   const activeSwaps = currentSwapSetup.swaps;
   const activeSwapTempoStretchRatios = currentSwapSetup.tempoStretchRatios;
 
@@ -3710,6 +3827,12 @@ export default function SessionExperience({
       pitchLockBusy,
       pitchLockMessage: isActive ? pitchLockMessage : null,
       onPitchPreservingChange: changePitchPreserving,
+      keyShiftSemitones: item?.id === currentItem?.id
+        ? currentKeyShift
+        : item?.id === nextItem?.id
+          ? nextKeyShift
+          : item ? keyShiftByTrack[item.id] ?? 0 : 0,
+      onKeyShiftFailure: reportKeyShiftFailure,
       onPerformanceAction: item ? actionForItem(item.id, deckIndex) : () => undefined,
       onSnapChange: item ? (snap: PerformanceSnap) => updateSnap(item, snap) : () => undefined,
       onInstantRestoreChange: item
@@ -4210,6 +4333,19 @@ export default function SessionExperience({
                   </p>
                 )}
               </div>
+            )}
+            {currentItem !== null && (
+              <SessionKeyMatchingControls
+                mode={keyMode}
+                leadKey={leadEffectiveKey}
+                complementKey={nextKeyMatch.sourceKey}
+                match={nextKeyMatch}
+                hasComplement={nextItem !== null}
+                supported={liveKeyMatchingAvailable}
+                busy={keyMatchBusy}
+                error={keyMatchError}
+                onChange={(mode) => { void changeKeyMatchingMode(mode); }}
+              />
             )}
             {currentItem !== null && (
               <CamelotWheel

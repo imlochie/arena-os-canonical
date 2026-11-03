@@ -128,3 +128,9 @@ For repeated-warning regressions, observing unchanged status text alone does not
 **Why:** A continuously repeated warning can look stable until another action clears or replaces status, at which point it interrupts that action.
 
 **How to apply:** After the first warning, clear status through a real control without rewinding playback, change the relevant live settings, and advance beyond the revised trigger. Assert the warning stays absent as well as checking that no guessed fade starts.
+
+For pitch-mode changes, separate playhead continuity from audible-output evidence. A running media element does not prove its stem is audible, and a zero-valued analyser tap does not prove the mix is silent unless the tap follows an active, non-muted graph path.
+
+**Why:** A synthetic session fixture advanced its media clock while an initial analyser tap returned zero, so that single measurement could not establish either interruption or audible continuity.
+
+**How to apply:** Assert the native clock and playing state, confirm the intended channel and processor connection, then collect output samples after the analyser has settled. Treat DSP tone tests as pitch-transform evidence, not proof of audible app output.

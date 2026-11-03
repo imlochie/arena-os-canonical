@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
 import outputPeakWorkletUrl from "./output-peak-worklet.ts?worker&url";
 import { acquireSessionOutput } from "./session-output";
-import { LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
+import { ensureLiveStemWorklet, LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
 export {
   SESSION_PLAYBACK_RATE_MAX,
   SESSION_PLAYBACK_RATE_MIN,
@@ -34,6 +34,10 @@ type AudioGraph = {
   inserts: InsertSubgraph | null;
   /** The tail node feeding mono (pan or gain). */
   tail: AudioNode;
+  /** Dry/wet split keeps live key-shift preparation from interrupting audio. */
+  keyShiftDry: GainNode;
+  keyShiftWet: GainNode;
+  keyShiftNode: AudioWorkletNode | null;
 };
 
 function disconnectGraph(graph: AudioGraph) {
@@ -42,6 +46,11 @@ function disconnectGraph(graph: AudioGraph) {
   graph.inputGain.disconnect();
   graph.gain.disconnect();
   graph.pan?.disconnect();
+  graph.keyShiftDry.disconnect();
+  graph.keyShiftWet.disconnect();
+  graph.keyShiftNode?.port.postMessage({ type: "dispose" });
+  graph.keyShiftNode?.port.close();
+  graph.keyShiftNode?.disconnect();
   graph.mono.disconnect();
   graph.analyser.disconnect();
   graph.inserts?.input.disconnect();
@@ -229,6 +238,18 @@ const DEFAULT_MIXER_VALUES: MixerValues = {
 
 const mediaPitchProperties = ["preservesPitch", "webkitPreservesPitch", "mozPreservesPitch"] as const;
 
+export function supportsLiveKeyMatching() {
+  if (typeof window === "undefined") return false;
+  const AudioContextConstructor = window.AudioContext;
+  return Boolean(
+    window.isSecureContext
+    && typeof AudioWorkletNode !== "undefined"
+    && AudioContextConstructor
+    && "audioWorklet" in AudioContextConstructor.prototype
+    && liveStemWorkletUrl,
+  );
+}
+
 function setMediaPitchPreserving(element: HTMLAudioElement, enabled: boolean) {
   const capabilities = element as unknown as Record<string, unknown>;
   for (const property of mediaPitchProperties) {
@@ -328,6 +349,8 @@ export function useStemTransport(
   const mixValues = useRef<Record<string, MixerValues>>({});
   const playbackRate = useRef(1);
   const pitchPreserving = useRef(false);
+  const keyShiftSemitones = useRef(0);
+  const keyShiftRequest = useRef(0);
   const masterTap = useRef<MediaStreamAudioDestinationNode | null>(null);
   const clockId = useRef<number | null>(null);
   const lastUiUpdate = useRef(0);
@@ -398,22 +421,32 @@ export function useStemTransport(
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
       const inputGain = ctx.createGain();
+      const keyShiftDry = ctx.createGain();
+      const keyShiftWet = ctx.createGain();
+      keyShiftDry.gain.value = 1;
+      keyShiftWet.gain.value = 0;
       source.connect(inputGain);
       inputGain.connect(gain);
       const tail: AudioNode = pan ?? gain;
       if (pan) gain.connect(pan);
       let insertSubgraph: InsertSubgraph | null = null;
       const chain = insertChains.current[id];
+      tail.connect(keyShiftDry);
       if (chain !== undefined && chain.length > 0) {
         insertSubgraph = buildChainSubgraph(ctx, chain);
-        tail.connect(insertSubgraph.input);
+        keyShiftDry.connect(insertSubgraph.input);
+        keyShiftWet.connect(insertSubgraph.input);
         insertSubgraph.output.connect(mono);
       } else {
-        tail.connect(mono);
+        keyShiftDry.connect(mono);
+        keyShiftWet.connect(mono);
       }
       mono.connect(analyser);
       analyser.connect(masterGain.current!);
-      graphs.current[id] = { source, inputGain, gain, pan, mono, analyser, inserts: insertSubgraph, tail };
+      graphs.current[id] = {
+        source, inputGain, gain, pan, mono, analyser, inserts: insertSubgraph, tail,
+        keyShiftDry, keyShiftWet, keyShiftNode: null,
+      };
     }
     return graphs.current[id];
   }, []);
@@ -482,6 +515,121 @@ export function useStemTransport(
     pitchPreserving.current = false;
     for (const element of elements) {
       applyMediaPlaybackRate(element, playbackRate.current, false);
+    }
+  }, []);
+  const setKeyShiftSemitones = useCallback(async (value: number) => {
+    if (!Number.isInteger(value) || value < -11 || value > 11) {
+      throw new Error("Live key shift must be an integer from -11 to +11 semitones.");
+    }
+    const request = ++keyShiftRequest.current;
+    const audioContext = context.current;
+    if (!audioContext) {
+      keyShiftSemitones.current = value;
+      return;
+    }
+    const graphsToUpdate = Object.values(graphs.current);
+    if (value === 0) {
+      keyShiftSemitones.current = 0;
+      const now = audioContext.currentTime;
+      for (const graph of graphsToUpdate) {
+        graph.keyShiftDry.gain.cancelScheduledValues(now);
+        graph.keyShiftWet.gain.cancelScheduledValues(now);
+        graph.keyShiftDry.gain.setValueAtTime(graph.keyShiftDry.gain.value, now);
+        graph.keyShiftWet.gain.setValueAtTime(graph.keyShiftWet.gain.value, now);
+        graph.keyShiftDry.gain.linearRampToValueAtTime(1, now + 0.04);
+        graph.keyShiftWet.gain.linearRampToValueAtTime(0, now + 0.04);
+      }
+      window.setTimeout(() => {
+        if (
+          keyShiftRequest.current !== request
+          || keyShiftSemitones.current !== 0
+          || context.current !== audioContext
+        ) return;
+        for (const graph of graphsToUpdate) {
+          if (!graph.keyShiftNode || !Object.values(graphs.current).includes(graph)) continue;
+          graph.tail.disconnect(graph.keyShiftNode);
+          graph.keyShiftNode.port.postMessage({ type: "dispose" });
+          graph.keyShiftNode.port.close();
+          graph.keyShiftNode.disconnect();
+          graph.keyShiftNode = null;
+        }
+      }, 80);
+      return;
+    }
+
+    if (!audioContext.audioWorklet || typeof AudioWorkletNode === "undefined" || !liveStemWorkletUrl) {
+      throw new Error("Live key matching needs AudioWorklet support in a secure browser context.");
+    }
+    await ensureLiveStemWorklet(audioContext, liveStemWorkletUrl);
+    if (keyShiftRequest.current !== request || context.current !== audioContext) return;
+
+    const pendingNodes: Array<{ graph: AudioGraph; node: AudioWorkletNode }> = [];
+    try {
+      for (const graph of graphsToUpdate) {
+        if (graph.keyShiftNode) continue;
+        const node = new AudioWorkletNode(audioContext, "waveyard-key-shift", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          channelCount: 2,
+          channelCountMode: "explicit",
+          outputChannelCount: [2],
+        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const timeout = window.setTimeout(() => finish(new Error("Live key matching did not start in time.")), 5_000);
+            const finish = (error?: Error) => {
+              window.clearTimeout(timeout);
+              node.port.onmessage = null;
+              if (error) reject(error);
+              else resolve();
+            };
+            node.port.onmessage = (event: MessageEvent<{ type?: string; message?: string }>) => {
+              if (event.data.type === "key-ready") finish();
+              else if (event.data.type === "error") finish(new Error(event.data.message ?? "Live key matching failed."));
+            };
+          });
+          pendingNodes.push({ graph, node });
+        } catch (error) {
+          node.port.postMessage({ type: "dispose" });
+          node.port.close();
+          node.disconnect();
+          throw error;
+        }
+      }
+    } catch (error) {
+      for (const { node } of pendingNodes) {
+        node.port.postMessage({ type: "dispose" });
+        node.port.close();
+        node.disconnect();
+      }
+      throw error;
+    }
+    if (keyShiftRequest.current !== request || context.current !== audioContext) {
+      for (const { node } of pendingNodes) {
+        node.port.postMessage({ type: "dispose" });
+        node.port.close();
+        node.disconnect();
+      }
+      return;
+    }
+
+    for (const { graph, node } of pendingNodes) {
+      graph.tail.connect(node);
+      node.connect(graph.keyShiftWet);
+      graph.keyShiftNode = node;
+    }
+    for (const graph of graphsToUpdate) {
+      graph.keyShiftNode?.port.postMessage({ type: "key-shift", semitones: value });
+    }
+    keyShiftSemitones.current = value;
+    const now = audioContext.currentTime;
+    for (const graph of graphsToUpdate) {
+      graph.keyShiftDry.gain.cancelScheduledValues(now);
+      graph.keyShiftWet.gain.cancelScheduledValues(now);
+      graph.keyShiftDry.gain.setValueAtTime(graph.keyShiftDry.gain.value, now);
+      graph.keyShiftWet.gain.setValueAtTime(graph.keyShiftWet.gain.value, now);
+      graph.keyShiftDry.gain.linearRampToValueAtTime(0, now + 0.04);
+      graph.keyShiftWet.gain.linearRampToValueAtTime(1, now + 0.04);
     }
   }, []);
   const cancelPendingStem = useCallback((id: string) => liveLayers.current!.cancelPending(id), []);
@@ -557,14 +705,22 @@ export function useStemTransport(
         const chain = chains[id];
         if (graph.inserts !== null) {
           try { graph.inserts.input.disconnect(); graph.inserts.output.disconnect(); } catch {}
-          try { graph.tail.disconnect(); } catch {}
           graph.inserts = null;
-          try { graph.tail.connect(graph.mono); } catch {}
+          try {
+            graph.keyShiftDry.disconnect();
+            graph.keyShiftWet.disconnect();
+            graph.keyShiftDry.connect(graph.mono);
+            graph.keyShiftWet.connect(graph.mono);
+          } catch {}
         }
         if (chain !== undefined && chain.length > 0) {
           const sub = buildChainSubgraph(context.current!, chain);
-          try { graph.tail.disconnect(); } catch {}
-          graph.tail.connect(sub.input);
+          try {
+            graph.keyShiftDry.disconnect();
+            graph.keyShiftWet.disconnect();
+          } catch {}
+          graph.keyShiftDry.connect(sub.input);
+          graph.keyShiftWet.connect(sub.input);
           sub.output.connect(graph.mono);
           graph.inserts = sub;
         }
@@ -685,6 +841,9 @@ export function useStemTransport(
         await context.current.resume();
       if (context.current && context.current.state !== "running")
         throw new Error("Audio playback was interrupted. Activate Play stems to resume.");
+      if (keyShiftSemitones.current !== 0) {
+        await setKeyShiftSemitones(keyShiftSemitones.current);
+      }
       // Resume inside the user's activation before waiting on module I/O
       // (important on mobile). There is no destination bypass while loading.
       await sessionOutput.current?.ready;
@@ -735,7 +894,7 @@ export function useStemTransport(
       );
       pause();
     }
-  }, [applyInserts, applyMix, ensureGraph, playbackIds, masterVolume, pause, duration]);
+  }, [applyInserts, applyMix, ensureGraph, playbackIds, masterVolume, pause, duration, setKeyShiftSemitones]);
 
   useEffect(() => {
     const recover = () => {
@@ -987,6 +1146,7 @@ export function useStemTransport(
     applyMasterVolumeRealtime,
     setPlaybackRate,
     setPitchPreserving,
+    setKeyShiftSemitones,
     loop,
     setLoop,
     error,

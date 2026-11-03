@@ -748,6 +748,25 @@
 .sess-compat-ok{color:#9db85c}
 .sess-compat-bad{color:var(--muted)}
 .wy-camelot-panel{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:10px}
+.wy-key-match{display:grid;gap:9px;padding:12px;border:1px solid var(--line);border-radius:14px;background:rgba(0,0,0,.16)}
+.wy-key-match-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.wy-key-match-heading h3{margin:2px 0 0;font-size:15px}
+.wy-key-match-live{padding:4px 8px;border:1px solid color-mix(in srgb,var(--wy-a) 45%,var(--line));border-radius:999px;color:var(--wy-a);font-size:9px;font-weight:850;letter-spacing:.1em}
+.wy-key-match-description,.wy-key-match-note{margin:0;color:var(--muted);font-size:11px;line-height:1.45}
+.wy-key-match-options{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.wy-key-match-options button{display:grid;gap:3px;min-width:0;min-height:48px;padding:7px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.035);color:var(--ink);text-align:left;cursor:pointer}
+.wy-key-match-options button.is-selected{border-color:color-mix(in srgb,var(--wy-a) 68%,var(--line));background:color-mix(in srgb,var(--wy-a) 13%,transparent)}
+.wy-key-match-options button:disabled{opacity:.45;cursor:not-allowed}
+.wy-key-match-options button:focus-visible{outline:2px solid var(--wy-a);outline-offset:2px}
+.wy-key-match-options button b{font-size:11px}
+.wy-key-match-options button small{color:var(--muted);font-size:9px;line-height:1.2}
+.wy-key-match-keys{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:0}
+.wy-key-match-keys div{min-width:0;padding:7px 8px;border-radius:9px;background:rgba(255,255,255,.035)}
+.wy-key-match-keys dt{color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.09em;text-transform:uppercase}
+.wy-key-match-keys dd{overflow-wrap:anywhere;margin:3px 0 0;color:var(--ink);font-size:11px;font-weight:750}
+.wy-key-match-status{margin:0;color:var(--muted);font-size:10px;line-height:1.4}
+.wy-key-match-status.is-warning{color:var(--danger,var(--wy-a))}
+@media(max-width:640px){.wy-key-match{padding:10px}.wy-key-match-options{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .wy-camelot-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
 .wy-camelot-heading h3{font-size:14px;margin:2px 0 0}
 .wy-camelot-status{font-size:10px;line-height:1.35;text-align:right;color:var(--muted);max-width:110px}

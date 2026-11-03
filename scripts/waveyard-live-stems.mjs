@@ -47,6 +47,7 @@ const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only"
 const sameStemSwapsOnly = process.argv.includes("--same-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
+const keyMatchingOnly = process.argv.includes("--key-matching-only");
 const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
 let donorSwapSequence = 0;
 let failNextDonorRestore = false;
@@ -251,7 +252,7 @@ try {
     window.audioProbe = {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [], decodedAudio: [],
       combinedInputs: [], combinedOutputs: [], playStarts: [],
-      workletLoads: [], workletSeeks: [], transportMessages: [], contexts: [],
+      workletLoads: [], workletSeeks: [], keyShifts: [], transportMessages: [], contexts: [],
     };
     if (probeAutoFades) {
       const nativePlay = HTMLMediaElement.prototype.play;
@@ -419,6 +420,8 @@ try {
               });
             } else if (message?.type === "seek") {
               window.audioProbe.workletSeeks.push({ node: this, context: this.context, frame: message.frame, at: performance.now() });
+            } else if (message?.type === "key-shift") {
+              window.audioProbe.keyShifts.push({ node: this, context: this.context, semitones: message.semitones, at: performance.now() });
             }
             return postMessage(message, ...postArgs);
           };
@@ -2152,6 +2155,103 @@ try {
   } else {
   await page.goto("http://localhost:80/waveyard");
   await page.evaluate(() => localStorage.clear());
+  if (keyMatchingOnly) {
+    session.tracks = ["a", "b"].map((id, position) => {
+      const item = tracks.find(track => track.id === id);
+      assert.ok(item, `the key-match fixture contains track ${id}`);
+      return { ...item, position, stemMix: { ...item.stemMix }, transition: { ...item.transition } };
+    });
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    session.swaps = [];
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    const keyCurrent = page.locator('[data-role="current"]');
+    await keyCurrent.getByText("Test a", { exact: true }).waitFor();
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('[data-role="current"] audio')].length === 4
+        && [...document.querySelectorAll('[data-role="current"] audio')].every(audio => audio.readyState === 4),
+    );
+    const play = page.getByTestId("session-play");
+    if (await play.getAttribute("aria-pressed") !== "true") {
+      await play.click();
+      await page.waitForFunction(() =>
+        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+      );
+    }
+    try {
+      await page.waitForFunction(() =>
+        (document.querySelector('[data-role="current"] audio')?.currentTime ?? 0) > 0.2,
+        undefined,
+        { timeout: 5000 },
+      );
+    } catch (error) {
+      console.log("KEY_MATCH_PLAYBACK_PRECHECK", JSON.stringify(await page.evaluate(() => ({
+        audio: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => ({
+          src: audio.currentSrc, time: audio.currentTime, paused: audio.paused,
+          readyState: audio.readyState, duration: audio.duration, playbackRate: audio.playbackRate,
+        })),
+        contexts: window.audioProbe.contexts.map(context => context.state),
+      }))));
+      throw error;
+    }
+    const before = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-role="current"] audio')]
+        .find(audio => audio.currentSrc.endsWith("/a-drums"))?.currentTime ?? 0,
+    );
+    await page.getByTestId("session-key-mode-match").click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="session-key-mode-match"]')?.getAttribute("aria-pressed") === "true"
+        && document.querySelector('[data-testid="session-key-match-status"]')?.textContent.includes("-3 semitones"),
+    );
+    await page.waitForFunction(() =>
+      window.audioProbe.worklets.filter(node =>
+        node.probeName === "waveyard-key-shift" && node.probeConnections.length > 0).length >= 4
+        && window.audioProbe.keyShifts.filter(message => message.semitones === -3).length >= 4,
+    );
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(async () => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')]
+        .find(element => element.currentSrc.endsWith("/a-drums"));
+      const source = window.audioProbe.sources.find(node => node.mediaElement === audio);
+      const analyser = source?.context.createAnalyser();
+      if (!audio || !source || !analyser) return { playing: false, time: 0, rms: 0, incomingKey: null };
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      const data = new Float32Array(analyser.fftSize);
+      let rms = 0;
+      for (let sample = 0; sample < 4; sample += 1) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        analyser.getFloatTimeDomainData(data);
+        rms = Math.max(rms, Math.sqrt(data.reduce((sum, value) => sum + value * value, 0) / data.length));
+      }
+      return {
+        playing: !audio.paused,
+        time: audio.currentTime,
+        rms,
+        sourceFound: Boolean(source),
+        audioContextState: source.context.state,
+        incomingKey: document.querySelector(
+          '[data-testid="session-key-matching"] .wy-key-match-keys div:nth-child(3) dd',
+        )?.textContent,
+      };
+    });
+    assert.ok(after.playing && after.time > before + 0.2,
+      `key matching cannot pause or reset the audible lead: ${JSON.stringify({ before, ...after })}`);
+    assert.equal(after.incomingKey, "A major",
+      `the incoming key display reflects the actual transposition: ${JSON.stringify(after)}`);
+
+    await page.getByTestId("session-transition").click();
+    await keyCurrent.getByText("Test b", { exact: true }).waitFor({ timeout: 12_000 });
+    assert.equal(await page.getByTestId("session-key-mode-match").getAttribute("aria-pressed"), "true");
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused)
+        && window.audioProbe.worklets.filter(node =>
+          node.probeName === "waveyard-key-shift" && node.probeConnections.length > 0).length >= 4,
+    );
+    console.log("PASS: key-match worklets transpose the incoming deck without interrupting the lead and remain active across the deck transition");
+    await browser.close();
+    process.exit(0);
+  }
   failNextModelCheck = true;
   await page.reload();
   await page.getByText("Temporary model status outage.", { exact: true }).waitFor();
@@ -3113,6 +3213,7 @@ try {
   );
   assert.equal(await current.getByTestId("session-speed-value").innerText(), "1.00×");
   console.log("PASS: browser-measured pitch lock/follow, playhead continuity, donor alignment, and mobile control");
+
   const pitchTransitionBaseline = { ...session };
   const pitchTransitionExposeSeparatedSource = exposeSeparatedSource;
   const firstSessionTrack = session.tracks.find(item => item.id === "a");

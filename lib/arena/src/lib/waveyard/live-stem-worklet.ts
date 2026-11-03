@@ -1,4 +1,5 @@
 import { LiveStemWsola } from "./live-stem-wsola";
+import { LiveKeyShift } from "./live-key-shift";
 
 type WorkletMessage =
   | {
@@ -11,6 +12,7 @@ type WorkletMessage =
     }
   | { type: "rate"; value: number }
   | { type: "pitch"; enabled: boolean }
+  | { type: "key-shift"; semitones: number }
   | { type: "seek"; frame: number }
   | { type: "play" | "pause" | "dispose" };
 
@@ -78,4 +80,37 @@ class WaveyardLiveStemProcessor extends workletGlobal.AudioWorkletProcessor {
   }
 }
 
+class WaveyardKeyShiftProcessor extends workletGlobal.AudioWorkletProcessor {
+  private processor = new LiveKeyShift(sampleRate, 2);
+  private disposed = false;
+
+  constructor() {
+    super();
+    this.port.onmessage = (event) => {
+      if (event.data.type === "key-shift") {
+        try {
+          this.processor.setSemitones(event.data.semitones);
+        } catch (error) {
+          this.port.postMessage({
+            type: "error",
+            message: error instanceof Error ? error.message : "The live key shift could not be changed.",
+          });
+        }
+      } else if (event.data.type === "dispose") {
+        this.disposed = true;
+        this.port.close();
+      }
+    };
+    this.port.postMessage({ type: "key-ready" });
+  }
+
+  process(inputs: Float32Array[][], outputs: Float32Array[][]) {
+    const input = inputs[0] ?? [];
+    const output = outputs[0] ?? [];
+    if (output.length > 0) this.processor.process(input, output);
+    return !this.disposed;
+  }
+}
+
 workletGlobal.registerProcessor("waveyard-live-stem", WaveyardLiveStemProcessor);
+workletGlobal.registerProcessor("waveyard-key-shift", WaveyardKeyShiftProcessor);

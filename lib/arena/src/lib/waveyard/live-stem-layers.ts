@@ -110,7 +110,7 @@ const MAX_PREFETCHED_ASSET_BYTES = 8 * 1024 * 1024;
 const WORKLET_READY_TIMEOUT_MS = 5_000;
 const workletModules = new WeakMap<AudioContext, Promise<void>>();
 
-function ensureLiveStemWorklet(context: AudioContext, workletUrl: string) {
+export function ensureLiveStemWorklet(context: AudioContext, workletUrl: string) {
   if (!context.audioWorklet || typeof AudioWorkletNode === "undefined") {
     return Promise.reject(new Error("Pitch lock is unavailable in this browser."));
   }
