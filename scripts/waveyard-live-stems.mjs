@@ -1409,8 +1409,57 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".timeline-track").length === 4);
     assert.equal(await page.locator(".timeline-track").count(), 4, "Studio opens with the selected track and no unselected tracks");
     await verifyStudioSaveReload();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const blockNextResume = () => page.evaluate(() => {
+      const prototype = window.AudioContext.prototype;
+      const originalResume = prototype.resume;
+      const originalState = Object.getOwnPropertyDescriptor(prototype, "state");
+      Object.defineProperty(prototype, "state", { configurable: true, get: () => "suspended" });
+      prototype.resume = function (...args) {
+        prototype.resume = originalResume;
+        if (originalState) Object.defineProperty(prototype, "state", originalState);
+        else delete prototype.state;
+        return Promise.reject(new DOMException("A user activation is required.", "NotAllowedError"));
+      };
+    });
+    const assertRecoveryControl = async (name, message) => {
+      const alert = page.getByRole("alert").filter({ hasText: message }).last();
+      await alert.waitFor();
+      const button = page.getByRole("button", { name, exact: true });
+      assert.equal(await button.isDisabled(), false, `${name} stays enabled after blocked audio recovery`);
+      const alertId = await alert.getAttribute("id");
+      assert.ok(alertId, `${name} recovery prompt has a stable accessible id`);
+      assert.equal(await button.getAttribute("aria-describedby"), alertId,
+        `${name} announces the matching recovery guidance when focused`);
+      await button.focus();
+      assert.equal(await button.evaluate(element => document.activeElement === element), true,
+        `${name} is keyboard-focusable after the alert`);
+      return button;
+    };
+
+    await blockNextResume();
+    let recoveryButton = page.getByRole("button", { name: "Play stems", exact: true });
+    await recoveryButton.click();
+    recoveryButton = await assertRecoveryControl(
+      "Play stems",
+      "Audio playback was interrupted. Activate Play stems to resume.",
+    );
+    await recoveryButton.click();
+    await page.getByRole("button", { name: "Pause stems", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Pause stems", exact: true }).click();
+
+    await blockNextResume();
+    recoveryButton = page.getByRole("button", { name: "Preview arrangement", exact: true });
+    await recoveryButton.click();
+    recoveryButton = await assertRecoveryControl(
+      "Preview arrangement",
+      "Audio playback was interrupted. Activate Preview arrangement to resume.",
+    );
+    await recoveryButton.click();
+    await page.getByRole("button", { name: "Pause arrangement", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
     assert.deepEqual(assetSnapshot(), originalAssets, "handoff and editing preserve original audio");
-    console.log("PASS: Studio handoff includes only selected tracks, blocks an empty selection, and preserves edits and original audio");
+    console.log("PASS: Studio handoff preserves edits and audio; mobile-sized blocked stem and arrangement recovery prompts name, describe, focus, and retry the correct controls");
   } else if (parallelStemSwapsOnly) {
     const gate = () => {
       let release;

@@ -26,7 +26,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "node scripts/arena-smoke.mjs && node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix"
+args = "node scripts/arena-smoke.mjs && pnpm --filter @workspace/scripts exec tsx --test $PWD/scripts/waveyard-studio-recovery-accessibility.test.ts && node scripts/waveyard-live-stems.mjs --studio-persistence-only && node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix"
 
 [workflows.workflow.metadata]
 isValidation = true

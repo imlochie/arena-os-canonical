@@ -281,7 +281,7 @@ export function useArrangementPreview(
       const audio = ensureContext();
       if (audio.state === "suspended") await audio.resume();
       if (audio.state !== "running")
-        throw new Error("Audio was interrupted. Tap Preview arrangement to resume.");
+        throw new Error("Audio playback was interrupted. Activate Preview arrangement to resume.");
       if (generation !== playbackGeneration.current) return;
       const didSchedule = await schedule(state, fromMs, generation);
       if (!didSchedule || generation !== playbackGeneration.current) return;
@@ -290,7 +290,7 @@ export function useArrangementPreview(
     } catch (cause) {
       const blocked = typeof cause === "object" && cause !== null && "name" in cause && cause.name === "NotAllowedError";
       failPreview(
-        blocked ? new Error("Audio was interrupted. Tap Preview arrangement to resume.") : cause,
+        blocked ? new Error("Audio playback was interrupted. Activate Preview arrangement to resume.") : cause,
         generation,
       );
     }
@@ -328,7 +328,7 @@ export function useArrangementPreview(
           }
         } catch {
           failPreview(
-            new Error("Audio couldn't resume automatically. Tap Preview arrangement to try again."),
+            new Error("Audio couldn't resume automatically. Activate Preview arrangement to try again."),
             generation,
           );
         } finally {

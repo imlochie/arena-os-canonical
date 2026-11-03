@@ -684,7 +684,7 @@ export function useStemTransport(
       if (context.current && context.current.state !== "running")
         await context.current.resume();
       if (context.current && context.current.state !== "running")
-        throw new Error("Audio was interrupted. Tap Play stems to resume.");
+        throw new Error("Audio playback was interrupted. Activate Play stems to resume.");
       // Resume inside the user's activation before waiting on module I/O
       // (important on mobile). There is no destination bypass while loading.
       await sessionOutput.current?.ready;
@@ -720,14 +720,19 @@ export function useStemTransport(
             "name" in result.reason &&
             result.reason.name === "NotAllowedError",
         );
-        if (blocked) throw new Error("Audio was interrupted. Tap Play stems to resume.");
+        if (blocked) throw new Error("Audio playback was interrupted. Activate Play stems to resume.");
         throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
       liveLayers.current?.sync(playbackIds);
       setPlaying(true);
     } catch (cause) {
       if (request !== playRequest.current) return;
-      setError(cause instanceof Error ? cause.message : "Audio playback failed. Tap Play stems to retry.");
+      const blocked = typeof cause === "object" && cause !== null && "name" in cause && cause.name === "NotAllowedError";
+      setError(
+        blocked
+          ? "Audio playback was interrupted. Activate Play stems to resume."
+          : cause instanceof Error ? cause.message : "Audio playback failed. Activate Play stems to retry.",
+      );
       pause();
     }
   }, [applyInserts, applyMix, ensureGraph, playbackIds, masterVolume, pause, duration]);

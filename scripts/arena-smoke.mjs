@@ -2739,7 +2739,7 @@ try {
       `the timeline's internal horizontal scroll must remain usable at ${width}px`);
     await timelineScroller.evaluate((element) => { element.scrollLeft = 0; });
 
-    const playButton = mobileTransport.getByRole("button", { name: "Play", exact: true });
+    const playButton = mobileTransport.getByRole("button", { name: "Play stems", exact: true });
     const previewButton = mobileTransport.getByRole("button", { name: "Preview arrangement", exact: true });
     const seekSlider = mobileTransport.getByLabel("Seek project");
     if (width === 320) {
@@ -2915,7 +2915,7 @@ try {
         });
       });
       await tapCenter(playButton);
-      const pauseButton = mobileTransport.getByRole("button", { name: "Pause", exact: true });
+      const pauseButton = mobileTransport.getByRole("button", { name: "Pause stems", exact: true });
       await pauseButton.waitFor({ state: "visible" });
       try {
         await setSimulatedVisibility(page, "hidden");
@@ -2927,7 +2927,7 @@ try {
         await page.waitForFunction(() =>
           window.__arenaSmokeAudioContexts[0]?.state === "running" &&
           [...document.querySelectorAll('audio[aria-label$=" audio"]')].some((audio) => !audio.paused) &&
-          document.querySelector('[aria-label="Pause"]'),
+          document.querySelector('[aria-label="Pause stems"]'),
         null, { timeout: 10_000 });
         const stemTimeBefore = await page.locator('audio[aria-label$=" audio"]').first().evaluate((audio) => audio.currentTime);
         await page.waitForFunction((before) =>
@@ -2959,7 +2959,7 @@ try {
         };
         return window.__arenaSmokeAudioContexts[0]?.suspend();
       });
-      await mobileTransport.getByRole("alert").filter({ hasText: "Tap Play stems to resume" }).waitFor({ timeout: 5_000 });
+      await mobileTransport.getByRole("alert").filter({ hasText: "Activate Play stems to resume" }).waitFor({ timeout: 5_000 });
       assert.equal(await page.evaluate(() => document.visibilityState), "visible",
         "a blocked foreground audio-context recovery must not depend on a visibility transition");
       await playButton.waitFor({ state: "visible" });
@@ -2974,7 +2974,7 @@ try {
       await setSimulatedVisibility(page, "hidden");
       await setSimulatedVisibility(page, "visible");
       await page.waitForTimeout(250);
-      assert.equal(await mobileTransport.getByRole("button", { name: "Play", exact: true }).count(), 1,
+      assert.equal(await mobileTransport.getByRole("button", { name: "Play stems", exact: true }).count(), 1,
         "returning to Studio must not restart stems that the listener paused");
       assert.equal(
         await page.locator('audio[aria-label$=" audio"]').evaluateAll((audios) => audios.filter((audio) => !audio.paused).length),
@@ -3019,7 +3019,7 @@ try {
         };
         await audioContext.suspend();
       });
-      await mobileTransport.getByRole("alert").filter({ hasText: "Tap Preview arrangement to try again" }).waitFor({ timeout: 5_000 });
+      await mobileTransport.getByRole("alert").filter({ hasText: "Activate Preview arrangement to try again" }).waitFor({ timeout: 5_000 });
       assert.equal(await page.evaluate(() => document.visibilityState), "visible",
         "a blocked foreground arrangement recovery must not depend on a visibility transition");
       await previewButton.waitFor({ state: "visible" });

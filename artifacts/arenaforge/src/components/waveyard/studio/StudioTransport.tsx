@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import type { MusicalTiming } from "@workspace/arena/lib/waveyard/timing";
 import { formatMusicalPosition, snapTimelineMs } from "@workspace/arena/lib/waveyard/timing";
 import type { useStemTransport } from "@workspace/arena/lib/waveyard/useStemTransport";
@@ -34,6 +35,9 @@ export function StudioTransport({
   onToggleArrangement: () => void;
   onToggleStemPreview: () => void;
 }) {
+  const recoveryId = React.useId();
+  const stemErrorId = `${recoveryId}-stem-error`;
+  const arrangementErrorId = `${recoveryId}-arrangement-error`;
   const positionMs = Math.round(transport.position * 1000);
   const snapSeek = (seconds: number) =>
     transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000);
@@ -43,13 +47,15 @@ export function StudioTransport({
         <button
           className="button"
           data-testid="play-all"
-          aria-label={transport.playing ? "Pause" : "Play"}
+          aria-label={transport.playing ? "Pause stems" : "Play stems"}
+          aria-describedby={transport.error ? stemErrorId : undefined}
           onClick={onToggleStemPreview}
         >
           {transport.playing ? "Pause stems" : "Play stems"}
         </button>
         <button
           className={`button ${arrangementPlaying ? "active" : "secondary"}`}
+          data-testid="arrangement-preview"
           aria-label={
             arrangementPending
               ? "Cancel arrangement preview"
@@ -59,6 +65,7 @@ export function StudioTransport({
                   ? "Preview arrangement"
                   : "Create arrangement to preview"
           }
+          aria-describedby={arrangementError ? arrangementErrorId : undefined}
           aria-busy={arrangementPending}
           disabled={!hasArrangement && !arrangementPending}
           onClick={onToggleArrangement}
@@ -128,8 +135,16 @@ export function StudioTransport({
           onChange={(event) => onMasterVolume(Number(event.target.value))}
         />
       </label>
-      {transport.error && <p className="error" role="alert">{transport.error}</p>}
-      {arrangementError && <p className="error" role="alert">{arrangementError}</p>}
+      {transport.error && (
+        <p className="error" id={stemErrorId} role="alert" aria-atomic="true">
+          {transport.error}
+        </p>
+      )}
+      {arrangementError && (
+        <p className="error" id={arrangementErrorId} role="alert" aria-atomic="true">
+          {arrangementError}
+        </p>
+      )}
     </section>
   );
 }

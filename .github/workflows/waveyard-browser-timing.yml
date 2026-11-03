@@ -60,4 +60,5 @@ jobs:
             cat "$RUNNER_TEMP/waveyard-vite.log"
             exit 1
           fi
+          node scripts/waveyard-live-stems.mjs --studio-persistence-only
           node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix

@@ -183,7 +183,7 @@ test("blocked foreground arrangement recovery exposes a working retry", { timeou
   await page.waitForFunction(() =>
     document.visibilityState === "visible" &&
     document.querySelector('[data-testid="playing"]')?.textContent === "false" &&
-    document.querySelector('[data-testid="error"]')?.textContent?.includes("Tap Preview arrangement to try again"),
+    document.querySelector('[data-testid="error"]')?.textContent?.includes("Activate Preview arrangement to try again"),
   null, { timeout: 5_000 });
   assert(Number(await page.locator('[data-testid="position"]').innerText()) >= before);
   await page.getByRole("button", { name: "Play preview" }).click();
