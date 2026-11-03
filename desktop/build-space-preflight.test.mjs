@@ -10,11 +10,125 @@ import {
   inspectBuildSpace,
   minimumFreeGiBForPreviousBuild,
   parseMinimumFreeGiB,
+  resolveNpmCachePath,
   resolvePnpmStorePath,
 } from "./build-space-preflight.mjs";
 import { summarizeBuildSpaceMeasurement } from "./build-space-measurement.mjs";
 
 const GiB = 1024 ** 3;
+
+test("npm resolves its effective cache with configuration intact and downloads disabled", () => {
+  for (const platform of ["win32", "linux"]) {
+    const cachePath = platform === "win32" ? "E:\\Custom npm cache" : "/custom/npm cache";
+    const calls = [];
+    assert.equal(resolveNpmCachePath({
+      platform,
+      cwd: "project-directory",
+      env: {
+        NPM_CONFIG_CACHE: cachePath,
+        NPM_CONFIG_USERCONFIG: "custom.npmrc",
+        NPM_CONFIG_OFFLINE: "false",
+      },
+      run: (command, args, options) => {
+        calls.push({ command, args, options });
+        return { status: 0, stdout: `\uFEFF${cachePath}\r\n` };
+      },
+    }), cachePath);
+    assert.equal(calls.length, 1, "must not bootstrap npm or invoke npx");
+    const [{ command, args, options }] = calls;
+    assert.equal(command, platform === "win32" ? "npm.cmd" : "npm");
+    assert.deepEqual(args, ["--offline", "config", "get", "cache"]);
+    assert.equal(options.cwd, "project-directory");
+    assert.equal(options.shell, platform === "win32");
+    assert.equal(options.timeout, 15000);
+    assert.equal(options.env.NPM_CONFIG_CACHE, cachePath);
+    assert.equal(options.env.NPM_CONFIG_USERCONFIG, "custom.npmrc");
+    assert.equal(options.env.npm_config_offline, "true");
+    assert.equal(options.env.NPM_CONFIG_OFFLINE, undefined);
+  }
+});
+
+test("missing npm, timeouts, and invalid cache output fail closed without a guessed location", () => {
+  for (const result of [
+    { status: 1, stdout: "" },
+    { status: null, error: new Error("npm unavailable or timed out") },
+    { status: 0, stdout: "" },
+    { status: 0, stdout: "undefined" },
+    { status: 0, stdout: "relative\\cache" },
+    { status: 0, stdout: "E:\\cache\nunexpected output" },
+  ]) {
+    assert.throws(() => resolveNpmCachePath({
+      platform: "win32",
+      run: () => result,
+    }), /No dependency download has started/);
+  }
+});
+
+test("a custom npm cache checks its own drive before the cache directory exists", () => {
+  const cache = resolveNpmCachePath({
+    platform: "win32",
+    run: () => ({ status: 0, stdout: "E:\\npm cache\\_cacache\r\n" }),
+  });
+  const checked = [];
+  const locations = inspectBuildSpace([
+    { label: "workspace", path: "C:\\Arena" },
+    { label: "npm cache", path: cache },
+  ], {
+    pathApi: path.win32,
+    exists: (target) => ["C:\\", "E:\\"].includes(target),
+    statfs: (target) => {
+      checked.push(target);
+      return { bsize: 1, bavail: (target === "E:\\" ? 5 : 40) * GiB };
+    },
+  });
+  assert.deepEqual(checked, ["C:\\", "E:\\"]);
+  assert.equal(locations[0].belowMinimumFreeSpace, false);
+  assert.equal(locations[1].belowMinimumFreeSpace, true);
+  assert.equal(locations[1].availableGiB, 5);
+  assert.equal(locations[1].path, cache);
+});
+
+test("an unavailable npm cache volume blocks the build instead of checking the workspace", () => {
+  for (const exists of [() => false, () => true]) {
+    const [cache] = inspectBuildSpace([
+      { label: "npm cache", path: "Z:\\unavailable\\npm-cache" },
+    ], {
+      pathApi: path.win32,
+      exists,
+      statfs: () => { throw new Error("cache volume unavailable"); },
+    });
+    assert.equal(cache.availableBytes, null);
+    assert.equal(cache.belowMinimumFreeSpace, true);
+    assert.match(cache.inspectionError, /No existing parent|cache volume unavailable/);
+  }
+});
+
+test("sampled reports retain npm cache drive consumption and its build phase", () => {
+  const initialLocations = inspectBuildSpace([
+    { label: "workspace", path: "C:\\Arena" },
+    { label: "npm cache", path: "E:\\npm-cache" },
+  ], {
+    pathApi: path.win32,
+    exists: () => true,
+    statfs: () => ({ bsize: 1, bavail: 40 * GiB }),
+  });
+  const report = summarizeBuildSpaceMeasurement({
+    initialLocations,
+    samples: [{
+      phase: "dependencies-installed",
+      checkpoint: true,
+      locations: [
+        { label: "workspace", freeBytes: 39 * GiB },
+        { label: "npm cache", freeBytes: 33 * GiB },
+      ],
+    }],
+  });
+  const cache = report.locations.find(({ label }) => label === "npm cache");
+  assert.equal(cache.peakConsumptionGiB, 7);
+  assert.equal(cache.peakPhase, "dependencies-installed");
+  assert.equal(report.measuredPeakConsumptionGiB, 7);
+  assert.doesNotMatch(JSON.stringify(report), /npm-cache|E:\\/);
+});
 
 test("installed pinned pnpm resolves a configured store without enabling downloads", () => {
   const calls = [];
@@ -197,8 +311,10 @@ test("the Windows installer fails closed before installing dependencies", async 
   assert.match(script, /temporary files=/);
   assert.match(script, /if \(\$spaceReport\.insufficientSpace\)/);
   assert.match(script, /ARENA_BUILD_MIN_FREE_GIB/);
-  assert.match(script, /"--include-pnpm-store" @spaceLocations/);
+  assert.match(script, /"--include-pnpm-store" "--include-npm-cache" @spaceLocations/);
   assert.ok(script.indexOf("$spaceReport.locations | ForEach-Object") < script.indexOf("$monitorLocationsJson ="));
+  assert.match(script, /ConvertTo-Json -InputObject @\(\$spaceLocations\) -Compress/);
+  assert.match(script, /Start-Job -ArgumentList @\(\$monitorLocationsJson,/);
   assert.doesNotMatch(script, /Read-Host "To continue anyway/);
 });
 
@@ -222,6 +338,47 @@ test("command-line preflight blocks low space and allows sufficient space", asyn
     const sufficientSpace = run(0.000000001);
     assert.equal(sufficientSpace.status, 0, sufficientSpace.stderr);
     assert.equal(JSON.parse(sufficientSpace.stdout).insufficientSpace, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("command-line preflight uses npm's user, project, and environment cache precedence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-npm-cache-"));
+  const scriptPath = fileURLToPath(new URL("./build-space-preflight.mjs", import.meta.url));
+  try {
+    const userConfig = path.join(root, "user.npmrc");
+    const projectConfig = path.join(root, ".npmrc");
+    const userCache = path.join(root, "user cache");
+    const projectCache = path.join(root, "project cache");
+    const environmentCache = path.join(root, "environment cache=custom");
+    const configPath = (value) => value.replaceAll("\\", "/");
+    await writeFile(userConfig, `cache=${configPath(userCache)}\n`);
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+        !["npm_config_cache", "npm_config_userconfig"].includes(key.toLowerCase()),
+      )),
+      npm_config_userconfig: userConfig,
+      ARENA_BUILD_MIN_FREE_GIB: "0.000000001",
+    };
+    const run = (overrides = {}) => {
+      const result = spawnSync(process.execPath, [
+        scriptPath, "--include-npm-cache", `workspace=${root}`,
+      ], { cwd: root, encoding: "utf8", env: { ...env, ...overrides } });
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.insufficientSpace, false);
+      assert.equal(report.locations.length, 2);
+      return report.locations.find(({ label }) => label === "npm cache");
+    };
+    assert.equal(run().path, userCache);
+    await writeFile(projectConfig, `cache=${configPath(projectCache)}\n`);
+    assert.equal(run().path, projectCache);
+    const cache = run({ npm_config_cache: environmentCache });
+    assert.equal(cache.path, environmentCache);
+    // npm may initialize its log directory during config lookup; either way
+    // the inspection must stay on the configured cache's volume.
+    assert.ok([root, environmentCache].includes(cache.checkedPath));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

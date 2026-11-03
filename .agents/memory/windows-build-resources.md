@@ -15,6 +15,12 @@ Build preflight must resolve the dependency store using the pinned package manag
 
 **How to apply:** Keep the same resolved locations in the before-download report and the build-time sampler. Treat a missing offline manager as an explicit setup prerequisite, not permission to skip the store check.
 
+Offline npm configuration queries are not necessarily read-only: npm can initialize its cache/log directory even for `config get cache`.
+
+**Why:** A real configuration-precedence check created the configured cache directory without downloading any packages.
+
+**How to apply:** Distinguish “no downloads” from “no filesystem writes” in preflight guarantees and tests; allow inspection of either the cache itself or its existing ancestor.
+
 Keep game-build SDK acquisition on demand, separate from building/installing Arena itself.
 
 **Why:** The user's repeated laptop disk exhaustion makes compiler/editor payloads an unacceptable hidden installer prerequisite.

@@ -7,6 +7,37 @@ export const DEFAULT_BUILD_MIN_FREE_GIB = 20;
 export const BUILD_SPACE_HEADROOM_MULTIPLIER = 1.25;
 export const BUILD_PNPM_VERSION = "10.26.1";
 
+// npm resolves its own project/user configuration and environment overrides.
+// `config get` uses the installed npm, not npx, and never installs packages.
+export function resolveNpmCachePath({
+  run = spawnSync,
+  cwd = process.cwd(),
+  env = process.env,
+  platform = process.platform,
+} = {}) {
+  const windows = platform === "win32";
+  const result = run(windows ? "npm.cmd" : "npm", ["--offline", "config", "get", "cache"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 15000,
+    windowsHide: true,
+    shell: windows,
+    env: {
+      ...Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== "npm_config_offline")),
+      npm_config_offline: "true",
+    },
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error("Could not resolve the npm cache offline. Check npm's configuration and cache drive. No dependency download has started.");
+  }
+  const cachePath = result.stdout?.replace(/^\uFEFF/, "").trim();
+  const pathApi = windows ? path.win32 : path;
+  if (!cachePath || /[\r\n]/.test(cachePath) || !pathApi.isAbsolute(cachePath)) {
+    throw new Error("npm did not return one absolute cache path. No dependency download has started.");
+  }
+  return cachePath;
+}
+
 // Ask pnpm itself so project/user configuration and environment overrides keep
 // their normal precedence. Never bootstrap a manager over the network here.
 export function resolvePnpmStorePath({
@@ -157,8 +188,13 @@ function parseLocation(value) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    const locations = args.filter((arg) => arg !== "--include-pnpm-store").map(parseLocation);
+    const locations = args
+      .filter((arg) => !["--include-pnpm-store", "--include-npm-cache"].includes(arg))
+      .map(parseLocation);
     if (locations.length === 0) throw new Error("Supply at least one label=path location.");
+    if (args.includes("--include-npm-cache")) {
+      locations.push({ label: "npm cache", path: resolveNpmCachePath() });
+    }
     if (args.includes("--include-pnpm-store")) {
       locations.push({ label: "pnpm dependency store", path: resolvePnpmStorePath() });
     }
