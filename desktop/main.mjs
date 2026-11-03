@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { dataRoot } from "./data-paths.mjs";
+import { ARENA_BACKUP_SCOPES, dataRoot } from "./data-paths.mjs";
 import { DesktopDatabase } from "./database.mjs";
 import { backupContentSummary, createArenaBackup, readArenaBackupManifest, restoreArenaBackup } from "./arena-backup.mjs";
 import { killProcessTree } from "./process-tree.mjs";
@@ -147,6 +147,75 @@ function passphraseDialog({ title, description, confirm = false }) {
   });
 }
 
+function backupScopeDialog() {
+  const prompt = new BrowserWindow({
+    parent: window,
+    modal: true,
+    width: 570,
+    height: 590,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: "Choose backup folders",
+    webPreferences: {
+      preload: path.join(__dirname, "backup-preload.cjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  const choices = [
+    ["waveyard-storage", "Waveyard audio, stems, and capture recordings", "Waveyard library audio and local capture recordings."],
+    ["waveyard-models", "Downloaded Waveyard models", "Locally downloaded model files; these can be large."],
+    ["workspace-files", "Workspace files", "Local project and workspace files. Browser profiles remain excluded."],
+    ["browser-profiles", "Browser profiles", "Highly sensitive: may include cookies, saved sessions, browsing history, and logged-in accounts. Excluded unless you check this box."],
+  ];
+  const rows = choices.map(([id, title, description]) =>
+    `<label class="${id === "browser-profiles" ? "sensitive" : ""}"><input type="checkbox" value="${id}"><span><strong>${title}</strong><small>${description}</small></span></label>`,
+  ).join("");
+  const html = `<!doctype html><meta charset="utf-8"><title>Choose backup folders</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;padding:24px;background:#111820;color:#f4f3ed;font:14px system-ui}
+    p{color:#b7c0c7;line-height:1.5}.choices{display:grid;gap:9px;margin-top:18px}
+    label{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1px solid #46545c;border-radius:8px;background:#182129}
+    label.sensitive{border-color:#b77e46;background:#2a2119}input{margin-top:3px;accent-color:#a6e85c}
+    span{display:grid;gap:4px}small{color:#b7c0c7;line-height:1.4}
+    footer{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}button{padding:9px 16px;border:1px solid #46545c;border-radius:7px;background:#1b252d;color:#fff;font:inherit}
+    button[type=submit]{background:#a6e85c;color:#12200b;border-color:#a6e85c;font-weight:700}
+  </style><h2>Choose folders to include</h2>
+  <p>The backup always includes Arena's database and matching credential. The passphrase encrypts every included file. Optional folders come from Arena's local data folder and restore into the new data folder.</p>
+  <form id="form"><div class="choices">${rows}</div><footer><button id="cancel" type="button">Cancel</button><button type="submit">Continue</button></footer></form>
+  <script>
+    const form=document.getElementById("form");
+    document.getElementById("cancel").onclick=()=>window.arenaBackupDialog.cancel();
+    form.onsubmit=event=>{event.preventDefault();window.arenaBackupDialog.submitScope([...form.querySelectorAll("input:checked")].map(input=>input.value));};
+  </script>`;
+  prompt.setMenuBarVisibility(false);
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      ipcMain.removeListener("arena-backup-scope-submit", onSubmit);
+      ipcMain.removeListener("arena-backup-cancel", onCancel);
+      if (!prompt.isDestroyed()) prompt.close();
+      resolve(value);
+    };
+    const onSubmit = (event, value) => {
+      if (event.sender === prompt.webContents && Array.isArray(value) && value.every(id => ARENA_BACKUP_SCOPES.some(scope => scope.id === id))) {
+        finish([...new Set(value)]);
+      }
+    };
+    const onCancel = event => {
+      if (event.sender === prompt.webContents) finish(null);
+    };
+    ipcMain.on("arena-backup-scope-submit", onSubmit);
+    ipcMain.on("arena-backup-cancel", onCancel);
+    prompt.once("closed", () => finish(null));
+    void prompt.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  });
+}
+
 function relaunch(dataDir = null) {
   const env = { ...process.env };
   if (dataDir) env.ARENA_DATA_DIR = dataDir;
@@ -157,25 +226,16 @@ function relaunch(dataDir = null) {
 
 function setDataMenu(root) {
   const backup = async () => {
+    const localFolders = await backupScopeDialog();
+    if (!localFolders) return;
     const folder = await dialog.showOpenDialog(window, {
       title: "Choose where to save the Arena backup",
       properties: ["openDirectory", "createDirectory"],
     });
     if (folder.canceled || !folder.filePaths[0]) return;
-    const contents = await dialog.showMessageBox(window, {
-      type: "question",
-      title: "Choose Arena backup contents",
-      message: "Include Waveyard audio, stems, and local capture recordings?",
-      detail: "Waveyard files can use substantial disk space. The backup stays in the folder you choose; nothing is uploaded. The passphrase encrypts the database and any included Waveyard files. Downloaded models and browser profiles stay excluded.",
-      buttons: ["Include Waveyard files", "Database only", "Cancel"],
-      defaultId: 1,
-      cancelId: 2,
-    });
-    if (contents.response === 2) return;
-    const includeWaveyardFiles = contents.response === 0;
     const passphrase = await passphraseDialog({
-      title: "Encrypt the Arena backup",
-      description: "This passphrase encrypts all backed-up database and selected Waveyard files. Arena does not save it; losing it means the backup cannot be restored.",
+      title: "Protect the Arena backup",
+      description: "This passphrase encrypts every included file. Arena does not save it; if you lose it, the backup cannot be restored.",
       confirm: true,
     });
     if (!passphrase) return;
@@ -183,9 +243,7 @@ function setDataMenu(root) {
       type: "warning",
       title: "Create Arena data backup",
       message: "Arena will pause and restart to make a safe database copy.",
-      detail: includeWaveyardFiles
-        ? "Includes Arena database records, the matching credential, Waveyard library audio/stems, and local capture recordings. All included file contents are encrypted. Downloaded models and browser profiles are excluded."
-        : "Includes Arena database records and the matching credential only. All included file contents are encrypted. Waveyard files, downloaded models, and browser profiles are excluded.",
+      detail: `Includes Arena database records and selected folders: ${localFolders.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label).join(", ") || "none"}. The passphrase encrypts every included file. Browser profiles ${localFolders.includes("browser-profiles") ? "can contain cookies, saved sessions, browsing history, and logged-in accounts; include them only if you accept copying that sensitive data." : "are excluded."}`,
       buttons: ["Create backup", "Cancel"],
       defaultId: 0,
       cancelId: 1,
@@ -198,17 +256,13 @@ function setDataMenu(root) {
         parentDir: folder.filePaths[0],
         passphrase,
         databaseStopped: true,
-        includeWaveyardFiles,
+        localFolders,
       });
       const summary = result.summary;
       await dialog.showMessageBox({
         type: "info",
         title: "Arena backup verified",
-        message: includeWaveyardFiles
-          ? summary.waveyardFileCount > 0
-            ? `The encrypted database and ${summary.waveyardFileCount} Waveyard file${summary.waveyardFileCount === 1 ? "" : "s"} (${formatBackupBytes(summary.waveyardBytes)}) were verified.`
-            : "The database was verified; no Waveyard files were present to copy."
-          : "The encrypted database backup was verified file by file.",
+        message: `Every included file was verified. Database: ${summary.databaseFileCount} files (${formatBackupBytes(summary.databaseBytes)}); optional local files: ${summary.localFileCount} (${formatBackupBytes(summary.localBytes)}).`,
         detail: `${result.backupDir}\n\nAll file contents in this backup are encrypted. Keep the passphrase safe; Arena cannot recover it.\nRestarting Arena now.`,
       });
       relaunch();
@@ -239,8 +293,9 @@ function setDataMenu(root) {
     const summary = backupContentSummary(manifest);
     const includesWaveyardFiles = manifest.includesWaveyardFiles === true;
     const waveyardFileCount = summary?.waveyardFileCount ?? null;
-    const hasWaveyardFiles = includesWaveyardFiles && (waveyardFileCount === null || waveyardFileCount > 0);
     const legacyReadableBackup = manifest.version === 1;
+    const backupScopes = manifest.localFolders ??
+      (includesWaveyardFiles ? ["waveyard-storage"] : []);
     const waveyardRestoreDetail = !includesWaveyardFiles
       ? "This backup does not contain Waveyard files."
       : legacyReadableBackup
@@ -251,15 +306,15 @@ function setDataMenu(root) {
     const passphrase = await passphraseDialog({
       title: "Unlock the Arena backup",
       description: legacyReadableBackup
-        ? "This is an older backup. Its passphrase encrypts only the database credential; database files and any included Waveyard files are readable. Newer backups encrypt all included files."
-        : "Enter the passphrase used when this backup was created. It encrypts all included database and Waveyard files. Arena does not save it.",
+        ? `This older backup encrypts only the database credential; its database and optional files are readable. Included folders: ${backupScopes.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ?? id).join(", ") || "none"}.`
+        : `Enter the passphrase used when this backup was created. It encrypts all included files. Included folders: ${backupScopes.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ?? id).join(", ") || "none"}. Browser profiles ${backupScopes.includes("browser-profiles") ? "may contain cookies, saved sessions, browsing history, and logged-in accounts" : "are not included"}.`,
     });
     if (!passphrase) return;
     const confirmation = await dialog.showMessageBox(window, {
       type: "warning",
       title: "Restore into a new data folder",
       message: "Arena will stop and restart using the selected folder.",
-      detail: `Restore target: ${target.filePaths[0]}\n${legacyReadableBackup ? "This older backup contains readable database files and may contain readable media." : "The backup is encrypted; restored files are decrypted locally and authenticated before the new folder is installed."}\n${waveyardRestoreDetail}\nThe current Arena data folder will not be overwritten. The destination must be empty.`,
+      detail: `Restore target: ${target.filePaths[0]}\nSelected folders: ${backupScopes.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ?? id).join(", ") || "none"}. ${legacyReadableBackup ? "This older backup contains readable database and optional files." : "Files are encrypted and will be decrypted locally into the new folder."} ${backupScopes.includes("browser-profiles") ? "Included browser profiles may contain cookies, saved sessions, history, and logged-in accounts." : "Browser profiles are not included."}\n${waveyardRestoreDetail}\nThe current Arena data folder will not be overwritten. The destination must be empty.`,
       buttons: ["Restore and restart", "Cancel"],
       defaultId: 0,
       cancelId: 1,
@@ -282,8 +337,8 @@ function setDataMenu(root) {
           ? "The database and Waveyard files were restored and verified."
           : includesWaveyardFiles
             ? "The database was restored and verified; this backup contained no Waveyard files."
-          : "The backup and restored database files were verified.",
-        detail: `PostgreSQL ${result.pgVersion}; ${result.fileCount} database files${includesWaveyardFiles ? `; ${result.waveyardFileCount} Waveyard files (${formatBackupBytes(result.waveyardBytes)})` : ""}.\nRestarting Arena with the restored data folder now.`,
+            : "The backup and restored files were verified.",
+        detail: `PostgreSQL ${result.pgVersion}; ${result.fileCount} database files; ${result.localFileCount} optional files${includesWaveyardFiles ? `, including ${result.waveyardFileCount} Waveyard files (${formatBackupBytes(result.waveyardBytes)})` : ""}.\nRestarting Arena with the restored data folder now.`,
       });
       relaunch(result.targetRoot);
     } catch (error) {
@@ -295,7 +350,7 @@ function setDataMenu(root) {
   Menu.setApplicationMenu(Menu.buildFromTemplate([{
     label: "Data",
     submenu: [
-      { label: "Create Arena data backup…", click: () => void backup() },
+      { label: "Create encrypted Arena backup…", click: () => void backup() },
       { label: "Restore backup to a new data folder…", click: () => void restore() },
     ],
   }]));

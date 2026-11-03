@@ -1,5 +1,28 @@
 import path from "node:path";
 
+export const ARENA_BACKUP_SCOPES = [
+  {
+    id: "waveyard-storage",
+    label: "Waveyard audio, stems, and capture recordings",
+    relativePath: "waveyard/storage",
+  },
+  {
+    id: "waveyard-models",
+    label: "Downloaded Waveyard models",
+    relativePath: "waveyard/models",
+  },
+  {
+    id: "workspace-files",
+    label: "Workspace files",
+    relativePath: "data/space-workspaces",
+  },
+  {
+    id: "browser-profiles",
+    label: "Browser profiles",
+    relativePath: "data/space-workspaces",
+  },
+];
+
 // Retains the original desktop's data directory and portable opt-in convention.
 export function dataRoot({ env = process.env, exeDir, exists, platform = process.platform }) {
   const ops = platform === "win32" ? path.win32 : path;

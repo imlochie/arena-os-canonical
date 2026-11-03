@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { Transform, Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
+import { ARENA_BACKUP_SCOPES } from "./data-paths.mjs";
 
 const FORMAT = "arena-data-backup";
 const VERSION = 2;
@@ -80,6 +81,79 @@ async function hashTree(root) {
   return files;
 }
 
+const validScopeIds = new Set(ARENA_BACKUP_SCOPES.map(scope => scope.id));
+function normalizeScopes(scopes = []) {
+  if (!Array.isArray(scopes) || scopes.some(id => !validScopeIds.has(id)) || new Set(scopes).size !== scopes.length) {
+    throw new Error("The selected local backup scope is invalid.");
+  }
+  return [...scopes].sort();
+}
+
+function scopesFromManifest(manifest) {
+  if (manifest.includesWaveyardFiles !== undefined && typeof manifest.includesWaveyardFiles !== "boolean") {
+    throw new Error("This Arena backup has an invalid Waveyard-file selection.");
+  }
+  const scopes = normalizeScopes(manifest.localFolders ?? []);
+  if (manifest.includesWaveyardFiles === true && !scopes.includes("waveyard-storage")) scopes.push("waveyard-storage");
+  return scopes.sort();
+}
+
+async function findBrowserProfiles(root) {
+  const workspaceRoot = path.join(root, "data/space-workspaces");
+  let entries;
+  try {
+    const info = await lstat(workspaceRoot);
+    if (!info.isDirectory()) throw new Error("The browser workspace path is not a regular folder; refusing to include browser profiles.");
+    entries = await readdir(workspaceRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const profiles = [];
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) throw new Error("A browser workspace folder is a symbolic link; refusing to include browser profiles.");
+    if (!entry.isDirectory()) continue;
+    const relative = path.posix.join("data/space-workspaces", entry.name, "browser-profile");
+    const full = path.join(root, ...relative.split("/"));
+    try {
+      const info = await lstat(full);
+      if (!info.isDirectory()) throw new Error(`A browser profile is not a regular folder: ${relative}`);
+      profiles.push(relative);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return profiles;
+}
+
+function isAllowedLocalPath(relative, scopes) {
+  const parts = relative.split("/");
+  if (parts[0] !== "local" || parts.some(part => !part || part === "." || part === "..") || relative.includes("\\")) return false;
+  const localPath = parts.slice(1).join("/");
+  if (scopes.includes("waveyard-storage") &&
+    (localPath.startsWith("waveyard/storage/") || localPath.startsWith("waveyard/capture/"))) return true;
+  if (scopes.includes("waveyard-models") && localPath.startsWith("waveyard/models/")) return true;
+  if (scopes.includes("workspace-files") && localPath.startsWith("data/space-workspaces/") && !parts.includes("browser-profile")) return true;
+  return scopes.includes("browser-profiles") &&
+    /^data\/space-workspaces\/[^/]+\/browser-profile\/.+/.test(localPath);
+}
+
+function validateLegacyManifestFilePaths(manifest) {
+  validateFileMap(manifest.files);
+  const scopes = scopesFromManifest(manifest);
+  for (const relative of Object.keys(manifest.files)) {
+    const parts = relative.split("/");
+    if (!isSafeRelativePath(relative)) throw new Error(`The backup manifest contains an unsafe path: ${relative}`);
+    if (relative === "credential.enc" || parts[0] === "database" && parts.length > 1) continue;
+    const waveyardFile = WAVEYARD_BACKUP_DIRS.some(directory =>
+      relative.startsWith(`waveyard/${directory}/`),
+    );
+    if (waveyardFile && scopes.includes("waveyard-storage")) continue;
+    if (isAllowedPlainPath(relative, scopes) || isAllowedLocalPath(relative, scopes)) continue;
+    throw new Error(`The backup manifest contains an unsupported path: ${relative}`);
+  }
+}
+
 function assertTreeMatches(expected, actual, label) {
   const mismatches = [];
   for (const [relative, entry] of Object.entries(expected)) {
@@ -91,22 +165,6 @@ function assertTreeMatches(expected, actual, label) {
     if (!Object.hasOwn(expected, relative)) mismatches.push(`${relative}: unexpected file`);
   }
   if (mismatches.length) throw new Error(`${label} verification failed: ${mismatches.slice(0, 5).join("; ")}`);
-}
-
-async function copyVerifiedDirectory(source, destination, label) {
-  let sourceStat;
-  try {
-    sourceStat = await lstat(source);
-  } catch (error) {
-    if (error?.code === "ENOENT") return { files: {}, present: false };
-    throw error;
-  }
-  if (!sourceStat.isDirectory()) throw new Error(`${label} must be a real directory; refusing links or special files.`);
-  const expected = await hashTree(source);
-  await mkdir(path.dirname(destination), { recursive: true });
-  await cp(source, destination, { recursive: true, errorOnExist: true, force: false });
-  assertTreeMatches(expected, await hashTree(destination), label);
-  return { files: expected, present: true };
 }
 
 function decodeBase64(value, expectedBytes, label) {
@@ -125,12 +183,21 @@ function isSafeRelativePath(relative) {
   return relative.split("/").every(segment => segment.length > 0 && segment !== "." && segment !== ".." && !segment.includes(":"));
 }
 
-function isAllowedPlainPath(relative, includesWaveyardFiles) {
+function isAllowedPlainPath(relative, scopesOrLegacyFlag) {
   if (!isSafeRelativePath(relative)) return false;
   if (relative === "runtime/db-password.json" || relative.startsWith("database/")) return true;
-  return includesWaveyardFiles === true && WAVEYARD_BACKUP_DIRS.some(directory =>
+  const scopes = typeof scopesOrLegacyFlag === "boolean"
+    ? (scopesOrLegacyFlag ? ["waveyard-storage"] : [])
+    : scopesOrLegacyFlag;
+  if (scopes.includes("waveyard-storage") && WAVEYARD_BACKUP_DIRS.some(directory =>
     relative.startsWith(`waveyard/${directory}/`),
-  );
+  )) return true;
+  if (scopes.includes("waveyard-models") && relative.startsWith("waveyard/models/")) return true;
+  if (scopes.includes("workspace-files") &&
+    relative.startsWith("data/space-workspaces/") &&
+    !relative.split("/").includes("browser-profile")) return true;
+  return scopes.includes("browser-profiles") &&
+    /^data\/space-workspaces\/[^/]+\/browser-profile\/.+/.test(relative);
 }
 
 function validateFileMap(files, label = "backup") {
@@ -138,29 +205,15 @@ function validateFileMap(files, label = "backup") {
     throw new Error(`This Arena ${label} has an invalid file list.`);
   }
   for (const [relative, entry] of Object.entries(files)) {
-    if (!isSafeRelativePath(relative) ||
-      !entry ||
+    if (!isSafeRelativePath(relative)) {
+      throw new Error(`The backup manifest contains an unsafe path: ${relative}`);
+    }
+    if (!entry ||
       !Number.isSafeInteger(entry.bytes) ||
       entry.bytes < 0 ||
       typeof entry.sha256 !== "string" ||
       !/^[a-f0-9]{64}$/.test(entry.sha256)) {
       throw new Error(`This Arena ${label} has invalid file-integrity metadata.`);
-    }
-  }
-}
-
-function validateLegacyManifestFilePaths(manifest) {
-  if (manifest.includesWaveyardFiles !== undefined && typeof manifest.includesWaveyardFiles !== "boolean") {
-    throw new Error("This Arena backup has an invalid Waveyard-file selection.");
-  }
-  validateFileMap(manifest.files);
-  for (const relative of Object.keys(manifest.files)) {
-    if (relative === "credential.enc" || relative.startsWith("database/")) continue;
-    const waveyardFile = WAVEYARD_BACKUP_DIRS.some((directory) =>
-      relative.startsWith(`waveyard/${directory}/`),
-    );
-    if (!waveyardFile || manifest.includesWaveyardFiles !== true) {
-      throw new Error(`This Arena backup contains an unsupported or unselected file: ${relative}`);
     }
   }
 }
@@ -249,7 +302,7 @@ async function decryptFileToFile(source, destination, key, ivText, tagText) {
   return { bytes: plainCount.bytes, sha256: plainHash.digest("hex") };
 }
 
-async function collectDirectoryFiles(directory, prefix, { optional = false } = {}) {
+async function collectDirectoryFiles(directory, prefix, { optional = false, excludeBrowserProfiles = false } = {}) {
   let rootStat;
   try {
     rootStat = await lstat(directory);
@@ -263,6 +316,7 @@ async function collectDirectoryFiles(directory, prefix, { optional = false } = {
     const entries = await readdir(current, { withFileTypes: true });
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
+      if (excludeBrowserProfiles && entry.name === "browser-profile") continue;
       const full = path.join(current, entry.name);
       const stat = await lstat(full);
       const subpath = path.relative(directory, full).split(path.sep).join("/");
@@ -282,19 +336,27 @@ function backupKey(passphrase, salt) {
 
 function summarizeEntries(entries) {
   const databaseEntries = entries.filter(entry => entry.path.startsWith("database/"));
-  const waveyardEntries = entries.filter(entry => entry.path.startsWith("waveyard/"));
+  const waveyardEntries = entries.filter(entry => {
+    const relative = entry.path.startsWith("local/") ? entry.path.slice("local/".length) : entry.path;
+    return relative.startsWith("waveyard/");
+  });
+  const optionalEntries = entries.filter(entry =>
+    !entry.path.startsWith("database/") && entry.path !== "runtime/db-password.json",
+  );
   return {
     databaseFileCount: databaseEntries.length,
     databaseBytes: databaseEntries.reduce((total, entry) => total + entry.plainBytes, 0),
     waveyardFileCount: waveyardEntries.length,
     waveyardBytes: waveyardEntries.reduce((total, entry) => total + entry.plainBytes, 0),
+    localFileCount: optionalEntries.length,
+    localBytes: optionalEntries.reduce((total, entry) => total + entry.plainBytes, 0),
   };
 }
 
 export function backupContentSummary(manifest) {
   if (manifest?.version === VERSION) return null;
   const entries = Object.entries(manifest?.files ?? {}).map(([relative, entry]) => ({
-    path: relative,
+    path: relative === "credential.enc" ? "runtime/db-password.json" : relative,
     plainBytes: entry.bytes,
   }));
   return summarizeEntries(entries);
@@ -302,7 +364,9 @@ export function backupContentSummary(manifest) {
 
 function validateV2Manifest(manifest) {
   validateFileMap(manifest.files);
+  const scopes = scopesFromManifest(manifest);
   if (typeof manifest.includesWaveyardFiles !== "boolean" ||
+    manifest.includesWaveyardFiles !== scopes.includes("waveyard-storage") ||
     !/^\d+$/.test(String(manifest.pgVersion)) ||
     !manifest.encryption ||
     manifest.encryption.algorithm !== ENCRYPTION_ALGORITHM ||
@@ -331,6 +395,8 @@ function validateEncryptedIndex(index, manifest) {
     index.version !== VERSION ||
     index.pgVersion !== manifest.pgVersion ||
     index.includesWaveyardFiles !== manifest.includesWaveyardFiles ||
+    JSON.stringify(normalizeScopes(index.localFolders ?? (index.includesWaveyardFiles ? ["waveyard-storage"] : []))) !==
+      JSON.stringify(scopesFromManifest(manifest)) ||
     !Array.isArray(index.entries)) {
     throw new Error("The encrypted Arena backup index does not match its manifest.");
   }
@@ -340,7 +406,7 @@ function validateEncryptedIndex(index, manifest) {
   let hasDatabaseVersion = false;
   for (const entry of index.entries) {
     if (!entry ||
-      !isAllowedPlainPath(entry.path, manifest.includesWaveyardFiles) ||
+      !isAllowedPlainPath(entry.path, scopesFromManifest(manifest)) ||
       typeof entry.encryptedPath !== "string" ||
       !/^payload\/[a-f0-9]{32}\.enc$/.test(entry.encryptedPath) ||
       entry.encryptedPath === "payload/index.enc" ||
@@ -371,8 +437,15 @@ function validateEncryptedIndex(index, manifest) {
     throw new Error("The encrypted Arena backup is missing its database credential or version marker.");
   }
   const summary = summarizeEntries(index.entries);
+  const requiredSummaryKeys = ["databaseFileCount", "databaseBytes", "waveyardFileCount", "waveyardBytes"];
   if (!index.summary ||
-    Object.keys(summary).some(key => !Number.isSafeInteger(index.summary[key]) || index.summary[key] !== summary[key])) {
+    requiredSummaryKeys.some(key =>
+      !Number.isSafeInteger(index.summary[key]) || index.summary[key] !== summary[key],
+    ) ||
+    ["localFileCount", "localBytes"].some(key =>
+      index.summary[key] !== undefined &&
+      (!Number.isSafeInteger(index.summary[key]) || index.summary[key] !== summary[key]),
+    )) {
     throw new Error("The encrypted Arena backup summary does not match its file index.");
   }
   return index.entries;
@@ -517,13 +590,17 @@ async function restoreLegacyV1(source, staging, manifest, credential) {
   const runtimeDir = path.join(staging, "runtime");
   await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
   await writeFile(path.join(runtimeDir, "db-password.json"), credential, { flag: "wx", mode: 0o600 });
-  if (manifest.includesWaveyardFiles === true) {
-    for (const directory of WAVEYARD_BACKUP_DIRS) {
-      await copyVerifiedDirectory(
-        path.join(source, "waveyard", directory),
-        path.join(staging, "waveyard", directory),
-        `Restored Waveyard ${directory}`,
-      );
+  const optionalEntries = Object.entries(manifest.files).filter(([relative]) =>
+    relative !== "credential.enc" && !relative.startsWith("database/"),
+  );
+  for (const [relative, expected] of optionalEntries) {
+    const targetRelative = relative.startsWith("local/") ? relative.slice("local/".length) : relative;
+    const destination = path.join(staging, ...targetRelative.split("/"));
+    await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+    await cp(path.join(source, ...relative.split("/")), destination, { errorOnExist: true, force: false });
+    const stat = await lstat(destination);
+    if (!stat.isFile() || stat.size !== expected.bytes || await hashFile(destination) !== expected.sha256) {
+      throw new Error(`Restored local file verification failed: ${relative}`);
     }
   }
 
@@ -534,23 +611,18 @@ async function restoreLegacyV1(source, staging, manifest, credential) {
       .map(([relative, entry]) => [relative.slice("database/".length), entry]),
   );
   assertTreeMatches(expectedDatabase, restoredDatabase, "Restored database");
-  const restoredWaveyard = existsSync(path.join(staging, "waveyard"))
-    ? await hashTree(path.join(staging, "waveyard"))
-    : {};
-  const expectedWaveyard = Object.fromEntries(
-    Object.entries(manifest.files)
-      .filter(([relative]) => relative.startsWith("waveyard/"))
-      .map(([relative, entry]) => [relative.slice("waveyard/".length), entry]),
-  );
-  assertTreeMatches(expectedWaveyard, restoredWaveyard, "Restored Waveyard files");
   const restoredVersion = (await readFile(path.join(postgresDir, "PG_VERSION"), "utf8")).trim();
   if (restoredVersion !== manifest.pgVersion) throw new Error("Restored PostgreSQL version does not match the backup.");
-  const waveyardEntries = Object.values(expectedWaveyard);
+  const waveyardEntries = optionalEntries.filter(([relative]) =>
+    (relative.startsWith("local/") ? relative.slice("local/".length) : relative).startsWith("waveyard/"),
+  );
   return {
     pgVersion: restoredVersion,
     fileCount: Object.keys(restoredDatabase).length,
     waveyardFileCount: waveyardEntries.length,
-    waveyardBytes: waveyardEntries.reduce((total, entry) => total + entry.bytes, 0),
+    waveyardBytes: waveyardEntries.reduce((total, [, entry]) => total + entry.bytes, 0),
+    localFileCount: optionalEntries.length,
+    localFolders: scopesFromManifest(manifest),
   };
 }
 
@@ -615,6 +687,10 @@ async function restoreEncryptedV2(source, staging, manifest, entries, key) {
     fileCount: Object.keys(restoredDatabase).length,
     waveyardFileCount: waveyardEntries.length,
     waveyardBytes: waveyardEntries.reduce((total, entry) => total + entry.plainBytes, 0),
+    localFileCount: entries.filter(entry =>
+      !entry.path.startsWith("database/") && entry.path !== "runtime/db-password.json",
+    ).length,
+    localFolders: scopesFromManifest(manifest),
   };
 }
 
@@ -623,14 +699,21 @@ export async function createArenaBackup({
   parentDir,
   passphrase,
   databaseStopped,
-  includeWaveyardFiles = false,
+  includeWaveyardFiles,
+  localFolders,
   now = () => new Date(),
   processExists: exists = processExists,
 }) {
   assertNewPassphrase(passphrase);
-  if (typeof includeWaveyardFiles !== "boolean") {
+  if (includeWaveyardFiles !== undefined && typeof includeWaveyardFiles !== "boolean") {
     throw new Error("Choose whether Waveyard files should be included in the Arena backup.");
   }
+  const scopes = normalizeScopes(localFolders ?? (includeWaveyardFiles === true ? ["waveyard-storage"] : []));
+  if (includeWaveyardFiles && !scopes.includes("waveyard-storage")) scopes.push("waveyard-storage");
+  if (localFolders !== undefined && includeWaveyardFiles === false && scopes.includes("waveyard-storage")) {
+    throw new Error("Waveyard files cannot be both selected and excluded from this backup.");
+  }
+  scopes.sort();
   if (databaseStopped !== true) {
     throw new Error("Arena has not confirmed a clean database shutdown; refusing the backup.");
   }
@@ -651,14 +734,28 @@ export async function createArenaBackup({
     ...databaseFiles,
     { source: credentialPath, relative: "runtime/db-password.json", buffer: credential },
   ];
-  if (includeWaveyardFiles) {
+  if (scopes.includes("waveyard-storage")) {
     for (const directory of WAVEYARD_BACKUP_DIRS) {
       sourceFiles.push(...await collectDirectoryFiles(path.join(root, "waveyard", directory), `waveyard/${directory}`, { optional: true }));
     }
   }
+  if (scopes.includes("waveyard-models")) {
+    sourceFiles.push(...await collectDirectoryFiles(path.join(root, "waveyard/models"), "waveyard/models", { optional: true }));
+  }
+  if (scopes.includes("workspace-files")) {
+    sourceFiles.push(...await collectDirectoryFiles(path.join(root, "data/space-workspaces"), "data/space-workspaces", {
+      optional: true,
+      excludeBrowserProfiles: true,
+    }));
+  }
+  if (scopes.includes("browser-profiles")) {
+    for (const relative of await findBrowserProfiles(root)) {
+      sourceFiles.push(...await collectDirectoryFiles(path.join(root, ...relative.split("/")), relative));
+    }
+  }
   const sourcePaths = new Set();
   for (const file of sourceFiles) {
-    if (!isAllowedPlainPath(file.relative, includeWaveyardFiles) || sourcePaths.has(file.relative)) {
+    if (!isAllowedPlainPath(file.relative, scopes) || sourcePaths.has(file.relative)) {
       throw new Error(`Unsupported or duplicate Arena backup entry: ${file.relative}`);
     }
     sourcePaths.add(file.relative);
@@ -710,7 +807,8 @@ export async function createArenaBackup({
       format: FORMAT,
       version: VERSION,
       pgVersion: version,
-      includesWaveyardFiles: includeWaveyardFiles,
+      includesWaveyardFiles: scopes.includes("waveyard-storage"),
+      localFolders: scopes,
       summary,
       entries,
     }));
@@ -736,10 +834,9 @@ export async function createArenaBackup({
       version: VERSION,
       createdAt: now().toISOString(),
       pgVersion: version,
-      includesWaveyardFiles: includeWaveyardFiles,
-      scope: includeWaveyardFiles
-        ? "Encrypted PostgreSQL database, matching credential, and Waveyard storage/capture files. Downloaded models, browser profiles, and other files are excluded."
-        : "Encrypted PostgreSQL database and matching credential only. Waveyard files, downloaded models, browser profiles, and other files are excluded.",
+      includesWaveyardFiles: scopes.includes("waveyard-storage"),
+      localFolders: scopes,
+      scope: `Encrypted PostgreSQL database, matching credential, and selected local folders (${scopes.join(", ") || "none"}). Browser profiles are excluded unless explicitly selected.`,
       encryption: {
         algorithm: ENCRYPTION_ALGORITHM,
         kdf: {

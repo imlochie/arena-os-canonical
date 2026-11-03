@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createCipheriv, createHash, scryptSync } from "node:crypto";
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -90,10 +91,12 @@ test("v2 encrypts the database and credential, verifies all files, and restores 
     assert.equal(manifest.version, 2);
     assert.equal(manifest.pgVersion, "16");
     assert.equal(manifest.includesWaveyardFiles, false);
-    assert.match(manifest.scope, /Encrypted PostgreSQL database.*Waveyard files.*excluded/);
+    assert.match(manifest.scope, /Encrypted PostgreSQL database.*selected local folders/);
     assert.equal(Object.hasOwn(manifest, "summary"), false);
     assert.equal(Object.keys(manifest.files).some((relative) => relative.startsWith("database/") || relative.startsWith("waveyard/")), false);
     assert.equal(Object.keys(manifest.files).every((relative) => relative.startsWith("payload/")), true);
+    assert.deepEqual(manifest.localFolders, []);
+    assert.equal(summary.localFileCount, 0);
     assert.equal(summary.waveyardFileCount, 0);
     assert.equal(JSON.stringify(manifest).includes("database/PG_VERSION"), false);
     assert.equal(JSON.stringify(manifest).includes("runtime/db-password.json"), false);
@@ -148,11 +151,12 @@ test("optional Waveyard storage and captures are verified and restored without m
       parentDir: parent,
       passphrase,
       databaseStopped: true,
-      includeWaveyardFiles: true,
+      localFolders: ["waveyard-storage"],
       now: () => new Date("2026-11-01T12:00:00.000Z"),
     });
     assert.equal(manifest.includesWaveyardFiles, true);
-    assert.match(manifest.scope, /Encrypted PostgreSQL.*Waveyard storage\/capture files/);
+    assert.deepEqual(manifest.localFolders, ["waveyard-storage"]);
+    assert.match(manifest.scope, /selected local folders \(waveyard-storage\)/);
     assert.equal(summary.waveyardFileCount, 3);
     assert.equal(summary.waveyardBytes, audio.byteLength + longAudio.byteLength + capture.byteLength);
     const serializedManifest = JSON.stringify(manifest);
@@ -227,6 +231,155 @@ test("legacy v1 backups remain restorable and clearly identifiable", async () =>
   }
 });
 
+test("selected local folders are verified and restored only under a new data root", async () => {
+  const { parent, root } = await fixture();
+  const workspace = path.join(root, "data/space-workspaces/project-1");
+  try {
+    await mkdir(path.join(root, "waveyard/storage/audio"), { recursive: true });
+    await mkdir(path.join(root, "waveyard/capture"), { recursive: true });
+    await mkdir(path.join(root, "waveyard/models"), { recursive: true });
+    await mkdir(path.join(workspace, "browser-profile/Default"), { recursive: true });
+    await writeFile(path.join(root, "waveyard/storage/audio/song.wav"), "private audio");
+    await writeFile(path.join(root, "waveyard/capture/take.pcm"), "capture data");
+    await writeFile(path.join(root, "waveyard/models/model.onnx"), "model weights");
+    await writeFile(path.join(workspace, "project.json"), "workspace content");
+    await writeFile(path.join(workspace, "browser-profile/Default/Cookies"), "session cookie");
+
+    const { backupDir, manifest, summary } = await createArenaBackup({
+      root,
+      parentDir: parent,
+      passphrase,
+      databaseStopped: true,
+      localFolders: ["waveyard-storage", "waveyard-models", "workspace-files"],
+    });
+    assert.deepEqual(manifest.localFolders, ["waveyard-models", "waveyard-storage", "workspace-files"]);
+    assert.equal(summary.localFileCount, 4);
+    assert.equal(summary.waveyardFileCount, 3);
+    assert.equal((await verifyArenaBackup(backupDir)).ok, true);
+
+    const target = path.join(parent, "restored-local");
+    const restored = await restoreArenaBackup({ backupDir, targetRoot: target, passphrase });
+    assert.equal(restored.localFileCount, 4);
+    assert.equal(await readFile(path.join(target, "waveyard/storage/audio/song.wav"), "utf8"), "private audio");
+    assert.equal(await readFile(path.join(target, "waveyard/capture/take.pcm"), "utf8"), "capture data");
+    assert.equal(await readFile(path.join(target, "waveyard/models/model.onnx"), "utf8"), "model weights");
+    assert.equal(await readFile(path.join(target, "data/space-workspaces/project-1/project.json"), "utf8"), "workspace content");
+    await assert.rejects(readFile(path.join(target, "data/space-workspaces/project-1/browser-profile/Default/Cookies")), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(root, "data/space-workspaces/project-1/browser-profile/Default/Cookies"), "utf8"), "session cookie");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("browser profiles require explicit opt-in and are verified on restore", async () => {
+  const { parent, root } = await fixture();
+  const profile = path.join(root, "data/space-workspaces/project-2/browser-profile/Default");
+  try {
+    await mkdir(profile, { recursive: true });
+    await writeFile(path.join(profile, "Cookies"), "account session");
+    await writeFile(path.join(profile, "History"), "browsing history");
+    const { backupDir, manifest, summary } = await createArenaBackup({
+      root, parentDir: parent, passphrase, databaseStopped: true, localFolders: ["browser-profiles"],
+    });
+    assert.deepEqual(manifest.localFolders, ["browser-profiles"]);
+    assert.equal(summary.localFileCount, 2);
+
+    const target = path.join(parent, "restored-profile");
+    const restored = await restoreArenaBackup({ backupDir, targetRoot: target, passphrase });
+    assert.equal(restored.localFileCount, 2);
+    assert.equal(await readFile(path.join(target, "data/space-workspaces/project-2/browser-profile/Default/Cookies"), "utf8"), "account session");
+
+    const payloadPath = Object.keys(manifest.files).find(relative => relative !== "payload/index.enc");
+    await writeFile(path.join(backupDir, payloadPath), "tampered");
+    assert.equal((await verifyArenaBackup(backupDir)).ok, false);
+    await assert.rejects(
+      restoreArenaBackup({ backupDir, targetRoot: path.join(parent, "tampered-target"), passphrase }),
+      /Backup verification failed/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("backup refuses unsupported scopes and unsafe manifest paths", async () => {
+  const { parent, root } = await fixture();
+  try {
+    await assert.rejects(
+      createArenaBackup({ root, parentDir: parent, passphrase, databaseStopped: true, localFolders: ["arbitrary-folder"] }),
+      /scope is invalid/,
+    );
+    const { backupDir } = await createArenaBackup({ root, parentDir: parent, passphrase, databaseStopped: true });
+    const manifestPath = path.join(backupDir, "backup-manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.files["payload/../outside.txt"] = { bytes: 0, sha256: "0".repeat(64) };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await assert.rejects(verifyArenaBackup(backupDir), /unsafe path/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("version 1 backups with selected local files restore into a new root", async () => {
+  const { parent } = await fixture();
+  const backupDir = path.join(parent, "legacy-v1");
+  const credential = Buffer.from(JSON.stringify({ password: "legacy-password-123456" }));
+  const passphraseBytes = Buffer.from(passphrase);
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(passphraseBytes, salt, 32, { N: 32_768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(credential), cipher.final()]);
+  const encryptedCredential = Buffer.from(JSON.stringify({
+    algorithm: "scrypt+aes-256-gcm",
+    salt: salt.toString("base64"),
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+  }));
+  const files = {};
+  const addFile = async (relative, value) => {
+    const contents = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    const destination = path.join(backupDir, ...relative.split("/"));
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, contents);
+    files[relative] = {
+      bytes: contents.length,
+      sha256: createHash("sha256").update(contents).digest("hex"),
+    };
+  };
+  try {
+    await addFile("database/PG_VERSION", "16\n");
+    await addFile("database/base/1/record", "preserved arena record");
+    await addFile("credential.enc", encryptedCredential);
+    await addFile("waveyard/storage/library/track.wav", "legacy audio");
+    await addFile("local/waveyard/models/model.onnx", "legacy model");
+    await addFile("local/data/space-workspaces/project-1/project.json", "legacy workspace");
+    await writeFile(path.join(backupDir, "backup-manifest.json"), JSON.stringify({
+      format: "arena-data-backup",
+      version: 1,
+      createdAt: "2026-11-01T12:00:00.000Z",
+      pgVersion: "16",
+      includesWaveyardFiles: true,
+      localFolders: ["waveyard-models", "waveyard-storage", "workspace-files"],
+      credentialSha256: createHash("sha256").update(credential).digest("hex"),
+      files,
+    }));
+
+    assert.equal((await verifyArenaBackup(backupDir)).ok, true);
+    const target = path.join(parent, "legacy-restored");
+    const restored = await restoreArenaBackup({ backupDir, targetRoot: target, passphrase });
+    assert.equal(restored.localFileCount, 3);
+    assert.equal(restored.waveyardFileCount, 2);
+    assert.equal(await readFile(path.join(target, "waveyard/storage/library/track.wav"), "utf8"), "legacy audio");
+    assert.equal(await readFile(path.join(target, "waveyard/models/model.onnx"), "utf8"), "legacy model");
+    assert.equal(await readFile(path.join(target, "data/space-workspaces/project-1/project.json"), "utf8"), "legacy workspace");
+  } finally {
+    key.fill(0);
+    passphraseBytes.fill(0);
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("backup rejects a running cluster and detects changed or extra files", async () => {
   const { parent, root } = await fixture();
   try {
@@ -242,7 +395,7 @@ test("backup rejects a running cluster and detects changed or extra files", asyn
       /uncertain/,
     );
     await rm(path.join(dataDir, "postmaster.pid"));
-    const { backupDir } = await createArenaBackup({
+    const { backupDir, manifest } = await createArenaBackup({
       root,
       parentDir: parent,
       passphrase,

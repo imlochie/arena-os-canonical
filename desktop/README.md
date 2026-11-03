@@ -190,32 +190,36 @@ port fails explicitly instead of silently changing the app's browser origin.
 Existing databases are never deleted or reinitialised to fix startup errors.
 The bundled PostgreSQL major remains 16 to match the retained desktop runtime.
 
-### Arena data backup and restore
+### Arena backup and restore
 
-Use the desktop app's **Data** menu to create or restore an Arena data backup.
-When creating one, choose **Database only** (the default) or opt in to include
-Waveyard storage and local capture recordings. Creating a backup pauses Arena,
-confirms a clean PostgreSQL shutdown, copies the selected files, and verifies
-every copied file before restarting. If PostgreSQL's process state cannot be
-confirmed, the backup is refused.
+Use the desktop app's **Data** menu to create or restore an Arena backup. The
+backup always includes Arena's PostgreSQL records and matching database
+credential. A passphrase (minimum 12 characters) encrypts all included files;
+Arena does not save it.
 
-The current backup format encrypts payload files with AES-256-GCM, using a key
-derived from the chosen passphrase with scrypt. Database and media files are
-processed as streams; the bounded-size encrypted index protects their original
-relative names. The passphrase must be at least 12 characters; Arena does not
-save it, and a lost passphrase cannot be recovered. Keep it separate from the
-backup. The public manifest still shows the creation time, PostgreSQL major
-version, whether Waveyard files were selected, and opaque encrypted-file sizes
-and hashes.
+During creation, opt in to any offered local folders: Waveyard storage and
+capture recordings, downloaded models, and workspace files. Workspace-file
+backup excludes browser profiles. Browser profiles are a separate, unchecked
+choice because they may contain cookies, saved sessions, browsing history, and
+logged-in accounts. Select them only if you accept that sensitive information
+being included.
 
-When selected, Waveyard backup includes the files in `waveyard/storage` and
-`waveyard/capture`. Downloaded models, browser profiles, workspace files, and
-other local folders remain excluded. Restore authenticates and verifies the
-encrypted files in a temporary sibling folder, then promotes the verified
-result into the new empty data folder; the existing data folder is left in
-place. Earlier version-1 backups remain restorable, but their database and
-media files are readable; version 1 encrypted only the matching database
-credential.
+The backup stays in the destination folder you select; nothing is uploaded.
+Creating a backup pauses Arena, confirms a clean PostgreSQL shutdown, and
+verifies every included file. Unsupported entries such as symbolic links fail
+closed. The current version encrypts file contents with AES-256-GCM and derives
+the key from the passphrase with scrypt. Files are processed as streams, and an
+encrypted index protects their original paths. The public manifest shows the
+selected scope and opaque encrypted-file sizes and hashes, not included file
+names or contents. Older version 1 backups encrypt only the matching database
+credential; their database and optional local files remain readable.
+
+Restore verifies the backup and protected credential, requires a new empty data
+folder, and restores selected files only under that new Arena data root. The
+files are decrypted into a temporary sibling folder, verified, and promoted
+only after validation succeeds. The existing data folder is left in place. The
+restore dialog shows the selected folders and flags the browser-profile privacy
+implications.
 
 The package includes ONNX Runtime's CPU engine and the Windows x64 DirectML
 runtime dependencies (`DirectML.dll`, DXCompiler, and DXIL) for Waveyard's local
@@ -234,7 +238,6 @@ The FFmpeg package build downloads its pinned archive from GitHub during the
 first Windows package build. If the upstream `latest` asset changes, the
 checksum fails safely; update the pinned archive name and SHA-256 together
 after reviewing the replacement release and its license.
-
 ## Measure Waveyard on Windows
 
 After installing the rebuilt app, open Waveyard once and wait until it says
