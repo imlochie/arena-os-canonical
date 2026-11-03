@@ -2755,16 +2755,42 @@ try {
         const visibleRight = Math.min(window.innerWidth, bounds.right);
         return { x: visibleLeft + (visibleRight - visibleLeft) / 2, y: bounds.top + Math.min(20, bounds.height / 2) };
       });
+      const touchScrollBefore = await page.evaluate(({ x, y }) => {
+        const hit = document.elementFromPoint(x, y);
+        const scroller = document.querySelector(".timeline-scroll");
+        const ancestry = [];
+        for (let node = hit; node instanceof HTMLElement && ancestry.length < 5; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          ancestry.push({ tag: node.tagName, className: node.className, touchAction: style.touchAction,
+            overflowX: style.overflowX, width: Math.round(node.getBoundingClientRect().width) });
+        }
+        return { hit: hit?.tagName, ancestry, scrollLeft: scroller?.scrollLeft,
+          scrollWidth: scroller?.scrollWidth, clientWidth: scroller?.clientWidth };
+      }, swipePoint);
       assert(swipePoint.x >= 0 && swipePoint.x < width,
         "The native-scroll touch must start on the visible portion of the clip");
+      console.log("STUDIO_TOUCH_SCROLL_START", JSON.stringify(touchScrollBefore));
       const swipeX = swipePoint.x;
       const swipeFraction = (swipeX - swipeBounds.x) / swipeBounds.width;
       const swipeYFraction = (swipePoint.y - swipeBounds.y) / swipeBounds.height;
       await swipeTouch(touchClip, -76, 0, swipeFraction, swipeYFraction);
-      await page.waitForFunction(({ before }) => {
-        const scroller = document.querySelector(".timeline-scroll");
-        return scroller instanceof HTMLElement && scroller.scrollLeft > before;
-      }, { before: scrollBeforeTouchSwipe }, { timeout: 3_000 });
+      try {
+        await page.waitForFunction(({ before }) => {
+          const scroller = document.querySelector(".timeline-scroll");
+          return scroller instanceof HTMLElement && scroller.scrollLeft > before;
+        }, { before: scrollBeforeTouchSwipe }, { timeout: 3_000 });
+      } catch (error) {
+        console.log("STUDIO_TOUCH_SCROLL_AFTER", JSON.stringify(await page.evaluate(() => ({
+          timeline: (() => {
+            const node = document.querySelector(".timeline-scroll");
+            return node ? { left: node.scrollLeft, top: node.scrollTop, width: node.clientWidth,
+              scrollWidth: node.scrollWidth, action: getComputedStyle(node).touchAction } : null;
+          })(),
+          page: { x: window.scrollX, y: window.scrollY, width: document.documentElement.scrollWidth,
+            viewport: document.documentElement.clientWidth },
+        }))));
+        throw error;
+      }
       assert.equal(await seekSlider.inputValue(), touchSeekBefore,
         "a native horizontal touch swipe beginning on a clip must not seek the playback position");
       assert(await timelineScroller.evaluate((element, before) => element.scrollLeft > before, scrollBeforeTouchSwipe),
