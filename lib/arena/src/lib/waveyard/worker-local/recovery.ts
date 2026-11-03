@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,15 +17,81 @@ import { processingJobs, waveformJobs } from "@workspace/db/waveyardSchema";
 const SEPARATION_TEMP_PREFIX = "arena-separation-";
 const PENDING_WAVEFORM_STATUSES = ["queued", "preparing", "processing", "finalizing"];
 const WAVEFORM_RECOVERY_CLAIM_STAGE = "recovery-submitting";
+const WAVEFORM_RECOVERY_OWNER_MARKER_PREFIX = "arena-waveform-recovery-owner-";
+const LEGACY_WAVEFORM_CLAIM_MAX_AGE_MS = 5 * 60_000;
 const activeWaveformRecoveryClaims = new Set<string>();
+const waveformRecoveryProcessInstanceId = randomUUID();
+let registeredWaveformRecoveryProcess: WaveformRecoveryProcessIdentity | undefined;
 
-function isWaveformRecoveryClaimActive(stage: string | null): boolean {
+export type WaveformRecoveryProcessIdentity = {
+  pid: number;
+  instanceId: string;
+  isProcessAlive(pid: number): boolean;
+  instanceIdForPid(pid: number): string | null;
+  now(): number;
+};
+
+function ownerMarkerPath(pid: number): string {
+  return join(tmpdir(), `${WAVEFORM_RECOVERY_OWNER_MARKER_PREFIX}${pid}`);
+}
+
+function registerWaveformRecoveryProcess(): WaveformRecoveryProcessIdentity {
+  if (registeredWaveformRecoveryProcess) return registeredWaveformRecoveryProcess;
+  const markerPath = ownerMarkerPath(process.pid);
+  const temporaryMarkerPath = `${markerPath}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryMarkerPath, waveformRecoveryProcessInstanceId, { flag: "wx", mode: 0o600 });
+  try {
+    renameSync(temporaryMarkerPath, markerPath);
+  } catch (error) {
+    // Windows cannot replace an existing destination with rename. The PID
+    // cannot belong to both processes at once, so replacing its stale marker
+    // is safe; competing recovery claims are still guarded by the row CAS.
+    if (!["EEXIST", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    rmSync(markerPath, { force: true });
+    renameSync(temporaryMarkerPath, markerPath);
+  }
+  process.once("exit", () => {
+    try {
+      if (readFileSync(markerPath, "utf8") === waveformRecoveryProcessInstanceId) unlinkSync(markerPath);
+    } catch { /* Process exit cleanup is best-effort; a reused PID replaces this marker. */ }
+  });
+
+  registeredWaveformRecoveryProcess = {
+    pid: process.pid,
+    instanceId: waveformRecoveryProcessInstanceId,
+    isProcessAlive,
+    instanceIdForPid(pid) {
+      try {
+        return readFileSync(ownerMarkerPath(pid), "utf8") || null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    },
+    now: Date.now,
+  };
+  return registeredWaveformRecoveryProcess;
+}
+
+function isWaveformRecoveryClaimActive(
+  stage: string | null,
+  updatedAt: Date | null,
+  identity: WaveformRecoveryProcessIdentity,
+): boolean {
   if (!stage?.startsWith(`${WAVEFORM_RECOVERY_CLAIM_STAGE}:`)) return false;
-  const [, ownerPidText] = stage.split(":", 3);
+  const [, ownerPidText, ownerInstanceId, claimId] = stage.split(":");
   if (!/^\d+$/.test(ownerPidText ?? "")) return false;
   const ownerPid = Number(ownerPidText);
-  if (ownerPid === process.pid) return activeWaveformRecoveryClaims.has(stage);
-  return isProcessAlive(ownerPid);
+  if (ownerPid === identity.pid) return activeWaveformRecoveryClaims.has(stage);
+  if (!identity.isProcessAlive(ownerPid)) return false;
+  if (ownerInstanceId && claimId) {
+    return identity.instanceIdForPid(ownerPid) === ownerInstanceId;
+  }
+  // Older versions wrote only a PID and per-claim nonce. They cannot be
+  // matched to a process incarnation, so preserve them briefly for rolling
+  // restarts, then reclaim even if the OS has reused their PID.
+  const ageMs = updatedAt ? identity.now() - updatedAt.getTime() : Number.POSITIVE_INFINITY;
+  return ageMs >= 0 && ageMs < LEGACY_WAVEFORM_CLAIM_MAX_AGE_MS;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -146,12 +213,14 @@ export async function recoverInterruptedLocalSeparationJobs(
 export async function recoverPendingLocalWaveformJobs(
   db: ReturnType<typeof drizzle>,
   enqueue: (payload: WaveformJobPayload) => Promise<unknown> = enqueueWaveform,
+  processIdentity?: WaveformRecoveryProcessIdentity,
 ): Promise<{
   resetJobIds: string[];
   enqueuedJobIds: string[];
   requeuedJobIds: string[];
   failedJobIds: string[];
 }> {
+  const identity = processIdentity ?? registerWaveformRecoveryProcess();
   const pending = await db
     .select()
     .from(waveformJobs)
@@ -162,8 +231,8 @@ export async function recoverPendingLocalWaveformJobs(
   const failedJobIds: string[] = [];
 
   for (const job of pending) {
-    if (isWaveformRecoveryClaimActive(job.stage)) continue;
-    const recoveryClaimStage = `${WAVEFORM_RECOVERY_CLAIM_STAGE}:${process.pid}:${randomUUID()}`;
+    if (isWaveformRecoveryClaimActive(job.stage, job.updatedAt, identity)) continue;
+    const recoveryClaimStage = `${WAVEFORM_RECOVERY_CLAIM_STAGE}:${identity.pid}:${identity.instanceId}:${randomUUID()}`;
     activeWaveformRecoveryClaims.add(recoveryClaimStage);
     try {
       const claim = await db.transaction(async (tx) => {

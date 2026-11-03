@@ -827,7 +827,7 @@ test("waveform recovery does not requeue a job completed after its pending read"
       .from(waveformJobs)
       .where(eq(waveformJobs.id, stillPending.id));
     assert.equal(requeued.status, "queued");
-    assert.match(requeued.stage, /^recovery-submitting:\d+:[0-9a-f-]+$/);
+    assert.match(requeued.stage, /^recovery-submitting:\d+:[0-9a-f-]+:[0-9a-f-]+$/);
   } finally {
     await f.close();
   }
@@ -1019,6 +1019,105 @@ test("waveform recovery reclaims a queue claim left by a stopped process", async
     assert.deepEqual(recovery.requeuedJobIds, [job.id]);
     assert.deepEqual(recovery.failedJobIds, []);
     assert.deepEqual(dispatched, [job.id]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform recovery reclaims a live PID whose process incarnation no longer owns the claim", async () => {
+  const f = await fixture();
+  try {
+    const oldOwnerPid = 43821;
+    const recoveryPid = 92514;
+    const oldInstanceId = randomUUID();
+    const replacementInstanceId = randomUUID();
+    const [job] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "queued",
+        stage: `recovery-submitting:${oldOwnerPid}:${oldInstanceId}:${randomUUID()}`,
+        idempotencyKey: `waveform:reused-process-id:${f.source.id}`,
+      })
+      .returning();
+    let observedReplacementClaim = false;
+
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      const [claimed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, payload.waveformJobId));
+      const [, pid, ownerInstanceId] = claimed!.stage!.split(":");
+      observedReplacementClaim = pid === String(recoveryPid) && ownerInstanceId === replacementInstanceId;
+      await handleWaveformJob(payload, {
+        db: f.database,
+        generateWaveform: async () => validWaveformDocument(),
+      });
+    }, {
+      pid: recoveryPid,
+      instanceId: replacementInstanceId,
+      isProcessAlive: (pid) => pid === oldOwnerPid,
+      instanceIdForPid: (pid) => pid === oldOwnerPid ? replacementInstanceId : null,
+      now: Date.now,
+    });
+
+    assert.equal(observedReplacementClaim, true, "a new process incarnation can replace the stale owner's claim");
+    assert.deepEqual(recovery.requeuedJobIds, [job!.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job!.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job!.id));
+    assert.equal(completed.status, "complete", "reclaimed work is delivered instead of remaining pending");
+    assert.equal(assets.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform recovery expires unidentifiable legacy claims even while their PID is live", async () => {
+  const f = await fixture();
+  try {
+    const liveOwnerPid = 84135;
+    const [recentLegacyClaim] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "queued",
+        stage: `recovery-submitting:${liveOwnerPid}:${randomUUID()}`,
+        idempotencyKey: `waveform:recent-legacy-claim:${f.source.id}`,
+        updatedAt: new Date(),
+      })
+      .returning();
+    const [expiredLegacyClaim] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "queued",
+        stage: `recovery-submitting:${liveOwnerPid}:${randomUUID()}`,
+        idempotencyKey: `waveform:expired-legacy-claim:${f.source.id}`,
+        updatedAt: new Date(Date.now() - 10 * 60_000),
+      })
+      .returning();
+
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      assert.equal(payload.waveformJobId, expiredLegacyClaim!.id);
+      await handleWaveformJob(payload, {
+        db: f.database,
+        generateWaveform: async () => validWaveformDocument(),
+      });
+    }, {
+      pid: 10842,
+      instanceId: randomUUID(),
+      isProcessAlive: (pid) => pid === liveOwnerPid,
+      instanceIdForPid: () => null,
+      now: Date.now,
+    });
+
+    assert.deepEqual(recovery.requeuedJobIds, [expiredLegacyClaim!.id]);
+    const [recent] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, recentLegacyClaim!.id));
+    const [expired] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, expiredLegacyClaim!.id));
+    assert.equal(recent.stage, `recovery-submitting:${liveOwnerPid}:${recent.stage!.split(":").at(-1)}`,
+      "a recent claim from a live pre-upgrade process gets a short compatibility grace period");
+    assert.equal(expired.status, "complete", "a recycled PID cannot preserve an old unidentifiable claim indefinitely");
   } finally {
     await f.close();
   }
