@@ -7,7 +7,12 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { makeHomebrewNesRom, checkNesInputs, runNesInputSmoke } from "./arcade-nes-input-checks.mjs";
+import { makeHomebrewNesRom, checkNesInputs, checkNesSaves, runNesInputSmoke } from "./arcade-nes-input-checks.mjs";
+
+if (process.argv.includes("--nes-save-only")) {
+  await runNesInputSmoke({ saveOnly: true });
+  process.exit(0);
+}
 
 if (process.argv.includes("--nes-input-only")) {
   await runNesInputSmoke();
@@ -4015,14 +4020,8 @@ try {
     buffer: makeHomebrewNesRom(),
   });
   report.push(...await checkNesInputs(page));
-  await page.getByRole("button", { name: "Save progress" }).click();
-  await page.getByText("Progress saved on this browser.").waitFor({ timeout: 10000 });
   assert((await page.locator("body").innerText()).includes("mapper IDs 0–5"));
-  await page.reload({ waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "Import and emulate" }).click();
-  await page.getByRole("button", { name: /open-homebrew-fixture\.nes NES homebrew/ }).waitFor({ timeout: 10000 });
-  await page.getByRole("button", { name: "Restore save" }).waitFor({ timeout: 10000 });
-  report.push("Original homebrew iNES visibly responds to keyboard and touch input, renders a frame, and restores its local save after reload.");
+  report.push(...await checkNesSaves(page, "open-homebrew-fixture.nes"));
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   for (const mapper of [6, 8]) {
     await page.locator('input[accept=".nes,application/octet-stream"]').setInputFiles({
