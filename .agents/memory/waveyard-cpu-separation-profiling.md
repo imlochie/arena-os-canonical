@@ -22,3 +22,11 @@ On 2026-11-01, seven consecutive pinned four-model jobs on the same 8-second, 44
 **Why:** Repeated real excerpts show a substantial one-time native/allocator warm-up followed by a plateau, while post-GC JS heap stayed flat. Active inference can consume much more memory than post-job samples, which matters on constrained laptops.
 
 **How to apply:** Treat this as Linux CPU evidence for an 8-second excerpt only. Continue measuring active peaks and Windows separately; do not infer Windows/DirectML memory from this plateau.
+
+On 2026-11-03, six pinned four-model jobs on one 20-second, 44.1 kHz stereo excerpt increased post-release RSS from 620.4 MiB to 715.6, 874.0, 953.2, 1056.5, 1041.5, and 1074.8 MiB. The first three jobs retained 332.7 MiB; final-half median RSS was 1058.1 MiB, only 1.6 MiB above the first steady sample. Post-GC heap stayed at 25.8–26.1 MiB, external memory at 296.8–303.6 MiB after warm-up, and array buffers at 58 MiB.
+
+Six checksum-distinct, 8-second excerpts from different positions of that same source recording were then processed sequentially in the same worker runtime. RSS started at 1065.5 MiB and measured 1153.1, 1189.9, 1189.0, 1207.3, 1231.6, and 1289.0 MiB. Warm-up retention was 123.5 MiB; final-half median RSS was 1260.3 MiB, 53.0 MiB above the first steady sample. Heap stayed at 26.0–26.2 MiB, external memory at 267.1–268.6 MiB, and array buffers at 58 MiB. Both continued-growth measurements were below the 128 MiB bound. The excerpts were not separate source songs.
+
+**Why:** The longest repeated excerpt showed a clear allocator warm-up followed by a small RSS plateau. Changing real input excerpts retained more RSS after warm-up, but the measured growth remained bounded and JavaScript/external buffers stayed nearly flat.
+
+**How to apply:** Treat this as Linux CPU evidence for one source recording only. It does not establish memory behavior across different songs or Windows/DirectML; repeat with multiple approved tracks and measure those providers separately.

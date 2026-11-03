@@ -864,7 +864,7 @@ test("the pinned four-model recipe completes through the production worker on re
   }
 });
 
-test("repeated pinned four-model jobs do not keep growing process memory after session release", { timeout: 900_000 }, async (t) => {
+test("repeated pinned four-model jobs do not keep growing process memory after session release", { timeout: 1_800_000 }, async (t) => {
   const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
   const workspaceRoot = resolve(arenaRoot, "../..");
   const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
@@ -1058,6 +1058,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         baselineMemoryBytes: baseline,
         jobs: jobReports,
         summary: {
+          warmupRetentionBytes: samples[warmupJobs - 1]!.rss - baseline.rss,
           firstSteadyRssBytes: firstSteadySample.rss,
           finalHalfMedianRssBytes: tailMedianRss,
           continuedRssGrowthBytes: continuedRssGrowth,
@@ -1091,6 +1092,222 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
     if (source.directory) await rm(source.directory, { recursive: true, force: true });
   }
 });
+
+const changingMemoryInputsJson = process.env.WAVEYARD_REAL_ORT_MEMORY_WAVS_JSON?.trim();
+if (changingMemoryInputsJson) {
+  test("changing real excerpts do not keep growing process memory after session release", { timeout: 900_000 }, async (t) => {
+    const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+    const workspaceRoot = resolve(arenaRoot, "../..");
+    const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
+    for (const spec of FOUR_STEM_MODELS) {
+      const modelPath = join(modelDirectory, spec.file);
+      if (!existsSync(modelPath)) {
+        t.skip(`Pinned ${spec.id} weights are not installed locally.`);
+        return;
+      }
+      assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
+    }
+
+    const paths = JSON.parse(changingMemoryInputsJson) as unknown;
+    assert.ok(Array.isArray(paths), "WAVEYARD_REAL_ORT_MEMORY_WAVS_JSON must be a JSON array of WAV paths");
+    assert.ok(paths.length >= 6 && paths.length <= 12, "supply between six and twelve changing real excerpts");
+    assert.ok(paths.every((path): path is string => typeof path === "string" && path.trim().length > 0));
+    const sources = await Promise.all(paths.map((path) => createMemoryMeasurementSource(path)));
+    assert.ok(sources.every(({ kind }) => kind === "real"), "every changing input must be a real WAV excerpt");
+    assert.equal(
+      new Set(sources.map(({ checksum }) => checksum)).size,
+      sources.length,
+      "every changing excerpt must have a distinct SHA-256 checksum",
+    );
+
+    const forceGc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+    const sampleMemory = async () => {
+      forceGc?.();
+      await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 150));
+      const { rss, heapUsed, external, arrayBuffers } = process.memoryUsage();
+      return { rss, heapUsed, external, arrayBuffers };
+    };
+    const toMiB = (bytes: number) => Number((bytes / (1024 * 1024)).toFixed(1));
+    const f = await fixture({ model: "stems_4", sourceWavPath: sources[0]!.path });
+    let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
+    try {
+      for (const spec of FOUR_STEM_MODELS) {
+        await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
+      }
+      await f.database
+        .update(processingJobs)
+        .set({
+          status: "failed",
+          stage: "failed",
+          errorCode: "separation_unavailable",
+          errorMessage: "Changing-input memory measurement initialized.",
+          completedAt: new Date(),
+        })
+        .where(eq(processingJobs.id, f.job.id));
+
+      const completedModelPasses: { model: string; chunkCount: number }[] = [];
+      harness = createLocalRetryHarness(f.database, (model, timings) => {
+        completedModelPasses.push({ model, chunkCount: timings.chunkCount });
+      });
+      const storage = getStorage();
+      const baseline = await sampleMemory();
+      const jobReports: {
+        input: { filename: string; sha256: string; durationSeconds: number };
+        requestedDevice: string;
+        resolvedDevice: string;
+        chunkCounts: Record<string, number>;
+        memory: Awaited<ReturnType<typeof sampleMemory>>;
+      }[] = [];
+      const startedAt = Date.now();
+      for (let run = 0; run < sources.length; run += 1) {
+        const source = sources[run]!;
+        // Reuse one durable source row and broker while replacing its audio.
+        // This keeps every changing-input inference in the same worker process.
+        await storage.putFile(f.source.storageKey, source.path, "audio/wav");
+        await f.database
+          .update(sourceAssets)
+          .set({
+            checksumSha256: source.checksum!,
+            durationSeconds: source.sampleCount / 44_100,
+            sampleRate: 44_100,
+            channels: 2,
+            codec: "pcm_s16le",
+            fileSizeBytes: (await stat(source.path)).size,
+          })
+          .where(eq(sourceAssets.id, f.source.id));
+        if (run > 0) {
+          await f.database
+            .update(processingJobs)
+            .set({
+              status: "failed",
+              stage: "failed",
+              errorCode: "separation_unavailable",
+              errorMessage: `Changing-input memory measurement ${run + 1}.`,
+              completedAt: new Date(),
+            })
+            .where(eq(processingJobs.id, f.job.id));
+        }
+
+        const firstPassIndex = completedModelPasses.length;
+        assert.deepEqual(await retrySeparationJob(f.database, f.job.id), { queued: true });
+        const deadline = Date.now() + 240_000;
+        let job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
+        while (
+          (job?.status !== "complete" || harness.broker.stats().succeeded < run + 1) &&
+          job?.status !== "failed" &&
+          Date.now() < deadline
+        ) {
+          await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 100));
+          job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
+        }
+        assert.equal(job?.status, "complete", `changing excerpt ${run + 1} completes before timeout`);
+        assert.equal(harness.broker.stats().submitted, run + 1);
+        assert.equal(harness.broker.stats().succeeded, run + 1);
+        const runPasses = completedModelPasses.slice(firstPassIndex);
+        assert.deepEqual(
+          runPasses.map(({ model }) => model),
+          FOUR_STEM_MODELS.map(({ id }) => id),
+          `changing excerpt ${run + 1} releases all four pinned model sessions`,
+        );
+        assert.ok(
+          runPasses.every(({ chunkCount }) => chunkCount > 1),
+          `changing excerpt ${run + 1} exercised multiple chunks in every model`,
+        );
+        const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+        assert.equal(stems.length, 4, `changing excerpt ${run + 1} persists all four stems`);
+        const memory = await sampleMemory();
+        jobReports.push({
+          input: {
+            filename: basename(source.path),
+            sha256: source.checksum!,
+            durationSeconds: Number((source.sampleCount / 44_100).toFixed(2)),
+          },
+          requestedDevice: job.requestedDevice ?? "unknown",
+          resolvedDevice: job.resolvedDevice ?? "unknown",
+          chunkCounts: Object.fromEntries(runPasses.map(({ model, chunkCount }) => [model, chunkCount])),
+          memory,
+        });
+      }
+
+      const warmupJobs = 3;
+      const firstSteadyRss = jobReports[warmupJobs]!.memory.rss;
+      const postWarmRss = jobReports
+        .slice(warmupJobs)
+        .slice(Math.floor((jobReports.length - warmupJobs) / 2))
+        .map(({ memory }) => memory.rss)
+        .sort((left, right) => left - right);
+      const middleIndex = Math.floor(postWarmRss.length / 2);
+      const tailMedianRss = postWarmRss.length % 2 === 1
+        ? postWarmRss[middleIndex]!
+        : (postWarmRss[middleIndex - 1]! + postWarmRss[middleIndex]!) / 2;
+      const continuedRssGrowth = tailMedianRss - firstSteadyRss;
+      const maxContinuedGrowthBytes = 128 * 1024 * 1024;
+      assert.ok(
+        continuedRssGrowth <= maxContinuedGrowthBytes,
+        `RSS continued growing by ${toMiB(continuedRssGrowth)} MiB after warm-up; ` +
+          `allowed ${toMiB(maxContinuedGrowthBytes)} MiB. ` +
+          `Samples: ${jobReports.map(({ memory }) => `${toMiB(memory.rss)} MiB`).join(" → ")}`,
+      );
+      const requestedDevices = [...new Set(jobReports.map(({ requestedDevice }) => requestedDevice))];
+      const resolvedDevices = [...new Set(jobReports.map(({ resolvedDevice }) => resolvedDevice))];
+      assert.equal(requestedDevices.length, 1, "all changing-input jobs use the same requested provider");
+      assert.equal(resolvedDevices.length, 1, "all changing-input jobs use the same selected provider");
+      assert.ok(resolvedDevices[0] && resolvedDevices[0] !== "unknown");
+
+      const reportPath = process.env.WAVEYARD_REAL_ORT_CHANGING_MEMORY_REPORT?.trim();
+      if (reportPath) {
+        const report = {
+          schemaVersion: 1,
+          benchmark: "changing real excerpts with pinned four-model process memory",
+          measuredMachine: {
+            platform: process.platform,
+            osType: osType(),
+            osRelease: release(),
+            architecture: process.arch,
+            nodeVersion: process.version,
+            cpuModel: cpus()[0]?.model ?? null,
+            logicalCpuCount: cpus().length,
+          },
+          requestedProvider: requestedDevices[0],
+          selectedProvider: resolvedDevices[0],
+          models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
+          baselineMemoryBytes: baseline,
+          warmupJobs,
+          jobs: jobReports,
+          summary: {
+            warmupRetentionBytes: jobReports[warmupJobs - 1]!.memory.rss - baseline.rss,
+            firstSteadyRssBytes: firstSteadyRss,
+            finalHalfMedianRssBytes: tailMedianRss,
+            continuedRssGrowthBytes: continuedRssGrowth,
+            allowedContinuedGrowthBytes: maxContinuedGrowthBytes,
+            continuedGrowthBounded: continuedRssGrowth <= maxContinuedGrowthBytes,
+            samplingMethod: "process.memoryUsage after optional explicit GC and a 150 ms worker-teardown settle",
+            explicitGcAvailable: Boolean(forceGc),
+          },
+        };
+        const resolvedReportPath = resolve(reportPath);
+        await mkdir(dirname(resolvedReportPath), { recursive: true });
+        await writeFile(resolvedReportPath, `${JSON.stringify(report, null, 2)}\n`);
+      }
+
+      t.diagnostic(
+        `Pinned four-model changing-input memory run on ${resolvedDevices[0]}: ${sources.length} distinct excerpts ` +
+          `in ${Date.now() - startedAt} ms; baseline RSS ${toMiB(baseline.rss)} MiB; post-job RSS ` +
+          `${jobReports.map(({ memory }) => toMiB(memory.rss)).join(" → ")} MiB; ` +
+          `${warmupJobs} warm-up jobs retained ${toMiB(jobReports[warmupJobs - 1]!.memory.rss - baseline.rss)} MiB; ` +
+          `first steady RSS ${toMiB(firstSteadyRss)} MiB; final-half median ${toMiB(tailMedianRss)} MiB; ` +
+          `continued growth ${toMiB(continuedRssGrowth)} MiB (limit ${toMiB(maxContinuedGrowthBytes)} MiB); ` +
+          `heapUsed ${jobReports.map(({ memory }) => toMiB(memory.heapUsed)).join(" → ")} MiB; ` +
+          `external ${jobReports.map(({ memory }) => toMiB(memory.external)).join(" → ")} MiB; ` +
+          `arrayBuffers ${jobReports.map(({ memory }) => toMiB(memory.arrayBuffers)).join(" → ")} MiB; ` +
+          `excerpt SHA-256 values ${sources.map(({ checksum }) => checksum).join(", ")}.`,
+      );
+    } finally {
+      await harness?.restore();
+      await f.close();
+    }
+  });
+}
 
 // Opt-in real-audio measurement. Arena decodes supported local audio formats
 // into 44.1 kHz stereo PCM, then bounds processing to a 2–20 second excerpt.
