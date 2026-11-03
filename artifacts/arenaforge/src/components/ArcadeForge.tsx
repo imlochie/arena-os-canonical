@@ -270,8 +270,8 @@ export default function ArcadeForge() {
   // Save-indicator updates are frequent; only source, save identity, or an
   // explicit reload may rebuild srcDoc, since assigning it restarts gameplay.
   const gameDocument = useMemo(() => typeof game?.code === "string"
-    ? browserHtmlAdapter.launch({ source: game.code, saveId: saveSlotId ?? game.id }) : "",
-  [game?.id, game?.code, saveSlotId, gameSaves.reloadKey]);
+    ? browserHtmlAdapter.launch({ source: game.code, saveId: saveSlotId ?? game.id, sessionId: gameSaves.sessionId }) : "",
+  [game?.id, game?.code, saveSlotId, gameSaves.reloadKey, gameSaves.sessionId]);
 
   const fetchHistory = useCallback(async () => {
     setHistoryLoading(true);

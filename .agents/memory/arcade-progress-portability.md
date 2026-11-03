@@ -15,6 +15,12 @@ Treat restore previews as snapshots, not permission to overwrite subsequently ch
 
 **How to apply:** Recheck committed progress before the restore write and invalidate stale previews. A same-tab check is not cross-tab transaction protection; other already-running players need separate stale-writer handling.
 
+Do not use an iframe `WindowProxy` alone to identify the active game document; the proxy can remain the same when that browsing context navigates to a new document.
+
+**Why:** A delayed save message from the outgoing game's document was accepted after switching games even though the parent checked `event.source` against the active iframe window.
+
+**How to apply:** Give each player document a distinct session ID, include it in save and clear messages, and accept messages only when both the game ID and current document session ID match. Test by holding a real outgoing-frame message and delivering it after switching games.
+
 For a continuously running emulator, pause execution and new input during a valid restore preview, then resume on cancellation without accumulating a catch-up backlog.
 
 **Why:** Machine state changes continuously even without an explicit save. A paused review is more usable than repeatedly invalidating its confirmation as the emulator advances.

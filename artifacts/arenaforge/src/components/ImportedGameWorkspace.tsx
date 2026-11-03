@@ -515,8 +515,8 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   // Save-indicator updates must not regenerate srcDoc with newly saved bytes:
   // changing that attribute navigates the iframe and resets live gameplay.
   const selectedHtmlDocument = useMemo(
-    () => runtimeGame?.kind === "html" ? browserHtmlAdapter.launch({ source: runtimeGame.source, saveId: runtimeSaveId }) : "",
-    [runtimeGame?.kind, runtimeSaveId, runtimeGame?.source, gameSaves.reloadKey],
+    () => runtimeGame?.kind === "html" ? browserHtmlAdapter.launch({ source: runtimeGame.source, saveId: runtimeSaveId, sessionId: gameSaves.sessionId }) : "",
+    [runtimeGame?.kind, runtimeSaveId, runtimeGame?.source, gameSaves.reloadKey, gameSaves.sessionId],
   );
 
   useEffect(() => () => revisionAbortRef.current?.abort(), []);

@@ -57,7 +57,7 @@ function saveRuntimeScript(gameId: string, sessionId: string, saved: GameSaveDat
     `})();</script>`;
 }
 
-export function createGameSandboxDocument(source: string, gameId: string, sessionId = crypto.randomUUID()) {
+export function createGameSandboxDocument(source: string, gameId: string, sessionId: string = crypto.randomUUID()) {
   const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' data: blob:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; media-src data: blob:; font-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">`;
   const runtime = saveRuntimeScript(gameId, sessionId, readSaveData(gameId));
   if (/<head\b[^>]*>/i.test(source)) {
