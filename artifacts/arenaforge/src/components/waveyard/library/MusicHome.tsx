@@ -72,6 +72,34 @@ interface RetryableLibraryUpload {
   reason: string;
 }
 
+type RestoreAudioItemResult = {
+  status: "restored" | "duplicate" | "failed";
+  title: string;
+  trackId?: string;
+  error?: string;
+};
+
+type RestoreAudioFileProgress = {
+  phase: "validating" | "restoring";
+  completedFiles: number;
+  totalFiles: number | null;
+  currentTitle?: string;
+  result?: RestoreAudioItemResult;
+};
+
+type RestoreAudioStreamEvent =
+  | ({ type: "progress" } & RestoreAudioFileProgress)
+  | {
+      type: "complete";
+      totalTracks: number;
+      restored: number;
+      duplicates: number;
+      failed: number;
+      totalAudioBytes: number;
+      results: RestoreAudioItemResult[];
+    }
+  | { type: "error"; error: string; retryable: boolean };
+
 function uploadFileIdentity(file: File): string {
   return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
 }
@@ -377,6 +405,8 @@ export function MusicHome() {
   const [restoreSpaceConfirmed, setRestoreSpaceConfirmed] = useState(false);
   const [restoreAudioBusy, setRestoreAudioBusy] = useState(false);
   const [restoreAudioProgress, setRestoreAudioProgress] = useState<number | null>(null);
+  const [restoreAudioFileProgress, setRestoreAudioFileProgress] = useState<RestoreAudioFileProgress | null>(null);
+  const [restoreAudioResults, setRestoreAudioResults] = useState<RestoreAudioItemResult[] | null>(null);
   const [restoreAudioMessage, setRestoreAudioMessage] = useState<string | null>(null);
   const [restoreAudioNeedsRetry, setRestoreAudioNeedsRetry] = useState(false);
   const restoreFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1057,10 +1087,53 @@ export function MusicHome() {
 
     setRestoreAudioBusy(true);
     setRestoreAudioProgress(0);
+    setRestoreAudioFileProgress(null);
+    setRestoreAudioResults(null);
     setRestoreAudioMessage(null);
     setRestoreAudioNeedsRetry(false);
     const request = new XMLHttpRequest();
     restoreRequestRef.current = request;
+    let responseOffset = 0;
+    let responseRemainder = "";
+    let terminalEvent: Extract<RestoreAudioStreamEvent, { type: "complete" | "error" }> | null = null;
+    const handleRestoreEvent = (line: string) => {
+      if (line.trim() === "") return;
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (typeof value !== "object" || value === null || !("type" in value)) return;
+      const event = value as RestoreAudioStreamEvent;
+      if (event.type === "progress") {
+        if (
+          (event.phase === "validating" || event.phase === "restoring") &&
+          Number.isSafeInteger(event.completedFiles) &&
+          event.completedFiles >= 0 &&
+          (event.totalFiles === null || (Number.isSafeInteger(event.totalFiles) && event.totalFiles > 0))
+        ) {
+          setRestoreAudioFileProgress({
+            phase: event.phase,
+            completedFiles: event.completedFiles,
+            totalFiles: event.totalFiles,
+            ...(typeof event.currentTitle === "string" ? { currentTitle: event.currentTitle } : {}),
+            ...(event.result === undefined ? {} : { result: event.result }),
+          });
+        }
+      } else if (event.type === "complete" || event.type === "error") {
+        terminalEvent = event;
+      }
+    };
+    const consumeRestoreEvents = (final = false) => {
+      const responseText = request.responseText;
+      const chunk = responseText.slice(responseOffset);
+      responseOffset = responseText.length;
+      const lines = `${responseRemainder}${chunk}`.split("\n");
+      responseRemainder = final ? "" : lines.pop() ?? "";
+      for (const line of lines) handleRestoreEvent(line.replace(/\r$/, ""));
+      if (final && responseRemainder !== "") handleRestoreEvent(responseRemainder.replace(/\r$/, ""));
+    };
     request.open("POST", "/api/library/audio-backup/restore");
     request.setRequestHeader("Content-Type", "application/zip");
     request.withCredentials = true;
@@ -1069,33 +1142,47 @@ export function MusicHome() {
         setRestoreAudioProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
       }
     };
-    request.upload.onload = () => setRestoreAudioProgress(100);
+    request.upload.onload = () => {
+      setRestoreAudioProgress(100);
+      setRestoreAudioFileProgress({ phase: "validating", completedFiles: 0, totalFiles: null });
+    };
+    request.onprogress = () => consumeRestoreEvents();
     request.onload = () => {
+      consumeRestoreEvents(true);
       restoreRequestRef.current = null;
       setRestoreAudioBusy(false);
       setRestoreAudioProgress(null);
-      let body: {
-        error?: unknown;
-        restored?: unknown;
-        duplicates?: unknown;
-        failed?: unknown;
-        results?: Array<{ status?: unknown; title?: unknown }>;
-      } = {};
-      try {
-        body = JSON.parse(request.responseText) as typeof body;
-      } catch {
-        setRestoreAudioMessage("The restore server returned an unreadable response. Retry the ZIP; already-restored audio will be skipped.");
-        return;
-      }
       if (request.status < 200 || request.status >= 300) {
-        setRestoreAudioMessage(typeof body.error === "string" ? body.error : "Could not restore this Waveyard ZIP.");
+        let errorMessage = "Could not restore this Waveyard ZIP.";
+        try {
+          const body = JSON.parse(request.responseText) as { error?: unknown };
+          if (typeof body.error === "string") errorMessage = body.error;
+        } catch {
+          // A failed HTTP response may not contain JSON.
+        }
+        setRestoreAudioMessage(errorMessage);
         return;
       }
-      const restored = typeof body.restored === "number" ? body.restored : 0;
-      const duplicates = typeof body.duplicates === "number" ? body.duplicates : 0;
-      const failed = typeof body.failed === "number" ? body.failed : 0;
-      const firstFailure = body.results?.find((result) => result.status === "failed");
-      const failureTitle = typeof firstFailure?.title === "string" ? ` First problem: ${firstFailure.title}.` : "";
+      if (terminalEvent === null) {
+        setRestoreAudioMessage("The restore server returned an unreadable response. Retry the ZIP; already-restored audio will be skipped.");
+        setRestoreAudioNeedsRetry(true);
+        return;
+      }
+      if (terminalEvent.type === "error") {
+        setRestoreAudioMessage(
+          `${terminalEvent.error}${terminalEvent.retryable ? " Retry this ZIP; completed files will be skipped safely." : ""}`,
+        );
+        setRestoreAudioNeedsRetry(terminalEvent.retryable);
+        void refresh(search);
+        return;
+      }
+      const body = terminalEvent;
+      const restored = body.restored;
+      const duplicates = body.duplicates;
+      const failed = body.failed;
+      const firstFailure = body.results.find((result) => result.status === "failed");
+      const failureTitle = firstFailure ? ` First problem: ${firstFailure.title}.` : "";
+      setRestoreAudioResults(body.results);
       setRestoreAudioMessage(
         `Restored ${restored} original${restored === 1 ? "" : "s"}; skipped ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${failed} failed.${failed > 0 ? `${failureTitle} Retry this ZIP; completed files will be skipped.` : ""}`,
       );
@@ -1111,14 +1198,14 @@ export function MusicHome() {
       restoreRequestRef.current = null;
       setRestoreAudioBusy(false);
       setRestoreAudioProgress(null);
-      setRestoreAudioMessage("The upload connection failed. Retry the ZIP; repeated files are detected and skipped.");
+      setRestoreAudioMessage("The restore connection failed. Retry the ZIP; completed files are detected and skipped.");
       setRestoreAudioNeedsRetry(true);
     };
     request.onabort = () => {
       restoreRequestRef.current = null;
       setRestoreAudioBusy(false);
       setRestoreAudioProgress(null);
-      setRestoreAudioMessage("Restore upload cancelled. Retry the ZIP; repeated files are detected and skipped.");
+      setRestoreAudioMessage("Restore cancelled. Retry the ZIP to continue; completed files are detected and skipped.");
       setRestoreAudioNeedsRetry(true);
     };
     request.send(restoreArchiveFile);
@@ -1692,6 +1779,8 @@ export function MusicHome() {
                   onChange={(event) => {
                     setRestoreArchiveFile(event.target.files?.[0] ?? null);
                     setRestoreSpaceConfirmed(false);
+                    setRestoreAudioFileProgress(null);
+                    setRestoreAudioResults(null);
                     setRestoreAudioMessage(null);
                     setRestoreAudioNeedsRetry(false);
                     event.currentTarget.value = "";
@@ -1708,8 +1797,12 @@ export function MusicHome() {
                 disabled={restoreArchiveFile === null || !restoreSpaceConfirmed || restoreAudioBusy || restoreArchiveFile.size > MAX_AUDIO_RESTORE_BYTES}
               >
                 {restoreAudioBusy
-                  ? restoreAudioProgress === 100 ? "Validating and restoring…" : `Uploading ${restoreAudioProgress ?? 0}%…`
-                  : restoreAudioNeedsRetry ? "Retry failed tracks" : "Restore originals"}
+                  ? restoreAudioProgress === 100
+                    ? restoreAudioFileProgress?.phase === "restoring"
+                      ? `Restoring ${restoreAudioFileProgress.completedFiles} of ${restoreAudioFileProgress.totalFiles ?? "…"}`
+                      : `Checking ${restoreAudioFileProgress?.completedFiles ?? 0} of ${restoreAudioFileProgress?.totalFiles ?? "…"}`
+                    : `Uploading ${restoreAudioProgress ?? 0}%…`
+                  : restoreAudioNeedsRetry ? "Retry remaining files" : "Restore originals"}
               </button>
               {restoreAudioBusy && (
                 <button type="button" className="button secondary" onClick={() => restoreRequestRef.current?.abort()}>
@@ -1722,8 +1815,33 @@ export function MusicHome() {
             )}
             {restoreAudioBusy && (
               <div className="library-audio-restore-progress">
-                <progress aria-label="Audio backup upload progress" max={100} value={restoreAudioProgress ?? 0} />
-                <small>{restoreAudioProgress === 100 ? "Upload complete — validating checksums and restoring files…" : `Uploading ZIP: ${restoreAudioProgress ?? 0}%`}</small>
+                {restoreAudioProgress !== 100 ? (
+                  <>
+                    <progress aria-label="Audio backup upload progress" max={100} value={restoreAudioProgress ?? 0} />
+                    <small role="status" aria-live="polite">
+                      Uploading ZIP: {restoreAudioProgress ?? 0}%
+                    </small>
+                  </>
+                ) : (
+                  <>
+                    {restoreAudioFileProgress?.totalFiles !== null && restoreAudioFileProgress !== null && (
+                      <progress
+                        aria-label="Audio files processed"
+                        max={restoreAudioFileProgress.totalFiles}
+                        value={restoreAudioFileProgress.completedFiles}
+                      />
+                    )}
+                    <small role="status" aria-live="polite" data-testid="audio-restore-phase">
+                      {restoreAudioFileProgress === null || restoreAudioFileProgress.totalFiles === null
+                        ? "Upload complete — checking backup contents…"
+                        : restoreAudioFileProgress.phase === "validating"
+                          ? `Checking checksums: ${restoreAudioFileProgress.completedFiles} of ${restoreAudioFileProgress.totalFiles} audio files${restoreAudioFileProgress.currentTitle ? ` · ${restoreAudioFileProgress.currentTitle}` : ""}`
+                          : restoreAudioFileProgress.result
+                            ? `${restoreAudioFileProgress.result.status === "restored" ? "Restored" : restoreAudioFileProgress.result.status === "duplicate" ? "Already present" : "Failed"} ${restoreAudioFileProgress.completedFiles} of ${restoreAudioFileProgress.totalFiles} · ${restoreAudioFileProgress.result.title}`
+                            : `Restoring ${restoreAudioFileProgress.completedFiles} of ${restoreAudioFileProgress.totalFiles} audio files${restoreAudioFileProgress.currentTitle ? ` · ${restoreAudioFileProgress.currentTitle}` : ""}`}
+                    </small>
+                  </>
+                )}
               </div>
             )}
             <label className="library-audio-restore-confirm">
@@ -1737,6 +1855,19 @@ export function MusicHome() {
             </label>
             <small>Only Waveyard audio ZIPs are accepted. Existing identical audio is skipped; restored tracks are not automatically queued for stem separation.</small>
             {restoreAudioMessage !== null && <p className="library-message" role="status" aria-live="polite">{restoreAudioMessage}</p>}
+            {restoreAudioResults !== null && (
+              <ul className="library-audio-restore-results" aria-label="Audio backup file results" data-testid="audio-restore-results">
+                {restoreAudioResults.map((result, index) => (
+                  <li key={`${result.title}-${index}`} data-testid="audio-restore-result">
+                    <span>{result.title}</span>
+                    <span>
+                      {result.status === "restored" ? "Restored" : result.status === "duplicate" ? "Already in library" : "Failed"}
+                    </span>
+                    {result.error && <small>{result.error}</small>}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </section>
         <AudioCaptureWorkbench

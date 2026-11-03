@@ -231,7 +231,31 @@ async function setupIsolatedEnvironment() {
   trackPlayedRoute = trackPlayed;
   pgPool = (await import("../lib/db/src/index.ts")).pool;
 
+  const browserOrigin = new URL(base).origin;
   routeServer = createServer(async (incoming, outgoing) => {
+    const incomingPath = new URL(incoming.url ?? "/", "http://127.0.0.1").pathname;
+    const origin = incoming.headers.origin;
+    const corsHeaders = origin === browserOrigin
+      ? {
+          "Access-Control-Allow-Origin": browserOrigin,
+          "Access-Control-Allow-Credentials": "true",
+          "Vary": "Origin",
+          ...(incoming.headers["access-control-request-private-network"] === "true"
+            ? { "Access-Control-Allow-Private-Network": "true" }
+            : {}),
+        }
+      : {};
+    if (incoming.method === "OPTIONS") {
+      apiRequests.push({ method: "OPTIONS", path: incomingPath });
+      outgoing.writeHead(204, {
+        ...corsHeaders,
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": incoming.headers["access-control-request-headers"] ?? "content-type",
+        "Access-Control-Max-Age": "0",
+      });
+      outgoing.end();
+      return;
+    }
     try {
       const body = await collectBody(incoming);
       const headers = new Headers();
@@ -245,12 +269,42 @@ async function setupIsolatedEnvironment() {
         ...((incoming.method === "GET" || incoming.method === "HEAD" || body.length === 0) ? {} : { body }),
       });
       const response = await dispatchApiRequest(request);
-      const responseBody = Buffer.from(await response.arrayBuffer());
-      outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
-      outgoing.end(responseBody);
+      outgoing.writeHead(response.status, { ...Object.fromEntries(response.headers.entries()), ...corsHeaders });
+      outgoing.flushHeaders();
+      if (response.body === null) {
+        outgoing.end();
+        return;
+      }
+      const reader = response.body.getReader();
+      const cancelResponse = () => {
+        if (!outgoing.writableEnded) void reader.cancel(new Error("Browser closed the isolated response.")).catch(() => undefined);
+      };
+      outgoing.once("close", cancelResponse);
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          if (!outgoing.write(Buffer.from(next.value))) {
+            await new Promise<void>((resolve) => outgoing.once("drain", resolve));
+          }
+          // Keep streamed restore events distinct so the browser acceptance
+          // can observe intermediate file counts, not only the terminal result.
+          if (incomingPath === "/api/library/audio-backup/restore") {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+        }
+        outgoing.end();
+      } finally {
+        outgoing.off("close", cancelResponse);
+        reader.releaseLock();
+      }
     } catch (error) {
-      outgoing.writeHead(500, { "Content-Type": "application/json" });
-      outgoing.end(JSON.stringify({ error: error instanceof Error ? error.message : "Isolated route failed." }));
+      if (outgoing.headersSent) {
+        outgoing.destroy(error instanceof Error ? error : undefined);
+      } else {
+        outgoing.writeHead(500, { "Content-Type": "application/json", ...corsHeaders });
+        outgoing.end(JSON.stringify({ error: error instanceof Error ? error.message : "Isolated route failed." }));
+      }
     }
   });
   const apiPort = await freePort();
@@ -362,6 +416,13 @@ test("a real restore route serves playable MP3, FLAC, and M4A files in an isolat
         method: browserRequest.method(),
         path: requestUrl.pathname,
       });
+      if (
+        requestUrl.pathname === "/api/library/audio-backup/restore" &&
+        (browserRequest.method() === "POST" || browserRequest.method() === "OPTIONS")
+      ) {
+        await route.continue({ url: `${apiBase}${requestUrl.pathname}${requestUrl.search}` });
+        return;
+      }
       const headers = browserRequest.headers();
       delete headers.host;
       delete headers["content-length"];
@@ -395,23 +456,68 @@ test("a real restore route serves playable MP3, FLAC, and M4A files in an isolat
     });
     assert.equal(await restoreButton.isDisabled(), true, "file selection alone does not bypass the disk-space confirmation");
     await page.getByRole("checkbox", { name: /enough disk space/i }).check();
+    await page.locator(".library-audio-restore").evaluate((container) => {
+      const progressWindow = window as unknown as { __restoreProgressHistory: string[] };
+      progressWindow.__restoreProgressHistory = [];
+      const observer = new MutationObserver(() => {
+        const text = container.querySelector('[data-testid="audio-restore-phase"]')?.textContent?.trim();
+        if (text && progressWindow.__restoreProgressHistory.at(-1) !== text) {
+          progressWindow.__restoreProgressHistory.push(text);
+        }
+      });
+      observer.observe(container, {
+        characterData: true,
+        childList: true,
+        subtree: true,
+      });
+    });
 
     const restoreResponsePromise = page.waitForResponse((response) =>
-      new URL(response.url()).pathname === "/api/library/audio-backup/restore",
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/library/audio-backup/restore",
     );
     await restoreButton.click();
     const restoreResponse = await restoreResponsePromise;
     assert.equal(restoreResponse.status(), 200, "the browser posted the archive through the real restore handler");
-    const restored = await restoreResponse.json();
+    await page.waitForFunction(() => {
+      const status = document.querySelector('[data-testid="audio-restore-phase"]')?.textContent ?? "";
+      return status.includes("Checking checksums: 0 of 3");
+    }, null, { timeout: 20_000 });
+    const responseLines = (await restoreResponse.text())
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const restored = responseLines.at(-1);
+    assert.equal(restored?.type, "complete", "the stream ends with final per-file results");
+    assert.ok(responseLines.some((event) => event.type === "progress" && event.phase === "validating" && event.completedFiles === 1));
+    assert.ok(responseLines.some((event) => event.type === "progress" && event.phase === "restoring" && event.completedFiles === 1));
+    const progressHistory = await page.evaluate(() =>
+      (window as unknown as { __restoreProgressHistory: string[] }).__restoreProgressHistory,
+    );
+    assert.ok(progressHistory.some((text) => text.includes("Checking checksums: 0 of 3")), JSON.stringify(progressHistory));
+    assert.ok(progressHistory.some((text) => text.includes("Checking checksums: 1 of 3")), JSON.stringify(progressHistory));
+    assert.ok(progressHistory.some((text) => text.includes("Restoring 0 of 3")), JSON.stringify(progressHistory));
+    assert.ok(progressHistory.some((text) => text.includes("Restored 1 of 3")), JSON.stringify(progressHistory));
     assert.deepEqual(
-      { totalTracks: restored.totalTracks, restored: restored.restored, duplicates: restored.duplicates, failed: restored.failed },
+      {
+        totalTracks: restored?.totalTracks,
+        restored: restored?.restored,
+        duplicates: restored?.duplicates,
+        failed: restored?.failed,
+      },
       { totalTracks: audioFormats.length, restored: audioFormats.length, duplicates: 0, failed: 0 },
     );
+    const restoredResults = restored?.results as Array<{ status: string; title: string }>;
     assert.deepEqual(
-      restored.results.map((result: { title: string }) => result.title),
+      restoredResults.map((result) => result.title),
       audioFixtures.map((fixture) => fixture.title),
     );
-    const restoredTrackIds = restored.results.map((result: { trackId: string }) => result.trackId);
+    assert.deepEqual(
+      await page.locator("[data-testid='audio-restore-result']").allInnerTexts(),
+      audioFixtures.map((fixture) => `${fixture.title}\nRestored`),
+      "the browser presents a final result for every file",
+    );
+    const restoredTrackIds = restoredResults.map((result: { trackId: string }) => result.trackId);
     assert.ok(restoredTrackIds.every((id: string) => /^[0-9a-f-]{36}$/i.test(id)));
     await page.getByRole("status").filter({ hasText: /Restored 3 originals/ }).waitFor({ timeout: 10_000 });
 

@@ -32,6 +32,14 @@ export type AudioBackupManifestRow = {
   sha256: string;
 };
 
+export type AudioRestoreProgress<T = unknown> = {
+  phase: "validating" | "restoring";
+  completedFiles: number;
+  totalFiles: number;
+  currentTitle?: string;
+  result?: T;
+};
+
 type ZipEntry = {
   name: string;
   crc32: number;
@@ -380,6 +388,7 @@ export async function restoreVerifiedAudioBackupZip<T>(
   archivePath: string,
   onAudioFile: (row: AudioBackupManifestRow, localPath: string) => Promise<T>,
   signal?: AbortSignal,
+  onProgress?: (progress: AudioRestoreProgress<T>) => void,
 ): Promise<{ totalBytes: number; results: T[] }> {
   signal?.throwIfAborted();
   const entries = await readZipEntries(archivePath);
@@ -416,7 +425,8 @@ export async function restoreVerifiedAudioBackupZip<T>(
 
   // Verify every audio checksum before adding the first library entry. This
   // prevents a damaged archive from producing a misleading partial restore.
-  for (const row of rows) {
+  onProgress?.({ phase: "validating", completedFiles: 0, totalFiles: rows.length });
+  for (const [index, row] of rows.entries()) {
     signal?.throwIfAborted();
     const entry = audioEntries.get(row.backupPath)!;
     const verified = await verifyEntry(archivePath, entry, signal);
@@ -427,13 +437,26 @@ export async function restoreVerifiedAudioBackupZip<T>(
     ) {
       fail(`Audio failed checksum verification: ${row.title}.`);
     }
+    onProgress?.({
+      phase: "validating",
+      completedFiles: index + 1,
+      totalFiles: rows.length,
+      currentTitle: row.title,
+    });
   }
 
   const tempDirectory = await mkdtemp(join(tmpdir(), "waveyard-audio-restore-"));
   const results: T[] = [];
   try {
+    onProgress?.({ phase: "restoring", completedFiles: 0, totalFiles: rows.length });
     for (const row of rows) {
       signal?.throwIfAborted();
+      onProgress?.({
+        phase: "restoring",
+        completedFiles: results.length,
+        totalFiles: rows.length,
+        currentTitle: row.title,
+      });
       const entry = audioEntries.get(row.backupPath)!;
       const localPath = join(tempDirectory, `${results.length}-${randomUUID()}${extname(row.originalFilename).toLowerCase()}`);
       const hash = createHash("sha256");
@@ -456,7 +479,15 @@ export async function restoreVerifiedAudioBackupZip<T>(
       if (bytesWritten !== row.fileSizeBytes || ((crc ^ 0xffffffff) >>> 0) !== entry.crc32 || hash.digest("hex") !== row.sha256) {
         fail(`Audio failed checksum verification during restore: ${row.title}.`);
       }
-      results.push(await onAudioFile(row, localPath));
+      const result = await onAudioFile(row, localPath);
+      results.push(result);
+      onProgress?.({
+        phase: "restoring",
+        completedFiles: results.length,
+        totalFiles: rows.length,
+        currentTitle: row.title,
+        result,
+      });
       await rm(localPath, { force: true });
     }
     return { totalBytes, results };
