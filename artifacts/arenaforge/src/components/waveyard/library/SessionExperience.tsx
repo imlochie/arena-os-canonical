@@ -157,6 +157,32 @@ interface TemporaryIsolation {
 
 type LibraryTrackOption = Pick<LibraryTrackSummary, "id" | "title" | "artist" | "analysis" | "stemAvailability">;
 
+function getPersistedSwapSetup(
+  session: SessionDetail | null,
+  item: SessionTrackItem | null,
+  library: LibraryTrackOption[],
+  cancelledSwapIds: Set<string>,
+) {
+  const swaps: Record<string, string> = {};
+  const tempoStretchRatios: Record<string, number> = {};
+  if (session === null || item === null) return { swaps, tempoStretchRatios };
+
+  for (const swap of session.swaps) {
+    if (swap.sessionTrackId !== item.id || cancelledSwapIds.has(swap.id)) continue;
+    const donor = session.tracks.find((track) => track.track.id === swap.toTrackId);
+    const donorStem = donor?.stems.find((stem) => stem.stemType === swap.stemType)
+      ?? swap.donorTrack?.stems.find((stem) => stem.stemType === swap.stemType);
+    if (donorStem) swaps[swap.stemType] = donorStem.id;
+
+    const donorBpm = donor?.analysis?.bpm
+      ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.bpm
+      ?? null;
+    const ratio = liveStemTempoStretchRatio(item.analysis?.bpm ?? null, donorBpm);
+    if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
+  }
+  return { swaps, tempoStretchRatios };
+}
+
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
   const separatedStems = item.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
   if (separatedStems.length > 0) {
@@ -1424,33 +1450,16 @@ export default function SessionExperience({
     return 0;
   };
 
-  const activeSwaps = useMemo(() => {
-    const map: Record<string, string> = {};
-    if (session === null || currentItem === null) return map;
-    for (const swap of session.swaps) {
-      if (swap.sessionTrackId !== currentItem.id) continue;
-      if (cancelledSwapIds.has(swap.id)) continue;
-      const donor = session.tracks.find((t) => t.track.id === swap.toTrackId);
-      const donorStem = donor?.stems.find((s) => s.stemType === swap.stemType)
-        ?? swap.donorTrack?.stems.find((s) => s.stemType === swap.stemType);
-      if (donorStem) map[swap.stemType] = donorStem.id;
-    }
-    return map;
-  }, [session, currentItem, cancelledSwapIds]);
-
-  const activeSwapTempoStretchRatios = useMemo(() => {
-    const ratios: Record<string, number> = {};
-    if (session === null || currentItem === null) return ratios;
-    for (const swap of session.swaps) {
-      if (swap.sessionTrackId !== currentItem.id) continue;
-      const donorBpm = session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis?.bpm
-        ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.bpm
-        ?? null;
-      const ratio = liveStemTempoStretchRatio(currentItem.analysis?.bpm ?? null, donorBpm);
-      if (ratio !== null) ratios[swap.stemType] = ratio;
-    }
-    return ratios;
-  }, [session, currentItem, library]);
+  const currentSwapSetup = useMemo(
+    () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds),
+    [session, currentItem, library, cancelledSwapIds],
+  );
+  const nextSwapSetup = useMemo(
+    () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds),
+    [session, nextItem, library, cancelledSwapIds],
+  );
+  const activeSwaps = currentSwapSetup.swaps;
+  const activeSwapTempoStretchRatios = currentSwapSetup.tempoStretchRatios;
 
   const publishTransport = useCallback((snapshot: {
     trackId: string | null;
@@ -3532,20 +3541,21 @@ export default function SessionExperience({
   const deckProps = (deckIndex: 0 | 1) => {
     const item = deckItems[deckIndex];
     const isActive = deckIndex === activeDeck;
+    const swapSetup = isActive ? currentSwapSetup : nextSwapSetup;
     const liveSwapFailures = failedLiveSwaps.filter((failure) => failure.sessionTrackId === item?.id);
     return {
       deckIndex,
       item,
       active: isActive,
       startAt: startAtFor(deckIndex),
-      swaps: isActive ? activeSwaps : {},
-      swapSelectionTimes: isActive && item !== null
+      swaps: swapSetup.swaps,
+      swapSelectionTimes: item !== null
         ? Object.fromEntries(item.stems.flatMap((stem) => {
           const selectedAt = swapSelectionTimes[`${item.id}:${stem.stemType}`];
           return selectedAt === undefined ? [] : [[stem.stemType, selectedAt]];
         }))
         : {},
-      tempoStretchRatios: isActive ? activeSwapTempoStretchRatios : {},
+      tempoStretchRatios: swapSetup.tempoStretchRatios,
       masterLevel,
       autoPlay: item !== null && autoPlayId === item.id && (isActive || resumeAt?.itemId === item.id),
       onAutoPlayed: () => {
