@@ -3013,6 +3013,13 @@ try {
         "the enlarged touch trim handle must change a clip's duration");
       await page.locator(".save-state.saved").waitFor({ timeout: 5_000 });
       const touchPersistedClip = studioRemixResponse.tracks[0].clips[0];
+       const touchClipSourceIdentity = {
+         remixTrackId: touchPersistedClip.remixTrackId,
+         stemAssetId: touchPersistedClip.stemAssetId,
+         trackStemAssetId: studioRemixResponse.tracks[0].stemAssetId,
+         sourceAssetId: studioStemRows.find((stem) => stem.id === touchPersistedClip.stemAssetId)?.sourceAssetId,
+       };
+       assert.ok(touchClipSourceIdentity.sourceAssetId, "the touch-trimmed stem resolves to its original linked source");
       assert.equal(touchPersistedClip.timelineStartMs, Number.parseFloat(movedClipLeft) / 80 * 1000,
         "the successful trim must retain the saved touch move");
       assert.equal(touchPersistedClip.durationMs, touchTrimSavedClip.durationMs,
@@ -3068,7 +3075,130 @@ try {
       assert.equal(await afterFailureClip.evaluate((element) => element.style.width),
         `${Math.max(18, (touchPersistedClip.durationMs / 1000) * 80)}px`,
         "reopening after a failed save must retain the previous saved trim, not the failed edit");
-      report.push("Touch move and trim edits reach the remix APIs and restore after reopening; rejected touch saves are visible and leave the prior saved arrangement intact.");
+
+       const tracksBeforeSuccessfulLeftTrim = structuredClone(studioRemixResponse.tracks);
+       const saveAttemptCountBeforeLeftTrim = studioSaveAttempts.length;
+       const savedStateCountBeforeLeftTrim = studioSavedStates.length;
+       const successfulLeftTrimResponsePromise = page.waitForResponse((response) =>
+         new URL(response.url()).pathname === `/api/remixes/${studioRemixId}` &&
+         response.request().method() === "PUT");
+       const successfulLeftTrimHandle = afterFailureClip.locator(".trim-left");
+       await successfulLeftTrimHandle.scrollIntoViewIfNeeded();
+       await dragTouch(successfulLeftTrimHandle, 48, 0);
+       const successfulLeftTrimResponse = await successfulLeftTrimResponsePromise;
+       assert(successfulLeftTrimResponse.ok(), "a successful touch left trim must save through the remix API");
+       const successfulLeftTrimAttempt = studioSaveAttempts.at(-1).tracks[0].clips[0];
+       const successfulLeftTrimClip = studioRemixResponse.tracks[0].clips[0];
+       const leftTrimBeforeValues = [
+         touchPersistedClip.timelineStartMs,
+         touchPersistedClip.sourceOffsetMs,
+         touchPersistedClip.durationMs,
+       ];
+       const leftTrimAfterValues = [
+         successfulLeftTrimClip.timelineStartMs,
+         successfulLeftTrimClip.sourceOffsetMs,
+         successfulLeftTrimClip.durationMs,
+       ];
+       assert.notDeepEqual(leftTrimAfterValues, leftTrimBeforeValues,
+         "the successful left trim must persist a distinct timeline and source window");
+       assert(successfulLeftTrimClip.timelineStartMs > touchPersistedClip.timelineStartMs,
+         "the left trim must move the timeline start later");
+       assert(successfulLeftTrimClip.sourceOffsetMs > touchPersistedClip.sourceOffsetMs,
+         "the left trim must advance the source offset");
+       assert(successfulLeftTrimClip.durationMs < touchPersistedClip.durationMs,
+         "the left trim must shorten the visible clip duration");
+       assert.equal(
+         successfulLeftTrimClip.sourceOffsetMs - touchPersistedClip.sourceOffsetMs,
+         successfulLeftTrimClip.timelineStartMs - touchPersistedClip.timelineStartMs,
+         "the un-stretched left trim must advance source audio by the same amount as the timeline start",
+       );
+       assert.deepEqual(
+         [successfulLeftTrimAttempt.timelineStartMs, successfulLeftTrimAttempt.sourceOffsetMs, successfulLeftTrimAttempt.durationMs],
+         leftTrimAfterValues,
+         "the successful touch save request must contain the new timeline start, source offset, and duration",
+       );
+       assert.equal(successfulLeftTrimAttempt.remixTrackId, touchClipSourceIdentity.remixTrackId);
+       assert.equal(successfulLeftTrimAttempt.stemAssetId, touchClipSourceIdentity.stemAssetId,
+         "left-trimming must keep the original stem attached to its clip");
+       assert.equal(studioRemixResponse.tracks[0].stemAssetId, touchClipSourceIdentity.trackStemAssetId,
+         "left-trimming must not replace the remix track's original stem");
+       assert.equal(studioStemRows.find((stem) => stem.id === successfulLeftTrimClip.stemAssetId)?.sourceAssetId,
+         touchClipSourceIdentity.sourceAssetId,
+         "left-trimming must retain the stem's original source audio");
+       const successfulLeftTrimSavedState = await successfulLeftTrimResponse.json();
+       assert.deepEqual(
+         [
+           successfulLeftTrimSavedState.tracks[0].clips[0].timelineStartMs,
+           successfulLeftTrimSavedState.tracks[0].clips[0].sourceOffsetMs,
+           successfulLeftTrimSavedState.tracks[0].clips[0].durationMs,
+         ],
+         leftTrimAfterValues,
+         "the successful remix response must contain the complete left-trimmed source window",
+       );
+       await page.locator(".save-state.saved").waitFor({ timeout: 5_000 });
+
+       const reopenedLeftTrimRemixPromise = page.waitForResponse((response) =>
+         new URL(response.url()).pathname === `/api/remixes/${studioRemixId}` &&
+         response.request().method() === "GET");
+       const reopenedLeftTrimProjectPromise = page.waitForResponse((response) =>
+         new URL(response.url()).pathname === `/api/waveyard/projects/${studioProjectId}` &&
+         response.request().method() === "GET");
+       await page.reload({ waitUntil: "domcontentloaded" });
+       await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
+       await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
+       const [reopenedLeftTrimRemixResponse, reopenedLeftTrimProjectResponse] = await Promise.all([
+         reopenedLeftTrimRemixPromise,
+         reopenedLeftTrimProjectPromise,
+       ]);
+       assert(reopenedLeftTrimRemixResponse.ok() && reopenedLeftTrimProjectResponse.ok(),
+         "reopening Studio must successfully reload the saved remix and source catalog");
+       const reopenedLeftTrimRemix = await reopenedLeftTrimRemixResponse.json();
+       const reopenedLeftTrimProject = await reopenedLeftTrimProjectResponse.json();
+       const reopenedLeftTrimTrack = reopenedLeftTrimRemix.tracks[0];
+       const reopenedLeftTrimClip = reopenedLeftTrimTrack.clips[0];
+       assert.deepEqual(
+         [
+           reopenedLeftTrimClip.timelineStartMs,
+           reopenedLeftTrimClip.sourceOffsetMs,
+           reopenedLeftTrimClip.durationMs,
+         ],
+         leftTrimAfterValues,
+         "reopening Studio must restore the complete saved left-trimmed source window",
+       );
+       assert.equal(reopenedLeftTrimTrack.stemAssetId, touchClipSourceIdentity.trackStemAssetId);
+       assert.equal(reopenedLeftTrimClip.remixTrackId, touchClipSourceIdentity.remixTrackId);
+       assert.equal(reopenedLeftTrimClip.stemAssetId, touchClipSourceIdentity.stemAssetId,
+         "reopening must keep the original stem assigned to the trimmed clip");
+       assert.equal(reopenedLeftTrimProject.stems.find((stem) => stem.id === reopenedLeftTrimClip.stemAssetId)?.sourceAssetId,
+         touchClipSourceIdentity.sourceAssetId,
+         "reopening must still resolve the original stem to the original source audio");
+       const reopenedSuccessfullyTrimmedClip = page.locator(".timeline-track").first().locator(".clip").first();
+       await page.waitForFunction(({ left, width }) => {
+         const clip = document.querySelector(".timeline-track .clip");
+         return clip instanceof HTMLElement && clip.style.left === left && clip.style.width === width;
+       }, {
+         left: `${(successfulLeftTrimClip.timelineStartMs / 1000) * 80}px`,
+         width: `${Math.max(18, (successfulLeftTrimClip.durationMs / 1000) * 80)}px`,
+       }, { timeout: 5_000 });
+       assert.equal(await reopenedSuccessfullyTrimmedClip.evaluate((element) => element.style.left),
+         `${(successfulLeftTrimClip.timelineStartMs / 1000) * 80}px`,
+         "the reopened timeline must visibly restore the left-trimmed start");
+       assert.equal(await reopenedSuccessfullyTrimmedClip.evaluate((element) => element.style.width),
+         `${Math.max(18, (successfulLeftTrimClip.durationMs / 1000) * 80)}px`,
+         "the reopened timeline must visibly restore the left-trimmed duration");
+       await reopenedSuccessfullyTrimmedClip.click();
+       const reopenedSourceOffsetField = page.getByLabel("Source offset (ms)", { exact: true });
+       await reopenedSourceOffsetField.waitFor({ state: "visible", timeout: 5_000 });
+       assert.equal(Number(await reopenedSourceOffsetField.inputValue()), successfulLeftTrimClip.sourceOffsetMs,
+         "the reopened clip inspector must show the restored source offset");
+
+       studioRemixResponse.tracks = tracksBeforeSuccessfulLeftTrim;
+       studioSaveAttempts.length = saveAttemptCountBeforeLeftTrim;
+       studioSavedStates.length = savedStateCountBeforeLeftTrim;
+       await page.reload({ waitUntil: "domcontentloaded" });
+       await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
+       await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
+       report.push("Touch moves and both trim edges persist and restore; left trims restore timeline start, source offset, duration, and the original stem/source, while rejected writes remain visibly unsaved.");
     }
     await mobileTransport.scrollIntoViewIfNeeded();
     const mobileTargets = await Promise.all([playButton, previewButton, seekSlider].map(async (target) => {
