@@ -451,6 +451,12 @@ try {
       await panel.getByTestId("button-restore-imported-progress").click();
     };
     await save(second.id, "private-progress-blue-23");
+    await panel.getByTestId("input-imported-progress-backup").dispatchEvent("cancel");
+    await panel.getByRole("status").getByText("No file selected. The current progress was not changed.").waitFor();
+    assert.equal(JSON.parse((await saves())[second.id]).progress, "private-progress-blue-23",
+      "cancelling the picker must not change saved progress");
+    assert.equal(await panel.getByTestId("imported-progress-restore-preview").count(), 0,
+      "cancelling the picker must not create a restore preview");
     await upload(backupText);
     await panel.getByTestId("imported-progress-restore-preview").waitFor();
     assert.equal(await panel.getByTestId("button-restore-imported-progress").isDisabled(), true);
@@ -574,7 +580,7 @@ try {
     await staleTab.close();
     checks.push("two open tabs reject stale saves, reject restore previews raced by another write, and preserve live progress only after explicit reconciliation");
 
-    const otherContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
+    const otherContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, serviceWorkers: "block" });
     const other = await otherContext.newPage();
     other.on("pageerror", error => errors.push(error.message));
     await other.goto(`${base}/arcade`);
@@ -586,12 +592,32 @@ try {
     const otherGame = (await records(other))[0];
     assert.notEqual(otherGame.id, second.id);
     const otherPanel = other.getByTestId("imported-progress-backup");
-    await otherPanel.locator("summary").click();
+    const mobileSummary = otherPanel.locator("summary");
+    await mobileSummary.scrollIntoViewIfNeeded();
+    const summaryBounds = await mobileSummary.boundingBox();
+    assert.ok(summaryBounds && summaryBounds.x >= 0 && summaryBounds.x + summaryBounds.width <= 391 &&
+      summaryBounds.y >= 0 && summaryBounds.y + summaryBounds.height <= 845,
+      "the restore disclosure must fit the mobile viewport");
+    await other.touchscreen.tap(summaryBounds.x + summaryBounds.width / 2, summaryBounds.y + summaryBounds.height / 2);
+    await otherPanel.getByTestId("input-imported-progress-backup").waitFor();
     await otherPanel.getByTestId("input-imported-progress-backup").setInputFiles({ name: "fixture.arena-progress.json", mimeType: "application/json", buffer: Buffer.from(backupText) });
     await otherPanel.getByText(/Different import identity, but the HTML source matches exactly/).waitFor();
-    assert.equal(await otherPanel.getByTestId("button-restore-imported-progress").isDisabled(), true);
-    await otherPanel.getByRole("checkbox").check();
-    await otherPanel.getByTestId("button-restore-imported-progress").click();
+    const mobilePreview = otherPanel.getByTestId("imported-progress-restore-preview");
+    await mobilePreview.scrollIntoViewIfNeeded();
+    const previewBounds = await mobilePreview.boundingBox();
+    assert.ok(previewBounds && previewBounds.x >= 0 && previewBounds.x + previewBounds.width <= 391,
+      "restore preview must fit the mobile viewport without horizontal clipping");
+    const mobileConfirm = otherPanel.getByRole("checkbox");
+    await mobileConfirm.focus();
+    await other.keyboard.press("Space");
+    assert.equal(await mobileConfirm.isChecked(), true, "keyboard Space must enable the explicit restore confirmation");
+    const restoreButton = otherPanel.getByTestId("button-restore-imported-progress");
+    await restoreButton.scrollIntoViewIfNeeded();
+    const restoreBounds = await restoreButton.boundingBox();
+    assert.ok(restoreBounds && restoreBounds.x >= 0 && restoreBounds.x + restoreBounds.width <= 391 &&
+      restoreBounds.y >= 0 && restoreBounds.y + restoreBounds.height <= 845,
+      "restore confirmation must fit the mobile viewport");
+    await other.touchscreen.tap(restoreBounds.x + restoreBounds.width / 2, restoreBounds.y + restoreBounds.height / 2);
     await otherPanel.getByText(/Progress restored locally/).waitFor();
     await otherFrame.locator("#stored").filter({ hasText: /^private-progress-blue-22$/ }).waitFor();
     assert.deepEqual(Object.keys(await saves(other)), [otherGame.id]);

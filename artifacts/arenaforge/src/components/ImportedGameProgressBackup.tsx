@@ -14,11 +14,19 @@ export default function ImportedGameProgressBackup({ game, hasProgress, disabled
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const generation = useRef(0);
+  const pickerRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     generation.current++;
     setCandidate(null); setConfirmed(false); setError(""); setNotice(""); setBusy(false);
     return () => { generation.current++; };
   }, [game.id, game.source]);
+  useEffect(() => {
+    const picker = pickerRef.current;
+    if (!picker) return;
+    const onCancel = () => setNotice("No file selected. The current progress was not changed.");
+    picker.addEventListener("cancel", onCancel);
+    return () => picker.removeEventListener("cancel", onCancel);
+  }, []);
   const report = (cause: unknown) => setError(cause instanceof Error ? cause.message : "Progress backup failed.");
 
   const exportProgress = async () => {
@@ -69,7 +77,7 @@ export default function ImportedGameProgressBackup({ game, hasProgress, disabled
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button type="button" disabled={busy || disabled || !hasProgress} onClick={() => void exportProgress()} className="min-h-11 rounded-lg border border-sky-300/25 px-3 py-2 text-[11px] font-bold text-sky-100 disabled:opacity-40" data-testid="button-export-imported-progress">Export progress</button>
         <label className="text-[11px] font-semibold text-slate-300">Choose progress backup
-          <input type="file" accept=".json,application/json" disabled={busy || disabled} className="mt-1 block max-w-full text-[11px] text-slate-400" data-testid="input-imported-progress-backup" onChange={event => {
+          <input ref={pickerRef} type="file" accept=".json,application/json" disabled={busy || disabled} className="mt-1 block max-w-full text-[11px] text-slate-400" data-testid="input-imported-progress-backup" onChange={event => {
             void inspect(event.target.files?.[0]); event.currentTarget.value = "";
           }} />
         </label>
