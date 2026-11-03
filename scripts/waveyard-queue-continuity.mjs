@@ -539,6 +539,52 @@ try {
   const currentTrackBeforeTabMove = session.currentSessionTrackId;
   const savedPositionBeforeTabMove = session.positionSeconds;
 
+  // Keep genuine pre-edit GET snapshots outstanding while a newer notice
+  // refresh wins. Response-body markers let us wait until the stale JSON has
+  // actually reached its consumer, rather than merely reaching the browser.
+  await secondPage.evaluate(() => {
+    const originalFetch = window.fetch;
+    window.__staleRefreshBodiesProcessed = [];
+    window.__restoreRefreshFetch = () => { window.fetch = originalFetch; };
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      const originalJson = response.json.bind(response);
+      response.json = async () => {
+        const body = await originalJson();
+        if (body.__staleRefreshProbe) {
+          setTimeout(() => window.__staleRefreshBodiesProcessed.push(body.__staleRefreshProbe), 0);
+        }
+        return body;
+      };
+      return response;
+    };
+  });
+  const holdOldGet = async (pattern, body) => {
+    let held = false;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const handler = async (route) => {
+      if (held || route.request().method() !== "GET") return route.fallback();
+      held = true;
+      await gate;
+      await routeJson(route, body);
+    };
+    await secondPage.route(pattern, handler);
+    return {
+      held: () => held,
+      release,
+      remove: () => secondPage.unroute(pattern, handler),
+    };
+  };
+  const oldQueueGet = await holdOldGet("**/api/library/queue", {
+    queue: structuredClone(savedQueue), __staleRefreshProbe: "queue",
+  });
+  const oldSessionGet = await holdOldGet(`**/api/library/sessions/${sessionId}`, {
+    session: structuredClone(session), __staleRefreshProbe: "session",
+  });
+  await secondPage.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+  await waitForFixture(() => oldQueueGet.held() && oldSessionGet.held(), "both pre-edit refreshes are held");
+
   await page.getByRole("button", { name: "Move Queue fixture 2 up from position 2" }).click();
   await waitForFixture(
     () => savedQueue[0].track.id === ids[1] && session.tracks[0]?.queueItemId === savedQueue[0].id,
@@ -548,6 +594,16 @@ try {
   const reorderedSessionOrder = ["Queue fixture 2", "Queue fixture 2", "Queue fixture 3", "Queue fixture 1"];
   await waitForViewOrder(page, reorderedQueueOrder, reorderedSessionOrder, "the initiating tab shows the committed queue and session order");
   await waitForViewOrder(secondPage, reorderedQueueOrder, reorderedSessionOrder, "the other tab refreshes to the committed queue and session order");
+  oldQueueGet.release();
+  oldSessionGet.release();
+  await secondPage.waitForFunction(() => window.__staleRefreshBodiesProcessed.length === 2);
+  await secondPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.deepEqual(await readQueueOrder(secondPage), reorderedQueueOrder, "an older queue GET must not restore the pre-edit order");
+  assert.deepEqual(await readSessionOrder(secondPage), reorderedSessionOrder, "an older session GET must not restore the pre-edit order");
+  await oldQueueGet.remove();
+  await oldSessionGet.remove();
+  await secondPage.evaluate(() => window.__restoreRefreshFetch());
+  console.log("PASS: older queue and session GETs cannot overwrite newer committed orders");
   assert.equal(session.currentSessionTrackId, currentTrackBeforeTabMove, "queue reorder does not change the playing session track");
   assert.ok(session.positionSeconds >= savedPositionBeforeTabMove, "queue reorder does not reset the saved playback position while playback advances");
   assert.equal(await page.locator(".wy-now b").innerText(), "Queue fixture 2", "the initiating tab keeps its current track");
@@ -845,7 +901,7 @@ try {
   assert.equal(await page.locator(`[data-testid="button-play-${ids[0]}"]`).count(), 1, "deleting a playlist leaves its library tracks playable");
   console.log("PASS: queue and playlist edits report failures; deletion confirms consequences and preserves library tracks; live continuity, handoff, and Studio reopen survive");
   await context.close();
-  await verifyAlignedFades(browser);
+  if (!process.argv.includes("--queue-only")) await verifyAlignedFades(browser);
 } finally {
   await browser.close();
 }

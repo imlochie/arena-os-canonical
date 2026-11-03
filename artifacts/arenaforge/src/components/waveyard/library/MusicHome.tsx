@@ -382,12 +382,15 @@ export function MusicHome() {
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const trackRequestVersion = useRef(0);
   const refreshRequestVersion = useRef(0);
+  // Shared by full-library reads, notice/resume reads, and committed edits.
+  const queueRequestVersion = useRef(0);
   const activeTrackSearchController = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async (query: string) => {
     activeTrackSearchController.current?.abort();
     activeTrackSearchController.current = null;
     const refreshRequestId = ++refreshRequestVersion.current;
+    const queueRequestId = ++queueRequestVersion.current;
     const trackRequestId = ++trackRequestVersion.current;
     const getJson = async (url: string) => {
       try {
@@ -426,7 +429,7 @@ export function MusicHome() {
       return data;
     });
     const queuePromise = getJson("/api/library/queue").then((data) => {
-      if (refreshRequestId === refreshRequestVersion.current && Array.isArray(data?.queue)) {
+      if (queueRequestId === queueRequestVersion.current && Array.isArray(data?.queue)) {
         setQueue(data.queue);
       }
       return data;
@@ -473,10 +476,14 @@ export function MusicHome() {
 
   useEffect(() => {
     const reloadQueue = () => {
+      const requestId = ++queueRequestVersion.current;
       void fetch("/api/library/queue", { cache: "no-store" }).then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        setQueue((await response.json()).queue ?? []);
-      }).catch(() => setMessage("The saved queue could not be refreshed."));
+        const data = await response.json();
+        if (requestId === queueRequestVersion.current && Array.isArray(data.queue)) setQueue(data.queue);
+      }).catch(() => {
+        if (requestId === queueRequestVersion.current) setMessage("The saved queue could not be refreshed.");
+      });
     };
     const unsubscribeChanges = subscribeToWaveyardQueueChanges(({ affectedSessionIds }) => {
       reloadQueue();
@@ -724,6 +731,7 @@ export function MusicHome() {
       return;
     }
     const result = await response.json();
+    ++queueRequestVersion.current;
     setQueue(result.queue ?? []);
     publishWaveyardQueueChange();
     if (typeof result.addedQueueItemId !== "string") {
@@ -735,7 +743,9 @@ export function MusicHome() {
     if (!addedToListening) {
       const rollback = await fetch(`/api/library/queue/${result.addedQueueItemId}`, { method: "DELETE" });
       if (rollback.ok) {
-        setQueue((await rollback.json()).queue ?? []);
+        const rolledBack = await rollback.json();
+        ++queueRequestVersion.current;
+        setQueue(rolledBack.queue ?? []);
         publishWaveyardQueueChange();
       }
       setMessage("The song could not be added to the listening order.");
@@ -1271,6 +1281,7 @@ export function MusicHome() {
         return;
       }
       const result = await response.json();
+      ++queueRequestVersion.current;
       setQueue(result.queue ?? []);
       setQueueErrorMessage(null);
       host.refreshSession(result.affectedSessionIds ?? []);
@@ -1288,6 +1299,7 @@ export function MusicHome() {
         return;
       }
       const result = await response.json();
+      ++queueRequestVersion.current;
       setQueue(result.queue ?? []);
       setQueueErrorMessage(null);
       host.refreshSession(result.affectedSessionIds ?? []);
@@ -1307,7 +1319,10 @@ export function MusicHome() {
       if (!response.ok) {
         if (response.status === 409) {
           const conflict = await response.json();
-          if (Array.isArray(conflict.queue)) setQueue(conflict.queue);
+          if (Array.isArray(conflict.queue)) {
+            ++queueRequestVersion.current;
+            setQueue(conflict.queue);
+          }
           setQueueErrorMessage(conflict.error ?? "The queue changed in another tab. Try your move again.");
           if (host.sessionId) host.refreshSession([host.sessionId]);
           return;
@@ -1316,6 +1331,7 @@ export function MusicHome() {
         return;
       }
       const result = await response.json();
+      ++queueRequestVersion.current;
       setQueue(result.queue ?? []);
       setQueueErrorMessage(null);
       host.refreshSession(result.affectedSessionIds ?? []);

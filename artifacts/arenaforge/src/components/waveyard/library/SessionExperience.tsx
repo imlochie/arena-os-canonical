@@ -1269,6 +1269,8 @@ export default function SessionExperience({
   const advancingRef = useRef(false);
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
   const sessionRef = useRef<SessionDetail | null>(null);
+  // All session GET paths share one order; committed edits invalidate older GETs.
+  const sessionRequestVersion = useRef(0);
   const currentIdRef = useRef<string | null>(null);
   const autoCrossfadeStartedForRef = useRef<{ trackId: string; cueMs: number } | null>(null);
   const activeDeckRef = useRef<0 | 1>(0);
@@ -1337,17 +1339,19 @@ export default function SessionExperience({
   }, []);
 
   // ------------------------------------------------------------------- load
+  const [reloadNonce, setReloadNonce] = useState(0);
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
         setLoadError(null);
+        const requestId = ++sessionRequestVersion.current;
         try {
           const [sessionResponse, libraryResponse] = await Promise.all([
             fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" }),
             fetch("/api/library/tracks", { cache: "no-store" }),
           ]);
-          if (cancelled) return;
+          if (cancelled || requestId !== sessionRequestVersion.current) return;
           if (sessionResponse.status === 404) {
             setLoadError("That session no longer exists.");
             onMissing?.();
@@ -1358,7 +1362,7 @@ export default function SessionExperience({
             return;
           }
           const detail = (await sessionResponse.json()).session as SessionDetail;
-          if (cancelled) return;
+          if (cancelled || requestId !== sessionRequestVersion.current) return;
           const restoredCurrent =
             detail.currentSessionTrackId !== null && detail.tracks.some((item) => item.id === detail.currentSessionTrackId)
               ? detail.currentSessionTrackId
@@ -1385,38 +1389,20 @@ export default function SessionExperience({
             if (!cancelled) setLibrary(tracks);
           }
         } catch {
-          if (!cancelled) setLoadError("The session could not be loaded — check the connection and retry.");
+          if (!cancelled && requestId === sessionRequestVersion.current) setLoadError("The session could not be loaded — check the connection and retry.");
         }
       })();
     }, 0);
     return () => {
       cancelled = true;
+      ++sessionRequestVersion.current;
       clearTimeout(timer);
       // Leaving this session (switch or unmount): save where we were.
       if (sessionRef.current?.id === sessionId) void persistState();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload per session id only
-  }, [sessionId]);
-
-  const [reloadNonce, setReloadNonce] = useState(0);
-  useEffect(() => {
-    if (reloadNonce === 0) return;
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
-          if (!response.ok) throw new Error();
-          const detail = (await response.json()).session as SessionDetail;
-          if (detail.id !== sessionId) return;
-          sessionRef.current = detail;
-          setSession(detail);
-          setLoadError(null);
-        } catch {
-          setLoadError("Still unreachable. Try again in a moment.");
-        }
-      })();
-    }, 0);
-    return () => clearTimeout(timer);
+    // Retry uses the same initialization path so a session switch cannot race
+    // a second loader that skips restoring the current track and saved mixes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload per session id or explicit retry only
   }, [reloadNonce, sessionId]);
 
   // Interval save while playing, plus pause/pagehide/hidden saves.
@@ -2048,6 +2034,7 @@ export default function SessionExperience({
               return old ? { ...old, position: item.position, queueItemId: item.queueItemId } : item;
             }),
           };
+          ++sessionRequestVersion.current;
           sessionRef.current = next;
           setSession(next);
         }
@@ -2086,6 +2073,7 @@ export default function SessionExperience({
         for (const item of nextDetail.tracks) if (!(item.id in next)) next[item.id] = item.transition;
         return next;
       });
+      ++sessionRequestVersion.current;
       sessionRef.current = nextDetail;
       setSession(nextDetail);
       if (swapScope) publishWaveyardQueueChange([detail.id]);
@@ -2235,11 +2223,12 @@ export default function SessionExperience({
         const previousIndex = s.tracks.findIndex((item) => item.id === previousCurrentId);
         const previousNextId = previousIndex >= 0 ? s.tracks[previousIndex + 1]?.id ?? null : null;
         const wasPlaying = playingRef.current;
+        const requestId = ++sessionRequestVersion.current;
         try {
           const response = await fetch(`/api/library/sessions/${s.id}`, { cache: "no-store" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const detail = (await response.json()).session as SessionDetail;
-          if (sessionRef.current?.id !== detail.id) return;
+          if (requestId !== sessionRequestVersion.current || sessionRef.current?.id !== detail.id) return;
           const currentRetained = previousCurrentId === null || detail.tracks.some((item) => item.id === previousCurrentId);
           const nextRetained = previousNextId === null || detail.tracks.some((item) => item.id === previousNextId);
           const wasFading = fadeRef.current !== null;
@@ -2281,7 +2270,7 @@ export default function SessionExperience({
             setStatus("The listening order is empty.");
           }
         } catch {
-          setStatus("The saved queue changed, but the listening order could not be refreshed.");
+          if (requestId === sessionRequestVersion.current) setStatus("The saved queue changed, but the listening order could not be refreshed.");
         }
         return;
       }
@@ -2883,10 +2872,13 @@ export default function SessionExperience({
   });
 
   const refreshSessionFromOtherTab = useCallback(async () => {
+    if (sessionRef.current?.id !== sessionId) return;
+    const requestId = ++sessionRequestVersion.current;
     try {
       const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
       if (!response.ok) return;
       const fresh = (await response.json()).session as SessionDetail;
+      if (requestId !== sessionRequestVersion.current || fresh.id !== sessionId) return;
       const previous = sessionRef.current;
       if (previous === null || previous.id !== sessionId) return;
       const audible = new Set<string>();
@@ -2940,6 +2932,7 @@ export default function SessionExperience({
     let cancelled = false;
     const id = session.id;
     const tick = async () => {
+      const requestId = pending ? ++sessionRequestVersion.current : null;
       try {
         const [sessionResponse, libraryResponse] = await Promise.all([
           pending ? fetch(`/api/library/sessions/${id}`, { cache: "no-store" }) : Promise.resolve(null),
@@ -2953,7 +2946,7 @@ export default function SessionExperience({
         if (sessionResponse === null || !sessionResponse.ok) return;
         const fresh = (await sessionResponse.json()).session as SessionDetail;
         const prev = sessionRef.current;
-        if (cancelled || prev === null || prev.id !== id) return;
+        if (cancelled || requestId !== sessionRequestVersion.current || prev === null || prev.id !== id) return;
         const audible = new Set<string>();
         for (const [index, deck] of decksRef.current.entries()) {
           const deckItem = deckItems[index as 0 | 1];
