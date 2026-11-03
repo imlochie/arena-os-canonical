@@ -15,7 +15,8 @@
  * explicitly named object the user then edits with the normal Studio tools.
  */
 
-import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
+import { extname } from "node:path";
 
 import { db } from "@workspace/db";
 import {
@@ -27,11 +28,16 @@ import {
   remixClips,
   remixSessions,
   remixTracks,
+  sourceAssets,
   sourceAnalyses,
+  sourceAcquisitions,
   stemAssets,
   tracks,
 } from "@workspace/db/waveyardSchema";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
+import { checksumFile, probeAudio, sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
+import { getStorage, privateObjectKey } from "../storage";
+import { sourceObjectLockQuery } from "../source-object-lock";
 import {
   normalizeStemMix,
   parseStemMix,
@@ -57,6 +63,12 @@ export class SessionNotFoundError extends Error {
 export class SessionTrackNotFoundError extends Error {
   constructor() {
     super("Session track not found.");
+  }
+}
+
+export class SessionTrackOriginalAudioRestoreError extends Error {
+  constructor(message: string) {
+    super(message);
   }
 }
 
@@ -86,12 +98,12 @@ export interface SessionTrackPayload {
   /** Saved queue row that created this entry; null for direct session additions. */
   queueItemId: string | null;
   track: TrackSummary;
-  /** Original uploaded asset, retained even after separated stems become the playback source. */
+  /** Original source asset when its private audio file is present; null if missing. */
   sourceAssetId: string | null;
   /** Real stems of the underlying track (empty if the track was deleted). */
   stems: TrackStem[];
   /** What a deck should load — stems when separated, source otherwise.
-   * Null when the track was deleted (deck shows it honestly). */
+   * Null when no playable asset is available. */
   playback: { assetIds: string[]; kind: "stems" | "source" } | null;
   /** Explicit per-session playback choice; null follows the track's default. */
   playbackPreference: "source" | "stems" | null;
@@ -203,6 +215,15 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
       if (donor) details.set(donorId, donor);
     }
   }
+  const sourceAvailability = new Map<string, boolean>();
+  const sourceRows = details.size > 0
+    ? await db.select({ id: sourceAssets.id, storageKey: sourceAssets.storageKey })
+      .from(sourceAssets)
+      .where(inArray(sourceAssets.id, [...details.values()].map((detail) => detail.source.id)))
+    : [];
+  for (const source of sourceRows) {
+    sourceAvailability.set(source.id, await getStorage().exists(source.storageKey));
+  }
   return {
     id: session.id,
     name: session.name,
@@ -215,9 +236,13 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
         position: row.position,
         queueItemId: row.queueItemId,
         track: (detail as TrackSummary | null) ?? summaries.get(row.trackId) ?? failSummary(row.trackId),
-        sourceAssetId: detail?.source.id ?? null,
+        sourceAssetId: detail?.source && sourceAvailability.get(detail.source.id) === true ? detail.source.id : null,
         stems: detail?.stems ?? [],
-        playback: detail === null ? null : sessionPlayback(detail, row.playbackPreference),
+        playback: detail === null ? null : sessionPlayback(
+          detail,
+          row.playbackPreference,
+          sourceAvailability.get(detail.source.id) === true,
+        ),
         playbackPreference: normalizePlaybackPreference(row.playbackPreference),
         stemMix: parseStemMix(row.stemMix),
         transition: normalizeTransitionConfig(safeParse(row.transition)) ?? defaultTransitionConfig(),
@@ -248,8 +273,9 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
 function sessionPlayback(
   detail: TrackDetail,
   preference: string | null,
+  sourceAvailable: boolean,
 ): SessionTrackPayload["playback"] {
-  if (preference === "source" && detail.source.id) {
+  if (preference === "source" && sourceAvailable && detail.source.id) {
     return { assetIds: [detail.source.id], kind: "source" };
   }
   if (preference === "stems") {
@@ -258,7 +284,136 @@ function sessionPlayback(
       return { assetIds: realStems.map((stem) => stem.id), kind: "stems" };
     }
   }
+  if (!sourceAvailable && detail.playback.kind === "source") return null;
   return detail.playback;
+}
+
+/**
+ * Restore missing source bytes for a stem-backed session track without
+ * replacing its source identity. Stem assets and saved session choices
+ * continue to reference the same source/track/session rows.
+ */
+export async function restoreSessionTrackOriginalAudio(
+  ownerId: string,
+  sessionId: string,
+  sessionTrackId: string,
+  input: { filePath: string; filename: string; mimeType: string },
+): Promise<SessionDetailPayload> {
+  await ownedSession(ownerId, sessionId);
+  const [entry] = await db
+    .select({
+      trackId: tracks.id,
+      projectId: tracks.projectId,
+      source: sourceAssets,
+    })
+    .from(listenSessionTracks)
+    .innerJoin(tracks, eq(tracks.id, listenSessionTracks.trackId))
+    .innerJoin(sourceAssets, eq(sourceAssets.id, tracks.sourceAssetId))
+    .where(and(
+      eq(listenSessionTracks.id, sessionTrackId),
+      eq(listenSessionTracks.sessionId, sessionId),
+      eq(tracks.ownerId, ownerId),
+    ))
+    .limit(1);
+  if (entry === undefined) throw new SessionTrackNotFoundError();
+
+  const realStems = await db
+    .select({ id: stemAssets.id })
+    .from(stemAssets)
+    .where(and(
+      eq(stemAssets.sourceAssetId, entry.source.id),
+      ne(stemAssets.engine, "passthrough-unseparated"),
+    ));
+  if (realStems.length === 0) {
+    throw new SessionTrackOriginalAudioRestoreError("This track has no separated stems to restore alongside.");
+  }
+  const storage = getStorage();
+  if (await storage.exists(entry.source.storageKey)) {
+    throw new SessionTrackOriginalAudioRestoreError("The original audio is already available.");
+  }
+
+  const filename = sanitizedFilename(input.filename);
+  const audio = await probeAudio(input.filePath);
+  const checksum = await checksumFile(input.filePath);
+  const storageKey = privateObjectKey(entry.projectId, "source", extname(filename));
+  let stored = false;
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sourceObjectLockQuery(entry.source.storageKey));
+      await tx.execute(sourceObjectLockQuery(storageKey));
+      const [current] = await tx
+        .select()
+        .from(sourceAssets)
+        .where(eq(sourceAssets.id, entry.source.id))
+        .for("update")
+        .limit(1);
+      if (current === undefined || current.storageKey !== entry.source.storageKey) {
+        throw new SessionTrackOriginalAudioRestoreError("The track's source changed before the replacement could be attached.");
+      }
+      if (await storage.exists(current.storageKey)) {
+        throw new SessionTrackOriginalAudioRestoreError("The original audio became available before the replacement could be attached.");
+      }
+      const stillHasStems = await tx
+        .select({ id: stemAssets.id })
+        .from(stemAssets)
+        .where(and(
+          eq(stemAssets.sourceAssetId, current.id),
+          ne(stemAssets.engine, "passthrough-unseparated"),
+        ))
+        .limit(1);
+      if (stillHasStems.length === 0) {
+        throw new SessionTrackOriginalAudioRestoreError("This track no longer has separated stems to restore alongside.");
+      }
+      const [duplicate] = await tx
+        .select({ id: tracks.id })
+        .from(tracks)
+        .where(and(
+          eq(tracks.ownerId, ownerId),
+          eq(tracks.sourceChecksumSha256, checksum),
+          ne(tracks.id, entry.trackId),
+        ))
+        .limit(1);
+      if (duplicate !== undefined) {
+        throw new SessionTrackOriginalAudioRestoreError("This audio already belongs to another library track. Nothing was changed.");
+      }
+
+      await storage.putFile(storageKey, input.filePath, input.mimeType || "application/octet-stream");
+      stored = true;
+      await tx.update(sourceAssets).set({
+        originalFilename: filename,
+        mimeType: input.mimeType || "application/octet-stream",
+        storageKey,
+        checksumSha256: checksum,
+        durationSeconds: Math.round(audio.durationSeconds),
+        sampleRate: audio.sampleRate,
+        channels: audio.channels,
+        codec: audio.codec,
+        bitrate: audio.bitrate,
+        fileSizeBytes: audio.sizeBytes,
+      }).where(eq(sourceAssets.id, current.id));
+      await tx.update(tracks).set({ sourceChecksumSha256: checksum }).where(eq(tracks.id, entry.trackId));
+      await tx.update(sourceAcquisitions).set({
+        method: "local-upload",
+        sourceUrl: null,
+        title: null,
+        artist: null,
+        resolver: null,
+        metadata: JSON.stringify({ intake: "waveyard-session-original-restore" }),
+      }).where(eq(sourceAcquisitions.sourceAssetId, current.id));
+    });
+  } catch (error) {
+    if (stored) {
+      const [referenced] = await db
+        .select({ id: sourceAssets.id })
+        .from(sourceAssets)
+        .where(and(eq(sourceAssets.id, entry.source.id), eq(sourceAssets.storageKey, storageKey)))
+        .limit(1)
+        .catch(() => []);
+      if (referenced === undefined) await storage.delete(storageKey).catch(() => undefined);
+    }
+    throw error;
+  }
+  return sessionPayload(sessionId);
 }
 
 function normalizePlaybackPreference(value: string | null): "source" | "stems" | null {

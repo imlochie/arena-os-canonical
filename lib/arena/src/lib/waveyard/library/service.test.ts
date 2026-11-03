@@ -638,7 +638,7 @@ test("legacy duplicate repair backfills identity and preserves every listening r
   await db.db.insert(schema.listenSessionSwaps).values({
     sessionId: session.id,
     sessionTrackId: sessionDetail.tracks[0].id,
-    stemType: "vocals",
+    stemType: "restore-test",
     fromTrackId: legacyTracks[1].id,
     toTrackId: legacyTracks[0].id,
   });
@@ -1261,6 +1261,102 @@ test("session: restore state persists and round-trips; foreign session tracks ne
   const guarded = await sessions.saveSessionState(OWNER, created.id, "33333333-3333-4333-8333-333333333333", 5);
   assert.equal(guarded.currentSessionTrackId, null, "a session-track id from another session is dropped");
   await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session: a missing original can be restored without changing stems or session state", async () => {
+  const sourceId = sourceIdByTrackId.get(trackA.id)!;
+  const [originalSource] = await db.db.select().from(schema.sourceAssets)
+    .where(eq(schema.sourceAssets.id, sourceId)).limit(1);
+  const [originalTrack] = await db.db.select().from(schema.tracks)
+    .where(eq(schema.tracks.id, trackA.id)).limit(1);
+  const [originalAcquisition] = await db.db.select().from(schema.sourceAcquisitions)
+    .where(eq(schema.sourceAcquisitions.sourceAssetId, sourceId)).limit(1);
+  const [job] = await db.db.select().from(schema.processingJobs)
+    .where(eq(schema.processingJobs.sourceAssetId, sourceId)).limit(1);
+  assert.ok(originalSource && originalTrack && originalAcquisition && job);
+  const [stem] = await db.db.insert(schema.stemAssets).values({
+    projectId: originalSource.projectId,
+    sourceAssetId: sourceId,
+    separationJobId: job.id,
+    stemType: "vocals",
+    engine: "test-separation",
+    model: "test",
+    modelVersion: "test",
+    storageKey: `test/restore-original-${randomUUID()}.wav`,
+    checksumSha256: "a".repeat(64),
+    durationSeconds: originalTrack.durationSeconds,
+    sampleRate: originalSource.sampleRate,
+    channels: originalSource.channels,
+    codec: "pcm_s16le",
+    format: "wav",
+    fileSizeBytes: originalSource.fileSizeBytes,
+  }).returning();
+  const created = await sessions.createSession(OWNER, "Restore original");
+  const withTrack = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const sessionTrackId = withTrack.tracks[0].id;
+  const selected = await sessions.updateSessionTrack(OWNER, created.id, sessionTrackId, {
+    playbackPreference: "stems",
+    stemMix: { "restore-test": 0.42 },
+    transition: { mode: "bar", crossfadeSeconds: 6, keepStems: ["restore-test"] },
+  });
+  await sessions.saveSessionState(OWNER, created.id, sessionTrackId, 37.5);
+  const replacementPath = path.join(root!, "replacement-original.wav");
+  writeWav(replacementPath, 2, 880);
+  try {
+    await getStorage().delete(originalSource.storageKey);
+    const missing = await sessions.getSession(OWNER, created.id);
+    assert.equal(missing.tracks[0].sourceAssetId, null, "a missing private file is not presented as an available original");
+    assert.equal(missing.tracks[0].playback?.kind, "stems");
+    assert.deepEqual(missing.tracks[0].stems.map(({ id }) => id), [stem.id]);
+
+    const restored = await sessions.restoreSessionTrackOriginalAudio(OWNER, created.id, sessionTrackId, {
+      filePath: replacementPath,
+      filename: "Authorized replacement.wav",
+      mimeType: "audio/wav",
+    });
+    const entry = restored.tracks[0];
+    assert.equal(entry.sourceAssetId, sourceId, "the track keeps its original source identity");
+    assert.deepEqual(entry.stems.map(({ id }) => id), [stem.id], "the separated stem remains attached");
+    assert.equal(entry.playback?.kind, "stems", "restoring a source does not change the chosen session playback mode");
+    assert.deepEqual(entry.stemMix, selected.tracks[0].stemMix);
+    assert.deepEqual(entry.transition, selected.tracks[0].transition);
+    assert.equal(restored.currentSessionTrackId, sessionTrackId);
+    assert.equal(restored.positionSeconds, 37.5, "the session cue survives the original restore");
+    const [updatedSource] = await db.db.select().from(schema.sourceAssets)
+      .where(eq(schema.sourceAssets.id, sourceId)).limit(1);
+    assert.equal(await getStorage().exists(updatedSource.storageKey), true);
+    assert.notEqual(updatedSource.checksumSha256, originalSource.checksumSha256);
+  } finally {
+    await sessions.deleteSession(OWNER, created.id);
+    const [updatedSource] = await db.db.select().from(schema.sourceAssets)
+      .where(eq(schema.sourceAssets.id, sourceId)).limit(1);
+    await getStorage().delete(updatedSource.storageKey);
+    await getStorage().putFile(originalSource.storageKey, path.join(root!, "aphex.wav"), "audio/wav");
+    await db.db.update(schema.sourceAssets).set({
+      originalFilename: originalSource.originalFilename,
+      mimeType: originalSource.mimeType,
+      storageKey: originalSource.storageKey,
+      checksumSha256: originalSource.checksumSha256,
+      durationSeconds: originalSource.durationSeconds,
+      sampleRate: originalSource.sampleRate,
+      channels: originalSource.channels,
+      codec: originalSource.codec,
+      bitrate: originalSource.bitrate,
+      fileSizeBytes: originalSource.fileSizeBytes,
+    }).where(eq(schema.sourceAssets.id, sourceId));
+    await db.db.update(schema.tracks).set({
+      sourceChecksumSha256: originalTrack.sourceChecksumSha256,
+    }).where(eq(schema.tracks.id, trackA.id));
+    await db.db.update(schema.sourceAcquisitions).set({
+      method: originalAcquisition.method,
+      sourceUrl: originalAcquisition.sourceUrl,
+      title: originalAcquisition.title,
+      artist: originalAcquisition.artist,
+      resolver: originalAcquisition.resolver,
+      metadata: originalAcquisition.metadata,
+    }).where(eq(schema.sourceAcquisitions.id, originalAcquisition.id));
+    await db.db.delete(schema.stemAssets).where(eq(schema.stemAssets.id, stem.id));
+  }
 });
 
 test("session stem swaps: distinct donors round-trip into Studio; impossible swaps refused honestly", async () => {

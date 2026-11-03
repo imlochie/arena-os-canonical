@@ -302,6 +302,8 @@ function SessionDeck({
   liveSwapFailure,
   onRetryLiveSwap,
   onReturnToSource,
+  onAttachOriginalAudio,
+  attachingOriginalAudio,
   onApi,
   onPlaying,
   onProgress,
@@ -345,6 +347,8 @@ function SessionDeck({
   liveSwapFailure?: string | null;
   onRetryLiveSwap?: () => void;
   onReturnToSource?: () => void;
+  onAttachOriginalAudio?: (file: File) => void;
+  attachingOriginalAudio?: boolean;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
   onProgress: (deckIndex: number, position: number) => void;
@@ -857,13 +861,32 @@ function SessionDeck({
           ) : (
             <div className="wy-stems" role="group" aria-label={`${active ? "Current" : "Next"} deck stems`}>
               {active && item.playback?.kind === "stems" && item.sourceAssetId === null && (
-                <p
-                  className="wy-stem-toolbar"
-                  role="status"
-                  data-testid={`full-track-unavailable-${item.id}`}
-                >
-                  Original audio unavailable · stem playback and controls remain available
-                </p>
+                <div className="wy-stem-toolbar sess-source-restore">
+                  <p
+                    role="status"
+                    data-testid={`full-track-unavailable-${item.id}`}
+                  >
+                    Original audio unavailable · stem playback and controls remain available
+                  </p>
+                  {onAttachOriginalAudio && (
+                    <label className="sess-source-restore-picker">
+                      <span>{attachingOriginalAudio ? "Attaching…" : "Attach original audio"}</span>
+                      <input
+                        type="file"
+                        accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg"
+                        aria-label={`Attach original audio for ${item.track.title}`}
+                        data-testid={`input-attach-original-audio-${item.id}`}
+                        disabled={attachingOriginalAudio}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = "";
+                          if (file) onAttachOriginalAudio(file);
+                        }}
+                      />
+                    </label>
+                  )}
+                  <small>Choose a local audio file you own or are authorized to use.</small>
+                </div>
               )}
               {active && item.sourceAssetId && onReturnToSource && (
                 <div className="wy-stem-toolbar">
@@ -1095,6 +1118,7 @@ export default function SessionExperience({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [library, setLibrary] = useState<LibraryTrackOption[]>([]);
   const [preparingSeparationTrackIds, setPreparingSeparationTrackIds] = useState<Set<string>>(() => new Set());
+  const [restoringOriginalTrackId, setRestoringOriginalTrackId] = useState<string | null>(null);
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [movingTrack, setMovingTrack] = useState(false);
@@ -3089,6 +3113,48 @@ export default function SessionExperience({
     }
   }, [deckItems]);
 
+  const attachOriginalAudio = useCallback(async (itemId: string, file: File) => {
+    const activeSession = sessionRef.current;
+    if (activeSession === null || restoringOriginalTrackId !== null) return;
+    const item = activeSession.tracks.find((track) => track.id === itemId);
+    if (item === undefined || item.sourceAssetId !== null || item.stems.length === 0) return;
+    const form = new FormData();
+    form.append("file", file);
+    setRestoringOriginalTrackId(itemId);
+    setStatus(`Attaching an original for “${item.track.title}”…`);
+    try {
+      const response = await fetch(`/api/library/sessions/${activeSession.id}/tracks/${itemId}/source`, {
+        method: "POST",
+        body: form,
+      });
+      const body = await response.json().catch(() => null) as {
+        error?: unknown;
+        session?: SessionDetail;
+      } | null;
+      if (!response.ok) {
+        throw new Error(typeof body?.error === "string" ? body.error : "The original audio could not be attached.");
+      }
+      const restored = body?.session?.tracks.find((track) => track.id === itemId);
+      if (restored?.sourceAssetId == null) throw new Error("The replacement was uploaded, but the session could not confirm it.");
+      const latest = sessionRef.current;
+      if (latest?.id === activeSession.id) {
+        const next = {
+          ...latest,
+          tracks: latest.tracks.map((track) => track.id === itemId
+            ? { ...track, sourceAssetId: restored.sourceAssetId }
+            : track),
+        };
+        sessionRef.current = next;
+        setSession(next);
+      }
+      setStatus(`Original audio attached for “${item.track.title}”. The stem mix and session position are unchanged; use Return to full track when ready.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "The original audio could not be attached.");
+    } finally {
+      setRestoringOriginalTrackId(null);
+    }
+  }, [restoringOriginalTrackId]);
+
   const compatibility = useMemo(() => {
     if (currentItem === null || nextItem === null) return null;
     const tempo = tempoCompatibility(currentItem.analysis?.bpm ?? null, nextItem.analysis?.bpm ?? null);
@@ -3528,6 +3594,10 @@ export default function SessionExperience({
       onReturnToSource: isActive && item?.playback?.kind === "stems" && item.sourceAssetId !== null
         ? () => void returnToFullTrack(item.id)
         : undefined,
+      onAttachOriginalAudio: isActive && item?.playback?.kind === "stems" && item.sourceAssetId === null
+        ? (file: File) => void attachOriginalAudio(item.id, file)
+        : undefined,
+      attachingOriginalAudio: item !== null && restoringOriginalTrackId === item.id,
       onApi: handleDeckApi,
       onPlaying: handleDeckPlaying,
       onProgress: handleDeckProgress,

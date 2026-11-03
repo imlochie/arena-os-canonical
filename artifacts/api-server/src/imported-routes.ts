@@ -145,6 +145,7 @@ export const importedRoutes = [
   { path: "/library/queue/:id", methods: ["PATCH","DELETE"], load: () => import("./imported/library/queue/[id]/route.ts") },
   { path: "/library/queue", methods: ["GET","POST","DELETE"], load: () => import("./imported/library/queue/route.ts") },
   { path: "/library/sessions/:id", methods: ["GET","PATCH","DELETE"], load: () => import("./imported/library/sessions/[id]/route.ts") },
+  { path: "/library/sessions/:id/tracks/:itemId/source", methods: ["POST"], load: () => import("./imported/library/sessions/[id]/tracks/[itemId]/source/route.ts") },
   { path: "/library/sessions", methods: ["GET","POST"], load: () => import("./imported/library/sessions/route.ts") },
   { path: "/library/stream/:id", methods: ["GET","HEAD"], load: () => import("./imported/library/stream/[id]/route.ts") },
   { path: "/library/tracks/:id/separation", methods: ["POST"], load: () => import("./imported/library/tracks/[id]/separation/route.ts") },
