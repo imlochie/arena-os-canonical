@@ -41,9 +41,6 @@ export async function verifyLibraryRetryWithRealWorker(options: {
   const { database, client, directory, addTrack } = options;
   const fourStem = options.recipe === "default-four-stem";
   const workerTimeout = fourStem ? 570_000 : 150_000;
-  // Service-only fixtures use synthetic owners; actual library routes filter
-  // by the canonical local user. Seed the identity the real UI will read.
-  const { id: ownerId } = await requireUser();
   const oldEnvironment = {
     ARENA_DESKTOP_MODE: process.env.ARENA_DESKTOP_MODE,
     REDIS_URL: process.env.REDIS_URL,
@@ -51,6 +48,15 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     SEPARATION_MODEL: process.env.SEPARATION_MODEL,
     WAVEYARD_LOCAL_WORKER: process.env.WAVEYARD_LOCAL_WORKER,
   };
+  // The fixture DB is private local data; initialize the same owner context
+  // that the desktop UI routes and the default model resolver use.
+  process.env.ARENA_DESKTOP_MODE = "1";
+  process.env.WAVEYARD_LOCAL_WORKER = "1";
+  delete process.env.REDIS_URL;
+  delete process.env.SEPARATION_MODEL;
+  // Service-only fixtures use synthetic owners; actual library routes filter
+  // by the canonical local user. Seed the identity the real UI will read.
+  const { id: ownerId } = await requireUser();
   const requireBrowser = createRequire(new URL("../../../../../../artifacts/api-server/package.json", import.meta.url));
   const { chromium } = requireBrowser("playwright-core");
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
