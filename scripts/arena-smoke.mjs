@@ -39,8 +39,10 @@ if (process.argv.includes("--revision-rollback-only")) {
 const waveyardMobileOnly = process.argv.includes("--waveyard-mobile-only");
 const waveyardMobileOnlyComplete = "WAVEYARD_MOBILE_ONLY_COMPLETE";
 const sessionModeRacesOnly = process.argv.includes("--session-mode-races-only");
+const liveDonorRecoveryOnly = process.argv.includes("--live-donor-recovery-only");
+const liveDonorRecoveryOnlyComplete = "LIVE_DONOR_RECOVERY_ONLY_COMPLETE";
 
-if (!sessionModeRacesOnly) {
+if (!sessionModeRacesOnly && !liveDonorRecoveryOnly) {
   execFileSync(
     process.execPath,
     [new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
@@ -594,7 +596,7 @@ try {
   let liveTrackPatchRequestCount = 0;
   let liveDonorFetchCount = 0;
   let liveDrumDonorFetchCount = 0;
-  let failLiveDrumDonorFetch = false;
+  let liveDrumDonorFailure = null;
   let signalFirstDonorFetchStarted;
   const firstDonorFetchStarted = new Promise(resolve => { signalFirstDonorFetchStarted = resolve; });
   let releaseFirstDonorFetch;
@@ -995,11 +997,18 @@ try {
     }
     if (assetId === liveDrumDonorDrumsAssetId) {
       liveDrumDonorFetchCount += 1;
-      if (failLiveDrumDonorFetch) {
+      if (liveDrumDonorFailure === "http") {
         await route.fulfill({ status: 503, headers: { "cache-control": "no-store" }, body: "Donor temporarily unavailable" });
         return;
       }
-      await route.fulfill({ status: 200, contentType: "audio/wav", body: drumDonorStemWav });
+      await route.fulfill({
+        status: 200,
+        contentType: "audio/wav",
+        headers: { "cache-control": "no-store" },
+        // A RIFF/WAVE header with no format or samples must fail in the browser
+        // decoder, not in the HTTP status check.
+        body: liveDrumDonorFailure === "decode" ? drumDonorStemWav.subarray(0, 12) : drumDonorStemWav,
+      });
       return;
     }
     if (assetId === liveVocalsAssetId) {
@@ -1886,34 +1895,62 @@ try {
   }, { assetId: liveVocalsAssetId, after: clockBeforeSwap }, { timeout: 5_000 });
   const clockAfterSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
   assert(clockAfterSwap > clockBeforeSwap + 0.2, `the recipient song clock must continue through a live stem swap (${clockBeforeSwap.toFixed(2)} → ${clockAfterSwap.toFixed(2)})`);
-  failLiveDrumDonorFetch = true;
-  const clockBeforeDonorFailure = await sourceVocals.evaluate((audio) => audio.currentTime);
-  await page.getByTestId("open-live-swap-drums").click();
-  await page.getByTestId(`live-swap-candidate-drums-${liveDrumDonorTrackId}`).click();
-  await page.getByTestId("session-status").filter({ hasText: "drums switch failed: Stem download failed (503)" })
-    .waitFor({ timeout: 8_000 });
-  await page.getByTestId("live-swap-pending-drums").waitFor({ state: "detached" });
-  assert(liveDrumDonorFetchCount >= 1, "the failing drum donor must actually be requested");
-  assert.deepEqual(liveSwaps.map(({ stemType }) => stemType), ["vocals"],
-    "failed drums roll back without deleting the working vocal swap");
-  assert.equal(liveSwapDeleteRequestCount, 2, "only the failed drum swap is removed after the earlier cancellation");
-  assert.equal(liveDonorFetchCount, 2, "the working vocal donor must not be fetched again or discarded");
-  await page.getByTestId("restore-live-swap-vocals").waitFor();
-  assert.equal(await sourceVocals.getAttribute("aria-label"), "vocals audio (swapped layer)");
-  assert.equal(await sourceDrums.getAttribute("aria-label"), "drums audio",
-    "the failed donor leaves the original drum layer selected");
-  await page.waitForFunction(({ assetId, after }) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
-    const bar = document.querySelector(".wy-stem-vocals .wy-stem-meter i");
-    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
-    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2 && peak > 0.4;
-  }, { assetId: liveVocalsAssetId, after: clockBeforeDonorFailure }, { timeout: 5_000 });
-  assert.equal(await sourceDrums.evaluate((audio) => audio.paused), false,
-    "the original drums continue playing while the vocal donor stays audible");
-  report.push("A failed drum-donor download rolls back only drums; the working vocal donor remains audible and the recipient clock keeps advancing, then drums can be retried.");
-  failLiveDrumDonorFetch = false;
-  await page.getByTestId("open-live-swap-drums").click();
-  await page.getByTestId(`live-swap-candidate-drums-${liveDrumDonorTrackId}`).click();
+  const healthyVocalSwap = structuredClone(liveSwaps);
+  await page.evaluate(() => { window.__donorRecoveryDocument = "same-live-mix"; });
+  const retryLiveStems = page.getByRole("button", { name: "Retry live stems", exact: true });
+  for (const failure of ["http", "decode"]) {
+    liveDrumDonorFailure = failure;
+    const clockBeforeDonorFailure = await sourceVocals.evaluate((audio) => audio.currentTime);
+    const fetchesBeforeFailure = liveDrumDonorFetchCount;
+    const deletesBeforeFailure = liveSwapDeleteRequestCount;
+    const donorResponse = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/assets/${liveDrumDonorDrumsAssetId}`);
+    if (failure === "http") {
+      await page.getByTestId("open-live-swap-drums").click();
+      await page.getByTestId(`live-swap-candidate-drums-${liveDrumDonorTrackId}`).click();
+    } else {
+      // Retry the retained candidate directly; do not reopen the picker or reload.
+      await retryLiveStems.click();
+    }
+    const response = await donorResponse;
+    assert.equal(response.status(), failure === "http" ? 503 : 200);
+    if (failure === "decode") {
+      assert.equal(response.headers()["content-type"], "audio/wav");
+      assert.deepEqual(await response.body(), drumDonorStemWav.subarray(0, 12),
+        "the successful HTTP response must contain the truncated WAV, not valid or missing audio");
+    }
+    await page.getByTestId("session-status").filter({
+      hasText: failure === "http"
+        ? "drums switch failed: Stem download failed (503)"
+        : /drums switch failed:.*decode.*The previous layer was kept\./i,
+    }).waitFor({ timeout: 8_000 });
+    await page.getByTestId("live-swap-pending-drums").waitFor({ state: "detached" });
+    assert(liveDrumDonorFetchCount > fetchesBeforeFailure, "each failed attempt requests the drum donor");
+    assert.deepEqual(liveSwaps, healthyVocalSwap,
+      `${failure}: failed drums roll back without modifying the working vocal swap`);
+    assert.equal(liveSwapDeleteRequestCount, deletesBeforeFailure + 1,
+      `${failure}: only the failed drum swap is removed`);
+    assert.equal(liveDonorFetchCount, 2, "the working vocal donor must not be fetched again or discarded");
+    await page.getByTestId("restore-live-swap-vocals").waitFor();
+    assert.equal(await sourceVocals.getAttribute("aria-label"), "vocals audio (swapped layer)");
+    assert.equal(await sourceDrums.getAttribute("aria-label"), "drums audio",
+      "the failed donor leaves the original drum layer selected");
+    assert.equal(await page.getByTestId("restore-live-swap-drums").count(), 0,
+      "the failed drum donor is no longer the saved source");
+    await page.waitForFunction(({ assetId, after }) => {
+      const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+      const bar = document.querySelector(".wy-stem-vocals .wy-stem-meter i");
+      const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+      return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2 && peak > 0.4;
+    }, { assetId: liveVocalsAssetId, after: clockBeforeDonorFailure }, { timeout: 5_000 });
+    assert.equal(await sourceDrums.evaluate((audio) => audio.paused), false,
+      "the original drums continue playing while the vocal donor stays audible");
+    assert.equal(await retryLiveStems.isEnabled(), true, "failure leaves an actionable retry");
+    report.push(`${failure === "http" ? "HTTP 503" : "HTTP 200 with a truncated WAV"} rolls back only drums, shows failure feedback and retry, and keeps the vocal donor meter and recipient clock active.`);
+  }
+  liveDrumDonorFailure = null;
+  const fetchesBeforeValidRetry = liveDrumDonorFetchCount;
+  await retryLiveStems.click();
   await page.getByTestId("session-status").filter({ hasText: "drums source saved" }).waitFor({ timeout: 8_000 });
   const swappedDrumsAudio = page.locator('audio[aria-label="drums audio (swapped layer)"]');
   await page.waitForFunction((originalAssetId) => {
@@ -1926,8 +1963,8 @@ try {
   assert.equal(await swappedDrumsAudio.getAttribute("src"), `/api/assets/${liveDrumsAssetId}`,
     "the session keeps the recipient element while replacing its active drum audio buffer");
   assert.equal(await sourceDrums.count(), 1, "the recipient drum element remains associated with the current session track");
-  assert(liveDrumDonorFetchCount >= 1,
-    "the matching drum donor asset must be requested as the replacement audio buffer");
+  assert(liveDrumDonorFetchCount > fetchesBeforeValidRetry,
+    "retry must fetch fresh valid donor audio rather than reuse the corrupt response");
   await page.waitForFunction((after) => {
     const bar = document.querySelector(".wy-stem-drums .wy-stem-meter i");
     const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
@@ -1942,7 +1979,18 @@ try {
     ],
     "each saved stem swap must retain its own donor track",
   );
-  assert.equal(liveSwapRequestCount, 4, "the cancellation, failed drums, and both successful stem swaps each persist once");
+  assert.equal(liveSwapRequestCount, 5, "the cancellation, two failed drums, and both successful stem swaps each persist once");
+  assert.equal(liveSwapDeleteRequestCount, 3, "the cancellation and two failed drum swaps each roll back once");
+  assert.equal(await retryLiveStems.count(), 0, "successful retry clears the failure action");
+  assert.equal(await page.evaluate(() => window.__donorRecoveryDocument), "same-live-mix",
+    "corrupt-audio recovery and successful retry happen in the same document without a reload");
+  report.push("Retry live stems fetches valid drums after a decode failure, restores the audible drum donor, and clears the failure without a page reload.");
+  if (liveDonorRecoveryOnly) {
+    assert.deepEqual(errors, [], "donor recovery must not raise uncaught browser errors");
+    await page.screenshot({ path: new URL("live-donor-recovery.jpg", output).pathname });
+    await writeFile(new URL("live-donor-recovery-report.json", output), JSON.stringify({ passed: true, report }, null, 2));
+    throw new Error(liveDonorRecoveryOnlyComplete);
+  }
   const isolateVocals = page.getByRole("button", { name: "Isolate vocals", exact: true });
   await isolateVocals.click();
   assert.equal(await isolateVocals.getAttribute("aria-pressed"), "true");
@@ -4225,7 +4273,10 @@ try {
   await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, report }, null, 2));
   console.log(report.join("\n"));
 } catch (error) {
-  if (waveyardMobileOnly && error instanceof Error && error.message === waveyardMobileOnlyComplete) {
+  if (error instanceof Error && (
+    (waveyardMobileOnly && error.message === waveyardMobileOnlyComplete)
+    || (liveDonorRecoveryOnly && error.message === liveDonorRecoveryOnlyComplete)
+  )) {
     console.log(report.join("\n"));
   } else {
     console.error("Browser errors:", errors);
@@ -4256,7 +4307,7 @@ try {
   await browser.close();
 }
 
-if (waveyardMobileOnly) process.exit(0);
+if (waveyardMobileOnly || liveDonorRecoveryOnly) process.exit(0);
 
 execFileSync(
   process.execPath,
