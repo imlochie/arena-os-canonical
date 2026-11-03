@@ -148,7 +148,7 @@ export async function commitDevelopment(doc: DevelopmentDocument, previewId: str
   const result = await commitWorkshopReview(previewId);
   if (!result.profiles.some(profile => profile.id === doc.profileId)) throw new Error("The installed profile could not be found.");
   const next = { ...doc, installedHash: await hashDevelopment(doc.draft) };
-  try { return saveDevelopment(await recordDevelopmentEvent(next, "installed", next.installedHash)); }
+  try { return await saveDevelopment(await recordDevelopmentEvent(next, "installed", next.installedHash)); }
   catch { throw new Error("The profile was installed, but its development checkpoint or mission evidence could not be saved. Reopen Mod Workshop; the original is unchanged."); }
 }
 export async function recordDevelopmentEvent(doc: DevelopmentDocument,

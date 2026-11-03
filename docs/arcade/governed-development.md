@@ -52,7 +52,7 @@ commands and external assets are not supported by this adapter.
 - Browser installation/launch/rollback and gameplay assessments are marked
   **owner-reported**, never presented as independent server gameplay evidence.
 
-## Evidence and remaining blocker
+## Evidence and remaining model acceptance
 
 The automated tool/mission tests use explicitly scripted inference for wiring
 only. They exercise unique source edits, failed static builds, exact-artifact
@@ -60,14 +60,38 @@ approval, denial, stale artifacts, cancellation, fallback rejection, source
 redaction in a **real persisted database journal**, and refusal of autonomous
 resume. They are not real-model generation evidence.
 
-The browser pass observed authorized import, real base progress, opening a
-separate development copy and saving a manual checkpoint. It stopped when the
-old API-backed static check required a hosted owner session. That dependency was
-removed: manual checks now parse locally. Focused follow-up checks prove local
-parsing and the actual generated-package → Workshop composition contract,
-including restoring original content and retaining unverified AI lineage.
-The remaining browser install/play/reopen/rollback journey has not been claimed
-as passed. No second broad browser pass was run.
+The Chromium browser journey in `scripts/arcade-development-journey.mjs` now
+passes without an owner session or model. It uses an original authorized HTML
+coin fixture and verifies real controls and durable browser records:
+
+- The base collects two coins. A manually saved draft changes collection from
+  one to five points, with a displayed comparison and exact source hashes.
+- Static checks make zero network requests. Broken syntax fails both checking
+  and install-review preparation.
+- Discarded reviews do not resume on reopen; expired reviews refuse commitment.
+  Installation requires a fresh review and an explicit commit.
+- The independent-save profile starts at zero, adds five, retains progress on
+  reload/reopen, and rolls back to one-point collection without rewinding its
+  save. The base source and two-coin save remain unchanged.
+- A stale second tab cannot overwrite the newer development checkpoint.
+- Fault injection aborts the development-checkpoint transaction after the
+  Workshop install has committed. The UI reports that partial success, leaves
+  the old checkpoint intact, and permits recovery through an explicit Workshop
+  launch. Reopening does not automatically resume, install, or launch.
+- A locally entered owner gameplay report remains labelled owner-reported;
+  it is separate from the fixture's independent browser assertions and is not
+  real-model evidence.
+
+Run `node scripts/arcade-development-journey.mjs` against the running preview
+(or set `TEST_BASE_URL`). Its report and screenshots are generated under
+`generated-artifacts/arcade-development-journey/`. Clock manipulation and
+transaction-abort injection are test-only; production storage is not bypassed.
+This is Chromium evidence, not Windows packaging, physical mobile-device, or
+selected-model acceptance.
+
+Installation and the development checkpoint are separate durable operations.
+Checkpoint/evidence failure after installation must be reported as partial
+success, not as “nothing installed”; recovery must not automatically reinstall.
 
 At implementation time the model registry had no registered local-server code
 model. TurboAgent catalog entries alone are not proof of a configured server.
