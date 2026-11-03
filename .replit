@@ -41,4 +41,4 @@ timeoutMs = 120000
 
 [nix]
 channel = "stable-25_05"
-packages = ["wineWowPackages.stable", "bubblewrap", "xorg.xorgserver", "xorg.xdpyinfo", "xdotool"]
+packages = ["wineWowPackages.stable", "bubblewrap", "xorg.xorgserver", "xorg.xdpyinfo", "xdotool", "icu74", "libjpeg_turbo", "gst_all_1.gstreamer", "gst_all_1.gst-plugins-base", "gst_all_1.gst-plugins-bad", "libsecret", "hyphen", "woff2", "patchelf", "libjpeg8"]
