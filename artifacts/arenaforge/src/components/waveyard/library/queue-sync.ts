@@ -2,6 +2,7 @@ export interface WaveyardQueueChange {
   id: string;
   sender: string;
   affectedSessionIds: string[];
+  affectedTrackIds?: string[];
   transport?: WaveyardTransportSnapshot;
 }
 
@@ -23,6 +24,7 @@ export interface WaveyardRemoteTransport extends WaveyardTransportSnapshot {
 
 type QueueChangeListener = (change: {
   affectedSessionIds: string[];
+  affectedTrackIds: string[];
   transport?: WaveyardRemoteTransport;
 }) => void;
 
@@ -62,6 +64,8 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
     || typeof candidate.sender !== "string"
     || !Array.isArray(candidate.affectedSessionIds)
     || !candidate.affectedSessionIds.every((id) => typeof id === "string")
+    || (candidate.affectedTrackIds !== undefined
+      && (!Array.isArray(candidate.affectedTrackIds) || !candidate.affectedTrackIds.every((id) => typeof id === "string")))
   ) return null;
   let transport: WaveyardTransportSnapshot | undefined;
   if (candidate.transport !== undefined) {
@@ -99,6 +103,7 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
     id: candidate.id,
     sender: candidate.sender,
     affectedSessionIds: candidate.affectedSessionIds,
+    ...(candidate.affectedTrackIds ? { affectedTrackIds: candidate.affectedTrackIds } : {}),
     ...(transport ? { transport } : {}),
   };
 }
@@ -121,16 +126,27 @@ function sendToOtherTabs(change: WaveyardQueueChange) {
   }
 }
 
-/** Update other tabs while keeping the initiating tab's UI event compatible. */
-export function publishWaveyardQueueChange(affectedSessionIds: string[] = []) {
+function publishChange(change: Omit<WaveyardQueueChange, "id" | "sender">, notifyLocal = true) {
   if (typeof window === "undefined") return;
-  const change: WaveyardQueueChange = {
+  const event: WaveyardQueueChange = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     sender: getClientId(),
-    affectedSessionIds: [...new Set(affectedSessionIds)],
+    ...change,
   };
-  window.dispatchEvent(new CustomEvent(LOCAL_EVENT, { detail: change }));
-  sendToOtherTabs(change);
+  if (notifyLocal) window.dispatchEvent(new CustomEvent(LOCAL_EVENT, { detail: event }));
+  sendToOtherTabs(event);
+}
+
+/** Update other tabs while keeping the initiating tab's queue UI event compatible. */
+export function publishWaveyardQueueChange(affectedSessionIds: string[] = []) {
+  publishChange({ affectedSessionIds: [...new Set(affectedSessionIds)] });
+}
+
+/** Refresh matching library rows in other tabs after a persisted track change. */
+export function publishWaveyardLibraryTrackChange(affectedTrackIds: string[]) {
+  const uniqueTrackIds = [...new Set(affectedTrackIds.filter((id) => id.length > 0))];
+  if (uniqueTrackIds.length === 0) return;
+  publishChange({ affectedSessionIds: [], affectedTrackIds: uniqueTrackIds }, false);
 }
 
 /** Publish a causally ordered transport snapshot to the other session tabs. */
@@ -175,7 +191,13 @@ export function subscribeToWaveyardResume(listener: () => void) {
 
 export function subscribeToWaveyardQueueChanges(listener: QueueChangeListener) {
   const seen = new Set<string>();
-  const onLocal = () => listener({ affectedSessionIds: [] });
+  const onLocal = (event: Event) => {
+    const change = parseChange((event as CustomEvent<unknown>).detail);
+    listener({
+      affectedSessionIds: change?.affectedSessionIds ?? [],
+      affectedTrackIds: change?.affectedTrackIds ?? [],
+    });
+  };
   const onRemote = (value: unknown) => {
     const change = parseChange(value);
     if (change === null || change.sender === getClientId() || seen.has(change.id)) return;
@@ -184,6 +206,7 @@ export function subscribeToWaveyardQueueChanges(listener: QueueChangeListener) {
     if (change.transport) logicalClock = Math.max(logicalClock, change.transport.clock);
     listener({
       affectedSessionIds: change.affectedSessionIds,
+      affectedTrackIds: change.affectedTrackIds ?? [],
       ...(change.transport ? { transport: { ...change.transport, sender: change.sender } } : {}),
     });
   };

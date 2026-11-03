@@ -16,7 +16,12 @@ import { ConnectedLibraries } from "../studio/ConnectedLibraries";
 import StemEngineSetup from "./StemEngineSetup";
 import { AudioCaptureWorkbench } from "./AudioCaptureWorkbench";
 import { ConversionWorkbench } from "./ConversionWorkbench";
-import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges, subscribeToWaveyardResume } from "./queue-sync";
+import {
+  publishWaveyardLibraryTrackChange,
+  publishWaveyardQueueChange,
+  subscribeToWaveyardQueueChanges,
+  subscribeToWaveyardResume,
+} from "./queue-sync";
 
 import {
   formatPlayClock,
@@ -462,6 +467,31 @@ export function MusicHome() {
     await tracksPromise;
   }, []);
 
+  const refreshTracks = useCallback(async (query: string) => {
+    activeTrackSearchController.current?.abort();
+    activeTrackSearchController.current = null;
+    const requestId = ++trackRequestVersion.current;
+    try {
+      const response = await fetch(
+        `/api/library/tracks${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) throw new Error(`Track refresh failed with HTTP ${response.status}`);
+      const data = await response.json();
+      if (requestId !== trackRequestVersion.current) return;
+      if (!Array.isArray(data?.tracks)) throw new Error("Track refresh returned an invalid result");
+      setTracks(data.tracks);
+      setTrackLoadFailed(false);
+      setLibraryClockMs(Date.now());
+      setLoaded(true);
+    } catch {
+      if (requestId === trackRequestVersion.current) {
+        setTrackLoadFailed(true);
+        setLoaded(true);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     // Initial load deferred to a timer callback (repo lint pattern: no
     // synchronous setState chains from the effect body).
@@ -485,16 +515,20 @@ export function MusicHome() {
         if (requestId === queueRequestVersion.current) setMessage("The saved queue could not be refreshed.");
       });
     };
-    const unsubscribeChanges = subscribeToWaveyardQueueChanges(({ affectedSessionIds }) => {
-      reloadQueue();
-      host.refreshSession(affectedSessionIds);
+    const unsubscribeChanges = subscribeToWaveyardQueueChanges(({ affectedSessionIds, affectedTrackIds }) => {
+      if (affectedTrackIds.length > 0) void refreshTracks(search);
+      else reloadQueue();
+      if (affectedSessionIds.length > 0) host.refreshSession(affectedSessionIds);
     });
-    const unsubscribeResume = subscribeToWaveyardResume(reloadQueue);
+    const unsubscribeResume = subscribeToWaveyardResume(() => {
+      reloadQueue();
+      void refreshTracks(search);
+    });
     return () => {
       unsubscribeChanges();
       unsubscribeResume();
     };
-  }, [host]);
+  }, [host, refreshTracks, search]);
 
   // Debounced live search over real persisted metadata.
   useEffect(() => {
@@ -561,7 +595,10 @@ export function MusicHome() {
               : "Imported through yt-dlp. Stems separate in the background.",
           );
           setImportUrl("");
-          if (typeof body.track?.id === "string") void host.sendTrack(body.track.id, "play");
+          if (typeof body.track?.id === "string") {
+            publishWaveyardLibraryTrackChange([body.track.id]);
+            void host.sendTrack(body.track.id, "play");
+          }
         } else {
           setMessage(`Import failed — ${body.error ?? `HTTP ${response.status}`}`);
         }
@@ -634,6 +671,7 @@ export function MusicHome() {
           if (failure !== undefined) failures.push(failure);
         }
         const trackIds = trackIdsByIndex.filter((id): id is string => id !== undefined);
+        publishWaveyardLibraryTrackChange(trackIds);
         const added = createdByIndex.filter(Boolean).length;
         const separationUnavailable = createdByIndex.some((created, index) => created && !separationQueuedByIndex[index]);
         const attemptedKeys = new Set(filesToAdd.map(uploadFileIdentity));
@@ -704,18 +742,9 @@ export function MusicHome() {
   const anyProcessing = tracks.some((track) => track.stemAvailability.status === "processing");
   useEffect(() => {
     if (!anyProcessing) return;
-    const interval = window.setInterval(() => {
-      void (async () => {
-        try {
-          const response = await fetch(`/api/library/tracks${search.trim() ? `?q=${encodeURIComponent(search.trim())}` : ""}`, { cache: "no-store" });
-          if (response.ok) setTracks((await response.json()).tracks ?? []);
-        } catch {
-          /* next tick retries */
-        }
-      })();
-    }, 3000);
+    const interval = window.setInterval(() => void refreshTracks(search), 3000);
     return () => window.clearInterval(interval);
-  }, [anyProcessing, search]);
+  }, [anyProcessing, refreshTracks, search]);
 
   const playTrack = useCallback((track: TrackSummary) => void host.sendTrack(track.id, "play"), [host]);
   const nextTrack = useCallback((track: TrackSummary) => void host.sendTrack(track.id, "next"), [host]);
@@ -811,6 +840,7 @@ export function MusicHome() {
               },
             }
           : existing));
+        publishWaveyardLibraryTrackChange([track.id]);
         setMessage(body.state === "queued"
           ? `${track.title}: separation started. You can keep listening while it runs.`
           : `${track.title}: separation is already running.`);
@@ -818,6 +848,7 @@ export function MusicHome() {
       }
       if (body.state === "separated") {
         await refresh(search);
+        publishWaveyardLibraryTrackChange([track.id]);
         setMessage(`${track.title}: stems are already available.`);
         return;
       }
@@ -833,13 +864,19 @@ export function MusicHome() {
               },
             }
           : existing));
+        publishWaveyardLibraryTrackChange([track.id]);
         setMessage(`${track.title}: ${body.error ?? "Separation could not be queued."}`);
         return;
       }
-      if (body.state === "previous-attempt") await refresh(search);
+      if (body.state === "previous-attempt") {
+        await refresh(search);
+        publishWaveyardLibraryTrackChange([track.id]);
+      }
       setMessage(`${track.title}: ${body.error ?? "Separation could not be started."}`);
     } catch {
       setMessage(`${track.title}: separation could not be started — check the connection.`);
+      void refresh(search);
+      publishWaveyardLibraryTrackChange([track.id]);
     } finally {
       setBusySeparationTrackIds((previous) => {
         const next = new Set(previous);
@@ -859,6 +896,8 @@ export function MusicHome() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setMessage(`${track.title}: ${body.error ?? "Separation retry could not be started."}`);
+        await refresh(search);
+        publishWaveyardLibraryTrackChange([track.id]);
         return;
       }
       setTracks((previous) => previous.map((existing) => existing.id === track.id
@@ -871,9 +910,12 @@ export function MusicHome() {
             },
           }
         : existing));
+      publishWaveyardLibraryTrackChange([track.id]);
       setMessage(`${track.title}: separation retry started.`);
     } catch {
       setMessage(`${track.title}: separation retry could not be started — check the connection.`);
+      void refresh(search);
+      publishWaveyardLibraryTrackChange([track.id]);
     } finally {
       setBusySeparationTrackIds((previous) => {
         const next = new Set(previous);
@@ -881,7 +923,7 @@ export function MusicHome() {
         return next;
       });
     }
-  }, [busySeparationTrackIds]);
+  }, [busySeparationTrackIds, refresh, search]);
 
   const cancelSeparation = useCallback(async (track: TrackSummary) => {
     const jobId = track.stemAvailability.cancelJobId;
@@ -902,17 +944,23 @@ export function MusicHome() {
               },
             }
           : existing));
+        publishWaveyardLibraryTrackChange([track.id]);
         setMessage(`${track.title}: the worker is still stopping. You can keep listening; restart is available after it exits.`);
         return;
       }
       if (!response.ok) {
         setMessage(`${track.title}: ${body.error ?? "The separation worker could not be stopped."}`);
+        await refresh(search);
+        publishWaveyardLibraryTrackChange([track.id]);
         return;
       }
       await refresh(search);
+      publishWaveyardLibraryTrackChange([track.id]);
       setMessage(`${track.title}: separation stopped. Original audio and existing stems are preserved; start separation to run it again.`);
     } catch {
       setMessage(`${track.title}: cancellation could not be confirmed — check the connection.`);
+      void refresh(search);
+      publishWaveyardLibraryTrackChange([track.id]);
     } finally {
       setBusySeparationTrackIds((previous) => {
         const next = new Set(previous);

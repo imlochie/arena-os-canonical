@@ -57,6 +57,7 @@ import {
   type PerformanceSnap,
 } from "@workspace/arena/lib/waveyard/library/performance";
 import {
+  publishWaveyardLibraryTrackChange,
   publishWaveyardQueueChange,
   publishWaveyardTransportChange,
   subscribeToWaveyardQueueChanges,
@@ -3608,6 +3609,7 @@ export default function SessionExperience({
           },
         }
       : item));
+    publishWaveyardLibraryTrackChange([trackId]);
     const readBody = async (response: Response) =>
       await response.json().catch(() => ({})) as Record<string, unknown>;
 
@@ -3632,6 +3634,7 @@ export default function SessionExperience({
           const latest = await refresh.json() as { tracks?: LibraryTrackOption[] };
           if (Array.isArray(latest.tracks)) setLibrary(latest.tracks);
         }
+        publishWaveyardLibraryTrackChange([trackId]);
         setStatus(`${track.title}: stems are already available. Choose it from the ready sources.`);
         return;
       }
@@ -3651,10 +3654,17 @@ export default function SessionExperience({
               },
             }
           : item));
+        publishWaveyardLibraryTrackChange([trackId]);
       }
       setStatus(`${track.title}: ${typeof body.error === "string" ? body.error : "Separation could not be started."}`);
     } catch {
       setStatus(`${track.title}: separation could not be started. Check the connection and try again.`);
+      void fetch("/api/library/tracks", { cache: "no-store" }).then(async (refresh) => {
+        if (!refresh.ok) return;
+        const latest = await refresh.json() as { tracks?: LibraryTrackOption[] };
+        if (Array.isArray(latest.tracks)) setLibrary(latest.tracks);
+      }).catch(() => undefined);
+      publishWaveyardLibraryTrackChange([trackId]);
     } finally {
       setPreparingSeparationTrackIds((previous) => {
         const next = new Set(previous);

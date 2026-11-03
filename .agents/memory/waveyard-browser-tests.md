@@ -134,3 +134,9 @@ For pitch-mode changes, separate playhead continuity from audible-output evidenc
 **Why:** A synthetic session fixture advanced its media clock while an initial analyser tap returned zero, so that single measurement could not establish either interruption or audible continuity.
 
 **How to apply:** Assert the native clock and playing state, confirm the intended channel and processor connection, then collect output samples after the analyser has settled. Treat DSP tone tests as pitch-transform evidence, not proof of audible app output.
+
+For multi-tab library tests, mock only the API routes under test and preserve the response shapes of other mounted workbenches.
+
+**Why:** MusicHome mounts audio-capture and other workbenches beside the track list; an incomplete catch-all API fixture can crash a sibling component before the cross-tab behavior is exercised.
+
+**How to apply:** Prefer exact route mocks, let unrelated calls reach the dev API, and capture page errors before diagnosing a library-tab synchronization failure.

@@ -26,7 +26,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "node scripts/arena-smoke.mjs && pnpm --filter @workspace/scripts exec tsx --test $PWD/scripts/waveyard-studio-recovery-accessibility.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/live-stem-layers.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/live-key-shift.test.ts $PWD/lib/arena/src/lib/waveyard/library/session-key-matching.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/artifacts/api-server/src/lib/waveyard-startup-recovery.test.ts $PWD/lib/arena/src/lib/waveyard/worker-local/restore-upload-cleanup.test.ts && node scripts/waveyard-live-stems.mjs --studio-persistence-only && node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix"
+args = "node scripts/arena-smoke.mjs && node scripts/waveyard-library-separation-sync.mjs && pnpm --filter @workspace/scripts exec tsx --test $PWD/scripts/waveyard-studio-recovery-accessibility.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/live-stem-layers.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/live-key-shift.test.ts $PWD/lib/arena/src/lib/waveyard/library/session-key-matching.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/artifacts/api-server/src/lib/waveyard-startup-recovery.test.ts $PWD/lib/arena/src/lib/waveyard/worker-local/restore-upload-cleanup.test.ts && node scripts/waveyard-live-stems.mjs --studio-persistence-only && node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix"
 
 [workflows.workflow.metadata]
 isValidation = true
