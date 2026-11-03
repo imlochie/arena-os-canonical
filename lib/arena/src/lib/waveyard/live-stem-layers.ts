@@ -190,8 +190,10 @@ export class LiveStemLayers {
   private prefetchedAssetBytes = 0;
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
+  private pendingEngineCleanups = new Set<() => void>();
   private playbackRate = 1;
   private pitchPreserving = false;
+  private disposed = false;
 
   constructor(
     private context: () => AudioContext,
@@ -202,6 +204,7 @@ export class LiveStemLayers {
   ) {}
 
   setPlaybackRate(value: number) {
+    if (this.disposed) return;
     this.playbackRate = normalizeSessionPlaybackRate(value);
     const layers = [...this.layers.values(), ...this.retired];
     if (!layers.some((layer) => layer.source !== null)) return;
@@ -216,6 +219,7 @@ export class LiveStemLayers {
   }
 
   async setPitchPreserving(enabled: boolean) {
+    if (this.disposed) return;
     if (this.pitchPreserving === enabled) return;
     if (!enabled) {
       this.pitchPreserving = false;
@@ -233,6 +237,7 @@ export class LiveStemLayers {
     }
     const context = this.context();
     await ensureLiveStemWorklet(context, this.workletUrl);
+    if (this.disposed) return;
     const migrated: Array<{ layer: Layer; source: AudioWorkletNode }> = [];
     for (const [id, layer] of this.layers) {
       if (layer.sourceMode === "worklet" && layer.source) {
@@ -259,8 +264,15 @@ export class LiveStemLayers {
         );
       } catch (error) {
         nextInput.disconnect();
+        if (this.disposed) return;
         for (const item of migrated) item.source.port.postMessage({ type: "pitch", enabled: false });
         throw error;
+      }
+      if (this.disposed || this.layers.get(id) !== layer) {
+        this.stopEngine(nextSource, "worklet");
+        nextInput.disconnect();
+        if (this.disposed) return;
+        continue;
       }
 
       const currentOffset = layer.duration > 0 ? media.currentTime % layer.duration : media.currentTime;
@@ -277,20 +289,26 @@ export class LiveStemLayers {
       layer.source = nextSource;
       layer.sourceMode = "worklet";
       migrated.push({ layer, source: nextSource });
-      const timer = setTimeout(() => {
+      let timer!: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
         this.stopEngine(previousSource, previousMode);
         previousInput.disconnect();
+        this.pendingEngineCleanups.delete(cleanup);
         this.timers.delete(timer);
-      }, 80);
+      };
+      timer = setTimeout(cleanup, 80);
       this.timers.add(timer);
+      this.pendingEngineCleanups.add(cleanup);
       // Let the first replacement become audible before transferring the next
       // donor, keeping the temporary PCM copy bounded to one stem at a time.
       await new Promise((resolve) => setTimeout(resolve, 45));
+      if (this.disposed) return;
       if (!layer.buffer) continue;
       this.discardRecent(this.preparedKey(layer.url, layer.tempoStretchRatio));
       layer.buffer = null;
     }
 
+    if (this.disposed) return;
     this.pitchPreserving = true;
     for (const item of migrated) item.source.port.postMessage({ type: "pitch", enabled: true });
   }
@@ -345,6 +363,7 @@ export class LiveStemLayers {
   ) {
     const context = this.context();
     await ensureLiveStemWorklet(context, this.workletUrl);
+    if (this.disposed) throw new DOMException("Live stem session was closed.", "AbortError");
     const node = new AudioWorkletNode(context, "waveyard-live-stem", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -397,6 +416,7 @@ export class LiveStemLayers {
   }
 
   private async start(layer: Layer, channel: Channel) {
+    if (this.disposed) return;
     if (layer.sourceMode === "worklet" && layer.source) {
       const media = channel.source.mediaElement;
       const worklet = layer.source as AudioWorkletNode;
@@ -417,6 +437,10 @@ export class LiveStemLayers {
         ? (media.currentTime % layer.duration) * layer.sampleRate
         : 0;
       const source = await this.createWorkletSource(layer.buffer, layer.input, offset, true, true);
+      if (this.disposed) {
+        this.stopEngine(source, "worklet");
+        return;
+      }
       layer.source = source;
       layer.sourceMode = "worklet";
       this.discardRecent(this.preparedKey(layer.url, layer.tempoStretchRatio));
@@ -498,6 +522,7 @@ export class LiveStemLayers {
 
   /** Download compressed bytes only for a likely next donor. */
   preloadAsset(url: string) {
+    if (this.disposed) return Promise.resolve();
     const existing = this.prefetchedAssets.get(url);
     if (existing) return existing.promise.then(() => undefined);
 
@@ -638,6 +663,7 @@ export class LiveStemLayers {
     if (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2) {
       return Promise.reject(new Error("The live stem tempo ratio must be between 0.5× and 2×."));
     }
+    if (this.disposed) return Promise.resolve();
     const key = this.preparedKey(url, tempoStretchRatio);
     if (this.getRecentBuffer(key, selectedAt)) return Promise.resolve();
     const existing = this.prepared.get(key);
@@ -693,6 +719,7 @@ export class LiveStemLayers {
     if (url && (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2)) {
       throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
     }
+    if (this.disposed) return false;
     const key = url ? this.preparedKey(url, tempoStretchRatio) : "";
     const currentPending = this.pending.get(id);
     if (key && currentPending?.key === key) return currentPending.promise;
@@ -770,6 +797,12 @@ export class LiveStemLayers {
         timing: prepared,
       };
       await this.start(layer, channel);
+      if (this.disposed || operation.controller.signal.aborted || this.pending.get(id) !== operation) {
+        this.stop(layer);
+        input.disconnect();
+        replacementInput = null;
+        return false;
+      }
       this.layers.set(id, layer);
       this.ramp(input, 1);
       this.ramp(channel.inputGain, 0);
@@ -789,6 +822,7 @@ export class LiveStemLayers {
   }
 
   sync(ids: string[]) {
+    if (this.disposed) return;
     for (const id of ids) {
       const layer = this.layers.get(id);
       const channel = layer && this.channel(id);
@@ -816,13 +850,19 @@ export class LiveStemLayers {
   }
 
   dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
     this.pause();
     for (const id of new Set([...this.layers.keys(), ...this.pending.keys()])) this.remove(id);
     for (const key of this.prepared.keys()) this.discardPrepared(key, true);
     for (const key of this.recent.keys()) this.discardRecent(key);
     for (const key of this.prefetchedAssets.keys()) this.discardPrefetchedAsset(key, true);
-    for (const layer of this.retired) layer.input.disconnect();
+    for (const layer of this.retired) {
+      this.stop(layer);
+      layer.input.disconnect();
+    }
     this.retired.clear();
+    for (const cleanup of this.pendingEngineCleanups) cleanup();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
   }

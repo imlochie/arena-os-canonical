@@ -102,6 +102,18 @@ function response(ok = true) {
   return { ok, status: ok ? 200 : 503, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
 }
 
+function lifecycleState(layers: LiveStemLayers) {
+  return layers as unknown as {
+    layers: Map<string, unknown>;
+    pending: Map<string, unknown>;
+    prepared: Map<string, unknown>;
+    recent: Map<string, unknown>;
+    prefetchedAssets: Map<string, unknown>;
+    prefetchedAssetBytes: number;
+    retired: Set<unknown>;
+  };
+}
+
 test("a stalled switch times out without muting or resetting the original, and a late response stays silent", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture();
@@ -651,6 +663,249 @@ test("disposing a live layer owner releases retained donors and stops playback i
   } finally {
     f.layers.dispose();
     mock.timers.reset();
+  }
+});
+
+test("disposal during a donor crossfade stops both the active and retiring layers", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await f.layers.replace("vocals", "/first-donor");
+    await f.layers.replace("vocals", "/crossfading-donor");
+    const retiring = f.sources[0];
+    const active = f.sources[1];
+    const state = lifecycleState(f.layers);
+    assert.equal(state.retired.size, 1, "the old source remains owned during the crossfade");
+    assert.equal(retiring.stopped, false);
+    assert.equal(active.stopped, false);
+
+    f.layers.dispose();
+    assert.equal(retiring.stopped, true, "session close stops the source whose fade timer was pending");
+    assert.equal(active.stopped, true, "session close also stops the current donor");
+    assert.equal(state.retired.size, 0);
+    mock.timers.tick(80);
+    assert.equal(retiring.stopped, true, "cleared fade timers cannot resurrect retired audio");
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
+});
+
+test("disposal aborts donor and compressed preloads, and ignored late downloads cannot be retained", async () => {
+  const f = fixture();
+  const requests = new Map<string, { signal: AbortSignal; resolve(response: Response): void }>();
+  globalThis.fetch = (url, init) => new Promise<Response>(resolve => {
+    requests.set(String(url), { signal: init?.signal as AbortSignal, resolve });
+  });
+  try {
+    const replacement = f.layers.replace("vocals", "/pending-donor");
+    const preload = f.layers.preloadAsset("/pending-prefetch");
+    const rejectedPreload = assert.rejects(preload, { name: "AbortError" });
+    assert.equal(requests.size, 2, "the live donor and the compressed preload both started");
+
+    f.layers.dispose();
+    assert.equal(requests.get("/pending-donor")?.signal.aborted, true,
+      "closing the session aborts the active donor download");
+    assert.equal(requests.get("/pending-prefetch")?.signal.aborted, true,
+      "closing the session aborts the compressed preload");
+    assert.equal(await replacement, false, "a closed session does not install the pending selection");
+
+    requests.get("/pending-donor")!.resolve(response());
+    requests.get("/pending-prefetch")!.resolve(response());
+    await rejectedPreload;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const state = lifecycleState(f.layers);
+    assert.equal(state.layers.size, 0);
+    assert.equal(state.pending.size, 0);
+    assert.equal(state.prepared.size, 0);
+    assert.equal(state.recent.size, 0);
+    assert.equal(state.prefetchedAssets.size, 0, "late response bytes do not repopulate the prefetch cache");
+    assert.equal(state.prefetchedAssetBytes, 0);
+    assert.equal(f.sources.length, 0, "late donor bytes never become audible");
+
+    assert.equal(await f.layers.replace("vocals", "/after-close"), false);
+    await f.layers.preload("/after-close");
+    await f.layers.preloadAsset("/after-close");
+    assert.equal(requests.size, 2, "a disposed layer owner cannot start new network work");
+  } finally { f.layers.dispose(); }
+});
+
+test("a decoder that finishes after disposal cannot install or retain its donor", async () => {
+  const f = fixture();
+  let releaseDecode!: (buffer: AudioBuffer) => void;
+  let markDecodeStarted!: () => void;
+  const decodeStarted = new Promise<void>(resolve => { markDecodeStarted = resolve; });
+  f.context.decodeAudioData = () => {
+    markDecodeStarted();
+    return new Promise<AudioBuffer>(resolve => { releaseDecode = resolve; });
+  };
+  globalThis.fetch = async () => response();
+  try {
+    const replacement = f.layers.replace("vocals", "/late-decoder");
+    await decodeStarted;
+    f.layers.dispose();
+    assert.equal(await replacement, false, "the session close settles the pending swap without waiting for decoding");
+
+    releaseDecode({ duration: 3, length: 144_000, numberOfChannels: 2 } as AudioBuffer);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const state = lifecycleState(f.layers);
+    assert.equal(f.sources.length, 0, "a decoder result arriving after close never starts playback");
+    assert.equal(state.layers.size, 0);
+    assert.equal(state.prepared.size, 0);
+    assert.equal(state.recent.size, 0);
+  } finally { f.layers.dispose(); }
+});
+
+test("disposal aborts pending tempo preparation when the worker honors its signal", async () => {
+  let signal: AbortSignal | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const f = fixture((_context, _buffer, _ratio, abortSignal) => new Promise<AudioBuffer>((_resolve, reject) => {
+    signal = abortSignal;
+    markStarted();
+    abortSignal.addEventListener("abort", () => reject(new DOMException("Cancelled.", "AbortError")), { once: true });
+  }));
+  globalThis.fetch = async () => response();
+  try {
+    const replacement = f.layers.replace("vocals", "/tempo-worker", 0.8);
+    await started;
+    f.layers.dispose();
+    assert.equal(signal?.aborted, true, "session disposal reaches the tempo worker's cancellation signal");
+    assert.equal(await replacement, false);
+    assert.equal(f.sources.length, 0);
+    assert.equal(lifecycleState(f.layers).layers.size, 0);
+  } finally { f.layers.dispose(); }
+});
+
+test("an uncancellable late tempo result cannot repopulate the prepared cache", async () => {
+  let releaseStretch!: (buffer: AudioBuffer) => void;
+  let signal: AbortSignal | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const f = fixture((_context, _buffer, _ratio, abortSignal) => {
+    signal = abortSignal;
+    markStarted();
+    return new Promise<AudioBuffer>(resolve => { releaseStretch = resolve; });
+  });
+  globalThis.fetch = async () => response();
+  try {
+    const warmup = f.layers.preload("/late-tempo", 0.8);
+    const rejectedWarmup = assert.rejects(warmup, { name: "AbortError" });
+    await started;
+    f.layers.dispose();
+    assert.equal(signal?.aborted, true, "disposal signals cancellation even to a worker that cannot stop immediately");
+    releaseStretch({ duration: 6, length: 288_000, numberOfChannels: 2 } as AudioBuffer);
+    await rejectedWarmup;
+    const state = lifecycleState(f.layers);
+    assert.equal(state.prepared.size, 0);
+    assert.equal(state.recent.size, 0, "a late tempo result is not promoted to retained audio");
+    assert.equal(state.layers.size, 0);
+  } finally { f.layers.dispose(); }
+});
+
+test("a late worklet-module completion cannot start a donor after session disposal", async () => {
+  const f = fixture();
+  const globals = globalThis as unknown as { AudioWorkletNode?: unknown };
+  const originalAudioWorkletNode = globals.AudioWorkletNode;
+  let workletNodeCount = 0;
+  globals.AudioWorkletNode = class {
+    readonly port = {
+      onmessage: null as ((event: MessageEvent<{ type?: string }>) => void) | null,
+      postMessage: (message: { type?: string }) => {
+        if (message.type === "load") {
+          queueMicrotask(() => this.port.onmessage?.({ data: { type: "ready" } } as MessageEvent<{ type?: string }>));
+        }
+      },
+      close() {},
+    };
+    constructor() { workletNodeCount += 1; }
+    connect(_destination: unknown) {}
+    disconnect() {}
+  };
+  let releaseModule!: () => void;
+  let markModuleStarted!: () => void;
+  const moduleStarted = new Promise<void>(resolve => { markModuleStarted = resolve; });
+  (f.context as unknown as { audioWorklet: { addModule(url: string): Promise<void> } }).audioWorklet = {
+    addModule: async () => {
+      markModuleStarted();
+      await new Promise<void>(resolve => { releaseModule = resolve; });
+    },
+  };
+  await f.layers.setPitchPreserving(true);
+  globalThis.fetch = async () => response();
+  try {
+    const replacement = f.layers.replace("vocals", "/late-worklet");
+    await moduleStarted;
+    f.layers.dispose();
+    releaseModule();
+    assert.equal(await replacement, false);
+    assert.equal(f.sources.length, 0);
+    assert.equal(workletNodeCount, 0, "the completed module load cannot create a processor after disposal");
+    assert.equal(lifecycleState(f.layers).layers.size, 0);
+  } finally {
+    f.layers.dispose();
+    if (originalAudioWorkletNode === undefined) delete globals.AudioWorkletNode;
+    else globals.AudioWorkletNode = originalAudioWorkletNode;
+  }
+});
+
+test("disposal during pitch-lock migration releases the worklet when it becomes ready", async () => {
+  const workletBuffer = {
+    duration: 3,
+    length: 144_000,
+    numberOfChannels: 2,
+    getChannelData: () => new Float32Array(144_000),
+  } as unknown as AudioBuffer;
+  const f = fixture(undefined, undefined, workletBuffer);
+  const globals = globalThis as unknown as { AudioWorkletNode?: unknown };
+  const originalAudioWorkletNode = globals.AudioWorkletNode;
+  const messages: string[] = [];
+  let workletPortClosed = false;
+  let releaseReady!: () => void;
+  let markLoadStarted!: () => void;
+  let markPlaying!: () => void;
+  const loadStarted = new Promise<void>(resolve => { markLoadStarted = resolve; });
+  const playingStarted = new Promise<void>(resolve => { markPlaying = resolve; });
+  (f.context as unknown as { audioWorklet: { addModule(url: string): Promise<void> } }).audioWorklet = {
+    addModule: async () => undefined,
+  };
+  globals.AudioWorkletNode = class {
+    readonly port = {
+      onmessage: null as ((event: MessageEvent<{ type?: string }>) => void) | null,
+      postMessage: (message: { type?: string }) => {
+        messages.push(message.type ?? "");
+        if (message.type === "play") markPlaying();
+        if (message.type === "load") {
+          markLoadStarted();
+          releaseReady = () => this.port.onmessage?.({ data: { type: "ready" } } as MessageEvent<{ type?: string }>);
+        }
+      },
+      close: () => { workletPortClosed = true; },
+    };
+    connect(_destination: unknown) {}
+    disconnect() {}
+  };
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/before-migration");
+    const activeSource = f.sources[0];
+    const migration = f.layers.setPitchPreserving(true);
+    await loadStarted;
+    releaseReady();
+    await playingStarted;
+    f.layers.dispose();
+    assert.equal(activeSource.stopped, true, "closing the session stops its original live layer");
+    await migration;
+    assert.equal(messages.includes("dispose"), true, "the late worklet is disposed rather than installed");
+    assert.equal(workletPortClosed, true);
+    assert.equal(lifecycleState(f.layers).layers.size, 0);
+  } finally {
+    f.layers.dispose();
+    if (originalAudioWorkletNode === undefined) delete globals.AudioWorkletNode;
+    else globals.AudioWorkletNode = originalAudioWorkletNode;
   }
 });
 

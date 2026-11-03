@@ -15,6 +15,12 @@ Keep only one native separation model open at a time and bound its CPU threading
 
 **How to apply:** Preserve sequential session lifetime, release on errors too, and measure real full-song memory/performance before increasing parallelism. A short synthetic musical fixture establishes pipeline execution, not subjective separation quality.
 
+Treat a live stem-layer instance as terminal once disposed. Abort signal-aware downloads and tempo work, but still check after non-cancellable decode/worklet awaits before installing audio or retaining buffers.
+
+**Why:** `decodeAudioData` cannot be aborted, and worklet setup can complete after the session closes; removing cache entries alone does not prevent late playback or orphaned sources.
+
+**How to apply:** Set the terminal flag before aborting pending work, guard new operations, validate ownership after awaits, and stop deferred/retired engines during disposal.
+
 For retry evidence, exercise the default local queue handoff into the production separation handler; a custom retry callback bypasses the broker wiring used by the library.
 
 **Why:** A real model can complete successfully when called directly even if the user-facing retry path fails to enqueue or route its job.
