@@ -182,6 +182,8 @@ let releaseStudioHandoff = null;
 let signalStudioHandoffStarted = null;
 let studioHandoffRequests = 0;
 let lastStudioHandoffSelection = [];
+let forcedStudioRefusals = new Map();
+let studioProjectCreations = 0;
 let studioProjectData = null;
 let studioRemixData = null;
 let holdSecondStudioProjectLoad = false;
@@ -646,6 +648,11 @@ try {
     const remixTracks = [];
     const refused = [];
     for (const item of session.tracks.filter(entry => selectedIds.has(entry.id))) {
+      const forcedRefusal = forcedStudioRefusals.get(item.id);
+      if (forcedRefusal) {
+        refused.push({ title: item.track.title, reason: forcedRefusal });
+        continue;
+      }
       if (item.stems.length === 0) {
         refused.push({ title: item.track.title, reason: "No separated stems or full-source audio are available." });
         continue;
@@ -697,6 +704,13 @@ try {
       }
       timelineStartMs += Math.max(1, Math.round(item.track.durationSeconds * 1000));
     }
+    if (remixTracks.length === 0) {
+      return route.fulfill({
+        status: 409,
+        json: { error: `No selected session entry can be opened in Studio. ${refused.map(item => `${item.title}: ${item.reason}`).join("; ")}. No Studio project was created. Restore or re-separate the named tracks in the Library, or remove them from the selection, then retry.` },
+      });
+    }
+    studioProjectCreations += 1;
     studioProjectData = {
       project: {
         title: `Session · ${session.name}`,
@@ -1318,6 +1332,46 @@ try {
     tracks[0].stemMix = { vocals: 0.42 };
     const originalAssets = assetSnapshot();
     await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(),
+      "3 selected of 3 selectable tracks", "all initially bindable entries are selected");
+    const projectsBeforePartial = studioProjectCreations;
+    forcedStudioRefusals = new Map([
+      ["b", "Its audio disappeared after selection."],
+      ["c", "Its source file was removed during submission."],
+    ]);
+    await page.getByTestId("session-handoff").click();
+    const studioLink = page.getByRole("link", { name: "Open in Studio" });
+    await studioLink.waitFor();
+    assert.deepEqual(lastStudioHandoffSelection, ["a", "b", "c"],
+      "the selected tracks are sent even when availability changes after selection");
+    assert.equal(studioProjectCreations, projectsBeforePartial + 1,
+      "the available track still creates a partial Studio arrangement");
+    assert.equal(studioRemixData.tracks.length, 4, "the arrangement keeps every available lane");
+    const partialMessage = await studioLink.locator("xpath=..").innerText();
+    assert.match(partialMessage, /Test b \(Its audio disappeared after selection\.\)/);
+    assert.match(partialMessage, /Test c \(Its source file was removed during submission\.\)/);
+
+    const projectsBeforeAllRefused = studioProjectCreations;
+    forcedStudioRefusals = new Map([
+      ["a", "Its source file is missing."],
+      ["b", "Its stems are missing."],
+      ["c", "Its recording is unavailable."],
+    ]);
+    await page.getByTestId("session-handoff").click();
+    const recoveryLink = page.getByTestId("link-studio-handoff-recovery");
+    await recoveryLink.waitFor();
+    assert.equal(await recoveryLink.getAttribute("href"), "/waveyard",
+      "the all-refused result links to the Library recovery workflow");
+    const allRefusedStatus = await page.getByTestId("session-status").innerText();
+    for (const trackId of ["a", "b", "c"]) assert.ok(allRefusedStatus.includes(`Test ${trackId}:`));
+    assert.match(allRefusedStatus, /No Studio project was created/);
+    assert.equal(await page.getByRole("link", { name: "Open in Studio" }).count(), 0,
+      "all-refused audio never shows a Studio project link");
+    assert.equal(studioProjectCreations, projectsBeforeAllRefused,
+      "an all-refused handoff creates no Studio project");
+    forcedStudioRefusals = new Map();
+    studioHandoffRequests = 0;
+
     await page.getByRole("button", { name: "Clear selection" }).click();
     assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
       "an empty Studio selection cannot be submitted");
@@ -1325,7 +1379,6 @@ try {
     await page.getByRole("button", { name: "Current only" }).click();
     assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "1 selected of 3 selectable tracks");
     await page.getByTestId("session-handoff").click();
-    const studioLink = page.getByRole("link", { name: "Open in Studio" });
     await studioLink.waitFor();
     assert.deepEqual(lastStudioHandoffSelection, ["a"], "the UI sends only the explicitly selected session entry");
     assert.equal(studioRemixData.tracks.length, 4, "the Studio arrangement contains only the selected track's lanes");

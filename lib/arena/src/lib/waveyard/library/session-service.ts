@@ -1158,8 +1158,8 @@ export async function sendSessionToStudio(
     const reasons = refused.map((item) => `${item.title}: ${item.reason}`).join("; ");
     throw new StemSwapRefusedError(
       reasons.length > 0
-        ? `No selected session entry can be opened in Studio. ${reasons}`
-        : "No selected session entry has audio the Studio can bind (needs separated stems or the full-source bridge).",
+        ? `No selected session entry can be opened in Studio. ${reasons}. No Studio project was created. Restore or re-separate the named tracks in the Library, or remove them from the selection, then retry.`
+        : "No selected session entry has audio the Studio can bind (needs separated stems or the full-source bridge). No Studio project was created. Restore or re-separate the tracks in the Library, or remove them from the selection, then retry.",
     );
   }
 

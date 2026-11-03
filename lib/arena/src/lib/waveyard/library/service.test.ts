@@ -2032,6 +2032,103 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   await sessions.deleteSession(OWNER, created.id);
 });
 
+test("session: partial Studio handoff names audio lost after selection; all-refused creates no project", async () => {
+  const created = await sessions.createSession(OWNER, "Changing audio availability");
+  const sourceFile = path.join(root!, "handoff-source-that-disappears.wav");
+  writeWav(sourceFile, 2, 517);
+  const lostSource = await service.addTrackFromAudioFile({
+    ownerId: OWNER,
+    filePath: sourceFile,
+    filename: "Handoff Lost Source.wav",
+    mimeType: "audio/wav",
+  });
+  const [sourceRow] = await db.db
+    .select()
+    .from(schema.tracks)
+    .where(eq(schema.tracks.id, lostSource.track.id))
+    .limit(1);
+  const [separationJob] = await db.db
+    .select()
+    .from(schema.processingJobs)
+    .where(eq(schema.processingJobs.sourceAssetId, sourceRow.sourceAssetId))
+    .limit(1);
+  assert.ok(separationJob, "the temporary track has a separation job for its test stems");
+  const lostSourceStems = await db.db.insert(schema.stemAssets).values(
+    ["vocals", "drums", "bass", "other"].map((stemType) => ({
+      projectId: lostSource.track.studioProjectId,
+      sourceAssetId: sourceRow.sourceAssetId,
+      separationJobId: separationJob.id,
+      stemType,
+      engine: "test-demucs",
+      model: "htdemucs",
+      modelVersion: "test",
+      storageKey: `test/handoff-lost-source-${stemType}.wav`,
+      checksumSha256: `handoff-lost-source-${stemType}`,
+      durationSeconds: 2,
+      sampleRate: 44100,
+      channels: 1,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: 100,
+    })),
+  ).returning();
+  const first = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const firstSessionTrackId = first.tracks[0].id;
+  const second = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: lostSource.track.id });
+  const lostSessionTrackId = second.tracks[1].id;
+  const selectedBeforeLoss = await sessions.getSession(OWNER, created.id);
+  assert.ok(selectedBeforeLoss.tracks.every((entry) => entry.stems.length > 0),
+    "both entries are selectable before the second track loses its separated audio");
+
+  try {
+    // Model source separation/artifact cleanup completing after the browser
+    // selected both entries but before the handoff request resolves them.
+    await db.db.delete(schema.stemAssets).where(eq(schema.stemAssets.sourceAssetId, sourceRow.sourceAssetId));
+    const partial = await sessions.sendSessionToStudio(
+      OWNER,
+      created.id,
+      [firstSessionTrackId, lostSessionTrackId],
+    );
+    const availableStems = selectedBeforeLoss.tracks[0].stems;
+    assert.equal(partial.remixTrackCount, availableStems.length, "the available entry still opens in Studio");
+    assert.deepEqual(partial.refused, [{
+      title: lostSource.track.title,
+      reason: "No separated stems or full-source audio are available.",
+    }], "the refused entry is reported by its track title and reason");
+    const partialTracks = await db.db
+      .select()
+      .from(schema.remixTracks)
+      .where(eq(schema.remixTracks.remixSessionId, partial.remixSessionId));
+    assert.deepEqual(
+      new Set(partialTracks.map((track) => track.stemAssetId)),
+      new Set(availableStems.map((stem) => stem.id)),
+      "the partial arrangement only references the still-available entry",
+    );
+    await db.db.delete(schema.projects).where(eq(schema.projects.id, partial.projectId));
+
+    const projectCountBeforeAllRefused = (await db.db
+      .select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(eq(schema.projects.ownerId, OWNER))).length;
+    await assert.rejects(
+      () => sessions.sendSessionToStudio(OWNER, created.id, [lostSessionTrackId]),
+      (error: unknown) => error instanceof sessions.StemSwapRefusedError
+        && error.message.includes(lostSource.track.title)
+        && error.message.includes("No Studio project was created")
+        && error.message.includes("re-separate"),
+      "when every selected entry loses audio, the error names it and explains recovery",
+    );
+    assert.equal(
+      (await db.db.select({ id: schema.projects.id }).from(schema.projects).where(eq(schema.projects.ownerId, OWNER))).length,
+      projectCountBeforeAllRefused,
+      "an all-refused handoff creates no empty Studio project",
+    );
+  } finally {
+    await sessions.deleteSession(OWNER, created.id);
+    await db.db.delete(schema.projects).where(eq(schema.projects.id, lostSource.track.studioProjectId));
+  }
+});
+
 test("session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)", async () => {
   // trackA has a complete analysis (128.5 BPM, A minor). Give trackB one too.
   const sourceB = sourceIdByTrackId.get(trackB.id)!;

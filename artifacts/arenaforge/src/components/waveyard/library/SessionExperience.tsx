@@ -3870,6 +3870,15 @@ export default function SessionExperience({
                   </button>
                 </>
               )}
+            {status.startsWith("No selected session entry can be opened in Studio.")
+              && (
+                <>
+                  {" "}
+                  <Link href="/waveyard" data-testid="link-studio-handoff-recovery">
+                    Open Library to restore or separate audio
+                  </Link>
+                </>
+              )}
           </p>
         )}
         {loadError !== null && <p className="sess-status" role="alert">{loadError}</p>}
