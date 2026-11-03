@@ -1174,6 +1174,209 @@ test("session: playlist-only moves preserve linked slots, duplicate identity and
   await assert.rejects(sessions.moveSessionTrack(OWNER, created.id, randomUUID(), 0, true), sessions.SessionTrackNotFoundError);
 });
 
+test("session ordering concurrency: all ordering writers share a transactional lock", async (t) => {
+  // The barrier holds the production advisory lock on a separate PostgreSQL
+  // connection. Wait for actual database lock contention, not arbitrary sleeps,
+  // so a writer that still reads/writes outside the protocol fails this test.
+  async function blockedPair<A, B>(owner: string, first: () => Promise<A>, second: () => Promise<B>) {
+    const blocker = await pool.connect();
+    const pending: Promise<PromiseSettledResult<unknown>>[] = [];
+    const start = (work: () => Promise<unknown>) => {
+      pending.push(work().then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason) => ({ status: "rejected" as const, reason }),
+      ));
+    };
+    async function waitForWaiters(count: number) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const result = await blocker.query(
+          "select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event = 'advisory'",
+        );
+        if (result.rows[0].n >= count) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.fail(`Expected ${count} ordering writers waiting on the real database lock`);
+    }
+    try {
+      await blocker.query("begin");
+      await blocker.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`waveyard-order:${owner}`]);
+      start(first);
+      await waitForWaiters(1);
+      start(second);
+      await waitForWaiters(2);
+      await blocker.query("commit");
+      return await Promise.all(pending);
+    } finally {
+      await blocker.query("rollback");
+      blocker.release();
+      await Promise.all(pending);
+    }
+  }
+
+  async function fixture(owner = randomUUID()) {
+    const filePath = path.join(root!, `ordering-${owner}.wav`);
+    writeWav(filePath, 0.1);
+    const { track } = await service.addTrackFromAudioFile({
+      ownerId: owner, filePath, filename: "Ordering test.wav", mimeType: "audio/wav",
+      enqueue: async () => {},
+    });
+    const created = await sessions.createSession(owner, "Concurrent ordering");
+    const q1 = await service.addToQueue({ ownerId: owner, trackId: track.id });
+    const q2 = await service.addToQueue({ ownerId: owner, trackId: track.id });
+    let detail = await sessions.getSession(owner, created.id);
+    for (const queueItemId of [undefined, q1.addedQueueItemId, undefined, q2.addedQueueItemId, undefined]) {
+      detail = await sessions.addTrackToSession({ ownerId: owner, sessionId: created.id, trackId: track.id, queueItemId });
+    }
+    const ids = detail.tracks.map((item) => item.id);
+    await sessions.saveSessionState(owner, created.id, ids[0], 0.04);
+    return {
+      owner, sessionId: created.id, ids, trackId: track.id,
+      queueIds: (await service.listQueue(owner)).map((item) => item.id),
+    };
+  }
+
+  const cases = [
+    ["playlist then general", "playlist", "general", [4, 2, 1, 0, 3]],
+    ["general then playlist", "general", "playlist", [4, 0, 1, 3, 2]],
+    ["playlist then queue", "playlist", "queue", [4, 3, 0, 1, 2]],
+    ["queue then playlist", "queue", "playlist", [4, 3, 0, 1, 2]],
+    ["general then queue", "general", "queue", [0, 2, 3, 1, 4]],
+    ["queue then general", "queue", "general", [0, 2, 3, 1, 4]],
+  ] as const;
+  for (const [name, first, second, expected] of cases) {
+    await t.test(name, async () => {
+      const f = await fixture();
+      const move = (kind: "playlist" | "general" | "queue") => kind === "queue"
+        ? service.moveQueueItem(f.owner, f.queueIds[1], 0, f.sessionId)
+        : sessions.moveSessionTrack(f.owner, f.sessionId, f.ids[kind === "playlist" ? 4 : 2], kind === "playlist" ? 0 : 1, kind === "playlist");
+      const results = await blockedPair(f.owner, () => move(first), () => move(second));
+      assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+      const fresh = await sessions.getSession(f.owner, f.sessionId);
+      assert.deepEqual(fresh.tracks.map((item) => item.id), expected.map((index) => f.ids[index]));
+      assert.deepEqual(fresh.tracks.map((item) => item.position), [0, 1, 2, 3, 4]);
+      assert.equal(fresh.currentSessionTrackId, f.ids[0]);
+      assert.equal(fresh.positionSeconds, 0.04);
+      assert.deepEqual((await service.listQueue(f.owner)).map((item) => item.id),
+        first === "queue" || second === "queue" ? [...f.queueIds].reverse() : f.queueIds);
+    });
+  }
+
+  await t.test("stale playlist/general edits conflict, leave the winner intact, and can retry", async () => {
+    for (const firstOnly of [true, false]) {
+      const f = await fixture();
+      const results = await blockedPair(f.owner,
+        () => sessions.moveSessionTrack(f.owner, f.sessionId, f.ids[4], 0, firstOnly, f.ids),
+        () => sessions.moveSessionTrack(f.owner, f.sessionId, f.ids[2], 1, !firstOnly, f.ids),
+      );
+      assert.equal(results[0].status, "fulfilled");
+      assert.equal(results[1].status, "rejected");
+      if (results[1].status === "rejected") assert.ok(results[1].reason instanceof sessions.OrderingConflictError);
+      const fresh = await sessions.getSession(f.owner, f.sessionId);
+      assert.deepEqual(fresh.tracks.map((item) => item.id),
+        (firstOnly ? [4, 1, 0, 3, 2] : [4, 0, 1, 2, 3]).map((index) => f.ids[index]));
+      const retried = await sessions.moveSessionTrack(f.owner, f.sessionId, f.ids[2], 1, !firstOnly, fresh.tracks.map((item) => item.id));
+      assert.equal(retried.tracks.length, 5);
+    }
+  });
+
+  await t.test("stale queue edit rolls back linked-session writes and retries from fresh state", async () => {
+    const f = await fixture();
+    const results = await blockedPair(f.owner,
+      () => service.moveQueueItem(f.owner, f.queueIds[1], 0, f.sessionId, f.queueIds),
+      () => service.moveQueueItem(f.owner, f.queueIds[0], 0, f.sessionId, f.queueIds),
+    );
+    assert.equal(results[0].status, "fulfilled");
+    assert.equal(results[1].status, "rejected");
+    if (results[1].status === "rejected") assert.ok(results[1].reason instanceof service.OrderingConflictError);
+    const fresh = await sessions.getSession(f.owner, f.sessionId);
+    assert.deepEqual(fresh.tracks.map((item) => item.id), [0, 3, 2, 1, 4].map((index) => f.ids[index]));
+    const queue = await service.listQueue(f.owner);
+    await service.moveQueueItem(f.owner, f.queueIds[0], 0, f.sessionId, queue.map((item) => item.id));
+    assert.deepEqual((await sessions.getSession(f.owner, f.sessionId)).tracks.map((item) => item.id), f.ids);
+    await assert.rejects(service.moveQueueItem(f.owner, f.queueIds[1], 0, randomUUID()), service.QueueSessionNotFoundError);
+    assert.deepEqual((await service.listQueue(f.owner)).map((item) => item.id), f.queueIds, "failed session validation rolls back queue positions too");
+  });
+
+  await t.test("membership and empty-list writers participate in the same lock", async () => {
+    const f = await fixture();
+    let results = await blockedPair(f.owner,
+      () => sessions.moveSessionTrack(f.owner, f.sessionId, f.ids[4], 0, true),
+      () => sessions.addTrackToSession({ ownerId: f.owner, sessionId: f.sessionId, trackId: f.trackId }),
+    );
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+    let fresh = await sessions.getSession(f.owner, f.sessionId);
+    assert.deepEqual(fresh.tracks.slice(0, 5).map((item) => item.id), [4, 1, 0, 3, 2].map((index) => f.ids[index]));
+    results = await blockedPair(f.owner,
+      () => service.removeQueueItem(f.owner, f.queueIds[0]),
+      () => sessions.moveSessionTrack(f.owner, f.sessionId, f.ids[2], 0, true),
+    );
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+    fresh = await sessions.getSession(f.owner, f.sessionId);
+    assert.deepEqual(fresh.tracks.map((item) => item.position), [0, 1, 2, 3, 4]);
+    assert.equal(fresh.tracks[2].id, f.ids[3], "surviving linked slot stays fixed after deletion compacts the list");
+    results = await blockedPair(f.owner,
+      () => sessions.removeSessionTrack(f.owner, f.sessionId, f.ids[4]),
+      () => service.moveQueueItem(f.owner, f.queueIds[1], 0, f.sessionId),
+    );
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+    await service.clearQueue(f.owner);
+    results = await blockedPair(f.owner,
+      () => service.addToQueue({ ownerId: f.owner, trackId: f.trackId }),
+      () => service.addToQueue({ ownerId: f.owner, trackId: f.trackId }),
+    );
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+    assert.deepEqual((await service.listQueue(f.owner)).map((item) => item.position), [0, 1]);
+    const raw = await pool.query("select position from wy_queue_items where owner_id = $1 order by position", [f.owner]);
+    assert.deepEqual(raw.rows.map((row) => row.position), [0, 1], "check stored positions, not the payload's normalized indices");
+  });
+
+  await t.test("real reorder routes return 409 with fresh ordering and accept an explicit retry", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      const { LOCAL_OWNER_ID } = await import("../local-context");
+      const sessionRoute = await import("../../../../../../artifacts/api-server/src/imported/library/sessions/[id]/tracks/route");
+      const queueRoute = await import("../../../../../../artifacts/api-server/src/imported/library/queue/[id]/route");
+      const f = await fixture(LOCAL_OWNER_ID);
+      const sessionRequest = (expectedOrder: string[]) => new Request(`http://localhost/api/library/sessions/${f.sessionId}/tracks`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionTrackId: f.ids[2], position: 0, sessionOnly: true, expectedOrder }),
+      });
+      const context = { params: Promise.resolve({ id: f.sessionId }) };
+      await sessions.moveSessionTrack(f.owner, f.sessionId, f.ids[4], 0, true);
+      const conflict = await sessionRoute.PATCH(sessionRequest(f.ids), context);
+      assert.equal(conflict.status, 409);
+      const body = await conflict.json();
+      assert.match(body.error, /another tab.*Try your move again/);
+      const freshIds = body.session.tracks.map((item: { id: string }) => item.id);
+      assert.deepEqual(freshIds, [4, 1, 0, 3, 2].map((index) => f.ids[index]));
+      assert.equal(body.session.currentSessionTrackId, f.ids[0]);
+      const retried = await sessionRoute.PATCH(sessionRequest(freshIds), context);
+      assert.equal(retried.status, 200);
+
+      const queueRequest = (expectedOrder: string[]) => new Request(`http://localhost/api/library/queue/${f.queueIds[0]}`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ position: 0, sessionId: f.sessionId, expectedOrder }),
+      });
+      const queueContext = { params: Promise.resolve({ id: f.queueIds[0] }) };
+      await service.moveQueueItem(f.owner, f.queueIds[1], 0, f.sessionId);
+      const queueConflict = await queueRoute.PATCH(queueRequest(f.queueIds), queueContext);
+      assert.equal(queueConflict.status, 409);
+      const queueBody = await queueConflict.json();
+      assert.match(queueBody.error, /another tab.*Try your move again/);
+      assert.deepEqual(queueBody.queue.map((item: { id: string }) => item.id), [...f.queueIds].reverse());
+      const queueRetried = await queueRoute.PATCH(queueRequest(queueBody.queue.map((item: { id: string }) => item.id)), queueContext);
+      assert.equal(queueRetried.status, 200);
+      const invalid = await sessionRoute.PATCH(sessionRequest(["not-an-entry-id"]), context);
+      assert.equal(invalid.status, 400);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+});
+
 test("session: per-track stem mix and transition persist and round-trip", async () => {
   const created = await sessions.createSession(OWNER, "Mix lab");
   const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });

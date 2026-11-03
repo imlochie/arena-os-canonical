@@ -22,6 +22,8 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 
 import { db, pool } from "@workspace/db";
+import { assertExpectedOrder, withOrderingLock, type OrderingTransaction } from "./ordering";
+export { OrderingConflictError } from "./ordering";
 import {
   listenSessions,
   listenSessionTracks,
@@ -837,56 +839,55 @@ export async function addToQueue(input: {
     .limit(1);
   if (track === undefined) throw new TrackNotFoundError();
 
-  const rows = await db
-    .select({ id: queueItems.id, trackId: queueItems.trackId })
-    .from(queueItems)
-    .where(eq(queueItems.ownerId, input.ownerId))
-    .orderBy(asc(queueItems.position));
+  const itemId = await withOrderingLock(input.ownerId, async (tx) => {
+    const rows = await tx
+      .select({ id: queueItems.id, trackId: queueItems.trackId })
+      .from(queueItems)
+      .where(eq(queueItems.ownerId, input.ownerId))
+      .orderBy(asc(queueItems.position), asc(queueItems.id));
 
-  const [item] = await db
-    .insert(queueItems)
-    .values({ ownerId: input.ownerId, trackId: input.trackId, position: rows.length })
-    .returning({ id: queueItems.id });
+    const [item] = await tx
+      .insert(queueItems)
+      .values({ ownerId: input.ownerId, trackId: input.trackId, position: rows.length })
+      .returning({ id: queueItems.id });
 
-  let orderedIds = [...rows.map((row) => row.id), item.id];
-  if ((input.at ?? "end") === "next") {
-    orderedIds = orderedIds.filter((id) => id !== item.id);
-    let insertAt = 0;
-    if (input.currentTrackId !== undefined && input.currentTrackId !== null) {
-      const currentIndex = rows.findIndex((row) => row.trackId === input.currentTrackId);
-      if (currentIndex >= 0) insertAt = currentIndex + 1;
+    let orderedIds = [...rows.map((row) => row.id), item.id];
+    if ((input.at ?? "end") === "next") {
+      orderedIds = orderedIds.filter((id) => id !== item.id);
+      let insertAt = 0;
+      if (input.currentTrackId !== undefined && input.currentTrackId !== null) {
+        const currentIndex = rows.findIndex((row) => row.trackId === input.currentTrackId);
+        if (currentIndex >= 0) insertAt = currentIndex + 1;
+      }
+      orderedIds.splice(insertAt, 0, item.id);
     }
-    orderedIds.splice(insertAt, 0, item.id);
-  }
-  await resequenceQueue(input.ownerId, orderedIds);
-  return { queue: await queueTracks(input.ownerId), addedQueueItemId: item.id };
-}
-
-async function resequenceQueue(ownerId: string, orderedIds: string[]): Promise<void> {
-  await db.transaction(async (tx) => {
-    for (const [index, id] of orderedIds.entries()) {
-      await tx.update(queueItems).set({ position: index }).where(and(eq(queueItems.id, id), eq(queueItems.ownerId, ownerId)));
-    }
+    await resequenceQueue(input.ownerId, orderedIds, tx);
+    return item.id;
   });
+  return { queue: await queueTracks(input.ownerId), addedQueueItemId: itemId };
 }
 
-async function resequenceSessionsAfterQueueEdit(sessionIds: string[]): Promise<void> {
+async function resequenceQueue(ownerId: string, orderedIds: string[], tx: OrderingTransaction): Promise<void> {
+  for (const [index, id] of orderedIds.entries()) {
+    await tx.update(queueItems).set({ position: index }).where(and(eq(queueItems.id, id), eq(queueItems.ownerId, ownerId)));
+  }
+}
+
+async function resequenceSessionsAfterQueueEdit(sessionIds: string[], tx: OrderingTransaction): Promise<void> {
   for (const sessionId of sessionIds) {
-    const rows = await db
+    const rows = await tx
       .select({ id: listenSessionTracks.id })
       .from(listenSessionTracks)
       .where(eq(listenSessionTracks.sessionId, sessionId))
-      .orderBy(asc(listenSessionTracks.position));
-    await db.transaction(async (tx) => {
-      for (const [position, row] of rows.entries()) {
-        await tx.update(listenSessionTracks).set({ position }).where(eq(listenSessionTracks.id, row.id));
-      }
-    });
+      .orderBy(asc(listenSessionTracks.position), asc(listenSessionTracks.id));
+    for (const [position, row] of rows.entries()) {
+      await tx.update(listenSessionTracks).set({ position }).where(eq(listenSessionTracks.id, row.id));
+    }
   }
 }
 
-async function linkedQueueEntries(ownerId: string, queueIds?: string[]) {
-  const rows = await db
+async function linkedQueueEntries(ownerId: string, tx: OrderingTransaction, queueIds?: string[]) {
+  const rows = await tx
     .select({ sessionId: listenSessionTracks.sessionId, sessionTrackId: listenSessionTracks.id })
     .from(queueItems)
     .innerJoin(listenSessionTracks, eq(listenSessionTracks.queueItemId, queueItems.id))
@@ -897,10 +898,10 @@ async function linkedQueueEntries(ownerId: string, queueIds?: string[]) {
 }
 
 async function deleteSavedQueueItems(ownerId: string, itemIds?: string[]): Promise<string[]> {
-  const rows = await linkedQueueEntries(ownerId, itemIds);
-  const sessionIds = [...new Set(rows.map((row) => row.sessionId))];
-  const now = new Date();
-  await db.transaction(async (tx) => {
+  return withOrderingLock(ownerId, async (tx) => {
+    const rows = await linkedQueueEntries(ownerId, tx, itemIds);
+    const sessionIds = [...new Set(rows.map((row) => row.sessionId))];
+    const now = new Date();
     if (sessionIds.length > 0) {
       await tx.update(listenSessions)
         .set({ updatedAt: now })
@@ -915,23 +916,23 @@ async function deleteSavedQueueItems(ownerId: string, itemIds?: string[]): Promi
     await tx.delete(queueItems).where(itemIds === undefined
       ? eq(queueItems.ownerId, ownerId)
       : and(eq(queueItems.ownerId, ownerId), inArray(queueItems.id, itemIds)));
+    await resequenceSessionsAfterQueueEdit(sessionIds, tx);
+    await resequenceQueue(ownerId, await remainingIds(ownerId, tx), tx);
+    return sessionIds;
   });
-  await resequenceSessionsAfterQueueEdit(sessionIds);
-  return sessionIds;
 }
 
 export async function removeQueueItem(ownerId: string, itemId: string): Promise<QueueEditPayload> {
   const affectedSessionIds = await deleteSavedQueueItems(ownerId, [itemId]);
-  await resequenceQueue(ownerId, await remainingIds(ownerId));
   return { queue: await queueTracks(ownerId), affectedSessionIds };
 }
 
-async function remainingIds(ownerId: string): Promise<string[]> {
-  const rows = await db
+async function remainingIds(ownerId: string, tx: OrderingTransaction): Promise<string[]> {
+  const rows = await tx
     .select({ id: queueItems.id })
     .from(queueItems)
     .where(eq(queueItems.ownerId, ownerId))
-    .orderBy(asc(queueItems.position));
+    .orderBy(asc(queueItems.position), asc(queueItems.id));
   return rows.map((row) => row.id);
 }
 
@@ -940,15 +941,16 @@ export async function moveQueueItem(
   itemId: string,
   position: number,
   sessionId?: string,
+  expectedOrder?: string[],
 ): Promise<QueueEditPayload> {
-  const ids = await remainingIds(ownerId);
-  const from = ids.indexOf(itemId);
-  if (from === -1) throw new QueueItemNotFoundError();
-  const to = Math.min(Math.max(Math.trunc(position), 0), ids.length - 1);
-  ids.splice(to, 0, ids.splice(from, 1)[0]);
   const affectedSessionIds: string[] = [];
-
-  await db.transaction(async (tx) => {
+  await withOrderingLock(ownerId, async (tx) => {
+    const ids = await remainingIds(ownerId, tx);
+    assertExpectedOrder(ids, expectedOrder);
+    const from = ids.indexOf(itemId);
+    if (from === -1) throw new QueueItemNotFoundError();
+    const to = Math.min(Math.max(Math.trunc(position), 0), ids.length - 1);
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
     for (const [index, id] of ids.entries()) {
       await tx.update(queueItems)
         .set({ position: index })
@@ -967,7 +969,7 @@ export async function moveQueueItem(
       .select({ id: listenSessionTracks.id, queueItemId: listenSessionTracks.queueItemId })
       .from(listenSessionTracks)
       .where(eq(listenSessionTracks.sessionId, sessionId))
-      .orderBy(asc(listenSessionTracks.position));
+      .orderBy(asc(listenSessionTracks.position), asc(listenSessionTracks.id));
     const queueRank = new Map(ids.map((id, index) => [id, index]));
     const linkedRows = sessionRows
       .filter((row) => row.queueItemId !== null && queueRank.has(row.queueItemId))

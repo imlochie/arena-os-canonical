@@ -1302,9 +1302,16 @@ export function MusicHome() {
       const response = await fetch(`/api/library/queue/${itemId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ position, sessionId: host.sessionId ?? undefined }),
+        body: JSON.stringify({ position, sessionId: host.sessionId ?? undefined, expectedOrder: queue.map((item) => item.id) }),
       });
       if (!response.ok) {
+        if (response.status === 409) {
+          const conflict = await response.json();
+          if (Array.isArray(conflict.queue)) setQueue(conflict.queue);
+          setQueueErrorMessage(conflict.error ?? "The queue changed in another tab. Try your move again.");
+          if (host.sessionId) host.refreshSession([host.sessionId]);
+          return;
+        }
         setQueueErrorMessage("Could not update the saved queue order. Try again.");
         return;
       }
@@ -1316,7 +1323,7 @@ export function MusicHome() {
     } catch {
       setQueueErrorMessage("Could not update the saved queue order. Check the connection and try again.");
     }
-  }, [host]);
+  }, [host, queue]);
 
   const recentlyPlayed = useMemo(
     () =>

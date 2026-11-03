@@ -9,6 +9,47 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary Move a session entry, optionally within playlist-only slots
+ */
+export const ReorderListeningSessionParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const reorderListeningSessionBodyPositionMin = 0;
+
+
+
+export const ReorderListeningSessionBody = zod.object({
+  "sessionTrackId": zod.string().uuid(),
+  "position": zod.number().int().min(reorderListeningSessionBodyPositionMin),
+  "sessionOnly": zod.boolean().optional(),
+  "expectedOrder": zod.array(zod.string().uuid()).optional().describe('Full ordered session-entry identifiers observed by the caller; compared under the ordering lock')
+})
+
+export const ReorderListeningSessionResponse = zod.record(zod.string(), zod.unknown())
+
+
+/**
+ * @summary Move a saved queue entry and synchronize linked slots in the selected session
+ */
+export const ReorderSavedQueueParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const reorderSavedQueueBodyPositionMin = 0;
+
+
+
+export const ReorderSavedQueueBody = zod.object({
+  "position": zod.number().int().min(reorderSavedQueueBodyPositionMin),
+  "sessionId": zod.string().uuid().optional(),
+  "expectedOrder": zod.array(zod.string().uuid()).optional().describe('Full ordered saved-queue row identifiers observed by the caller; compared under the ordering lock')
+})
+
+export const ReorderSavedQueueResponse = zod.record(zod.string(), zod.unknown())
+
+
+/**
  * @summary Explicit owner-authorized local-model development with private source
  */
 export const runArcadeDevelopmentBodyEventDraftHashRegExp = new RegExp('^[a-f0-9]{64}$');

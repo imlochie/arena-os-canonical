@@ -35,6 +35,7 @@
 - [Artifact workflow ports](artifact-workflow-ports.md) — after stale Vite/API copies collide with managed ports, stop the exact services, then restart and verify each expected port.
 - [Arcade shelf concurrency](arcade-shelf-concurrency.md) — notifications are advisory; stale-write checks must be transactional, and refreshing unrelated games must not restart players.
 - [Session-only ordering](waveyard-session-only-order.md) — playlist-only moves use unlinked slots; preserve unrestricted ordering for explicit up-next cueing.
+- [Waveyard ordering coordination](waveyard-ordering-locks.md) — queue and session writers share an owner lock, including empty lists; stale UI moves require an explicit retry.
 - [Arcade runtime management](arcade-runtime-management.md) — metadata must preserve private identities and saves; runtime registration is not execution evidence.
 - [Mod profile boundaries](arcade-mod-profile-boundaries.md) — rollback restores content, not saves; native isolation requires separate OS identities, not just folders.
 - [Playwright frame evidence](playwright-frame-evidence.md) — text filters exclude scripts; inspect DOM code and verify gameplay after iframe navigation.

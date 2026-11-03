@@ -13,6 +13,58 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /library/sessions/{id}/tracks:
+    patch:
+      operationId: reorderListeningSession
+      tags: [waveyard]
+      summary: Move a session entry, optionally within playlist-only slots
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ListeningSessionOrderInput" }
+      responses:
+        "200":
+          description: Updated session envelope
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "409":
+          description: Stale expected order; error and current session are returned for an explicit retry
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /library/queue/{id}:
+    patch:
+      operationId: reorderSavedQueue
+      tags: [waveyard]
+      summary: Move a saved queue entry and synchronize linked slots in the selected session
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SavedQueueOrderInput" }
+      responses:
+        "200":
+          description: Updated queue and affected session identifiers
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "409":
+          description: Stale expected order; error and current queue are returned for an explicit retry
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
   /arcade/development:
     post:
       operationId: runArcadeDevelopment
@@ -690,6 +742,27 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
 components:
   schemas:
+    ListeningSessionOrderInput:
+      type: object
+      required: [sessionTrackId, position]
+      properties:
+        sessionTrackId: { type: string, format: uuid }
+        position: { type: integer, minimum: 0 }
+        sessionOnly: { type: boolean }
+        expectedOrder:
+          description: Full ordered session-entry identifiers observed by the caller; compared under the ordering lock
+          type: array
+          items: { type: string, format: uuid }
+    SavedQueueOrderInput:
+      type: object
+      required: [position]
+      properties:
+        position: { type: integer, minimum: 0 }
+        sessionId: { type: string, format: uuid }
+        expectedOrder:
+          description: Full ordered saved-queue row identifiers observed by the caller; compared under the ordering lock
+          type: array
+          items: { type: string, format: uuid }
     ArcadeDevelopmentInput:
       type: object
       required: [authorized, op]

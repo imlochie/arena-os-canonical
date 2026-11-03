@@ -53,6 +53,8 @@ import {
   type TransitionConfig,
 } from "./session-logic";
 import { getTrack, QueueItemNotFoundError, removeQueueItem, type TrackDetail, type TrackStem, type TrackSummary } from "./service";
+import { assertExpectedOrder, withOrderingLock, type OrderingTransaction } from "./ordering";
+export { OrderingConflictError } from "./ordering";
 
 export class SessionNotFoundError extends Error {
   constructor() {
@@ -533,8 +535,8 @@ export async function addTrackToSession(input: {
     .limit(1);
   if (track === undefined) throw new TrackNotInLibraryError();
 
-  const existing = await loadSessionTracks(input.sessionId);
-  const [item] = await db.transaction(async (tx) => {
+  await withOrderingLock(input.ownerId, async (tx) => {
+    const existing = await sessionTrackIds(input.sessionId, tx);
     if (input.queueItemId !== undefined) {
       const [queueItem] = await tx
         .select({ trackId: queueItems.trackId })
@@ -546,7 +548,7 @@ export async function addTrackToSession(input: {
         .limit(1);
       if (queueItem === undefined || queueItem.trackId !== input.trackId) throw new QueueItemNotFoundError();
     }
-    return tx
+    const [item] = await tx
       .insert(listenSessionTracks)
       .values({
         sessionId: input.sessionId,
@@ -557,35 +559,32 @@ export async function addTrackToSession(input: {
         transition: JSON.stringify(defaultTransitionConfig()),
       })
       .returning({ id: listenSessionTracks.id });
+    const ordered = [...existing, item.id];
+    if (input.position !== undefined) {
+      const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
+      ordered.splice(to, 0, ordered.pop()!);
+    }
+    await resequence(input.sessionId, ordered, tx);
+    await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, input.sessionId));
   });
-  let ordered = [...existing.map((row) => row.id), item.id];
-  if (input.position !== undefined) {
-    const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
-    const from = ordered.length - 1;
-    ordered.splice(to, 0, ordered.splice(from, 1)[0]);
-  }
-  await resequence(input.sessionId, ordered);
-  await touchSession(input.sessionId);
   return sessionPayload(input.sessionId);
 }
 
-async function resequence(sessionId: string, orderedIds: string[]): Promise<void> {
-  await db.transaction(async (tx) => {
-    for (const [index, id] of orderedIds.entries()) {
-      await tx
-        .update(listenSessionTracks)
-        .set({ position: index })
-        .where(and(eq(listenSessionTracks.id, id), eq(listenSessionTracks.sessionId, sessionId)));
-    }
-  });
+async function resequence(sessionId: string, orderedIds: string[], tx: OrderingTransaction): Promise<void> {
+  for (const [index, id] of orderedIds.entries()) {
+    await tx
+      .update(listenSessionTracks)
+      .set({ position: index })
+      .where(and(eq(listenSessionTracks.id, id), eq(listenSessionTracks.sessionId, sessionId)));
+  }
 }
 
-async function sessionTrackIds(sessionId: string): Promise<string[]> {
-  const rows = await db
+async function sessionTrackIds(sessionId: string, tx: OrderingTransaction): Promise<string[]> {
+  const rows = await tx
     .select({ id: listenSessionTracks.id })
     .from(listenSessionTracks)
     .where(eq(listenSessionTracks.sessionId, sessionId))
-    .orderBy(asc(listenSessionTracks.position));
+    .orderBy(asc(listenSessionTracks.position), asc(listenSessionTracks.id));
   return rows.map((row) => row.id);
 }
 
@@ -601,7 +600,7 @@ export async function removeSessionTrack(ownerId: string, sessionId: string, ses
     await removeQueueItem(ownerId, item.queueItemId);
   } else {
     const now = new Date();
-    await db.transaction(async (tx) => {
+    await withOrderingLock(ownerId, async (tx) => {
       await tx.delete(listenSessionTracks).where(and(
         eq(listenSessionTracks.id, sessionTrackId),
         eq(listenSessionTracks.sessionId, sessionId),
@@ -613,10 +612,10 @@ export async function removeSessionTrack(ownerId: string, sessionId: string, ses
           eq(listenSessions.ownerId, ownerId),
           eq(listenSessions.currentTrackId, sessionTrackId),
         ));
+      await resequence(sessionId, await sessionTrackIds(sessionId, tx), tx);
+      await tx.update(listenSessions).set({ updatedAt: now }).where(eq(listenSessions.id, sessionId));
     });
   }
-  await resequence(sessionId, await sessionTrackIds(sessionId));
-  await touchSession(sessionId);
   return sessionPayload(sessionId);
 }
 
@@ -626,42 +625,33 @@ export async function moveSessionTrack(
   sessionTrackId: string,
   position: number,
   sessionOnly = false,
+  expectedOrder?: string[],
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
-  if (sessionOnly) {
-    // Reorder only the unlinked slots: linked entries and saved queue rows
-    // must not move when a listener rearranges playlist additions.
-    await db.transaction(async (tx) => {
-      const rows = await tx.select({
-        id: listenSessionTracks.id,
-        queueItemId: listenSessionTracks.queueItemId,
-        position: listenSessionTracks.position,
-      }).from(listenSessionTracks)
-        .where(eq(listenSessionTracks.sessionId, sessionId))
-        .orderBy(asc(listenSessionTracks.position), asc(listenSessionTracks.id))
-        .for("update");
-      const slots = rows.filter((row) => row.queueItemId === null);
-      const from = slots.findIndex((row) => row.id === sessionTrackId);
-      if (from === -1) throw new SessionTrackNotFoundError();
-      const to = Math.max(0, slots.filter((row) => row.position <= position).length - 1);
-      const ids = slots.map((row) => row.id);
-      ids.splice(to, 0, ids.splice(from, 1)[0]);
-      for (const [index, id] of ids.entries()) {
-        await tx.update(listenSessionTracks).set({ position: slots[index].position })
-          .where(eq(listenSessionTracks.id, id));
-      }
-      await tx.update(listenSessions).set({ updatedAt: new Date() })
-        .where(eq(listenSessions.id, sessionId));
-    });
-    return sessionPayload(sessionId);
-  }
-  const ids = await sessionTrackIds(sessionId);
-  const from = ids.indexOf(sessionTrackId);
-  if (from === -1) throw new SessionTrackNotFoundError();
-  const to = Math.min(Math.max(Math.trunc(position), 0), ids.length - 1);
-  ids.splice(to, 0, ids.splice(from, 1)[0]);
-  await resequence(sessionId, ids);
-  await touchSession(sessionId);
+  await withOrderingLock(ownerId, async (tx) => {
+    const rows = await tx.select({
+      id: listenSessionTracks.id,
+      queueItemId: listenSessionTracks.queueItemId,
+      position: listenSessionTracks.position,
+    }).from(listenSessionTracks)
+      .where(eq(listenSessionTracks.sessionId, sessionId))
+      .orderBy(asc(listenSessionTracks.position), asc(listenSessionTracks.id));
+    assertExpectedOrder(rows.map((row) => row.id), expectedOrder);
+    // Playlist-only moves protect linked slots. Explicit up-next/general
+    // moves intentionally remain free to use all session slots.
+    const slots = sessionOnly ? rows.filter((row) => row.queueItemId === null) : rows;
+    const from = slots.findIndex((row) => row.id === sessionTrackId);
+    if (from === -1) throw new SessionTrackNotFoundError();
+    const to = Math.max(0, slots.filter((row) => row.position <= Math.trunc(position)).length - 1);
+    const ids = slots.map((row) => row.id);
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    for (const [index, id] of ids.entries()) {
+      await tx.update(listenSessionTracks).set({ position: slots[index].position })
+        .where(eq(listenSessionTracks.id, id));
+    }
+    await tx.update(listenSessions).set({ updatedAt: new Date() })
+      .where(eq(listenSessions.id, sessionId));
+  });
   return sessionPayload(sessionId);
 }
 

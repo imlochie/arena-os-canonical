@@ -54,8 +54,14 @@ import type {
   LibraryConversionOptionsResponse,
   LibraryTrackListResponse,
   LibraryTrackSeparationStartResponse,
+  ListeningSessionOrderInput,
+  ReorderListeningSession200,
+  ReorderListeningSession409,
+  ReorderSavedQueue200,
+  ReorderSavedQueue409,
   ReviewArcadeModRepository200,
   RunArcadeDevelopment200,
+  SavedQueueOrderInput,
   SearchArcadeCatalog200,
   SeparationCancellationResponse
 } from './api.schemas';
@@ -86,6 +92,184 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getReorderListeningSessionUrl = (id: string,) => {
+
+
+
+
+  return `/api/library/sessions/${id}/tracks`
+}
+
+/**
+ * @summary Move a session entry, optionally within playlist-only slots
+ */
+export const reorderListeningSession = async (id: string,
+    listeningSessionOrderInput: ListeningSessionOrderInput, options?: Parameters<typeof customFetch>[1]): Promise<ReorderListeningSession200> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<ReorderListeningSession200>(getReorderListeningSessionUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(listeningSessionOrderInput)
+  }
+);}
+
+
+
+
+
+export const getReorderListeningSessionMutationKey = () => ['reorderListeningSession'] as const;
+
+export const getReorderListeningSessionMutationOptions = <TError = ErrorType<ReorderListeningSession409>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderListeningSession>>, TError,ReorderListeningSessionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reorderListeningSession>>, TError,ReorderListeningSessionMutationVariables, TContext> => {
+
+const mutationKey = getReorderListeningSessionMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reorderListeningSession>>, ReorderListeningSessionMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  reorderListeningSession(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReorderListeningSessionMutationResult = NonNullable<Awaited<ReturnType<typeof reorderListeningSession>>>
+    export type ReorderListeningSessionMutationBody = BodyType<ListeningSessionOrderInput>
+    export type ReorderListeningSessionMutationError = ErrorType<ReorderListeningSession409>
+    export type ReorderListeningSessionMutationVariables = {id: string;data: BodyType<ListeningSessionOrderInput>}
+
+    /**
+ * @summary Move a session entry, optionally within playlist-only slots
+ */
+export const useReorderListeningSession = <TError = ErrorType<ReorderListeningSession409>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderListeningSession>>, TError,ReorderListeningSessionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reorderListeningSession>>,
+        TError,
+        ReorderListeningSessionMutationVariables,
+        TContext
+      > => {
+      return useMutation(getReorderListeningSessionMutationOptions(options));
+    }
+
+export const getReorderSavedQueueUrl = (id: string,) => {
+
+
+
+
+  return `/api/library/queue/${id}`
+}
+
+/**
+ * @summary Move a saved queue entry and synchronize linked slots in the selected session
+ */
+export const reorderSavedQueue = async (id: string,
+    savedQueueOrderInput: SavedQueueOrderInput, options?: Parameters<typeof customFetch>[1]): Promise<ReorderSavedQueue200> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<ReorderSavedQueue200>(getReorderSavedQueueUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(savedQueueOrderInput)
+  }
+);}
+
+
+
+
+
+export const getReorderSavedQueueMutationKey = () => ['reorderSavedQueue'] as const;
+
+export const getReorderSavedQueueMutationOptions = <TError = ErrorType<ReorderSavedQueue409>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderSavedQueue>>, TError,ReorderSavedQueueMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reorderSavedQueue>>, TError,ReorderSavedQueueMutationVariables, TContext> => {
+
+const mutationKey = getReorderSavedQueueMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reorderSavedQueue>>, ReorderSavedQueueMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  reorderSavedQueue(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReorderSavedQueueMutationResult = NonNullable<Awaited<ReturnType<typeof reorderSavedQueue>>>
+    export type ReorderSavedQueueMutationBody = BodyType<SavedQueueOrderInput>
+    export type ReorderSavedQueueMutationError = ErrorType<ReorderSavedQueue409>
+    export type ReorderSavedQueueMutationVariables = {id: string;data: BodyType<SavedQueueOrderInput>}
+
+    /**
+ * @summary Move a saved queue entry and synchronize linked slots in the selected session
+ */
+export const useReorderSavedQueue = <TError = ErrorType<ReorderSavedQueue409>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderSavedQueue>>, TError,ReorderSavedQueueMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reorderSavedQueue>>,
+        TError,
+        ReorderSavedQueueMutationVariables,
+        TContext
+      > => {
+      return useMutation(getReorderSavedQueueMutationOptions(options));
+    }
 
 export const getRunArcadeDevelopmentUrl = () => {
 

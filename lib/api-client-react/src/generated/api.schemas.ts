@@ -5,6 +5,23 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface ListeningSessionOrderInput {
+  sessionTrackId: string;
+  /** @minimum 0 */
+  position: number;
+  sessionOnly?: boolean;
+  /** Full ordered session-entry identifiers observed by the caller; compared under the ordering lock */
+  expectedOrder?: string[];
+}
+
+export interface SavedQueueOrderInput {
+  /** @minimum 0 */
+  position: number;
+  sessionId?: string;
+  /** Full ordered saved-queue row identifiers observed by the caller; compared under the ordering lock */
+  expectedOrder?: string[];
+}
+
 export type ArcadeDevelopmentInputOp = typeof ArcadeDevelopmentInputOp[keyof typeof ArcadeDevelopmentInputOp];
 
 
@@ -824,6 +841,14 @@ export interface SeparationCancellationResponse {
   stage: string;
   message?: string;
 }
+
+export type ReorderListeningSession200 = { [key: string]: unknown };
+
+export type ReorderListeningSession409 = { [key: string]: unknown };
+
+export type ReorderSavedQueue200 = { [key: string]: unknown };
+
+export type ReorderSavedQueue409 = { [key: string]: unknown };
 
 export type RunArcadeDevelopment200 = { [key: string]: unknown };
 

@@ -2035,7 +2035,22 @@ export default function SessionExperience({
     try {
       const response = await fetch(input, init);
       if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
+        const body = (await response.json().catch(() => null)) as { error?: string; session?: SessionDetail } | null;
+        if (response.status === 409 && body?.session && sessionRef.current?.id === body.session.id) {
+          // Only replace ordering/membership. A rejected move must not reset
+          // this tab's live transport, mix, or audible playback selection.
+          const current = sessionRef.current;
+          const previous = new Map(current.tracks.map((item) => [item.id, item]));
+          const next = {
+            ...current,
+            tracks: body.session.tracks.map((item) => {
+              const old = previous.get(item.id);
+              return old ? { ...old, position: item.position, queueItemId: item.queueItemId } : item;
+            }),
+          };
+          sessionRef.current = next;
+          setSession(next);
+        }
         setStatus(body?.error ?? "The session change was rejected.");
         return null;
       }
@@ -2310,7 +2325,7 @@ export default function SessionExperience({
           ? await mutate(`/api/library/sessions/${s.id}/tracks`, {
               method: "PATCH",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ sessionTrackId: existing.id, position: existingIdx < curIdx ? curIdx : insertAt }),
+              body: JSON.stringify({ sessionTrackId: existing.id, position: existingIdx < curIdx ? curIdx : insertAt, expectedOrder: s.tracks.map((item) => item.id) }),
             })
           : await mutate(`/api/library/sessions/${s.id}/tracks`, {
               method: "POST",
@@ -2362,7 +2377,7 @@ export default function SessionExperience({
     const detail = await mutate(`/api/library/sessions/${session.id}/tracks`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionTrackId: itemId, position }),
+      body: JSON.stringify({ sessionTrackId: itemId, position, expectedOrder: session.tracks.map((item) => item.id) }),
     });
     if (detail === null) return;
     const title = detail.tracks.find((item) => item.id === itemId)?.track.title ?? "Track";
@@ -2411,9 +2426,12 @@ export default function SessionExperience({
         const detail = await mutate(`/api/library/sessions/${session.id}/tracks`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sessionTrackId: itemId, position: target.position, sessionOnly }),
+          body: JSON.stringify({ sessionTrackId: itemId, position: target.position, sessionOnly, expectedOrder: session.tracks.map((entry) => entry.id) }),
         });
-        if (detail !== null) publishWaveyardQueueChange([session.id]);
+        if (detail !== null) {
+          publishWaveyardQueueChange([session.id]);
+          setStatus("Session order updated.");
+        }
       } finally {
         movingTrackRef.current = false;
         setMovingTrack(false);
