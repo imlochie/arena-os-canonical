@@ -66,7 +66,12 @@ async function run() {
   const migrationsDir = path.join(resources, "desktop-migrations");
 
   dataRoot = await mkdtemp(path.join(os.tmpdir(), "arenaforge-package-smoke-"));
-  const env = { ...process.env, ARENA_DATA_DIR: dataRoot };
+  const env = {
+    ...process.env,
+    ARENA_DATA_DIR: dataRoot,
+    APPDATA: path.join(dataRoot, "profile/roaming"),
+    LOCALAPPDATA: path.join(dataRoot, "profile/local"),
+  };
   delete env.ARENA_FFMPEG_PATH;
   delete env.ARENA_FFPROBE_PATH;
   delete env.ARENA_APP_BIN_DIR;
@@ -74,6 +79,7 @@ async function run() {
   begin("installed_app_starts");
   desktop = await _electron.launch({
     executablePath: executable,
+    args: [`--user-data-dir=${path.join(dataRoot, "electron-profile")}`],
     timeout: 150_000,
     env,
   });
@@ -194,8 +200,14 @@ async function run() {
   );
   desktop = await _electron.launch({
     executablePath: executable,
+    args: [`--user-data-dir=${path.join(restoreRoot, "electron-profile")}`],
     timeout: 150_000,
-    env: { ...env, ARENA_DATA_DIR: restoreRoot },
+    env: {
+      ...env,
+      ARENA_DATA_DIR: restoreRoot,
+      APPDATA: path.join(restoreRoot, "profile/roaming"),
+      LOCALAPPDATA: path.join(restoreRoot, "profile/local"),
+    },
   });
   const restoredPage = await desktop.firstWindow({ timeout: 150_000 });
   await restoredPage.waitForURL("**/spaces", { timeout: 150_000 });

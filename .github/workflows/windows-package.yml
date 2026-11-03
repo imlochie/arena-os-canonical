@@ -11,9 +11,11 @@ permissions:
 jobs:
   installed-package:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: ilammy/msvc-dev-cmd@v1
 
@@ -44,6 +46,44 @@ jobs:
       - name: Run desktop packaging unit tests
         run: pnpm --filter @workspace/desktop test
 
+      - name: Build previous Windows package for update test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $workflowEvent = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+          $baseline = $null
+          if ($workflowEvent.pull_request.base.sha) {
+            $baseline = $workflowEvent.pull_request.base.sha
+          } elseif ($workflowEvent.before -and $workflowEvent.before -notmatch "^0+$") {
+            $baseline = $workflowEvent.before
+          } else {
+            $baseline = (git rev-parse HEAD^).Trim()
+          }
+          if (-not $baseline) { throw "The previous package revision could not be identified." }
+
+          $previousSource = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) "arenaforge-previous-source"
+          $previousInstaller = Join-Path $env:RUNNER_TEMP "ArenaForge-previous.exe"
+          git worktree add --detach $previousSource $baseline
+          if ($LASTEXITCODE -ne 0) { throw "The previous package source could not be prepared." }
+          try {
+            Push-Location $previousSource
+            pnpm install --frozen-lockfile --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
+            if ($LASTEXITCODE -ne 0) { throw "Previous package dependencies could not be installed." }
+            $env:ARENA_CLASSIC_PACKAGES = "1"
+            pnpm --filter @workspace/desktop run dist:win
+            if ($LASTEXITCODE -ne 0) { throw "The previous Windows package could not be built." }
+            $builtInstaller = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
+              Where-Object { $_.Name -notmatch "uninstall" } |
+              Select-Object -First 1
+            if (-not $builtInstaller) { throw "The previous Windows installer was not created." }
+            Copy-Item $builtInstaller.FullName $previousInstaller
+          } finally {
+            Pop-Location
+            git worktree remove --force $previousSource
+          }
+          if (-not (Test-Path $previousInstaller)) { throw "The previous Windows installer was not retained for the update test." }
+          "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
+
       - name: Build Windows x64 installer
         run: pnpm --filter @workspace/desktop run dist:win
         env:
@@ -68,12 +108,17 @@ jobs:
           node desktop/windows-package-smoke.mjs $executable
           if ($LASTEXITCODE -ne 0) { throw "The installed-package smoke check failed." }
 
+          node desktop/windows-package-update-smoke.mjs "$env:ARENA_PREVIOUS_INSTALLER" "$($installer.FullName)"
+          if ($LASTEXITCODE -ne 0) { throw "The installed-package update check failed." }
+
       - name: Upload test-status report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-package-smoke-result
-          path: generated-artifacts/windows-package-smoke/result.json
+          path: |
+            generated-artifacts/windows-package-smoke/result.json
+            generated-artifacts/windows-package-update-smoke/result.json
           if-no-files-found: ignore
           retention-days: 14
 
