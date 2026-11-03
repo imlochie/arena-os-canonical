@@ -28,11 +28,52 @@ const WAVEFORM_PCM_SAMPLE_RATE = 44_100;
 const configuredWaveformPcmLimit = Number(
   process.env.MAX_WAVEFORM_PCM_BYTES ?? 1_000_000_000,
 );
-const MAX_WAVEFORM_PCM_BYTES =
+export const MAX_WAVEFORM_PCM_BYTES =
   Number.isSafeInteger(configuredWaveformPcmLimit) &&
   configuredWaveformPcmLimit > 0
     ? configuredWaveformPcmLimit
     : 1_000_000_000;
+
+export class WaveformPcmLimitError extends Error {
+  readonly errorCode = "waveform_pcm_limit" as const;
+
+  constructor(
+    readonly estimatedPcmBytes: number,
+    readonly maximumPcmBytes: number,
+  ) {
+    super(
+      `Audio is too long to derive a bounded waveform artifact ` +
+        `(estimated PCM ${estimatedPcmBytes.toLocaleString("en-US")} bytes; ` +
+        `limit ${maximumPcmBytes.toLocaleString("en-US")} bytes).`,
+    );
+    this.name = "WaveformPcmLimitError";
+  }
+}
+
+export function estimateWaveformPcmBytes(durationSeconds: number): number {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const sampleCount = Math.ceil(durationSeconds * WAVEFORM_PCM_SAMPLE_RATE);
+  const estimatedBytes = sampleCount * 2;
+  return Number.isSafeInteger(sampleCount) && Number.isSafeInteger(estimatedBytes)
+    ? estimatedBytes
+    : Number.POSITIVE_INFINITY;
+}
+
+export function assertWaveformPcmWithinLimit(
+  durationSeconds: number,
+  maximumPcmBytes = MAX_WAVEFORM_PCM_BYTES,
+): number {
+  if (!Number.isSafeInteger(maximumPcmBytes) || maximumPcmBytes <= 0) {
+    throw new Error("The waveform PCM size limit must be a positive safe integer.");
+  }
+  const estimatedPcmBytes = estimateWaveformPcmBytes(durationSeconds);
+  if (!Number.isSafeInteger(estimatedPcmBytes) || estimatedPcmBytes > maximumPcmBytes) {
+    throw new WaveformPcmLimitError(estimatedPcmBytes, maximumPcmBytes);
+  }
+  return estimatedPcmBytes;
+}
 
 export function acceptedAudioFilename(filename: string) {
   return ACCEPTED_EXTENSIONS.has(extname(filename).toLowerCase());
@@ -276,16 +317,13 @@ async function waveformPeaksFromPcmFile(
 export async function generateWaveform(
   path: string,
   temporaryPcmPath: string,
+  options: { maxPcmBytes?: number } = {},
 ): Promise<WaveformDocument> {
   const metadata = await probeAudio(path);
-  const estimatedPcmBytes =
-    metadata.durationSeconds * WAVEFORM_PCM_SAMPLE_RATE * 2;
-  if (
-    !Number.isFinite(estimatedPcmBytes) ||
-    estimatedPcmBytes > MAX_WAVEFORM_PCM_BYTES
-  ) {
-    throw new Error("Audio is too long to derive a bounded waveform artifact.");
-  }
+  assertWaveformPcmWithinLimit(
+    metadata.durationSeconds,
+    options.maxPcmBytes ?? MAX_WAVEFORM_PCM_BYTES,
+  );
   await exec((await requireTool("ffmpeg")).path, [
     "-v",
     "error",

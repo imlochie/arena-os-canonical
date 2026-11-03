@@ -71,7 +71,9 @@ export function WaveformCanvas({ assetId, label, position = 0, duration, onSeek,
           pollTimer = setTimeout(() => void load(), 2_000);
           return;
         }
-        if (job?.status === "failed" && job.errorCode === "queue_unavailable") {
+        if (job?.status === "failed" && job.errorCode === "waveform_pcm_limit") {
+          setMessage("This recording is too long to build a waveform within the safe processing limit. Audio playback remains available.");
+        } else if (job?.status === "failed" && job.errorCode === "queue_unavailable") {
           setMessage("Waveform generation could not be queued because processing is unavailable. Audio playback remains available.");
         } else if (job?.status === "failed") {
           setMessage("Waveform generation failed. Audio playback remains available.");
@@ -119,7 +121,7 @@ export function WaveformCanvas({ assetId, label, position = 0, duration, onSeek,
   if (!peaks) return (
     <div className={`waveform-empty ${compact ? "compact" : ""}`}>
       <p role={loadState === "error" ? "alert" : "status"}>{message}</p>
-      {loadState === "error" && (
+      {loadState === "error" && waveformJob?.errorCode !== "waveform_pcm_limit" && (
         <button
           type="button"
           data-testid="waveform-canvas-retry"

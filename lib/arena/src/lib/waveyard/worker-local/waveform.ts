@@ -22,7 +22,11 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db } from "@workspace/db";
 import { sourceAnalyses, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
-import { checksumFile, generateWaveform } from "@workspace/arena/lib/waveyard/audio";
+import {
+  checksumFile,
+  generateWaveform,
+  WaveformPcmLimitError,
+} from "@workspace/arena/lib/waveyard/audio";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueSourceAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
@@ -335,6 +339,7 @@ export async function handleWaveformJob(
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown waveform failure.";
       const retryable = isTransientWaveformFailure(error);
+      const permanentPcmLimit = error instanceof WaveformPcmLimitError;
       if (retryable && attempt < WAVEFORM_MAX_ATTEMPTS) {
         const delay = WAVEFORM_RETRY_BACKOFF_MS[Math.min(attempt - 1, WAVEFORM_RETRY_BACKOFF_MS.length - 1)];
         await updateJob(database, job.id, {
@@ -354,7 +359,9 @@ export async function handleWaveformJob(
         status: "failed",
         stage: "failed",
         attempts: attempt,
-        errorCode: exhausted ? "waveform_retry_exhausted" : "waveform_failed",
+        errorCode: permanentPcmLimit
+          ? error.errorCode
+          : exhausted ? "waveform_retry_exhausted" : "waveform_failed",
         errorMessage: exhausted
           ? `Waveform generation failed after ${attempt} attempts: ${message}`
           : message,

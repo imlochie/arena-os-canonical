@@ -12,8 +12,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { eq } from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 
-import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
+import {
+  assertWaveformPcmWithinLimit,
+  checksumFile,
+  estimateWaveformPcmBytes,
+  generateWaveform,
+  MAX_WAVEFORM_PCM_BYTES,
+  WaveformPcmLimitError,
+} from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import { clearResolvedToolCache, requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import { processingJobs, projects, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
@@ -302,6 +310,98 @@ async function createSourceWaveformJob(f: Fixture) {
 function sourceWaveformPayload(f: Fixture, waveformJobId: string) {
   return { waveformJobId, projectId: f.project.id, sourceAssetId: f.source.id };
 }
+
+test("waveform PCM estimates accept the boundary and reject the first over-limit duration", () => {
+  const maximumPcmBytes = 44_100 * 2;
+  assert.equal(estimateWaveformPcmBytes(0.99), maximumPcmBytes - 882);
+  assert.equal(estimateWaveformPcmBytes(1), maximumPcmBytes);
+  assert.equal(estimateWaveformPcmBytes(1.01), maximumPcmBytes + 882);
+  assert.equal(assertWaveformPcmWithinLimit(0.99, maximumPcmBytes), maximumPcmBytes - 882);
+  assert.equal(assertWaveformPcmWithinLimit(1, maximumPcmBytes), maximumPcmBytes);
+  assert.throws(
+    () => assertWaveformPcmWithinLimit(1.01, maximumPcmBytes),
+    (error) => error instanceof WaveformPcmLimitError && error.errorCode === "waveform_pcm_limit",
+  );
+
+  const configuredLimitSeconds = MAX_WAVEFORM_PCM_BYTES / (44_100 * 2);
+  assert.ok(
+    estimateWaveformPcmBytes(configuredLimitSeconds - 0.001) <= MAX_WAVEFORM_PCM_BYTES,
+    "duration just below the configured PCM boundary remains allowed",
+  );
+  assert.throws(
+    () => assertWaveformPcmWithinLimit(configuredLimitSeconds + 0.001),
+    (error) => error instanceof WaveformPcmLimitError && error.errorCode === "waveform_pcm_limit",
+    "duration just above the configured PCM boundary is rejected",
+  );
+});
+
+test("waveform generation preflights oversized input and keeps normal output bounded", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "waveform-pcm-boundary-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const normalPath = join(root, "normal.wav");
+  const oversizedPath = join(root, "oversized.wav");
+  const temporaryPcmPath = join(root, "decoded.pcm");
+  const sampleRate = 44_100;
+  const wavForDuration = (durationSeconds: number) => {
+    const frames = Math.round(durationSeconds * sampleRate);
+    const samples = new Float32Array(frames * 2);
+    for (let frame = 0; frame < frames; frame += 1) {
+      const sample = Math.sin((2 * Math.PI * 330 * frame) / sampleRate) * 0.2;
+      samples[frame * 2] = sample;
+      samples[frame * 2 + 1] = sample;
+    }
+    return encodeWav16(samples, sampleRate);
+  };
+  await writeFile(normalPath, wavForDuration(1));
+  await writeFile(oversizedPath, wavForDuration(1.01));
+
+  const realFfmpeg = await requireTool("ffmpeg");
+  const realFfprobe = await requireTool("ffprobe");
+  const previousFfmpegPath = process.env.ARENA_FFMPEG_PATH;
+  const previousFfprobePath = process.env.ARENA_FFPROBE_PATH;
+  const maximumPcmBytes = sampleRate * 2;
+  const restoreToolPaths = () => {
+    if (previousFfmpegPath === undefined) delete process.env.ARENA_FFMPEG_PATH;
+    else process.env.ARENA_FFMPEG_PATH = previousFfmpegPath;
+    if (previousFfprobePath === undefined) delete process.env.ARENA_FFPROBE_PATH;
+    else process.env.ARENA_FFPROBE_PATH = previousFfprobePath;
+    clearResolvedToolCache();
+  };
+
+  try {
+    process.env.ARENA_FFPROBE_PATH = realFfprobe.path;
+    // If the size guard is bypassed, Node exits without producing decoded PCM,
+    // so this assertion receives a different error than the permanent limit error.
+    process.env.ARENA_FFMPEG_PATH = process.execPath;
+    clearResolvedToolCache();
+    await assert.rejects(
+      generateWaveform(oversizedPath, temporaryPcmPath, { maxPcmBytes: maximumPcmBytes }),
+      (error) =>
+        error instanceof WaveformPcmLimitError &&
+        error.errorCode === "waveform_pcm_limit" &&
+        /too long to derive a bounded waveform artifact/.test(error.message),
+    );
+    assert.equal(existsSync(temporaryPcmPath), false, "oversized audio is rejected before the decode output is created");
+
+    process.env.ARENA_FFMPEG_PATH = realFfmpeg.path;
+    clearResolvedToolCache();
+    const document = await generateWaveform(normalPath, temporaryPcmPath, {
+      maxPcmBytes: maximumPcmBytes,
+    });
+    assert.equal(document.durationSeconds, 1);
+    assert.equal(document.sampleRate, sampleRate);
+    assert.equal(document.channels, 1);
+    for (const resolution of WAVEFORM_RESOLUTIONS) {
+      const peaks = document.resolutions[String(resolution)];
+      assert.equal(peaks?.min.length, resolution);
+      assert.equal(peaks?.max.length, resolution);
+    }
+    assert.ok(Buffer.byteLength(JSON.stringify(document)) < 256 * 1024);
+    assert.equal((await stat(temporaryPcmPath)).size, maximumPcmBytes);
+  } finally {
+    restoreToolPaths();
+  }
+});
 
 test("waveform cleanup removes only old unreferenced generated objects", async () => {
   const f = await fixture();
@@ -1368,6 +1468,41 @@ test("waveform stops after the bounded transient retry limit and keeps the failu
     assert.equal(failed.attempts, WAVEFORM_MAX_ATTEMPTS);
     assert.equal(failed.errorCode, "waveform_retry_exhausted");
     assert.match(failed.errorMessage ?? "", /failed after 3 attempts/i);
+    assert.equal(assets.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform size-limit failures are terminal on the first attempt", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const delays: number[] = [];
+    let generationCalls = 0;
+    const sizeError = new WaveformPcmLimitError(88_202, 88_200);
+
+    await assert.rejects(
+      () => handleWaveformJob(sourceWaveformPayload(f, job.id), {
+        db: f.database,
+        generateWaveform: async () => {
+          generationCalls += 1;
+          throw sizeError;
+        },
+        sleep: async (milliseconds) => { delays.push(milliseconds); },
+      }),
+      (error) => error === sizeError,
+    );
+
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(generationCalls, 1);
+    assert.deepEqual(delays, [], "an input size limit is permanent and does not enter retry backoff");
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.stage, "failed");
+    assert.equal(failed.attempts, 1);
+    assert.equal(failed.errorCode, "waveform_pcm_limit");
+    assert.equal(failed.errorMessage, sizeError.message);
     assert.equal(assets.length, 0);
   } finally {
     await f.close();
