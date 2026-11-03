@@ -332,6 +332,126 @@ for (const [firstId, secondId] of [["vocals", "drums"], ["drums", "vocals"]] as 
   });
 }
 
+test("parallel donor failures preserve the other channel across cancel, reject, and timeout", async t => {
+  for (const failure of ["cancel", "reject", "timeout"] as const) {
+    for (const failedId of ["vocals", "drums"] as const) {
+      for (const retainedMode of ["original", "donor"] as const) {
+        await t.test(`${failure} ${failedId} while retaining its ${retainedMode}`, async () => {
+          const f = fixture(undefined, undefined, undefined, ["vocals", "drums"]);
+          const channelIds = ["vocals", "drums"] as const;
+          const failedChannel = f.channels.get(failedId)!;
+          const successId = channelIds.find(id => id !== failedId)!;
+          const successChannel = f.channels.get(successId)!;
+          failedChannel.source.mediaElement.currentTime = 8.75;
+          successChannel.source.mediaElement.currentTime = 23.5;
+
+          let retainedLayer: unknown;
+          let retainedSource: (typeof f.sources)[number] | undefined;
+          if (retainedMode === "donor") {
+            globalThis.fetch = async () => response();
+            await f.layers.replace(failedId, "/retained-failed-channel-donor");
+            retainedLayer = lifecycleState(f.layers).layers.get(failedId);
+            retainedSource = f.sources.at(-1);
+            assert.ok(retainedLayer && retainedSource);
+          }
+
+          const failedUrl = "/pending-failed-channel-donor";
+          const successUrl = "/pending-success-channel-donor";
+          const downloads = new Map<string, {
+            resolve: (value: Response) => void;
+            reject: (reason: Error) => void;
+            signal: AbortSignal | undefined;
+          }>();
+          globalThis.fetch = (url, init) => new Promise<Response>((resolve, reject) => {
+            downloads.set(String(url), { resolve, reject, signal: init?.signal ?? undefined });
+          });
+          if (failure === "timeout") mock.timers.enable({ apis: ["setTimeout"] });
+
+          try {
+            const sourceCountBefore = f.sources.length;
+            const failing = f.layers.replace(failedId, failedUrl);
+            // Give this operation a one-second head start so the second
+            // channel is still pending when only the first deadline expires.
+            if (failure === "timeout") mock.timers.tick(LIVE_STEM_SWITCH_TIMEOUT_MS - 1_000);
+            const succeeding = f.layers.replace(successId, successUrl);
+            assert.equal(downloads.size, 2, "both independent stem IDs are preparing");
+            assert.equal(lifecycleState(f.layers).pending.size, 2);
+
+            if (failure === "cancel") {
+              f.layers.cancelPending(failedId);
+              assert.equal(await failing, false);
+              assert.equal(downloads.get(failedUrl)!.signal?.aborted, true);
+            } else if (failure === "reject") {
+              downloads.get(failedUrl)!.reject(new Error("Donor network reset."));
+              await assert.rejects(failing, /Donor network reset/);
+              assert.equal(downloads.get(failedUrl)!.signal?.aborted, false,
+                "a rejected download is distinct from an operation cancelled by its peer");
+            } else {
+              const timedOut = assert.rejects(failing, /timed out after 15 seconds/);
+              mock.timers.tick(1_000);
+              await timedOut;
+              assert.equal(downloads.get(failedUrl)!.signal?.aborted, true);
+            }
+
+            assert.equal(lifecycleState(f.layers).pending.has(failedId), false,
+              "the failed channel clears only its own operation identity");
+            assert.equal(lifecycleState(f.layers).pending.has(successId), true,
+              "the successful channel remains pending and independently owned");
+            assert.equal(downloads.get(successUrl)!.signal?.aborted, false,
+              "failure on one stem never aborts the other download");
+
+            downloads.get(successUrl)!.resolve(response());
+            await succeeding;
+            assert.equal(lifecycleState(f.layers).pending.size, 0,
+              "both per-channel operation identities are cleared after their independent outcomes settle");
+            const successSource = f.sources.at(-1)!;
+            const successInput = f.gains.at(-1)!;
+            assert.equal(f.sources.length, sourceCountBefore + 1,
+              "only the successful donor installs; a failed donor never creates a source");
+            assert.equal(successSource.connectedTo, successInput);
+            assert.equal(successInput.connectedTo, successChannel.gain,
+              "the surviving donor routes only to its own stem ID");
+            assert.equal(successChannel.inputGain.gain.value, 0);
+            assert.equal(successSource.stopped, false,
+              "the successful donor stays installed after the other channel fails");
+            assert.equal(downloads.get(successUrl)!.signal?.aborted, false);
+            assert.equal(successChannel.source.mediaElement.currentTime, 23.5);
+            assert.equal(successChannel.source.mediaElement.paused, false);
+
+            assert.equal(lifecycleState(f.layers).layers.get(failedId), retainedLayer,
+              "the failed operation preserves the exact previously audible layer identity");
+            assert.equal(failedChannel.source.mediaElement.currentTime, 8.75);
+            assert.equal(failedChannel.source.mediaElement.paused, false);
+            if (retainedMode === "original") {
+              assert.equal(failedChannel.inputGain.gain.value, 1,
+                "the still-audible original retains its gain while its replacement fails");
+            } else {
+              assert.equal(retainedSource?.stopped, false,
+                "the prior donor is not retired when its replacement on this channel fails");
+              assert.equal(failedChannel.inputGain.gain.value, 0,
+                "the previous donor remains selected instead of falling back to the original");
+            }
+
+            if (failure !== "reject") {
+              const sourcesBeforeLateResponse = f.sources.length;
+              downloads.get(failedUrl)!.resolve(response());
+              await new Promise<void>(resolve => setImmediate(resolve));
+              assert.equal(f.sources.length, sourcesBeforeLateResponse,
+                "a response that ignores abort cannot install on the failed channel");
+              assert.equal(lifecycleState(f.layers).layers.get(failedId), retainedLayer);
+              assert.equal(successSource.stopped, false,
+                "the late stale response cannot retire or replace the successful peer");
+            }
+          } finally {
+            f.layers.dispose();
+            if (failure === "timeout") mock.timers.reset();
+          }
+        });
+      }
+    }
+  }
+});
+
 test("tempo-matched donor audio is prepared before the original layer fades out", async () => {
   const ratios: number[] = [];
   const f = fixture(async (_context, _buffer, ratio, signal) => {
