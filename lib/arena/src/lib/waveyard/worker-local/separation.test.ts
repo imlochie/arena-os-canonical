@@ -164,6 +164,36 @@ function startRecoveryProcess(
   });
 }
 
+function startSourceIngestProcess(
+  connectionString: string,
+  projectId: string,
+  filePath: string,
+  storageDir: string,
+): ChildProcess & { send(message: unknown): boolean } {
+  const importFlagIndex = process.execArgv.findIndex((arg, index, args) =>
+    arg === "--import" && args[index + 1]?.includes("tsx/dist/loader.mjs"));
+  const tsxImport = process.execArgv.find((arg) =>
+    arg.startsWith("--import=") && arg.includes("tsx/dist/loader.mjs"));
+  const execArgv = importFlagIndex >= 0
+    ? ["--import", process.execArgv[importFlagIndex + 1]!]
+    : tsxImport
+      ? [tsxImport]
+      : [];
+  const databaseUrl = new URL(connectionString);
+  databaseUrl.searchParams.set("application_name", "source-ingest-race");
+  return fork(fileURLToPath(new URL("./source-ingest-process.test-helper.ts", import.meta.url)), [], {
+    execArgv,
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl.toString(),
+      WAVEYARD_STORAGE_DIR: storageDir,
+      SOURCE_INGEST_TEST_PROJECT_ID: projectId,
+      SOURCE_INGEST_TEST_FILE_PATH: filePath,
+    },
+    stdio: ["ignore", "ignore", "inherit", "ipc"],
+  });
+}
+
 function waitForRecoveryMessage(
   child: ChildProcess,
   type: string,
@@ -202,6 +232,26 @@ function waitForRecoveryMessage(
     child.once("exit", onExit);
     child.once("error", onError);
   });
+}
+
+async function waitForAdvisoryLockWait(
+  observer: import("pg").Pool,
+  applicationName: string,
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const result = await observer.query(
+      `select count(*)::int as count
+       from pg_stat_activity
+       where application_name = $1
+         and wait_event_type = 'Lock'
+         and wait_event = 'advisory'`,
+      [applicationName],
+    );
+    if (result.rows[0]?.count > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${applicationName} to block on the source object advisory lock.`);
 }
 
 function waitForRecoveryProcessExit(child: ChildProcess): Promise<void> {
@@ -334,6 +384,77 @@ test("source cleanup removes only old generated objects without a source row", a
     assert.equal((await f.database.select().from(sourceAssets)).length, 1, "source rows remain unchanged");
   } finally {
     await f.close();
+  }
+});
+
+test("source cleanup on another API connection preserves a concurrent committed upload", async (t) => {
+  const pg = await independentRecoveryPostgres(t);
+  if (!pg) return;
+
+  const f = await fixture();
+  const { Pool } = await import("pg");
+  const cleanupPool = new Pool({
+    connectionString: pg.connectionString,
+    application_name: "source-cleanup-race",
+    max: 2,
+  });
+  const observer = new Pool({ connectionString: pg.connectionString, max: 1 });
+  const cleanupDb = drizzlePg(cleanupPool);
+  const children: ChildProcess[] = [];
+  let cleanupPromise: Promise<string[]> | undefined;
+  try {
+    const [project] = await pg.database
+      .insert(projects)
+      .values({ ownerId: randomUUID(), title: "Concurrent source cleanup" })
+      .returning();
+    const storage = getStorage();
+    const orphanKey = privateObjectKey(project.id, "source", "wav");
+    await storage.putBuffer(orphanKey, "old unreferenced source");
+    const storageRoot = path.resolve(storage.getLocalPath(orphanKey)!, "..", "..", "..", "..");
+    const oldTime = new Date(Date.now() - ORPHAN_SOURCE_GRACE_PERIOD_MS - 60_000);
+    await utimes(storage.getLocalPath(orphanKey)!, oldTime, oldTime);
+
+    const upload = startSourceIngestProcess(pg.connectionString, project.id, f.sourcePath, storageRoot);
+    children.push(upload);
+    const stored = await waitForRecoveryMessage(upload, "stored");
+    const uploadKey = String(stored.key);
+    await utimes(storage.getLocalPath(uploadKey)!, oldTime, oldTime);
+
+    cleanupPromise = cleanupOrphanedSourceObjects({
+      db: cleanupDb,
+      storage,
+      now: new Date(),
+    });
+    await waitForAdvisoryLockWait(observer, "source-cleanup-race");
+
+    upload.send({ type: "release" });
+    const completed = await waitForRecoveryMessage(upload, "done");
+    await waitForRecoveryProcessExit(upload);
+    const removed = await cleanupPromise;
+
+    assert.equal(completed.storageKey, uploadKey);
+    assert.ok(removed.includes(orphanKey), "cleanup removes an old, unreferenced source object");
+    assert.ok(!removed.includes(uploadKey), "cleanup skips the upload after its committed source row appears");
+    assert.equal(await storage.exists(orphanKey), false, "the old source orphan is deleted");
+    assert.equal(await storage.exists(uploadKey), true, "the committed upload object remains present");
+    const [source] = await pg.database
+      .select()
+      .from(sourceAssets)
+      .where(eq(sourceAssets.id, String(completed.sourceId)));
+    assert.ok(source, "the upload has a committed source row");
+    assert.equal(source.storageKey, uploadKey);
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.send({ type: "release" });
+        await waitForRecoveryProcessExit(child).catch(() => undefined);
+      }
+    }
+    await cleanupPromise?.catch(() => undefined);
+    await cleanupPool.end();
+    await observer.end();
+    await f.close();
+    await pg.close();
   }
 });
 
