@@ -44,6 +44,7 @@ const loudFadesOnly = process.argv.includes("--loud-fades-only");
 const automaticFadesOnly = loudFadesOnly || process.argv.includes("--automatic-fades-only");
 const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
 const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only");
+const sameStemSwapsOnly = process.argv.includes("--same-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
 const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
@@ -58,6 +59,9 @@ let parallelSwapResponses = null;
 const parallelSwapRequestOrder = [];
 const parallelSwapResponseOrder = [];
 const parallelSwapDeleteRequests = [];
+let sameStemSaveResponses = null;
+const sameStemSaveRequestOrder = [];
+const sameStemSaveResponseOrder = [];
 function waitForSignal(signal, label, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label} after ${timeoutMs}ms.`)), timeoutMs);
@@ -452,6 +456,7 @@ try {
       parallelDonor.signalStarted();
       await parallelDonor.promise;
       parallelDonorResponseOrder.push(id);
+      parallelDonor.signalFinished?.();
     }
     const isHeldAssetRequest = id === heldAssetId && heldAssetGate !== null;
     if (isHeldAssetRequest) {
@@ -460,7 +465,12 @@ try {
     }
     if (id === failAsset) {
       failedAssetRequests += 1;
-      return route.fulfill({ status: 503, headers: { "Cache-Control": "no-store" }, body: "Test failure" });
+      try {
+        await route.fulfill({ status: 503, headers: { "Cache-Control": "no-store" }, body: "Test failure" });
+      } catch {
+        if (!parallelDonor) throw new Error(`Asset ${id} failed after its browser request had already been cancelled.`);
+      }
+      return;
     }
     const body = assets.get(id);
     if (!body) return route.fulfill({ status: 404 });
@@ -472,7 +482,14 @@ try {
         "Cache-Control": "no-store",
         ...(range ? { "Content-Range": `bytes ${start}-${end}/${body.length}` } : {}) },
     };
-    if (!isHeldAssetRequest) return route.fulfill(response);
+    if (!isHeldAssetRequest) {
+      try {
+        await route.fulfill(response);
+      } catch {
+        if (!parallelDonor) throw new Error(`Asset ${id} could not be fulfilled.`);
+      }
+      return;
+    }
     try {
       await route.fulfill(response);
     } catch {
@@ -592,6 +609,15 @@ try {
         const selected = session.swaps.find(s => s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType);
         if (selected?.id !== body.expectedSwapId) return route.fulfill({ json: { session } });
       }
+      const sameStemSave = sameStemSaveResponses?.get(body.toTrackId);
+      if (sameStemSave?.failBeforePersist) {
+        sameStemSaveRequestOrder.push(body.toTrackId);
+        sameStemSave.signalStarted();
+        await sameStemSave.promise;
+        sameStemSaveResponseOrder.push(body.toTrackId);
+        sameStemSave.signalFinished?.();
+        return route.fulfill({ status: 503, json: { error: "An earlier donor save failed after a newer choice was made." } });
+      }
       if (body.toTrackId === "b" && body.stemType === "vocals") liveSwapRequestOrder.push("save");
       if (body.toTrackId === "b" && body.stemType === "vocals" && pendingSwapSaveGate) {
         signalPendingSwapSaveStarted?.();
@@ -604,10 +630,22 @@ try {
         liveSwapRequestOrder.push("save-complete:d");
       }
       session.swaps = session.swaps.filter(s => !(s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType));
-      session.swaps.push({ ...body, id: donorReplacementOnly ? `swap-${++donorSwapSequence}` : `swap-${body.stemType}`,
+      session.swaps.push({ ...body, id: donorReplacementOnly || sameStemSwapsOnly ? `swap-${++donorSwapSequence}` : `swap-${body.stemType}`,
         toStemAssetId: body.toStemAssetId ?? `${body.toTrackId}-${body.stemType}`,
         fromTrackId: "a", createdAt: new Date().toISOString(),
         donorTrack: body.toTrackId === "d" ? { id: "d", title: "Test D", stems: externalStemKeys } : undefined });
+      if (sameStemSave) {
+        sameStemSaveRequestOrder.push(body.toTrackId);
+        sameStemSave.snapshot = structuredClone(session);
+        sameStemSave.signalStarted();
+        await sameStemSave.promise;
+        sameStemSaveResponseOrder.push(body.toTrackId);
+        sameStemSave.signalFinished?.();
+        if (sameStemSave.failAfterPersist) {
+          return route.fulfill({ status: 503, json: { error: "The older donor response failed after a newer choice was saved." } });
+        }
+        return route.fulfill({ json: { session: sameStemSave.snapshot } });
+      }
       const parallelSave = parallelSwapResponses?.get(body.stemType);
       if (parallelSave) {
         parallelSwapRequestOrder.push(body.stemType);
@@ -1738,6 +1776,245 @@ try {
       parallelSwapResponses = null;
       parallelDonorResponses = null;
     }
+  } else if (sameStemSwapsOnly) {
+    // Keep the active session entry stable while the deliberately held
+    // responses exercise rapid repeated choices.
+    tracks[0].track.durationSeconds = 90;
+    for (const [index, type] of types.entries()) assets.set(`a-${type}`, wav(90, 130 + index * 40));
+    const gate = ({ failAfterPersist = false, failBeforePersist = false } = {}) => {
+      let release;
+      let signalStarted;
+      let signalFinished;
+      return {
+        promise: new Promise(resolve => { release = resolve; }),
+        started: new Promise(resolve => { signalStarted = resolve; }),
+        finished: new Promise(resolve => { signalFinished = resolve; }),
+        release: () => release(),
+        signalStarted: () => signalStarted(),
+        signalFinished: () => signalFinished(),
+        failAfterPersist,
+        failBeforePersist,
+        snapshot: null,
+      };
+    };
+    const waitForReadyDeck = async () => {
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(element => element.readyState === 4);
+      });
+    };
+    const chooseDonor = async donorId => {
+      const deck = page.locator('[data-role="current"]');
+      await deck.getByTestId("open-live-swap-vocals").click();
+      const candidate = deck.getByTestId(`live-swap-candidate-vocals-${donorId}`);
+      await candidate.waitFor();
+      await candidate.click();
+    };
+    const saveResponseFor = donorId => page.waitForResponse(response => {
+      if (!response.url().endsWith("/swaps") || response.request().method() !== "POST") return false;
+      return response.request().postDataJSON().toTrackId === donorId;
+    });
+    const releaseSave = async (donorId, expectedStatus = 200) => {
+      const gateForSave = sameStemSaveResponses.get(donorId);
+      const response = saveResponseFor(donorId);
+      gateForSave.release();
+      const saved = await response;
+      assert.equal(saved.status(), expectedStatus, `the ${donorId} save returns the expected status`);
+    };
+    const assertLatestDonor = async () => {
+      assert.equal(session.swaps.length, 1, `one current donor is saved for vocals: ${JSON.stringify(session.swaps)}`);
+      assert.equal(session.swaps[0].toTrackId, "c", "the newest explicit donor remains saved");
+      const deck = page.locator('[data-role="current"]');
+      await deck.getByTestId("open-live-swap-vocals").click();
+      assert.equal(await deck.getByTestId("live-swap-candidate-vocals-c").getAttribute("aria-pressed"), "true",
+        "the newest donor remains selected in the picker");
+      assert.equal(await deck.getByTestId("live-swap-candidate-vocals-b").getAttribute("aria-pressed"), "false",
+        "the older donor is not shown as selected");
+      try {
+        await page.waitForFunction(() => window.audioProbe.buffers.some(node =>
+          Math.abs(node.buffer.duration - 12) < 0.03 && node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+        ), null, { timeout: 8000 });
+      } catch (error) {
+        const evidence = await page.evaluate(() => ({
+          buffers: window.audioProbe.buffers.map(node => ({
+            duration: node.buffer.duration,
+            gain: node.inputNode?.gain.value ?? 0,
+            stopped: node.stopCount ?? 0,
+          })),
+          decoded: window.audioProbe.decodedAudio.map(entry => entry.duration),
+          sourceUrls: window.audioProbe.sources.map(node => node.mediaElement?.currentSrc ?? ""),
+          workletLoads: window.audioProbe.workletLoads.map(entry => entry.duration),
+          mediaError: document.querySelector('[data-role="current"]')?.querySelector('[role="alert"]')?.textContent,
+          pending: [...document.querySelectorAll('[data-testid^="live-swap-pending-"]')].map(node => node.textContent),
+          status: [...document.querySelectorAll('[role="status"]')].map(node => node.textContent),
+          current: document.querySelector('[data-role="current"]')?.textContent?.slice(0, 200),
+        })).catch(() => null);
+        throw new Error(`Newest donor did not become audible: ${error instanceof Error ? error.message : error}; ` +
+          `assetRequests=${JSON.stringify(parallelDonorRequestOrder)}; assetResponses=${JSON.stringify(parallelDonorResponseOrder)}; ` +
+          `saveResponses=${JSON.stringify(sameStemSaveResponseOrder)}; ${JSON.stringify(evidence)}`);
+      }
+      assert.ok(!await page.evaluate(() => window.audioProbe.buffers.some(node =>
+        Math.abs(node.buffer.duration - 8.2667) < 0.03 && node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+      )), "the older donor never takes over the audible graph");
+    };
+    const verifyReopen = async () => {
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForReadyDeck();
+      const play = page.getByTestId("session-play");
+      if (await play.getAttribute("aria-pressed") !== "true") {
+        await play.click();
+        await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+      }
+      await page.waitForFunction(() => window.audioProbe.buffers.some(node =>
+        Math.abs(node.buffer.duration - 12) < 0.03 && node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+      ), null, { timeout: 8000 });
+      assert.equal(session.swaps.length, 1);
+      assert.equal(session.swaps[0].toTrackId, "c", "the reopened session restores the newest donor");
+      const deck = page.locator('[data-role="current"]');
+      await deck.getByTestId("open-live-swap-vocals").click();
+      assert.equal(await deck.getByTestId("live-swap-candidate-vocals-c").getAttribute("aria-pressed"), "true");
+    };
+    const runOrderScenario = async (saveOrder, donorOrder) => {
+      session.swaps = [];
+      session.tracks = tracks;
+      session.currentSessionTrackId = "a";
+      session.positionSeconds = 0;
+      sameStemSaveRequestOrder.splice(0);
+      sameStemSaveResponseOrder.splice(0);
+      parallelDonorRequestOrder.splice(0);
+      parallelDonorResponseOrder.splice(0);
+      const saveA = gate();
+      const saveB = gate();
+      const donorA = gate();
+      const donorB = gate();
+      sameStemSaveResponses = new Map([["b", saveA], ["c", saveB]]);
+      parallelDonorResponses = new Map([["b-vocals", donorA], ["c-vocals", donorB]]);
+      try {
+        await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+        await waitForReadyDeck();
+        const play = page.getByTestId("session-play");
+        await play.click();
+        await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+        const deck = page.locator('[data-role="current"]');
+        const clocksBefore = await deck.locator("audio").evaluateAll(audio =>
+          audio.map(element => element.currentTime),
+        );
+        await chooseDonor("b");
+        await Promise.all([
+          waitForSignal(saveA.started, "first vocals save"),
+          waitForSignal(donorA.started, "first vocals donor download"),
+        ]);
+        await chooseDonor("c");
+        await Promise.all([
+          waitForSignal(saveB.started, "newer vocals save"),
+          waitForSignal(donorB.started, "newer vocals donor download"),
+        ]);
+        assert.deepEqual(sameStemSaveRequestOrder, ["b", "c"],
+          "both same-stem saves are in flight in user-selection order");
+        await page.waitForTimeout(500);
+        const pendingPlayback = await deck.locator("audio").evaluateAll(
+          (audio, previous) => audio.map((element, index) => ({
+              paused: element.paused,
+              currentTime: element.currentTime,
+              advanced: element.currentTime > (previous[index] ?? 0) + 0.1,
+              source: element.currentSrc,
+            })),
+          clocksBefore,
+        );
+        assert.ok(pendingPlayback.every(item => !item.paused) && pendingPlayback.filter(item => item.advanced).length >= 3,
+          `recipient playback continues while saves/downloads are unresolved: ${JSON.stringify(pendingPlayback)}`);
+
+        for (const donorId of saveOrder) await releaseSave(donorId);
+        assert.deepEqual(sameStemSaveResponseOrder, saveOrder, "save responses complete in the requested order");
+        for (const assetId of donorOrder) {
+          const donorGate = assetId === "b-vocals" ? donorA : donorB;
+          donorGate.release();
+          await waitForSignal(donorGate.finished, `${assetId} donor response`);
+        }
+        const firstAResponse = parallelDonorResponseOrder.indexOf("b-vocals");
+        const firstBResponse = parallelDonorResponseOrder.indexOf("c-vocals");
+        assert.ok(firstAResponse >= 0 && firstBResponse >= 0,
+          `both selected donor downloads resolve: ${JSON.stringify(parallelDonorResponseOrder)}`);
+        assert.ok(
+          donorOrder[0] === "b-vocals" ? firstAResponse < firstBResponse : firstBResponse < firstAResponse,
+          `donor downloads complete in the requested order: ${JSON.stringify(parallelDonorResponseOrder)}`,
+        );
+        await assertLatestDonor();
+        sameStemSaveResponses = null;
+        parallelDonorResponses = null;
+        await verifyReopen();
+      } finally {
+        for (const response of [...(sameStemSaveResponses?.values() ?? []), ...(parallelDonorResponses?.values() ?? [])]) {
+          response.release();
+        }
+        sameStemSaveResponses = null;
+        parallelDonorResponses = null;
+      }
+    };
+
+    for (const [saveOrder, donorOrder] of [
+      [["b", "c"], ["b-vocals", "c-vocals"]],
+      [["b", "c"], ["c-vocals", "b-vocals"]],
+      [["c", "b"], ["b-vocals", "c-vocals"]],
+      [["c", "b"], ["c-vocals", "b-vocals"]],
+    ]) {
+      await runOrderScenario(saveOrder, donorOrder);
+    }
+
+    // An earlier request may fail after the newer choice has committed. The
+    // late failure must not replace picker state or hide the successful save.
+    session.swaps = [];
+    session.currentSessionTrackId = "a";
+    const olderFailure = gate({ failAfterPersist: true });
+    sameStemSaveResponses = new Map([["b", olderFailure]]);
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await waitForReadyDeck();
+    await page.getByTestId("session-play").click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+    await chooseDonor("b");
+    await waitForSignal(olderFailure.started, "older save held after persistence");
+    const newerSaveResponse = saveResponseFor("c");
+    await chooseDonor("c");
+    assert.ok((await newerSaveResponse).ok(), "the newer donor saves while the older response is pending");
+    const oldFailureResponse = saveResponseFor("b");
+    olderFailure.release();
+    assert.equal((await oldFailureResponse).status(), 503, "the older save failure is delivered after the newer save");
+    await waitForSignal(olderFailure.finished, "older failed response");
+    await assertLatestDonor();
+    sameStemSaveResponses = null;
+    await verifyReopen();
+
+    // A cancellation already requested for A may complete after B has been
+    // saved. The API deletion is scoped to A's unique swap id and cannot erase B.
+    session.swaps = [];
+    session.currentSessionTrackId = "a";
+    parallelSwapDeleteRequests.splice(0);
+    const cancelledOlderSave = gate();
+    sameStemSaveResponses = new Map([["b", cancelledOlderSave]]);
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await waitForReadyDeck();
+    await page.getByTestId("session-play").click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+    await chooseDonor("b");
+    await waitForSignal(cancelledOlderSave.started, "cancelled older save");
+    const cancel = page.locator('[data-testid^="cancel-live-stem-swap-pending-"]').first();
+    await cancel.waitFor();
+    await cancel.click();
+    const newestSave = saveResponseFor("c");
+    await chooseDonor("c");
+    assert.ok((await newestSave).ok(), "the newest donor saves after the older choice is cancelled");
+    const olderPost = saveResponseFor("b");
+    const staleDelete = page.waitForResponse(response =>
+      new URL(response.url()).pathname.endsWith("/swaps") && response.request().method() === "DELETE",
+    );
+    cancelledOlderSave.release();
+    assert.ok((await olderPost).ok(), "the cancelled older save response arrives late");
+    assert.ok((await staleDelete).ok(), "the cancellation request completes without removing the newer swap");
+    await waitForSignal(cancelledOlderSave.finished, "cancelled older response");
+    assert.equal(session.swaps.length, 1);
+    assert.equal(session.swaps[0].toTrackId, "c", "a stale cancellation cannot delete the latest persisted choice");
+    await verifyReopen();
+    console.log("PASS: same-stem donor A→B keeps B across all save/download response orders, older failure, stale cancellation, picker state, active audio, and session reopen");
   } else if (donorReplacementOnly) {
     // Longer fixtures keep this focused acceptance flow on one recipient.
     tracks[0].track.durationSeconds = 90;
@@ -1764,7 +2041,8 @@ try {
           await page.getByTestId(`live-swap-pending-${stemType}`).count() === 0) return;
         await page.waitForTimeout(50);
       }
-      throw new Error(`Unsettled ${stemType}: ${JSON.stringify(session.swaps)}; ${await deck.innerText()}`);
+       const alerts = await page.locator('[role="status"], [role="alert"]').allInnerTexts();
+       throw new Error(`Unsettled ${stemType}: ${JSON.stringify(session.swaps)}; restores=${JSON.stringify(donorRestoreRequests)}; deletes=${JSON.stringify(parallelSwapDeleteRequests)}; alerts=${JSON.stringify(alerts)}; ${await deck.innerText()}`);
     };
     await page.getByTestId("session-play").click();
     await choose("vocals", "c");

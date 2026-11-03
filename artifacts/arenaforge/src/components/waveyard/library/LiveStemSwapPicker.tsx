@@ -210,7 +210,6 @@ export default function LiveStemSwapPicker({
         aria-pressed={selected}
         aria-label={`Use ${candidate.title} for ${stemType}; ${tempoLabel}; ${keyLabel}`}
         data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
-        disabled={busy}
         onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
         onPointerEnter={() => scheduleHoverWarm(candidate.id)}
         onPointerLeave={clearHoverWarm}
@@ -252,7 +251,6 @@ export default function LiveStemSwapPicker({
           aria-expanded={isOpen}
           aria-controls={pickerId}
           data-testid={`open-live-swap-${stemType}`}
-          disabled={pending || busy}
           onClick={onToggle}
         >
           <span className="wy-swap-trigger-icon" aria-hidden="true">⇄</span>
