@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { runAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
+import { runAutomaticFadeAcceptance, runLoudAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
 if (process.argv.includes("--live-stem-timing-matrix")) {
   const { spawnSync } = await import("node:child_process");
@@ -25,7 +25,8 @@ const browserTypes = { chromium, firefox, webkit };
 const browserType = browserTypes[engineName];
 if (!browserType) throw new Error(`Unknown browser engine "${engineName}". Choose chromium, firefox, or webkit.`);
 const sessionId = "00000000-0000-4000-8000-000000000007";
-const automaticFadesOnly = process.argv.includes("--automatic-fades-only");
+const loudFadesOnly = process.argv.includes("--loud-fades-only");
+const automaticFadesOnly = loudFadesOnly || process.argv.includes("--automatic-fades-only");
 const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
 const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
@@ -84,14 +85,15 @@ async function waitForSessionRateInPage(targetPage, rate, bpm) {
     throw error;
   }
 }
-function wav(seconds, frequency) {
-  const n = 22050 * seconds, data = Buffer.alloc(44 + n * 2);
+function wav(seconds, frequency, amplitude = 2000 / 32767, held = false, channels = 1) {
+  const n = 22050 * seconds, data = Buffer.alloc(44 + n * 2 * channels);
   data.write("RIFF"); data.writeUInt32LE(data.length - 8, 4); data.write("WAVEfmt ", 8);
-  data.writeUInt32LE(16, 16); data.writeUInt16LE(1, 20); data.writeUInt16LE(1, 22);
-  data.writeUInt32LE(22050, 24); data.writeUInt32LE(44100, 28);
-  data.writeUInt16LE(2, 32); data.writeUInt16LE(16, 34); data.write("data", 36);
-  data.writeUInt32LE(n * 2, 40);
-  for (let i = 0; i < n; i++) data.writeInt16LE(Math.round(2000 * Math.sin(i * frequency * Math.PI * 2 / 22050)), 44 + i * 2);
+  data.writeUInt32LE(16, 16); data.writeUInt16LE(1, 20); data.writeUInt16LE(channels, 22);
+  data.writeUInt32LE(22050, 24); data.writeUInt32LE(44100 * channels, 28);
+  data.writeUInt16LE(2 * channels, 32); data.writeUInt16LE(16, 34); data.write("data", 36);
+  data.writeUInt32LE(n * 2 * channels, 40);
+  for (let i = 0; i < n; i++) for (let ch = 0; ch < channels; ch++)
+    data.writeInt16LE(Math.round(32767 * amplitude * (held ? 1 : Math.sin(i * frequency * Math.PI * 2 / 22050))), 44 + (i * channels + ch) * 2);
   return data;
 }
 const assets = new Map();
@@ -220,8 +222,19 @@ try {
   await context.addInitScript(({ fixtureSessionId, probeAutoFades }) => {
     window.audioProbe = {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [], decodedAudio: [],
+      combinedInputs: [], combinedOutputs: [], playStarts: [],
       workletLoads: [], workletSeeks: [], transportMessages: [],
     };
+    if (probeAutoFades) {
+      const nativePlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function (...args) {
+        const deckId = this.closest('[data-testid="session-deck-a"], [data-testid="session-deck-b"]')?.getAttribute("data-testid");
+        const deck = deckId === "session-deck-a" ? 0 : deckId === "session-deck-b" ? 1 : null;
+        window.audioProbe.playStarts.push({ deck, src: this.src,
+          master: deck === null ? null : window.audioProbe.masterGains[deck]?.gain.value ?? null });
+        return nativePlay.apply(this, args);
+      };
+    }
     if (window.BroadcastChannel) {
       const nativePostMessage = window.BroadcastChannel.prototype.postMessage;
       window.BroadcastChannel.prototype.postMessage = function (message, ...args) {
@@ -272,7 +285,6 @@ try {
     window.AudioContext = class extends Base {
       constructor(...args) {
         super(...args);
-        this.probeFirstGain = true;
       }
       decodeAudioData(...args) {
         return super.decodeAudioData(...args).then(buffer => {
@@ -284,20 +296,41 @@ try {
         const node = super.createGain(), connect = node.connect.bind(node);
         node.connect = (target, ...args) => {
           node.nextNode = target;
+          if (target instanceof AnalyserNode) {
+            (node.probeAnalysers ??= []).push(target);
+          }
+          if (target instanceof ChannelSplitterNode && !window.audioProbe.masterGains.includes(node)) {
+            window.audioProbe.masterGains.push(node);
+            this.probePendingMaster = node;
+            node.waveyardProbeMaster = probeAutoFades;
+            if (probeAutoFades && node.probeAnalysers?.[0])
+              window.audioProbe.outputAnalyzers.push({ analyser: node.probeAnalysers[0], master: node });
+          }
+          if (probeAutoFades && target.probeName === "waveyard-output-peak") {
+            const analyser = this.createAnalyser();
+            analyser.fftSize = 2048;
+            connect(analyser);
+            window.audioProbe.combinedInputs.push(analyser);
+          }
           if (node.waveyardProbeMaster && target instanceof AnalyserNode &&
               !window.audioProbe.outputAnalyzers.some(entry => entry.analyser === target)) {
-            window.audioProbe.outputAnalyzers.push({ analyser: target });
+            window.audioProbe.outputAnalyzers.push({ analyser: target, master: node });
           }
           return connect(target, ...args);
         };
-        if (this.probeFirstGain) {
-          window.audioProbe.masterGains.push(node);
-          this.probeFirstGain = false;
-          node.waveyardProbeMaster = probeAutoFades;
-        }
         return node;
       }
       createMediaElementSource(media) {
+        if (this.probePendingMaster) {
+          const deck = media.closest('[data-testid="session-deck-a"], [data-testid="session-deck-b"]');
+          const index = deck?.getAttribute("data-testid") === "session-deck-b" ? 1 : 0;
+          this.probePendingMaster.probeDeckIndex = index;
+          this.probePendingMaster = null;
+          // Saved standby donors can build their graph first. Creation order
+          // is not physical-deck identity when both decks share one context.
+          window.audioProbe.masterGains.sort((a, b) => (a.probeDeckIndex ?? 9) - (b.probeDeckIndex ?? 9));
+          window.audioProbe.outputAnalyzers.sort((a, b) => (a.master.probeDeckIndex ?? 9) - (b.master.probeDeckIndex ?? 9));
+        }
         const node = super.createMediaElementSource(media), connect = node.connect.bind(node);
         node.connect = (target, ...args) => { node.inputNode = target; return connect(target, ...args); };
         window.audioProbe.sources.push(node); return node;
@@ -319,6 +352,7 @@ try {
       window.AudioWorkletNode = class extends NativeAudioWorkletNode {
         constructor(...args) {
           super(...args);
+          this.probeName = args[1];
           this.probeConnections = [];
           const postMessage = this.port.postMessage.bind(this.port);
           this.port.postMessage = (message, ...postArgs) => {
@@ -362,9 +396,11 @@ try {
           const connect = this.connect.bind(this);
           this.connect = (target, ...connectArgs) => {
             this.probeConnections.push(target);
+            if (probeAutoFades && this.probeName === "waveyard-output-peak" && target instanceof AnalyserNode)
+              window.audioProbe.combinedOutputs.push(target);
             return connect(target, ...connectArgs);
           };
-          window.audioProbe.worklets.push(this);
+          if (this.probeName !== "waveyard-output-peak") window.audioProbe.worklets.push(this);
         }
       };
     }
@@ -1615,8 +1651,8 @@ try {
       await deck.getByTestId(`open-live-swap-${stemType}`).click();
       await deck.getByTestId(`live-swap-candidate-${stemType}-${donorId}`).click();
     };
-    await runAutomaticFadeAcceptance({
-      page, session, tracks, sourceOnlyTrack, toggle: toggleForFade, chooseLiveSource: chooseFadeDonor,
+    await (loudFadesOnly ? runLoudAutomaticFadeAcceptance : runAutomaticFadeAcceptance)({
+      page, session, tracks, sourceOnlyTrack, assets, wav, toggle: toggleForFade, chooseLiveSource: chooseFadeDonor,
     });
   } else {
   await page.goto("http://localhost:80/waveyard");
@@ -2653,7 +2689,7 @@ try {
       donorDecoded: window.audioProbe.decodedAudio.some(entry =>
         entry.context === standbySource?.context && Math.abs(entry.duration - 12) < 0.1),
       donorStartedBeforeTransition: window.audioProbe.buffers.some(source =>
-        source.context === standbySource?.context && source.startedOffset !== undefined),
+        source.inputNode?.nextNode === standbySource?.inputNode?.nextNode && source.startedOffset !== undefined),
       playing: [...document.querySelectorAll('[data-testid="session-deck-b"] audio')]
         .some(audio => !audio.paused),
     };
@@ -2678,7 +2714,7 @@ try {
       && [...standby.querySelectorAll("audio")].every(audio => !audio.paused)
       && standbySource
       && window.audioProbe.buffers.some(source =>
-        source.context === standbySource.context && source.startedOffset !== undefined);
+        source.inputNode?.nextNode === standbySource.inputNode?.nextNode && source.startedOffset !== undefined);
   }, undefined, { timeout: 10_000 });
   const transitionProbeReady = await page.evaluate(() => {
     const sourceFor = assetId => window.audioProbe.sources.find(source =>
@@ -2694,12 +2730,14 @@ try {
       node.connect(analyser);
       return analyser;
     };
-    const masterA = window.audioProbe.masterGains.find(gain => gain.context === contextA);
-    const masterB = window.audioProbe.masterGains.find(gain => gain.context === contextB);
+    const masterA = window.audioProbe.masterGains.find(gain => gain.probeDeckIndex === 0);
+    const masterB = window.audioProbe.masterGains.find(gain => gain.probeDeckIndex === 1);
     if (!masterA || !masterB) return false;
     const probe = {
       contextA,
       contextB,
+      channelA: sourceFor("a-vocals").inputNode.nextNode,
+      channelB: sourceB.inputNode.nextNode,
       originalA: analyserFor(sourceA, 16_384),
       originalB: analyserFor(sourceB, 16_384),
       outputA: analyserFor(masterA, 2_048),
@@ -2737,19 +2775,19 @@ try {
   await page.waitForFunction(() => {
     const probe = window.transitionPitchProbe;
     return window.audioProbe.worklets.some(node =>
-      node.context === probe.contextA && node.probeConnections.length > 0)
+      node.probeConnections.some(input => input.nextNode === probe.channelA))
       && window.audioProbe.worklets.some(node =>
-        node.context === probe.contextB && node.probeConnections.length > 0)
+        node.probeConnections.some(input => input.nextNode === probe.channelB))
       && [...document.querySelectorAll('[data-testid="session-deck-a"] audio, [data-testid="session-deck-b"] audio')]
         .every(audio => audio.preservesPitch === true);
   });
   await page.waitForTimeout(450);
   const transitionPitchState = await page.evaluate(() => {
     const probe = window.transitionPitchProbe;
-    const activeWorkletFor = context => [...window.audioProbe.worklets].reverse().find(node =>
-      node.context === context && node.probeConnections.length > 0);
-    const workletA = activeWorkletFor(probe.contextA);
-    const workletB = activeWorkletFor(probe.contextB);
+    const activeWorkletFor = channel => [...window.audioProbe.worklets].reverse().find(node =>
+      node.probeConnections.some(input => input.nextNode === channel));
+    const workletA = activeWorkletFor(probe.channelA);
+    const workletB = activeWorkletFor(probe.channelB);
     if (!workletA || !workletB) return null;
     const frequency = analyser => {
       const data = new Float32Array(analyser.fftSize);
@@ -2801,7 +2839,7 @@ try {
         `[data-testid="session-deck-${deck}"] audio`,
       )].every(audio => !audio.paused)),
       worklets: window.audioProbe.workletLoads.map(entry => ({
-        deck: entry.context === probe.contextA ? "a" : entry.context === probe.contextB ? "b" : "other",
+        deck: entry.node === workletA ? "a" : entry.node === workletB ? "b" : "other",
         duration: entry.duration,
         channelCount: entry.channelCount,
         pitchPreserving: entry.pitchPreserving,

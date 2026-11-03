@@ -67,12 +67,12 @@ before(async () => {
     plugins: [{
       name: "waveyard-worklet-url-fixture",
       setup(build) {
-        build.onResolve({ filter: /live-stem-worklet\.ts\?worker&url$/ }, () => ({
-          path: "waveyard-live-stem-worklet-fixture",
+        build.onResolve({ filter: /(?:live-stem|output-peak)-worklet\.ts\?worker&url$/ }, args => ({
+          path: args.path,
           namespace: "waveyard-worklet-url",
         }));
-        build.onLoad({ filter: /.*/, namespace: "waveyard-worklet-url" }, () => ({
-          contents: 'export default "/test/live-stem-worklet.js";',
+        build.onLoad({ filter: /.*/, namespace: "waveyard-worklet-url" }, args => ({
+          contents: `export default ${JSON.stringify(`/test/${args.path.split("/").at(-1).replace(".ts?worker&url", ".js")}`)};`,
           loader: "js",
         }));
       },

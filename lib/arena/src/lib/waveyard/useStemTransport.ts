@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
+import outputPeakWorkletUrl from "./output-peak-worklet.ts?worker&url";
+import { acquireSessionOutput } from "./session-output";
 import { LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
 export {
   SESSION_PLAYBACK_RATE_MAX,
@@ -296,6 +298,7 @@ export function useStemTransport(
   assetIds: string[],
   duration: number,
   playbackAssetIds: string[] = assetIds,
+  outputGroup?: string,
 ) {
   // Polling may construct a fresh array for identical assets. Treat equal IDs
   // as the same deck so renders do not restart its audio clock or effects.
@@ -311,6 +314,9 @@ export function useStemTransport(
   const media = useRef<Record<string, HTMLAudioElement | null>>({});
   const graphs = useRef<Record<string, AudioGraph>>({});
   const context = useRef<AudioContext | null>(null);
+  const sessionOutput = useRef<ReturnType<typeof acquireSessionOutput> | null>(null);
+  const outputGroupRef = useRef(outputGroup);
+  const contextStateHandler = useRef<(() => void) | null>(null);
   const masterGain = useRef<GainNode | null>(null);
   const masterAnalyser = useRef<AnalyserNode | null>(null);
   const insertChains = useRef<Record<string, InsertChain>>({});
@@ -335,7 +341,8 @@ export function useStemTransport(
   // Commands such as seek(0); play() run in one event/effect. React state
   // has not rerendered between them, so playback must use a synchronous clock.
   const positionRef = useRef(0);
-  const [masterVolume, setMasterVolume] = useState(1);
+  const [masterVolume, setMasterVolumeState] = useState(1);
+  const masterVolumeRef = useRef(1);
   const [loop, setLoop] = useState({ enabled: false, start: 0, end: 0 });
   const [error, setError] = useState<string | null>(null);
 
@@ -345,13 +352,24 @@ export function useStemTransport(
     if (!audioContext || !gain || !Number.isFinite(volume)) return;
     gain.setValueAtTime(Math.min(2, Math.max(0, volume)), audioContext.currentTime);
   }, []);
+  const setMasterVolume = useCallback((volume: number) => {
+    if (!Number.isFinite(volume)) return;
+    const value = Math.min(2, Math.max(0, volume));
+    masterVolumeRef.current = value;
+    applyMasterVolumeRealtime(value);
+    setMasterVolumeState(value);
+  }, [applyMasterVolumeRealtime]);
 
   const ensureGraph = useCallback((id: string) => {
     const element = media.current[id];
     if (!element) return null;
     if (!context.current) {
-      context.current = new AudioContext();
-      context.current.addEventListener("statechange", () => recoverAudioContext.current());
+      if (outputGroupRef.current) {
+        sessionOutput.current = acquireSessionOutput(outputGroupRef.current, outputPeakWorkletUrl);
+        context.current = sessionOutput.current.context;
+      } else context.current = new AudioContext();
+      contextStateHandler.current = () => recoverAudioContext.current();
+      context.current.addEventListener("statechange", contextStateHandler.current);
       masterGain.current = context.current.createGain();
       const ctx = context.current;
       masterAnalyser.current = ctx.createAnalyser();
@@ -365,7 +383,7 @@ export function useStemTransport(
       masterGain.current.connect(splitter);
       splitter.connect(masterLeft.current, 0);
       splitter.connect(masterRight.current, 1);
-      masterGain.current.connect(ctx.destination);
+      masterGain.current.connect(sessionOutput.current?.input ?? ctx.destination);
     }
     if (!graphs.current[id]) {
       const ctx = context.current;
@@ -569,7 +587,7 @@ export function useStemTransport(
           masterInsertsSubgraph.current = null;
         }
         head.connect(masterAnalyser.current);
-        head.connect(context.current.destination);
+        head.connect(sessionOutput.current?.input ?? context.current.destination);
         // The L/R splitter taps re-attach after the chain so correlation
         // reflects the processed master.
         const splitter = context.current.createChannelSplitter(2);
@@ -658,7 +676,7 @@ export function useStemTransport(
         return element;
       });
       for (const id of playbackIds) ensureGraph(id);
-      if (masterGain.current) masterGain.current.gain.value = masterVolume;
+      if (masterGain.current) masterGain.current.gain.value = masterVolumeRef.current;
       applyMix(mixValues.current);
       // Saved insert intent may have been restored before any audio graph
       // existed. Build it now, inside the first user-initiated play action.
@@ -667,6 +685,9 @@ export function useStemTransport(
         await context.current.resume();
       if (context.current && context.current.state !== "running")
         throw new Error("Audio was interrupted. Tap Play stems to resume.");
+      // Resume inside the user's activation before waiting on module I/O
+      // (important on mobile). There is no destination bypass while loading.
+      await sessionOutput.current?.ready;
       if (request !== playRequest.current) {
         if (!wantsPlayback.current) elements.forEach((element) => element.pause());
         return;
@@ -811,7 +832,15 @@ export function useStemTransport(
       for (const element of Object.values(media.current)) element?.pause();
       liveLayers.current?.dispose();
       stopClock();
-      context.current?.close().catch(() => undefined);
+      if (contextStateHandler.current)
+        context.current?.removeEventListener("statechange", contextStateHandler.current);
+      for (const graph of Object.values(graphs.current)) disconnectGraph(graph);
+      masterGain.current?.disconnect();
+      masterAnalyser.current?.disconnect();
+      masterInsertsSubgraph.current?.output.disconnect();
+      if (sessionOutput.current) sessionOutput.current.release();
+      else context.current?.close().catch(() => undefined);
+      sessionOutput.current = null;
       context.current = null;
       graphs.current = {};
     },
@@ -844,6 +873,7 @@ export function useStemTransport(
    *  same stream is reused for every recording. Null before the first play
    *  (no audio graph exists yet). */
   const masterTapStream = useCallback((): MediaStream | null => {
+    if (sessionOutput.current) return sessionOutput.current.stream();
     const analyser = masterAnalyser.current;
     const ctx = context.current;
     if (!analyser || !ctx) return null;

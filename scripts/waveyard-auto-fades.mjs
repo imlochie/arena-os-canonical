@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
+export { runLoudAutomaticFadeAcceptance } from "./waveyard-loud-fades.mjs";
 
 const STEMS = ["vocals", "drums", "bass", "other"];
 const MIX = { vocals: 0.31, drums: 0.53, bass: 0.76, other: 0.94 };
@@ -242,7 +243,14 @@ export async function runAutomaticFadeAcceptance({ page, session, tracks, source
         return current && !current.paused && current.currentTime > 0 && row?.master > 0.60 && row.rms > 0.005;
       });
       return stableWindows.length >= 6;
-    }, { before: sampleCountAtHandoff, toDeck }, { timeout: 3000 });
+    }, { before: sampleCountAtHandoff, toDeck }, { timeout: 3000 }).catch(async error => {
+      console.error("AUTO_FADE_STEADY_TIMEOUT", JSON.stringify(await page.evaluate(({ toDeck }) => ({
+        toDeck, masters: window.audioProbe.masterGains.map(g => g.gain.value),
+        media: [...document.querySelectorAll("audio")].map(a => ({ src: a.src, paused: a.paused, time: a.currentTime })),
+        samples: window.audioProbe.autoFadeSamples.slice(-3),
+      }), { toDeck })));
+      throw error;
+    });
     const samples = await stopSamples();
     const handoff = await page.evaluate(() => ({
       current: document.querySelector('[data-role="current"]')?.textContent ?? "",

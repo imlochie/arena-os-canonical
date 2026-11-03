@@ -91,7 +91,7 @@ For pitch-mode transitions, keep assertions tied to physical deck identity while
 
 **Why:** A single-deck pitch test and a passing WSOLA unit test do not prove that saved standby donors are prepared, that pitch mode reaches both transports, or that playback continues through a deck-role swap.
 
-**How to apply:** Map audio and worklet nodes to deck contexts rather than querying only `[data-role="current"]`. If measuring donor output pitch, tap the active donor gain after worklet migration and old-source retirement; source-media frequency, donor PCM input, and audible donor output are separate evidence.
+**How to apply:** Map media nodes to physical deck DOM identity and donor worklets to their actual recipient channel connections, not AudioContext identity or graph creation order. Standby preparation can build its graph first, and decks can share an output context. If measuring donor output pitch, tap the active donor gain after migration and old-source retirement; source-media frequency, donor PCM input, and audible donor output are separate evidence.
 
 When a browser scenario temporarily reorders tracks or seeds donor swaps, restore the complete prior session fixture and source mode before later scenarios.
 

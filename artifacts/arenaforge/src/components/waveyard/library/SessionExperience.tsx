@@ -291,6 +291,7 @@ function effectiveMix(item: SessionTrackItem | null, levels: Record<string, numb
 
 function SessionDeck({
   deckIndex,
+  outputGroup,
   item,
   active,
   startAt,
@@ -336,6 +337,7 @@ function SessionDeck({
   onEnded,
 }: {
   deckIndex: 0 | 1;
+  outputGroup: string;
   item: SessionTrackItem | null;
   active: boolean;
   startAt: number;
@@ -407,7 +409,7 @@ function SessionDeck({
   // Staged handoff audio must not be treated as a required live channel until
   // the replacement is ready. In particular, a failed donor load must not
   // pause the source that is currently audible.
-  const transport = useStemTransport(transportIds, duration, assetIds);
+  const transport = useStemTransport(transportIds, duration, assetIds, outputGroup);
   const [cuePosition, setCuePosition] = useState(0);
   const [selectedLoopBeats, setSelectedLoopBeats] = useState<number | null>(null);
   useEffect(() => {
@@ -3545,6 +3547,7 @@ export default function SessionExperience({
     const liveSwapFailures = failedLiveSwaps.filter((failure) => failure.sessionTrackId === item?.id);
     return {
       deckIndex,
+      outputGroup: `session:${session.id}`,
       item,
       active: isActive,
       startAt: startAtFor(deckIndex),
@@ -3684,6 +3687,9 @@ export default function SessionExperience({
           <span>Master</span>
           <input type="range" aria-label="Master volume" min={0} max={1} step={0.01} value={masterLevel} onChange={(event) => setMasterLevel(Number(event.target.value))} />
         </label>
+        <span data-testid="session-peak-protection" title="Combined stereo output has a 0.98 sample-peak ceiling and 5 ms lookahead. Saved stem levels are unchanged.">
+          Peak protection on
+        </span>
         <button
           type="button"
           className={`wy-save ${saveLabel === "Not saved" ? "bad" : ""}`}
