@@ -24,6 +24,24 @@ export async function waitForServerListening(server: Server): Promise<void> {
   await once(server, "listening");
 }
 
+export async function startApiServerAfterBestEffortRestoreUploadCleanup<T>(
+  cleanup: () => Promise<string[]>,
+  startServer: () => T,
+  logging: {
+    onCleanupComplete: (cleanedCount: number) => void;
+    onCleanupFailure: (error: unknown) => void;
+  },
+): Promise<T> {
+  try {
+    const cleaned = await cleanup();
+    if (cleaned.length > 0) logging.onCleanupComplete(cleaned.length);
+  } catch (error) {
+    logging.onCleanupFailure(error);
+  }
+
+  return startServer();
+}
+
 export function isTransientDatabaseConnectionFailure(error: unknown): boolean {
   const visited = new Set<object>();
   let current: unknown = error;

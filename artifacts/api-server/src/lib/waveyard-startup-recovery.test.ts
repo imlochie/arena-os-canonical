@@ -1,12 +1,57 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
+import { cleanupAbandonedAudioRestoreUploadDirectories } from "@workspace/arena/lib/waveyard/worker-local";
+import app from "../app";
 import {
   isTransientDatabaseConnectionFailure,
   runWaveyardStartupRecovery,
+  startApiServerAfterBestEffortRestoreUploadCleanup,
   waitForServerListening,
 } from "./waveyard-startup-recovery";
+
+test("API starts serving health requests after restore-upload cleanup hits an I/O failure", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "waveyard-restore-startup-test-"));
+  context.after(async () => rm(root, { recursive: true, force: true }));
+  const cleanupRootFile = join(root, "not-a-directory");
+  const unrelatedTempPath = join(root, "unrelated-audio-cache.tmp");
+  await writeFile(cleanupRootFile, "the cleanup root is intentionally invalid");
+  await writeFile(unrelatedTempPath, "keep this file");
+
+  const cleanupWarnings: unknown[] = [];
+  let cleanupSuccessLogs = 0;
+  const server = await startApiServerAfterBestEffortRestoreUploadCleanup(
+    () => cleanupAbandonedAudioRestoreUploadDirectories(cleanupRootFile),
+    () => app.listen(0, "127.0.0.1"),
+    {
+      onCleanupComplete: () => { cleanupSuccessLogs += 1; },
+      onCleanupFailure: (error) => cleanupWarnings.push(error),
+    },
+  );
+  context.after(async () => {
+    if (!server.listening) return;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  await waitForServerListening(server);
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/healthz`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "ok" });
+  assert.equal(cleanupWarnings.length, 1, "the cleanup I/O failure is logged");
+  assert.equal((cleanupWarnings[0] as NodeJS.ErrnoException).code, "ENOTDIR");
+  assert.equal(cleanupSuccessLogs, 0);
+  assert.equal(await readFile(unrelatedTempPath, "utf8"), "keep this file",
+    "a cleanup failure must not remove unrelated temporary paths");
+  assert.equal(await readFile(cleanupRootFile, "utf8"), "the cleanup root is intentionally invalid");
+});
 
 test("background Waveyard maintenance can wait for the server listening event", async (context) => {
   const server = createServer();

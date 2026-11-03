@@ -14,3 +14,9 @@ The user approved startup cleanup of unreferenced Waveyard source files after a 
 **Why:** the user explicitly chose a 24-hour cleanup window for unreferenced source files.
 
 **How to apply:** Delete only old generated source objects with no canonical source row. Preserve referenced objects, recent objects, and unrelated storage keys; if reference checks fail, do not delete.
+
+Restore-upload cleanup is best-effort housekeeping: log filesystem failures and continue to the API listener; never make request availability depend on deleting stale upload folders.
+
+**Why:** A temporary filesystem error must not prevent users from restoring audio through the API.
+
+**How to apply:** Keep the guarded cleanup before `listen`, test an injected I/O failure with a real health request, and verify unrelated temporary files remain intact.

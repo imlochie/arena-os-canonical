@@ -10,7 +10,11 @@ import {
 } from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
-import { runWaveyardStartupRecovery, waitForServerListening } from "./lib/waveyard-startup-recovery";
+import {
+  runWaveyardStartupRecovery,
+  startApiServerAfterBestEffortRestoreUploadCleanup,
+  waitForServerListening,
+} from "./lib/waveyard-startup-recovery";
 import { shutdownAudioCaptures } from "./lib/waveyard/audio-capture-manager";
 import {
   startLocalLibraryConversionWorker,
@@ -34,18 +38,6 @@ if (Number.isNaN(port) || port <= 0) {
 // The Express runtime must register the same real processors as the desktop
 // runtime before accepting uploads. Policy keeps hosted Redis deployments out.
 const worker = startLocalWorker();
-try {
-  const cleanedRestoreUploadDirectories = await cleanupAbandonedAudioRestoreUploadDirectories();
-  if (cleanedRestoreUploadDirectories.length > 0) {
-    logger.info({
-      cleanedRestoreUploadDirectories: cleanedRestoreUploadDirectories.length,
-    }, "Abandoned Waveyard restore uploads removed");
-  }
-} catch (error) {
-  // Upload cleanup is best-effort; a filesystem issue must not prevent the
-  // API from serving requests or restoring audio.
-  logger.warn({ error }, "Abandoned Waveyard restore upload cleanup failed");
-}
 
 if (worker) {
   // The in-memory broker and worker threads belonged to the previous API
@@ -89,9 +81,20 @@ if (process.env.ARENA_DESKTOP_MODE === "1") {
 }
 
 let sourceCleanupTask: Promise<void> | undefined;
-const server = app.listen(port, process.env.ARENA_DESKTOP_MODE === "1" ? "127.0.0.1" : "0.0.0.0", () => {
-  logger.info({ port }, "Server listening");
-});
+const server = await startApiServerAfterBestEffortRestoreUploadCleanup(
+  () => cleanupAbandonedAudioRestoreUploadDirectories(),
+  () => app.listen(port, process.env.ARENA_DESKTOP_MODE === "1" ? "127.0.0.1" : "0.0.0.0", () => {
+    logger.info({ port }, "Server listening");
+  }),
+  {
+    onCleanupComplete: (cleanedCount) => logger.info({
+      cleanedRestoreUploadDirectories: cleanedCount,
+    }, "Abandoned Waveyard restore uploads removed"),
+    // Restore cleanup is best-effort; a filesystem issue must not prevent the
+    // API from serving requests or restoring audio.
+    onCleanupFailure: (error) => logger.warn({ error }, "Abandoned Waveyard restore upload cleanup failed"),
+  },
+);
 if (worker) {
   sourceCleanupTask = waitForServerListening(server)
     .then(async () => {
