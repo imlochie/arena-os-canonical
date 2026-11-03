@@ -99,7 +99,7 @@ function writeWav(filePath: string, seconds: number, frequency = 220): void {
   writeFileSync(filePath, buffer);
 }
 
-function pcmWavToneMagnitude(filePath: string, frequency: number, startMs: number, endMs: number): number {
+function pcmWavToneMagnitude(filePath: string, frequency: number, startMs: number, endMs: number, channel = 0): number {
   const wav = readFileSync(filePath);
   let sampleRate = 0;
   let channels = 0;
@@ -123,6 +123,7 @@ function pcmWavToneMagnitude(filePath: string, frequency: number, startMs: numbe
   }
   assert.ok(dataOffset >= 0, "rendered WAV has a data chunk");
   assert.equal(bitsPerSample, 16, "rendered WAV uses the expected PCM test format");
+  assert.ok(channel >= 0 && channel < channels, "the analyzed channel exists");
   const frameBytes = channels * 2;
   const firstFrame = Math.max(0, Math.floor((startMs / 1000) * sampleRate));
   const lastFrame = Math.min(Math.floor(dataBytes / frameBytes), Math.floor((endMs / 1000) * sampleRate));
@@ -134,7 +135,7 @@ function pcmWavToneMagnitude(filePath: string, frequency: number, startMs: numbe
   for (let index = 0; index < frameCount; index += 1) {
     const window = 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / Math.max(1, frameCount - 1));
     const frame = firstFrame + index;
-    const sample = wav.readInt16LE(dataOffset + frame * frameBytes) / 32768;
+    const sample = wav.readInt16LE(dataOffset + frame * frameBytes + channel * 2) / 32768;
     const phase = (2 * Math.PI * frequency * frame) / sampleRate;
     real += sample * window * Math.cos(phase);
     imaginary += sample * window * Math.sin(phase);
@@ -1523,7 +1524,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   await sessions.deleteSession(OWNER, created.id);
 });
 
-test("Studio reload routes preserve distinct donors after blocked library deletion", async () => {
+test("Studio reload routes and exports preserve both saved donors and clip edits after blocked library deletion", async (t) => {
   // Real database, private WAV fixtures, service mutations, and production GET
   // handlers. These tones test routing/persistence, not separation quality.
   const routeOwner = (await import("../local-context")).LOCAL_OWNER_ID;
@@ -1647,6 +1648,84 @@ test("Studio reload routes preserve distinct donors after blocked library deleti
   const beforeEdit = await (await remixRoute.GET(
     new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
   )).json();
+  await t.test("export/routing evidence: both reloaded donors retain saved levels without original-stem substitution", async () => {
+    // Deterministic file-backed tones stand in for already-separated stems.
+    // This proves saved audio routing and rendering, NOT model separation quality.
+    const versionsRoute = await import(new URL(
+      "../../../../../../artifacts/api-server/src/imported/remixes/[id]/versions/route.ts", import.meta.url,
+    ).href);
+    const response = await versionsRoute.POST(new Request(
+      `http://localhost/api/remixes/${handoff.remixSessionId}/versions`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Both saved donors routing proof" }) },
+    ), remixParams);
+    assert.equal(response.status, 201);
+    const { version } = await response.json();
+    const [persistedVersion] = await db.db.select().from(schema.remixVersions)
+      .where(eq(schema.remixVersions.id, version.id));
+    assert.ok(persistedVersion, "export reloads an immutable version from PostgreSQL");
+    const snapshot = JSON.parse(persistedVersion.snapshot);
+    assert.equal(snapshot.tracks.length, 2);
+    assert.equal(snapshot.masterVolume, 1);
+    for (const { type, donor, volume } of expected) {
+      const lane = snapshot.tracks.find((track: { stemAssetId: string }) =>
+        track.stemAssetId === donor.stemIds.get(type));
+      assert.ok(lane, `saved version retains the ${type} donor`);
+      assert.equal(lane.volume, volume);
+      assert.equal(lane.pan, 0);
+      assert.equal(lane.muted, false);
+      assert.equal(lane.clips.length, 1);
+      assert.equal(lane.clips[0].stemAssetId, donor.stemIds.get(type));
+      assert.equal(lane.clips[0].gain, 1);
+    }
+    // Use the real export handler, not a test mixer or a mocked audio loader.
+    // Its only audio inputs are the stem IDs re-read from the saved version.
+    const [job] = await db.db.insert(schema.exportJobs).values({
+      projectId: handoff.projectId,
+      remixSessionId: handoff.remixSessionId,
+      remixVersionId: persistedVersion.id,
+      requestedById: routeOwner,
+      idempotencyKey: `both-donors-export:${randomUUID()}`,
+      format: "wav",
+      sampleRate: 44_100,
+      channels: 2,
+    }).returning();
+    const { handleExportJob } = await import("../worker-local/export");
+    await handleExportJob({
+      exportJobId: job.id, projectId: handoff.projectId,
+      remixSessionId: handoff.remixSessionId, remixVersionId: persistedVersion.id, format: "wav",
+    });
+    const [completed] = await db.db.select().from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, job.id));
+    assert.equal(completed.status, "complete", completed.errorMessage ?? "both donors render successfully");
+    const assets = await db.db.select().from(schema.exportAssets)
+      .where(eq(schema.exportAssets.exportJobId, job.id));
+    assert.equal(assets.length, 1, "the worker persists one real export asset");
+    const output = path.join(root!, "both-saved-donors-export.wav");
+    await getStorage().getToFile(assets[0].storageKey, output);
+    assert.equal(await checksumFile(output), assets[0].checksumSha256);
+    const metadata = await probeAudio(output);
+    assert.equal(metadata.sampleRate, 44_100);
+    assert.equal(metadata.channels, 2);
+    assert.ok(Math.abs(metadata.durationSeconds - 1) < 0.02);
+    // A mono fixture is expanded to stereo (-3 dB per channel), followed by
+    // the exporter's equal-power center pan (-3 dB). No peak normalization.
+    const unityAmplitude = (12000 / 32768) * Math.SQRT1_2 * Math.SQRT1_2;
+    for (const channel of [0, 1]) {
+      for (const { type, frequency, volume } of [
+        { type: "vocals", frequency: 523, volume: 0.72 },
+        { type: "drums", frequency: 733, volume: 0.37 },
+      ]) {
+        const measured = pcmWavToneMagnitude(output, frequency, 200, 800, channel);
+        const target = unityAmplitude * volume;
+        assert.ok(Math.abs(measured - target) < target * 0.02,
+          `${type} channel ${channel}: saved level ${volume} yields ${target}, measured ${measured}`);
+      }
+      const original = pcmWavToneMagnitude(output, 311, 200, 800, channel);
+      assert.ok(original < 0.0001, `channel ${channel}: original audio must be absent (${original})`);
+      const unselected = pcmWavToneMagnitude(output, 997, 200, 800, channel);
+      assert.ok(unselected < 0.0001, `channel ${channel}: unselected clip donor must be absent (${unselected})`);
+    }
+  });
   const drumsStemId = drums.stemIds.get("drums")!;
   const clipOnlyDrumsStemId = clipOnlyDrums.stemIds.get("drums")!;
   const editedTrackId = beforeEdit.tracks.find((track: { id: string; stemAssetId: string }) =>
