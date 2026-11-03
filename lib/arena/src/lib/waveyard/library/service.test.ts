@@ -15,12 +15,12 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { getStorage } from "../storage";
@@ -526,6 +526,157 @@ test("retry links a committed source without creating a second separation job", 
       eq(schema.processingJobs.type, "separation"),
     ));
   assert.equal(separationJobs.length, 1);
+});
+
+test("migration 0021 repairs a populated pre-migration library without losing saved order", async (t) => {
+  const ownerId = randomUUID();
+  const checksum = "f".repeat(64);
+  const databaseName = `arena_library_upgrade_${process.pid}_${randomUUID().slice(0, 8)}`;
+  const migrationsDir = path.join(root!, `migrations-before-0021-${randomUUID()}`);
+  mkdirSync(migrationsDir, { recursive: true });
+
+  const { Client } = await import("pg");
+  const { drizzle: drizzlePg } = await import("drizzle-orm/node-postgres");
+  const databaseUrl = new URL(process.env.DATABASE_URL!);
+  const adminUrl = new URL(databaseUrl);
+  adminUrl.pathname = "/postgres";
+  const isolatedUrl = new URL(databaseUrl);
+  isolatedUrl.pathname = `/${databaseName}`;
+  const adminClient = new Client({ connectionString: adminUrl.toString() });
+  let isolatedClient: import("pg").Client | null = null;
+  t.after(async () => {
+    await isolatedClient?.end().catch(() => {});
+    await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`).catch(() => {});
+    await adminClient.end().catch(() => {});
+    rmSync(migrationsDir, { recursive: true, force: true });
+  });
+
+  await adminClient.connect();
+  await adminClient.query(`CREATE DATABASE "${databaseName}"`);
+  isolatedClient = new Client({ connectionString: isolatedUrl.toString() });
+  await isolatedClient.connect();
+  const legacyDb = drizzlePg(isolatedClient);
+  const { migrate } = await import("../../../../../../desktop/database.mjs");
+  const sourceMigrationsDir = path.join(repoRoot, "desktop-migrations");
+  const migration0021 = "0021_repair_legacy_library_track_duplicates.sql";
+  for (const file of readdirSync(sourceMigrationsDir).filter(
+    (entry) => entry.endsWith(".sql") && entry < migration0021,
+  )) {
+    copyFileSync(path.join(sourceMigrationsDir, file), path.join(migrationsDir, file));
+  }
+  await migrate(isolatedClient, migrationsDir);
+  const appliedBeforeRepair = await isolatedClient.query(
+    "select name from arena_schema_migrations where name = $1",
+    [migration0021],
+  );
+  assert.equal(appliedBeforeRepair.rowCount, 0, "the fixture starts before migration 0021");
+
+  const trackIds: string[] = [];
+  for (const [index, title] of ["Original", "Raced upload"].entries()) {
+    const [project] = await legacyDb.insert(schema.projects).values({
+      ownerId, title: `${title} migration fixture`, kind: "library", visibility: "private",
+    }).returning({ id: schema.projects.id });
+    const [source] = await legacyDb.insert(schema.sourceAssets).values({
+      projectId: project.id, originalFilename: `${title}.wav`, mimeType: "audio/wav",
+      storageKey: `${project.id}/source.wav`, checksumSha256: checksum,
+      durationSeconds: 12, sampleRate: 44_100, channels: 2, codec: "pcm_s16le",
+      bitrate: 1_411_200, fileSizeBytes: 2_116_800,
+    }).returning({ id: schema.sourceAssets.id });
+    const [track] = await legacyDb.insert(schema.tracks).values({
+      ownerId, title, artist: "Legacy Artist", album: "Legacy Album",
+      sourceAssetId: source.id, projectId: project.id, durationSeconds: 12,
+      createdAt: new Date(Date.UTC(2020 + index, 0, 1)),
+    }).returning({ id: schema.tracks.id });
+    trackIds.push(track.id);
+  }
+
+  const queueIds: string[] = [];
+  for (const [position, trackId] of trackIds.entries()) {
+    const [item] = await legacyDb.insert(schema.queueItems).values({
+      ownerId, trackId, position,
+    }).returning({ id: schema.queueItems.id });
+    queueIds.push(item.id);
+  }
+  const [playlist] = await legacyDb.insert(schema.playlists).values({
+    ownerId, name: "Pre-migration order",
+  }).returning({ id: schema.playlists.id });
+  const playlistItemIds: string[] = [];
+  for (const [position, trackId] of trackIds.entries()) {
+    const [item] = await legacyDb.insert(schema.playlistItems).values({
+      playlistId: playlist.id, trackId, position,
+    }).returning({ id: schema.playlistItems.id });
+    playlistItemIds.push(item.id);
+  }
+  const [session] = await legacyDb.insert(schema.listenSessions).values({
+    ownerId, name: "Pre-migration session",
+  }).returning({ id: schema.listenSessions.id });
+  const sessionTrackIds: string[] = [];
+  for (const [position, trackId] of trackIds.entries()) {
+    const [item] = await legacyDb.insert(schema.listenSessionTracks).values({
+      sessionId: session.id, trackId, queueItemId: queueIds[position], position,
+      stemMix: JSON.stringify({ vocals: 0.7 }), transition: JSON.stringify({ type: "cut" }),
+    }).returning({ id: schema.listenSessionTracks.id });
+    sessionTrackIds.push(item.id);
+  }
+  await legacyDb.update(schema.listenSessions)
+    .set({ currentTrackId: sessionTrackIds[1], positionSeconds: 8.25 })
+    .where(eq(schema.listenSessions.id, session.id));
+
+  const beforeRepair = await legacyDb.select().from(schema.tracks)
+    .where(eq(schema.tracks.ownerId, ownerId));
+  assert.equal(beforeRepair.length, 2, "both duplicate legacy tracks exist before the upgrade");
+  copyFileSync(
+    path.join(sourceMigrationsDir, migration0021),
+    path.join(migrationsDir, migration0021),
+  );
+  await migrate(isolatedClient, migrationsDir);
+  const appliedRepair = await isolatedClient.query(
+    "select name from arena_schema_migrations where name = $1",
+    [migration0021],
+  );
+  assert.equal(appliedRepair.rowCount, 1, "the populated database records migration 0021 as applied");
+
+  const afterRepair = await legacyDb.select().from(schema.tracks)
+    .where(eq(schema.tracks.ownerId, ownerId));
+  assert.equal(afterRepair.length, 1, "the listener library opens with one track per owner and checksum");
+  assert.equal(afterRepair[0].id, trackIds[0], "the oldest legacy track identity is retained");
+  assert.equal(afterRepair[0].sourceChecksumSha256, checksum);
+
+  const repairedQueue = await legacyDb.select().from(schema.queueItems)
+    .where(eq(schema.queueItems.ownerId, ownerId))
+    .orderBy(asc(schema.queueItems.position));
+  assert.deepEqual(
+    repairedQueue.map(({ id, trackId, position }) => ({ id, trackId, position })),
+    [
+      { id: queueIds[0], trackId: trackIds[0], position: 0 },
+      { id: queueIds[1], trackId: trackIds[0], position: 1 },
+    ],
+  );
+  const repairedPlaylist = await legacyDb.select().from(schema.playlistItems)
+    .where(eq(schema.playlistItems.playlistId, playlist.id))
+    .orderBy(asc(schema.playlistItems.position));
+  assert.deepEqual(
+    repairedPlaylist.map(({ id, trackId, position }) => ({ id, trackId, position })),
+    [
+      { id: playlistItemIds[0], trackId: trackIds[0], position: 0 },
+      { id: playlistItemIds[1], trackId: trackIds[0], position: 1 },
+    ],
+  );
+  const repairedSessionTracks = await legacyDb.select().from(schema.listenSessionTracks)
+    .where(eq(schema.listenSessionTracks.sessionId, session.id))
+    .orderBy(asc(schema.listenSessionTracks.position));
+  assert.deepEqual(
+    repairedSessionTracks.map(({ id, trackId, queueItemId, position }) => ({ id, trackId, queueItemId, position })),
+    [
+      { id: sessionTrackIds[0], trackId: trackIds[0], queueItemId: queueIds[0], position: 0 },
+      { id: sessionTrackIds[1], trackId: trackIds[0], queueItemId: queueIds[1], position: 1 },
+    ],
+  );
+  const [repairedSession] = await legacyDb.select().from(schema.listenSessions)
+    .where(eq(schema.listenSessions.id, session.id));
+  assert.equal(repairedSession.id, session.id);
+  assert.equal(repairedSession.currentTrackId, sessionTrackIds[1]);
+  assert.equal(repairedSession.positionSeconds, 8.25);
 });
 
 test("legacy duplicate repair backfills identity and preserves every listening reference", async (t) => {
