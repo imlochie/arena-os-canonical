@@ -3,18 +3,33 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import { runAutomaticFadeAcceptance, runLoudAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
+const requireBrowserEngines = process.env.WAVEYARD_REQUIRE_BROWSER_ENGINES === "1"
+  || process.argv.includes("--require-browser-engines");
 if (process.argv.includes("--live-stem-timing-matrix")) {
   const { spawnSync } = await import("node:child_process");
+  const skippedEngines = [];
   for (const engine of ["chromium", "webkit", "firefox"]) {
     console.log(`LIVE_STEM_TIMING_ENGINE ${engine}`);
-    const result = spawnSync(process.execPath, [process.argv[1], "--live-stem-timing-only", `--engine=${engine}`], {
+    const args = [process.argv[1], "--live-stem-timing-only", `--engine=${engine}`];
+    if (requireBrowserEngines) args.push("--require-browser-engines");
+    const result = spawnSync(process.execPath, args, {
       stdio: "inherit",
       env: process.env,
     });
     if (result.error) throw result.error;
+    if (result.status === 3 && !requireBrowserEngines) {
+      skippedEngines.push(engine);
+      continue;
+    }
     if (result.status !== 0) process.exit(result.status ?? 1);
+  }
+  if (skippedEngines.length > 0) {
+    console.log(`PARTIAL: timing checks skipped for ${skippedEngines.join(", ")}; this is not full cross-browser coverage.`);
+  } else {
+    console.log("PASS: Chromium, WebKit, and Firefox timing checks all completed.");
   }
   process.exit(0);
 }
@@ -206,14 +221,21 @@ const assetSnapshot = () => [...assets.entries()]
   .sort(([left], [right]) => left.localeCompare(right));
 let browser;
 try {
+  const chromiumExecutable = process.env.CHROMIUM_PATH
+    ?? (existsSync("/repl/tools/bin/chromium") ? "/repl/tools/bin/chromium" : undefined);
   browser = await browserType.launch(engineName === "chromium"
-    ? { executablePath: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium",
+    ? { ...(chromiumExecutable ? { executablePath: chromiumExecutable } : {}),
       args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] }
     : { headless: true });
 } catch (error) {
-  if (timingOnly && engineName !== "chromium") {
-    console.log(`SKIP: ${engineName} timing coverage is unavailable here: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
-    process.exit(0);
+  if (timingOnly) {
+    const detail = error instanceof Error ? error.message.split("\n")[0] : String(error);
+    if (requireBrowserEngines) {
+      console.error(`ERROR: required ${engineName} timing coverage cannot start: ${detail}`);
+      process.exit(1);
+    }
+    console.log(`SKIP: ${engineName} timing coverage is unavailable here: ${detail}`);
+    process.exit(3);
   }
   throw error;
 }

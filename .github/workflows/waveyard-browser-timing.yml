@@ -1,0 +1,63 @@
+name: Waveyard browser timing
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-stem-timing:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install Waveyard app and browser-runner dependencies
+        run: pnpm install --frozen-lockfile --filter "@workspace/arenaforge..." --filter "@workspace/api-server..."
+
+      - name: Install all required Playwright browsers and Linux libraries
+        run: node artifacts/api-server/node_modules/playwright-core/cli.js install --with-deps chromium firefox webkit
+
+      - name: Run cross-browser live-stem timing matrix
+        env:
+          WAVEYARD_REQUIRE_BROWSER_ENGINES: "1"
+        run: |
+          set -euo pipefail
+          sudo env PATH="$PATH" PORT=80 BASE_PATH=/ node artifacts/arenaforge/node_modules/vite/bin/vite.js \
+            --config artifacts/arenaforge/vite.config.ts --host 127.0.0.1 \
+            > "$RUNNER_TEMP/waveyard-vite.log" 2>&1 &
+          vite_pid=$!
+          cleanup() {
+            kill "$vite_pid" 2>/dev/null || true
+            wait "$vite_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:80/ >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat "$RUNNER_TEMP/waveyard-vite.log"
+            exit 1
+          fi
+          node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix
