@@ -1380,8 +1380,8 @@
 .wy-drawer-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .wy-ready{border-left:2px solid var(--wy-a)}
 /* Compact dock: same tree, full-only parts hidden; audio elements keep playing. */
-.wy-host-compact{position:fixed;left:12px;right:12px;bottom:12px;z-index:60;max-width:980px;margin:0 auto}
-.wy-host-compact.wy-host-editor-flow{position:relative;inset:auto;z-index:auto;margin:0 auto 14px}
+.wy-host-compact{--wy-compact-safe-top:env(safe-area-inset-top,0px);--wy-compact-safe-left:env(safe-area-inset-left,0px);--wy-compact-safe-right:env(safe-area-inset-right,0px);--wy-compact-safe-bottom:env(safe-area-inset-bottom,0px);position:fixed;left:calc(12px + var(--wy-compact-safe-left));right:calc(12px + var(--wy-compact-safe-right));bottom:calc(12px + var(--wy-compact-safe-bottom));z-index:60;max-width:980px;max-height:calc(100vh - var(--wy-compact-safe-top) - var(--wy-compact-safe-bottom) - 24px);max-height:calc(100svh - var(--wy-compact-safe-top) - var(--wy-compact-safe-bottom) - 24px);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;margin:0 auto}
+.wy-host-compact.wy-host-editor-flow{position:relative;inset:auto;z-index:auto;max-height:none;overflow:visible;-webkit-overflow-scrolling:auto;margin:0 auto 14px}
 .wy-host-compact .wy-workspace{margin:0;padding:10px 14px;background:var(--wy-glass);backdrop-filter:blur(16px);box-shadow:0 18px 50px rgba(0,0,0,.4)}
 .wy-host-compact .wy-full-only{display:none}
 .wy-host-compact .wy-master{display:none}

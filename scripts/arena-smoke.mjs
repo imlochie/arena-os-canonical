@@ -1819,6 +1819,25 @@ try {
   const compactLevelSliders = ["vocals", "drums", "bass", "other"].map((stem) =>
     compactDock.getByTestId(`compact-level-${stem}`));
   const compactVocalsLevel = compactDock.getByTestId("compact-level-vocals");
+  const viewportMeta = await page.locator('meta[name="viewport"]').getAttribute("content");
+  assert(viewportMeta?.includes("viewport-fit=cover"), "phone viewport must expose safe-area insets to the compact dock");
+  const appRoot = page.locator("#root");
+  await appRoot.evaluate((element) => element.style.setProperty("--arena-safe-top", "44px"));
+  const safeAreaNav = page.locator("header.arena-nav");
+  const safeTopNavBounds = await safeAreaNav.boundingBox();
+  assert(safeTopNavBounds && safeTopNavBounds.y >= 44,
+    `app navigation must remain below the simulated top safe area: ${JSON.stringify(safeTopNavBounds)}`);
+  await page.evaluate(() => window.scrollTo(0, 160));
+  const stickySafeTopBounds = await safeAreaNav.boundingBox();
+  assert(stickySafeTopBounds && stickySafeTopBounds.y >= 44,
+    `sticky navigation must stay below the simulated top safe area after scrolling: ${JSON.stringify(stickySafeTopBounds)}`);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await appRoot.evaluate((element) => element.style.removeProperty("--arena-safe-top"));
+  const fitsSafeArea = (bounds, width, height, insets) => Boolean(bounds)
+    && bounds.x >= insets.left
+    && bounds.y >= insets.top
+    && bounds.x + bounds.width <= width - insets.right
+    && bounds.y + bounds.height <= height - insets.bottom;
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await compactMissingOriginal.waitFor({ state: "visible" });
@@ -1847,11 +1866,61 @@ try {
     assert.equal(await compactDock.getByTestId(`button-retry-full-track-${liveSessionTrackId}`).count(), 0,
       `${width}px compact dock must not offer a retry for an absent original`);
   }
+  const setCompactSafeArea = (insets) => compactDock.evaluate((element, area) => {
+    element.style.setProperty("--wy-compact-safe-left", `${area.left}px`);
+    element.style.setProperty("--wy-compact-safe-right", `${area.right}px`);
+    element.style.setProperty("--wy-compact-safe-bottom", `${area.bottom}px`);
+  }, insets);
+  await page.setViewportSize({ width: 320, height: 844 });
+  await setCompactSafeArea({ left: 0, right: 0, bottom: 34 });
+  const portraitDockBounds = await compactDock.boundingBox();
+  assert(portraitDockBounds, "compact dock must have visible bounds with a simulated phone home inset");
+  assert(fitsSafeArea(portraitDockBounds, 320, 844, { left: 0, top: 0, right: 0, bottom: 34 }),
+    `compact dock must remain above the portrait home gesture area: ${JSON.stringify(portraitDockBounds)}`);
+  assert.equal(await compactDock.evaluate((element) => getComputedStyle(element).bottom), "46px",
+    "compact dock must keep its 12px gap above the simulated bottom safe area");
+  const portraitSafeAreaTargets = [compactMissingOriginal, compactPlay, compactIsolateVocals, ...compactLevelSliders];
+  for (const target of portraitSafeAreaTargets) {
+    const bounds = await target.boundingBox();
+    assert(fitsSafeArea(bounds, 320, 844, { left: 0, top: 0, right: 0, bottom: 34 }),
+    `compact status and controls must stay reachable above the portrait home area: ${target}`);
+  }
+  await page.setViewportSize({ width: 844, height: 390 });
+  await setCompactSafeArea({ left: 44, right: 44, bottom: 21 });
+  const landscapeDockBounds = await compactDock.boundingBox();
+  assert(fitsSafeArea(landscapeDockBounds, 844, 390, { left: 44, top: 0, right: 44, bottom: 21 }),
+  `compact dock must respect landscape notch and home insets: ${JSON.stringify(landscapeDockBounds)}`);
+  let landscapePlaybackBounds = await compactPlay.boundingBox();
+  assert(fitsSafeArea(landscapePlaybackBounds, 844, 390, { left: 44, top: 0, right: 44, bottom: 21 }),
+    `landscape playback must remain immediately reachable above the home area: ${JSON.stringify(landscapePlaybackBounds)}`);
+  await compactMissingOriginal.scrollIntoViewIfNeeded();
+  let landscapeStatusBounds = await compactMissingOriginal.boundingBox();
+  assert(fitsSafeArea(landscapeStatusBounds, 844, 390, { left: 44, top: 0, right: 44, bottom: 21 }),
+    `landscape compact status must remain reachable above the safe area: ${JSON.stringify(landscapeStatusBounds)}`);
+  for (const slider of compactLevelSliders) {
+    await slider.scrollIntoViewIfNeeded();
+    const bounds = await slider.boundingBox();
+    assert(fitsSafeArea(bounds, 844, 390, { left: 44, top: 0, right: 44, bottom: 21 }),
+      `landscape stem fader must scroll into the safe touch area: ${slider}`);
+  }
+  await compactIsolateVocals.scrollIntoViewIfNeeded();
+  const landscapeIsolationBounds = await compactIsolateVocals.boundingBox();
+  assert(fitsSafeArea(landscapeIsolationBounds, 844, 390, { left: 44, top: 0, right: 44, bottom: 21 }),
+    `landscape isolation must scroll into the safe touch area: ${JSON.stringify(landscapeIsolationBounds)}`);
+  await tapCenter(compactIsolateVocals);
+  await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "true");
+  const landscapeRestore = compactDock.getByTestId("compact-restore-stems");
+  await landscapeRestore.scrollIntoViewIfNeeded();
+  await tapCenter(landscapeRestore);
+  await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "false");
+  await compactDock.evaluate((element) => { element.scrollTop = 0; });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await setCompactSafeArea({ left: 0, right: 0, bottom: 34 });
   assert.equal(await compactIsolateVocals.isEnabled(), true,
     "stem isolation remains enabled in compact mode when the original asset is missing");
-  await compactIsolateVocals.click();
+  await tapCenter(compactIsolateVocals);
   await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "true");
-  await compactDock.getByTestId("compact-restore-stems").click();
+  await tapCenter(compactDock.getByTestId("compact-restore-stems"));
   await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "false");
   const compactLevelSave = page.waitForResponse((response) => {
     const request = response.request();
@@ -1866,13 +1935,13 @@ try {
   assert.equal(await compactDock.getByTestId("compact-level-value-vocals").innerText(), "1.75");
   await compactLevelSave;
   assert.equal(liveCurrentItem.stemMix.vocals, 1.75, "compact fader changes must persist through the existing session mix endpoint");
-  await compactPlay.click();
+  await tapCenter(compactPlay);
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
-  await compactPlay.click();
-  report.push("Compact listening exposes every stem level and isolation at 320px and 390px; a changed level saves through the shared session mix.");
+  await tapCenter(compactPlay);
+  report.push("Compact status and controls stay above simulated portrait and landscape safe areas; playback and isolation respond to touch, and changed stem levels save through the shared session mix.");
   await page.goto(`${base}/waveyard/session/${liveSessionId}`, { waitUntil: "domcontentloaded" });
   await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
   liveCurrentItem.sourceAssetId = liveCurrentSourceAssetId;

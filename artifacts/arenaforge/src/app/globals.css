@@ -8,6 +8,18 @@ html, body {
   min-height: 100%;
 }
 
+#root {
+  --arena-safe-top: env(safe-area-inset-top, 0px);
+  --arena-safe-right: env(safe-area-inset-right, 0px);
+  --arena-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --arena-safe-left: env(safe-area-inset-left, 0px);
+  padding: var(--arena-safe-top) var(--arena-safe-right) var(--arena-safe-bottom) var(--arena-safe-left);
+}
+
+.arena-nav {
+  top: var(--arena-safe-top, env(safe-area-inset-top, 0px));
+}
+
 /* ---- Affordance layer: things you can press should look pressable ----
    Tailwind v4 preflight sets buttons to cursor:default — restore pointer
    everywhere, give every interactive element press feedback + focus rings. */

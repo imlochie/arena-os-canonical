@@ -164,7 +164,7 @@ export default function Nav() {
   const primaryPageIsActive = PRIMARY.some((room) => room.href === pathname);
 
   return (
-    <header className="sticky top-0 z-50 border-b border-white/10 bg-[#060a17]/85 backdrop-blur-xl">
+    <header className="arena-nav sticky top-0 z-50 border-b border-white/10 bg-[#060a17]/85 backdrop-blur-xl">
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6">
         <Link href="/" className="flex shrink-0 items-center gap-2.5" title="Home">
           <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-violet-600 via-indigo-600 to-cyan-500 text-lg shadow-[0_8px_24px_rgba(124,58,237,0.5)]">
