@@ -1766,33 +1766,18 @@ test("session: a missing original can be restored without changing stems or sess
     .where(eq(schema.tracks.id, trackA.id)).limit(1);
   const [originalAcquisition] = await db.db.select().from(schema.sourceAcquisitions)
     .where(eq(schema.sourceAcquisitions.sourceAssetId, sourceId)).limit(1);
-  const [job] = await db.db.select().from(schema.processingJobs)
-    .where(eq(schema.processingJobs.sourceAssetId, sourceId)).limit(1);
-  assert.ok(originalSource && originalTrack && originalAcquisition && job);
-  const [stem] = await db.db.insert(schema.stemAssets).values({
-    projectId: originalSource.projectId,
-    sourceAssetId: sourceId,
-    separationJobId: job.id,
-    stemType: "vocals",
-    engine: "test-separation",
-    model: "test",
-    modelVersion: "test",
-    storageKey: `test/restore-original-${randomUUID()}.wav`,
-    checksumSha256: "a".repeat(64),
-    durationSeconds: originalTrack.durationSeconds,
-    sampleRate: originalSource.sampleRate,
-    channels: originalSource.channels,
-    codec: "pcm_s16le",
-    format: "wav",
-    fileSizeBytes: originalSource.fileSizeBytes,
-  }).returning();
+  assert.ok(originalSource && originalTrack && originalAcquisition);
+  const originalStems = await db.db.select().from(schema.stemAssets)
+    .where(eq(schema.stemAssets.sourceAssetId, sourceId));
+  assert.ok(originalStems.length > 0);
+  const originalStemIds = originalStems.map((stem) => stem.id).sort();
   const created = await sessions.createSession(OWNER, "Restore original");
   const withTrack = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
   const sessionTrackId = withTrack.tracks[0].id;
   const selected = await sessions.updateSessionTrack(OWNER, created.id, sessionTrackId, {
     playbackPreference: "stems",
-    stemMix: { "restore-test": 0.42 },
-    transition: { mode: "bar", crossfadeSeconds: 6, keepStems: ["restore-test"] },
+    stemMix: { vocals: 0.42, drums: 0.78 },
+    transition: { mode: "bar", crossfadeSeconds: 6, keepStems: ["vocals"] },
   });
   await sessions.saveSessionState(OWNER, created.id, sessionTrackId, 37.5);
   const replacementPath = path.join(root!, "replacement-original.wav");
@@ -1802,7 +1787,7 @@ test("session: a missing original can be restored without changing stems or sess
     const missing = await sessions.getSession(OWNER, created.id);
     assert.equal(missing.tracks[0].sourceAssetId, null, "a missing private file is not presented as an available original");
     assert.equal(missing.tracks[0].playback?.kind, "stems");
-    assert.deepEqual(missing.tracks[0].stems.map(({ id }) => id), [stem.id]);
+    assert.deepEqual(missing.tracks[0].stems.map(({ id }) => id).sort(), originalStemIds);
 
     const restored = await sessions.restoreSessionTrackOriginalAudio(OWNER, created.id, sessionTrackId, {
       filePath: replacementPath,
@@ -1811,7 +1796,7 @@ test("session: a missing original can be restored without changing stems or sess
     });
     const entry = restored.tracks[0];
     assert.equal(entry.sourceAssetId, sourceId, "the track keeps its original source identity");
-    assert.deepEqual(entry.stems.map(({ id }) => id), [stem.id], "the separated stem remains attached");
+    assert.deepEqual(entry.stems.map(({ id }) => id).sort(), originalStemIds, "the separated stems remain attached");
     assert.equal(entry.playback?.kind, "stems", "restoring a source does not change the chosen session playback mode");
     assert.deepEqual(entry.stemMix, selected.tracks[0].stemMix);
     assert.deepEqual(entry.transition, selected.tracks[0].transition);
@@ -1850,7 +1835,6 @@ test("session: a missing original can be restored without changing stems or sess
       resolver: originalAcquisition.resolver,
       metadata: originalAcquisition.metadata,
     }).where(eq(schema.sourceAcquisitions.id, originalAcquisition.id));
-    await db.db.delete(schema.stemAssets).where(eq(schema.stemAssets.id, stem.id));
   }
 });
 
