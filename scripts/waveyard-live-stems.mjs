@@ -2209,7 +2209,158 @@ try {
       })).sort((left, right) => left.stemType.localeCompare(right.stemType));
       assert.deepEqual(reloadedChoices, savedChoices,
         "both independently saved swaps survive reloading the session");
-      console.log("PASS: two stem choices save concurrently, out-of-order donor and session responses preserve both live graphs, playback advances, and both swaps survive reload");
+
+      const retainedVocalSwap = {
+        id: "retained-vocals-b",
+        sessionTrackId: "a",
+        stemType: "vocals",
+        toTrackId: "b",
+        toStemAssetId: "b-vocals",
+        atSeconds: 0,
+        fromTrackId: "a",
+        createdAt: new Date().toISOString(),
+      };
+      session.tracks = tracks;
+      session.swaps = [retainedVocalSwap];
+      session.currentSessionTrackId = "a";
+      session.positionSeconds = 0;
+      parallelSwapRequestOrder.splice(0);
+      parallelSwapResponseOrder.splice(0);
+      parallelDonorRequestOrder.splice(0);
+      parallelDonorResponseOrder.splice(0);
+      parallelSwapDeleteRequests.splice(0);
+      donorRestoreRequests.splice(0);
+      failedAssetRequests = 0;
+      const failedVocalSave = gate();
+      const successfulDrumSave = gate();
+      const failedVocalDonor = gate();
+      const successfulDrumDonor = gate();
+      parallelSwapResponses = new Map([["vocals", failedVocalSave], ["drums", successfulDrumSave]]);
+      parallelDonorResponses = new Map([
+        ["c-vocals", failedVocalDonor],
+        ["c-drums", successfulDrumDonor],
+      ]);
+      failAsset = null;
+
+      const failureDeck = page.locator('[data-role="current"]');
+      await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(element => element.readyState === 4);
+      });
+      await page.getByTestId("session-play").click();
+      await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+      await page.waitForFunction(() => window.audioProbe.buffers.some(node =>
+        Math.abs(node.buffer.duration - 8.2667) < 0.03 &&
+        node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+      ), null, { timeout: 8000 });
+
+      const failedVocalSaveResponse = responseFor("vocals");
+      await choose("vocals", "c");
+      await Promise.all([failedVocalSave.started, failedVocalDonor.started]);
+      const successfulDrumSaveResponse = responseFor("drums");
+      await choose("drums", "c");
+      await Promise.all([successfulDrumSave.started, successfulDrumDonor.started]);
+      assert.deepEqual(parallelSwapRequestOrder, ["vocals", "drums"],
+        "both stem choices are saved before either save response is released");
+      assert.ok(parallelDonorRequestOrder.includes("c-vocals") && parallelDonorRequestOrder.includes("c-drums"),
+        `both selected donor downloads are pending: ${JSON.stringify(parallelDonorRequestOrder)}`);
+      assert.deepEqual(parallelDonorResponseOrder, [],
+        "neither donor finishes before both stem choices have been made");
+
+      const pendingClocks = await failureDeck.locator("audio").evaluateAll(audio => audio.map(element => element.currentTime));
+      await page.waitForTimeout(350);
+      const failurePendingPlayback = await failureDeck.locator("audio").evaluateAll((audio, before) => audio.map((element, index) => ({
+        paused: element.paused,
+        advanced: element.currentTime > (before[index] ?? 0) + 0.15,
+      })), pendingClocks);
+      assert.ok(failurePendingPlayback.every(item => !item.paused) && failurePendingPlayback.filter(item => item.advanced).length >= 3,
+        `the retained mix keeps playing during both downloads: ${JSON.stringify(failurePendingPlayback)}`);
+
+      successfulDrumSave.release();
+      assert.ok((await successfulDrumSaveResponse)?.ok(), "the drums choice saves first");
+      failedVocalSave.release();
+      assert.ok((await failedVocalSaveResponse)?.ok(), "the vocals choice saves before its asset fails");
+      assert.deepEqual(failedVocalSave.snapshot.swaps.map(swap => [swap.stemType, swap.toTrackId]), [["vocals", "c"]],
+        "the late vocals response contains only its older channel snapshot");
+      assert.deepEqual(successfulDrumSave.snapshot.swaps.map(swap => [swap.stemType, swap.toTrackId]), [
+        ["vocals", "c"], ["drums", "c"],
+      ], "the drums response includes both saved choices");
+
+      const rollbackResponse = page.waitForResponse(response => {
+        if (!response.url().endsWith("/swaps") || response.request().method() !== "POST") return false;
+        const body = response.request().postDataJSON();
+        return body.stemType === "vocals" && body.toTrackId === "b" && body.expectedSwapId === "swap-vocals";
+      });
+      failAsset = "c-vocals";
+      failedVocalDonor.release();
+      const failedDownload = await page.waitForResponse(response =>
+        response.url().endsWith("/api/assets/c-vocals") && response.request().resourceType() === "fetch",
+      );
+      assert.equal(failedDownload.status(), 503, "the newly selected vocals asset fails after its save");
+      await waitForSignal(failedVocalDonor.finished, "failed vocals donor response");
+      assert.ok((await rollbackResponse).ok(), "the UI restores the last valid vocals donor");
+      assert.ok(failedAssetRequests > 0, "the selected vocals donor was rejected by the asset route");
+      assert.equal(donorRestoreRequests.length, 1);
+      assert.equal(donorRestoreRequests[0].toTrackId, "b");
+      assert.equal(donorRestoreRequests[0].expectedSwapId, "swap-vocals");
+      assert.deepEqual(session.swaps.map(swap => [swap.stemType, swap.toTrackId]).sort(), [
+        ["drums", "c"], ["vocals", "b"],
+      ], "the failed channel returns to its prior donor without removing the drums choice");
+      assert.ok(!parallelDonorResponseOrder.includes("c-drums"),
+        "the independent drums request remains in flight during vocal recovery");
+      assert.equal(await page.getByText("Retry live stems", { exact: true }).count(), 1,
+        "the failed vocals choice remains available for retry");
+      await page.waitForFunction(() => window.audioProbe.buffers.some(node =>
+        Math.abs(node.buffer.duration - 8.2667) < 0.03 &&
+        node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+      ), null, { timeout: 8000 });
+      assert.ok((await failureDeck.locator("audio").evaluateAll(audio => audio.every(element => !element.paused))),
+        "the retained vocals donor keeps playing while drums is still pending");
+
+      failAsset = null;
+      successfulDrumDonor.release();
+      await waitForSignal(successfulDrumDonor.finished, "successful drums donor response");
+      await page.waitForFunction(() => window.audioProbe.buffers.some(node =>
+        Math.abs(node.buffer.duration - 12) < 0.01 &&
+        node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+      ), null, { timeout: 8000 });
+      parallelSwapResponses = null;
+      parallelDonorResponses = null;
+      await assertSelected("vocals", "b");
+      await assertSelected("drums", "c");
+      assert.deepEqual(session.swaps.map(swap => [swap.stemType, swap.toTrackId]).sort(), [
+        ["drums", "c"], ["vocals", "b"],
+      ], "visible selections match the audible retained and successful layers");
+
+      await page.reload({ waitUntil: "domcontentloaded" });
+      const reopenedDeck = page.locator('[data-role="current"]');
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(element => element.readyState === 4);
+      });
+      const reopenedPlay = page.getByTestId("session-play");
+      if (await reopenedPlay.getAttribute("aria-pressed") !== "true") {
+        await reopenedPlay.click();
+        await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+      }
+      await page.waitForFunction(() => {
+        const nodes = window.audioProbe.buffers;
+        return nodes.some(node => Math.abs(node.buffer.duration - 8.2667) < 0.03 &&
+          node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0) &&
+          nodes.some(node => Math.abs(node.buffer.duration - 12) < 0.01 &&
+            node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0);
+      }, null, { timeout: 8000 });
+      await reopenedDeck.getByTestId("open-live-swap-vocals").click();
+      assert.equal(await reopenedDeck.getByTestId("live-swap-candidate-vocals-b").getAttribute("aria-pressed"), "true",
+        "reopening preserves the last valid vocals donor");
+      await reopenedDeck.getByTestId("open-live-swap-drums").click();
+      assert.equal(await reopenedDeck.getByTestId("live-swap-candidate-drums-c").getAttribute("aria-pressed"), "true",
+        "reopening preserves the successful drums donor");
+      assert.deepEqual(session.swaps.map(swap => [swap.stemType, swap.toTrackId]).sort(), [
+        ["drums", "c"], ["vocals", "b"],
+      ], "the reopened session keeps both valid saved donor choices");
+    console.log("PASS: parallel stem donors preserve the last valid failed-channel choice, the independent successful layer, playback, and saved state after reopen");
     } finally {
       for (const response of [...(parallelSwapResponses?.values() ?? []), ...(parallelDonorResponses?.values() ?? [])]) response.release();
       parallelSwapResponses = null;
