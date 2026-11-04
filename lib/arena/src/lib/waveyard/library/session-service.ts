@@ -935,6 +935,24 @@ export async function sendSessionToStudio(
   }> = [];
   const refused: Array<{ title: string; reason: string }> = [];
   const transitionWarnings: NonNullable<StudioHandoffResult["transitionWarnings"]> = [];
+  const handoffStorage = getStorage();
+  const stemObjectAvailability = new Map<string, boolean>();
+  const availableStemIds = async (stems: TrackStem[]): Promise<Set<string>> => {
+    const ids = [...new Set(stems.map((stem) => stem.id))];
+    const pendingIds = ids.filter((id) => !stemObjectAvailability.has(id));
+    if (pendingIds.length > 0) {
+      const rows = await db
+        .select({ id: stemAssets.id, storageKey: stemAssets.storageKey })
+        .from(stemAssets)
+        .where(inArray(stemAssets.id, pendingIds));
+      const rowById = new Map(rows.map((row) => [row.id, row]));
+      await Promise.all(pendingIds.map(async (id) => {
+        const row = rowById.get(id);
+        stemObjectAvailability.set(id, row !== undefined && await handoffStorage.exists(row.storageKey));
+      }));
+    }
+    return new Set(ids.filter((id) => stemObjectAvailability.get(id) === true));
+  };
   let preservedSwapCount = 0;
   let preservedTransitionCount = 0;
   let previousPlacement: {
@@ -965,6 +983,16 @@ export async function sendSessionToStudio(
       refused.push({ title: sessionTrack.track.title, reason: "No separated stems or full-source audio are available." });
       continue;
     }
+    const selectedStemAvailability = await availableStemIds(playableStems);
+    const missingSelectedStems = playableStems.filter((stem) => !selectedStemAvailability.has(stem.id));
+    if (missingSelectedStems.length > 0) {
+      const names = missingSelectedStems.map((stem) => stem.stemType).join(", ");
+      refused.push({
+        title: sessionTrack.track.title,
+        reason: `The ${names} stem ${missingSelectedStems.length === 1 ? "file is" : "files are"} missing from private storage; this entry was not sent to Studio.`,
+      });
+      continue;
+    }
     const replacements = new Map<string, { stemId: string; donorTitle: string; durationSeconds: number }>();
     let invalidSwapReason: string | null = null;
     for (const swap of detail.swaps.filter((entry) => entry.sessionTrackId === sessionTrack.id)) {
@@ -981,6 +1009,10 @@ export async function sendSessionToStudio(
       );
       if (originalStem === undefined || donorStem === undefined || donorDetail === null) {
         invalidSwapReason = `The saved ${swap.stemType} swap audio is no longer available at its recorded version. Reapply the swap before sending this entry to Studio.`;
+        break;
+      }
+      if (!(await availableStemIds([donorStem])).has(donorStem.id)) {
+        invalidSwapReason = `The saved ${swap.stemType} live-swap audio from “${donorDetail.title}” is missing from private storage. Restore or re-separate the donor in the Library, then reapply the swap.`;
         break;
       }
       replacements.set(swap.stemType, {

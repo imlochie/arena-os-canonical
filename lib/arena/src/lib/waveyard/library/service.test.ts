@@ -1237,6 +1237,8 @@ test("real stems change availability and what the player loads", async () => {
   const sourceId = sourceIdByTrackId.get(trackA.id)!;
   const stemIds: string[] = [];
   for (const stemType of ["vocals", "drums", "bass", "other"]) {
+    const storageKey = `test/${stemType}.wav`;
+    await getStorage().putFile(storageKey, path.join(root!, "aphex.wav"), "audio/wav");
     const [stem] = await db.db.insert(schema.stemAssets).values({
       projectId: trackA.studioProjectId,
       sourceAssetId: sourceId,
@@ -1245,7 +1247,7 @@ test("real stems change availability and what the player loads", async () => {
       engine: "demucs",
       model: "htdemucs",
       modelVersion: "test",
-      storageKey: `test/${stemType}.wav`,
+      storageKey,
       checksumSha256: `checksum-${stemType}`,
       durationSeconds: 2,
       sampleRate: 44100,
@@ -1277,6 +1279,7 @@ test("real stems change availability and what the player loads", async () => {
 test("passthrough bridge = honest source-only playback", async () => {
   const sourceId = sourceIdByTrackId.get(trackB.id)!;
   const [job] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceId)).limit(1);
+  await getStorage().putFile("test/passthrough.wav", path.join(root!, "aphex.wav"), "audio/wav");
   const [stem] = await db.db.insert(schema.stemAssets).values({
     projectId: trackB.studioProjectId,
     sourceAssetId: sourceId,
@@ -1856,6 +1859,8 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   const sourceB = sourceIdByTrackId.get(trackB.id)!;
   const [jobB] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceB)).limit(1);
   for (const stemType of ["drums", "vocals"]) {
+    const storageKey = `test/b-${stemType}.wav`;
+    await getStorage().putFile(storageKey, path.join(root!, "aphex.wav"), "audio/wav");
     await db.db.insert(schema.stemAssets).values({
       projectId: trackB.studioProjectId,
       sourceAssetId: sourceB,
@@ -1864,7 +1869,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
       engine: "demucs",
       model: "htdemucs",
       modelVersion: "test",
-      storageKey: `test/b-${stemType}.wav`,
+      storageKey,
       checksumSha256: `checksum-b-${stemType}`,
       durationSeconds: 3,
       sampleRate: 44100,
@@ -2740,6 +2745,148 @@ test("session: partial Studio handoff names audio lost after selection; all-refu
   } finally {
     await sessions.deleteSession(OWNER, created.id);
     await db.db.delete(schema.projects).where(eq(schema.projects.id, lostSource.track.studioProjectId));
+  }
+});
+
+test("session: Studio handoff checks selected and live-donor audio files, keeping other tracks", async () => {
+  const created = await sessions.createSession(OWNER, "Missing private audio");
+  const [trackARow] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, trackA.id)).limit(1);
+  const [trackBRow] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, trackB.id)).limit(1);
+  const playableTrackAStems = await db.db
+    .select()
+    .from(schema.stemAssets)
+    .where(eq(schema.stemAssets.sourceAssetId, trackARow.sourceAssetId));
+  const trackBStems = await db.db
+    .select()
+    .from(schema.stemAssets)
+    .where(eq(schema.stemAssets.sourceAssetId, trackBRow.sourceAssetId));
+  const playableTrackBStems = trackBStems.filter((stem) => stem.engine !== "passthrough-unseparated");
+  const sourceFixture = path.join(root!, "aphex.wav");
+  const storage = getStorage();
+  const deletedKeys = new Set<string>();
+  const removeAudioObject = async (storageKey: string) => {
+    await storage.delete(storageKey);
+    deletedKeys.add(storageKey);
+  };
+  const restoreDeletedAudioObjects = async () => {
+    for (const storageKey of deletedKeys) {
+      await storage.putFile(storageKey, sourceFixture, "audio/wav");
+    }
+    deletedKeys.clear();
+  };
+  const projectsBefore = new Set((await db.db
+    .select({ id: schema.projects.id })
+    .from(schema.projects)
+    .where(eq(schema.projects.ownerId, OWNER))).map((project) => project.id));
+  let partialProjectId: string | null = null;
+
+  try {
+    assert.ok(playableTrackAStems.length > 0, "the kept selected track has separated stem rows");
+    const missingSelectedStem = playableTrackBStems.find((stem) => stem.stemType === "drums");
+    const donorDrums = playableTrackAStems.find((stem) => stem.stemType === "drums");
+    assert.ok(missingSelectedStem, "the selected track has a drum stem to remove from storage");
+    assert.ok(donorDrums, "the donor track has a drum stem to remove from storage");
+
+    const withTrackA = await sessions.addTrackToSession({
+      ownerId: OWNER,
+      sessionId: created.id,
+      trackId: trackA.id,
+    });
+    const withTrackB = await sessions.addTrackToSession({
+      ownerId: OWNER,
+      sessionId: created.id,
+      trackId: trackB.id,
+    });
+    const trackASessionId = withTrackA.tracks.find((entry) => entry.track.id === trackA.id)!.id;
+    const trackBSessionId = withTrackB.tracks.find((entry) => entry.track.id === trackB.id)!.id;
+
+    await removeAudioObject(missingSelectedStem.storageKey);
+    assert.equal(await storage.exists(missingSelectedStem.storageKey), false);
+    assert.equal((await db.db.select({ id: schema.stemAssets.id })
+      .from(schema.stemAssets)
+      .where(eq(schema.stemAssets.id, missingSelectedStem.id))).length, 1,
+    "the database stem row remains even though its private object is gone");
+    const partial = await sessions.sendSessionToStudio(OWNER, created.id, [trackASessionId, trackBSessionId]);
+    partialProjectId = partial.projectId;
+    assert.equal(partial.remixTrackCount, playableTrackAStems.length,
+      "the playable selected track still opens while the entry with a missing stem is refused");
+    const missingSelectedRefusal = partial.refused?.find((item) => item.title === trackB.title);
+    assert.ok(missingSelectedRefusal);
+    assert.match(missingSelectedRefusal.reason, /drums stem file is missing from private storage/i,
+      "the result identifies the track title and exact missing stem");
+    const partialTracks = await db.db.select().from(schema.remixTracks)
+      .where(eq(schema.remixTracks.remixSessionId, partial.remixSessionId));
+    assert.deepEqual(
+      new Set(partialTracks.map((entry) => entry.stemAssetId)),
+      new Set(playableTrackAStems.map((stem) => stem.id)),
+      "Studio lanes reference only existing audio objects from the playable selected track",
+    );
+    await db.db.delete(schema.projects).where(eq(schema.projects.id, partial.projectId));
+    partialProjectId = null;
+    await restoreDeletedAudioObjects();
+
+    await sessions.recordStemSwap({
+      ownerId: OWNER,
+      sessionId: created.id,
+      sessionTrackId: trackBSessionId,
+      stemType: "drums",
+      toTrackId: trackA.id,
+      atSeconds: 0,
+    });
+    await removeAudioObject(donorDrums.storageKey);
+    const projectCountBeforeMissingDonor = (await db.db.select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(eq(schema.projects.ownerId, OWNER))).length;
+    await assert.rejects(
+      () => sessions.sendSessionToStudio(OWNER, created.id, [trackBSessionId]),
+      (error: unknown) => error instanceof sessions.StemSwapRefusedError
+        && error.message.includes(trackB.title)
+        && error.message.includes(trackA.title)
+        && /drums live-swap audio .* missing from private storage/i.test(error.message)
+        && error.message.includes("No Studio project was created"),
+      "a missing live-donor object is named and must not create a broken Studio lane",
+    );
+    assert.equal(
+      (await db.db.select({ id: schema.projects.id }).from(schema.projects).where(eq(schema.projects.ownerId, OWNER))).length,
+      projectCountBeforeMissingDonor,
+      "a handoff with no usable selected entry does not create a project",
+    );
+    await restoreDeletedAudioObjects();
+
+    for (const stem of trackBStems) await removeAudioObject(stem.storageKey);
+    const projectCountBeforeAllMissing = (await db.db.select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(eq(schema.projects.ownerId, OWNER))).length;
+    await assert.rejects(
+      () => sessions.sendSessionToStudio(OWNER, created.id, [trackBSessionId]),
+      (error: unknown) => error instanceof sessions.StemSwapRefusedError
+        && error.message.startsWith("No selected session entry can be opened in Studio.")
+        && error.message.includes(trackB.title)
+        && error.message.includes("vocals")
+        && error.message.includes("drums")
+        && error.message.includes("No Studio project was created")
+        && error.message.includes("Restore or re-separate the named tracks in the Library"),
+      "an all-missing selection gives the UI its Library recovery message",
+    );
+    assert.equal(
+      (await db.db.select({ id: schema.projects.id }).from(schema.projects).where(eq(schema.projects.ownerId, OWNER))).length,
+      projectCountBeforeAllMissing,
+      "an all-missing selection does not create an empty Studio project",
+    );
+  } finally {
+    await restoreDeletedAudioObjects();
+    if (partialProjectId !== null) {
+      await db.db.delete(schema.projects).where(eq(schema.projects.id, partialProjectId));
+    }
+    const projectsAddedByTest = (await db.db
+      .select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(eq(schema.projects.ownerId, OWNER)))
+      .filter((project) => !projectsBefore.has(project.id));
+    for (const project of projectsAddedByTest) {
+      await db.db.delete(schema.projects).where(eq(schema.projects.id, project.id));
+    }
+    await sessions.deleteSession(OWNER, created.id);
   }
 });
 
