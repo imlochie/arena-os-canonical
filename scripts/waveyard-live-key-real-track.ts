@@ -9,7 +9,7 @@ import { LiveStemWsola } from "../lib/arena/src/lib/waveyard/live-stem-wsola";
 
 const SAMPLE_RATE = 48_000;
 const BLOCK = 128;
-const FFT_SIZE = 4096;
+const FFT_SIZE = 16_384;
 const shifts = [-11, -6, -3, 0, 3, 6, 11];
 const rateSegments = [
   { start: 0, end: 2, rate: 1 },
@@ -117,6 +117,15 @@ function shiftedChromaSimilarity(reference: number[], actual: number[], semitone
     actualEnergy += actual[expectedPitch] ** 2;
   }
   return dot / Math.max(1e-12, Math.sqrt(referenceEnergy * actualEnergy));
+}
+
+function bestChromaShift(reference: number[], actual: number[]) {
+  let best = { semitones: 0, similarity: -Infinity };
+  for (let semitones = -5; semitones <= 6; semitones += 1) {
+    const similarity = shiftedChromaSimilarity(reference, actual, semitones);
+    if (similarity > best.similarity) best = { semitones, similarity };
+  }
+  return best;
 }
 
 function logFrequencySpectrum(samples: Float32Array[], startFrame: number, endFrame: number) {
@@ -294,6 +303,40 @@ const inputInfo = {
 };
 const results = [];
 
+function validatePitchMeter() {
+  const frames = SAMPLE_RATE * 2;
+  const tone = Float32Array.from({ length: frames }, (_, frame) =>
+    Math.sin(2 * Math.PI * 440 * frame / SAMPLE_RATE) * 0.6);
+  const reference = [tone, Float32Array.from(tone)];
+  const observations = [-6, -3, 3, 6].map(semitones => {
+    const shifter = new LiveKeyShift(SAMPLE_RATE, 2);
+    shifter.setSemitones(semitones);
+    const shifted = [new Float32Array(frames), new Float32Array(frames)];
+    const inputBlock = [new Float32Array(BLOCK), new Float32Array(BLOCK)];
+    const outputBlock = [new Float32Array(BLOCK), new Float32Array(BLOCK)];
+    for (let offset = 0; offset < frames; offset += BLOCK) {
+      for (let channel = 0; channel < 2; channel += 1) {
+        inputBlock[channel].set(reference[channel].subarray(offset, offset + BLOCK));
+      }
+      shifter.process(inputBlock, outputBlock);
+      for (let channel = 0; channel < 2; channel += 1) {
+        shifted[channel].set(outputBlock[channel], offset);
+      }
+    }
+    const measured = estimateSemitoneShift(
+      logFrequencySpectrum(reference, SAMPLE_RATE / 2, frames - SAMPLE_RATE / 2),
+      logFrequencySpectrum(shifted, SAMPLE_RATE / 2, frames - SAMPLE_RATE / 2),
+    );
+    assert(
+      Math.abs(measured.semitones - semitones) <= 0.5,
+      `The spectrum meter must recognize its ${semitones}-semitone calibration tone; measured ${measured.semitones}.`,
+    );
+    return { expectedSemitones: semitones, ...measured };
+  });
+  return observations;
+}
+
+const pitchMeterCalibration = validatePitchMeter();
 for (const semitones of shifts) {
   const rendered = render(semitones, input);
   const intervals = rateSegments.map(segment => {
@@ -301,6 +344,7 @@ for (const semitones of shifts) {
     const end = Math.min(frameCount, Math.round(segment.end * SAMPLE_RATE));
     const referenceChroma = chroma(rendered.unshifted, start, end);
     const outputChroma = chroma(rendered.shifted, start, end);
+    const bestPitchClass = bestChromaShift(referenceChroma, outputChroma);
     const estimatedPitch = estimateSemitoneShift(
       logFrequencySpectrum(rendered.unshifted, start, end),
       logFrequencySpectrum(rendered.shifted, start, end),
@@ -311,7 +355,11 @@ for (const semitones of shifts) {
       rate: segment.rate,
       seconds: [segment.start, Math.min(segment.end, frameCount / SAMPLE_RATE)],
       spectralPitchClassSimilarity: shiftedChromaSimilarity(referenceChroma, outputChroma, semitones),
+      unshiftedPitchClassSimilarity: shiftedChromaSimilarity(referenceChroma, outputChroma, 0),
+      bestPitchClassShift: bestPitchClass.semitones,
+      bestPitchClassSimilarity: bestPitchClass.similarity,
       estimatedSemitoneShift: estimatedPitch.semitones,
+      semitoneError: Math.abs(estimatedPitch.semitones - semitones),
       spectralShiftSimilarity: estimatedPitch.similarity,
       metrics: {
         inputRms: before.rms,
@@ -328,6 +376,12 @@ for (const semitones of shifts) {
       },
     };
   });
+  const wholeReferenceChroma = chroma(rendered.unshifted, 0, frameCount);
+  const wholeOutputChroma = chroma(rendered.shifted, 0, frameCount);
+  const wholePitch = estimateSemitoneShift(
+    logFrequencySpectrum(rendered.unshifted, 0, frameCount),
+    logFrequencySpectrum(rendered.shifted, 0, frameCount),
+  );
   results.push({
     semitones,
     expectedFrequencyRatio: 2 ** (semitones / 12),
@@ -335,16 +389,32 @@ for (const semitones of shifts) {
     realTimeFactor: rendered.processingMs / 1000 / (frameCount / SAMPLE_RATE),
     frameCountPreserved: rendered.shifted.every(channel => channel.length === input[0].length),
     liveTempoChanges: rendered.rateChanges,
+    wholeExcerpt: {
+      spectralPitchClassSimilarity: shiftedChromaSimilarity(wholeReferenceChroma, wholeOutputChroma, semitones),
+      unshiftedPitchClassSimilarity: shiftedChromaSimilarity(wholeReferenceChroma, wholeOutputChroma, 0),
+      bestPitchClassShift: bestChromaShift(wholeReferenceChroma, wholeOutputChroma),
+      estimatedSemitoneShift: wholePitch.semitones,
+      semitoneError: Math.abs(wholePitch.semitones - semitones),
+      spectralShiftSimilarity: wholePitch.similarity,
+    },
     intervals,
   });
 }
 
 for (const result of results) {
   assert(result.frameCountPreserved, `${result.semitones}-semitone shift must keep the 10-second output clock intact.`);
+  assert(
+    result.wholeExcerpt.semitoneError <= 0.5,
+    `${result.semitones}-semitone shift did not measure within half a semitone across the excerpt.`,
+  );
   for (const interval of result.intervals) {
     assert(
       interval.spectralPitchClassSimilarity >= 0.9,
       `${result.semitones}-semitone shift missed its measured pitch class at ${interval.rate}x: ${interval.spectralPitchClassSimilarity}`,
+    );
+    assert(
+      interval.semitoneError <= 0.5,
+      `${result.semitones}-semitone shift was not measurable at ${interval.rate}x (measured ${interval.estimatedSemitoneShift}).`,
     );
     assert(
       interval.metrics.loudnessDeltaDb >= -3 && interval.metrics.loudnessDeltaDb <= 3,
@@ -361,4 +431,4 @@ for (const result of results) {
   }
 }
 
-console.log(JSON.stringify({ report: "waveyard-live-key-real-track-v1", input: inputInfo, results }, null, 2));
+console.log(JSON.stringify({ report: "waveyard-live-key-real-track-v1", input: inputInfo, pitchMeterCalibration, results }, null, 2));
