@@ -49,6 +49,7 @@ const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-onl
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
 const keyMatchingOnly = process.argv.includes("--key-matching-only");
 const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
+const disableBroadcastChannel = process.argv.includes("--disable-broadcast-channel");
 const crossTabStemMixOnly = process.argv.includes("--cross-tab-stem-mix-only");
 let donorSwapSequence = 0;
 let failNextDonorRestore = false;
@@ -251,11 +252,39 @@ try {
   const context = await browser.newContext({ serviceWorkers: "block" });
   let page = await context.newPage();
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
-  await context.addInitScript(({ fixtureSessionId, probeAutoFades }) => {
+  await context.addInitScript(({ fixtureSessionId, probeAutoFades, disableBroadcastChannel }) => {
+    if (disableBroadcastChannel) {
+      Object.defineProperty(window, "BroadcastChannel", { configurable: true, value: undefined });
+    }
     window.audioProbe = {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [], decodedAudio: [],
       combinedInputs: [], combinedOutputs: [], playStarts: [],
-      workletLoads: [], workletSeeks: [], keyShifts: [], transportMessages: [], contexts: [],
+      workletLoads: [], workletSeeks: [], keyShifts: [], transportMessages: [],
+      storageTransportMessages: [], storageTransportReceives: [], contexts: [],
+    };
+    window.addEventListener("storage", event => {
+      if (event.key !== "waveyard:queue-change" || event.newValue === null) return;
+      try {
+        const message = JSON.parse(event.newValue);
+        if (message?.transport) window.audioProbe.storageTransportReceives.push(message);
+      } catch {
+        // The app independently ignores malformed storage events.
+      }
+    });
+    const nativeStorageSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === "waveyard:queue-change") {
+        try {
+          const message = JSON.parse(String(value));
+          if (message?.transport) {
+            window.audioProbe.transportMessages.push(message);
+            window.audioProbe.storageTransportMessages.push(message);
+          }
+        } catch {
+          // The app independently ignores malformed storage events.
+        }
+      }
+      return nativeStorageSetItem.call(this, key, value);
     };
     if (probeAutoFades) {
       const nativePlay = HTMLMediaElement.prototype.play;
@@ -439,7 +468,11 @@ try {
         }
       };
     }
-  }, { fixtureSessionId: sessionId, probeAutoFades: automaticFadesOnly });
+  }, {
+    fixtureSessionId: sessionId,
+    probeAutoFades: automaticFadesOnly,
+    disableBroadcastChannel,
+  });
   let failAsset = null;
   let failedAssetRequests = 0;
   const liveSwapRequestOrder = [];
@@ -2712,6 +2745,11 @@ try {
   const secondPage = await context.newPage();
   secondPage.on("pageerror", error => console.log("SECOND_PAGE_ERROR", error.stack));
   await secondPage.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  if (disableBroadcastChannel) {
+    assert.ok(await Promise.all([firstPage, secondPage].map(targetPage =>
+      targetPage.evaluate(() => typeof BroadcastChannel === "undefined"),
+    )).then(results => results.every(Boolean)), "the speed-sync regression uses the storage fallback in both pages");
+  }
   await secondPage.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].length === 4 &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.readyState === 4));
   await toggle();
@@ -2774,6 +2812,25 @@ try {
   "a mirror-tab speed command updates the audible owner without duplicating playback");
   assert.ok([...speedOwnership[0].rates, ...speedOwnership[1].rates].every(rate => Math.abs(rate - 0.8) < 0.001),
     "the requested 0.80× rate reaches every original stem in both tabs");
+  if (disableBroadcastChannel) {
+    const storageSpeedEvidence = await Promise.all([firstPage, secondPage].map(targetPage =>
+      targetPage.evaluate(() => ({
+        sent: window.audioProbe.storageTransportMessages
+          .filter(message => message.transport?.action === "speed")
+          .map(message => message.transport.playbackRate),
+        received: window.audioProbe.storageTransportReceives
+          .filter(message => message.transport?.action === "speed")
+          .map(message => message.transport.playbackRate),
+      })),
+    ));
+    assert.ok(storageSpeedEvidence[0].sent.some(rate => Math.abs(rate - 1.1) < 0.001)
+      && storageSpeedEvidence[0].sent.some(rate => Math.abs(rate - 0.8) < 0.001)
+      && storageSpeedEvidence[1].sent.some(rate => Math.abs(rate - 0.8) < 0.001),
+    `speed commands from both pages must use the storage fallback: ${JSON.stringify(storageSpeedEvidence)}`);
+    assert.ok(storageSpeedEvidence[0].received.some(rate => Math.abs(rate - 0.8) < 0.001)
+      && storageSpeedEvidence[1].received.some(rate => Math.abs(rate - 1.1) < 0.001),
+    `both pages must receive speed changes through storage events: ${JSON.stringify(storageSpeedEvidence)}`);
+  }
 
   const ownerSpeedControl = await firstPage.evaluate(rate =>
     window.audioProbe.transportMessages
@@ -2783,7 +2840,7 @@ try {
       .at(-1) ?? null,
   0.8);
   assert.ok(ownerSpeedControl, "the audible owner republishes a mirror-requested speed control");
-  await secondPage.evaluate(control => {
+  const staleHeartbeatId = await firstPage.evaluate(({ control, useStorageFallback }) => {
     const stale = JSON.parse(JSON.stringify(control));
     stale.id = `stale-heartbeat-${crypto.randomUUID()}`;
     stale.transport = {
@@ -2793,11 +2850,22 @@ try {
       playbackRate: 1,
       updatedAt: stale.transport.updatedAt - 1,
     };
-    const channel = new BroadcastChannel("waveyard:queue-sync");
-    channel.postMessage(stale);
-    channel.close();
-  }, ownerSpeedControl);
-  await new Promise(resolve => setTimeout(resolve, 100));
+    if (useStorageFallback) {
+      localStorage.setItem("waveyard:queue-change", JSON.stringify(stale));
+    } else {
+      const channel = new BroadcastChannel("waveyard:queue-sync");
+      channel.postMessage(stale);
+      channel.close();
+    }
+    return stale.id;
+  }, { control: ownerSpeedControl, useStorageFallback: disableBroadcastChannel });
+  if (disableBroadcastChannel) {
+    await secondPage.waitForFunction(id =>
+      window.audioProbe.storageTransportReceives.some(message => message.id === id),
+    staleHeartbeatId);
+  } else {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   await Promise.all([
     waitForSessionRateInPage(firstPage, 0.8, 96),
     waitForSessionRateInPage(secondPage, 0.8, 96),
