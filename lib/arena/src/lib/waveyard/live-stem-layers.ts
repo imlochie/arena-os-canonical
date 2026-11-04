@@ -563,7 +563,17 @@ export class LiveStemLayers {
   }
 
   private async readAssetBytes(url: string, signal: AbortSignal) {
-    if (this.assetPool) return this.assetPool.readBytes(url, signal);
+    if (this.assetPool) {
+      try {
+        return await this.assetPool.readBytes(url, signal);
+      } catch (error) {
+        const status = error instanceof Error
+          ? /^Audio asset download failed \((\d+)\)\.$/.exec(error.message)?.[1]
+          : undefined;
+        if (status) throw new Error(`Stem download failed (${status}).`);
+        throw error;
+      }
+    }
     const prefetched = this.prefetchedAssets.get(url);
     if (prefetched) {
       // Refresh LRU order but keep the original expiry; repeated reads must not

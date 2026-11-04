@@ -2043,7 +2043,7 @@ try {
   ));
   assert(donorVocalPeak > originalVocalPeak * 2, "the live vocal meter must reflect the donor audio, not just the selected label");
   await page.waitForFunction(({ assetId, after }) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && audio.currentTime > after + 0.2;
   }, { assetId: liveVocalsAssetId, after: clockBeforeSwap }, { timeout: 5_000 });
   const clockAfterSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
