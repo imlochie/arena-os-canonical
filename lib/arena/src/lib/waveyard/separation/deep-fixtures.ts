@@ -46,6 +46,8 @@ export type StubDeepOptions = {
   /** Non-zero exit with this stderr instead of writing stems. */
   runStderr?: string;
   runExitCode?: number;
+  /** Spawn a short-lived child or an uncooperative process tree for lifecycle tests. */
+  processTree?: "complete" | "ignore-term";
   /** Where the dummy checkpoint goes (default `<directory>/models`). */
   modelsDir?: string;
   /** Write the dummy checkpoint (default true; false = "not prepared"). */
@@ -133,6 +135,39 @@ function fakeDemucsMain(options: Required<Pick<StubDeepOptions, "stems" | "empty
   const failure = options.runStderr !== undefined
     ? `    sys.stderr.write(${pythonString(options.runStderr)} + "\\n")\n    sys.stderr.flush()\n    sys.exit(${options.runExitCode ?? 1})\n`
     : "    pass\n";
+  const processTree = options.processTree === undefined
+    ? ""
+    : options.processTree === "complete"
+      ? `    import subprocess
+    child_code = ${pythonString(
+      "import os, sys, time\n" +
+        "time.sleep(0.1)\n" +
+        "open(os.path.join(sys.argv[1], 'child-complete'), 'w').write('done')\n",
+    )}
+    child = subprocess.Popen([sys.executable, "-c", child_code, out])
+    with open(os.path.join(out, "parent.pid"), "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+    child.wait()
+`
+      : `    import signal
+    import subprocess
+    import time
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    child_code = ${pythonString(
+      "import os, signal, sys, time\n" +
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" +
+        "open(os.path.join(sys.argv[1], 'child.pid'), 'w').write(str(os.getpid()))\n" +
+        "time.sleep(2.5)\n" +
+        "open(os.path.join(sys.argv[1], 'late-write'), 'w').write('late')\n",
+    )}
+    child = subprocess.Popen([sys.executable, "-c", child_code, out])
+    with open(os.path.join(out, "parent.pid"), "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+    with open(os.path.join(out, "child-process.pid"), "w", encoding="utf-8") as handle:
+        handle.write(str(child.pid))
+    while True:
+        time.sleep(0.05)
+`;
   return `# Fake Demucs CLI (deep-fixtures.ts) — the same argv contract as \`python -m demucs\`.
 import os
 import shutil
@@ -193,6 +228,7 @@ def main(argv):
             sys.stderr.write("fake demucs: no such file %s\\n" % track)
             return 2
 ${failure}
+${processTree}
     track_dir = os.path.join(out, name, "track")
     os.makedirs(track_dir, exist_ok=True)
     for stem in STEMS:

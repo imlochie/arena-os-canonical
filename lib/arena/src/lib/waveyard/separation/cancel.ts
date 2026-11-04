@@ -3,7 +3,6 @@ import { and, eq, ne } from "drizzle-orm";
 import { processingJobs } from "@workspace/db/waveyardSchema";
 import type { LocalJobBroker } from "../worker-local/broker";
 import { LOCAL_JOB_CANCEL_WAIT_MS } from "../worker-local/broker";
-import { isDeepSeparationMode } from "./modes";
 import type { ClaimDb, ProcessingJobRow } from "./claim";
 
 export type SeparationCancelResult =
@@ -13,8 +12,7 @@ export type SeparationCancelResult =
   | { kind: "not-separation"; job: ProcessingJobRow }
   | { kind: "not-active"; job: ProcessingJobRow }
   | { kind: "worker-unavailable"; job: ProcessingJobRow }
-  | { kind: "worker-not-running"; job: ProcessingJobRow }
-  | { kind: "unsupported-model"; job: ProcessingJobRow };
+  | { kind: "worker-not-running"; job: ProcessingJobRow };
 
 type CancellationDb = Pick<ClaimDb, "select" | "update">;
 
@@ -53,7 +51,6 @@ export async function requestSeparationCancellation(
     return terminalResult(job);
   }
   if (!localWorkerAvailable) return { kind: "worker-unavailable", job };
-  if (isDeepSeparationMode(job.model)) return { kind: "unsupported-model", job };
 
   if (job.status === "queued") {
     const [cancelled] = await database

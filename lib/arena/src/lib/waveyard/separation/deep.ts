@@ -373,6 +373,8 @@ export type DeepRunRequest = {
   onProgress?: (percent: number) => void;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** Aborted when the owner stops this durable separation attempt. */
+  signal?: AbortSignal;
 };
 
 export type DeepRunStem = { stemType: DeepStemType; path: string; bytes: number };
@@ -389,24 +391,167 @@ export type DeepRunResult = {
   stems: DeepRunStem[];
 };
 
-type SpawnedOutcome = { status: number | null; stdout: string; stderr: string; error: Error | null };
+export class DeepSeparationCancelledError extends Error {
+  constructor() {
+    super("Deep separation was cancelled.");
+    this.name = "DeepSeparationCancelledError";
+  }
+}
+
+type SpawnedOutcome = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error: Error | null;
+  cancelled?: boolean;
+  timedOut?: boolean;
+};
+
+const PROCESS_STOP_GRACE_MS = 750;
+const PROCESS_EXIT_CONFIRM_MS = 5_000;
+const WINDOWS_TASKKILL_TIMEOUT_MS = 4_000;
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
+}
+
+function processGroupExists(processGroupId: number): boolean {
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    // EPERM still means the group exists; this process just cannot signal it.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processGroupExists(processGroupId)) return true;
+    await wait(25);
+  }
+  return !processGroupExists(processGroupId);
+}
+
+function signalProcessGroup(processGroupId: number, signal: NodeJS.Signals): void {
+  try {
+    // The run is spawned detached on POSIX, so its PID is also the ID of its
+    // private process group. Never signal the API server's own process group.
+    process.kill(-processGroupId, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+function terminateWindowsProcessTree(processId: number): Promise<boolean> {
+  return new Promise((resolveResult) => {
+    const killer = spawn("taskkill.exe", ["/PID", String(processId), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    let settled = false;
+    const finish = (success: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveResult(success);
+    };
+    const timer = setTimeout(() => {
+      if (killer.pid !== undefined) killer.kill("SIGKILL");
+      finish(false);
+    }, WINDOWS_TASKKILL_TIMEOUT_MS);
+    killer.once("error", () => finish(false));
+    killer.once("close", (code) => finish(code === 0));
+  });
+}
+
+async function stopOwnedProcessTree(child: ReturnType<typeof spawn>): Promise<void> {
+  const processId = child.pid;
+  if (processId === undefined) return;
+  if (process.platform === "win32") {
+    // Windows does not support POSIX negative-PID process-group signals.
+    // taskkill's /T is scoped to this exact Demucs PID and its descendants.
+    if (!(await terminateWindowsProcessTree(processId))) {
+      throw new Error(`Could not confirm termination of Windows deep-separation process tree ${processId}.`);
+    }
+    return;
+  }
+
+  if (!processGroupExists(processId)) return;
+  signalProcessGroup(processId, "SIGTERM");
+  if (await waitForProcessGroupExit(processId, PROCESS_STOP_GRACE_MS)) return;
+  signalProcessGroup(processId, "SIGKILL");
+  if (!(await waitForProcessGroupExit(processId, PROCESS_EXIT_CONFIRM_MS))) {
+    throw new Error(`Deep separation process group ${processId} did not exit after SIGKILL.`);
+  }
+}
 
 function runPython(
   bin: string,
   args: string[],
   env: NodeJS.ProcessEnv,
-  options: { timeoutMs: number; onStderr?: (chunk: string) => void; onStdout?: (chunk: string) => void },
+  options: {
+    timeoutMs: number;
+    signal?: AbortSignal;
+    onStderr?: (chunk: string) => void;
+    onStdout?: (chunk: string) => void;
+  },
 ): Promise<SpawnedOutcome> {
   return new Promise((resolvePromise) => {
-    const child = spawn(bin, args, { env: childEnv(env), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(bin, args, {
+      env: childEnv(env),
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, options.timeoutMs);
+    let cancelled = false;
+    let closeStatus: number | null | undefined;
+    let spawnError: Error | null = null;
+    let stopPromise: Promise<void> | null = null;
+    let stopConfirmed = false;
+    let stopError: Error | null = null;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (settled || closeStatus === undefined) return;
+      if (stopPromise !== null && !stopConfirmed) return;
+      if (stopError !== null) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", onAbort);
+      resolvePromise({
+        status: closeStatus,
+        stdout,
+        stderr,
+        error: timedOut
+          ? new Error(`timed out after at least ${Math.max(1, Math.ceil(options.timeoutMs / 1000))}s`)
+          : spawnError,
+        cancelled,
+        timedOut,
+      });
+    };
+    const requestStop = (reason: "cancelled" | "timeout" | "finished") => {
+      if (settled || stopPromise !== null) return;
+      if (reason === "cancelled") cancelled = true;
+      if (reason === "timeout") timedOut = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      stopPromise = stopOwnedProcessTree(child);
+      void stopPromise.then(
+        () => {
+          stopConfirmed = true;
+          finish();
+        },
+        (error: unknown) => {
+          stopError = error instanceof Error ? error : new Error(String(error));
+        },
+      );
+    };
+    const onAbort = () => requestStop("cancelled");
     child.stdout?.on("data", (data: Buffer) => {
       const text = data.toString();
       stdout += text;
@@ -417,21 +562,33 @@ function runPython(
       stderr += text;
       options.onStderr?.(text);
     });
-    const finish = (outcome: SpawnedOutcome) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolvePromise(outcome);
-    };
-    child.once("error", (error: Error) => finish({ status: null, stdout, stderr, error }));
-    child.once("close", (code: number | null) =>
-      finish({
-        status: code,
-        stdout,
-        stderr,
-        error: timedOut ? new Error(`timed out after ${Math.round(options.timeoutMs / 1000)}s`) : null,
-      }),
-    );
+    child.once("error", (error: Error) => {
+      spawnError = error;
+      closeStatus = null;
+      finish();
+    });
+    child.once("exit", () => {
+      // Do not return a successful run while a child left behind in the
+      // private group can still write into this attempt's output directory.
+      if (process.platform !== "win32" && child.pid !== undefined && processGroupExists(child.pid)) {
+        requestStop("finished");
+      }
+    });
+    child.once("close", (code: number | null) => {
+      closeStatus = code;
+      if (
+        stopPromise === null &&
+        process.platform !== "win32" &&
+        child.pid !== undefined &&
+        processGroupExists(child.pid)
+      ) {
+        requestStop("finished");
+      }
+      finish();
+    });
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    timeout = setTimeout(() => requestStop("timeout"), options.timeoutMs);
+    if (options.signal?.aborted) onAbort();
   });
 }
 
@@ -440,8 +597,10 @@ async function resolveTorchDevice(
   env: NodeJS.ProcessEnv,
   requested: "auto" | "cuda",
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<"cpu" | "cuda"> {
-  const outcome = await runPython(candidate.bin, [...candidate.prefixArgs, "-c", TORCH_SNIPPET], env, { timeoutMs });
+  const outcome = await runPython(candidate.bin, [...candidate.prefixArgs, "-c", TORCH_SNIPPET], env, { timeoutMs, signal });
+  if (outcome.cancelled || signal?.aborted) throw new DeepSeparationCancelledError();
   const parsed = outcome.status === 0 ? parseJsonLine(outcome.stdout) : null;
   if (parsed === null) {
     throw new SeparationUnavailableError(
@@ -488,6 +647,7 @@ async function collectWavFiles(directory: string): Promise<Map<string, string>> 
  * The caller persists; this function never touches the database.
  */
 export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRunResult> {
+  if (request.signal?.aborted) throw new DeepSeparationCancelledError();
   const env = request.env ?? process.env;
   const status = probeDeepEngine({ env });
   if (!status.prepared) throw new SeparationUnavailableError(status.reason);
@@ -499,7 +659,10 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   const requestedDevice = request.requestedDevice ?? "auto";
   const timeoutMs = request.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   const resolvedDevice =
-    requestedDevice === "cpu" ? "cpu" : await resolveTorchDevice(candidate, env, requestedDevice, PROBE_TIMEOUT_MS);
+    requestedDevice === "cpu"
+      ? "cpu"
+      : await resolveTorchDevice(candidate, env, requestedDevice, PROBE_TIMEOUT_MS, request.signal);
+  if (request.signal?.aborted) throw new DeepSeparationCancelledError();
 
   await mkdir(request.outputDirectory, { recursive: true });
   // `--repo <models dir>` makes Demucs read ONLY that local repository, and
@@ -523,6 +686,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   let lastPercent = -1;
   const outcome = await runPython(candidate.bin, args, env, {
     timeoutMs,
+    signal: request.signal,
     onStderr: (chunk) => {
       // Demucs renders its progress on stderr with carriage returns; forward
       // the engine's own percent, at most once per whole percent.
@@ -535,6 +699,10 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
     },
   });
 
+  if (outcome.cancelled || request.signal?.aborted) throw new DeepSeparationCancelledError();
+  if (outcome.timedOut) {
+    throw new Error(`Demucs timed out (${outcome.error?.message ?? "the run exceeded its time limit"}).`);
+  }
   const tail = (outcome.stderr || outcome.stdout).trim().slice(-2000);
   if (outcome.error !== null && outcome.status === null) {
     throw new SeparationUnavailableError(`The deep engine could not run (${outcome.error.message}). ${deepPrepareHint(env)}`);
@@ -573,6 +741,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
         (tail ? `Engine tail: ${tail.slice(-600)}` : ""),
     );
   }
+  if (request.signal?.aborted) throw new DeepSeparationCancelledError();
 
   return {
     engine: "demucs",

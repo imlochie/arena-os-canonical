@@ -20,6 +20,7 @@
 
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -35,6 +36,7 @@ import {
   deepPrepareHint,
   probeDeepEngine,
   resetDeepProbeCacheForTests,
+  DeepSeparationCancelledError,
   runDeepSeparation,
 } from "./deep";
 import { SeparationUnavailableError } from "./session";
@@ -76,6 +78,34 @@ async function setup(t: TestContext, options: StubDeepOptions = {}) {
       await rm(directory, { recursive: true, force: true });
     },
   };
+}
+
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await readFile(path, "utf8").catch(() => null);
+    if (value !== null) return value.trim();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
+  throw new Error(`Timed out waiting for test marker ${path}`);
+}
+
+async function waitForProcessGroupExit(groupId: number, timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-groupId, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
+  try {
+    process.kill(-groupId, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
 }
 
 test("unprepared machine (no Demucs): the probe reports exactly why, and the run refuses honestly", async (t) => {
@@ -339,6 +369,110 @@ test("a failing engine surfaces its own tail — never a silent success", async 
         return true;
       },
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("normal Demucs completion waits for its child in the private process group", async (t) => {
+  const f = await setup(t, { demucsVersion: "4.0.1", processTree: "complete" });
+  if (f === null) return;
+  try {
+    const outputDirectory = join(f.directory, "normal-tree-output");
+    const result = await runDeepSeparation({
+      inputPath: f.fixture,
+      outputDirectory,
+      requestedDevice: "cpu",
+      env: f.env,
+    });
+    assert.equal(result.stems.length, DEEP_STEM_TYPES.length);
+    assert.equal(await readFile(join(outputDirectory, "child-complete"), "utf8"), "done");
+  } finally {
+    await f.close();
+  }
+});
+
+test("stopping deep separation kills only its process group and blocks late output writes", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX process-group proof runs on the Linux CI runner.");
+    return;
+  }
+  const f = await setup(t, { demucsVersion: "4.0.1", processTree: "ignore-term" });
+  if (f === null) return;
+  const outputDirectory = join(f.directory, "cancel-tree-output");
+  const controller = new AbortController();
+  let running: Promise<unknown> | undefined;
+  let unrelated: ReturnType<typeof spawn> | undefined;
+  try {
+    unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    await new Promise<void>((resolveSpawn, rejectSpawn) => {
+      unrelated!.once("spawn", () => resolveSpawn());
+      unrelated!.once("error", rejectSpawn);
+    });
+    const unrelatedPid = unrelated.pid;
+    assert.ok(unrelatedPid);
+
+    running = runDeepSeparation({
+      inputPath: f.fixture,
+      outputDirectory,
+      requestedDevice: "cpu",
+      env: f.env,
+      signal: controller.signal,
+    });
+    const parentPid = Number(await waitForFile(join(outputDirectory, "parent.pid")));
+    const childPid = Number(await waitForFile(join(outputDirectory, "child.pid")));
+    assert.ok(parentPid > 0);
+    assert.ok(childPid > 0);
+    controller.abort();
+    await assert.rejects(running, DeepSeparationCancelledError);
+    assert.equal(await waitForProcessGroupExit(parentPid), true, "the complete Demucs process group exited before cancellation resolved");
+    assert.doesNotThrow(() => process.kill(unrelatedPid, 0), "an unrelated process remains alive");
+
+    // The fake child would write this after 2.5 seconds if any process from
+    // the cancelled attempt were still running.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 2_700));
+    await assert.rejects(readFile(join(outputDirectory, "late-write")), { code: "ENOENT" });
+  } finally {
+    if (!controller.signal.aborted) controller.abort();
+    await running?.catch(() => undefined);
+    if (unrelated?.pid !== undefined) {
+      try {
+        process.kill(-unrelated.pid, "SIGKILL");
+      } catch {
+        // The test process may already have exited.
+      }
+    }
+    await f.close();
+  }
+});
+
+test("deep-run timeout waits for the process tree to exit before returning", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX process-group proof runs on the Linux CI runner.");
+    return;
+  }
+  const f = await setup(t, { demucsVersion: "4.0.1", processTree: "ignore-term" });
+  if (f === null) return;
+  const outputDirectory = join(f.directory, "timeout-tree-output");
+  try {
+    const running = runDeepSeparation({
+      inputPath: f.fixture,
+      outputDirectory,
+      requestedDevice: "cpu",
+      env: f.env,
+      timeoutMs: 1_000,
+    });
+    const parentPid = Number(await waitForFile(join(outputDirectory, "parent.pid")));
+    const childPid = Number(await waitForFile(join(outputDirectory, "child.pid")));
+    assert.ok(parentPid > 0);
+    assert.ok(childPid > 0);
+    await assert.rejects(running, /Demucs timed out/);
+    assert.equal(await waitForProcessGroupExit(parentPid), true, "timeout is not reported until the owned group exits");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 2_700));
+    await assert.rejects(readFile(join(outputDirectory, "late-write")), { code: "ENOENT" });
   } finally {
     await f.close();
   }

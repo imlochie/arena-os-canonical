@@ -92,6 +92,23 @@ test("resolveStemAvailability: separation pending = processing", () => {
   assert.match(availability.reason, /running/);
 });
 
+test("resolveStemAvailability exposes the stop control for active deep separation", () => {
+  const availability = resolveStemAvailability({
+    stems: [],
+    separationPending: true,
+    separationJob: {
+      id: "job-deep-active",
+      model: "deep_6s",
+      status: "processing",
+      stage: "separating",
+      errorCode: null,
+    },
+  });
+  assert.equal(availability.status, "processing");
+  if (availability.status !== "processing") throw new Error("Expected an active deep separation.");
+  assert.equal(availability.cancelJobId, "job-deep-active");
+});
+
 test("resolveStemAvailability distinguishes queued separation from active work", () => {
   const queued = resolveStemAvailability({
     stems: [],

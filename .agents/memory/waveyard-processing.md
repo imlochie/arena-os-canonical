@@ -15,6 +15,12 @@ Keep only one native separation model open at a time and bound its CPU threading
 
 **How to apply:** Preserve sequential session lifetime, release on errors too, and measure real full-song memory/performance before increasing parallelism. A short synthetic musical fixture establishes pipeline execution, not subjective separation quality.
 
+Deep subprocess cancellation must own one process group per attempt, stop descendants as well as the Python parent, and wait for confirmed exit before the job becomes terminal. Remove only that attempt's unpublished temporary outputs.
+
+**Why:** Killing only the parent can leave a child writing into output folders after the UI reports a stop, while an unsafe cleanup can damage the original track, prior stems, or saved session references.
+
+**How to apply:** Isolate each external engine run in its own process group, escalate termination only within that group, propagate the broker abort signal, and verify source bytes, prior outputs, session pointers, and a clean retry after cancellation.
+
 Treat a live stem-layer instance as terminal once disposed. Abort signal-aware downloads and tempo work, but still check after non-cancellable decode/worklet awaits before installing audio or retaining buffers.
 
 **Why:** `decodeAudioData` cannot be aborted, and worklet setup can complete after the session closes; removing cache entries alone does not prevent late playback or orphaned sources.

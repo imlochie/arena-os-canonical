@@ -33,11 +33,6 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         error: "The local worker does not own this active job, so it was not marked cancelled.",
       }, { status: 409 });
     }
-    if (result.kind === "unsupported-model") {
-      return Response.json({
-        error: "This deep-separation engine does not expose a safe stop control yet. The job was not changed.",
-      }, { status: 409 });
-    }
     if (result.kind === "stopping") {
       return Response.json({
         state: "stopping",

@@ -5,7 +5,7 @@ import { fork, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import path, { basename, join } from "node:path";
+import path, { basename, dirname, join } from "node:path";
 import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -23,9 +23,23 @@ import {
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { clearResolvedToolCache, requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
-import { processingJobs, projects, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
+import {
+  listenSessionTracks,
+  listenSessions,
+  processingJobs,
+  projects,
+  sourceAssets,
+  stemAssets,
+  tracks,
+  waveformAssets,
+  waveformJobs,
+} from "@workspace/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
-import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@workspace/arena/lib/waveyard/separation/deep";
+import {
+  DEEP_MODEL_SIGNATURE,
+  resetDeepProbeCacheForTests,
+  runDeepSeparation,
+} from "@workspace/arena/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@workspace/arena/lib/waveyard/separation/deep-fixtures";
 import { DEEP_STEM_TYPES } from "@workspace/arena/lib/waveyard/separation/modes";
 import { claimProcessingJob } from "@workspace/arena/lib/waveyard/separation/claim";
@@ -2885,6 +2899,197 @@ test("deep seam: the decoded 44.1 kHz PCM is the engine input, no MDX engine ope
       assert.ok(snr > 60, `${stemType} persists exactly what the engine produced (SNR ${snr.toFixed(1)} dB)`);
     }
   } finally {
+    await f.close();
+  }
+});
+
+test("deep cancellation waits for Demucs exit, preserves saved playback, and allows a clean retry", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("The process-group integration assertion is exercised on Linux.");
+    return;
+  }
+  const f = await fixture({ model: "deep_6s" });
+  const firstEngineDir = await mkdtemp(join(tmpdir(), "wy-deep-cancel-engine-"));
+  const retryEngineDir = await mkdtemp(join(tmpdir(), "wy-deep-retry-engine-"));
+  let broker: LocalJobBroker | undefined;
+  let activeJobId = f.job.id;
+  let outputDirectory: string | null = null;
+  try {
+    const firstEngine = await writeStubDeepEngine(firstEngineDir, f.sourcePath, {
+      demucsVersion: "4.0.1",
+      processTree: "ignore-term",
+    });
+    const retryEngine = await writeStubDeepEngine(retryEngineDir, f.sourcePath, { demucsVersion: "4.0.1" });
+    if (firstEngine === null || retryEngine === null) {
+      t.skip(NO_TEST_PYTHON);
+      return;
+    }
+
+    const originalChecksum = await checksumFile(f.sourcePath);
+    const [priorJob] = await f.database
+      .insert(processingJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        type: "separation",
+        model: "deep_6s",
+        requestedDevice: "auto",
+        status: "complete",
+        stage: "complete",
+        idempotencyKey: `prior-deep-cancel:${f.source.id}`,
+        completedAt: new Date(),
+      })
+      .returning();
+    const [priorStem] = await f.database
+      .insert(stemAssets)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        separationJobId: priorJob.id,
+        stemType: "vocals",
+        engine: "mdx",
+        model: "deep_6s",
+        modelVersion: KIM.sha256,
+        storageKey: f.source.storageKey,
+        checksumSha256: f.source.checksumSha256,
+        durationSeconds: f.source.durationSeconds,
+        sampleRate: f.source.sampleRate,
+        channels: f.source.channels,
+        codec: f.source.codec,
+        format: "wav",
+        fileSizeBytes: f.source.fileSizeBytes,
+      })
+      .returning();
+    const [track] = await f.database
+      .insert(tracks)
+      .values({
+        ownerId: f.project.ownerId,
+        sourceChecksumSha256: f.source.checksumSha256,
+        title: "Source retained during deep cancellation",
+        artist: "",
+        album: "",
+        sourceAssetId: f.source.id,
+        projectId: f.project.id,
+        durationSeconds: Math.round(f.source.durationSeconds),
+      })
+      .returning();
+    const [session] = await f.database
+      .insert(listenSessions)
+      .values({ ownerId: f.project.ownerId, name: "Deep cancellation playback" })
+      .returning();
+    const [sessionEntry] = await f.database
+      .insert(listenSessionTracks)
+      .values({
+        sessionId: session.id,
+        trackId: track.id,
+        position: 0,
+        stemMix: "{}",
+        transition: "{}",
+      })
+      .returning();
+    await f.database
+      .update(listenSessions)
+      .set({ currentTrackId: sessionEntry.id, positionSeconds: 1.25 })
+      .where(eq(listenSessions.id, session.id));
+
+    let engineForAttempt = firstEngine;
+    let notifyDeepStarted!: () => void;
+    const deepStarted = new Promise<void>((resolveStarted) => {
+      notifyDeepStarted = resolveStarted;
+    });
+    const runDeep: NonNullable<SeparationHandlerDeps["runDeep"]> = async (request) => {
+      outputDirectory = request.outputDirectory;
+      notifyDeepStarted();
+      resetDeepProbeCacheForTests();
+      return runDeepSeparation({ ...request, env: engineForAttempt.env });
+    };
+    broker = new LocalJobBroker();
+    broker.registerCancellable(SEPARATION_QUEUE, async (payload, { signal }) => {
+      await handleSeparationJob(payload, { db: f.database, signal, runDeep });
+    });
+
+    await broker.submit(SEPARATION_QUEUE, f.job.id, payloadOf(f));
+    await deepStarted;
+    const deadline = Date.now() + 10_000;
+    while (
+      Date.now() < deadline &&
+      (outputDirectory === null ||
+        !existsSync(join(outputDirectory, "parent.pid")) ||
+        !existsSync(join(outputDirectory, "child.pid")))
+    ) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+    }
+    assert.ok(outputDirectory, "the worker reached the real deep runner");
+    assert.ok(existsSync(join(outputDirectory, "parent.pid")), "the Demucs process started");
+    assert.ok(existsSync(join(outputDirectory, "child.pid")), "its child process started");
+
+    const stopped = await requestSeparationCancellation(f.database, f.job.id, broker, true);
+    assert.equal(stopped.kind, "cancelled", "the job is terminal only after its handler and process group exit");
+    assert.equal(await broker.drain(5_000), true);
+    assert.equal(existsSync(dirname(outputDirectory)), false, "only this attempt's temporary output tree is removed");
+
+    const [cancelledJob] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, f.job.id));
+    assert.equal(cancelledJob.status, "cancelled");
+    assert.equal(
+      (await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id))).length,
+      0,
+      "partial outputs from the cancelled attempt are never published",
+    );
+    const [retainedStem] = await f.database
+      .select()
+      .from(stemAssets)
+      .where(eq(stemAssets.id, priorStem.id));
+    assert.ok(retainedStem, "a previously saved stem remains referenced");
+    assert.equal(await checksumFile(f.sourcePath), originalChecksum, "original source bytes remain unchanged");
+    const [sessionAfterCancel] = await f.database
+      .select()
+      .from(listenSessions)
+      .where(eq(listenSessions.id, session.id));
+    const [entryAfterCancel] = await f.database
+      .select()
+      .from(listenSessionTracks)
+      .where(eq(listenSessionTracks.id, sessionEntry.id));
+    assert.equal(sessionAfterCancel.currentTrackId, sessionEntry.id);
+    assert.equal(sessionAfterCancel.positionSeconds, 1.25);
+    assert.equal(entryAfterCancel.trackId, track.id);
+
+    await new Promise((resolveWait) => setTimeout(resolveWait, 2_700));
+    assert.equal(existsSync(join(outputDirectory, "late-write")), false, "the cancelled process tree cannot write after cleanup");
+
+    const retry = await claimProcessingJob(f.database, {
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      type: "separation",
+      model: "deep_6s",
+      requestedDevice: "auto",
+      idempotencyKey: f.job.idempotencyKey,
+    });
+    assert.equal(retry.created, true, "the cancelled attempt releases the idempotency target");
+    if (!retry.created) return;
+    activeJobId = retry.job.id;
+    engineForAttempt = retryEngine;
+    await broker.submit(SEPARATION_QUEUE, retry.job.id, payloadOf(f, { processingJobId: retry.job.id }));
+    assert.equal(await broker.drain(30_000), true);
+    const [retriedJob] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, retry.job.id));
+    assert.equal(retriedJob.status, "complete", "a fresh deep run can reuse the retained source");
+    assert.equal(
+      (await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, retry.job.id))).length,
+      6,
+    );
+  } finally {
+    if (broker?.isRunning(activeJobId)) {
+      await requestSeparationCancellation(f.database, activeJobId, broker, true).catch(() => undefined);
+    }
+    await broker?.drain(10_000);
+    resetDeepProbeCacheForTests();
+    await rm(firstEngineDir, { recursive: true, force: true });
+    await rm(retryEngineDir, { recursive: true, force: true });
     await f.close();
   }
 });

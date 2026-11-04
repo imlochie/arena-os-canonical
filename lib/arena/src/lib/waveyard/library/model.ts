@@ -13,7 +13,6 @@
  */
 
 import { isDeepStemModel, stemDisplayName } from "../separation/stem-display";
-import { isDeepSeparationMode } from "../separation/modes";
 
 /** The canonical default stem channels, in player order. `other` is the
  * standard fourth separation stem (melody/instrumental) — displayed as
@@ -179,10 +178,7 @@ export function resolveStemAvailability(input: StemAvailabilityInput): StemAvail
   }
   if (input.separationPending === true) {
     const stage = input.separationJob?.stage ?? undefined;
-    const cancelJobId = input.separationJob?.id &&
-      !isDeepSeparationMode(input.separationJob.model ?? "")
-      ? input.separationJob.id
-      : undefined;
+    const cancelJobId = input.separationJob?.id;
     const progress = stage === "separating" || stage === "finalizing"
       ? parseSeparationProgress(input.separationJob?.metadata)
       : undefined;

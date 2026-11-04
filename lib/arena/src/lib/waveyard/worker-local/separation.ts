@@ -616,6 +616,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         inputPath: deepInputPath,
         outputDirectory: join(temporaryDirectory, "deep-output"),
         requestedDevice: payload.requestedDevice,
+        signal: deps.signal,
         onProgress: (percent) => {
           if (percent === lastDeepPercent) return;
           lastDeepPercent = percent;
