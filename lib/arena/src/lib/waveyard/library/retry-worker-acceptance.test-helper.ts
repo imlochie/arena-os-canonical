@@ -10,10 +10,11 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
-import { processingJobs, stemAssets } from "@workspace/db/waveyardSchema";
+import { processingJobs, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
 import type { db as workspaceDb } from "@workspace/db";
 import type { Client } from "pg";
 import { checksumFile } from "../audio";
+import { execTool } from "../ffmpeg";
 import { encodeWav16, decodeWav16 } from "../mixer/synth";
 import { findMdxModel } from "../separation/mdx";
 import { SEPARATION_QUEUE } from "../queue";
@@ -76,22 +77,55 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     const modelsDirectory = join(directory, `retry-acceptance-models-${fourStem ? "four" : "kim"}`);
     await stagePinnedModels(installedDirectory, modelsDirectory, fourStem ? FOUR_STEM_MODELS : [model]);
     process.env.WAVEYARD_MODELS_DIR = modelsDirectory;
-    const inputPath = join(directory, `retry-acceptance-${fourStem ? "four" : "kim"}.wav`);
+    const wavFixturePath = join(directory, `retry-acceptance-${fourStem ? "four-source" : "kim"}.wav`);
+    const inputPath = fourStem ? join(directory, "retry-acceptance-four.mp3") : wavFixturePath;
     const sourcePcm = stemMachineSource(44_100);
     // Both opt-in cases share one disposable DB; distinct PCM avoids making
     // the second intake an intentional checksum-deduplication hit.
     if (fourStem) for (let index = 0; index < sourcePcm.length; index++) sourcePcm[index] *= 0.9;
-    await writeFile(inputPath, encodeWav16(sourcePcm, 44_100));
+    await writeFile(wavFixturePath, encodeWav16(sourcePcm, 44_100));
+    if (fourStem) {
+      await execTool("ffmpeg", [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", wavFixturePath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
+        inputPath,
+      ], { timeoutMs: 30_000 });
+      const { stdout: probeOutput } = await execTool("ffprobe", [
+        "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name,sample_rate,channels",
+        "-of", "json", inputPath,
+      ], { timeoutMs: 30_000 });
+      const probe = JSON.parse(probeOutput) as {
+        streams?: Array<{ codec_name?: string; sample_rate?: string; channels?: number }>;
+      };
+      assert.equal(probe.streams?.[0]?.codec_name, "mp3", "the disposable compressed fixture is actually MP3");
+      assert.equal(probe.streams?.[0]?.sample_rate, "44100");
+      assert.equal(probe.streams?.[0]?.channels, 2);
+    }
     const originalChecksum = await checksumFile(inputPath);
     const intake = await addTrack({
-      ownerId, filePath: inputPath, filename: "Fixture - Library retry acceptance.wav",
-      mimeType: "audio/wav", ...(fourStem ? {} : { model: model.id }), device: "cpu",
+      ownerId,
+      filePath: inputPath,
+      filename: fourStem ? "Fixture - Library retry acceptance.mp3" : "Fixture - Library retry acceptance.wav",
+      mimeType: fourStem ? "audio/mpeg" : "audio/wav",
+      ...(fourStem ? {} : { model: model.id }),
+      device: "cpu",
     });
     assert.equal(intake.separationQueued, false);
     assert.equal(intake.track.stemAvailability.status, "rejected");
     const jobId = intake.track.stemAvailability.retryJobId;
     assert.ok(jobId);
     assert.ok(intake.track.sourceAssetId);
+    const [importedSource] = await database.select().from(sourceAssets)
+      .where(eq(sourceAssets.id, intake.track.sourceAssetId)).limit(1);
+    assert.ok(importedSource, "desktop library intake persists the imported audio source");
+    if (fourStem) {
+      assert.equal(importedSource.codec, "mp3", "the desktop importer recognizes the compressed codec");
+      assert.equal(importedSource.mimeType, "audio/mpeg");
+      assert.equal(importedSource.sampleRate, 44_100);
+      assert.equal(importedSource.channels, 2);
+      assert.match(importedSource.originalFilename, /\.mp3$/i);
+    }
     const jobsBefore = await database.select().from(processingJobs)
       .where(eq(processingJobs.sourceAssetId, intake.track.sourceAssetId));
     assert.equal(jobsBefore.find(job => job.id === jobId)?.status, "failed");
@@ -290,7 +324,13 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     }
     assert.deepEqual(pageErrors, [], "the completed library view has no browser exceptions");
     assert.equal(await checksumFile(inputPath), originalChecksum, "the input audio remains unchanged");
-    return { jobId, device: completed.resolvedDevice, elapsedMs: Date.now() - started, stemCount: stems.length };
+    return {
+      jobId,
+      device: completed.resolvedDevice,
+      elapsedMs: Date.now() - started,
+      stemCount: stems.length,
+      inputFormat: fourStem ? "MP3" : "WAV",
+    };
   } finally {
     await browser?.close();
     await broker.drain(workerTimeout);

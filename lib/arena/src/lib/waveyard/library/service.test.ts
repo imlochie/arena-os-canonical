@@ -3124,7 +3124,7 @@ test("library default four-stem retry reaches real live-mixing controls", {
     database: db.db, client, directory: root, addTrack: service.addTrackFromAudioFile,
     recipe: "default-four-stem",
   });
-  t.diagnostic(`Default-recipe library retry: ${JSON.stringify(result)}. One-second synthetic input; real pinned CPU execution and UI routing, not subjective quality or Windows speed evidence.`);
+  t.diagnostic(`Default-recipe library retry: ${JSON.stringify(result)}. One-second synthetic MP3 generated from disposable PCM; real pinned CPU execution and UI routing, not subjective quality or Windows speed evidence.`);
 });
 
 // Opt-in real CPU load and HTTP latency measurement, using this suite's private
