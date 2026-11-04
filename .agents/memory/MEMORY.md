@@ -41,6 +41,7 @@
 - [Mod profile boundaries](arcade-mod-profile-boundaries.md) — rollback restores content, not saves; native isolation requires separate OS identities, not just folders.
 - [Playwright frame evidence](playwright-frame-evidence.md) — text filters exclude scripts; inspect DOM code and verify gameplay after iframe navigation.
 - [Linux WebKit evidence](playwright-webkit-host.md) — record Playwright WebKit and host separately; its Safari-shaped Mac user agent is not native Safari evidence.
+- [Playwright WebKit on Nix](playwright-webkit-nix.md) — verify browser runtime libraries before starting cross-engine work; do not claim coverage when WebKit cannot launch.
 - [Source adoption expectations](source-adoption-expectations.md) — assess priority source collections against all relevant rooms, not just a few ideas or presets.
 - [Spaces expectations](spaces-product-expectations.md) — persistent AI-operated Linux environments that build and perform real tasks, not browser presets.
 - [Arena Everywhere](arena-everywhere-expectations.md) — one ecosystem with native 3DS, Switch and Wii shells; audit first, offline usefulness and evidence before compatibility claims.
