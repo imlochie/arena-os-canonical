@@ -1185,6 +1185,62 @@ test("waveform recovery reclaims a live PID whose process incarnation no longer 
   }
 });
 
+test("waveform recovery reclaims malformed claims instead of stranding jobs", async () => {
+  const f = await fixture();
+  try {
+    const ownerPid = 74219;
+    const ownerInstanceId = randomUUID();
+    const malformedStages = [
+      `recovery-submitting:${ownerPid}:${ownerInstanceId}:${randomUUID()}:unexpected`,
+      `recovery-submitting:${ownerPid}:${randomUUID()}:`,
+    ];
+    const jobs = await f.database
+      .insert(waveformJobs)
+      .values(malformedStages.map((stage, index) => ({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "queued" as const,
+        stage,
+        idempotencyKey: `waveform:malformed-recovery-claim:${index}:${f.source.id}`,
+        updatedAt: new Date(),
+      })))
+      .returning();
+    const dispatched: string[] = [];
+
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      dispatched.push(payload.waveformJobId);
+      await handleWaveformJob(payload, {
+        db: f.database,
+        generateWaveform: async () => validWaveformDocument(),
+      });
+    }, {
+      pid: 10843,
+      instanceId: randomUUID(),
+      isProcessAlive: (pid) => pid === ownerPid,
+      instanceIdForPid: () => ownerInstanceId,
+      now: Date.now,
+    });
+
+    assert.deepEqual(recovery.requeuedJobIds, jobs.map(({ id }) => id));
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.deepEqual(dispatched, jobs.map(({ id }) => id));
+    for (const job of jobs) {
+      const [completed] = await f.database
+        .select()
+        .from(waveformJobs)
+        .where(eq(waveformJobs.id, job.id));
+      const assets = await f.database
+        .select()
+        .from(waveformAssets)
+        .where(eq(waveformAssets.waveformJobId, job.id));
+      assert.equal(completed.status, "complete", "malformed claims are replaced and their waveform work runs");
+      assert.equal(assets.length, 1, "recovered jobs persist one canonical waveform");
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform recovery expires unidentifiable legacy claims even while their PID is live", async () => {
   const f = await fixture();
   try {

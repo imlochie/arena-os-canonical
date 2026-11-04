@@ -19,6 +19,7 @@ const PENDING_WAVEFORM_STATUSES = ["queued", "preparing", "processing", "finaliz
 const WAVEFORM_RECOVERY_CLAIM_STAGE = "recovery-submitting";
 const WAVEFORM_RECOVERY_OWNER_MARKER_PREFIX = "arena-waveform-recovery-owner-";
 const LEGACY_WAVEFORM_CLAIM_MAX_AGE_MS = 5 * 60_000;
+const RECOVERY_CLAIM_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const activeWaveformRecoveryClaims = new Set<string>();
 const waveformRecoveryProcessInstanceId = randomUUID();
 let registeredWaveformRecoveryProcess: WaveformRecoveryProcessIdentity | undefined;
@@ -78,13 +79,30 @@ function isWaveformRecoveryClaimActive(
   updatedAt: Date | null,
   identity: WaveformRecoveryProcessIdentity,
 ): boolean {
-  if (!stage?.startsWith(`${WAVEFORM_RECOVERY_CLAIM_STAGE}:`)) return false;
-  const [, ownerPidText, ownerInstanceId, claimId] = stage.split(":");
-  if (!/^\d+$/.test(ownerPidText ?? "")) return false;
+  if (!stage) return false;
+  const parts = stage.split(":");
+  if (parts[0] !== WAVEFORM_RECOVERY_CLAIM_STAGE) return false;
+
+  const ownerPidText = parts[1] ?? "";
+  if (!/^[1-9]\d*$/.test(ownerPidText)) return false;
   const ownerPid = Number(ownerPidText);
-  if (ownerPid === identity.pid) return activeWaveformRecoveryClaims.has(stage);
+  if (!Number.isSafeInteger(ownerPid) || String(ownerPid) !== ownerPidText) return false;
+
+  const isCurrentClaim =
+    parts.length === 4 &&
+    RECOVERY_CLAIM_UUID.test(parts[2] ?? "") &&
+    RECOVERY_CLAIM_UUID.test(parts[3] ?? "");
+  const isLegacyClaim =
+    parts.length === 3 &&
+    RECOVERY_CLAIM_UUID.test(parts[2] ?? "");
+  if (!isCurrentClaim && !isLegacyClaim) return false;
+
+  if (ownerPid === identity.pid) {
+    return isCurrentClaim && activeWaveformRecoveryClaims.has(stage);
+  }
   if (!identity.isProcessAlive(ownerPid)) return false;
-  if (ownerInstanceId && claimId) {
+  if (isCurrentClaim) {
+    const ownerInstanceId = parts[2]!;
     return identity.instanceIdForPid(ownerPid) === ownerInstanceId;
   }
   // Older versions wrote only a PID and per-claim nonce. They cannot be
