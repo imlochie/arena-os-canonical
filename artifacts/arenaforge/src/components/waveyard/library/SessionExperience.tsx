@@ -1326,7 +1326,19 @@ export default function SessionExperience({
   // All session GET paths share one order; committed edits invalidate older GETs.
   const sessionRequestVersion = useRef(0);
   const currentIdRef = useRef<string | null>(null);
-  const autoCrossfadeStartedForRef = useRef<{ trackId: string; cueMs: number } | null>(null);
+  const autoCrossfadeStartedForRef = useRef<{
+    trackId: string;
+    nextTrackId: string;
+    cueMs: number;
+    requestId: number;
+  } | null>(null);
+  const automaticTransitionRequestIdRef = useRef(0);
+  const pendingAutomaticTransitionRef = useRef<{
+    requestId: number;
+    trackId: string;
+    nextTrackId: string;
+    toDeck: 0 | 1;
+  } | null>(null);
   const activeDeckRef = useRef<0 | 1>(0);
   const masterRef = useRef(1);
   const playingRef = useRef(false);
@@ -2012,7 +2024,12 @@ export default function SessionExperience({
     [finishTransition],
   );
 
-  const beginTransition = useCallback(async (automaticCue?: { startInCurrentMs: number; incomingOffsetMs: number }) => {
+  const beginTransition = useCallback(async (automaticCue?: {
+    startInCurrentMs: number;
+    incomingOffsetMs: number;
+    nextTrackId: string;
+    requestId: number;
+  }) => {
     if (phase === "fading") return;
     cancelPendingPerformance("Pending stem changes cancelled because a transition started.");
     endTemporaryIsolation();
@@ -2030,8 +2047,30 @@ export default function SessionExperience({
       setStatus("The next deck is empty — press Next on a song in the library.");
       return;
     }
+    if (toApi.itemId !== toItem.id) {
+      setStatus("The next song is still loading. The current song keeps playing.");
+      return;
+    }
+    const latestNextId = () => {
+      const latest = sessionRef.current;
+      const currentIndex = latest?.tracks.findIndex((item) => item.id === fromItem.id) ?? -1;
+      return currentIndex >= 0 ? latest?.tracks[currentIndex + 1]?.id ?? null : null;
+    };
+    if (automaticCue && (
+      currentIdRef.current !== fromItem.id
+      || toItem.id !== automaticCue.nextTrackId
+      || latestNextId() !== automaticCue.nextTrackId
+    )) return;
     let cfg = transitions[fromItem.id] ?? fromItem.transition;
     advancingRef.current = false;
+    if (automaticCue) {
+      pendingAutomaticTransitionRef.current = {
+        requestId: automaticCue.requestId,
+        trackId: fromItem.id,
+        nextTrackId: automaticCue.nextTrackId,
+        toDeck,
+      };
+    }
 
     let startInCurrent = automaticCue ? fromApi.transport.currentPosition() : fromApi.transport.position;
     let incomingOffset = 0;
@@ -2068,8 +2107,31 @@ export default function SessionExperience({
       return;
     }
     toApi.transport.setMasterVolume(0);
-    await toApi.transport.play();
+    try {
+      await toApi.transport.play();
+    } catch (error) {
+      if (!automaticCue) throw error;
+      if (pendingAutomaticTransitionRef.current?.requestId === automaticCue.requestId) {
+        pendingAutomaticTransitionRef.current = null;
+        toApi.transport.setMasterVolume(masterRef.current);
+      }
+      return;
+    }
     if (automaticCue) {
+      const pending = pendingAutomaticTransitionRef.current;
+      const stillSelected = currentIdRef.current === fromItem.id
+        && latestNextId() === automaticCue.nextTrackId
+        && pending?.requestId === automaticCue.requestId
+        && pending.nextTrackId === automaticCue.nextTrackId;
+      if (!stillSelected) {
+        if (pending?.requestId === automaticCue.requestId) {
+          toApi.transport.pause();
+          toApi.transport.setMasterVolume(masterRef.current);
+          pendingAutomaticTransitionRef.current = null;
+        }
+        return;
+      }
+      pendingAutomaticTransitionRef.current = null;
       cfg = { ...cfg, crossfadeSeconds: Math.min(cfg.crossfadeSeconds, Math.max(0, fromItem.track.durationSeconds - fromApi.transport.currentPosition())) };
     }
     runFade(cfg, fromDeck, toDeck, { ...currentEffective });
@@ -3453,10 +3515,30 @@ export default function SessionExperience({
   // Start the selected fade early enough to reach its transition cue and finish
   // before the current song ends. The same transition core powers manual mixes.
   useEffect(() => {
-    if (!autoCrossfadeEnabled || phase === "fading" || !playingByDeck[activeDeck] || currentItem === null || nextItem === null) return;
+    const pending = pendingAutomaticTransitionRef.current;
+    if (pending === null
+      || (pending.trackId === currentItem?.id && pending.nextTrackId === nextItem?.id)) return;
+    const standby = decksRef.current[pending.toDeck];
+    standby?.transport.pause();
+    standby?.transport.setMasterVolume(masterRef.current);
+    pendingAutomaticTransitionRef.current = null;
+  }, [currentItem?.id, nextItem?.id]);
+
+  useEffect(() => {
+    if (!autoCrossfadeEnabled || phase === "fading" || !playingByDeck[activeDeck] || currentItem === null) return;
+    const pending = pendingAutomaticTransitionRef.current;
+    if (pending !== null
+      && (pending.trackId !== currentItem.id || pending.nextTrackId !== nextItem?.id)) {
+      const standby = decksRef.current[pending.toDeck];
+      standby?.transport.pause();
+      standby?.transport.setMasterVolume(masterRef.current);
+      pendingAutomaticTransitionRef.current = null;
+    }
+    if (nextItem === null) return;
     const fromApi = decksRef.current[activeDeck];
     const toDeck: 0 | 1 = activeDeck === 0 ? 1 : 0;
-    if (fromApi === null || decksRef.current[toDeck] === null) return;
+    const toApi = decksRef.current[toDeck];
+    if (fromApi === null || toApi === null || toApi.itemId !== nextItem.id) return;
 
     const cfg = transitions[currentItem.id] ?? currentItem.transition;
     if (cfg.crossfadeSeconds <= 0) return;
@@ -3465,16 +3547,21 @@ export default function SessionExperience({
     const cue = automaticTransitionCue(cfg, duration, currentItem.analysis?.beatGridMs ?? null, nextItem.analysis?.beatGridMs ?? null);
     const triggerMs = cue.startInCurrentMs ?? Math.max(0, duration - cfg.crossfadeSeconds) * 1000;
     const attempted = autoCrossfadeStartedForRef.current;
-    if (attempted?.trackId === currentItem.id) {
+    if (attempted !== null && (attempted.trackId !== currentItem.id || attempted.nextTrackId !== nextItem.id)) {
+      autoCrossfadeStartedForRef.current = null;
+    }
+    const currentAttempt = autoCrossfadeStartedForRef.current;
+    if (currentAttempt?.trackId === currentItem.id && currentAttempt.nextTrackId === nextItem.id) {
       // Rearm only after a genuine rewind, not while the clock is still
       // approaching the fallback after a skipped cue. Changing settings must
       // not move this threshold and make forward playback look like a rewind.
-      if (currentPosition * 1000 >= attempted.cueMs - 1000) return;
+      if (currentPosition * 1000 >= currentAttempt.cueMs - 1000) return;
       autoCrossfadeStartedForRef.current = null;
     }
     const timing = automaticCueTiming(currentPosition * 1000, triggerMs);
     if (timing === "wait") return;
-    autoCrossfadeStartedForRef.current = { trackId: currentItem.id, cueMs: triggerMs };
+    const requestId = ++automaticTransitionRequestIdRef.current;
+    autoCrossfadeStartedForRef.current = { trackId: currentItem.id, nextTrackId: nextItem.id, cueMs: triggerMs, requestId };
     if (!cue.ok || cue.startInCurrentMs === null || cue.incomingOffsetMs === null) {
       setStatus(`${cue.reason} Automatic fade skipped; the next track will start at the end.`);
       return;
@@ -3483,7 +3570,12 @@ export default function SessionExperience({
       setStatus("The verified automatic fade cue was missed; the next track will start at the end.");
       return;
     }
-    void beginTransition({ startInCurrentMs: cue.startInCurrentMs, incomingOffsetMs: cue.incomingOffsetMs });
+    void beginTransition({
+      startInCurrentMs: cue.startInCurrentMs,
+      incomingOffsetMs: cue.incomingOffsetMs,
+      nextTrackId: nextItem.id,
+      requestId,
+    });
   }, [
     autoCrossfadeEnabled, phase, playingByDeck, activeDeck, currentItem, nextItem,
     transitions, beginTransition, positions,

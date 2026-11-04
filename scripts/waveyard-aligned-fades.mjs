@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { verifyNextSongCueChanges } from "./waveyard-next-cue-mutations.mjs";
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
 
@@ -30,9 +31,10 @@ export async function verifyAlignedFades(browser, { liveSettingsOnly = false, sc
     { name: "backgrounded clock arrives late", mode: "beat", edit: "late-clock", skip: true },
     { name: "missing-grid settings do not rearm warnings", mode: "beat", missing: true, length: 4, edit: "warning-edits", skip: true },
   ];
-  const selected = scenarios.filter((scenario) => (!liveSettingsOnly || !scenario.replay)
+  const targetScenario = scenarioName?.startsWith("target-") ?? false;
+  const selected = (targetScenario ? [] : scenarios).filter((scenario) => (!liveSettingsOnly || !scenario.replay)
     && (!scenarioName || scenario.name === scenarioName || scenario.edit === scenarioName));
-  assert.ok(selected.length > 0, "at least one aligned-fade scenario must be selected");
+  assert.ok(targetScenario || selected.length > 0, "at least one aligned-fade scenario must be selected");
   for (const scenario of selected) {
       const { mode, missing = false } = scenario;
       const context = await browser.newContext();
@@ -216,6 +218,9 @@ export async function verifyAlignedFades(browser, { liveSettingsOnly = false, sc
       } finally {
         await context.close();
       }
+  }
+  if (targetScenario || (!scenarioName && !liveSettingsOnly)) {
+    await verifyNextSongCueChanges(browser, targetScenario ? scenarioName : undefined);
   }
 }
 
