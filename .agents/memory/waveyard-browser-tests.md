@@ -146,3 +146,27 @@ For browser instrumentation authored in TSX-run test files, pass raw JavaScript 
 **Why:** The test transpiler can inject a module-scoped `__name` helper into callback source; Playwright serializes the callback without that module scope, causing instrumentation to fail only inside the browser.
 
 **How to apply:** Use raw init-script content for AudioContext and media-node probes, then keep test assertions against real browser-created buffers and nodes.
+
+For mobile pitch acceptance in this Replit Linux environment, use generated PCM WAV fixtures and remap WebKit media to in-memory Blob URLs. Record the engine version and mobile-emulation status; Playwright WebKit is not physical iOS Safari.
+
+**Why:** The WebKit media backend can depend on inaccessible `/var/tmp/WebKit-Media-*` files, and its pitch/transition behavior can differ from Chromium even when the UI reports the selected mode.
+
+**How to apply:** Report browser-engine measurements separately from physical-device evidence. Keep unsupported pitch or deck-transition behavior visible in test output instead of treating a mode toggle as proof that the audio followed it.
+
+When checking donor alignment across speed changes, integrate the rate history since the latest seek rather than applying only the final rate to the whole elapsed interval.
+
+**Why:** A final-rate-only clock estimate misstates donor position when playback changed speed between the seek and measurement.
+
+**How to apply:** Record worklet rate messages with their audio-context times, reset the comparison at each seek, and compare circular donor position against the recipient clock.
+
+In mobile browser emulation, media elements can report playing and an AudioContext can report running after a tab switch while the output analyser remains silent.
+
+**Why:** Chromium and WebKit emulation both showed zero output samples after returning from a mirror tab, despite unpaused media and a running context; this does not establish physical-phone behavior.
+
+**How to apply:** After a tab switch, verify recipient/donor clocks and actual output samples independently. Record browser version and emulation status, and keep physical-device results separate.
+
+For cross-tab speed tests, inspect the active owner's rate and playback after the mirror control changes; the sender can update locally before the owner receives the change, and focus return can leave the owner paused.
+
+**Why:** Mobile-emulated Chromium once kept the owner at 1.20× while the mirror showed 0.80×; WebKit synchronized 0.80× but did not resume the owner after focus returned.
+
+**How to apply:** Assert the sender UI, active receiver rate, media paused states, and sampled output separately before treating cross-tab pitch as verified.

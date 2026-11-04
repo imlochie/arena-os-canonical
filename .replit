@@ -41,4 +41,12 @@ timeoutMs = 120000
 
 [nix]
 channel = "stable-25_05"
-packages = ["wineWowPackages.stable", "bubblewrap", "xorg.xorgserver", "xorg.xdpyinfo", "xdotool", "icu74", "libjpeg_turbo", "gst_all_1.gstreamer", "gst_all_1.gst-plugins-base", "gst_all_1.gst-plugins-bad", "libsecret", "hyphen", "woff2", "patchelf", "libjpeg8"]
+packages = ["wineWowPackages.stable", "bubblewrap", "xorg.xorgserver", "xorg.xdpyinfo", "xdotool", "icu74", "libjpeg_turbo", "gst_all_1.gstreamer", "gst_all_1.gst-plugins-base", "gst_all_1.gst-plugins-bad", "libsecret", "hyphen", "woff2", "patchelf", "libjpeg8", "gtk4", "pango", "harfbuzz", "gdk-pixbuf", "cairo", "vulkan-loader", "graphene", "libxml2", "sqlite", "libxslt", "lcms2", "libevent", "libopus", "flite", "libwebp", "libavif", "wayland", "libmanette", "mesa", "enchant", "atk", "libxkbcommon", "libGL", "x264", "gcc", "libglvnd", "libjxl", "libsoup_3", "gst_all_1.gst-plugins-good"]
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 19744
+externalPort = 80
