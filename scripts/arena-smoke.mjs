@@ -1816,11 +1816,17 @@ try {
   const compactMissingOriginal = compactDock.getByTestId(`compact-full-track-unavailable-${liveSessionTrackId}`);
   const compactPlay = compactDock.getByTestId("session-play");
   const compactIsolateVocals = compactDock.getByTestId("compact-isolate-vocals");
+  const compactLevelSliders = ["vocals", "drums", "bass", "other"].map((stem) =>
+    compactDock.getByTestId(`compact-level-${stem}`));
+  const compactVocalsLevel = compactDock.getByTestId("compact-level-vocals");
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await compactMissingOriginal.waitFor({ state: "visible" });
     assert.equal(await compactPlay.isVisible(), true, `${width}px compact dock keeps playback visible`);
     assert.equal(await compactIsolateVocals.isVisible(), true, `${width}px compact dock keeps stem controls visible`);
+    for (const slider of compactLevelSliders) {
+      assert.equal(await slider.isVisible(), true, `${width}px compact dock exposes every active stem level`);
+    }
     assert.equal(await page.evaluate((testIds) => testIds.every((testId) => {
       const element = document.querySelector(`[data-testid="${testId}"]`);
       if (!(element instanceof HTMLElement)) return false;
@@ -1831,6 +1837,10 @@ try {
       `compact-full-track-unavailable-${liveSessionTrackId}`,
       "session-play",
       "compact-isolate-vocals",
+      "compact-level-vocals",
+      "compact-level-drums",
+      "compact-level-bass",
+      "compact-level-other",
     ]), true, `${width}px compact status and controls fit in the phone viewport`);
     assert.equal(await compactDock.getByTestId(`button-return-full-track-${liveSessionTrackId}`).count(), 0,
       `${width}px compact dock must not offer a return to an absent original`);
@@ -1843,18 +1853,43 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "true");
   await compactDock.getByTestId("compact-restore-stems").click();
   await page.waitForFunction(() => document.querySelector('[data-testid="compact-isolate-vocals"]')?.getAttribute("aria-pressed") === "false");
+  const compactLevelSave = page.waitForResponse((response) => {
+    const request = response.request();
+    if (request.method() !== "PATCH" ||
+        !new URL(response.url()).pathname.endsWith(`/api/library/sessions/${liveSessionId}/tracks/${liveSessionTrackId}`)) return false;
+    return request.postDataJSON()?.stemMixPatch?.vocals === 1.75;
+  }, { timeout: 12_000 });
+  await compactVocalsLevel.focus();
+  await compactVocalsLevel.press("End");
+  for (let step = 0; step < 25; step++) await compactVocalsLevel.press("ArrowLeft");
+  assert.equal(await compactVocalsLevel.inputValue(), "1.75", "the compact vocal fader must change its displayed mix level");
+  assert.equal(await compactDock.getByTestId("compact-level-value-vocals").innerText(), "1.75");
+  await compactLevelSave;
+  assert.equal(liveCurrentItem.stemMix.vocals, 1.75, "compact fader changes must persist through the existing session mix endpoint");
   await compactPlay.click();
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
   await compactPlay.click();
-  report.push("Compact listening keeps the missing-original status visible, hides full-track recovery actions, and plays/isolate stems at 320px and 390px.");
+  report.push("Compact listening exposes every stem level and isolation at 320px and 390px; a changed level saves through the shared session mix.");
   await page.goto(`${base}/waveyard/session/${liveSessionId}`, { waitUntil: "domcontentloaded" });
   await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
   liveCurrentItem.sourceAssetId = liveCurrentSourceAssetId;
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
+  const fullMixerVocalsLevel = page.getByLabel("Vocals level, current deck");
+  await fullMixerVocalsLevel.waitFor({ state: "visible", timeout: 8_000 });
+  assert.equal(await fullMixerVocalsLevel.inputValue(), "1.75", "compact fader changes must restore in the full session mixer");
+  const resetMixSave = page.waitForResponse((response) => {
+    const request = response.request();
+    if (request.method() !== "PATCH" ||
+        !new URL(response.url()).pathname.endsWith(`/api/library/sessions/${liveSessionId}/tracks/${liveSessionTrackId}`)) return false;
+    return request.postDataJSON()?.stemMixPatch?.vocals === 1;
+  }, { timeout: 12_000 });
+  await page.getByRole("button", { name: "Restore all current stems" }).click();
+  await resetMixSave;
+  assert.equal(liveCurrentItem.stemMix.vocals, 1, "smoke-test fader change is restored before unrelated mix checks");
 
   await page.getByTestId("session-play").click();
   await page.waitForFunction((assetId) => {

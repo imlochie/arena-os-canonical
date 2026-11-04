@@ -4049,6 +4049,9 @@ export default function SessionExperience({
     : transitions[compactStemItem.id]?.performance
       ?? compactStemItem.transition.performance
       ?? defaultPerformance();
+  const compactStemLevels: Record<string, number> = compactStemItem === null
+    ? {}
+    : effectiveMix(compactStemItem, mixes[compactStemItem.id] ?? compactStemItem.stemMix);
 
   return (
     <section className={`wy-workspace wy-${variant}`} aria-label={`Listening · ${session.name}`} data-testid="listening-workspace">
@@ -4142,6 +4145,29 @@ export default function SessionExperience({
               Original audio unavailable · stem playback and controls remain available
             </p>
           )}
+          <div className="wy-compact-stem-levels" role="group" aria-label="Stem volume controls">
+            {compactStemItem.stems.map((stem) => {
+              const level = Math.max(0, Math.min(2, compactStemLevels[stem.stemType] ?? 1));
+              return (
+                <label key={stem.id} className="wy-compact-stem-level">
+                  <span>{stem.stemType}</span>
+                  <output data-testid={`compact-level-value-${stem.stemType}`}>{level.toFixed(2)}</output>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    value={level}
+                    aria-label={`${stem.stemType} volume`}
+                    aria-valuetext={`${Math.round(level * 100)} percent`}
+                    data-testid={`compact-level-${stem.stemType}`}
+                    disabled={phase !== "idle"}
+                    onChange={(event) => setLevel(compactStemItem.id)(stem.stemType, Number(event.currentTarget.value))}
+                  />
+                </label>
+              );
+            })}
+          </div>
           <div className="wy-compact-stem-actions" role="group" aria-label="Quick stem isolation">
             {compactStemItem.stems.map((stem) => (
               <button
