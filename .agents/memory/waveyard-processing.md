@@ -13,7 +13,7 @@ Keep only one native separation model open at a time and bound its CPU threading
 
 **Why:** Native inference arenas can retain far more memory than the weights themselves, so holding several models risks terminating the entire API.
 
-**How to apply:** Preserve sequential session lifetime, release on errors too, and measure real full-song memory/performance before increasing parallelism. A short synthetic musical fixture establishes pipeline execution, not subjective separation quality.
+**How to apply:** Preserve sequential session lifetime, release on errors too, and measure real full-song memory/performance before increasing parallelism. Keep native arena and memory-pattern caching disabled unless new target-device evidence justifies enabling them: real short excerpts repeatedly exhausted the hosted memory limit with those caches enabled, including without the database fixture, while the same pinned models completed with both disabled. Small model-file sizes are not a reliable inference-memory budget. A short synthetic musical fixture establishes pipeline execution, not subjective separation quality.
 
 Deep subprocess cancellation must own one process group per attempt, stop descendants as well as the Python parent, and wait for confirmed exit before the job becomes terminal. Remove only that attempt's unpublished temporary outputs.
 

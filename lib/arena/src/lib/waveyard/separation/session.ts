@@ -93,6 +93,13 @@ export const WAVEYARD_ORT_INTRA_OP_THREADS = separationInferenceThreads(
 );
 export const WAVEYARD_ORT_INTER_OP_THREADS = separationInterOpThreads();
 
+/** Prefer completing on memory-constrained machines over retaining large native
+ * allocation pools. Each model still owns and releases its session sequentially. */
+export const SEPARATION_MEMORY_OPTIONS = Object.freeze({
+  enableCpuMemArena: false,
+  enableMemPattern: false,
+});
+
 /** Auto prefers the platform's packaged GPU provider; CPU is the fallback. */
 export function executionProviderAttempts(
   requestedDevice: "auto" | "cpu" | "cuda",
@@ -231,8 +238,7 @@ export async function createMdxSession(
       intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
       interOpNumThreads: WAVEYARD_ORT_INTER_OP_THREADS,
       executionMode: WAVEYARD_ORT_EXECUTION_MODE,
-      enableCpuMemArena: true,
-      enableMemPattern: true,
+      ...SEPARATION_MEMORY_OPTIONS,
     });
   } catch (err) {
     throw new SeparationUnavailableError(

@@ -61,6 +61,7 @@ import {
   WAVEYARD_ORT_EXECUTION_MODE,
   WAVEYARD_ORT_INTER_OP_THREADS,
   WAVEYARD_ORT_INTRA_OP_THREADS,
+  SEPARATION_MEMORY_OPTIONS,
   verifyModelFile,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { DependencyMissingError } from "@workspace/arena/lib/waveyard/measure/pcm";
@@ -110,8 +111,7 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
         intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         interOpNumThreads: WAVEYARD_ORT_INTER_OP_THREADS,
         executionMode: WAVEYARD_ORT_EXECUTION_MODE,
-        enableCpuMemArena: true,
-        enableMemPattern: true,
+        ...SEPARATION_MEMORY_OPTIONS,
       }),
       requestedDevice,
     );

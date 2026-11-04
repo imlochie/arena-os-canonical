@@ -84,3 +84,45 @@ mtime_ms = 1793802630163
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/e78dea31-eba4-4e49-87fd-604bfc174fa1/e121bc55-ccdd-41ab-a9ad-5a808a15a21d"
 storage_version_token = "1793805862638196"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "O_MG9hYJn_QhS7KyEDCK8"
+uri = "file://generated-artifacts/waveyard-drum-swap-proof/continuous-drums-swap-and-restore.wav"
+type = "audio"
+title = "Live drum swap and restore"
+description = "Continuous Waveyard browser-master recording: original drums first, Funkorama drums at approximately 2.6 seconds, original drums restored around 5.2 seconds. The lead vocals, bass and instruments remain active. Channel-identity diagnostic only: tempo/key matching disabled; fixture-backed session routes; Linux Chromium. Decoded from WebM/Opus, not a lossless export."
+logical_id = "c470d062-6179-4d73-97f4-27f38ee0b444"
+content_hash = "sha256:116f259fa168111954a286ff33d23cdb63723ec54c2fe8ba0b71eb4ef5129c85"
+size = 1440078
+mtime_ms = 1793807354544
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/c470d062-6179-4d73-97f4-27f38ee0b444/c03f8604-576f-4a59-8b3e-325d2886d0c5"
+storage_version_token = "1793807491674014"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "Qwt-AqYTI2PzZ4ZGIFhDh"
+uri = "file://generated-artifacts/waveyard-drum-swap-proof/stems/september/drums-estimate.wav"
+type = "audio"
+title = "Reference: original September drums"
+description = "Eight-second isolated drum estimate from your uploaded excerpt, using the real pinned separation model. Private diagnostic reference, not CC BY."
+logical_id = "b6c6aaf9-a997-4c03-894b-8c5d061035f3"
+content_hash = "sha256:aaa1b13cfc7c4b92983964012229d6e65aa2cd4e4f44fedc42aca5c4906674ab"
+size = 1411244
+mtime_ms = 1793806974235
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/b6c6aaf9-a997-4c03-894b-8c5d061035f3/fc97a024-ac9d-4aa5-b9c5-5bb9a195d952"
+storage_version_token = "1793807492325600"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "HO7XTmg7r72a6ZYuF1iCr"
+uri = "file://generated-artifacts/waveyard-drum-swap-proof/stems/funkorama/drums-estimate.wav"
+type = "audio"
+title = "Reference: replacement Funkorama drums"
+description = "Eight-second isolated drum estimate used for the live replacement. Funkorama by Kevin MacLeod (incompetech.com), CC BY 4.0: https://creativecommons.org/licenses/by/4.0/."
+logical_id = "ff79ffd6-3f4e-4e13-8fbe-ceb5a613b7b6"
+content_hash = "sha256:3a728092273679ad21c66a7ff24d5c7ccc15561725c2528c9c6f0961ce9ce8c0"
+size = 1411244
+mtime_ms = 1793807050663
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/ff79ffd6-3f4e-4e13-8fbe-ceb5a613b7b6/646b4503-5fee-4b7c-8ea0-c9e3b1bda2e2"
+storage_version_token = "1793807492871612"
+content_type = "audio/wav"

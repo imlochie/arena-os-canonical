@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { findMdxModel } from "./mdx";
 import {
   createSessionWithProviderFallback,
+  SEPARATION_MEMORY_OPTIONS,
   SeparationUnavailableError,
   createMdxSession,
   resolveModelsDir,
@@ -187,8 +188,11 @@ test("createMdxSession: a real-shaped fake ort module wires end to end (verify â
     setOrtLoaderForTests(async () => {
       return {
         InferenceSession: {
-          create: async (path: string) => {
+          create: async (path: string, options: Parameters<OrtModuleLike["InferenceSession"]["create"]>[1]) => {
             createdFrom.push(path);
+            assert.equal(options?.enableCpuMemArena, false, "model sessions must not reserve a native CPU arena");
+            assert.equal(options?.enableMemPattern, false, "shape-pattern caching must not reserve an additional native pool");
+            assert.equal(Object.isFrozen(SEPARATION_MEMORY_OPTIONS), true);
             return session;
           },
         },

@@ -69,6 +69,7 @@ import {
   WAVEYARD_ORT_EXECUTION_MODE,
   WAVEYARD_ORT_INTER_OP_THREADS,
   WAVEYARD_ORT_INTRA_OP_THREADS,
+  SEPARATION_MEMORY_OPTIONS,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
@@ -1562,8 +1563,8 @@ if (realAudioInputPath) {
         ortExecutionMode: WAVEYARD_ORT_EXECUTION_MODE,
         ortIntraOpThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         ortInterOpThreads: WAVEYARD_ORT_INTER_OP_THREADS,
-        ortMemoryArenaEnabled: true,
-        ortMemoryPatternEnabled: true,
+        ortMemoryArenaEnabled: SEPARATION_MEMORY_OPTIONS.enableCpuMemArena,
+        ortMemoryPatternEnabled: SEPARATION_MEMORY_OPTIONS.enableMemPattern,
         models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
         input: {
           filename: basename(realAudioInputPath),

@@ -1596,8 +1596,13 @@ try {
         return audio.length === 4 && audio.every(element => element.readyState >= 2
           && new URL(element.src).pathname.includes(`/api/assets/${browserId}-`));
       }, lead.browserId, { timeout: 20_000 });
-      await page.evaluate(() => window.audioProbe.startRenderedCapture());
+      // Audio graph creation may wait for the first real playback gesture.
+      // Record that same uninterrupted playback, rather than racing pause/seek.
       await page.getByTestId("session-play").click();
+      await page.waitForFunction(() =>
+        window.audioProbe.contexts.some(context => context.__waveyardCaptureDestination),
+      null, { timeout: 10_000 });
+      await page.evaluate(() => window.audioProbe.startRenderedCapture());
       await page.waitForFunction(() =>
         [...document.querySelectorAll('[data-role="current"] audio')].some(element =>
           !element.paused && element.currentTime > 0.1),

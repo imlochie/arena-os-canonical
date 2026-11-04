@@ -9,6 +9,7 @@ import {
   WAVEYARD_ORT_EXECUTION_MODE,
   WAVEYARD_ORT_INTER_OP_THREADS,
   WAVEYARD_ORT_INTRA_OP_THREADS,
+  SEPARATION_MEMORY_OPTIONS,
   verifyModelFile,
   type MdxSessionLike,
 } from "@workspace/arena/lib/waveyard/separation/session";
@@ -51,8 +52,7 @@ async function run() {
         // All model calls use fixed tensor dimensions. ONNX Runtime's arena
         // and memory pattern reuse buffers across chunks instead of allocating
         // them repeatedly.
-        enableCpuMemArena: true,
-        enableMemPattern: true,
+        ...SEPARATION_MEMORY_OPTIONS,
       });
       resolvedDevice = executionProviders[0];
       break;
