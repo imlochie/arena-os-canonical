@@ -296,6 +296,12 @@ export function useArrangementPreview(
     }
   }, [ensureContext, failPreview, schedule, startClock]);
 
+  const seek = useCallback((positionMs: number) => {
+    const active = currentState.current;
+    if (!active || (!playing && !pending)) return;
+    void play(active, Math.max(0, positionMs));
+  }, [pending, play, playing]);
+
   useEffect(() => {
     const recover = () => {
       if (document.visibilityState !== "visible") {
@@ -367,5 +373,5 @@ export function useArrangementPreview(
     clear();
     void context.current?.close();
   }, [clear]);
-  return { playing, pending, error, play, pause, stop };
+  return { playing, pending, error, play, pause, seek, stop };
 }

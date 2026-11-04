@@ -21,6 +21,8 @@ export function StudioTransport({
   arrangementError,
   onToggleArrangement,
   onToggleStemPreview,
+  onStop,
+  onSeek,
 }: {
   transport: Transport;
   timing: MusicalTiming;
@@ -34,13 +36,15 @@ export function StudioTransport({
   arrangementError: string | null;
   onToggleArrangement: () => void;
   onToggleStemPreview: () => void;
+  onStop: () => void;
+  onSeek: (seconds: number) => void;
 }) {
   const recoveryId = React.useId();
   const stemErrorId = `${recoveryId}-stem-error`;
   const arrangementErrorId = `${recoveryId}-arrangement-error`;
   const positionMs = Math.round(transport.position * 1000);
   const snapSeek = (seconds: number) =>
-    transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000);
+    onSeek(snapTimelineMs(seconds * 1000, timing) / 1000);
   return (
     <section className="transport-panel" aria-label="Transport controls">
       <div className="transport-actions">
@@ -78,7 +82,7 @@ export function StudioTransport({
                 ? "Preview arrangement"
                 : "Create arrangement to preview"}
         </button>
-        <button className="button secondary" aria-label="Stop" onClick={transport.stop}>
+        <button className="button secondary" aria-label="Stop" onClick={onStop}>
           Stop stems
         </button>
         <button

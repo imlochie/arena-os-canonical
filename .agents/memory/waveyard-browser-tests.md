@@ -140,3 +140,9 @@ For multi-tab library tests, mock only the API routes under test and preserve th
 **Why:** MusicHome mounts audio-capture and other workbenches beside the track list; an incomplete catch-all API fixture can crash a sibling component before the cross-tab behavior is exercised.
 
 **How to apply:** Prefer exact route mocks, let unrelated calls reach the dev API, and capture page errors before diagnosing a library-tab synchronization failure.
+
+For browser instrumentation authored in TSX-run test files, pass raw JavaScript through Playwright's `addInitScript({ content })` rather than serializing a TypeScript callback.
+
+**Why:** The test transpiler can inject a module-scoped `__name` helper into callback source; Playwright serializes the callback without that module scope, causing instrumentation to fail only inside the browser.
+
+**How to apply:** Use raw init-script content for AudioContext and media-node probes, then keep test assertions against real browser-created buffers and nodes.

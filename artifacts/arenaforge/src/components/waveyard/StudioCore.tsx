@@ -548,15 +548,16 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     return () => { active = false; };
   }, [loadRemix, projectId, remixSessionId]);
 
-  const changeRemix = useCallback((transform: (current: Remix) => Remix) => {
+  const changeRemix = useCallback((transform: (current: Remix) => Remix): Remix | null => {
     const current = remixRef.current;
-    if (!current) return;
+    if (!current) return null;
     const next = transform(current);
     remixRef.current = next;
     saveRevision.current += 1;
     record(current);
     setRemix(next);
     queuePersist(next);
+    return next;
   }, [queuePersist, record]);
   const previewTimeline = useCallback((next: Remix) => { setRemix(next); setSaveState("unsaved"); }, []);
   const commitTimeline = useCallback((before: Remix, after: Remix) => {
@@ -605,7 +606,10 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     const { monoMonitor: _monitorOnly, phaseInvert, ...persistable } = patch;
     const trackPatch = { ...persistable, ...(phaseInvert !== undefined ? { phaseInverted: phaseInvert } : {}) };
     // This remains the source-stem inspection mixer. Arrangement tracks have independent controls in the timeline.
-    changeRemix((current) => ({ ...current, tracks: current.tracks.map((track) => track.stemAssetId === id ? { ...track, ...trackPatch } : track) }));
+    const nextRemix = changeRemix((current) => ({ ...current, tracks: current.tracks.map((track) => track.stemAssetId === id ? { ...track, ...trackPatch } : track) }));
+    if (patch.muted !== undefined && nextRemix && (arrangementPreview.playing || arrangementPreview.pending)) {
+      void arrangementPreview.play(nextRemix, transport.position * 1000);
+    }
   };
   const requestSourceEvents = useCallback(async (sourceId: string) => {
     const response = await fetch(`/api/sources/${sourceId}/events`, { method: "POST" });
@@ -1216,6 +1220,14 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       arrangementError={arrangementPreview.error}
       onToggleStemPreview={toggleStemPreview}
       onToggleArrangement={toggleArrangementPreview}
+      onStop={() => {
+        arrangementPreview.stop();
+        transport.stop();
+      }}
+      onSeek={(seconds) => {
+        transport.seek(seconds);
+        if (arrangementPreview.playing || arrangementPreview.pending) arrangementPreview.seek(seconds * 1000);
+      }}
       onMasterVolume={(volume) => {
         transport.setMasterVolume(volume);
         changeRemix((current) => ({ ...current, masterVolume: volume }));

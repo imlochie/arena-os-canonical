@@ -25,7 +25,7 @@
 - [Waveyard product expectations](waveyard-stemfm-expectation.md) — live swapping, pitch behavior, beat-aligned DJ controls, mobile usability, and Studio handoff must all work.
 - [Arena product expectations](arena-product-expectations.md) — prioritize demonstrable local tools and open-source alternatives over claims, presets, and page-load checks.
 - [Arena baseline reconciliation](arena-baseline-reconciliation.md) — recover branch intent as user outcomes, then verify current end-to-end workflows; code similarity is not proof.
-- [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, disable caching for failures, and wait for the intended track before asserting queue-switch playback.
+- [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, disable caching for failures, and use raw init-script content for TSX browser instrumentation.
 - [Waveyard output protection](waveyard-output-protection.md) — protect the actual summed output without rewriting faders; sample peaks are not true-peak or hardware evidence.
 - [Waveyard worklet test boundary](waveyard-worklet-boundary.md) — keep Vite-only worklet URLs at the browser adapter so Node tests can import the DSP core.
 - [Waveyard touch gesture tests](waveyard-touch-tests.md) — preflight visible touch coordinates so offscreen clip bounds do not turn gesture failures into misleading scroll results.
