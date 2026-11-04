@@ -49,6 +49,7 @@ const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-onl
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
 const keyMatchingOnly = process.argv.includes("--key-matching-only");
 const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
+const crossTabStemMixOnly = process.argv.includes("--cross-tab-stem-mix-only");
 let donorSwapSequence = 0;
 let failNextDonorRestore = false;
 const donorRestoreRequests = [];
@@ -63,6 +64,8 @@ const parallelSwapDeleteRequests = [];
 let sameStemSaveResponses = null;
 const sameStemSaveRequestOrder = [];
 const sameStemSaveResponseOrder = [];
+let holdStemMixPatchResponses = false;
+const pendingStemMixPatchRequests = [];
 function waitForSignal(signal, label, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label} after ${timeoutMs}ms.`)), timeoutMs);
@@ -684,8 +687,22 @@ try {
     else if (request.method() === "PATCH" && body) {
       const targetId = url.pathname.split("/").at(-1);
       const sessionTrack = session.tracks.find(item => item.id === targetId);
-      if (sessionTrack) Object.assign(sessionTrack, body);
-      else Object.assign(tracks.find(t => t.id === targetId), body);
+      if (sessionTrack) {
+        const { stemMix, stemMixPatch, ...trackPatch } = body;
+        if (stemMixPatch !== undefined && holdStemMixPatchResponses) {
+          const pending = { patch: structuredClone(stemMixPatch), body: structuredClone(body), release: null };
+          pendingStemMixPatchRequests.push(pending);
+          await new Promise(resolve => { pending.release = resolve; });
+        }
+        if (stemMix !== undefined) sessionTrack.stemMix = { ...stemMix };
+        if (stemMixPatch !== undefined) {
+          sessionTrack.stemMix = { ...sessionTrack.stemMix, ...stemMixPatch };
+        }
+        Object.assign(sessionTrack, trackPatch);
+      } else {
+        const track = tracks.find(t => t.id === targetId);
+        if (track) Object.assign(track, body);
+      }
     }
     await route.fulfill({ json: { session } });
   });
@@ -1308,6 +1325,117 @@ try {
       comparisonMs: report.comparison.tempoMatchedMinusNativeMedianMs,
     }));
     console.log("PASS: device benchmark collects comparative native and tempo-matched measurements and environment metadata");
+  } else if (crossTabStemMixOnly) {
+    session.tracks = tracks;
+    session.swaps = [];
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    tracks[0].stemMix = { vocals: 0.8, drums: 0.61, bass: 1, other: 1 };
+    tracks[0].transition = {
+      mode: "manual",
+      crossfadeSeconds: 2,
+      keepStems: [],
+    };
+
+    const firstTab = page;
+    const secondTab = await context.newPage();
+    await Promise.all([
+      firstTab.goto(`http://localhost:80/waveyard/session/${sessionId}`),
+      secondTab.goto(`http://localhost:80/waveyard/session/${sessionId}`),
+    ]);
+    const waitForStemAudio = targetPage => targetPage.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element => element.readyState === 4);
+    });
+    await Promise.all([waitForStemAudio(firstTab), waitForStemAudio(secondTab)]);
+    const setFader = async (targetPage, stem, level) => {
+      const input = targetPage.locator('[data-role="current"]')
+        .getByLabel(`${stem} level, current deck`, { exact: true });
+      await input.evaluate((element, value) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        setter.call(element, String(value));
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      }, level);
+      assert.equal(await input.inputValue(), String(level), `${stem} fader changes in its own tab`);
+    };
+    const waitForGains = async (targetPage, { vocals, drums }) => {
+      await targetPage.waitForFunction(({ vocals: targetVocals, drums: targetDrums }) => {
+        const gain = type => window.audioProbe.sources
+          .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
+          .at(-1)?.inputNode?.nextNode?.gain?.value;
+        return Math.abs(gain("vocals") - targetVocals) < 0.01
+          && Math.abs(gain("drums") - targetDrums) < 0.01;
+      }, { vocals, drums }, { timeout: 5_000 });
+    };
+
+    await firstTab.waitForTimeout(700);
+    assert.equal(pendingStemMixPatchRequests.length, 0, "opening either tab does not create a mix edit");
+    holdStemMixPatchResponses = true;
+    pendingStemMixPatchRequests.length = 0;
+
+    const firstSaveResponse = firstTab.waitForResponse(response =>
+      response.request().method() === "PATCH"
+      && response.url().endsWith(`/tracks/${tracks[0].id}`)
+      && response.request().postDataJSON()?.stemMixPatch?.vocals === 0.37,
+    );
+    await setFader(firstTab, "vocals", 0.37);
+    for (let attempt = 0; attempt < 60 && pendingStemMixPatchRequests.length < 1; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(pendingStemMixPatchRequests.length, 1, "the first tab submits its vocals edit");
+    assert.deepEqual(pendingStemMixPatchRequests[0].patch, { vocals: 0.37 },
+      "the first tab sends only the stem it changed");
+    assert.equal(pendingStemMixPatchRequests[0].body.transition, undefined,
+      "a normal fader change does not send an unrelated stale transition snapshot");
+
+    const secondSaveResponse = secondTab.waitForResponse(response =>
+      response.request().method() === "PATCH"
+      && response.url().endsWith(`/tracks/${tracks[0].id}`)
+      && response.request().postDataJSON()?.stemMixPatch?.drums === 0,
+    );
+    await secondTab.locator('[data-role="current"]').getByLabel("Mute drums", { exact: true }).click();
+    for (let attempt = 0; attempt < 60 && pendingStemMixPatchRequests.length < 2; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(pendingStemMixPatchRequests.length, 2, "the second tab submits its drums mute while the first save is pending");
+    assert.deepEqual(pendingStemMixPatchRequests[1].patch, { drums: 0 },
+      "the second tab sends a drums-only mute patch");
+
+    // Release the newer request first, then the older one. The server must
+    // merge each changed channel instead of applying either tab's full snapshot.
+    pendingStemMixPatchRequests[1].release();
+    const drumsResponse = await secondSaveResponse;
+    assert.ok(drumsResponse.ok(), "the later drums mute saves successfully first");
+    assert.deepEqual(session.tracks[0].stemMix, { vocals: 0.8, drums: 0, bass: 1, other: 1 },
+      "the first save is still pending when the drums mute commits");
+
+    pendingStemMixPatchRequests[0].release();
+    const vocalsResponse = await firstSaveResponse;
+    assert.ok(vocalsResponse.ok(), "the older vocals fader save succeeds after the mute");
+    holdStemMixPatchResponses = false;
+    assert.deepEqual(session.tracks[0].stemMix, { vocals: 0.37, drums: 0, bass: 1, other: 1 },
+      "the final saved mix retains both tabs' independent changes");
+    assert.equal(session.tracks[0].transition.performance.recall.drums, 0.61,
+      "the mute's prior fader level remains available for unmute");
+
+    await secondTab.close();
+    await firstTab.reload({ waitUntil: "domcontentloaded" });
+    await waitForStemAudio(firstTab);
+    const play = firstTab.getByTestId("session-play");
+    if (await play.getAttribute("aria-pressed") !== "true") await play.click();
+    await firstTab.waitForFunction(() =>
+      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+    );
+    const reloadedDeck = firstTab.locator('[data-role="current"]');
+    assert.equal(await reloadedDeck.getByLabel("vocals level, current deck", { exact: true }).inputValue(), "0.37",
+      "reopening the session restores the first tab's vocals fader");
+    assert.equal(await reloadedDeck.getByLabel("drums level, current deck", { exact: true }).inputValue(), "0",
+      "reopening the session restores the second tab's drums mute");
+    assert.equal(await reloadedDeck.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
+      "reopening reflects the saved mute state");
+    await waitForGains(firstTab, { vocals: 0.37, drums: 0 });
+    console.log("PASS: two tabs save independent fader and mute edits in reverse response order; reload restores both audible stem gains");
   } else if (stemControlsReopenOnly) {
     session.tracks = tracks;
     session.swaps = [];

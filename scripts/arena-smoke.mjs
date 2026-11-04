@@ -867,6 +867,7 @@ try {
       assert(item, `Cannot persist a mix for missing session item ${itemId}`);
       const request = route.request().postDataJSON();
       if (request.stemMix) item.stemMix = { ...request.stemMix };
+      if (request.stemMixPatch) item.stemMix = { ...item.stemMix, ...request.stemMixPatch };
       if (request.transition) item.transition = { ...request.transition };
       if (request.playbackPreference) {
         item.playbackPreference = request.playbackPreference;
@@ -875,7 +876,9 @@ try {
           : { kind: "stems", assetIds: item.stems.filter(stem => stem.engine !== "passthrough-unseparated").map(stem => stem.id) };
       }
       liveTrackPatchRequestCount += 1;
-      if (item.id === liveSessionTrackId && request.stemMix?.drums === 0) resolveIsolatedMixSave();
+      if (item.id === liveSessionTrackId && (request.stemMix?.drums === 0 || request.stemMixPatch?.drums === 0)) {
+        resolveIsolatedMixSave();
+      }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (/^\/api\/library\/sessions\/[^/]+\/state$/.test(url.pathname) && route.request().method() === "PUT") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ saved: true }) });
@@ -2178,14 +2181,33 @@ try {
   await page.getByLabel("Snap stem changes").selectOption("off");
   const mobilePlaybackTime = await sourceVocals.evaluate((audio) => audio.currentTime);
   const isolateBass = page.getByTestId("quick-isolate-bass");
+  const mobileIsolationSaved = page.waitForResponse((response) => {
+    if (response.request().method() !== "PATCH" || !response.url().endsWith(`/api/library/sessions/${liveSessionId}/tracks/${liveSessionTrackId}`)) return false;
+    const body = response.request().postDataJSON();
+    return body?.stemMix !== undefined || body?.stemMixPatch !== undefined;
+  }, { timeout: 5_000 });
   await isolateBass.click();
   await page.waitForFunction(() => document.querySelector('[data-testid="quick-isolate-bass"]')?.getAttribute("aria-pressed") === "true");
   assert.equal(await page.locator(".wy-stem-vocals").evaluate((row) => row.classList.contains("silent")), true,
     "phone isolation must apply to the active audio mix, not only change the button state");
+  await mobileIsolationSaved;
+  const mixBeforeMobileRestore = { ...liveCurrentItem.stemMix };
+  const expectedMobileRestorePatch = Object.fromEntries(
+    Object.entries(mixBeforeMobileRestore)
+      .filter(([, level]) => level !== 1)
+      .map(([stemType]) => [stemType, 1]),
+  );
+  assert(Object.keys(expectedMobileRestorePatch).length > 0, "phone isolation changes at least one saved stem level");
   const mobileRestoreSaved = page.waitForResponse((response) => {
     if (response.request().method() !== "PATCH" || !response.url().endsWith(`/api/library/sessions/${liveSessionId}/tracks/${liveSessionTrackId}`)) return false;
-    const mix = response.request().postDataJSON()?.stemMix;
-    return mix !== undefined && ["vocals", "drums", "bass", "other"].every((stemType) => mix[stemType] === 1);
+    const body = response.request().postDataJSON();
+    if (body?.stemMix !== undefined) {
+      return ["vocals", "drums", "bass", "other"].every((stemType) => body.stemMix[stemType] === 1);
+    }
+    const patch = body?.stemMixPatch;
+    return patch !== undefined
+      && Object.keys(patch).length === Object.keys(expectedMobileRestorePatch).length
+      && Object.entries(expectedMobileRestorePatch).every(([stemType, level]) => patch[stemType] === level);
   }, { timeout: 5_000 });
   await page.getByTestId("quick-restore-mix").click();
   await page.waitForFunction(() => [...document.querySelectorAll('[data-testid^="quick-isolate-"]')]

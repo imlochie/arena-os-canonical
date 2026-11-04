@@ -157,6 +157,11 @@ export async function checkNesInputs(page) {
 
     await startTouch();
     await endTouch("touchCancel");
+    await page.waitForFunction(
+      () => Number(document.querySelector("button[data-cancels]")?.dataset.cancels) === 1,
+      null,
+      { timeout: 5000 },
+    );
     assert.equal(await button.getAttribute("data-cancels"), "1", "The browser must deliver a real pointercancel");
     await waitColor(idle, "Touch cancellation must release A without pointerup");
     checks.push("A real CDP touchCancel delivers pointercancel and visibly releases A.");

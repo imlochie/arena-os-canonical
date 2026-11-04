@@ -661,7 +661,7 @@ export async function updateSessionTrack(
   ownerId: string,
   sessionId: string,
   sessionTrackId: string,
-  patch: { stemMix?: unknown; transition?: unknown; playbackPreference?: unknown },
+  patch: { stemMix?: unknown; stemMixPatch?: unknown; transition?: unknown; playbackPreference?: unknown },
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
   const [row] = await db
@@ -679,19 +679,50 @@ export async function updateSessionTrack(
     values.playbackPreference = patch.playbackPreference;
   }
   if (patch.stemMix !== undefined) {
+    if (patch.stemMixPatch !== undefined) {
+      throw new Error("The stem mix cannot be both a full replacement and a per-stem patch.");
+    }
     const mix = normalizeStemMix(patch.stemMix);
     if (Object.keys(mix).length === 0 && Object.keys(patch.stemMix ?? {}).length > 0) {
       throw new Error("The stem mix contained no valid stem levels.");
     }
     values.stemMix = serializeStemMix(mix);
   }
+  let stemMixPatch: Record<string, number> | undefined;
+  if (patch.stemMixPatch !== undefined) {
+    const mix = normalizeStemMix(patch.stemMixPatch);
+    if (Object.keys(mix).length === 0 && Object.keys(patch.stemMixPatch ?? {}).length > 0) {
+      throw new Error("The stem mix patch contained no valid stem levels.");
+    }
+    stemMixPatch = mix;
+  }
   if (patch.transition !== undefined) {
     const config = normalizeTransitionConfig(patch.transition);
     if (config === null) throw new Error("The transition configuration is invalid.");
     values.transition = JSON.stringify(config);
   }
-  if (Object.keys(values).length > 0) {
-    await db.update(listenSessionTracks).set(values).where(eq(listenSessionTracks.id, sessionTrackId));
+  if (Object.keys(values).length > 0 || stemMixPatch !== undefined) {
+    if (stemMixPatch !== undefined) {
+      // Merge against the latest row under a lock, so two tabs cannot replace
+      // each other's independent stem changes. Parsing in application code
+      // also lets malformed legacy mixes recover as unity.
+      await db.transaction(async (tx) => {
+        const [latest] = await tx
+          .select({ stemMix: listenSessionTracks.stemMix })
+          .from(listenSessionTracks)
+          .where(and(eq(listenSessionTracks.id, sessionTrackId), eq(listenSessionTracks.sessionId, sessionId)))
+          .limit(1)
+          .for("update");
+        if (latest === undefined) throw new SessionTrackNotFoundError();
+        const mergedMix = serializeStemMix({ ...parseStemMix(latest.stemMix), ...stemMixPatch });
+        await tx.update(listenSessionTracks).set({
+          ...values,
+          stemMix: mergedMix,
+        }).where(eq(listenSessionTracks.id, sessionTrackId));
+      });
+    } else {
+      await db.update(listenSessionTracks).set(values).where(eq(listenSessionTracks.id, sessionTrackId));
+    }
     await touchSession(sessionId);
   }
   return sessionPayload(sessionId);

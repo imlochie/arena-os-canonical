@@ -1682,7 +1682,11 @@ export default function SessionExperience({
   }, [clearRemoteTransport, publishTransport]);
 
   // Debounced mix + transition persistence for BOTH loaded items.
-  const lastSentRef = useRef<Record<string, string>>({});
+  const lastSentRef = useRef<Record<string, {
+    stemMix: Record<string, number>;
+    transitionJson: string;
+  }>>({});
+  const saveQueueRef = useRef<Record<string, Promise<void>>>({});
   useEffect(() => {
     if (session === null) return;
     const items = [currentItem, nextItem].filter((item): item is SessionTrackItem => item !== null);
@@ -1690,27 +1694,53 @@ export default function SessionExperience({
       void (async () => {
         let failed = false;
         for (const item of items) {
-          const body = JSON.stringify({
-            stemMix: effectiveMix(item, mixes[item.id] ?? item.stemMix),
-            transition: transitions[item.id] ?? item.transition,
-          });
           const key = `${session.id}:${item.id}`;
           if (lastSentRef.current[key] === undefined) {
             // First sight of this item: what's on the server is the baseline.
-            lastSentRef.current[key] = JSON.stringify({ stemMix: effectiveMix(item, item.stemMix), transition: item.transition });
+            lastSentRef.current[key] = {
+              stemMix: effectiveMix(item, item.stemMix),
+              transitionJson: JSON.stringify(item.transition),
+            };
           }
-          if (lastSentRef.current[key] === body) continue;
-          try {
-            const response = await fetch(`/api/library/sessions/${session.id}/tracks/${item.id}`, {
-              method: "PATCH",
-              headers: { "content-type": "application/json" },
-              body,
-            });
-            if (response.ok) lastSentRef.current[key] = body;
-            else failed = true;
-          } catch {
-            failed = true;
-          }
+          const mix = effectiveMix(item, mixes[item.id] ?? item.stemMix);
+          const transition = transitions[item.id] ?? item.transition;
+          const transitionJson = JSON.stringify(transition);
+          const previousSave = saveQueueRef.current[key] ?? Promise.resolve();
+          const save = previousSave.catch(() => undefined).then(async () => {
+            const saved = lastSentRef.current[key];
+            if (saved === undefined) return;
+            const stemMixPatch = Object.fromEntries(
+              Object.entries(mix).filter(([stemType, value]) =>
+                !Object.is(saved.stemMix[stemType] ?? 1, value),
+              ),
+            );
+            const transitionChanged = saved.transitionJson !== transitionJson;
+            const body: Record<string, unknown> = {};
+            if (Object.keys(stemMixPatch).length > 0) body.stemMixPatch = stemMixPatch;
+            if (transitionChanged) body.transition = transition;
+            if (Object.keys(body).length === 0) return;
+
+            try {
+              const response = await fetch(`/api/library/sessions/${session.id}/tracks/${item.id}`, {
+                method: "PATCH",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              });
+              if (response.ok) {
+                const currentSaved = lastSentRef.current[key] ?? saved;
+                lastSentRef.current[key] = {
+                  stemMix: { ...currentSaved.stemMix, ...stemMixPatch },
+                  transitionJson: transitionChanged ? transitionJson : currentSaved.transitionJson,
+                };
+              } else {
+                failed = true;
+              }
+            } catch {
+              failed = true;
+            }
+          });
+          saveQueueRef.current[key] = save;
+          await save;
         }
         setMixSaveError(failed);
       })();
@@ -3508,7 +3538,12 @@ export default function SessionExperience({
     const nextMixes = { ...mixesRef.current, [itemId]: levels };
     mixesRef.current = nextMixes;
     setMixes(nextMixes);
-    if (item !== undefined) setPerformanceForItem(item, { isolatedStem: null, beforeIsolation: null });
+    if (item !== undefined) {
+      const performance = (transitionsRef.current[itemId] ?? item.transition).performance;
+      if (performance?.isolatedStem != null || performance?.beforeIsolation != null) {
+        setPerformanceForItem(item, { isolatedStem: null, beforeIsolation: null });
+      }
+    }
   };
   const resetMix = (item: SessionTrackItem) => {
     cancelPendingPerformance();

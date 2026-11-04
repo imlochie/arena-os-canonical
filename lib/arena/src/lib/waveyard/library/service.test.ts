@@ -1714,6 +1714,29 @@ test("session: per-track stem mix and transition persist and round-trip", async 
   await sessions.deleteSession(OWNER, created.id);
 });
 
+test("session: concurrent per-stem patches from separate tabs preserve both edits", async () => {
+  const created = await sessions.createSession(OWNER, "Parallel stem mix edits");
+  const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const sessionTrackId = detail.tracks[0].id;
+
+  await Promise.all([
+    sessions.updateSessionTrack(OWNER, created.id, sessionTrackId, {
+      stemMixPatch: { vocals: 0.37 },
+    }),
+    sessions.updateSessionTrack(OWNER, created.id, sessionTrackId, {
+      stemMixPatch: { drums: 0 },
+    }),
+  ]);
+
+  const reread = await sessions.getSession(OWNER, created.id);
+  assert.deepEqual(
+    reread.tracks[0].stemMix,
+    { vocals: 0.37, drums: 0 },
+    "a concurrent mute patch does not discard the other tab's fader update",
+  );
+  await sessions.deleteSession(OWNER, created.id);
+});
+
 test("session: restore state persists and round-trips; foreign session tracks never persist", async () => {
   const created = await sessions.createSession(OWNER, "Restore point");
   const withA = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });

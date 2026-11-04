@@ -12,6 +12,9 @@ export const runtime = "nodejs";
 
 const patchSchema = z.object({
   stemMix: z.record(z.string(), z.number()).optional(),
+  stemMixPatch: z.record(z.string(), z.number())
+    .refine((mix) => Object.keys(mix).length <= 64)
+    .optional(),
   playbackPreference: z.enum(["source", "stems"]).nullable().optional(),
   transition: z
     .object({

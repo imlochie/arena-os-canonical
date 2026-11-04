@@ -22,3 +22,9 @@ Explicit speed controls from a mirror tab must publish even while the tab is app
 **Why:** A speed slider could change locally and then snap back on the next owner heartbeat because its control event was blocked by the remote-apply guard.
 
 **How to apply:** Keep explicit user controls authoritative, retain sender/clock ordering for heartbeats, and test a mirror speed change during active playback plus a deliberately stale heartbeat.
+
+Stem fader and mute edits from a tab must send only the changed stem keys. The service merges those keys with the latest saved mix under a row lock; preserve full-mix replacement only for deliberate whole-mix updates. Same-tab writes for one track remain serialized, and a fader change must not send an unchanged transition snapshot.
+
+**Why:** Two tabs can hold stale full-mix snapshots. The last whole-object write could silently erase another tab's gain or mute, including its remembered unmute level.
+
+**How to apply:** Test real UI controls in two tabs with the later tab's response applied first, then reload and verify saved gains reach the audio graph. Also verify independent concurrent partial writes against the real database.
