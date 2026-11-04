@@ -25,6 +25,9 @@ export type SessionAudioMediaLease = {
  */
 export class SessionAudioAssetPool {
   private entries = new Map<string, AssetEntry>();
+  private retired = new Set<AssetEntry>();
+  private invalidatedUrls = new Set<string>();
+  private replacementListeners = new Set<(url: string) => void>();
   private cachedBytes = 0;
   private disposed = false;
 
@@ -62,6 +65,9 @@ export class SessionAudioAssetPool {
           this.removeIfUnused(url, entry);
         }, ASSET_TTL_MS);
         this.trimCache();
+        if (this.invalidatedUrls.delete(url)) {
+          for (const listener of this.replacementListeners) listener(url);
+        }
         return blob;
       })
       .catch((error: unknown) => {
@@ -112,6 +118,7 @@ export class SessionAudioAssetPool {
 
   private remove(url: string, entry: AssetEntry) {
     if (this.entries.get(url) === entry) this.entries.delete(url);
+    this.retired.delete(entry);
     if (entry.timer !== null) clearTimeout(entry.timer);
     entry.timer = null;
     if (entry.blob !== null) {
@@ -139,6 +146,22 @@ export class SessionAudioAssetPool {
 
   async preload(url: string, signal?: AbortSignal) {
     await this.waitForBlob(this.entryFor(url), signal);
+  }
+
+  /** Retry rejected audio with fresh bytes without revoking a playing deck's URL. */
+  invalidate(url: string) {
+    const entry = this.entries.get(url);
+    if (!entry) return;
+    this.entries.delete(url);
+    this.invalidatedUrls.add(url);
+    entry.expired = true;
+    this.retired.add(entry);
+    this.removeIfUnused(url, entry);
+  }
+
+  subscribeToReplacement(listener: (url: string) => void) {
+    this.replacementListeners.add(listener);
+    return () => { this.replacementListeners.delete(listener); };
   }
 
   async acquireMediaUrl(url: string, signal: AbortSignal): Promise<SessionAudioMediaLease> {
@@ -176,7 +199,13 @@ export class SessionAudioAssetPool {
       entry.controller.abort();
       this.remove(url, entry);
     }
+    for (const entry of this.retired) {
+      entry.controller.abort();
+      this.remove("", entry);
+    }
     this.entries.clear();
+    this.invalidatedUrls.clear();
+    this.replacementListeners.clear();
     this.cachedBytes = 0;
   }
 }

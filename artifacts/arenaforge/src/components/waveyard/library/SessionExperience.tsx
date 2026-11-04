@@ -515,13 +515,20 @@ function SessionDeck({
     const shouldShare = activeRef.current
       ? stagedIds
       : transportIds;
-    for (const id of shouldShare) {
-      if (mediaAssetLeases.current.has(id)) continue;
+    const acquire = (id: string, replace = false) => {
+      if (!replace && mediaAssetLeases.current.has(id)) return;
       void audioAssetPool.acquireMediaUrl(`/api/assets/${id}`, controller.signal).then((lease) => {
         if (stale || !wantedIds.has(id)) {
           lease.release();
           return;
         }
+        // Replace only prepared/standby media. The audible deck retains its
+        // current lease even if a donor decoder rejects those same bytes.
+        if (replace && activeRef.current && !stagedIds.includes(id)) {
+          lease.release();
+          return;
+        }
+        mediaAssetLeases.current.get(id)?.release();
         mediaAssetLeases.current.set(id, lease);
         setMediaAssetSourceRevision((revision) => revision + 1);
       }).catch((error: unknown) => {
@@ -530,9 +537,16 @@ function SessionDeck({
           ? error.message
           : "Session audio could not be prepared.");
       });
-    }
+    };
+    for (const id of shouldShare) acquire(id);
+    const unsubscribe = audioAssetPool.subscribeToReplacement((url) => {
+      for (const id of shouldShare) {
+        if (url === `/api/assets/${id}` && (!activeRef.current || stagedIds.includes(id))) acquire(id, true);
+      }
+    });
     return () => {
       stale = true;
+      unsubscribe();
       controller.abort();
     };
   }, [audioAssetPool, stagedIds, transportIds]);

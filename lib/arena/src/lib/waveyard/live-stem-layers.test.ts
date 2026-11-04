@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
 import { LIVE_STEM_SWITCH_TIMEOUT_MS, LiveStemLayers } from "./live-stem-layers";
+import { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -101,6 +102,42 @@ function fixture(
 function response(ok = true) {
   return { ok, status: ok ? 200 : 503, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
 }
+
+test("a rejected pooled donor downloads fresh bytes on retry without revoking the standby deck", async () => {
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return new Response(new Uint8Array([fetches]));
+  };
+  const pool = new SessionAudioAssetPool();
+  const replacements: string[] = [];
+  pool.subscribeToReplacement(url => replacements.push(url));
+  let rejects = true;
+  const f = fixture(undefined, undefined, () => {
+    if (rejects) throw new Error("Corrupt donor");
+    return { duration: 3, length: 144_000, numberOfChannels: 2 };
+  });
+  f.layers.setAssetPool(pool);
+  const lease = await pool.acquireMediaUrl("/donor", new AbortController().signal);
+  try {
+    await assert.rejects(f.layers.replace("vocals", "/donor"), /Corrupt donor/);
+    assert.equal(fetches, 1, "the standby download was reused for the initial swap");
+    assert.equal((await (await originalFetch(lease.src)).arrayBuffer()).byteLength, 1,
+      "invalidating donor bytes must not revoke the standby deck's existing media URL");
+    rejects = false;
+    await f.layers.replace("vocals", "/donor");
+    assert.equal(fetches, 2, "retry fetches fresh audio instead of decoding the corrupt cached response");
+    assert.deepEqual(replacements, ["/donor"], "fresh bytes notify standby decks exactly once");
+    assert.equal(f.sources.length, 1);
+    lease.release();
+    await pool.readBytes("/donor", new AbortController().signal);
+    assert.equal(fetches, 2, "releasing the retired deck lease must not remove the replacement cache entry");
+  } finally {
+    lease.release();
+    f.layers.dispose();
+    pool.dispose();
+  }
+});
 
 function lifecycleState(layers: LiveStemLayers) {
   return layers as unknown as {

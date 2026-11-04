@@ -47,6 +47,7 @@ const loudFadesOnly = process.argv.includes("--loud-fades-only");
 const automaticFadesOnly = loudFadesOnly || process.argv.includes("--automatic-fades-only");
 const donorReplacementOnly = process.argv.includes("--donor-replacement-only");
 const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only");
+const sharedDonorRetryOnly = process.argv.includes("--shared-donor-retry-only");
 const sameStemSwapsOnly = process.argv.includes("--same-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
@@ -2158,6 +2159,62 @@ try {
     await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
     assert.deepEqual(assetSnapshot(), originalAssets, "handoff and editing preserve original audio");
     console.log("PASS: mobile-sized Bluetooth output-switch simulation resumes stem and arrangement playback at their current positions; blocked resumes expose linked, focusable retry controls");
+  } else if (sharedDonorRetryOnly) {
+    tracks[0].track.durationSeconds = 90;
+    for (const [index, type] of types.entries()) assets.set(`a-${type}`, wav(90, 130 + index * 40));
+    session.tracks = tracks;
+    session.swaps = [];
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    const validDonor = assets.get("b-vocals");
+    assets.set("b-vocals", Buffer.from("RIFFcorrupt!"));
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element => element.readyState === 4);
+    });
+    const standby = page.locator('[data-role="next"] audio[data-waveyard-asset-url$="/b-vocals"]');
+    await page.waitForFunction(() => {
+      const audio = document.querySelector('[data-role="next"] audio[data-waveyard-asset-url$="/b-vocals"]');
+      return audio instanceof HTMLAudioElement && audio.error !== null;
+    });
+    const corruptSrc = await standby.getAttribute("src");
+    await page.getByTestId("session-play").click();
+    const deck = page.locator('[data-role="current"]');
+    const before = await deck.locator("audio").first().evaluate(audio => audio.currentTime);
+    await deck.getByTestId("open-live-swap-vocals").click();
+    await deck.getByTestId("live-swap-candidate-vocals-b").click();
+    await deck.getByText("Retry live stems", { exact: true }).waitFor();
+    const failedTransfers = assetRequestTrace.filter(request => request.id === "b-vocals").length;
+    assert.ok(failedTransfers > 0, "the corrupt asset reached the shared audio pool");
+    assets.set("b-vocals", validDonor);
+    await deck.getByText("Retry live stems", { exact: true }).click();
+    await page.waitForFunction(() => {
+      const audio = document.querySelector('[data-role="next"] audio[data-waveyard-asset-url$="/b-vocals"]');
+      return audio?.readyState === 4 && audio.error === null;
+    });
+    assert.notEqual(await standby.getAttribute("src"), corruptSrc,
+      "the standby deck adopts a fresh lease after donor retry replaces corrupt bytes");
+    await page.waitForFunction(expected => window.audioProbe.buffers.some(node =>
+      Math.abs(node.buffer.duration - expected) < 0.03
+      && node.inputNode?.gain.value > 0.9 && (node.stopCount ?? 0) === 0,
+    ), 8 * 124 / 120);
+    assert.equal(assetRequestTrace.filter(request => request.id === "b-vocals").length, failedTransfers + 1,
+      "one fresh response repairs both the donor and standby deck");
+    await page.waitForFunction(before => {
+      const audio = document.querySelector('[data-role="current"] audio');
+      return audio && !audio.paused && audio.currentTime > before + 0.15;
+    }, before);
+    await page.getByTestId("session-transition").click();
+    await page.getByRole("button", { name: "Finish", exact: true }).click();
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element =>
+        element.dataset.waveyardAssetUrl?.includes("/b-")
+        && !element.paused && element.currentTime > 0.1 && element.error === null);
+    });
+    assert.equal(session.currentSessionTrackId, "b", "the repaired upcoming track becomes current");
+    console.log("PASS: corrupt shared next-track bytes recover on donor retry; one fresh transfer repairs both decks and the next track plays after transition");
   } else if (parallelStemSwapsOnly) {
     const gate = () => {
       let release;

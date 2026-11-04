@@ -705,7 +705,13 @@ export class LiveStemLayers {
     if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
     const ctx = this.context();
     const decodeStartedAt = performance.now();
-    const decoded = await ctx.decodeAudioData(bytes);
+    let decoded: AudioBuffer;
+    try {
+      decoded = await ctx.decodeAudioData(bytes);
+    } catch (error) {
+      this.assetPool?.invalidate(url);
+      throw error;
+    }
     const decodeMs = performance.now() - decodeStartedAt;
     if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
     let buffer = decoded;

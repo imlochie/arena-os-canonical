@@ -2722,10 +2722,10 @@ let liveDrumDonorResponseBodyLength = 0;
     "the linked remix must load its saved audio clips, not an empty arrangement");
   assert.equal(await page.getByLabel("Drum donor track.wav — Drums arrangement volume").inputValue(), "0",
     "the isolated stem level must be present in the Studio mix");
-  const donorStudioAudio = page.locator(`audio[data-waveyard-asset-url$="/${liveDonorVocalsAssetId}"]`);
+  const donorStudioAudio = page.locator(`audio[src$="/${liveDonorVocalsAssetId}"]`);
   await donorStudioAudio.waitFor({ state: "attached" });
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
   }, liveDonorVocalsAssetId, { timeout: 8_000 });
   assert(
@@ -2737,10 +2737,10 @@ let liveDrumDonorResponseBodyLength = 0;
     1,
     "the vocal donor source group must contain its vocals stem; audio is registered with the shared transport",
   );
-  const donorDrumStudioAudio = page.locator(`audio[data-waveyard-asset-url$="/${liveDrumDonorDrumsAssetId}"]`);
+  const donorDrumStudioAudio = page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`);
   await donorDrumStudioAudio.waitFor({ state: "attached" });
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
   }, liveDrumDonorDrumsAssetId, { timeout: 8_000 });
   assert(
@@ -2783,15 +2783,15 @@ let liveDrumDonorResponseBodyLength = 0;
   assert.equal(await page.locator(".clip").count(), 8, "all saved clips must return after reload");
   await page.waitForFunction(({ vocalAssetId, drumAssetId }) => {
     return [vocalAssetId, drumAssetId].every((assetId) => {
-      const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
+      const audio = document.querySelector(`audio[src$="/${assetId}"]`);
       return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
     });
   }, { vocalAssetId: liveDonorVocalsAssetId, drumAssetId: liveDrumDonorDrumsAssetId }, { timeout: 8_000 });
   assert.equal(await page.getByLabel("Drum donor track.wav — Drums arrangement volume").inputValue(), "0",
     "the isolated stem mix value must survive reload");
-  assert.equal(await page.locator(`audio[data-waveyard-asset-url$="/${liveDonorVocalsAssetId}"]`).count(), 1,
+  assert.equal(await page.locator(`audio[src$="/${liveDonorVocalsAssetId}"]`).count(), 1,
     "the live-swapped vocal donor stem must remain the source audio after reload");
-  assert.equal(await page.locator(`audio[data-waveyard-asset-url$="/${liveDrumDonorDrumsAssetId}"]`).count(), 1,
+  assert.equal(await page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`).count(), 1,
     "the different live-swapped drum donor must remain the source audio after reload");
   assert.equal(
     await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] [data-testid="stem-vocals"]`).count(),
