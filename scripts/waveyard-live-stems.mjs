@@ -1586,6 +1586,57 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".timeline-track").length === 4);
     assert.equal(await page.locator(".timeline-track").count(), 4, "Studio opens with the selected track and no unselected tracks");
     await verifyStudioSaveReload();
+    const serverVolumeBeforeInterruptedSave = studioRemixData.tracks[0].volume;
+    const interruptedSaveCount = studioRemixPutCount;
+    await page.getByLabel("Test a original.wav — Vocals arrangement volume").fill("0.73");
+    await page.locator(".save-state.unsaved").waitFor();
+    assert.equal(studioRemixPutCount, interruptedSaveCount,
+      "the hard-close fixture exits before the 700ms autosave begins");
+    const browserDraft = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find(candidate => candidate.startsWith("waveyard-studio-recovery-v1:"));
+      return key ? { key, payload: JSON.parse(localStorage.getItem(key)) } : null;
+    });
+    assert.ok(browserDraft, "the edit is synchronously kept as a browser recovery draft before the debounce");
+    assert.equal(browserDraft.key,
+      `waveyard-studio-recovery-v1:${encodeURIComponent(studioProjectId)}:${encodeURIComponent(studioRemixId)}`,
+      "the recovery key is isolated to the handed-off project and remix");
+    assert.equal(browserDraft.payload.projectId, studioProjectId);
+    assert.equal(browserDraft.payload.remixId, studioRemixId);
+    assert.equal("previewAssets" in browserDraft.payload.state, false,
+      "the local draft stores arrangement references, not source or stem assets");
+    let exitWarningShown = false;
+    page.on("dialog", async dialog => {
+      if (dialog.type() === "beforeunload") exitWarningShown = true;
+      await dialog.accept();
+    });
+    const interruptedStudioUrl = page.url();
+    await page.close({ runBeforeUnload: true });
+    page = await context.newPage();
+    await page.goto(interruptedStudioUrl);
+    await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+    assert.equal(
+      await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(),
+      String(serverVolumeBeforeInterruptedSave),
+      "the server correctly remains unchanged after closing before autosave starts",
+    );
+    await page.getByRole("alert").filter({ hasText: "local Studio draft" }).waitFor();
+    assert.equal(exitWarningShown, true,
+      "the browser gives supported hosts an exit warning for unsaved arrangement edits");
+    await page.getByRole("button", { name: "Restore local draft", exact: true }).click();
+    await page.locator(".save-state.saved").waitFor();
+    assert.equal(studioRemixData.tracks[0].volume, 0.73,
+      "restoring the interrupted draft explicitly saves the edit to the remix");
+    assert.equal(await page.evaluate(() => Object.keys(localStorage)
+      .some(key => key.startsWith("waveyard-studio-recovery-v1:"))), false,
+    "the confirmed save clears its matching recovery draft");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+    assert.equal(
+      await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(),
+      "0.73",
+      "the recovered edit is now persisted through the remix API",
+    );
+    console.log("PASS: a hard close before autosave leaves a scoped browser draft that can be restored and saved.");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => {
       const prototype = window.AudioContext.prototype;
@@ -4544,6 +4595,7 @@ try {
     "0.84",
     "a just-edited Studio value survives navigating away and back",
   );
+
   assert.deepEqual(assetSnapshot(), sourceAssetsBeforeHandoff,
     "creating and editing the derived arrangement leaves original audio assets unchanged");
 

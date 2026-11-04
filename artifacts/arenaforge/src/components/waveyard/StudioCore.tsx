@@ -43,6 +43,12 @@ import {
   type Stem,
 } from "./studio/types";
 import { remixFromResponse } from "./studio/remix-response";
+import {
+  clearStudioRecoveryDraft,
+  discardStudioRecoveryDraft,
+  readStudioRecoveryDraft,
+  writeStudioRecoveryDraft,
+} from "./studio/recovery-draft";
 import { useArrangementHistory } from "./studio/useArrangementHistory";
 import { VersionHistory } from "./studio/VersionHistory";
 import type { MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
@@ -120,6 +126,8 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const [selectedSourceSectionId, setSelectedSourceSectionId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(80);
   const [remix, setRemix] = useState<Remix | null>(null);
+  const [recoveryDraft, setRecoveryDraft] = useState<Remix | null>(null);
+  const [localDraftUnavailable, setLocalDraftUnavailable] = useState(false);
   const arrangementDuration = useMemo(() => {
     const latestClipEndMs = Math.max(
       0,
@@ -181,6 +189,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const saveRevision = useRef(0);
   const mountedRef = useRef(false);
+  const dirtyRef = useRef(false);
   const transport = useStemTransport(ids, duration);
   const { setLoop, seek: seekTransport } = transport;
   const seekArrangementPosition = useCallback((milliseconds: number) => seekTransport(milliseconds / 1000), [seekTransport]);
@@ -306,6 +315,15 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     window.addEventListener("keydown", escape);
     return () => window.removeEventListener("keydown", escape);
   }, []);
+  useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, []);
 
   const persist = useCallback((next = remixRef.current): Promise<void> => {
     if (!next) return Promise.resolve();
@@ -339,24 +357,31 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         return;
       }
       const persisted = remixFromResponse(body);
+      clearStudioRecoveryDraft(projectId, next);
+      dirtyRef.current = false;
       remixRef.current = persisted;
       if (mountedRef.current) {
         setRemix(persisted);
+        setRecoveryDraft(null);
+        setLocalDraftUnavailable(false);
         setSaveState("saved");
       }
     };
     const queuedSave = saveQueue.current.then(save, save);
     saveQueue.current = queuedSave.then(() => undefined, () => undefined);
     return queuedSave;
-  }, []);
+  }, [projectId]);
   const queuePersist = useCallback((next: Remix) => {
+    dirtyRef.current = true;
+    setRecoveryDraft(null);
+    setLocalDraftUnavailable(!writeStudioRecoveryDraft(projectId, next));
     setSaveState("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
       void persist(next);
     }, 700);
-  }, [persist]);
+  }, [persist, projectId]);
   const saveNow = useCallback(() => {
     // An explicit save supersedes the debounce snapshot, which may otherwise
     // write an older whole-arrangement payload after this request.
@@ -388,6 +413,9 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       const next = remixFromResponse(body);
       remixRef.current = next;
       setRemix(next);
+      dirtyRef.current = false;
+      setLocalDraftUnavailable(false);
+      setRecoveryDraft(readStudioRecoveryDraft(projectId, next));
       setAutomaticGeneration(body.generation ?? null);
       setClipSelection(null);
       setSelectedClipIds([]);
@@ -406,7 +434,22 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       setSaveState("failed");
       return false;
     }
-  }, [reset]);
+  }, [projectId, reset]);
+
+  const restoreRecoveryDraft = useCallback(() => {
+    if (!recoveryDraft) return;
+    remixRef.current = recoveryDraft;
+    reset();
+    setRemix(recoveryDraft);
+    setRecoveryDraft(null);
+    queuePersist(recoveryDraft);
+  }, [queuePersist, recoveryDraft, reset]);
+
+  const discardRecoveryDraft = useCallback(() => {
+    if (!remix) return;
+    discardStudioRecoveryDraft(projectId, remix.id);
+    setRecoveryDraft(null);
+  }, [projectId, remix]);
 
   useEffect(() => {
     let active = true;
@@ -954,6 +997,20 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         src={`/api/assets/${stem.id}`} preload="auto" />)}
     </div>
     <header className="studio-head"><div><span className="eyebrow">{presentation === "studio" ? "Studio" : presentation === "play" ? "Play" : "Visual"} · one musical state</span><h2>{presentation === "studio" ? "Real stems, one transport." : presentation === "play" ? "Music in motion." : "Music, made visible."}</h2></div><div className="presentation-nav" role="tablist" aria-label="Waveyard presentation mode"><button type="button" role="tab" aria-selected={presentation === "play"} data-testid="waveyard-mode-play" className={presentation === "play" ? "active" : ""} onClick={() => { setPresentation("play"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Play</button><button type="button" role="tab" aria-selected={presentation === "studio"} data-testid="waveyard-mode-studio" className={presentation === "studio" ? "active" : ""} onClick={() => { setPresentation("studio"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Studio</button><button type="button" role="tab" aria-selected={presentation === "visual"} data-testid="waveyard-mode-visual" className={presentation === "visual" ? "active" : ""} onClick={() => { setPresentation("visual"); setPlayerFullscreen(false); }}>Visual</button></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
+    {(saveState !== "saved" || localDraftUnavailable) && (
+      <p className="notice" role="status">
+        {localDraftUnavailable
+          ? "Browser storage is unavailable. Keep Studio open until the save finishes; a closing-page request cannot be guaranteed."
+          : "A recovery draft is stored in this browser. Closing can interrupt the server save; return to this project to restore the draft."}
+      </p>
+    )}
+    {recoveryDraft && (
+      <div className="notice" role="alert">
+        <p><strong>Unsaved local Studio draft.</strong> This browser has edits that were not confirmed by the server.</p>
+        <button type="button" className="button" onClick={restoreRecoveryDraft}>Restore local draft</button>
+        <button type="button" className="button" onClick={discardRecoveryDraft}>Discard local draft</button>
+      </div>
+    )}
     {presentation === "play" ? <>
       {!remix && <AutomaticRemixPrompt building={buildingAutomaticRemix} message={automaticRemixMessage} onBuild={createAutomaticRemix} />}
       {remix && (automaticRemixMessage || automaticGeneration) && <p className="automatic-remix-banner" role="status">{automaticRemixMessage ?? `Automatic ${automaticGeneration?.variant ?? "original"} arrangement · verified sections, tempo, and key remain explainable in Studio.`}</p>}
