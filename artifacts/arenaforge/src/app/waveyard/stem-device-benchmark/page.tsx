@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { LiveStemLayers, type LiveStemTiming } from "@workspace/arena/lib/waveyard/live-stem-layers";
+import {
+  groupDeviceReports,
+  parseDeviceReport,
+  type LoadedDeviceReport,
+} from "./comparison";
 
 type DeviceClass = "Phone" | "Tablet";
 type Mode = "nativeTempo" | "tempoMatched";
@@ -142,6 +147,8 @@ export default function StemDeviceBenchmarkPage() {
   const [status, setStatus] = useState("Ready. Audio and device details stay in this browser until you export a report.");
   const [report, setReport] = useState<DeviceReport | null>(null);
   const [error, setError] = useState("");
+  const [loadedReports, setLoadedReports] = useState<LoadedDeviceReport[]>([]);
+  const [importError, setImportError] = useState("");
   const layersRef = useRef<LiveStemLayers | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -295,6 +302,30 @@ export default function StemDeviceBenchmarkPage() {
     setStatus("The JSON report was copied to the clipboard.");
   };
 
+  const importReports = async (files: FileList | null, input: HTMLInputElement) => {
+    if (!files?.length) return;
+    const accepted: LoadedDeviceReport[] = [];
+    const failures: string[] = [];
+    for (const [index, file] of Array.from(files).entries()) {
+      try {
+        const parsed: unknown = JSON.parse(await file.text());
+        accepted.push({
+          id: `${file.name}-${file.lastModified}-${file.size}-${index}-${Date.now()}`,
+          filename: file.name,
+          report: parseDeviceReport(parsed),
+        });
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : "Could not read this file.";
+        failures.push(`${file.name}: ${detail}`);
+      }
+    }
+    if (accepted.length) setLoadedReports(previous => [...previous, ...accepted]);
+    setImportError(failures.join(" "));
+    input.value = "";
+  };
+
+  const comparisonGroups = groupDeviceReports(loadedReports);
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 py-6 text-slate-100" data-testid="stem-device-benchmark">
       <header className="space-y-3">
@@ -423,6 +454,79 @@ export default function StemDeviceBenchmarkPage() {
           browser and hardware effects. Download timing covers local fixture retrieval, not network latency.
         </p>
       </section>}
+
+      <section className="space-y-4 rounded-2xl border border-white/10 bg-slate-900/70 p-5"
+        aria-labelledby="multi-device-comparison-heading" data-testid="multi-device-comparison">
+        <div>
+          <h2 id="multi-device-comparison-heading" className="text-xl font-semibold">Compare device reports</h2>
+          <p className="mt-1 text-sm leading-6 text-slate-400">
+            Load exported benchmark JSON files to compare native-tempo and tempo-matched swap timing.
+            Reports are grouped by browser, operating system, and device class.
+          </p>
+        </div>
+        <label className="block space-y-2 text-sm">
+          <span className="font-medium">Benchmark JSON reports</span>
+          <input type="file" accept=".json,application/json" multiple
+            aria-label="Load benchmark JSON reports"
+            onChange={event => void importReports(event.currentTarget.files, event.currentTarget)}
+            className="block w-full rounded-lg border border-white/15 bg-slate-950 p-3 text-slate-200 file:mr-3 file:rounded-md file:border-0 file:bg-white/10 file:px-3 file:py-2 file:font-semibold file:text-white" />
+        </label>
+        {importError && <p role="alert" className="text-sm leading-6 text-rose-300">{importError}</p>}
+        {loadedReports.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm text-slate-300" role="status">
+                {loadedReports.length} report{loadedReports.length === 1 ? "" : "s"} loaded
+              </p>
+              <button type="button" onClick={() => { setLoadedReports([]); setImportError(""); }}
+                className="rounded-lg bg-white/10 px-3 py-2 text-sm font-semibold hover:bg-white/15">
+                Clear reports
+              </button>
+            </div>
+            <ul className="divide-y divide-white/5 rounded-xl border border-white/10">
+              {loadedReports.map(loaded => (
+                <li key={loaded.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
+                  <span className="min-w-0 break-all text-slate-200">
+                    {loaded.filename}
+                    <span className="ml-2 text-slate-500">
+                      {loaded.report.environment.deviceModel || "Device model not provided"} · {new Date(loaded.report.measuredAt).toLocaleDateString()}
+                    </span>
+                  </span>
+                  <button type="button" aria-label={`Remove ${loaded.filename}`}
+                    onClick={() => setLoadedReports(previous => previous.filter(item => item.id !== loaded.id))}
+                    className="rounded-md px-2 py-1 text-slate-400 hover:bg-white/10 hover:text-white">
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="space-y-4">
+              {comparisonGroups.map(group => (
+                <article key={`${group.browser}-${group.operatingSystem}-${group.deviceClass}`}
+                  className="rounded-xl border border-cyan-300/15 bg-slate-950/60 p-4"
+                  data-testid="device-comparison-group">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h3 className="font-semibold">{group.browser}</h3>
+                      <p className="text-sm text-slate-400">{group.operatingSystem} · {group.deviceClass}</p>
+                    </div>
+                    <span className="text-xs text-slate-500">{group.reports.length} report{group.reports.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    <Metric label={`Native tempo · ${group.nativeSampleCount} swaps`} value={group.nativeTempoMedianMs} />
+                    <Metric label={`Tempo matched · ${group.tempoMatchedSampleCount} swaps`} value={group.tempoMatchedMedianMs} />
+                    <Metric label="Matched minus native" value={group.tempoMatchedMinusNativeMedianMs} signed />
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-slate-400">
+                    Medians combine individual observations across these reports. They describe the measured devices;
+                    they are not judged against a pass/fail latency threshold.
+                  </p>
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
