@@ -42,3 +42,17 @@ mtime_ms = 1793549523639
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/bfe41ecd-a079-405f-ac3d-1e0b62c1d3dc/5b15cf9b-6364-4dfa-82f8-67630ff2780c"
 storage_version_token = "1793549615762007"
 content_type = "text/html"
+
+[[outputs]]
+id = "gV9rSM5G7kYaLVleOW0SS"
+uri = "file://generated-artifacts/arcade-codeberg-proof/hurry-curry-codeberg-review.png"
+type = "image"
+title = "Arcade Codeberg review — Hurry Curry"
+description = "Live catalog selection and pinned Codeberg review. The screen shows the verified AGPL-3.0 license and the actual source/build blockers; no source was installed or run."
+logical_id = "68d1a26a-17ad-406d-9564-40077ef1bdf2"
+content_hash = "sha256:70dff27ff1794a0cd380008c7d304d4f2cf201217a91fe0b9130ac27809d5901"
+size = 70283
+mtime_ms = 1793772923579
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/68d1a26a-17ad-406d-9564-40077ef1bdf2/499ada25-bfa9-4165-8eb3-875462874289"
+storage_version_token = "1793773104786823"
+content_type = "image/png"

@@ -99,6 +99,44 @@ test("Codeberg working-state warnings are surfaced during review and stop a bypa
   await assert.rejects(inspectRepository("https://codeberg.org/demo/game", signal(), f.read), /not in a working state/i);
 });
 
+test("Codeberg review recognizes complete AGPL v3 structure and the standard single-quoted Zlib notice", async () => {
+  const agpl = Buffer.from(`GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+Preamble
+TERMS AND CONDITIONS
+0. Definitions
+1. Source Code.
+13. Remote Network Interaction; Use with the GNU General Public License.
+14. Revised Versions of this License.
+END OF TERMS AND CONDITIONS
+How to Apply These Terms to Your New Programs`);
+  const files = new Map(codebergFiles);
+  files.delete("LICENSE");
+  files.set("COPYING", agpl);
+  const assessment = await assessCodebergRepository("https://codeberg.org/demo/game", signal(), codebergRead(files).read);
+  assert.deepEqual(
+    { spdx: assessment.license?.spdx, path: assessment.license?.path },
+    { spdx: "AGPL-3.0", path: "COPYING" },
+  );
+
+  const zlibFiles = new Map(codebergFiles);
+  zlibFiles.set("LICENSE", Buffer.from(`Copyright (c) 2020 Example
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented.
+2. Altered source versions must be plainly marked as such.
+3. This notice may not be removed or altered from any source distribution.`));
+  const zlib = await assessCodebergRepository("https://codeberg.org/demo/game", signal(), codebergRead(zlibFiles).read);
+  assert.equal(zlib.license?.spdx, "Zlib");
+});
+
 test("SourceForge review pins feed file IDs but blocks RSS-only code without verified source and license", async () => {
   const feed = `<?xml version="1.0"?>
     <rss><channel><item>

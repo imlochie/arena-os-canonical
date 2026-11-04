@@ -237,7 +237,11 @@ function detectFullLicense(text: string) {
   const value = text.replace(/\r/g, "");
   if (/Permission is hereby granted, free of charge[\s\S]{0,2000}THE SOFTWARE IS PROVIDED ["“]AS IS["”]/i.test(value)) return "MIT";
   if (/Apache License[\s\S]{0,200}Version 2\.0/i.test(value) && /TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION/i.test(value)) return "Apache-2.0";
-  if (/GNU AFFERO GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 3/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "AGPL-3.0";
+  if (/GNU AFFERO GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 3/i.test(value) &&
+      /TERMS AND CONDITIONS/i.test(value) &&
+      /13\.\s+Remote Network Interaction; Use with the GNU General Public License/i.test(value) &&
+      /14\.\s+Revised Versions of this License/i.test(value) &&
+      /END OF TERMS AND CONDITIONS/i.test(value)) return "AGPL-3.0";
   if (/GNU LESSER GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 3/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "LGPL-3.0";
   if (/GNU LESSER GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 2\.1/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "LGPL-2.1";
   if (/GNU GENERAL PUBLIC LICENSE[\s\S]{0,120}Version 3/i.test(value) && /TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION/i.test(value)) return "GPL-3.0";
@@ -249,7 +253,7 @@ function detectFullLicense(text: string) {
   }
   if (/Permission to use, copy, modify, and\/or distribute this software for any purpose/i.test(value) &&
       /THE SOFTWARE IS PROVIDED ["“]AS IS["”]/i.test(value)) return "ISC";
-  if (/This software is provided ["“]as-is["”]/i.test(value)) return "Zlib";
+  if (/This software is provided ["'“]as-is["'”]/i.test(value)) return "Zlib";
   if (/Creative Commons Zero v1\.0 Universal/i.test(value) && /No Copyright/i.test(value)) return "CC0-1.0";
   if (/This is free and unencumbered software released into the public domain/i.test(value)) return "Unlicense";
   return null;
