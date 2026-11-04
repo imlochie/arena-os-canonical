@@ -111,6 +111,12 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       ...(fourStem ? {} : { model: model.id }),
       device: "cpu",
     });
+    let incomingTrack: typeof intake.track | null = null;
+    let incomingJobId: string | null = null;
+    let incomingSourceId: string | null = null;
+    let incomingInputPath: string | null = null;
+    let incomingOriginalChecksum: string | null = null;
+    let incomingJobIdsBefore: string[] = [];
     assert.equal(intake.separationQueued, false);
     assert.equal(intake.track.stemAvailability.status, "rejected");
     const jobId = intake.track.stemAvailability.retryJobId;
@@ -125,6 +131,42 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       assert.equal(importedSource.sampleRate, 44_100);
       assert.equal(importedSource.channels, 2);
       assert.match(importedSource.originalFilename, /\.mp3$/i);
+
+      const incomingWavPath = join(directory, "retry-acceptance-transition-incoming.wav");
+      incomingInputPath = join(directory, "retry-acceptance-transition-incoming.mp3");
+      const incomingPcm = stemMachineSource(44_100);
+      for (let index = 0; index < incomingPcm.length; index++) incomingPcm[index] *= 0.71;
+      await writeFile(incomingWavPath, encodeWav16(incomingPcm, 44_100));
+      await execTool("ffmpeg", [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", incomingWavPath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
+        incomingInputPath,
+      ], { timeoutMs: 30_000 });
+      incomingOriginalChecksum = await checksumFile(incomingInputPath);
+      const incomingIntake = await addTrack({
+        ownerId,
+        filePath: incomingInputPath,
+        filename: "Fixture - Library retry transition incoming.mp3",
+        mimeType: "audio/mpeg",
+        device: "cpu",
+      });
+      incomingTrack = incomingIntake.track;
+      incomingJobId = incomingTrack.stemAvailability.retryJobId ?? null;
+      incomingSourceId = incomingTrack.sourceAssetId ?? null;
+      assert.equal(incomingIntake.separationQueued, false);
+      assert.equal(incomingTrack.stemAvailability.status, "rejected");
+      assert.ok(incomingJobId, "the incoming track has a real rejected job to retry");
+      assert.ok(incomingSourceId, "the incoming track has its own persisted source");
+      assert.notEqual(incomingSourceId, intake.track.sourceAssetId, "the two transition tracks use distinct source assets");
+      assert.notEqual(await checksumFile(incomingInputPath), originalChecksum, "the incoming MP3 differs from the outgoing fixture");
+      const [incomingSource] = await database.select().from(sourceAssets)
+        .where(eq(sourceAssets.id, incomingSourceId)).limit(1);
+      assert.ok(incomingSource);
+      assert.equal(incomingSource.codec, "mp3");
+      assert.equal(incomingSource.sampleRate, 44_100);
+      assert.equal(incomingSource.channels, 2);
+      incomingJobIdsBefore = (await database.select().from(processingJobs)
+        .where(eq(processingJobs.sourceAssetId, incomingSourceId))).map(job => job.id);
     }
     const jobsBefore = await database.select().from(processingJobs)
       .where(eq(processingJobs.sourceAssetId, intake.track.sourceAssetId));
@@ -170,6 +212,7 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     const assetsRoute = await import(new URL(
       "../../../../../../artifacts/api-server/src/imported/assets/[id]/route.ts", import.meta.url,
     ).href);
+    const retryJobIds = new Set([jobId, ...(incomingJobId ? [incomingJobId] : [])]);
     browser = await chromium.launch({
       executablePath: "/repl/tools/bin/chromium", headless: true,
       args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
@@ -183,13 +226,14 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       const url = new URL(request.url());
       const sessionPath = url.pathname.match(/^\/api\/library\/sessions\/([^/]+)(?:\/(state|tracks)(?:\/([^/]+))?)?$/);
       const assetPath = url.pathname.match(/^\/api\/assets\/([^/]+)$/);
+      const retryJobPath = url.pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
       let response: Response | undefined;
       if (libraryReads.has(url.pathname) && request.method() === "GET") {
         response = await libraryReads.get(url.pathname)(new Request(url));
-      } else if (url.pathname === `/api/jobs/${jobId}/retry` && request.method() === "POST") {
+      } else if (retryJobPath && retryJobIds.has(retryJobPath[1]) && request.method() === "POST") {
         retryRequests++;
         response = await retryRoute.POST(new Request(url, { method: "POST" }), {
-          params: Promise.resolve({ id: jobId }),
+          params: Promise.resolve({ id: retryJobPath[1] }),
         });
       } else if (fourStem && url.pathname === "/api/library/sessions" && request.method() === "POST") {
         response = await sessionsRoute.POST(new Request(url, {
@@ -237,6 +281,9 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     const card = page.getByTestId("library-track").filter({
       has: page.getByTestId(`button-play-${intake.track.id}`),
     });
+    const incomingCard = incomingTrack === null ? null : page.getByTestId("library-track").filter({
+      has: page.getByTestId(`button-play-${incomingTrack.id}`),
+    });
     const [retried] = await Promise.all([
       page.waitForResponse((response: { url(): string; request(): { method(): string } }) =>
         response.url().endsWith(`/api/jobs/${jobId}/retry`) && response.request().method() === "POST"),
@@ -253,7 +300,8 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     assert.equal(completed.status, "complete", completed.errorMessage ?? "the original job completes");
     assert.equal(completed.errorCode, null);
     assert.equal(completed.resolvedDevice, "cpu");
-    assert.deepEqual(completedPasses, (fourStem ? FOUR_STEM_MODELS : [model]).map(spec => spec.id),
+    const expectedPasses = (fourStem ? FOUR_STEM_MODELS : [model]).map(spec => spec.id);
+    assert.deepEqual(completedPasses, expectedPasses,
       "every pinned model pass releases sequentially through the production worker");
     const transitions = await client.query<{ status: string }>(
       "SELECT status FROM retry_acceptance_transitions WHERE job_id = $1", [jobId],
@@ -265,8 +313,6 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       .where(eq(processingJobs.sourceAssetId, intake.track.sourceAssetId));
     assert.deepEqual(jobsAfter.map(job => job.id).sort(), jobsBefore.map(job => job.id).sort(),
       "retry creates no duplicate durable job, including waveform jobs");
-    assert.equal(activeBroker.stats().succeeded, 1, "the broker executes exactly one retry");
-    assert.equal(retryRequests, 1, "the library submits exactly one retry request");
     const stems = await database.select().from(stemAssets).where(eq(stemAssets.separationJobId, jobId));
     assert.equal(stems.length, fourStem ? 4 : 2);
     assert.deepEqual(stems.map(stem => stem.stemType).sort(),
@@ -282,11 +328,62 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       const decoded = decodeWav16(new Uint8Array(await readFile(filename)));
       assert.ok(decoded && decoded.frames > 0 && decoded.sampleRate === 44_100, "each stem is a decodable WAV");
     }
+    let incomingStems: typeof stems = [];
+    if (fourStem && incomingTrack !== null && incomingJobId !== null && incomingSourceId !== null && incomingCard !== null) {
+      const [incomingRetried] = await Promise.all([
+        page.waitForResponse((response: { url(): string; request(): { method(): string } }) =>
+          response.url().endsWith(`/api/jobs/${incomingJobId}/retry`) && response.request().method() === "POST"),
+        incomingCard.getByRole("button", {
+          name: `Retry separation for ${incomingTrack.title}`,
+          exact: true,
+        }).click({ timeout: 10_000 }),
+      ]);
+      assert.equal(incomingRetried.status(), 200, "the incoming track uses the real retry route too");
+      assert.equal(await activeBroker.drain(workerTimeout), true, "the second pinned CPU separation completes");
+      const [incomingCompleted] = await database.select().from(processingJobs)
+        .where(eq(processingJobs.id, incomingJobId));
+      assert.equal(incomingCompleted.status, "complete", incomingCompleted.errorMessage ?? "incoming job completes");
+      assert.equal(incomingCompleted.errorCode, null);
+      assert.equal(incomingCompleted.resolvedDevice, "cpu");
+      assert.deepEqual(completedPasses, [...expectedPasses, ...expectedPasses],
+        "both tracks pass through the same four pinned CPU models");
+      const incomingTransitions = await client.query<{ status: string }>(
+        "SELECT status FROM retry_acceptance_transitions WHERE job_id = $1", [incomingJobId],
+      );
+      for (const status of ["queued", "processing", "complete"]) {
+        assert.ok(incomingTransitions.rows.some(row => row.status === status),
+          `incoming job durably enters ${status}`);
+      }
+      const incomingJobsAfter = await database.select().from(processingJobs)
+        .where(eq(processingJobs.sourceAssetId, incomingSourceId));
+      assert.deepEqual(incomingJobsAfter.map(job => job.id).sort(), incomingJobIdsBefore.sort(),
+        "retry adds no duplicate job for the incoming source");
+      incomingStems = await database.select().from(stemAssets)
+        .where(eq(stemAssets.separationJobId, incomingJobId));
+      assert.equal(incomingStems.length, 4);
+      assert.deepEqual(incomingStems.map(stem => stem.stemType).sort(), ["bass", "drums", "other", "vocals"]);
+      for (const stem of incomingStems) {
+        const spec = FOUR_STEM_MODELS.find(item => item.id === stem.model);
+        assert.ok(spec);
+        assert.equal(stem.modelVersion, spec.sha256);
+        const filename = getStorage().getLocalPath(stem.storageKey);
+        assert.ok(filename && existsSync(filename), "every incoming output is in private storage");
+        const { readFile } = await import("node:fs/promises");
+        const decoded = decodeWav16(new Uint8Array(await readFile(filename)));
+        assert.ok(decoded && decoded.frames > 0 && decoded.sampleRate === 44_100);
+      }
+    }
+    assert.equal(activeBroker.stats().succeeded, fourStem ? 2 : 1,
+      "the broker executes one retry per distinct track");
+    assert.equal(retryRequests, fourStem ? 2 : 1,
+      "the real library submits one retry per distinct track");
     // The existing processing poll must discover real completed state, not a
     // test-supplied success response or a forced page reload.
     await card.getByText(`${stems.length} STEMS`, { exact: true }).waitFor({ timeout: 30_000 });
     assert.equal(await card.getByRole("button", { name: /^Retry separation for/ }).count(), 0);
     if (fourStem) {
+      await incomingCard!.getByText(`${incomingStems.length} STEMS`, { exact: true }).waitFor({ timeout: 30_000 });
+      assert.equal(await incomingCard!.getByRole("button", { name: /^Retry separation for/ }).count(), 0);
       await card.getByTestId(`button-play-${intake.track.id}`).click();
       const expectedAssets = stems.map(stem => stem.id);
       await page.waitForFunction((ids: string[]) => {
@@ -320,16 +417,95 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       }, undefined, { timeout: 5_000 });
       await play.click();
       assert.ok((await readLiveAudioState(page)).every(item => item.gain! > 0),
-        "restoring all stems keeps every actual stem connected");
+        "restoring all stems keeps every actual stem connected while the outgoing track is paused for preparation");
+
+      const incomingAssets = incomingStems.map(stem => stem.id);
+      await page.getByTestId(`button-next-${incomingTrack!.id}`).click();
+      await page.waitForFunction(({ outgoingIds, incomingIds }: { outgoingIds: string[]; incomingIds: string[] }) => {
+        const idsForRole = (role: string) => {
+          const deck = document.querySelector<HTMLElement>(`[data-role="${role}"]`);
+          return [...(deck?.querySelectorAll<HTMLAudioElement>("audio") ?? [])].map(audio =>
+            new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1));
+        };
+        const outgoing = idsForRole("current");
+        const incoming = idsForRole("next");
+        const exact = (actual: Array<string | undefined>, expected: string[]) =>
+          actual.length === expected.length && expected.every(id => actual.includes(id));
+        return exact(outgoing, outgoingIds) && exact(incoming, incomingIds)
+          && [...document.querySelectorAll<HTMLAudioElement>('[data-role="next"] audio')].every(audio => audio.readyState >= 2);
+      }, { outgoingIds: expectedAssets, incomingIds: incomingAssets }, { timeout: 30_000 });
+      assert.deepEqual(
+        await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
+          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1)).sort()),
+        [...expectedAssets].sort(),
+        "the outgoing deck contains only the first track's real separated assets",
+      );
+      assert.deepEqual(
+        await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
+          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1)).sort()),
+        [...incomingAssets].sort(),
+        "the incoming deck contains only the second track's real separated assets",
+      );
+      assert.ok(incomingAssets.every(id => servedAudioAssets.has(id)),
+        "all incoming stems were loaded through the private asset route");
+
+      const fadeLength = page.locator("#sess-fade");
+      await fadeLength.press("Home");
+      await fadeLength.press("ArrowRight");
+      await page.waitForFunction(() =>
+        (document.querySelector<HTMLInputElement>("#sess-fade")?.value ?? "") === "0.5",
+      );
+      await page.getByTestId("session-transition").click();
+      await page.waitForFunction(() => {
+        const outgoing = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
+        const incoming = [...document.querySelectorAll<HTMLAudioElement>('[data-role="next"] audio')];
+        return outgoing.length === 4 && incoming.length === 4
+          && outgoing.every(audio => !audio.paused)
+          && incoming.every(audio => !audio.paused && audio.currentTime > 0.03);
+      }, undefined, { timeout: 5_000 });
+      await page.waitForFunction((ids: string[]) => {
+        const current = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
+        const actual = current.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1));
+        return current.length === 4 && ids.every(id => actual.includes(id))
+          && current.every(audio => !audio.paused && audio.currentTime > 0.03);
+      }, incomingAssets, { timeout: 5_000 });
+      assert.equal(await page.locator(".wy-now b").innerText(), incomingTrack!.title,
+        "the session advances its current title with the incoming real stems");
+
+      const incomingDrums = incomingStems.find(stem => stem.stemType === "drums");
+      assert.ok(incomingDrums);
+      const isolateIncoming = page.getByTestId("quick-isolate-drums");
+      await isolateIncoming.click();
+      await page.waitForFunction(() =>
+        document.querySelector('[data-testid="quick-isolate-drums"]')?.getAttribute("aria-pressed") === "true",
+      );
+      const incomingMix = await readLiveAudioState(page);
+      assert.deepEqual(incomingMix.map(item => item.assetId).sort(), [...incomingAssets].sort(),
+        "the incoming current deck still routes the second track's four persisted assets");
+      assert.ok(incomingMix.find(item => item.assetId === incomingDrums.id)?.gain! > 0,
+        "the isolated incoming drum stem has a real positive gain");
+      assert.ok(incomingMix.filter(item => item.assetId !== incomingDrums.id).every(item => item.gain === 0),
+        "isolating the incoming stem mutes only the other incoming stem routes");
+      assert.ok(incomingMix.every(item => !item.paused && item.currentTime > 0),
+        "the incoming separated track continues playing while isolated");
+      await isolateIncoming.click();
+      assert.ok((await readLiveAudioState(page)).every(item => item.gain! > 0),
+        "restoring the incoming track reconnects all four real stem routes");
     }
     assert.deepEqual(pageErrors, [], "the completed library view has no browser exceptions");
     assert.equal(await checksumFile(inputPath), originalChecksum, "the input audio remains unchanged");
+    if (incomingInputPath !== null && incomingOriginalChecksum !== null) {
+      assert.equal(await checksumFile(incomingInputPath), incomingOriginalChecksum, "the incoming source remains unchanged");
+    }
     return {
       jobId,
+      incomingJobId,
       device: completed.resolvedDevice,
       elapsedMs: Date.now() - started,
       stemCount: stems.length,
+      incomingStemCount: incomingStems.length,
       inputFormat: fourStem ? "MP3" : "WAV",
+      transition: fourStem ? "real stem-set crossfade and incoming isolation" : "not exercised",
     };
   } finally {
     await browser?.close();
