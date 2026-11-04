@@ -48,6 +48,7 @@ function saveRuntimeScript(gameId: string, sessionId: string, saved: GameSaveDat
   return `<script data-arenaforge-save-runtime>(function(){` +
     `var gameId=${safeId},sessionId=${safeSessionId},revision=${safelyEmbedJson(initialRevision)},data=Object.assign(Object.create(null),JSON.parse(${safeSaved})),channel=${safelyEmbedJson(MESSAGE_CHANNEL)};` +
     `function send(op,key,value){try{parent.postMessage({channel:channel,gameId:gameId,sessionId:sessionId,revision:revision,op:op,key:key,value:value},"*")}catch(e){}}` +
+    `try{var nativePlay=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){var result=nativePlay.apply(this,arguments);if(result&&typeof result.then==="function")result.then(function(){send("media-play-started",null,null)},function(error){var name=String(error&&error.name||"PlaybackError").slice(0,40);if(name!=="AbortError")send("media-play-failed",null,name)});return result}}catch(e){}` +
     `function size(value){return new TextEncoder().encode(value).byteLength}function reject(key){send("rejected",key&&key.length<=${MAX_KEY_LENGTH}?key:null,"too-large")}` +
     `function write(key,value){key=String(key);value=String(value);if(!key||key.length>${MAX_KEY_LENGTH}||size(value)>${MAX_SAVE_BYTES}){reject(key);return}` +
     `var old=data[key];data[key]=value;if(size(JSON.stringify(data))>${MAX_SAVE_BYTES}){if(old===undefined)delete data[key];else data[key]=old;reject(key);return}send("set",key,value)}` +
@@ -89,6 +90,7 @@ export function useArcadeGameSave(
   gameId: string | null,
 ) {
   const [hasSavedProgress, setHasSavedProgress] = useState(false);
+  const [mediaPlaybackError, setMediaPlaybackError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
   const [canRetrySave, setCanRetrySave] = useState(true);
@@ -110,6 +112,7 @@ export function useArcadeGameSave(
   const retiredSaveWindow = useRef<Window | null>(null);
 
   useEffect(() => {
+    setMediaPlaybackError(null);
     setPersistenceWarning(null);
     setCanRetrySave(true);
     setHasRevisionConflict(false);
@@ -174,6 +177,14 @@ export function useArcadeGameSave(
     };
 
     const processMessage = async (message: any) => {
+      if (message.op === "media-play-started") { setMediaPlaybackError(null); return; }
+      if (message.op === "media-play-failed") {
+        const errorName = typeof message.value === "string" && /^[A-Za-z]+$/.test(message.value)
+          ? message.value.slice(0, 40)
+          : "PlaybackError";
+        setMediaPlaybackError(errorName);
+        return;
+      }
       if (message.op === "rejected") { reject(true, message.key); return; }
       if (!["set", "remove", "clear", "snapshot"].includes(message.op)) return;
       if (message.op === "snapshot" && (!retryToken.current || message.key !== retryToken.current)) return;
@@ -404,7 +415,7 @@ export function useArcadeGameSave(
   }, [gameId, frameRef]);
 
   return {
-    hasSavedProgress, persistenceWarning, canRetrySave, retrySaving, reloadKey, sessionId, initialRevision,
+    hasSavedProgress, mediaPlaybackError, persistenceWarning, canRetrySave, retrySaving, reloadKey, sessionId, initialRevision,
     hasRevisionConflict, reconcileStaleProgress, clearSavedProgress, reloadGame, restoreSavedProgress,
   };
 }

@@ -1354,6 +1354,15 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   srcDoc={selectedHtmlDocument}
                   className="h-[min(68vh,620px)] min-h-[320px] w-full rounded-lg border border-white/10 bg-black"
                 />
+                {gameSaves.mediaPlaybackError && (
+                  <p
+                    role="alert"
+                    data-testid="imported-audio-playback-error"
+                    className="mt-2 rounded-lg border border-amber-300/25 bg-amber-300/[0.08] px-3 py-2 text-xs text-amber-100"
+                  >
+                    Game audio could not start ({gameSaves.mediaPlaybackError}). Click Play in the game again. If it still fails, check browser audio permissions and the selected output device.
+                  </p>
+                )}
                 <div className="flex items-center justify-between gap-3 px-1 pt-2">
                   <p className="text-[10px] text-slate-500">
                     {gameSaves.persistenceWarning ? "Progress persistence needs attention." : `Progress saves in this browser${gameSaves.hasSavedProgress ? " · save data found" : ""}.`}
