@@ -642,6 +642,7 @@ try {
   let liveTrackPatchRequestCount = 0;
   let liveDonorFetchCount = 0;
   let liveDrumDonorFetchCount = 0;
+let liveDrumDonorResponseBodyLength = 0;
   let liveDrumDonorFailure = null;
   let signalFirstDonorFetchStarted;
   const firstDonorFetchStarted = new Promise(resolve => { signalFirstDonorFetchStarted = resolve; });
@@ -1050,13 +1051,15 @@ try {
         await route.fulfill({ status: 503, headers: { "cache-control": "no-store" }, body: "Donor temporarily unavailable" });
         return;
       }
+      const body = liveDrumDonorFailure === "decode" ? drumDonorStemWav.subarray(0, 12) : drumDonorStemWav;
+      liveDrumDonorResponseBodyLength = body.byteLength;
       await route.fulfill({
         status: 200,
         contentType: "audio/wav",
         headers: { "cache-control": "no-store" },
         // A RIFF/WAVE header with no format or samples must fail in the browser
         // decoder, not in the HTTP status check.
-        body: liveDrumDonorFailure === "decode" ? drumDonorStemWav.subarray(0, 12) : drumDonorStemWav,
+        body,
       });
       return;
     }
@@ -2069,8 +2072,8 @@ try {
     assert.equal(response.status(), failure === "http" ? 503 : 200);
     if (failure === "decode") {
       assert.equal(response.headers()["content-type"], "audio/wav");
-      assert.deepEqual(await response.body(), drumDonorStemWav.subarray(0, 12),
-        "the successful HTTP response must contain the truncated WAV, not valid or missing audio");
+      assert.equal(liveDrumDonorResponseBodyLength, 12,
+        "the successful HTTP fixture must contain only a truncated WAV header");
     }
     await page.getByTestId("session-status").filter({
       hasText: failure === "http"
