@@ -15,12 +15,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { PianoRoll } from "./PianoRoll";
 import { midiToNoteName, type PianoNote } from "@workspace/arena/lib/waveyard/studio/piano-roll";
-import { assignChopToNewNotes } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
+import {
+  assignChopToNewNotes,
+  buildChopSequencerClips,
+  CHOP_SEQUENCER_TRACK_NAME,
+  readChopSequencerSteps,
+  type ChopSequencerStep,
+} from "@workspace/arena/lib/waveyard/studio/vocal-chops";
 import { cleanupPattern } from "@workspace/arena/lib/waveyard/studio/soul-chef";
 import { useUndoRedo } from "@workspace/arena/lib/waveyard/studio/history";
+import type { RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
 
 type VocalChop = {
   id: string;
+  stemAssetId: string;
   startMs: number;
   durationMs: number;
   rootMidi: number;
@@ -30,7 +38,21 @@ type VocalChop = {
   audioUrl: string;
 };
 
-export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit: boolean }) {
+type SequencerTrack = { name: string; stemAssetId: string; clips: RemixClipInput[] };
+
+export function VocalChops({
+  projectId,
+  canEdit,
+  sequencerTracks,
+  sequencerBpm,
+  onSaveSequence,
+}: {
+  projectId: string;
+  canEdit: boolean;
+  sequencerTracks: SequencerTrack[];
+  sequencerBpm: number;
+  onSaveSequence: (stemAssetId: string, clips: RemixClipInput[]) => Promise<string | null>;
+}) {
   const [chops, setChops] = useState<VocalChop[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -50,8 +72,22 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
   const [renderError, setRenderError] = useState<string | null>(null);
   const patternNotes = pattern.value;
   const [renderUrl, setRenderUrl] = useState<string | null>(null);
+  const [sequenceSteps, setSequenceSteps] = useState<ChopSequencerStep[]>(Array.from({ length: 16 }, () => null));
+  const [sequenceSaving, setSequenceSaving] = useState(false);
+  const [sequenceError, setSequenceError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const renderUrlRef = useRef<string | null>(null);
+  const sequenceStemAssetId = chops?.[0]?.stemAssetId ?? null;
+  const sequenceTrack = sequenceStemAssetId
+    ? sequencerTracks.find((track) =>
+      track.name === CHOP_SEQUENCER_TRACK_NAME && track.stemAssetId === sequenceStemAssetId,
+    )
+    : undefined;
+  const effectiveSequencerBpm = Number.isFinite(sequencerBpm) && sequencerBpm > 0 ? sequencerBpm : bpm;
+
+  useEffect(() => {
+    setSequenceSteps(readChopSequencerSteps(sequenceTrack?.clips ?? [], chops ?? [], effectiveSequencerBpm));
+  }, [chops, effectiveSequencerBpm, sequenceTrack?.clips]);
 
   const load = useCallback(async () => {
     const response = await fetch(`/api/waveyard/projects/${projectId}/vocal-chops`, { cache: "no-store" });
@@ -108,8 +144,43 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
     await load();
   };
 
+  const saveSequenceSteps = async (nextSteps: ChopSequencerStep[]) => {
+    if (!sequenceStemAssetId) return;
+    const previousSteps = sequenceSteps;
+    setSequenceSteps(nextSteps);
+    setSequenceError(null);
+    setSequenceSaving(true);
+    try {
+      const clips = buildChopSequencerClips(chops ?? [], nextSteps, effectiveSequencerBpm);
+      const message = await onSaveSequence(sequenceStemAssetId, clips);
+      if (message) {
+        setSequenceSteps(previousSteps);
+        setSequenceError(message);
+      }
+    } catch {
+      setSequenceSteps(previousSteps);
+      setSequenceError("The beat pattern could not be added to the arrangement.");
+    } finally {
+      setSequenceSaving(false);
+    }
+  };
+
+  const toggleSequenceStep = (stepIndex: number) => {
+    if (sequenceSaving || !armedChopId) return;
+    const next = [...sequenceSteps];
+    next[stepIndex] = next[stepIndex] === armedChopId ? null : armedChopId;
+    void saveSequenceSteps(next);
+  };
+
   const remove = async (chopId: string) => {
-    await fetch(`/api/waveyard/projects/${projectId}/vocal-chops/${chopId}`, { method: "DELETE" });
+    const response = await fetch(`/api/waveyard/projects/${projectId}/vocal-chops/${chopId}`, { method: "DELETE" });
+    if (!response.ok) {
+      setError("That chop could not be deleted.");
+      return;
+    }
+    if (sequenceStemAssetId && sequenceSteps.includes(chopId)) {
+      await saveSequenceSteps(sequenceSteps.map((step) => step === chopId ? null : step));
+    }
     if (armedChopId === chopId) setArmedChopId(null);
     pattern.set(patternNotes.filter((note) => !note.id.startsWith(`${chopId}:`)));
     await load();
@@ -185,6 +256,7 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
   };
 
   const armed = chops?.find((chop) => chop.id === armedChopId) ?? null;
+  const armedIndex = armed ? (chops?.indexOf(armed) ?? -1) : -1;
   const patternEndMs = patternNotes.reduce((latest, note) => Math.max(latest, note.startMs + note.durationMs), 0);
 
   return (
@@ -269,8 +341,55 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
 
       {canEdit && (
         <div className="chop-builder" data-testid="chop-builder">
+          <section className="chop-sequencer" aria-label="Vocal chop beat sequencer" data-testid="chop-sequencer">
+            <div className="chop-sequencer-heading">
+              <div>
+                <b>Beat pad sequencer</b>
+                <small>First bar · 16 steps · {effectiveSequencerBpm.toFixed(1)} BPM</small>
+              </div>
+              <button
+                className="button secondary"
+                disabled={sequenceSaving || !sequenceSteps.some(Boolean)}
+                onClick={() => void saveSequenceSteps(Array.from({ length: 16 }, () => null))}
+              >
+                Clear pattern
+              </button>
+            </div>
+            <div className="chop-step-grid" role="group" aria-label="Sixteenth-note beat steps">
+              {sequenceSteps.map((chopId, stepIndex) => {
+                const assigned = chops?.find((chop) => chop.id === chopId);
+                const assignedIndex = assigned ? chops?.indexOf(assigned) ?? -1 : -1;
+                return (
+                  <button
+                    key={stepIndex}
+                    type="button"
+                    className={`chop-step ${stepIndex % 4 === 0 ? "beat-start" : ""} ${assigned ? "active" : ""}`}
+                    aria-label={`Step ${stepIndex + 1}: ${assigned ? `chop ${assignedIndex + 1}, tap to remove or replace` : armed ? `empty, tap to place chop ${armedIndex + 1}` : "empty, arm a chop first"}`}
+                    aria-pressed={Boolean(assigned)}
+                    disabled={!armed || sequenceSaving}
+                    onClick={() => toggleSequenceStep(stepIndex)}
+                    data-step={stepIndex}
+                  >
+                    <span>{stepIndex + 1}</span>
+                    <strong>{assigned ? `#${assignedIndex + 1}` : "＋"}</strong>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="chop-sequencer-footer">
+              <small>
+                {sequenceSaving
+                  ? "Updating arrangement…"
+                  : armed
+                    ? `Tap an empty step to place chop ${armedIndex + 1}; tap it again to remove.`
+                    : "Arm a chop above, then tap steps to place or replace hits."}
+              </small>
+              {sequenceError && <span className="form-error" role="alert">{sequenceError}</span>}
+              <small>Every hit is stored as an editable arrangement clip and follows Studio playback and export.</small>
+            </div>
+          </section>
           <div className="layer-editor-bar">
-            <b>Chop pattern</b>
+            <b>Pitch-roll pattern</b>
             <small>
               {armed === null
                 ? "Arm a chop above (🎹), then draw notes — each note plays that chop at the drawn pitch"

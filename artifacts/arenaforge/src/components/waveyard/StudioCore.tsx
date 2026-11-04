@@ -15,6 +15,8 @@ import { AIStudio } from "./studio/AIStudio";
 import { SoundDesignStudio } from "./studio/SoundDesignStudio";
 import { MasterStudio } from "./studio/MasterStudio";
 import type { InsertChain } from "@workspace/arena/lib/waveyard/mixer/inserts";
+import type { RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
+import { CHOP_SEQUENCER_TRACK_NAME } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
 import { GeneratedLayers } from "./studio/GeneratedLayers";
 import { VocalChops } from "./studio/VocalChops";
 import { MashupStudio } from "./studio/MashupStudio";
@@ -762,6 +764,71 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     setRemix(next);
     setSaveState("saved");
   };
+  const saveChopSequence = useCallback(async (stemAssetId: string, clips: RemixClipInput[]) => {
+    let current = remixRef.current;
+    if (!current) return "Open a Studio arrangement before adding a chop pattern.";
+
+    let sequenceTrack = current.tracks.find((track) =>
+      track.name === CHOP_SEQUENCER_TRACK_NAME && track.stemAssetId === stemAssetId,
+    );
+    if (!sequenceTrack && clips.length > 0) {
+      const sessionId = current.id;
+      if (dirtyRef.current) {
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+        await persist(current);
+        if (dirtyRef.current) return "Save the current arrangement before adding a chop track.";
+        current = remixRef.current;
+        if (!current || current.id !== sessionId) return "The active Studio session changed. Reopen the chop sequencer and try again.";
+      }
+
+      const existingTrackIds = new Set(current.tracks.map((track) => track.id));
+      const response = await fetch(`/api/remixes/${sessionId}/tracks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stemAssetId, name: CHOP_SEQUENCER_TRACK_NAME }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setSaveState("failed");
+        return body.error ?? "A chop track could not be added to the arrangement.";
+      }
+      const serverState = remixFromResponse(body);
+      const latest = remixRef.current;
+      if (!latest || latest.id !== sessionId) return "The active Studio session changed. Reopen the chop sequencer and try again.";
+      const addedTrack = serverState.tracks.find((track) =>
+        !existingTrackIds.has(track.id) && track.stemAssetId === stemAssetId,
+      );
+      if (!addedTrack) return "The new chop track was not returned by the arrangement.";
+
+      current = {
+        ...latest,
+        version: serverState.version,
+        tracks: [...latest.tracks, { ...addedTrack, name: CHOP_SEQUENCER_TRACK_NAME, clips: [] }],
+      };
+      serverVersionRef.current = serverState.version;
+      reset();
+      remixRef.current = current;
+      setRemix(current);
+      sequenceTrack = current.tracks[current.tracks.length - 1];
+    }
+
+    if (!sequenceTrack) return null;
+    const next: Remix = {
+      ...current,
+      tracks: current.tracks.map((track) =>
+        track.id === sequenceTrack!.id ? { ...track, clips } : track,
+      ),
+    };
+    saveRevision.current += 1;
+    record(current);
+    remixRef.current = next;
+    setRemix(next);
+    queuePersist(next);
+    if (arrangementPreview.playing || arrangementPreview.pending)
+      void arrangementPreview.play(next, transport.position * 1000);
+    return null;
+  }, [arrangementPreview, persist, queuePersist, record, reset, transport.position]);
   const undo = useCallback(() => {
     if (!remix) return;
     const prior = historyUndo(remix);
@@ -1269,6 +1336,17 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       <StudioDisclosure title="Sound design">
         <SoundDesignStudio projectId={projectId} />
       </StudioDisclosure>
+      {remix && (
+        <StudioDisclosure title="Vocal chops & beat pads">
+          <VocalChops
+            projectId={projectId}
+            canEdit
+            sequencerTracks={remix.tracks}
+            sequencerBpm={remix.tempoBpm}
+            onSaveSequence={saveChopSequence}
+          />
+        </StudioDisclosure>
+      )}
       <StudioDisclosure title="Mastering">
         <MasterStudio projectId={projectId} sourceAudioUrl={sources.length > 0 ? `/api/assets/${sources[0].id}` : null} />
       </StudioDisclosure>
@@ -1285,7 +1363,6 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       {source && !source.linkedFromLibrary && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id, selected.id)} />}
       <AIStudio projectId={projectId} />
       <GeneratedLayers projectId={projectId} canEdit />
-      <VocalChops projectId={projectId} canEdit />
       <MashupStudio projectId={projectId} sources={sources} canEdit />
     </>}
     {studioTab === "showcase" && <>

@@ -934,6 +934,21 @@
 .chop-builder{border-top:1px solid var(--line);margin-top:14px;padding-top:12px;display:grid;gap:10px}
 .chop-render-result{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .chop-render-result audio{flex:1;min-width:260px}
+.chop-sequencer{display:grid;gap:12px;border:1px solid var(--line);background:#10140f;padding:12px}
+.chop-sequencer-heading,.chop-sequencer-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.chop-sequencer-heading>div{display:grid;gap:3px}
+.chop-sequencer-heading small,.chop-sequencer-footer small{color:var(--muted);font-size:11px}
+.chop-step-grid{display:grid;grid-template-columns:repeat(8,minmax(44px,1fr));gap:6px}
+.chop-step{position:relative;display:grid;place-content:center;gap:2px;min-width:44px;min-height:52px;border:1px solid var(--line);border-radius:8px;background:#1a2018;color:var(--muted);cursor:pointer;touch-action:manipulation}
+.chop-step span{font-size:10px;line-height:1}
+.chop-step strong{font-size:15px;line-height:1.1}
+.chop-step.beat-start{border-left:2px solid #687555}
+.chop-step.active{background:#28391e;border-color:var(--acid);color:var(--ink)}
+.chop-step:disabled{opacity:.62;cursor:not-allowed}
+.chop-step:focus-visible{outline:2px solid var(--acid);outline-offset:2px}
+.chop-sequencer-footer{justify-content:flex-start}
+.chop-sequencer-footer .form-error{margin:0}
+@media(max-width:560px){.chop-step-grid{grid-template-columns:repeat(4,minmax(48px,1fr));gap:7px}.chop-step{min-height:56px}.chop-sequencer{padding:10px}}
 
 /* Mashup studio (song × song, vision main goal) */
 .mashup-pickers{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0}

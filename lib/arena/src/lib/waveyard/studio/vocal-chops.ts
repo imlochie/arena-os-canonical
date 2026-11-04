@@ -18,9 +18,91 @@
  */
 
 import type { StereoBuffer } from "../mixer/dsp";
+import type { RemixClipInput } from "../remix";
 
 export const CHOP_SCAN_ENGINE = "waveyard-chop-scan-v1";
 export const CHOP_RENDER_ENGINE = "waveyard-chop-render-v1";
+export const CHOP_SEQUENCER_TRACK_NAME = "Vocal Chop Sequencer";
+
+export type ChopSequencerSample = {
+  id: string;
+  stemAssetId: string;
+  startMs: number;
+  durationMs: number;
+};
+
+/** One chop assignment per sixteenth-note step; null means an empty pad. */
+export type ChopSequencerStep = string | null;
+
+const CHOP_SEQUENCER_STEP_COUNT = 16;
+
+/**
+ * Convert the first-bar pad pattern to ordinary remix clips. These clips use
+ * the separated stem as their source, so Studio preview, saved arrangements,
+ * version snapshots, and export all share the same audio path.
+ */
+export function buildChopSequencerClips(
+  samples: readonly ChopSequencerSample[],
+  steps: readonly ChopSequencerStep[],
+  bpm: number,
+): RemixClipInput[] {
+  if (!Number.isFinite(bpm) || bpm <= 0) return [];
+  const stepMs = 60_000 / bpm / 4;
+
+  return steps.slice(0, CHOP_SEQUENCER_STEP_COUNT).flatMap((sampleId, stepIndex) => {
+    if (!sampleId) return [];
+    const sample = samples.find((candidate) => candidate.id === sampleId);
+    if (
+      !sample ||
+      !sample.stemAssetId ||
+      !Number.isFinite(sample.startMs) ||
+      !Number.isFinite(sample.durationMs) ||
+      sample.startMs < 0 ||
+      sample.durationMs <= 0
+    ) return [];
+
+    // A pad hit is a short staccato chop. Ending it at the next sixteenth
+    // keeps neighboring steps independent and avoids crossfade conflicts.
+    const durationMs = Math.min(sample.durationMs, stepMs);
+    const edgeFadeMs = Math.min(3, durationMs / 4);
+    return [{
+      stemAssetId: sample.stemAssetId,
+      timelineStartMs: Math.round(stepIndex * stepMs),
+      durationMs,
+      sourceOffsetMs: sample.startMs,
+      gain: 1,
+      fadeInMs: edgeFadeMs,
+      fadeOutMs: edgeFadeMs,
+      tempoSyncEnabled: false,
+      keySyncEnabled: false,
+      beatSnapEnabled: false,
+    }];
+  });
+}
+
+/** Rebuild the visible 16-step pattern from persisted arrangement clips. */
+export function readChopSequencerSteps(
+  clips: readonly RemixClipInput[],
+  samples: readonly ChopSequencerSample[],
+  bpm: number,
+): ChopSequencerStep[] {
+  const steps: ChopSequencerStep[] = Array.from({ length: CHOP_SEQUENCER_STEP_COUNT }, () => null);
+  if (!Number.isFinite(bpm) || bpm <= 0) return steps;
+  const stepMs = 60_000 / bpm / 4;
+
+  for (const clip of clips) {
+    const sample = samples.find((candidate) =>
+      candidate.stemAssetId === clip.stemAssetId &&
+      Math.abs(candidate.startMs - clip.sourceOffsetMs) <= 1,
+    );
+    if (!sample) continue;
+    const stepIndex = Math.round(clip.timelineStartMs / stepMs);
+    if (stepIndex < 0 || stepIndex >= CHOP_SEQUENCER_STEP_COUNT) continue;
+    if (Math.abs(clip.timelineStartMs - stepIndex * stepMs) > Math.max(2, stepMs * 0.1)) continue;
+    steps[stepIndex] = sample.id;
+  }
+  return steps;
+}
 
 /** Defaults tuned for 44.1 kHz vocal stems. */
 export type ChopScanOptions = {

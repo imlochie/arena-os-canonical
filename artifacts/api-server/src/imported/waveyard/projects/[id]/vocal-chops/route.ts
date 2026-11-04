@@ -37,9 +37,10 @@ const MAX_CHOPS = 12;
 /** Stems the chop scanner accepts (the registry's stem vocabulary). */
 const SCAN_STEM_TYPES = ["vocals", "drums", "bass", "other", "instrumental"] as const;
 
-function chopRowToResponse(projectId: string, row: { id: string; startMs: number; durationMs: number; rootMidi: number; cents: number; confidence: number; sampleRate: number; createdAt: Date }) {
+function chopRowToResponse(projectId: string, row: { id: string; stemAssetId: string; startMs: number; durationMs: number; rootMidi: number; cents: number; confidence: number; sampleRate: number; createdAt: Date }) {
   return {
     id: row.id,
+    stemAssetId: row.stemAssetId,
     startMs: row.startMs,
     durationMs: row.durationMs,
     rootMidi: row.rootMidi,

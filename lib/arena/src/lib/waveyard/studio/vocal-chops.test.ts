@@ -9,10 +9,13 @@ import test from "node:test";
 
 import {
   assignChopToNewNotes,
+  buildChopSequencerClips,
+  CHOP_SEQUENCER_TRACK_NAME,
   chopNoteId,
   detectVocalChops,
   extractChopSample,
   parseChopNoteId,
+  readChopSequencerSteps,
   renderChopPattern,
   scanVocalStemForChops,
   type ChopSample,
@@ -299,4 +302,25 @@ test("scan survives a full WAV encode → decode round trip (the API's exact pat
     for (const value of chop.sample) peak = Math.max(peak, Math.abs(value));
     assert.ok(peak > 0.9 && peak <= 0.951, "stored chops are normalised");
   }
+});
+
+test("sixteenth-note chop patterns become reloadable ordinary arrangement clips", () => {
+  const stemAssetId = "00000000-0000-0000-0000-000000000010";
+  const samples = [
+    { id: "chop-a", stemAssetId, startMs: 250, durationMs: 240 },
+    { id: "chop-b", stemAssetId, startMs: 910, durationMs: 80 },
+  ];
+  const pattern = ["chop-a", null, "chop-b", "chop-a", ...Array.from({ length: 12 }, () => null)];
+  const clips = buildChopSequencerClips(samples, pattern, 120);
+
+  assert.equal(CHOP_SEQUENCER_TRACK_NAME, "Vocal Chop Sequencer");
+  assert.equal(clips.length, 3);
+  assert.deepEqual(clips.map((clip) => clip.timelineStartMs), [0, 250, 375]);
+  assert.deepEqual(clips.map((clip) => clip.sourceOffsetMs), [250, 910, 250]);
+  assert.deepEqual(clips.map((clip) => clip.durationMs), [125, 80, 125]);
+  assert.ok(clips.every((clip) => clip.stemAssetId === stemAssetId));
+  assert.ok(clips.every((clip) => clip.beatSnapEnabled === false));
+  assert.ok(clips.every((clip) => clip.fadeInMs + clip.fadeOutMs < clip.durationMs));
+  assert.deepEqual(readChopSequencerSteps(clips, samples, 120), pattern);
+  assert.deepEqual(buildChopSequencerClips(samples, pattern, 0), []);
 });
