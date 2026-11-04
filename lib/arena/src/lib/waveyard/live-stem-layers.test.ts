@@ -17,6 +17,7 @@ function fixture(
       numberOfChannels: 2,
     },
   channelIds = ["vocals"],
+  assetPool?: SessionAudioAssetPool,
 ) {
   const sources: Array<{
     offset: number;
@@ -86,6 +87,7 @@ function fixture(
     stretchBuffer,
     onTiming,
     "/test/live-stem-worklet.js",
+    assetPool,
   );
   return {
     layers,
@@ -270,6 +272,58 @@ test("failed donor selection preserves the existing layer and reports the failur
     assert.equal(active.stopped, false);
     assert.equal(f.channel.inputGain.gain.value, 0);
   } finally { f.layers.dispose(); }
+});
+
+test("a corrupt shared download is evicted so retry fetches fresh bytes without interrupting the original", async () => {
+  const pool = new SessionAudioAssetPool();
+  let decodeFails = true;
+  let fetches = 0;
+  const f = fixture(undefined, undefined, () => {
+    if (decodeFails) throw new Error("Unable to decode audio data");
+    return { duration: 3, length: 144_000, numberOfChannels: 2 };
+  }, ["vocals"], pool);
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return new Response(new Uint8Array([fetches]), { status: 200 });
+  };
+  try {
+    await pool.preload("/donor");
+    await assert.rejects(f.layers.replace("vocals", "/donor"), /Unable to decode/);
+    assert.equal(fetches, 1, "the decoder consumes the prefetched response");
+    assert.equal(f.channel.inputGain.gain.value, 1);
+    assert.equal(f.media.paused, false);
+    assert.equal(f.media.currentTime, 7);
+    decodeFails = false;
+    await f.layers.replace("vocals", "/donor");
+    assert.equal(fetches, 2, "retry downloads the same URL again instead of decoding cached corruption");
+    assert.equal(f.sources.length, 1);
+    assert.equal(f.channel.inputGain.gain.value, 0);
+    assert.equal(f.media.currentTime, 7);
+  } finally {
+    f.layers.dispose();
+    pool.dispose();
+  }
+});
+
+test("invalidating rejected bytes preserves media leases and late failures cannot evict a newer download", async () => {
+  const pool = new SessionAudioAssetPool();
+  const signal = new AbortController().signal;
+  let fetches = 0;
+  globalThis.fetch = async () => new Response(new Uint8Array([++fetches]), { status: 200 });
+  try {
+    const lease = await pool.acquireMediaUrl("/donor", signal);
+    const oldBytes = await pool.readBytes("/donor", signal);
+    pool.invalidateBytes("/donor", oldBytes);
+    assert.deepEqual([...new Uint8Array(await (await originalFetch(lease.src)).arrayBuffer())], [1],
+      "existing playback retains its object URL until its lease is released");
+    const newBytes = await pool.readBytes("/donor", signal);
+    assert.deepEqual([...new Uint8Array(newBytes)], [2]);
+    pool.invalidateBytes("/donor", oldBytes);
+    assert.deepEqual([...new Uint8Array(await pool.readBytes("/donor", signal))], [2]);
+    assert.equal(fetches, 2, "late rejection of the first response leaves the new cache intact");
+    lease.release();
+    await assert.rejects(originalFetch(lease.src), /fetch failed/);
+  } finally { pool.dispose(); }
 });
 
 test("a late download cannot override a newer selection", async () => {

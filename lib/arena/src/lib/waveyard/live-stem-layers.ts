@@ -708,8 +708,12 @@ export class LiveStemLayers {
     let decoded: AudioBuffer;
     try {
       decoded = await ctx.decodeAudioData(bytes);
+      if (!(decoded.duration > 0)) throw new Error("The donor stem has no playable audio.");
     } catch (error) {
-      this.assetPool?.invalidate(url);
+      // A successful HTTP response may still contain corrupt audio. Do not pin
+      // that response in the compressed cache for every subsequent retry.
+      this.assetPool?.invalidateBytes(url, bytes);
+      if (!this.assetPool) this.discardPrefetchedAsset(url);
       throw error;
     }
     const decodeMs = performance.now() - decodeStartedAt;

@@ -9,7 +9,7 @@ When a live donor fails, keep the previous layer audible and restore the last va
 
 **How to apply:** Test failed swaps both with and without a previous donor. Confirm the old mix and clock continue, the saved source returns to the previous valid choice, retry remains visible, and retry resubmits the same donor without affecting other stems.
 
-Shared encoded-audio caches must invalidate bytes rejected by the decoder, not just failed HTTP responses. Keep audible media leases alive, but refresh standby leases when fresh bytes arrive.
+Shared encoded-audio caches must invalidate bytes rejected by the decoder, not just failed HTTP responses. Scope invalidation to the rejected response so a late failure cannot evict a newer download. Keep audible media leases alive, but refresh standby leases when fresh bytes arrive.
 
 **Why:** An HTTP 200 can contain corrupt audio; retaining it makes an explicit retry fail repeatedly without reaching the server. Revoking an existing deck lease during invalidation can interrupt unrelated playback.
 

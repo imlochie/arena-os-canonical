@@ -12,6 +12,41 @@ If the Windows package was built in this checkout, the host defaults to `desktop
 
 This confirms the native system-loopback path only. Verify the complete product flow separately in the packaged app: start a recording, capture the test tone, stop and add it to the Waveyard library, play the imported track, and confirm an interrupted partial recording appears under **Preserved recordings** after restarting the app.
 
+## Interactive endpoint-loss and recovery check
+
+This opt-in check exercises a real selected-endpoint loss while the packaged
+ArenaForge workbench is also recording. Run it from an interactive Windows
+terminal with the packaged app open and a default playback endpoint you can
+safely disable or unplug:
+
+```powershell
+node desktop/windows-capture-acceptance.mjs --device-loss "C:\path\to\resources\native\waveyard-capture-host.exe"
+```
+
+Omit the host argument to use
+`desktop\stage\native\waveyard-capture-host.exe`. The check explicitly starts
+native capture with the current default endpoint ID, verifies that the generated
+440 Hz tone is present before the test, and does not change capture sources if
+Windows changes the default route. Follow its prompts to start a whole-output
+recording on that same endpoint in ArenaForge, then disable or unplug the
+endpoint yourself. It confirms that the selected endpoint disappears from the
+active-device list before waiting for the native failure. Restore it when
+prompted. Do not use an endpoint needed by other users or critical audio; the
+check does not disable or restore devices automatically.
+
+The check passes only when Windows reports a native capture failure, a
+tone-bearing RF64 recovery file is saved, and the tester confirms that
+ArenaForge showed its failure message, exposed the recording under
+**Preserved recordings**, imported it, and played the imported track after the
+endpoint was restored. The JSON report is written to
+`generated-artifacts/windows-capture-device-loss/result.json`; a diagnostic
+copy of the native test's captured PCM is stored under
+`generated-artifacts/windows-capture-device-loss/recovery/`. If the run cannot
+confirm a usable file or the in-app recovery flow, it reports `status: "failed"`
+and records the reason instead of counting that run as a pass. These generated
+files are local test evidence, not library items; the app recording must be
+recovered through the workbench.
+
 ## Application isolation
 
 The host builds with the Windows SDK containing `audioclientactivationparams.h`

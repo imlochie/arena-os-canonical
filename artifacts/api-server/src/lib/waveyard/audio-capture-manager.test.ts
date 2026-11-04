@@ -323,14 +323,17 @@ test("native audio failures stop the recording visibly and preserve recoverable 
 const emit=(event)=>process.stderr.write(JSON.stringify(event)+"\\n");
 if(process.argv[2]==="devices"){console.log(JSON.stringify({devices:[{id:"default",name:"Default",isDefault:true}]}));process.exit(0);}
 emit(${JSON.stringify(JSON.parse(ready))});
+const tone=()=>{const buffer=Buffer.alloc(1920);for(let frame=0;frame<480;frame++){const sample=Math.round(10000*Math.sin(2*Math.PI*440*frame/48000));buffer.writeInt16LE(sample,frame*4);buffer.writeInt16LE(sample,frame*4+2);}return buffer;};
 require("node:readline").createInterface({input:process.stdin}).on("line",(line)=>{
   if(line==="start"){
     emit({type:"started"});
-    process.stdout.write(Buffer.alloc(1920, 0));
+    process.stdout.write(tone());
+    const timer=setInterval(()=>process.stdout.write(tone()),10);
     setTimeout(()=>{
+      clearInterval(timer);
       emit({type:"error",message:"GetNextPacketSize failed (HRESULT 0x88890004)"});
       process.exit(4);
-    },100);
+    },350);
   }
 });
 `);
@@ -356,9 +359,10 @@ require("node:readline").createInterface({input:process.stdin}).on("line",(line)
   }
   assert.ok(recovery, "captured audio must remain discoverable after a native failure");
   const audio = await readFile(recovery.path);
+  clearRecoveredAudioCapture("device-failure-owner", started.sessionId);
   assert.equal(audio.toString("ascii", 0, 4), "RF64");
   assert.ok(audio.length > 80, "recovered RF64 must retain captured PCM");
-  clearRecoveredAudioCapture("device-failure-owner", started.sessionId);
+  assert.ok(audio.subarray(80).some((sample) => sample !== 0), "the recoverable recording must contain non-silent sample data");
 });
 
 test("requesting process capture rejects a host that silently switches to whole output", {

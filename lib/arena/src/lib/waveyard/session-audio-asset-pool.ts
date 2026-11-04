@@ -25,9 +25,10 @@ export type SessionAudioMediaLease = {
  */
 export class SessionAudioAssetPool {
   private entries = new Map<string, AssetEntry>();
-  private retired = new Set<AssetEntry>();
   private invalidatedUrls = new Set<string>();
   private replacementListeners = new Set<(url: string) => void>();
+  private retiredEntries = new Map<AssetEntry, string>();
+  private byteEntries = new WeakMap<ArrayBuffer, AssetEntry>();
   private cachedBytes = 0;
   private disposed = false;
 
@@ -111,14 +112,15 @@ export class SessionAudioAssetPool {
   private removeIfUnused(url: string, entry: AssetEntry) {
     if (entry.consumers > 0 || entry.mediaLeases > 0 || !entry.settled) return;
     if (entry.expired || this.disposed) {
-      const key = url || [...this.entries].find(([, candidate]) => candidate === entry)?.[0];
+      const key = url || this.retiredEntries.get(entry)
+        || [...this.entries].find(([, candidate]) => candidate === entry)?.[0];
       if (key !== undefined) this.remove(key, entry);
     }
   }
 
   private remove(url: string, entry: AssetEntry) {
     if (this.entries.get(url) === entry) this.entries.delete(url);
-    this.retired.delete(entry);
+    this.retiredEntries.delete(entry);
     if (entry.timer !== null) clearTimeout(entry.timer);
     entry.timer = null;
     if (entry.blob !== null) {
@@ -140,8 +142,19 @@ export class SessionAudioAssetPool {
   }
 
   async readBytes(url: string, signal: AbortSignal) {
-    const blob = await this.waitForBlob(this.entryFor(url), signal);
-    return blob.arrayBuffer();
+    const entry = this.entryFor(url);
+    const blob = await this.waitForBlob(entry, signal);
+    const bytes = await blob.arrayBuffer();
+    this.byteEntries.set(bytes, entry);
+    return bytes;
+  }
+
+  /** A decoder rejected these bytes. Retry without disrupting existing media leases. */
+  invalidateBytes(url: string, bytes: ArrayBuffer) {
+    const entry = this.byteEntries.get(bytes);
+    // A late decoder failure must not evict a newer download of the same URL.
+    if (!entry || this.entries.get(url) !== entry) return;
+    this.invalidate(url);
   }
 
   async preload(url: string, signal?: AbortSignal) {
@@ -155,7 +168,7 @@ export class SessionAudioAssetPool {
     this.entries.delete(url);
     this.invalidatedUrls.add(url);
     entry.expired = true;
-    this.retired.add(entry);
+    this.retiredEntries.set(entry, url);
     this.removeIfUnused(url, entry);
   }
 
@@ -199,9 +212,9 @@ export class SessionAudioAssetPool {
       entry.controller.abort();
       this.remove(url, entry);
     }
-    for (const entry of this.retired) {
+    for (const [entry, url] of this.retiredEntries) {
       entry.controller.abort();
-      this.remove("", entry);
+      this.remove(url, entry);
     }
     this.entries.clear();
     this.invalidatedUrls.clear();
