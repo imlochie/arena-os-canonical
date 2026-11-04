@@ -8,8 +8,9 @@ import {
 
 function report(overrides: Record<string, unknown> = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     measuredAt: "2026-11-04T12:00:00.000Z",
+    fixtures: [{ durationSeconds: 8 }, { durationSeconds: 30 }],
     environment: {
       browser: "Safari 18",
       operatingSystem: "iOS / iPadOS",
@@ -17,10 +18,12 @@ function report(overrides: Record<string, unknown> = {}) {
       deviceModel: "Example Phone",
     },
     observations: [
-      { mode: "nativeTempo", observedSelectionToAudibleMs: 20 },
-      { mode: "nativeTempo", observedSelectionToAudibleMs: 40 },
-      { mode: "tempoMatched", observedSelectionToAudibleMs: 30 },
-      { mode: "tempoMatched", observedSelectionToAudibleMs: 50 },
+      { mode: "nativeTempo", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 20 },
+      { mode: "nativeTempo", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 40 },
+      { mode: "tempoMatched", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 30 },
+      { mode: "tempoMatched", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 50 },
+      { mode: "nativeTempo", fixtureDurationSeconds: 30, observedSelectionToAudibleMs: 60 },
+      { mode: "tempoMatched", fixtureDurationSeconds: 30, observedSelectionToAudibleMs: 80 },
     ],
     ...overrides,
   };
@@ -33,23 +36,48 @@ function loaded(filename: string, value: unknown): LoadedDeviceReport {
 test("parses exported reports and rejects incomplete or unsafe swap observations", () => {
   const parsed = parseDeviceReport(report());
   assert.equal(parsed.environment.browser, "Safari 18");
-  assert.equal(parsed.observations.length, 4);
+  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.observations.length, 6);
 
-  assert.throws(() => parseDeviceReport({ ...report(), schemaVersion: 2 }), /schema version 1/);
+  assert.throws(() => parseDeviceReport({ ...report(), schemaVersion: 3 }), /schema version 1 or 2/);
   assert.throws(() => parseDeviceReport(report({
-    observations: [{ mode: "nativeTempo", observedSelectionToAudibleMs: 20 }],
+    fixtures: [{ durationSeconds: 8 }],
+    observations: [
+      { mode: "nativeTempo", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 20 },
+    ],
   })), /both native-tempo and tempo-matched/);
   assert.throws(() => parseDeviceReport(report({
-    observations: [{ mode: "tempoMatched", observedSelectionToAudibleMs: Number.NaN }],
+    observations: [
+      { mode: "nativeTempo", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 10 },
+      { mode: "tempoMatched", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: Number.NaN },
+    ],
   })), /invalid swap measurement/);
+  assert.throws(() => parseDeviceReport(report({
+    observations: [
+      { mode: "nativeTempo", fixtureDurationSeconds: 60, observedSelectionToAudibleMs: 10 },
+      { mode: "tempoMatched", fixtureDurationSeconds: 60, observedSelectionToAudibleMs: 20 },
+    ],
+  })), /invalid swap measurement/);
+
+  const legacy = parseDeviceReport({
+    ...report(),
+    schemaVersion: 1,
+    fixture: { durationSeconds: 8 },
+    observations: [
+      { mode: "nativeTempo", observedSelectionToAudibleMs: 12 },
+      { mode: "tempoMatched", observedSelectionToAudibleMs: 22 },
+    ],
+  });
+  assert.equal(legacy.observations[0].fixtureDurationSeconds, 8);
 });
 
-test("groups reports by browser, operating system, and device class using pooled medians", () => {
+test("groups reports by device and donor duration using pooled medians", () => {
   const sameGroup = report({
     observations: [
-      { mode: "nativeTempo", observedSelectionToAudibleMs: 60 },
-      { mode: "tempoMatched", observedSelectionToAudibleMs: 70 },
+      { mode: "nativeTempo", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 60 },
+      { mode: "tempoMatched", fixtureDurationSeconds: 8, observedSelectionToAudibleMs: 70 },
     ],
+    fixtures: [{ durationSeconds: 8 }],
   });
   const tablet = report({
     environment: {
@@ -75,8 +103,9 @@ test("groups reports by browser, operating system, and device class using pooled
     loaded("android.json", android),
   ]);
 
-  assert.equal(groups.length, 3);
-  const phones = groups.find(group => group.deviceClass === "Phone" && group.browser === "Safari 18");
+  assert.equal(groups.length, 6);
+  const phones = groups.find(group =>
+    group.deviceClass === "Phone" && group.browser === "Safari 18" && group.durationSeconds === 8);
   assert.ok(phones);
   assert.equal(phones.reports.length, 2);
   assert.equal(phones.nativeSampleCount, 3);
@@ -84,6 +113,11 @@ test("groups reports by browser, operating system, and device class using pooled
   assert.equal(phones.nativeTempoMedianMs, 40);
   assert.equal(phones.tempoMatchedMedianMs, 50);
   assert.equal(phones.tempoMatchedMinusNativeMedianMs, 10);
-  assert.ok(groups.some(group => group.deviceClass === "Tablet"));
-  assert.ok(groups.some(group => group.operatingSystem === "Android"));
+  const longerPhones = groups.find(group =>
+    group.deviceClass === "Phone" && group.browser === "Safari 18" && group.durationSeconds === 30);
+  assert.ok(longerPhones);
+  assert.equal(longerPhones.nativeTempoMedianMs, 60);
+  assert.equal(longerPhones.tempoMatchedMedianMs, 80);
+  assert.ok(groups.some(group => group.deviceClass === "Tablet" && group.durationSeconds === 30));
+  assert.ok(groups.some(group => group.operatingSystem === "Android" && group.durationSeconds === 8));
 });

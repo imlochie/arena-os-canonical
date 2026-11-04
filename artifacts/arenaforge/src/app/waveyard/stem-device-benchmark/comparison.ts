@@ -1,7 +1,7 @@
 export type BenchmarkMode = "nativeTempo" | "tempoMatched";
 
 export type ImportedDeviceReport = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   measuredAt: string;
   environment: {
     browser: string;
@@ -11,6 +11,7 @@ export type ImportedDeviceReport = {
   };
   observations: Array<{
     mode: BenchmarkMode;
+    fixtureDurationSeconds: number | null;
     observedSelectionToAudibleMs: number;
   }>;
 };
@@ -25,6 +26,7 @@ export type DeviceComparisonGroup = {
   browser: string;
   operatingSystem: string;
   deviceClass: "Phone" | "Tablet";
+  durationSeconds: number | null;
   reports: LoadedDeviceReport[];
   nativeTempoMedianMs: number;
   tempoMatchedMedianMs: number;
@@ -38,9 +40,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function parseDeviceReport(value: unknown): ImportedDeviceReport {
-  if (!isRecord(value) || value.schemaVersion !== 1) {
-    throw new Error("This is not a supported Waveyard device benchmark report (schema version 1).");
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) {
+    throw new Error("This is not a supported Waveyard device benchmark report (schema version 1 or 2).");
   }
+  const schemaVersion = value.schemaVersion;
 
   const environment = value.environment;
   if (!isRecord(environment)) {
@@ -58,13 +61,45 @@ export function parseDeviceReport(value: unknown): ImportedDeviceReport {
     throw new Error("The report is missing a valid measurement date.");
   }
 
+  const fixtureDurations = new Set<number>();
+  if (schemaVersion === 2) {
+    if (!Array.isArray(value.fixtures) || value.fixtures.length === 0) {
+      throw new Error("The report does not identify its donor fixtures.");
+    }
+    for (const fixture of value.fixtures) {
+      if (!isRecord(fixture) || typeof fixture.durationSeconds !== "number" ||
+          !Number.isFinite(fixture.durationSeconds) || fixture.durationSeconds <= 0 ||
+          fixtureDurations.has(fixture.durationSeconds)) {
+        throw new Error("The report contains an invalid or duplicate donor duration.");
+      }
+      fixtureDurations.add(fixture.durationSeconds);
+    }
+  } else if (isRecord(value.fixture) &&
+      typeof value.fixture.durationSeconds === "number" &&
+      Number.isFinite(value.fixture.durationSeconds) &&
+      value.fixture.durationSeconds > 0) {
+    fixtureDurations.add(value.fixture.durationSeconds);
+  }
+
   if (!Array.isArray(value.observations) || value.observations.length === 0) {
     throw new Error("The report does not include individual swap measurements.");
   }
   const observations: ImportedDeviceReport["observations"] = [];
   for (const observation of value.observations) {
+    const fixtureDurationSeconds = schemaVersion === 1
+      ? [...fixtureDurations][0] ?? null
+      : isRecord(observation) ? observation.fixtureDurationSeconds : undefined;
+    const invalidFixtureDuration = schemaVersion === 2
+      ? typeof fixtureDurationSeconds !== "number" ||
+        !Number.isFinite(fixtureDurationSeconds) ||
+        !fixtureDurations.has(fixtureDurationSeconds)
+      : fixtureDurationSeconds !== null &&
+        (typeof fixtureDurationSeconds !== "number" ||
+         !Number.isFinite(fixtureDurationSeconds) ||
+         !fixtureDurations.has(fixtureDurationSeconds));
     if (!isRecord(observation) ||
         (observation.mode !== "nativeTempo" && observation.mode !== "tempoMatched") ||
+        invalidFixtureDuration ||
         typeof observation.observedSelectionToAudibleMs !== "number" ||
         !Number.isFinite(observation.observedSelectionToAudibleMs) ||
         observation.observedSelectionToAudibleMs < 0) {
@@ -72,17 +107,27 @@ export function parseDeviceReport(value: unknown): ImportedDeviceReport {
     }
     observations.push({
       mode: observation.mode,
+      fixtureDurationSeconds: fixtureDurationSeconds as number | null,
       observedSelectionToAudibleMs: observation.observedSelectionToAudibleMs,
     });
   }
 
-  if (!observations.some(({ mode }) => mode === "nativeTempo") ||
-      !observations.some(({ mode }) => mode === "tempoMatched")) {
+  const durations = new Set(observations.map(({ fixtureDurationSeconds }) => fixtureDurationSeconds));
+  if (schemaVersion === 2 &&
+      (durations.size !== fixtureDurations.size ||
+       [...fixtureDurations].some(duration => !durations.has(duration)))) {
+    throw new Error("The report is missing swap measurements for one or more donor durations.");
+  }
+  if ([...durations].some(duration => {
+    const durationObservations = observations.filter(item => item.fixtureDurationSeconds === duration);
+    return !durationObservations.some(({ mode }) => mode === "nativeTempo") ||
+      !durationObservations.some(({ mode }) => mode === "tempoMatched");
+  })) {
     throw new Error("Each report must include both native-tempo and tempo-matched measurements.");
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion,
     measuredAt: value.measuredAt,
     environment: {
       browser: browser.trim(),
@@ -101,21 +146,28 @@ function median(values: number[]) {
 }
 
 export function groupDeviceReports(reports: LoadedDeviceReport[]): DeviceComparisonGroup[] {
-  const groups = new Map<string, LoadedDeviceReport[]>();
+  const groups = new Map<string, { durationSeconds: number | null; reports: LoadedDeviceReport[] }>();
   for (const loaded of reports) {
     const { browser, operatingSystem, deviceClass } = loaded.report.environment;
-    const key = JSON.stringify([browser, operatingSystem, deviceClass]);
-    groups.set(key, [...(groups.get(key) ?? []), loaded]);
+    const durations = new Set(loaded.report.observations.map(item => item.fixtureDurationSeconds));
+    for (const durationSeconds of durations) {
+      const key = JSON.stringify([browser, operatingSystem, deviceClass, durationSeconds]);
+      const group = groups.get(key) ?? { durationSeconds, reports: [] };
+      group.reports.push(loaded);
+      groups.set(key, group);
+    }
   }
 
-  return [...groups.values()].map((groupReports) => {
+  return [...groups.values()].map(({ durationSeconds, reports: groupReports }) => {
     const nativeValues = groupReports.flatMap(({ report }) =>
       report.observations
-        .filter(({ mode }) => mode === "nativeTempo")
+        .filter(({ mode, fixtureDurationSeconds }) =>
+          mode === "nativeTempo" && fixtureDurationSeconds === durationSeconds)
         .map(({ observedSelectionToAudibleMs }) => observedSelectionToAudibleMs));
     const matchedValues = groupReports.flatMap(({ report }) =>
       report.observations
-        .filter(({ mode }) => mode === "tempoMatched")
+        .filter(({ mode, fixtureDurationSeconds }) =>
+          mode === "tempoMatched" && fixtureDurationSeconds === durationSeconds)
         .map(({ observedSelectionToAudibleMs }) => observedSelectionToAudibleMs));
     const nativeTempoMedianMs = median(nativeValues);
     const tempoMatchedMedianMs = median(matchedValues);
@@ -125,6 +177,7 @@ export function groupDeviceReports(reports: LoadedDeviceReport[]): DeviceCompari
       browser,
       operatingSystem,
       deviceClass,
+      durationSeconds,
       reports: groupReports,
       nativeTempoMedianMs,
       tempoMatchedMedianMs,

@@ -11,10 +11,27 @@ type Mode = "nativeTempo" | "tempoMatched";
 type Observation = LiveStemTiming & {
   trial: number;
   mode: Mode;
+  fixtureDurationSeconds: number;
   observedSelectionToAudibleMs: number;
 };
+type FixtureDetails = {
+  durationSeconds: number;
+  source: string;
+  sampleRate: number;
+  transferBytes: number;
+  tempoRatio: number;
+};
+type DurationComparison = {
+  durationSeconds: number;
+  nativeTempoMedianMs: number;
+  tempoMatchedMedianMs: number;
+  tempoMatchedMinusNativeMedianMs: number;
+  tempoMatchedChangePercent: number | null;
+  nativeStagesMedianMs: Record<string, number>;
+  tempoMatchedStagesMedianMs: Record<string, number>;
+};
 type DeviceReport = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   measuredAt: string;
   environment: {
     browser: string;
@@ -26,25 +43,12 @@ type DeviceReport = {
     deviceMemoryGiB: number | null;
     audioSampleRate: number;
   };
-  fixture: {
-    source: string;
-    durationSeconds: number;
-    sampleRate: number;
-    transferBytes: number;
-    tempoRatio: number;
-  };
+  fixtures: FixtureDetails[];
   observations: Observation[];
-  comparison: {
-    nativeTempoMedianMs: number;
-    tempoMatchedMedianMs: number;
-    tempoMatchedMinusNativeMedianMs: number;
-    tempoMatchedChangePercent: number | null;
-    nativeStagesMedianMs: Record<string, number>;
-    tempoMatchedStagesMedianMs: Record<string, number>;
-  };
+  durationComparisons: DurationComparison[];
 };
 
-const FIXTURE_SECONDS = 8;
+const FIXTURE_DURATIONS_SECONDS = [8, 30] as const;
 const FIXTURE_SAMPLE_RATE = 44_100;
 const TEMPO_RATIO = 124 / 120;
 const BENCHMARK_CHANNEL = "device-benchmark";
@@ -174,8 +178,12 @@ export default function StemDeviceBenchmarkPage() {
       if (!browser.trim() || !operatingSystem.trim()) {
         throw new Error("Enter the browser and operating system used for this run.");
       }
-      const fixture = createWaveFixture(FIXTURE_SECONDS);
-      const fixtureBlob = new Blob([fixture], { type: "audio/wav" });
+      const fixtureBuffers = new Map(
+        FIXTURE_DURATIONS_SECONDS.map(durationSeconds =>
+          [durationSeconds, createWaveFixture(durationSeconds)] as const),
+      );
+      const baselineFixture = fixtureBuffers.get(FIXTURE_DURATIONS_SECONDS[0])!;
+      const fixtureBlob = new Blob([baselineFixture], { type: "audio/wav" });
       const context = new AudioContext();
       contextRef.current = context;
       const baselineUrl = URL.createObjectURL(fixtureBlob);
@@ -204,40 +212,66 @@ export default function StemDeviceBenchmarkPage() {
       await Promise.all([context.resume(), audio.play()]);
 
       const observations: Observation[] = [];
+      const fixtures: FixtureDetails[] = FIXTURE_DURATIONS_SECONDS.map(durationSeconds => ({
+        durationSeconds,
+        source: "Browser-generated synthetic WAV retrieved from a local Blob URL",
+        sampleRate: FIXTURE_SAMPLE_RATE,
+        transferBytes: fixtureBuffers.get(durationSeconds)!.byteLength,
+        tempoRatio: TEMPO_RATIO,
+      }));
       const modes: Mode[] = ["nativeTempo", "tempoMatched"];
       for (let trial = 1; trial <= trialCount; trial += 1) {
-        // Alternate the order in each pair so thermal or background-load drift
-        // is less likely to favor one tempo mode consistently.
-        const order = trial % 2 === 1 ? modes : [...modes].reverse();
-        for (const mode of order) {
-          const ratio = mode === "nativeTempo" ? 1 : TEMPO_RATIO;
-          const donorUrl = URL.createObjectURL(new Blob([fixture], { type: "audio/wav" }));
-          donorUrls.push(donorUrl);
-          let resolveTiming!: (timing: LiveStemTiming) => void;
-          const timingReady = new Promise<LiveStemTiming>(resolve => { resolveTiming = resolve; });
-          resolveActiveTiming = resolveTiming;
-          const selectedAt = performance.now();
-          setStatus(`Trial ${trial} of ${trialCount}: ${mode === "nativeTempo" ? "native tempo" : "tempo matched"}…`);
-          await layers.replace(BENCHMARK_CHANNEL, donorUrl, ratio, selectedAt);
-          const timing = await timingReady;
-          resolveActiveTiming = null;
-          observations.push({
-            ...timing,
-            trial,
-            mode,
-            observedSelectionToAudibleMs: Math.max(0, performance.now() - selectedAt),
-          });
-          await new Promise(resolve => setTimeout(resolve, 120));
-          await layers.replace(BENCHMARK_CHANNEL, null);
+        // Alternate fixture and mode order to reduce systematic warmup or
+        // background-load bias between donor durations and tempo modes.
+        const durationOrder = trial % 2 === 1
+          ? FIXTURE_DURATIONS_SECONDS
+          : [...FIXTURE_DURATIONS_SECONDS].reverse();
+        const modeOrder = trial % 2 === 1 ? modes : [...modes].reverse();
+        for (const durationSeconds of durationOrder) {
+          const fixture = fixtureBuffers.get(durationSeconds)!;
+          for (const mode of modeOrder) {
+            const ratio = mode === "nativeTempo" ? 1 : TEMPO_RATIO;
+            const donorUrl = URL.createObjectURL(new Blob([fixture], { type: "audio/wav" }));
+            donorUrls.push(donorUrl);
+            let resolveTiming!: (timing: LiveStemTiming) => void;
+            const timingReady = new Promise<LiveStemTiming>(resolve => { resolveTiming = resolve; });
+            resolveActiveTiming = resolveTiming;
+            const selectedAt = performance.now();
+            setStatus(`Trial ${trial} of ${trialCount}: ${durationSeconds}-second donor, ${mode === "nativeTempo" ? "native tempo" : "tempo matched"}…`);
+            await layers.replace(BENCHMARK_CHANNEL, donorUrl, ratio, selectedAt);
+            const timing = await timingReady;
+            resolveActiveTiming = null;
+            observations.push({
+              ...timing,
+              trial,
+              mode,
+              fixtureDurationSeconds: durationSeconds,
+              observedSelectionToAudibleMs: Math.max(0, performance.now() - selectedAt),
+            });
+            await new Promise(resolve => setTimeout(resolve, 120));
+            await layers.replace(BENCHMARK_CHANNEL, null);
+          }
         }
       }
 
-      const native = observations.filter(item => item.mode === "nativeTempo");
-      const matched = observations.filter(item => item.mode === "tempoMatched");
-      const nativeMedian = median(native.map(item => item.observedSelectionToAudibleMs));
-      const matchedMedian = median(matched.map(item => item.observedSelectionToAudibleMs));
+      const durationComparisons: DurationComparison[] = FIXTURE_DURATIONS_SECONDS.map(durationSeconds => {
+        const durationObservations = observations.filter(item => item.fixtureDurationSeconds === durationSeconds);
+        const native = durationObservations.filter(item => item.mode === "nativeTempo");
+        const matched = durationObservations.filter(item => item.mode === "tempoMatched");
+        const nativeMedian = median(native.map(item => item.observedSelectionToAudibleMs));
+        const matchedMedian = median(matched.map(item => item.observedSelectionToAudibleMs));
+        return {
+          durationSeconds,
+          nativeTempoMedianMs: nativeMedian,
+          tempoMatchedMedianMs: matchedMedian,
+          tempoMatchedMinusNativeMedianMs: matchedMedian - nativeMedian,
+          tempoMatchedChangePercent: nativeMedian > 0 ? ((matchedMedian - nativeMedian) / nativeMedian) * 100 : null,
+          nativeStagesMedianMs: medianStages(native),
+          tempoMatchedStagesMedianMs: medianStages(matched),
+        };
+      });
       const reportData: DeviceReport = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         measuredAt: new Date().toISOString(),
         environment: {
           browser: browser.trim(),
@@ -249,25 +283,12 @@ export default function StemDeviceBenchmarkPage() {
           deviceMemoryGiB: (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? null,
           audioSampleRate: context.sampleRate,
         },
-        fixture: {
-          source: "Browser-generated synthetic WAV retrieved from a local Blob URL",
-          durationSeconds: FIXTURE_SECONDS,
-          sampleRate: FIXTURE_SAMPLE_RATE,
-          transferBytes: fixture.byteLength,
-          tempoRatio: TEMPO_RATIO,
-        },
+        fixtures,
         observations,
-        comparison: {
-          nativeTempoMedianMs: nativeMedian,
-          tempoMatchedMedianMs: matchedMedian,
-          tempoMatchedMinusNativeMedianMs: matchedMedian - nativeMedian,
-          tempoMatchedChangePercent: nativeMedian > 0 ? ((matchedMedian - nativeMedian) / nativeMedian) * 100 : null,
-          nativeStagesMedianMs: medianStages(native),
-          tempoMatchedStagesMedianMs: medianStages(matched),
-        },
+        durationComparisons,
       };
       setReport(reportData);
-      setStatus(`${trialCount} paired comparisons finished. Review or download the measurements below.`);
+      setStatus(`${trialCount} paired comparisons per donor duration finished. Review or download the measurements below.`);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(message);
@@ -413,45 +434,53 @@ export default function StemDeviceBenchmarkPage() {
             </button>
           </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Metric label="Native-tempo median" value={report.comparison.nativeTempoMedianMs} />
-          <Metric label="Tempo-matched median" value={report.comparison.tempoMatchedMedianMs} />
-          <Metric label="Matched minus native" value={report.comparison.tempoMatchedMinusNativeMedianMs} signed />
-        </div>
-        <p className="text-sm text-slate-300">
-          Tempo matching changed the median selection-to-audible time by{" "}
-          <strong>{report.comparison.tempoMatchedChangePercent === null
-            ? "not enough to calculate a percentage"
-            : `${report.comparison.tempoMatchedChangePercent >= 0 ? "+" : ""}${FORMATTERS.format(report.comparison.tempoMatchedChangePercent)}%`}</strong>
-          {" "}on this device. This is a comparison, not a pass/fail threshold.
-        </p>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[34rem] border-collapse text-left text-sm">
-            <thead><tr className="border-b border-white/10 text-slate-400">
-              <th className="py-2 pr-3 font-medium">Median stage (ms)</th>
-              <th className="px-3 py-2 font-medium">Native tempo</th>
-              <th className="px-3 py-2 font-medium">Tempo matched</th>
-            </tr></thead>
-            <tbody>
-              {([
-                ["Download", "downloadMs"],
-                ["Decode", "decodeMs"],
-                ["Tempo matching", "tempoMatchMs"],
-                ["Selection to audible", "selectionToAudibleMs"],
-              ] as const).map(([label, field]) => (
-                <tr key={field} className="border-b border-white/5">
-                  <th className="py-2 pr-3 font-medium text-slate-200">{label}</th>
-                  <td className="px-3 py-2 tabular-nums">{FORMATTERS.format(report.comparison.nativeStagesMedianMs[field])}</td>
-                  <td className="px-3 py-2 tabular-nums">{FORMATTERS.format(report.comparison.tempoMatchedStagesMedianMs[field])}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-4">
+          {report.durationComparisons.map(comparison => (
+            <article key={comparison.durationSeconds} className="rounded-xl border border-cyan-300/15 bg-slate-950/60 p-4"
+              data-testid="stem-duration-comparison">
+              <h3 className="font-semibold">{comparison.durationSeconds}-second donor</h3>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <Metric label="Native-tempo median" value={comparison.nativeTempoMedianMs} />
+                <Metric label="Tempo-matched median" value={comparison.tempoMatchedMedianMs} />
+                <Metric label="Matched minus native" value={comparison.tempoMatchedMinusNativeMedianMs} signed />
+              </div>
+              <p className="mt-3 text-sm text-slate-300">
+                Tempo matching changed the median selection-to-audible time by{" "}
+                <strong>{comparison.tempoMatchedChangePercent === null
+                  ? "not enough to calculate a percentage"
+                  : `${comparison.tempoMatchedChangePercent >= 0 ? "+" : ""}${FORMATTERS.format(comparison.tempoMatchedChangePercent)}%`}</strong>
+                {" "}for this duration on this device. This is a comparison, not a pass/fail threshold.
+              </p>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full min-w-[34rem] border-collapse text-left text-sm">
+                  <thead><tr className="border-b border-white/10 text-slate-400">
+                    <th className="py-2 pr-3 font-medium">Median stage (ms)</th>
+                    <th className="px-3 py-2 font-medium">Native tempo</th>
+                    <th className="px-3 py-2 font-medium">Tempo matched</th>
+                  </tr></thead>
+                  <tbody>
+                    {([
+                      ["Download", "downloadMs"],
+                      ["Decode", "decodeMs"],
+                      ["Tempo matching", "tempoMatchMs"],
+                      ["Selection to audible", "selectionToAudibleMs"],
+                    ] as const).map(([label, field]) => (
+                      <tr key={field} className="border-b border-white/5">
+                        <th className="py-2 pr-3 font-medium text-slate-200">{label}</th>
+                        <td className="px-3 py-2 tabular-nums">{FORMATTERS.format(comparison.nativeStagesMedianMs[field])}</td>
+                        <td className="px-3 py-2 tabular-nums">{FORMATTERS.format(comparison.tempoMatchedStagesMedianMs[field])}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          ))}
         </div>
         <p className="text-xs leading-5 text-slate-500">
           The JSON report includes every individual swap, user-agent string, sample details, and the phone/tablet metadata.
-          The donor is an 8-second, locally generated stereo WAV; keep reports from different devices to compare
-          browser and hardware effects. Download timing covers local fixture retrieval, not network latency.
+          It records locally generated 8- and 30-second stereo WAV donors separately; keep reports from different devices
+          to compare browser and hardware effects. Download timing covers local fixture retrieval, not network latency.
         </p>
       </section>}
 
@@ -460,8 +489,8 @@ export default function StemDeviceBenchmarkPage() {
         <div>
           <h2 id="multi-device-comparison-heading" className="text-xl font-semibold">Compare device reports</h2>
           <p className="mt-1 text-sm leading-6 text-slate-400">
-            Load exported benchmark JSON files to compare native-tempo and tempo-matched swap timing.
-            Reports are grouped by browser, operating system, and device class.
+            Load exported benchmark JSON files to compare native-tempo and tempo-matched timing by donor duration.
+            Reports are grouped by browser, operating system, device class, and duration.
           </p>
         </div>
         <label className="block space-y-2 text-sm">
@@ -502,13 +531,15 @@ export default function StemDeviceBenchmarkPage() {
             </ul>
             <div className="space-y-4">
               {comparisonGroups.map(group => (
-                <article key={`${group.browser}-${group.operatingSystem}-${group.deviceClass}`}
+                <article key={`${group.browser}-${group.operatingSystem}-${group.deviceClass}-${group.durationSeconds ?? "unknown"}`}
                   className="rounded-xl border border-cyan-300/15 bg-slate-950/60 p-4"
                   data-testid="device-comparison-group">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <h3 className="font-semibold">{group.browser}</h3>
-                      <p className="text-sm text-slate-400">{group.operatingSystem} · {group.deviceClass}</p>
+                    <p className="text-sm text-slate-400">
+                      {group.operatingSystem} · {group.deviceClass} · {group.durationSeconds === null ? "Duration unknown" : `${group.durationSeconds}-second donor`}
+                    </p>
                     </div>
                     <span className="text-xs text-slate-500">{group.reports.length} report{group.reports.length === 1 ? "" : "s"}</span>
                   </div>
@@ -518,7 +549,7 @@ export default function StemDeviceBenchmarkPage() {
                     <Metric label="Matched minus native" value={group.tempoMatchedMinusNativeMedianMs} signed />
                   </div>
                   <p className="mt-3 text-xs leading-5 text-slate-400">
-                    Medians combine individual observations across these reports. They describe the measured devices;
+                    Medians combine individual observations for this duration across these reports. They describe the measured devices;
                     they are not judged against a pass/fail latency threshold.
                   </p>
                 </article>

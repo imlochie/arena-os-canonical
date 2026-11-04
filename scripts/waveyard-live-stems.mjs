@@ -1421,28 +1421,51 @@ try {
     await page.getByLabel("Paired trials per tempo mode").selectOption("3");
     await page.getByTestId("run-stem-device-benchmark").click();
     const results = page.getByTestId("stem-benchmark-results");
-    await results.waitFor({ timeout: 30_000 });
+    await results.waitFor({ timeout: 90_000 });
     const report = JSON.parse(await results.getAttribute("data-report"));
-    assert.equal(report.observations.length, 6, "the harness records both modes for each paired trial");
-    assert.ok(report.observations.some(item => item.mode === "nativeTempo"),
-      "the device report includes native-tempo swaps");
-    assert.ok(report.observations.some(item => item.mode === "tempoMatched"),
-      "the device report includes tempo-matched swaps");
+    assert.equal(await results.getByTestId("stem-duration-comparison").count(), 2,
+      "the page renders a separate comparison for each donor duration");
+    for (const durationSeconds of [8, 30]) {
+      await results.getByRole("heading", { name: `${durationSeconds}-second donor` }).waitFor();
+    }
+    assert.equal(report.schemaVersion, 2, "the device report identifies its duration-aware schema");
+    assert.deepEqual(report.fixtures.map(item => item.durationSeconds), [8, 30],
+      "physical-device runs include short and longer donor fixtures");
+    assert.equal(report.observations.length, 12,
+      "the harness records both modes for each trial and each donor duration");
+    for (const durationSeconds of [8, 30]) {
+      const observations = report.observations.filter(item => item.fixtureDurationSeconds === durationSeconds);
+      assert.equal(observations.length, 6, `${durationSeconds}-second donors have all paired trial observations`);
+      assert.ok(observations.some(item => item.mode === "nativeTempo"),
+        `${durationSeconds}-second donors include native-tempo swaps`);
+      assert.ok(observations.some(item => item.mode === "tempoMatched"),
+        `${durationSeconds}-second donors include tempo-matched swaps`);
+    }
     assert.equal(report.environment.deviceClass, "Phone",
       "each result records the selected device class");
     assert.ok(report.environment.browser && report.environment.operatingSystem && report.environment.userAgent,
       "each result records browser, operating system, and user-agent details");
-    assert.ok(Number.isFinite(report.comparison.tempoMatchedMinusNativeMedianMs),
-      "the report compares paired timing medians without imposing a latency threshold");
+    assert.deepEqual(report.durationComparisons.map(item => item.durationSeconds), [8, 30],
+      "the report provides a separate comparison for each fixture duration");
+    for (const comparison of report.durationComparisons) {
+      assert.ok(Number.isFinite(comparison.nativeTempoMedianMs) &&
+        Number.isFinite(comparison.tempoMatchedMedianMs) &&
+        Number.isFinite(comparison.tempoMatchedMinusNativeMedianMs),
+      `${comparison.durationSeconds}-second results compare both tempo modes without imposing a latency threshold`);
+    }
     console.log("LIVE_STEM_DEVICE_BENCHMARK_SMOKE", JSON.stringify({
       simulatedViewport: "390x844",
       observationCount: report.observations.length,
       deviceClass: report.environment.deviceClass,
       browser: report.environment.browser,
       operatingSystem: report.environment.operatingSystem,
-      comparisonMs: report.comparison.tempoMatchedMinusNativeMedianMs,
+      durationComparisons: report.durationComparisons.map(({ durationSeconds, nativeTempoMedianMs, tempoMatchedMedianMs }) => ({
+        durationSeconds,
+        nativeTempoMedianMs,
+        tempoMatchedMedianMs,
+      })),
     }));
-    console.log("PASS: device benchmark collects comparative native and tempo-matched measurements and environment metadata");
+    console.log("PASS: device benchmark compares native and tempo-matched timing for short and longer donors");
   } else if (crossTabStemMixOnly) {
     session.tracks = tracks;
     session.swaps = [];
