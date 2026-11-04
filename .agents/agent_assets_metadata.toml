@@ -56,3 +56,31 @@ mtime_ms = 1793772923579
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/68d1a26a-17ad-406d-9564-40077ef1bdf2/499ada25-bfa9-4165-8eb3-875462874289"
 storage_version_token = "1793773104786823"
 content_type = "image/png"
+
+[[outputs]]
+id = "yE9vm-KAD6gXWXckaCpQN"
+uri = "file://generated-artifacts/waveyard-mashup-quality/blind-listening/participant/audio/521e5c66-a739-47a7-be4d-7fba73c4791d.wav"
+type = "audio"
+title = "Before: original separated track"
+description = "8.4 seconds of Monkeys Spinning Monkeys, Kevin MacLeod, CC BY 4.0. Recorded from Waveyard's browser audio graph; WebM/Opus capture decoded to WAV."
+logical_id = "37a3b2f2-3fd1-423a-b8f3-6c99493da062"
+content_hash = "sha256:14937e49b97bdd9a53bac16c8ff91cd86fa085da54b59e47f611a1d9a3fd6d45"
+size = 1481838
+mtime_ms = 1793802628935
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/37a3b2f2-3fd1-423a-b8f3-6c99493da062/04a234f3-7b1e-4310-be43-712017be4d76"
+storage_version_token = "1793805861987875"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "4NSg9WJ5iQ2erNeHfcQhl"
+uri = "file://generated-artifacts/waveyard-mashup-quality/blind-listening/participant/audio/7ebde8cd-6329-4d0b-84bb-1581d3346d1d.wav"
+type = "audio"
+title = "After: live melody/other stem swap"
+description = "Same lead track with Sneaky Snitch's other stem substituted through Waveyard. Both tracks by Kevin MacLeod, CC BY 4.0, https://incompetech.com/ . This pair was not tempo-matched; this is not proof of a fluid mashup."
+logical_id = "e78dea31-eba4-4e49-87fd-604bfc174fa1"
+content_hash = "sha256:63189729f5d2f18888ab41988925a835d4e3b91cc259c1003564713caeae1fed"
+size = 1481838
+mtime_ms = 1793802630163
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/e78dea31-eba4-4e49-87fd-604bfc174fa1/e121bc55-ccdd-41ab-a9ad-5a808a15a21d"
+storage_version_token = "1793805862638196"
+content_type = "audio/wav"
