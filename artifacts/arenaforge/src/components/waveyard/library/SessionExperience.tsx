@@ -69,6 +69,20 @@ import {
 // Types mirrored from the session API payload.
 // ---------------------------------------------------------------------------
 
+const SESSION_MASTER_LEVEL_STORAGE_KEY = "waveyard:session-master-level:v1";
+
+function readStoredSessionMasterLevel(): number {
+  if (typeof window === "undefined") return 1;
+  try {
+    const stored = window.localStorage.getItem(SESSION_MASTER_LEVEL_STORAGE_KEY);
+    if (stored === null) return 1;
+    const value = Number(stored);
+    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+  } catch {
+    return 1;
+  }
+}
+
 interface SessionTrackItem {
   id: string;
   position: number;
@@ -1252,7 +1266,7 @@ export default function SessionExperience({
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
   const [pendingPerformance, setPendingPerformance] = useState<PendingPerformance | null>(null);
   const [temporaryIsolation, setTemporaryIsolation] = useState<TemporaryIsolation | null>(null);
-  const [masterLevel, setMasterLevel] = useState(1);
+  const [masterLevel, setMasterLevel] = useState(readStoredSessionMasterLevel);
   const [playbackRate, setPlaybackRate] = useState(1);
   const playbackRateRef = useRef(playbackRate);
   const [pitchModesAvailable] = useState(() => supportsSessionPitchModes());
@@ -1956,6 +1970,13 @@ export default function SessionExperience({
   }, [endTemporaryIsolation]);
 
   // Master level drives both decks outside a fade (the fade multiplies by it).
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SESSION_MASTER_LEVEL_STORAGE_KEY, String(masterLevel));
+    } catch {
+      // Audio remains usable when browser storage is unavailable.
+    }
+  }, [masterLevel]);
   useEffect(() => {
     if (fadeRef.current !== null) return;
     decksRef.current[0]?.transport.setMasterVolume(masterLevel);

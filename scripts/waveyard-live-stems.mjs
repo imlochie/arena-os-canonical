@@ -180,6 +180,7 @@ const retryDonorRow = {
 let liveQueue = [];
 let exposeSeparatedSource = false;
 let showSeparationProgress = false;
+let suppressSessionStateWritesForStemSwitchFixture = false;
 let unstartedCurrentSessionTrack = false;
 let currentSessionSeparationRequests = 0;
 let preparationRequested = false;
@@ -263,6 +264,18 @@ try {
       combinedInputs: [], combinedOutputs: [], playStarts: [],
       workletLoads: [], workletSeeks: [], keyShifts: [], transportMessages: [],
       storageTransportMessages: [], storageTransportReceives: [], contexts: [],
+    };
+    window.audioProbe.currentStemGain = stemType => {
+      const deck = document.querySelector('[data-role="current"]');
+      const audio = [...(deck?.querySelectorAll("audio") ?? [])]
+        .find(element => element.src.endsWith(`/a-${stemType}`));
+      const source = window.audioProbe.sources.find(entry => entry.mediaElement === audio);
+      return source?.inputNode?.nextNode?.gain?.value ?? null;
+    };
+    window.audioProbe.currentMasterGain = () => {
+      const deckIndex = document.querySelector('[data-role="current"]')?.getAttribute("data-testid") === "session-deck-b" ? 1 : 0;
+      return window.audioProbe.masterGains
+        .find(master => master.probeDeckIndex === deckIndex)?.gain.value ?? null;
     };
     window.addEventListener("storage", event => {
       if (event.key !== "waveyard:queue-change" || event.newValue === null) return;
@@ -641,7 +654,14 @@ try {
     if (request.method() === "GET" && exposeSeparatedSource) {
       return route.fulfill({ json: { session: {
         ...session,
-        tracks: session.tracks.map(item => item.id === "a" ? tracks[0] : item),
+        // Separation refreshes library assets, not the session's saved faders
+        // or transition settings.
+        tracks: session.tracks.map(item => item.id === "a" ? {
+          ...item,
+          sourceAssetId: tracks[0].sourceAssetId,
+          stems: tracks[0].stems,
+          playback: tracks[0].playback,
+        } : item),
       } } });
     }
     if (url.pathname.endsWith("/swaps") && request.method() === "POST") {
@@ -738,7 +758,9 @@ try {
       parallelSwapDeleteRequests.push(url.searchParams.get("swapId"));
       if (pendingSwapDeleteGate) await pendingSwapDeleteGate;
       session.swaps = session.swaps.filter(s => s.id !== url.searchParams.get("swapId"));
-    } else if (url.pathname.endsWith("/state") && body) Object.assign(session, body);
+    } else if (url.pathname.endsWith("/state") && body) {
+      if (!suppressSessionStateWritesForStemSwitchFixture) Object.assign(session, body);
+    }
     else if (request.method() === "PATCH" && body) {
       const targetId = url.pathname.split("/").at(-1);
       const sessionTrack = session.tracks.find(item => item.id === targetId);
@@ -1028,11 +1050,19 @@ try {
     });
   });
   async function verifyStemSwitchRecovery() {
+    await page.bringToFront();
+    suppressSessionStateWritesForStemSwitchFixture = true;
     for (const scenario of ["cancel", "timeout"]) {
+      // Let the old page finish its keepalive state save before forcing a
+      // deterministic fixture track for this scenario.
+      await page.goto("http://localhost:80/waveyard");
+      await page.bringToFront();
+      await page.evaluate(() => window.localStorage.removeItem("waveyard:queue-change"));
       session.currentSessionTrackId = "a";
       session.positionSeconds = 0;
       session.swaps = [];
       await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+      await page.bringToFront();
       await page.waitForFunction(() => {
         const audio = [...document.querySelectorAll('[data-role="current"] audio')];
         return audio.length === 4 && audio.every(element =>
@@ -1060,9 +1090,25 @@ try {
           pendingSwapDeleteGate = new Promise(resolve => { releaseDelete = resolve; });
           await page.getByTestId("cancel-live-stem-swap-swap-vocals").click();
         }
-        await page.getByTestId("session-status")
-          .filter({ hasText: scenario === "cancel" ? /vocals switch cancelled/i : /stem switch timed out after 15 seconds/i })
-          .waitFor({ timeout: 20_000 });
+        try {
+          await page.getByTestId("session-status")
+            .filter({ hasText: scenario === "cancel" ? /vocals switch cancelled/i : /stem switch timed out after 15 seconds/i })
+            .waitFor({ timeout: 20_000 });
+        } catch (error) {
+          console.error("STEM_SWITCH_RECOVERY_STATE", JSON.stringify({
+            scenario,
+            serverCurrentTrackId: session.currentSessionTrackId,
+            suppressSessionStateWrites: suppressSessionStateWritesForStemSwitchFixture,
+            openPages: context.pages().map(candidate => ({ url: candidate.url(), closed: candidate.isClosed() })),
+            visibility: await page.evaluate(() => document.visibilityState),
+            body: (await page.locator("body").innerText()).slice(-1200),
+            pending: await page.locator('[data-testid*="pending"]').allTextContents(),
+            audio: await deck.locator("audio").evaluateAll(elements => elements.map(element => ({
+              src: element.src, paused: element.paused, time: element.currentTime,
+            }))),
+          }));
+          throw error;
+        }
         const afterStop = await deck.locator("audio").evaluateAll(elements => elements.map(audio => ({
           time: audio.currentTime, paused: audio.paused,
         })));
@@ -1236,6 +1282,7 @@ try {
         await mirror.close();
       }
     }
+    suppressSessionStateWritesForStemSwitchFixture = false;
   }
 
   async function verifyStudioSaveReload() {
@@ -1607,9 +1654,7 @@ try {
     };
     const assertStemGains = async ({ vocals, drums }) => {
       await page.waitForFunction(({ vocals: targetVocals, drums: targetDrums }) => {
-        const gain = type => window.audioProbe.sources
-          .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
-          .at(-1)?.inputNode?.nextNode?.gain?.value;
+        const gain = type => window.audioProbe.currentStemGain(type);
         return Math.abs(gain("vocals") - targetVocals) < 0.01
           && Math.abs(gain("drums") - targetDrums) < 0.01;
       }, { vocals, drums }, { timeout: 5_000 });
@@ -3130,13 +3175,13 @@ try {
   await quickVocalsPad.waitFor();
   await quickVocalsPad.click();
   await page.waitForFunction(() => {
-    const gain = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    const gain = type => window.audioProbe.currentStemGain(type);
     return document.querySelector('[data-testid="quick-isolate-vocals"]')?.getAttribute("aria-pressed") === "true" &&
       gain("vocals") > 0.9 && ["drums", "bass", "other"].every(type => gain(type) < 0.01);
   });
   await current.getByTestId("quick-restore-mix").click();
   await page.waitForFunction(() => {
-    const gain = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    const gain = type => window.audioProbe.currentStemGain(type);
     return document.querySelector('[data-testid="quick-isolate-vocals"]')?.getAttribute("aria-pressed") === "false" &&
       ["vocals", "drums", "bass", "other"].every(type => gain(type) > 0.9);
   });
@@ -3152,27 +3197,33 @@ try {
 
   await current.getByLabel("Isolate vocals", { exact: true }).click();
   await page.waitForFunction(() => {
-    const get = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    const get = type => window.audioProbe.currentStemGain(type);
     return get("vocals") > 0.9 && ["drums", "bass", "other"].every(type => get(type) < 0.01);
   });
   await current.getByLabel("Isolate vocals", { exact: true }).click();
-  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
-    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
-    return source?.inputNode?.nextNode?.gain?.value > 0.9;
-  }));
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
+    window.audioProbe.currentStemGain(type) > 0.9));
   await current.getByLabel("Mute drums", { exact: true }).click();
   await page.waitForFunction(() => {
-    const get = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    const get = type => window.audioProbe.currentStemGain(type);
     return get("drums") < 0.01 && ["vocals", "bass", "other"].every(type => get(type) > 0.9);
   });
   await current.getByLabel("Restore all current stems", { exact: true }).click();
-  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
-    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
-    return source?.inputNode?.nextNode?.gain?.value > 0.9;
-  }));
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
+    window.audioProbe.currentStemGain(type) > 0.9));
 
+  const beatSnapSaved = page.waitForResponse(response => {
+    const request = response.request();
+    if (request.method() !== "PATCH" || !new URL(request.url()).pathname.endsWith("/tracks/a")) return false;
+    try {
+      return JSON.parse(request.postData() ?? "{}").transition?.performance?.snap === "beat";
+    } catch {
+      return false;
+    }
+  });
   await current.getByLabel("Snap stem changes").selectOption("beat");
-  await page.waitForTimeout(800);
+  const beatSnapResponse = await beatSnapSaved;
+  assert.ok(beatSnapResponse.ok(), `the beat-snap edit request succeeds (${beatSnapResponse.status()})`);
   assert.equal(session.tracks.find(item => item.id === "a").transition.performance.snap, "beat",
     "the per-track performance snap setting persists through the session edit route");
   const barSnapOptions = await current.locator('option[value="bar"]').evaluateAll(options =>
@@ -3183,17 +3234,15 @@ try {
   await current.getByLabel("Hold to isolate vocals").focus();
   await page.keyboard.down("Space");
   await page.waitForFunction(() => {
-    const gain = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    const gain = type => window.audioProbe.currentStemGain(type);
     return gain("vocals") > 0.9 && ["drums", "bass", "other"].every(type => gain(type) < 0.01);
   });
   await page.waitForTimeout(700);
   assert.deepEqual(session.tracks.find(item => item.id === "a").stemMix, mixBeforeHold,
     "momentary isolation never writes a temporary mix to the session");
   await page.keyboard.up("Space");
-  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
-    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
-    return source?.inputNode?.nextNode?.gain?.value > 0.9;
-  }), null, { timeout: 3000 });
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
+    window.audioProbe.currentStemGain(type) > 0.9), null, { timeout: 3000 });
 
   await firstPage.bringToFront();
   if (await page.getByTestId("session-play").getAttribute("aria-pressed") !== "true") await toggle();
@@ -3210,8 +3259,7 @@ try {
   // wait. The wide synthetic grid gives the browser four seconds to apply the
   // actual audio-graph change without racing a sub-second boundary under load.
   await page.waitForFunction(() => {
-    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-drums"));
-    return source?.inputNode?.nextNode?.gain?.value < 0.01;
+    return window.audioProbe.currentStemGain("drums") < 0.01;
   }, null, { timeout: 6000 }).catch(async error => {
     const diagnostic = await page.evaluate(() => {
       const audio = document.querySelector('[data-role="current"] audio[src$="/a-drums"]');
@@ -3235,10 +3283,8 @@ try {
     throw error;
   });
   await current.getByLabel("Restore all current stems").click();
-  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
-    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
-    return source?.inputNode?.nextNode?.gain?.value > 0.9;
-  }));
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
+    window.audioProbe.currentStemGain(type) > 0.9));
   await toggle();
 
   if (await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.paused)) await toggle();
@@ -4379,7 +4425,7 @@ try {
   const masterVolume = page.getByLabel("Master volume", { exact: true });
   await masterVolume.fill("0.63");
   assert.equal(await masterVolume.inputValue(), "0.63", "the chosen master level is active before returning");
-  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.currentMasterGain()) - 0.63) < 0.01,
     "the live master gain matches its control before returning");
   await current.getByLabel("Snap stem changes", { exact: true }).selectOption("off");
   const vocalsLevel = current.getByLabel("vocals level, current deck", { exact: true });
@@ -4400,9 +4446,7 @@ try {
   assert.equal(await drumsLevel.inputValue(), "0.61", "the distinctive drums level is set before muting");
   await current.getByLabel("Mute drums", { exact: true }).click();
   await page.waitForFunction(() => {
-    const gain = type => window.audioProbe.sources
-      .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
-      .at(-1)?.inputNode?.nextNode?.gain?.value;
+    const gain = type => window.audioProbe.currentStemGain(type);
     return Math.abs(gain("vocals") - 0.37) < 0.01 && gain("drums") < 0.01;
   });
   assert.equal(await current.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
@@ -4427,7 +4471,7 @@ try {
   assert.ok(duringReturn[4].src.endsWith("/a-source") && duringReturn[4].paused,
     "the staged full-track element does not start before it is ready");
   assert.ok(duringReturn[0].time > beforeReturn, "the existing stem mix advances during source preparation");
-  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.currentMasterGain()) - 0.63) < 0.01,
     "the master gain stays unchanged while the original is prepared");
   heldAssetId = null;
   heldAssetGate = null;
@@ -4442,7 +4486,7 @@ try {
   assert.ok(Math.abs(afterReturn - expectedReturnPosition) < 0.5,
     `returning to the full track preserves the live playhead; expected ${expectedReturnPosition}, received ${afterReturn}`);
   assert.equal(await masterVolume.inputValue(), "0.63", "returning does not reset the master-volume control");
-  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.currentMasterGain()) - 0.63) < 0.01,
     "returning preserves the actual master gain");
   const returnGains = await page.evaluate(() => window.audioProbe.sources.map(source => ({
     url: source.mediaElement.src, gain: source.inputNode?.nextNode?.gain?.value,
@@ -4471,12 +4515,10 @@ try {
     "the muted drums fader remains at zero after switching back to stems");
   assert.equal(await current.getByLabel("Mute drums", { exact: true }).getAttribute("aria-pressed"), "true",
     "switching back to stems restores the muted drums state");
-  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.currentMasterGain()) - 0.63) < 0.01,
     "switching back to stems preserves the master gain");
   await page.waitForFunction(() => {
-    const gain = type => window.audioProbe.sources
-      .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
-      .at(-1)?.inputNode?.nextNode?.gain?.value;
+    const gain = type => window.audioProbe.currentStemGain(type);
     return Math.abs(gain("vocals") - 0.37) < 0.01 && gain("drums") < 0.01 &&
       gain("bass") > 0.9 && gain("other") > 0.9;
   });
@@ -4502,12 +4544,36 @@ try {
   }
   const reloadedVocalsLevel = current.getByLabel("vocals level, current deck", { exact: true });
   const reloadedDrumsLevel = current.getByLabel("drums level, current deck", { exact: true });
-  await page.waitForFunction(() => {
-    const gain = type => window.audioProbe.sources
-      .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
-      .at(-1)?.inputNode?.nextNode?.gain?.value;
-    return Math.abs(gain("vocals") - 0.37) < 0.01 && gain("drums") < 0.01;
-  });
+  try {
+    await page.waitForFunction(() => {
+      const gain = type => window.audioProbe.currentStemGain(type);
+      return Math.abs(gain("vocals") - 0.37) < 0.01 && gain("drums") < 0.01;
+    });
+  } catch (error) {
+    const snapshot = await page.evaluate(() => {
+      const deck = document.querySelector('[data-role="current"]');
+      return {
+        controls: [...(deck?.querySelectorAll('input[type="range"]') ?? [])]
+          .map(input => ({ label: input.getAttribute("aria-label"), value: input.value })),
+        audio: [...(deck?.querySelectorAll("audio") ?? [])]
+          .map(element => ({ src: element.src, paused: element.paused, readyState: element.readyState, currentTime: element.currentTime })),
+        gains: window.audioProbe.sources.map(source => ({
+          src: source.mediaElement.src,
+          inCurrentDeck: source.mediaElement.closest('[data-role="current"]') !== null,
+          nextNode: source.inputNode?.nextNode?.constructor?.name ?? null,
+          gain: source.inputNode?.nextNode?.gain?.value ?? null,
+        })),
+        contexts: window.audioProbe.contexts.map(context => context.state),
+      };
+    });
+    throw new Error(
+      `Reloaded UI/audio state did not restore the saved stem gains: ${JSON.stringify({
+        snapshot,
+        savedMix: session.tracks.find(item => item.id === "a")?.stemMix,
+      })}`,
+      { cause: error },
+    );
+  }
   assert.equal(await reloadedVocalsLevel.inputValue(), "0.37",
     "reopening the session restores the distinctive vocals fader");
   assert.equal(await reloadedDrumsLevel.inputValue(), "0",
@@ -4521,9 +4587,7 @@ try {
 
   await current.getByLabel("Mute drums", { exact: true }).click();
   await page.waitForFunction(() => {
-    const gain = window.audioProbe.sources
-      .filter(source => source.mediaElement.src.endsWith("/a-drums"))
-      .at(-1)?.inputNode?.nextNode?.gain?.value;
+    const gain = window.audioProbe.currentStemGain("drums");
     return Math.abs(gain - 0.61) < 0.01;
   });
   assert.equal(await reloadedDrumsLevel.inputValue(), "0.61",
@@ -4572,8 +4636,17 @@ try {
   assert.ok(afterFailedReturn.playing,
     `all original stems continue playing after the source fails: ${JSON.stringify(afterFailedReturn)}`);
   assert.ok(afterFailedReturn.position > beforeFailedReturn, "the current stem mix advances while the source is unavailable");
-  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
-    "a failed source load leaves the master level unchanged");
+  const failedSourceMaster = await page.evaluate(() => ({
+    currentDeck: document.querySelector('[data-role="current"]')?.getAttribute("data-testid"),
+    control: document.querySelector('[aria-label="Master volume"]')?.value,
+    gain: window.audioProbe.currentMasterGain(),
+    deckGains: window.audioProbe.masterGains.map(master => ({
+      deck: master.probeDeckIndex,
+      gain: master.gain.value,
+    })),
+  }));
+  assert.ok(Math.abs(failedSourceMaster.gain - 0.63) < 0.01,
+    `a failed source load leaves the current deck master level unchanged: ${JSON.stringify(failedSourceMaster)}`);
   assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "true",
     "the transport remains in the playing state after the source fails");
 
@@ -4591,7 +4664,7 @@ try {
     `retry returns to the full track at the live playhead; expected ${expectedRetryPosition}, received ${afterRetry}`);
   assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "true",
     "successful retry keeps playback active");
-  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.currentMasterGain()) - 0.63) < 0.01,
     "successful retry also preserves the master level");
   const retryGains = await page.evaluate(() => window.audioProbe.sources.map(source => ({
     url: source.mediaElement.src, gain: source.inputNode?.nextNode?.gain?.value,
@@ -4827,14 +4900,18 @@ try {
   );
   await undoTestVolume.fill("0.91");
   await page.getByRole("button", { name: "Undo", exact: true }).click();
+  assert.equal(await undoTestVolume.inputValue(), "0.68",
+    "undo restores the current canonical draft after an explicit conflict recovery");
   assert.ok((await undoSaveResponse).ok(), "undo persists the restored arrangement");
+  assert.equal(studioRemixData.tracks[0].volume, 0.68,
+    "the undo save stores the restored value, not the transient edit");
   await page.waitForTimeout(850);
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: "Mixer console" }).waitFor();
   assert.equal(
     await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(),
-    "0.79",
-    "a pending autosave cannot reapply the edit after undo",
+    "0.68",
+    "a pending autosave cannot reapply the edit after undo to the restored draft",
   );
   const exitTestVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
   const exitSaveResponse = page.waitForResponse(response =>

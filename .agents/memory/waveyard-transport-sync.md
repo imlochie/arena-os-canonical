@@ -28,3 +28,9 @@ Stem fader and mute edits from a tab must send only the changed stem keys. The s
 **Why:** Two tabs can hold stale full-mix snapshots. The last whole-object write could silently erase another tab's gain or mute, including its remembered unmute level.
 
 **How to apply:** Test real UI controls in two tabs with the later tab's response applied first, then reload and verify saved gains reach the audio graph. Also verify independent concurrent partial writes against the real database.
+
+The master output level is a device-local listening preference, not shared session state. Persist it locally across reloads, but do not include it in transport sync or the saved stem mix.
+
+**Why:** Paired devices can have different speakers, headphones, and comfortable output levels; syncing one device's master gain could unexpectedly change another device's volume.
+
+**How to apply:** Keep session transport and stem faders synchronized while leaving each device's master output level independently controlled.
