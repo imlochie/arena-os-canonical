@@ -1,3 +1,5 @@
+import type { SessionAudioAssetPool } from "./session-audio-asset-pool";
+
 export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
 export const SESSION_PLAYBACK_RATE_MIN = 0.8;
 export const SESSION_PLAYBACK_RATE_MAX = 1.2;
@@ -210,7 +212,12 @@ export class LiveStemLayers {
     private stretchBuffer: BufferStretcher = stretchBufferInWorker,
     private onTiming?: (timing: LiveStemTiming) => void,
     private workletUrl = "",
+    private assetPool?: SessionAudioAssetPool,
   ) {}
+
+  setAssetPool(assetPool?: SessionAudioAssetPool) {
+    this.assetPool = assetPool;
+  }
 
   setPlaybackRate(value: number) {
     if (this.disposed) return;
@@ -556,6 +563,7 @@ export class LiveStemLayers {
   }
 
   private async readAssetBytes(url: string, signal: AbortSignal) {
+    if (this.assetPool) return this.assetPool.readBytes(url, signal);
     const prefetched = this.prefetchedAssets.get(url);
     if (prefetched) {
       // Refresh LRU order but keep the original expiry; repeated reads must not
@@ -577,6 +585,7 @@ export class LiveStemLayers {
   /** Download compressed bytes only for a likely next donor. */
   preloadAsset(url: string) {
     if (this.disposed) return Promise.resolve();
+    if (this.assetPool) return this.assetPool.preload(url);
     const existing = this.prefetchedAssets.get(url);
     if (existing) return existing.promise.then(() => undefined);
 

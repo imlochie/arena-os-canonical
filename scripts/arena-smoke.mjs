@@ -1731,17 +1731,17 @@ try {
   await page.goto(`${base}/waveyard/session/${liveSessionId}`, { waitUntil: "domcontentloaded" });
   await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
   await page.getByText("Live source track", { exact: true }).first().waitFor();
-  const sourceVocals = page.locator(`audio[src$="/${liveVocalsAssetId}"]`);
-  const sourceDrums = page.locator(`audio[src$="/${liveDrumsAssetId}"]`);
+  const sourceVocals = page.locator(`audio[data-waveyard-asset-url$="/${liveVocalsAssetId}"]`);
+  const sourceDrums = page.locator(`audio[data-waveyard-asset-url$="/${liveDrumsAssetId}"]`);
   await page.getByTestId("session-play").click();
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
   await page.getByText(`Session order · ${liveSessionTracks.length}`, { exact: true }).click();
   const upcomingMode = page.getByTestId(`session-playback-mode-${liveNextItem.id}`);
   await page.evaluate((assetId) => {
-    window.__modePrepAudio = document.querySelector(`audio[src$="/${assetId}"]`);
+    window.__modePrepAudio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     window.__modePrepTime = window.__modePrepAudio.currentTime;
     window.__modePrepInterruptions = 0;
     for (const name of ["pause", "emptied", "loadstart"]) {
@@ -1760,7 +1760,7 @@ try {
   await page.getByTestId("session-status").filter({ hasText: "Stems saved" }).waitFor();
   assert.equal(liveNextItem.playbackPreference, "stems");
   assert.equal(await page.evaluate((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio === window.__modePrepAudio && !audio.paused
       && audio.currentTime > window.__modePrepTime && window.__modePrepInterruptions === 0;
   }, liveVocalsAssetId), true, "preparing the next entry must retain the audible element and advancing playback");
@@ -1772,12 +1772,12 @@ try {
   assert.equal(liveCurrentItem.playbackPreference, "source", "returning to the full track must save the per-session choice");
   assert.equal(liveCurrentItem.playback.kind, "source");
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
   }, liveCurrentSourceAssetId, { timeout: 8_000 });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
-  await page.locator(`audio[src$="/${liveCurrentSourceAssetId}"]`).waitFor({ state: "attached", timeout: 8_000 });
+  await page.locator(`audio[data-waveyard-asset-url$="/${liveCurrentSourceAssetId}"]`).waitFor({ state: "attached", timeout: 8_000 });
   assert.equal(liveCurrentItem.playbackPreference, "source", "reopening the session must retain full-track playback");
   await page.getByTestId(`button-switch-stems-${liveSessionTrackId}`).waitFor({ timeout: 8_000 });
   await page.getByTestId(`button-switch-stems-${liveSessionTrackId}`).click();
@@ -1805,7 +1805,7 @@ try {
     "stem controls remain usable when the original asset is missing");
   await page.getByTestId("session-play").click();
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
   await page.getByTestId("session-play").click();
@@ -1937,7 +1937,7 @@ try {
   assert.equal(liveCurrentItem.stemMix.vocals, 1.75, "compact fader changes must persist through the existing session mix endpoint");
   await tapCenter(compactPlay);
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
   await tapCenter(compactPlay);
@@ -1962,7 +1962,7 @@ try {
 
   await page.getByTestId("session-play").click();
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
   const clockBeforeSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
@@ -2018,7 +2018,7 @@ try {
     "a late response from the cancelled donor cannot become the active stem",
   );
   await page.waitForFunction(({ assetId, after }) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2;
   }, { assetId: liveVocalsAssetId, after: clockBeforeCancel }, { timeout: 5_000 });
   assert.equal(await page.getByTestId("restore-live-swap-vocals").count(), 0,
@@ -2027,7 +2027,7 @@ try {
   await page.getByTestId(`live-swap-candidate-vocals-${liveDonorTrackId}`).click();
   await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio?.getAttribute("aria-label") === "vocals audio (swapped layer)";
   }, liveVocalsAssetId, { timeout: 8_000 });
   await page.waitForFunction(() => {
@@ -2091,7 +2091,7 @@ try {
     assert.equal(await page.getByTestId("restore-live-swap-drums").count(), 0,
       "the failed drum donor is no longer the saved source");
     await page.waitForFunction(({ assetId, after }) => {
-      const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+      const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
       const bar = document.querySelector(".wy-stem-vocals .wy-stem-meter i");
       const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
       return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2 && peak > 0.4;
@@ -2278,7 +2278,7 @@ try {
   }
   await mobilePlay.click();
   await page.waitForFunction(({ assetId }) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused;
   }, { assetId: liveVocalsAssetId }, { timeout: 5_000 });
 
@@ -2318,7 +2318,7 @@ try {
     .every((button) => button.getAttribute("aria-pressed") === "false"));
   await mobileRestoreSaved;
   await page.waitForFunction(({ assetId, after }) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2;
   }, { assetId: liveVocalsAssetId, after: mobilePlaybackTime }, { timeout: 5_000 });
 
@@ -2330,7 +2330,7 @@ try {
   await page.waitForFunction(() => Number(document.querySelector('[aria-label="Seek current track"]')?.value) < 1,
     null, { timeout: 2_000 });
   await page.waitForFunction(({ assetId }) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime < 1.5;
   }, { assetId: liveVocalsAssetId }, { timeout: 5_000 });
 
@@ -2719,10 +2719,10 @@ try {
     "the linked remix must load its saved audio clips, not an empty arrangement");
   assert.equal(await page.getByLabel("Drum donor track.wav — Drums arrangement volume").inputValue(), "0",
     "the isolated stem level must be present in the Studio mix");
-  const donorStudioAudio = page.locator(`audio[src$="/${liveDonorVocalsAssetId}"]`);
+  const donorStudioAudio = page.locator(`audio[data-waveyard-asset-url$="/${liveDonorVocalsAssetId}"]`);
   await donorStudioAudio.waitFor({ state: "attached" });
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
   }, liveDonorVocalsAssetId, { timeout: 8_000 });
   assert(
@@ -2734,10 +2734,10 @@ try {
     1,
     "the vocal donor source group must contain its vocals stem; audio is registered with the shared transport",
   );
-  const donorDrumStudioAudio = page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`);
+  const donorDrumStudioAudio = page.locator(`audio[data-waveyard-asset-url$="/${liveDrumDonorDrumsAssetId}"]`);
   await donorDrumStudioAudio.waitFor({ state: "attached" });
   await page.waitForFunction((assetId) => {
-    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
   }, liveDrumDonorDrumsAssetId, { timeout: 8_000 });
   assert(
@@ -2780,15 +2780,15 @@ try {
   assert.equal(await page.locator(".clip").count(), 8, "all saved clips must return after reload");
   await page.waitForFunction(({ vocalAssetId, drumAssetId }) => {
     return [vocalAssetId, drumAssetId].every((assetId) => {
-      const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+      const audio = document.querySelector(`audio[data-waveyard-asset-url$="/${assetId}"]`);
       return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
     });
   }, { vocalAssetId: liveDonorVocalsAssetId, drumAssetId: liveDrumDonorDrumsAssetId }, { timeout: 8_000 });
   assert.equal(await page.getByLabel("Drum donor track.wav — Drums arrangement volume").inputValue(), "0",
     "the isolated stem mix value must survive reload");
-  assert.equal(await page.locator(`audio[src$="/${liveDonorVocalsAssetId}"]`).count(), 1,
+  assert.equal(await page.locator(`audio[data-waveyard-asset-url$="/${liveDonorVocalsAssetId}"]`).count(), 1,
     "the live-swapped vocal donor stem must remain the source audio after reload");
-  assert.equal(await page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`).count(), 1,
+  assert.equal(await page.locator(`audio[data-waveyard-asset-url$="/${liveDrumDonorDrumsAssetId}"]`).count(), 1,
     "the different live-swapped drum donor must remain the source audio after reload");
   assert.equal(
     await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] [data-testid="stem-vocals"]`).count(),

@@ -343,9 +343,13 @@ try {
       const srcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src");
       const currentSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "currentSrc");
       const setMediaSource = (element, value) => {
-        const logicalUrl = new URL(String(value), window.location.href);
+        const logicalUrl = new URL(element.dataset.waveyardAssetUrl ?? String(value), window.location.href);
         element.dataset.waveyardFixtureSrc = logicalUrl.href;
-        srcDescriptor.set.call(element, webkitAudioFixtureUrls[logicalUrl.pathname] ?? value);
+        element.dataset.waveyardMediaSrc = String(value);
+        const source = String(value).startsWith("blob:")
+          ? value
+          : webkitAudioFixtureUrls[logicalUrl.pathname] ?? value;
+        srcDescriptor.set.call(element, source);
       };
       Object.defineProperty(HTMLMediaElement.prototype, "src", {
         ...srcDescriptor,
@@ -623,11 +627,17 @@ try {
   let failAsset = null;
   let failedAssetRequests = 0;
   const liveSwapRequestOrder = [];
+  const assetRequestTrace = [];
   let externalDonorSaveGate = null;
   let signalExternalDonorSave;
   let signalExternalDonorWarm;
   await context.route("**/api/assets/*", async route => {
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
+    assetRequestTrace.push({
+      id,
+      resourceType: route.request().resourceType(),
+      range: route.request().headers().range ?? null,
+    });
     if (id === timedAssetId && timedAssetDelayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, timedAssetDelayMs));
     }
@@ -2362,6 +2372,7 @@ try {
       parallelSwapResponseOrder.splice(0);
       parallelDonorRequestOrder.splice(0);
       parallelDonorResponseOrder.splice(0);
+      assetRequestTrace.splice(0);
       parallelSwapDeleteRequests.splice(0);
       donorRestoreRequests.splice(0);
       failedAssetRequests = 0;
@@ -2614,6 +2625,10 @@ try {
       sameStemSaveResponses = new Map([["b", saveA], ["c", saveB]]);
       parallelDonorResponses = new Map([["b-vocals", donorA], ["c-vocals", donorB]]);
       try {
+        const upcomingPayloadResponse = page.waitForResponse(response =>
+          new URL(response.url()).pathname === "/api/assets/b-vocals"
+          && response.request().resourceType() === "fetch",
+        );
         await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
         await waitForReadyDeck();
         const play = page.getByTestId("session-play");
@@ -2665,6 +2680,51 @@ try {
           `donor downloads complete in the requested order: ${JSON.stringify(parallelDonorResponseOrder)}`,
         );
         await assertLatestDonor();
+        await page.waitForFunction(() => {
+          const audio = document.querySelector(
+            '[data-testid="session-deck-b"] audio[data-waveyard-asset-url$="/b-vocals"]',
+          );
+          return audio?.readyState === 4
+            && audio.dataset.waveyardMediaSrc?.startsWith("blob:");
+        }, undefined, { timeout: 8_000 });
+        const upcomingTrackPlayback = await page.evaluate(async () => {
+          const audio = document.querySelector(
+            '[data-testid="session-deck-b"] audio[data-waveyard-asset-url$="/b-vocals"]',
+          );
+          if (!(audio instanceof HTMLAudioElement) || audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+            return { ready: false, played: false, source: audio?.dataset.waveyardMediaSrc ?? null };
+          }
+          audio.currentTime = 0;
+          const start = audio.currentTime;
+          await audio.play();
+          await new Promise(resolve => setTimeout(resolve, 180));
+          const played = audio.currentTime > start + 0.03;
+          audio.pause();
+          return {
+            ready: audio.readyState === HTMLMediaElement.HAVE_ENOUGH_DATA,
+            played,
+            paused: audio.paused,
+            source: audio.dataset.waveyardMediaSrc ?? null,
+          };
+        });
+        assert.deepEqual(upcomingTrackPlayback, {
+          ready: true,
+          played: true,
+          paused: true,
+          source: upcomingTrackPlayback.source,
+        }, `the next-up track remains playable from the shared in-memory asset: ${JSON.stringify(upcomingTrackPlayback)}`);
+        assert.ok(upcomingTrackPlayback.source?.startsWith("blob:"),
+          `the next-up media element consumes the pool's in-memory bytes: ${upcomingTrackPlayback.source}`);
+        const nextTrackAssetRequests = assetRequestTrace.filter(request => request.id === "b-vocals");
+        assert.equal(nextTrackAssetRequests.length, 1,
+          `the upcoming deck and live swap cause one total request for the next-up stem: ${JSON.stringify(nextTrackAssetRequests)}`);
+        assert.equal(nextTrackAssetRequests[0].resourceType, "fetch",
+          "the shared no-store fetch feeds both the media element and live-stem decoder");
+        assert.equal(nextTrackAssetRequests[0].range, null,
+          "the asset is transferred once in full instead of fetching separate media ranges");
+        const sharedResponse = await upcomingPayloadResponse;
+        assert.match(sharedResponse.headers()["cache-control"] ?? "", /no-store/i,
+          "shared private audio remains non-persistent at the response boundary");
         const selectedDonorTransfers = await page.evaluate(() => window.liveStemAssetFetchTrace
           .filter(path => path === "/api/assets/b-vocals" || path === "/api/assets/c-vocals")
           .reduce((counts, path) => ({ ...counts, [path]: (counts[path] ?? 0) + 1 }), {}));
@@ -2673,7 +2733,7 @@ try {
         assert.equal(selectedDonorTransfers["/api/assets/c-vocals"] ?? 0, 1,
           "the final audible donor reuses its warm-up transfer");
         assert.equal(parallelDonorRequestOrder.filter(id => id === "b-vocals").length, 1,
-          "the superseded donor uses one live-swap fetch; its upcoming-track media preload is separate");
+          "the next deck and the live swap share the same private asset response");
         assert.equal(parallelDonorRequestOrder.filter(id => id === "c-vocals").length, 1,
           "the final audible donor uses one live-swap fetch");
         sameStemSaveResponses = null;

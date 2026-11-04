@@ -12,6 +12,8 @@ import {
   SESSION_PLAYBACK_RATE_MIN,
   type ChannelMeter,
   type MixerValues,
+  SessionAudioAssetPool,
+  type SessionAudioMediaLease,
 } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { nextSessionBeatLoop, SESSION_DJ_LOOP_LENGTHS } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
@@ -368,6 +370,7 @@ function SessionDeck({
   onPlaying,
   onProgress,
   onEnded,
+  audioAssetPool,
 }: {
   deckIndex: 0 | 1;
   outputGroup: string;
@@ -416,6 +419,7 @@ function SessionDeck({
   onPlaying: (deckIndex: number, playing: boolean) => void;
   onProgress: (deckIndex: number, position: number) => void;
   onEnded: (deckIndex: number, itemId: string) => void;
+  audioAssetPool: SessionAudioAssetPool;
 }) {
   const assetIds = useMemo(() => item?.playback?.assetIds ?? [], [item?.playback]);
   const duration = item?.track.durationSeconds ?? 0;
@@ -444,7 +448,7 @@ function SessionDeck({
   // Staged handoff audio must not be treated as a required live channel until
   // the replacement is ready. In particular, a failed donor load must not
   // pause the source that is currently audible.
-  const transport = useStemTransport(transportIds, duration, assetIds, outputGroup);
+  const transport = useStemTransport(transportIds, duration, assetIds, outputGroup, audioAssetPool);
   const [cuePosition, setCuePosition] = useState(0);
   const [selectedLoopBeats, setSelectedLoopBeats] = useState<number | null>(null);
   useEffect(() => {
@@ -483,6 +487,8 @@ function SessionDeck({
     setSelectedLoopBeats(beats);
   };
   const mediaElements = useRef<Record<string, HTMLAudioElement | null>>({});
+  const mediaAssetLeases = useRef(new Map<string, SessionAudioMediaLease>());
+  const [, setMediaAssetSourceRevision] = useState(0);
   const pendingHandoff = useRef<{
     target: SessionTrackItem;
     volumes: Record<string, number>;
@@ -493,6 +499,47 @@ function SessionDeck({
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [loadingLayers, setLoadingLayers] = useState(false);
   const [swapRetry, setSwapRetry] = useState(0);
+
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  useEffect(() => {
+    const wantedIds = new Set(transportIds);
+    for (const [id, lease] of mediaAssetLeases.current) {
+      if (wantedIds.has(id)) continue;
+      lease.release();
+      mediaAssetLeases.current.delete(id);
+    }
+
+    const controller = new AbortController();
+    let stale = false;
+    const shouldShare = activeRef.current
+      ? stagedIds
+      : transportIds;
+    for (const id of shouldShare) {
+      if (mediaAssetLeases.current.has(id)) continue;
+      void audioAssetPool.acquireMediaUrl(`/api/assets/${id}`, controller.signal).then((lease) => {
+        if (stale || !wantedIds.has(id)) {
+          lease.release();
+          return;
+        }
+        mediaAssetLeases.current.set(id, lease);
+        setMediaAssetSourceRevision((revision) => revision + 1);
+      }).catch((error: unknown) => {
+        if (stale || (error instanceof DOMException && error.name === "AbortError")) return;
+        setMediaError(error instanceof Error
+          ? error.message
+          : "Session audio could not be prepared.");
+      });
+    }
+    return () => {
+      stale = true;
+      controller.abort();
+    };
+  }, [audioAssetPool, stagedIds, transportIds]);
+  useEffect(() => () => {
+    for (const lease of mediaAssetLeases.current.values()) lease.release();
+    mediaAssetLeases.current.clear();
+  }, [audioAssetPool]);
 
   const stemTypeByAsset = useMemo(() => {
     const map = new Map<string, string>();
@@ -739,15 +786,18 @@ function SessionDeck({
         const stemType = stemTypeByAsset.get(assetId) ?? "source";
         const donorAssetId = swaps[stemType];
         const isStaged = stagedIds.includes(assetId);
+        const mediaLease = mediaAssetLeases.current.get(assetId);
+        const src = mediaLease?.src ?? (active && !isStaged ? `/api/assets/${assetId}` : undefined);
         return (
           <audio
             key={assetId}
             aria-label={`${stemType} audio${donorAssetId ? " (swapped layer)" : ""}`}
+            data-waveyard-asset-url={`/api/assets/${assetId}`}
             ref={(element) => {
               mediaElements.current[assetId] = element;
               transport.register(assetId, element);
             }}
-            src={`/api/assets/${assetId}`}
+            src={src}
             preload="auto"
             onLoadedMetadata={(event) => {
               if (isStaged) {
@@ -1195,6 +1245,8 @@ export default function SessionExperience({
   command?: HostCommand | null;
   onMissing?: () => void;
 }) {
+  const audioAssetPool = useMemo(() => new SessionAudioAssetPool(), [sessionId]);
+  useEffect(() => () => audioAssetPool.dispose(), [audioAssetPool]);
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [library, setLibrary] = useState<LibraryTrackOption[]>([]);
@@ -3961,6 +4013,7 @@ export default function SessionExperience({
     return {
       deckIndex,
       outputGroup: `session:${session.id}`,
+      audioAssetPool,
       item,
       active: isActive,
       startAt: startAtFor(deckIndex),

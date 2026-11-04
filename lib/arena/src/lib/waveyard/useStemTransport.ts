@@ -5,6 +5,9 @@ import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
 import outputPeakWorkletUrl from "./output-peak-worklet.ts?worker&url";
 import { acquireSessionOutput } from "./session-output";
 import { ensureLiveStemWorklet, LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
+import type { SessionAudioAssetPool } from "./session-audio-asset-pool";
+export { SessionAudioAssetPool } from "./session-audio-asset-pool";
+export type { SessionAudioMediaLease } from "./session-audio-asset-pool";
 export {
   SESSION_PLAYBACK_RATE_MAX,
   SESSION_PLAYBACK_RATE_MIN,
@@ -320,6 +323,7 @@ export function useStemTransport(
   duration: number,
   playbackAssetIds: string[] = assetIds,
   outputGroup?: string,
+  assetPool?: SessionAudioAssetPool,
 ) {
   // Polling may construct a fresh array for identical assets. Treat equal IDs
   // as the same deck so renders do not restart its audio clock or effects.
@@ -466,11 +470,13 @@ export function useStemTransport(
         }
       },
       liveStemWorkletUrl,
+      assetPool,
     );
     if (pitchPreserving.current) {
       void liveLayers.current.setPitchPreserving(true).catch(() => undefined);
     }
   }
+  liveLayers.current.setAssetPool(assetPool);
   const replaceStem = useCallback((id: string, url: string | null, tempoStretchRatio = 1, selectedAt?: number) => {
     if (url) ensureGraph(id);
     return liveLayers.current!.replace(id, url, tempoStretchRatio, selectedAt);
