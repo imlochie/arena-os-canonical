@@ -30,6 +30,7 @@ const checkIds = [
   "waveyard_capture_host_loads",
   "waveyard_capture_runtime_wired",
   "database_backup_restore_round_trip",
+  "restored_record_opens_in_ui",
 ];
 const report = {
   passed: false,
@@ -170,8 +171,9 @@ async function run() {
 
   begin("database_backup_restore_round_trip");
   const sentinelTitle = `Backup round trip ${Date.now()}`;
+  const sentinelPrompt = "Windows package backup acceptance record";
   const createdSpace = await page.request.post(`${base}/api/spaces`, {
-    data: { title: sentinelTitle, prompt: "Windows package backup acceptance record" },
+    data: { title: sentinelTitle, prompt: sentinelPrompt },
     timeout: 20_000,
   });
   assert.equal(createdSpace.status(), 201);
@@ -239,6 +241,24 @@ async function run() {
     "Arena must start with the restored database and return the preserved record",
   );
   pass("database_backup_restore_round_trip");
+
+  begin("restored_record_opens_in_ui");
+  const restoredOrigin = new URL(restoredPage.url()).origin;
+  await restoredPage.goto(`${restoredOrigin}/spaces/${sentinel.id}`, {
+    waitUntil: "domcontentloaded",
+  });
+  await restoredPage.getByText(sentinelTitle, { exact: false }).waitFor({
+    timeout: 15_000,
+  });
+  await restoredPage.getByRole("button", { name: /setup/i }).click();
+  const restoredPrompt = restoredPage.getByLabel(/task prompt/i);
+  await restoredPrompt.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await restoredPrompt.inputValue(),
+    sentinelPrompt,
+    "the restored Arena UI must load the record's saved prompt",
+  );
+  pass("restored_record_opens_in_ui");
 
   report.passed = true;
 }
