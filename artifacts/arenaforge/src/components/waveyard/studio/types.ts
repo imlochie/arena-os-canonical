@@ -188,6 +188,7 @@ export type PersistedTrack = RemixTrackInput & {
 
 export type Remix = {
   id: string;
+  version: number;
   name: string;
   masterVolume: number;
   /** Master insert chain (waveyard-inserts-v1); absent on historical sessions. */

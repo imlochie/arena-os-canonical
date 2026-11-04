@@ -4,6 +4,7 @@ type DraftPayload = {
   version: 1;
   projectId: string;
   remixId: string;
+  baseVersion: number;
   savedAt: string;
   state: ReturnType<typeof remixState>;
 };
@@ -12,17 +13,32 @@ function storageKey(projectId: string, remixId: string) {
   return `waveyard-studio-recovery-v1:${encodeURIComponent(projectId)}:${encodeURIComponent(remixId)}`;
 }
 
-export function writeStudioRecoveryDraft(projectId: string, remix: Remix): boolean {
+export function writeStudioRecoveryDraft(projectId: string, remix: Remix, baseVersion = remix.version): boolean {
   try {
     const draft: DraftPayload = {
       version: 1,
       projectId,
       remixId: remix.id,
+      baseVersion,
       savedAt: new Date().toISOString(),
       state: remixState(remix),
     };
     window.localStorage.setItem(storageKey(projectId, remix.id), JSON.stringify(draft));
     return true;
+  } catch {
+    return false;
+  }
+}
+
+export function studioRecoveryDraftIsStale(projectId: string, canonical: Remix): boolean {
+  try {
+    const saved = window.localStorage.getItem(storageKey(projectId, canonical.id));
+    if (!saved) return false;
+    const draft = JSON.parse(saved) as Partial<DraftPayload>;
+    return draft.version === 1
+      && draft.projectId === projectId
+      && draft.remixId === canonical.id
+      && draft.baseVersion !== canonical.version;
   } catch {
     return false;
   }

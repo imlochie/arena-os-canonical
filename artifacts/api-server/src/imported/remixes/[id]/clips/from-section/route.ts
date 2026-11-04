@@ -200,7 +200,7 @@ export async function POST(
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       return clips;
     });
-    return Response.json({ clips: created, trackId: track.id, action }, { status: 201 });
+    return Response.json({ clips: created, trackId: track.id, action, version: remix.version + 1 }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("section arrangement action failed", error);

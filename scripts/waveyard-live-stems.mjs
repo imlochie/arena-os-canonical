@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { runAutomaticFadeAcceptance, runLoudAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
+const studioConflictOnly = process.argv.includes("--studio-conflict-only");
 const requireBrowserEngines = process.env.WAVEYARD_REQUIRE_BROWSER_ENGINES === "1"
   || process.argv.includes("--require-browser-engines");
 if (process.argv.includes("--live-stem-timing-matrix")) {
@@ -968,11 +969,20 @@ try {
     if (route.request().method() === "PUT" && studioRemixData !== null) {
       studioRemixPutCount += 1;
       const input = route.request().postDataJSON();
-      const { tracks: inputTracks, automation: inputAutomation, ...remixInput } = input;
+      const { tracks: inputTracks, automation: inputAutomation, expectedVersion, ...remixInput } = input;
       if (holdNextStudioRemixPut) {
         holdNextStudioRemixPut = false;
         signalHeldStudioRemixPut?.();
         await new Promise(resolve => { releaseHeldStudioRemixPut = resolve; });
+      }
+      if (expectedVersion !== studioRemixData.remix.version) {
+        return route.fulfill({
+          status: 409,
+          json: {
+            error: "Another Studio edit was saved first. Your arrangement was not changed.",
+            code: "REMIX_VERSION_CONFLICT",
+          },
+        });
       }
       studioRemixData = {
         remix: { ...studioRemixData.remix, ...remixInput, version: studioRemixData.remix.version + 1 },
@@ -1229,7 +1239,61 @@ try {
     return reloaded;
   }
 
-  if (timingOnly) {
+  if (studioConflictOnly) {
+    session.tracks = tracks.slice(0, 2).map((item, index) => ({
+      ...item,
+      position: index,
+      sourceAssetId: index === 0 ? "a-source" : "b-source",
+      stemMix: index === 0
+        ? { vocals: 0.42, drums: 0.78, bass: 1, other: 1 }
+        : { vocals: 1, drums: 1, bass: 0.31, other: 1 },
+    }));
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    session.swaps = [];
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.waitForFunction(() => document.querySelectorAll('[data-role="current"] audio').length === 4);
+    await page.getByRole("button", { name: "Current only" }).click();
+    await page.getByTestId("session-handoff").click();
+    const studioLink = page.getByRole("link", { name: "Open in Studio" });
+    await studioLink.waitFor();
+    await studioLink.click();
+    await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+    await page.getByRole("tab", { name: "Edit" }).click();
+    const volume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+    await volume.waitFor();
+    assert.equal(await volume.inputValue(), "0.42", "the handoff loaded the initial authoritative arrangement");
+    const originalAssets = assetSnapshot();
+
+    // A second editor commits against the same initial version. The open
+    // Studio tab must keep its local draft while it exposes the newer state.
+    studioRemixData.remix.version += 1;
+    studioRemixData.tracks[0].volume = 0.43;
+    const staleSave = page.waitForResponse(response =>
+      response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+    );
+    await volume.fill("0.68");
+    assert.equal((await staleSave).status(), 409, "the stale client is rejected by the version guard");
+    await page.getByText(/Another Studio tab saved newer changes first/).waitFor();
+    assert.equal(await volume.inputValue(), "0.68", "the unsaved value remains in the editor after conflict");
+
+    await page.getByRole("button", { name: "Load latest and keep my draft" }).click();
+    await page.getByRole("button", { name: "Restore draft and replace latest" }).waitFor();
+    assert.equal(await volume.inputValue(), "0.43", "reload selects the newer saved arrangement");
+    await page.getByRole("button", { name: "Restore draft and replace latest" }).click();
+    await page.locator(".save-state.saved").waitFor();
+    assert.equal(studioRemixData.tracks[0].volume, 0.68,
+      "the preserved draft can be explicitly restored against the latest version");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+    assert.equal(await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(), "0.68",
+      "the explicit draft restore survives reload");
+    assert.deepEqual(assetSnapshot(), originalAssets, "conflict recovery leaves source and stem audio unchanged");
+    console.log("PASS: competing Studio arrangement versions reject stale writes, retain the draft, and reload the selected state");
+    await context.close();
+    await browser.close();
+    process.exit(0);
+  } else if (timingOnly) {
     session.tracks = tracks;
     session.swaps = [];
     session.currentSessionTrackId = "a";
@@ -4629,6 +4693,26 @@ try {
     "0.79",
     "a slow earlier save cannot overwrite a newer Studio edit after reopening",
   );
+  const conflictVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+  studioRemixData.remix.version += 1;
+  studioRemixData.tracks[0].volume = 0.43;
+  const staleStudioSave = page.waitForResponse(response =>
+    response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+  );
+  await conflictVolume.fill("0.68");
+  assert.equal((await staleStudioSave).status(), 409,
+    "a separate Studio writer makes the old browser's arrangement version stale");
+  await page.getByText(/Another Studio tab saved newer changes first/).waitFor();
+  assert.equal(await conflictVolume.inputValue(), "0.68",
+    "a stale-save conflict leaves the unsaved edit visible in Studio");
+  await page.getByRole("button", { name: "Load latest and keep my draft" }).click();
+  await page.getByRole("button", { name: "Restore draft and replace latest" }).waitFor();
+  assert.equal(await conflictVolume.inputValue(), "0.43",
+    "loading the authoritative arrangement does not silently apply the stale draft");
+  await page.getByRole("button", { name: "Restore draft and replace latest" }).click();
+  await page.locator(".save-state.saved").waitFor();
+  assert.equal(studioRemixData.tracks[0].volume, 0.68,
+    "explicitly restoring the preserved draft saves it against the latest version");
   const undoTestVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
   const undoSaveResponse = page.waitForResponse(response =>
     response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",

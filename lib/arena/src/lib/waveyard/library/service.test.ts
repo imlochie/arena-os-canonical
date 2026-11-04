@@ -2235,6 +2235,7 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
         })),
       } : track),
     automation: beforeEdit.automation,
+    expectedVersion: beforeEdit.remix.version,
   };
   const saveResponse = await remixRoute.PUT(new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`, {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
@@ -2248,6 +2249,47 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
   assert.equal(persistedClipRows.length, 1);
   assert.equal(persistedClipRows[0].stemAssetId, clipOnlyDrumsStemId,
     "PostgreSQL stores the clip-only donor on the file-backed clip relation");
+  const [olderClient, newerClient] = await Promise.all([
+    remixRoute.GET(new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams)
+      .then((response: Response) => response.json()),
+    remixRoute.GET(new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams)
+      .then((response: Response) => response.json()),
+  ]);
+  assert.equal(olderClient.remix.version, newerClient.remix.version,
+    "independent Studio clients begin from the same authoritative version");
+  const newerClientInput = {
+    ...newerClient.remix,
+    masterVolume: 0.67,
+    tracks: newerClient.tracks,
+    automation: newerClient.automation,
+    expectedVersion: newerClient.remix.version,
+  };
+  const olderClientInput = {
+    ...olderClient.remix,
+    masterVolume: 0.24,
+    tracks: olderClient.tracks,
+    automation: olderClient.automation,
+    expectedVersion: olderClient.remix.version,
+  };
+  const newerClientSave = await remixRoute.PUT(new Request(
+    `http://localhost/api/remixes/${handoff.remixSessionId}`,
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(newerClientInput) },
+  ), remixParams);
+  assert.equal(newerClientSave.status, 200, "the first independent client saves its arrangement");
+  const staleClientSave = await remixRoute.PUT(new Request(
+    `http://localhost/api/remixes/${handoff.remixSessionId}`,
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(olderClientInput) },
+  ), remixParams);
+  assert.equal(staleClientSave.status, 409, "a stale independent client cannot overwrite the newer save");
+  assert.equal((await staleClientSave.json()).code, "REMIX_VERSION_CONFLICT");
+  const authoritativeAfterConflict = await (await remixRoute.GET(
+    new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
+  )).json();
+  assert.equal(authoritativeAfterConflict.remix.masterVolume, 0.67,
+    "reload selects the newer authoritative arrangement, not the stale snapshot");
+  assert.equal(authoritativeAfterConflict.tracks.find((track: { id: string }) =>
+    track.id === editedTrackId).clips[0].stemAssetId, clipOnlyDrumsStemId,
+  "the winning arrangement retains its selected clip donor");
   for (let reload = 0; reload < 3; reload += 1) {
     const projectAfterEdit = await (await projectRoute.GET(
       new Request(`http://localhost/api/waveyard/projects/${handoff.projectId}`),
@@ -2334,7 +2376,8 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
   const reopened = await (await remixRoute.GET(
     new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
   )).json();
-  assert.deepEqual(reopened.tracks, savedBeforeDeletion.tracks, "neither saved lane nor its clips silently disappears");
+  assert.deepEqual(reopened.tracks, authoritativeAfterConflict.tracks,
+    "reload keeps the selected authoritative lanes and clips after the stale write is rejected");
   const projectAfterDeletion = await (await projectRoute.GET(
     new Request(`http://localhost/api/waveyard/projects/${handoff.projectId}`),
     { params: Promise.resolve({ id: handoff.projectId }) },
@@ -2377,6 +2420,7 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
         clips: track.clips.map(clip => ({ ...clip, stemAssetId: drumsStemId })),
       } : track),
     automation: reopened.automation,
+    expectedVersion: reopened.remix.version,
   };
   const changedAgain = await remixRoute.PUT(new Request(
     `http://localhost/api/remixes/${handoff.remixSessionId}`,

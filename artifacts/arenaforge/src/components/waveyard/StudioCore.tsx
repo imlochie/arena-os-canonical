@@ -47,6 +47,7 @@ import {
   clearStudioRecoveryDraft,
   discardStudioRecoveryDraft,
   readStudioRecoveryDraft,
+  studioRecoveryDraftIsStale,
   writeStudioRecoveryDraft,
 } from "./studio/recovery-draft";
 import { useArrangementHistory } from "./studio/useArrangementHistory";
@@ -127,6 +128,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const [zoom, setZoom] = useState(80);
   const [remix, setRemix] = useState<Remix | null>(null);
   const [recoveryDraft, setRecoveryDraft] = useState<Remix | null>(null);
+  const [recoveryDraftConflicts, setRecoveryDraftConflicts] = useState(false);
   const [localDraftUnavailable, setLocalDraftUnavailable] = useState(false);
   const arrangementDuration = useMemo(() => {
     const latestClipEndMs = Math.max(
@@ -141,7 +143,9 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   // committed its render. Keep the most recently edited arrangement available
   // to that explicit persistence boundary.
   const remixRef = useRef<Remix | null>(null);
+  const serverVersionRef = useRef<number | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
+  const [saveConflict, setSaveConflict] = useState(false);
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
   const [creatingRemixSession, setCreatingRemixSession] = useState(false);
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
@@ -336,7 +340,10 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         response = await fetch(`/api/remixes/${next.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(remixState(next)),
+          body: JSON.stringify({
+            ...remixState(next),
+            expectedVersion: serverVersionRef.current ?? next.version,
+          }),
         });
       } catch {
         if (mountedRef.current && remixRef.current?.id === next.id) {
@@ -346,23 +353,43 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (response.status === 409 && body.code === "REMIX_VERSION_CONFLICT") {
+          const current = remixRef.current;
+          if (current?.id === next.id) {
+            setLocalDraftUnavailable(!writeStudioRecoveryDraft(
+              projectId,
+              current,
+              serverVersionRef.current ?? current.version,
+            ));
+          }
+          if (mountedRef.current) setSaveConflict(true);
+        }
         if (mountedRef.current && remixRef.current?.id === next.id) {
           setSaveState(revision === saveRevision.current ? "failed" : "unsaved");
         }
         return;
       }
       if (remixRef.current?.id !== next.id) return;
+      const persisted = remixFromResponse(body);
+      serverVersionRef.current = persisted.version;
       if (revision !== saveRevision.current) {
+        const latest = remixRef.current;
+        if (latest?.id === next.id) {
+          const latestWithVersion = { ...latest, version: persisted.version };
+          remixRef.current = latestWithVersion;
+          if (mountedRef.current) setRemix(latestWithVersion);
+        }
         if (mountedRef.current) setSaveState("unsaved");
         return;
       }
-      const persisted = remixFromResponse(body);
       clearStudioRecoveryDraft(projectId, next);
       dirtyRef.current = false;
       remixRef.current = persisted;
+      setSaveConflict(false);
       if (mountedRef.current) {
         setRemix(persisted);
         setRecoveryDraft(null);
+        setRecoveryDraftConflicts(false);
         setLocalDraftUnavailable(false);
         setSaveState("saved");
       }
@@ -374,7 +401,11 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const queuePersist = useCallback((next: Remix) => {
     dirtyRef.current = true;
     setRecoveryDraft(null);
-    setLocalDraftUnavailable(!writeStudioRecoveryDraft(projectId, next));
+    setLocalDraftUnavailable(!writeStudioRecoveryDraft(
+      projectId,
+      next,
+      serverVersionRef.current ?? next.version,
+    ));
     setSaveState("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -412,10 +443,13 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       if (!response.ok) { setSaveState("failed"); return false; }
       const next = remixFromResponse(body);
       remixRef.current = next;
+      serverVersionRef.current = next.version;
       setRemix(next);
       dirtyRef.current = false;
       setLocalDraftUnavailable(false);
-      setRecoveryDraft(readStudioRecoveryDraft(projectId, next));
+      const draft = readStudioRecoveryDraft(projectId, next);
+      setRecoveryDraft(draft);
+      setRecoveryDraftConflicts(Boolean(draft && studioRecoveryDraftIsStale(projectId, next)));
       setAutomaticGeneration(body.generation ?? null);
       setClipSelection(null);
       setSelectedClipIds([]);
@@ -438,18 +472,61 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
 
   const restoreRecoveryDraft = useCallback(() => {
     if (!recoveryDraft) return;
-    remixRef.current = recoveryDraft;
+    const draft = {
+      ...recoveryDraft,
+      version: remix?.id === recoveryDraft.id ? remix.version : recoveryDraft.version,
+    };
+    remixRef.current = draft;
     reset();
-    setRemix(recoveryDraft);
+    setRemix(draft);
     setRecoveryDraft(null);
-    queuePersist(recoveryDraft);
-  }, [queuePersist, recoveryDraft, reset]);
+    setRecoveryDraftConflicts(false);
+    setSaveConflict(false);
+    queuePersist(draft);
+  }, [queuePersist, recoveryDraft, remix, reset]);
 
   const discardRecoveryDraft = useCallback(() => {
     if (!remix) return;
     discardStudioRecoveryDraft(projectId, remix.id);
     setRecoveryDraft(null);
+    setRecoveryDraftConflicts(false);
   }, [projectId, remix]);
+
+  const reloadLatestKeepingDraft = useCallback(async () => {
+    const draft = remixRef.current;
+    if (!draft) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    const revision = ++saveRevision.current;
+    await saveQueue.current;
+    if (revision !== saveRevision.current || remixRef.current?.id !== draft.id) return;
+    const draftStored = writeStudioRecoveryDraft(
+      projectId,
+      draft,
+      serverVersionRef.current ?? draft.version,
+    );
+    setLocalDraftUnavailable(!draftStored);
+    try {
+      const response = await fetch(`/api/remixes/${draft.id}`, { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setSaveState("failed");
+        return;
+      }
+      if (revision !== saveRevision.current || remixRef.current?.id !== draft.id) return;
+      const latest = remixFromResponse(body);
+      setRecoveryDraft(draft);
+      setRecoveryDraftConflicts(true);
+      remixRef.current = latest;
+      serverVersionRef.current = latest.version;
+      dirtyRef.current = !draftStored;
+      setRemix(latest);
+      setSaveConflict(false);
+      setSaveState("saved");
+    } catch {
+      setSaveState("failed");
+    }
+  }, [projectId]);
 
   useEffect(() => {
     let active = true;
@@ -676,6 +753,8 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     // Track creation is an explicit server-side operation; reset history so an
     // old PUT cannot accidentally reconcile away the newly duplicated track.
     reset();
+    remixRef.current = next;
+    serverVersionRef.current = next.version;
     setRemix(next);
     setSaveState("saved");
   };
@@ -761,12 +840,16 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     // This one server mutation is one history entry, even when it generated a
     // loop. Undo/redo continue to use the ordinary canonical arrangement state.
     record(remix);
-    setRemix({
+    const next = {
       ...remix,
+      version: typeof body.version === "number" ? body.version : remix.version,
       tracks: remix.tracks.map((track) => track.id === targetTrack.id
         ? { ...track, clips: [...track.clips, ...generated] }
         : track),
-    });
+    };
+    remixRef.current = next;
+    if (typeof body.version === "number") serverVersionRef.current = body.version;
+    setRemix(next);
     setClipSelection({ trackId: targetTrack.id, clipIndex: targetTrack.clips.length });
     setSaveState("saved");
     return null;
@@ -793,6 +876,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     const returned = (body.clips ?? []) as Remix["tracks"][number]["clips"];
     const next = {
       ...before,
+      version: typeof body.version === "number" ? body.version : before.version,
       tracks: before.tracks.map((track) => {
         if (operation === "delete")
           return { ...track, clips: track.clips.filter((clip) => !clipIds.includes(clip.id ?? "")) };
@@ -809,6 +893,8 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         };
       }),
     };
+    remixRef.current = next;
+    if (typeof body.version === "number") serverVersionRef.current = body.version;
     setRemix(next);
     if (operation === "delete") {
       setSelectedClipIds([]);
@@ -841,6 +927,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     // The response belongs to the session that started the request. Do not
     // write it into a newly selected session if the user switched while waiting.
     if (!current || current.id !== sessionId) return null;
+    if (typeof body.version === "number") serverVersionRef.current = body.version;
     // Other controls can change while the endpoint is pending. Record and
     // reconcile from that latest state so undo removes only this automation
     // edit and retains those intervening changes.
@@ -865,7 +952,11 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         automation = [...automation, { remixTrackId: point.remixTrackId, parameter: point.parameter, points: [pointValue] }];
       }
     }
-    const next = { ...current, automation };
+    const next = {
+      ...current,
+      version: typeof body.version === "number" ? body.version : current.version,
+      automation,
+    };
     remixRef.current = next;
     setRemix(next);
     if (saveRevision.current === saveRevisionAtStart && !saveTimer.current) setSaveState("saved");
@@ -888,15 +979,19 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     // Each successful endpoint call is exactly one persisted clip operation and
     // receives one ordinary arrangement-history snapshot.
     record(remix);
+    if (typeof body.version === "number") serverVersionRef.current = body.version;
     if (operation === "split" && Array.isArray(body.clips)) {
       const clips = body.clips as Remix["tracks"][number]["clips"];
-      setRemix({
+      const next = {
         ...remix,
+        version: typeof body.version === "number" ? body.version : remix.version,
         tracks: remix.tracks.map((track) => ({
           ...track,
           clips: track.clips.flatMap((clip) => clip.id === body.replacedClipId ? clips : [clip]),
         })),
-      });
+      };
+      remixRef.current = next;
+      setRemix(next);
       const track = remix.tracks.find((candidate) => candidate.clips.some((clip) => clip.id === body.replacedClipId));
       if (track) {
         const priorIndex = track.clips.findIndex((clip) => clip.id === body.replacedClipId);
@@ -906,15 +1001,18 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     } else if (body.clip) {
       const edited = body.clip as Remix["tracks"][number]["clips"][number];
       const isDuplicate = operation === "duplicate";
-      setRemix({
+      const next = {
         ...remix,
+        version: typeof body.version === "number" ? body.version : remix.version,
         tracks: remix.tracks.map((track) => ({
           ...track,
           clips: isDuplicate && track.clips.some((clip) => clip.id === clipId)
             ? [...track.clips, edited]
             : track.clips.map((clip) => clip.id === edited.id ? edited : clip),
         })),
-      });
+      };
+      remixRef.current = next;
+      setRemix(next);
       if (isDuplicate) {
         const track = remix.tracks.find((candidate) => candidate.clips.some((clip) => clip.id === clipId));
         if (track) setClipSelection({ trackId: track.id, clipIndex: track.clips.length });
@@ -942,13 +1040,17 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     // This single persisted timeline edit is one ordinary arrangement history
     // entry; source offset and all transform intent remain untouched.
     record(remix);
-    setRemix({
+    const next = {
       ...remix,
+      version: typeof body.version === "number" ? body.version : remix.version,
       tracks: remix.tracks.map((track) => ({
         ...track,
         clips: track.clips.map((clip) => clip.id === body.clip.id ? body.clip : clip),
       })),
-    });
+    };
+    remixRef.current = next;
+    if (typeof body.version === "number") serverVersionRef.current = body.version;
+    setRemix(next);
     setSaveState("saved");
     return null;
   }, [record, remix]);
@@ -997,7 +1099,15 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
         src={`/api/assets/${stem.id}`} preload="auto" />)}
     </div>
     <header className="studio-head"><div><span className="eyebrow">{presentation === "studio" ? "Studio" : presentation === "play" ? "Play" : "Visual"} · one musical state</span><h2>{presentation === "studio" ? "Real stems, one transport." : presentation === "play" ? "Music in motion." : "Music, made visible."}</h2></div><div className="presentation-nav" role="tablist" aria-label="Waveyard presentation mode"><button type="button" role="tab" aria-selected={presentation === "play"} data-testid="waveyard-mode-play" className={presentation === "play" ? "active" : ""} onClick={() => { setPresentation("play"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Play</button><button type="button" role="tab" aria-selected={presentation === "studio"} data-testid="waveyard-mode-studio" className={presentation === "studio" ? "active" : ""} onClick={() => { setPresentation("studio"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Studio</button><button type="button" role="tab" aria-selected={presentation === "visual"} data-testid="waveyard-mode-visual" className={presentation === "visual" ? "active" : ""} onClick={() => { setPresentation("visual"); setPlayerFullscreen(false); }}>Visual</button></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
-    {(saveState !== "saved" || localDraftUnavailable) && (
+    {saveConflict && (
+      <p className="notice" role="alert">
+        Another Studio tab saved newer changes first. Your edits are still here and were not saved.
+        <button type="button" className="button" onClick={() => void reloadLatestKeepingDraft()}>
+          Load latest and keep my draft
+        </button>
+      </p>
+    )}
+    {!saveConflict && (saveState !== "saved" || localDraftUnavailable) && (
       <p className="notice" role="status">
         {localDraftUnavailable
           ? "Browser storage is unavailable. Keep Studio open until the save finishes; a closing-page request cannot be guaranteed."
@@ -1006,8 +1116,12 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     )}
     {recoveryDraft && (
       <div className="notice" role="alert">
-        <p><strong>Unsaved local Studio draft.</strong> This browser has edits that were not confirmed by the server.</p>
-        <button type="button" className="button" onClick={restoreRecoveryDraft}>Restore local draft</button>
+        <p><strong>Unsaved local Studio draft.</strong> {recoveryDraftConflicts
+          ? "This draft was preserved after another tab saved newer changes. Restoring it will replace the latest arrangement."
+          : "This browser has edits that were not confirmed by the server."}</p>
+        <button type="button" className="button" onClick={restoreRecoveryDraft}>
+          {recoveryDraftConflicts ? "Restore draft and replace latest" : "Restore local draft"}
+        </button>
         <button type="button" className="button" onClick={discardRecoveryDraft}>Discard local draft</button>
       </div>
     )}

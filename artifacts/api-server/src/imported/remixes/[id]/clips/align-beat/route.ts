@@ -97,7 +97,13 @@ export async function POST(
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       return [aligned];
     });
-    return Response.json({ clip: updated, sourceBeatIndex, sourceBeatMs: resolvedSourceBeatMs, timelineTargetMs }, { status: 200 });
+    return Response.json({
+      clip: updated,
+      sourceBeatIndex,
+      sourceBeatMs: resolvedSourceBeatMs,
+      timelineTargetMs,
+      version: remix.version + 1,
+    }, { status: 200 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("source beat alignment failed", error);

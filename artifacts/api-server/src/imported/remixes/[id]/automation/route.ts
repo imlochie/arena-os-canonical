@@ -55,7 +55,7 @@ export async function POST(
         await tx.delete(remixAutomationPoints).where(eq(remixAutomationPoints.id, point.id));
         await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       });
-      return Response.json({ operation, removedPointIds: [point.id] });
+      return Response.json({ operation, removedPointIds: [point.id], version: remix.version + 1 });
     }
     const timelineMs = finite(body.timelineMs);
     const value = finite(body.value);
@@ -108,7 +108,12 @@ export async function POST(
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       return { point, removedPointIds };
     });
-    return Response.json({ operation, point: result.point, removedPointIds: result.removedPointIds });
+    return Response.json({
+      operation,
+      point: result.point,
+      removedPointIds: result.removedPointIds,
+      version: remix.version + 1,
+    });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("automation edit failed", error);

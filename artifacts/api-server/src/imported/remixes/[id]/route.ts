@@ -1,7 +1,7 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
 import { nearestBeat } from "@workspace/arena/lib/waveyard/types";
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   automaticRemixGenerations,
@@ -173,7 +173,17 @@ export async function PUT(
     const { id } = await params;
     if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await getRemixAccess(user.id, id, "editor");
-    let input = normaliseRemixState(await request.json());
+    const rawInput = await request.json().catch(() => null);
+    const expectedVersion = rawInput && typeof rawInput === "object"
+      ? (rawInput as { expectedVersion?: unknown }).expectedVersion
+      : undefined;
+    if (!Number.isInteger(expectedVersion) || (expectedVersion as number) < 1) {
+      return Response.json(
+        { error: "A valid arrangement version is required.", code: "REMIX_VERSION_REQUIRED" },
+        { status: 400 },
+      );
+    }
+    let input = normaliseRemixState(rawInput);
     if (!input)
       return Response.json(
         { error: "Invalid remix arrangement." },
@@ -278,7 +288,7 @@ export async function PUT(
     if (crossfadeMessage)
       return Response.json({ error: crossfadeMessage }, { status: 422 });
     await db.transaction(async (tx) => {
-      await tx
+      const [claimedVersion] = await tx
         .update(remixSessions)
         .set({
           name: input.name || remix.name,
@@ -294,10 +304,20 @@ export async function PUT(
           ...(input.masterInserts !== undefined
             ? { masterInserts: JSON.stringify(input.masterInserts) }
             : {}),
-          version: remix.version + 1,
+          version: (expectedVersion as number) + 1,
           updatedAt: new Date(),
         })
-        .where(eq(remixSessions.id, remix.id));
+        .where(and(
+          eq(remixSessions.id, remix.id),
+          eq(remixSessions.version, expectedVersion as number),
+        ))
+        .returning({ id: remixSessions.id });
+      if (!claimedVersion) {
+        throw Response.json({
+          error: "Another Studio edit was saved first. Your arrangement was not changed.",
+          code: "REMIX_VERSION_CONFLICT",
+        }, { status: 409 });
+      }
       for (const track of input.tracks) {
         await tx
           .update(remixTracks)

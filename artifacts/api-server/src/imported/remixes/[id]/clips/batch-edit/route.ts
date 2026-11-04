@@ -214,7 +214,12 @@ export async function POST(
         await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       });
     }
-    return Response.json({ operation, clips: operation === "duplicate" ? created : updated, removedClipIds: operation === "delete" ? clipIds : [] });
+    return Response.json({
+      operation,
+      clips: operation === "duplicate" ? created : updated,
+      removedClipIds: operation === "delete" ? clipIds : [],
+      version: remix.version + 1,
+    });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("arrangement group edit failed", error);
