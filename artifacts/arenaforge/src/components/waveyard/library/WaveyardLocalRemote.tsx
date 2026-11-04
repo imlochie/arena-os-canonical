@@ -30,6 +30,7 @@ interface PairCredentials {
 }
 
 const SESSION_KEY = "waveyard-local-remote";
+const RECONNECT_MESSAGE = "Connection lost. If Wi-Fi changed, open Share on your laptop, generate a fresh QR, and scan it again.";
 
 function formatTime(seconds: number) {
   const safe = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
@@ -62,6 +63,7 @@ export default function WaveyardLocalRemote() {
   const [position, setPosition] = useState(0);
   const [connection, setConnection] = useState<"connecting" | "connected" | "offline" | "invalid">("connecting");
   const [message, setMessage] = useState("");
+  const [connectAttempt, setConnectAttempt] = useState(0);
   const receivedAtRef = useRef(0);
   const lastHostCounterRef = useRef(0);
   const sequenceRef = useRef(Math.floor(Date.now() * 1000 + Math.random() * 1000));
@@ -76,7 +78,21 @@ export default function WaveyardLocalRemote() {
       return;
     }
     let cancelled = false;
+    let ended = false;
     let stream: EventSource | null = null;
+    const controller = new AbortController();
+    let lastStateAt = performance.now();
+    setConnection("connecting");
+    setMessage("");
+    const watchdog = window.setInterval(() => {
+      if (cancelled || performance.now() - lastStateAt < 10_000) return;
+      window.clearInterval(watchdog);
+      ended = true;
+      controller.abort();
+      stream?.close();
+      setConnection("offline");
+      setMessage(RECONNECT_MESSAGE);
+    }, 1000);
     const connect = async () => {
       try {
         if (!deviceTokenRef.current) {
@@ -84,12 +100,13 @@ export default function WaveyardLocalRemote() {
           joinStartedRef.current = true;
           const response = await fetch(`/join?pair=${encodeURIComponent(credentials.pairingToken)}`, {
             cache: "no-store",
+            signal: controller.signal,
           });
           const joined = await response.json() as { deviceId?: string; deviceToken?: string; error?: string };
           if (!response.ok || !joined.deviceId || !joined.deviceToken) {
             throw new Error(joined.error ?? "This QR invitation has expired.");
           }
-          if (cancelled) return;
+          if (cancelled || ended || controller.signal.aborted) return;
           deviceIdRef.current = joined.deviceId;
           deviceTokenRef.current = joined.deviceToken;
           const saved = { ...credentials, deviceId: joined.deviceId, deviceToken: joined.deviceToken };
@@ -99,16 +116,30 @@ export default function WaveyardLocalRemote() {
         }
         if (!deviceIdRef.current || cancelled) return;
         stream = new EventSource(`/events?token=${encodeURIComponent(deviceTokenRef.current)}`);
-        stream.onopen = () => setConnection("connected");
+        // Only a verified snapshot proves that the laptop is still publishing.
+        // An open relay connection alone can otherwise leave the phone waiting forever.
         stream.onerror = () => {
+          if (cancelled || ended) return;
           if (stream?.readyState === EventSource.CLOSED) {
+            ended = true;
+            window.clearInterval(watchdog);
             setConnection("invalid");
             setMessage("This pairing ended or expired. Scan a fresh QR from Waveyard.");
           } else {
             setConnection("offline");
+            setMessage(RECONNECT_MESSAGE);
           }
         };
+        stream.addEventListener("ended", () => {
+          if (cancelled || ended) return;
+          ended = true;
+          stream?.close();
+          window.clearInterval(watchdog);
+          setConnection("invalid");
+          setMessage("This pairing ended or was replaced. Scan the fresh QR from Waveyard on your laptop.");
+        });
         stream.addEventListener("state", (event) => {
+          if (cancelled || ended) return;
           try {
             const packet = JSON.parse((event as MessageEvent<string>).data) as EncryptedLocalSessionPacket;
             if (packet.senderId !== credentials.hostSenderId || packet.counter <= lastHostCounterRef.current) return;
@@ -132,12 +163,15 @@ export default function WaveyardLocalRemote() {
                 || typeof stem.isolated !== "boolean")
             ) return;
             lastHostCounterRef.current = packet.counter;
+            lastStateAt = performance.now();
             receivedAtRef.current = performance.now();
             setState(next);
             setPosition(next.positionSeconds);
             setConnection("connected");
             setMessage("");
           } catch {
+            ended = true;
+            window.clearInterval(watchdog);
             setMessage("The session could not be verified. Rescan the QR from Waveyard.");
             setConnection("invalid");
             stream?.close();
@@ -145,8 +179,10 @@ export default function WaveyardLocalRemote() {
         });
       } catch (error) {
         if (cancelled) return;
-        setMessage(error instanceof Error ? error.message : "Could not connect to the desktop.");
-        setConnection("invalid");
+        window.clearInterval(watchdog);
+        const lostConnection = controller.signal.aborted || error instanceof TypeError;
+        setMessage(lostConnection ? RECONNECT_MESSAGE : error instanceof Error ? error.message : "Could not connect to the desktop.");
+        setConnection(lostConnection ? "offline" : "invalid");
       } finally {
         joinStartedRef.current = false;
       }
@@ -154,18 +190,20 @@ export default function WaveyardLocalRemote() {
     void connect();
     return () => {
       cancelled = true;
+      window.clearInterval(watchdog);
+      controller.abort();
       stream?.close();
     };
-  }, [credentials]);
+  }, [credentials, connectAttempt]);
 
   useEffect(() => {
-    if (state === null) return;
+    if (state === null || connection !== "connected") return;
     const timer = window.setInterval(() => {
       const elapsed = state.playing ? (performance.now() - receivedAtRef.current) / 1000 : 0;
       setPosition(Math.min(state.durationSeconds, state.positionSeconds + elapsed));
     }, 250);
     return () => window.clearInterval(timer);
-  }, [state]);
+  }, [state, connection]);
 
   const send = useCallback(async (command: LocalRemoteCommand) => {
     if (!credentials || !deviceTokenRef.current || !deviceIdRef.current) return;
@@ -185,11 +223,12 @@ export default function WaveyardLocalRemote() {
       if (!response.ok) {
         const result = await response.json().catch(() => ({})) as { error?: string };
         setMessage(result.error ?? "The desktop did not receive that control.");
+        if (response.status === 401) setConnection("invalid");
       } else {
         setMessage("");
       }
     } catch {
-      setMessage("Connection lost. Reopen the QR link while the desktop session is shared.");
+      setMessage(RECONNECT_MESSAGE);
       setConnection("offline");
     }
   }, [credentials]);
@@ -249,6 +288,14 @@ export default function WaveyardLocalRemote() {
 
       <section className="wy-remote-content">
         <div className="wy-remote-brand">WAVEYARD <span>REMOTE</span></div>
+        {(connection === "offline" || (connection === "invalid" && state !== null)) && (
+          <div className="wy-remote-message" role="status">
+            <p>{message || "Scan the QR from Waveyard to reconnect."}</p>
+            {connection === "offline" && (
+              <button type="button" onClick={() => setConnectAttempt(attempt => attempt + 1)}>Retry connection</button>
+            )}
+          </div>
+        )}
         {connection === "invalid" && state === null ? (
           <div className="wy-remote-message">
             <h1>Scan the QR from Waveyard</h1>
@@ -362,7 +409,7 @@ export default function WaveyardLocalRemote() {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
                 </button>
               </div>
-              {message && <p className="wy-remote-alert" role="status">{message}</p>}
+              {message && connected && <p className="wy-remote-alert" role="status">{message}</p>}
             </section>
           </>
         )}

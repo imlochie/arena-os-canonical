@@ -1,4 +1,4 @@
-import { startWaveyardLocalSync, stopWaveyardLocalSync } from "../../../lib/waveyard/local-sync";
+import { getWaveyardLocalSyncStatus, startWaveyardLocalSync, stopWaveyardLocalSync } from "../../../lib/waveyard/local-sync";
 
 export async function POST(request: Request) {
   if (process.env.ARENA_DESKTOP_MODE !== "1") {
@@ -8,7 +8,7 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: { action?: unknown; hostToken?: unknown };
+  let body: { action?: unknown; hostToken?: unknown; selectedAddress?: unknown };
   try {
     body = await request.json() as typeof body;
   } catch {
@@ -42,5 +42,20 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ error: "Choose start or stop." }, { status: 400 });
+  if (body.action === "status") {
+    if (typeof body.hostToken !== "string" || typeof body.selectedAddress !== "string") {
+      return Response.json({ error: "Host authorization and the selected address are required." }, { status: 400 });
+    }
+    try {
+      return Response.json(getWaveyardLocalSyncStatus(body.hostToken, body.selectedAddress), {
+        headers: { "cache-control": "no-store" },
+      });
+    } catch {
+      return Response.json({ error: "This local sharing session is no longer active." }, {
+        status: 401, headers: { "cache-control": "no-store" },
+      });
+    }
+  }
+
+  return Response.json({ error: "Choose start, status or stop." }, { status: 400 });
 }

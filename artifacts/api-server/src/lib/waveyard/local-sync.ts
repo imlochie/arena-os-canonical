@@ -28,6 +28,7 @@ type ActiveSync = {
   expiresAt: number;
   expiryTimer: ReturnType<typeof setTimeout>;
   privateAddresses: string[];
+  closed: boolean;
 };
 
 let active: ActiveSync | null = null;
@@ -196,6 +197,10 @@ async function handleRequest(state: ActiveSync, req: IncomingMessage, res: Serve
   const url = new URL(req.url ?? "/", "http://local-sync");
   corsHeaders(req, res, state);
   res.setHeader("cache-control", "no-store");
+  if (state.closed) {
+    sendJson(res, 401, { error: "This pairing ended. Scan a fresh QR from Waveyard." });
+    return;
+  }
 
   if (req.method === "OPTIONS") {
     if (!originAllowed(req, state)) {
@@ -335,9 +340,14 @@ async function handleRequest(state: ActiveSync, req: IncomingMessage, res: Serve
   sendJson(res, 404, { error: "Not found." });
 }
 
-async function closeActiveSync(state: ActiveSync) {
+async function closeActiveSync(state: ActiveSync, reason = "stopped") {
+  state.closed = true;
   if (active === state) active = null;
   clearTimeout(state.expiryTimer);
+  state.remoteDevices.clear();
+  state.latestState = null;
+  broadcast(state.remoteStreams, "ended", { reason });
+  broadcast(state.hostStreams, "ended", { reason });
   for (const client of state.hostStreams) client.end();
   for (const client of state.remoteStreams) client.end();
   state.hostStreams.clear();
@@ -348,10 +358,19 @@ async function closeActiveSync(state: ActiveSync) {
       return;
     }
     state.server.close(() => resolve());
+    state.server.closeAllConnections();
   });
 }
 
-export async function startWaveyardLocalSync(input: { hostOrigin: string }) {
+let starting: Promise<unknown> = Promise.resolve();
+
+export function startWaveyardLocalSync(input: { hostOrigin: string }) {
+  const result = starting.then(() => startLocalSync(input));
+  starting = result.catch(() => undefined);
+  return result;
+}
+
+async function startLocalSync(input: { hostOrigin: string }) {
   if (process.env.ARENA_DESKTOP_MODE !== "1") {
     throw new Error("LOCAL_SYNC_DESKTOP_ONLY");
   }
@@ -359,9 +378,9 @@ export async function startWaveyardLocalSync(input: { hostOrigin: string }) {
   if (origin.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(origin.hostname)) {
     throw new Error("LOCAL_SYNC_HOST_ORIGIN_INVALID");
   }
+  if (active) await closeActiveSync(active, "replaced");
   const addresses = waveyardLocalSyncAddresses();
   if (addresses.length === 0) throw new Error("LOCAL_SYNC_NO_PRIVATE_NETWORK");
-  if (active) await closeActiveSync(active);
 
   const pairingToken = randomBytes(32).toString("base64url");
   const hostToken = randomBytes(32).toString("base64url");
@@ -378,8 +397,9 @@ export async function startWaveyardLocalSync(input: { hostOrigin: string }) {
     remoteStreams: new Set(),
     latestState: null,
     expiresAt: Date.now() + SESSION_TTL_MS,
-    expiryTimer: setTimeout(() => { void closeActiveSync(state); }, SESSION_TTL_MS),
+    expiryTimer: setTimeout(() => { void closeActiveSync(state, "expired"); }, SESSION_TTL_MS),
     privateAddresses: addresses,
+    closed: false,
   };
   state.expiryTimer.unref?.();
   server.on("request", (req, res) => {
@@ -412,6 +432,16 @@ export async function startWaveyardLocalSync(input: { hostOrigin: string }) {
     expiresAt: state.expiresAt,
     maxDevices: MAX_REMOTE_DEVICES,
   };
+}
+
+export function getWaveyardLocalSyncStatus(
+  hostToken: string,
+  selectedAddress: string,
+  addresses = waveyardLocalSyncAddresses(),
+) {
+  if (!active) return { active: false, addresses: [], selectedAddressAvailable: false };
+  if (!sameSecret(hostToken, active.hostToken)) throw new Error("LOCAL_SYNC_HOST_UNAUTHORIZED");
+  return { active: true, addresses, selectedAddressAvailable: addresses.includes(selectedAddress) };
 }
 
 export async function stopWaveyardLocalSync(hostToken: string) {

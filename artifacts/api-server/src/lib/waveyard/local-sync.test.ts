@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { startWaveyardLocalSync, stopWaveyardLocalSync } from "./local-sync";
+import { getWaveyardLocalSyncStatus, startWaveyardLocalSync, stopWaveyardLocalSync } from "./local-sync";
 
 test("laptop sync relays encrypted packets only while the pairing is active", async () => {
   const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
@@ -126,6 +126,44 @@ test("local sync refuses hosted requests and non-local host origins", async () =
       /LOCAL_SYNC_HOST_ORIGIN_INVALID/,
     );
   } finally {
+    if (previousDesktopMode === undefined) delete process.env.ARENA_DESKTOP_MODE;
+    else process.env.ARENA_DESKTOP_MODE = previousDesktopMode;
+  }
+});
+
+test("network status detects a lost selected address and replacing an invitation revokes the old listener and phone tokens", async () => {
+  const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  let current: Awaited<ReturnType<typeof startWaveyardLocalSync>> | null = null;
+  try {
+    const old = await startWaveyardLocalSync({ hostOrigin: "http://127.0.0.1:5170" });
+    current = old;
+    const base = `http://127.0.0.1:${old.port}`;
+    const selected = old.addresses[0];
+    assert.equal(getWaveyardLocalSyncStatus(old.hostToken, selected, [selected]).selectedAddressAvailable, true);
+    assert.deepEqual(getWaveyardLocalSyncStatus(old.hostToken, selected, ["192.168.90.7"]), {
+      active: true, addresses: ["192.168.90.7"], selectedAddressAvailable: false,
+    });
+    assert.deepEqual(getWaveyardLocalSyncStatus(old.hostToken, selected, []).addresses, []);
+    assert.throws(() => getWaveyardLocalSyncStatus("wrong", selected), /UNAUTHORIZED/);
+    const phone = await (await fetch(`${base}/join?pair=${old.pairingToken}`)).json() as {
+      deviceId: string; deviceToken: string;
+    };
+    current = await startWaveyardLocalSync({ hostOrigin: "http://127.0.0.1:5170" });
+    assert.notEqual(current.pairingToken, old.pairingToken);
+    assert.notEqual(current.hostToken, old.hostToken);
+    assert.notEqual(current.hostNoncePrefix, old.hostNoncePrefix);
+    await assert.rejects(fetch(`${base}/join?pair=${old.pairingToken}`));
+    const replacement = `http://127.0.0.1:${current.port}`;
+    assert.equal((await fetch(`${replacement}/join?pair=${old.pairingToken}`)).status, 401);
+    assert.equal((await fetch(`${replacement}/events?token=${phone.deviceToken}`)).status, 401);
+    assert.equal((await fetch(`${replacement}/control?token=${phone.deviceToken}`, {
+      method: "POST", body: JSON.stringify({ packet: {} }),
+    })).status, 401);
+    assert.equal((await fetch(`${replacement}/host/events?token=${old.hostToken}`)).status, 401);
+    assert.equal((await fetch(`${replacement}/join?pair=${current.pairingToken}`)).status, 200);
+  } finally {
+    if (current) await stopWaveyardLocalSync(current.hostToken);
     if (previousDesktopMode === undefined) delete process.env.ARENA_DESKTOP_MODE;
     else process.env.ARENA_DESKTOP_MODE = previousDesktopMode;
   }

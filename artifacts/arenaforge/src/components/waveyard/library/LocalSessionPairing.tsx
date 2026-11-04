@@ -60,6 +60,8 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
   const [error, setError] = useState("");
   const [deviceCount, setDeviceCount] = useState(0);
   const [selectedAddress, setSelectedAddress] = useState("");
+  const [networkProblem, setNetworkProblem] = useState("");
+  const startingRef = useRef(false);
   const snapshotRef = useRef(snapshot);
   const commandRef = useRef(onCommand);
   const sequenceRef = useRef(0);
@@ -79,6 +81,7 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
   const stopSharing = useCallback(async (hostToken?: string) => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
+    pairingRef.current = null;
     if (hostToken) {
       await fetch("/api/waveyard/local-sync", {
         method: "POST",
@@ -173,9 +176,74 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
     return () => window.clearInterval(timer);
   }, [pairing]);
 
+  useEffect(() => {
+    if (!pairing) return;
+    let cancelled = false;
+    let checking = false;
+    let previousProblem = "";
+    const reportProblem = (problem: string) => {
+      setNetworkProblem(problem);
+      if (problem && previousProblem !== problem) setOpen(true);
+      previousProblem = problem;
+    };
+    let controller: AbortController | null = null;
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      const requestController = new AbortController();
+      controller = requestController;
+      const timeout = window.setTimeout(() => requestController.abort(), 5000);
+      try {
+        const response = await fetch("/api/waveyard/local-sync", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "status", hostToken: pairing.hostToken, selectedAddress }),
+          signal: requestController.signal,
+          cache: "no-store",
+        });
+        const status = await response.json() as { active: boolean; addresses: string[]; selectedAddressAvailable: boolean };
+        if (cancelled || pairingRef.current?.hostToken !== pairing.hostToken) return;
+        const problem = !response.ok || !status.active
+          ? "This invitation ended. Generate a fresh QR and scan it on your phone."
+          : !status.selectedAddressAvailable
+            ? status.addresses.length
+              ? "Your laptop’s network address changed. Generate a fresh QR and scan it on your phone."
+              : "Your laptop lost its private network. Connect to Wi-Fi, then generate a fresh QR."
+            : "";
+        reportProblem(problem);
+      } catch {
+        if (!cancelled && pairingRef.current?.hostToken === pairing.hostToken) {
+          reportProblem("Could not check the phone connection. Generate a fresh QR to reconnect.");
+        }
+      } finally {
+        window.clearTimeout(timeout);
+        checking = false;
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 3000);
+    window.addEventListener("online", check);
+    window.addEventListener("focus", check);
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("online", check);
+      window.removeEventListener("focus", check);
+    };
+  }, [pairing, selectedAddress]);
+
   const startSharing = useCallback(async () => {
+    if (startingRef.current) return;
+    startingRef.current = true;
     setBusy(true);
     setError("");
+    setNetworkProblem("");
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    pairingRef.current = null;
+    setPairing(null);
+    setDeviceCount(0);
     try {
       const key = createLocalSessionKey();
       const response = await fetch("/api/waveyard/local-sync", {
@@ -185,6 +253,15 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
       });
       const result = await response.json() as LocalSyncStartResponse;
       if (!response.ok) throw new Error(result.error ?? "Could not start local sharing.");
+      if (!mountedRef.current) {
+        await fetch("/api/waveyard/local-sync", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "stop", hostToken: result.hostToken }),
+          keepalive: true,
+        });
+        return;
+      }
       if (!result.addresses.length) {
         throw new Error("No private network address is available. Connect both devices to the same Wi-Fi.");
       }
@@ -195,10 +272,13 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
       setDeviceCount(0);
       setOpen(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not start local sharing.");
-      setOpen(true);
+      if (mountedRef.current) {
+        setError(caught instanceof Error ? caught.message : "Could not start local sharing.");
+        setOpen(true);
+      }
     } finally {
-      setBusy(false);
+      startingRef.current = false;
+      if (mountedRef.current) setBusy(false);
     }
   }, []);
 
@@ -223,7 +303,7 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
         data-testid="waveyard-share-phone"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM5 5v3h3V5zM14 3h7v7h-7zM16 5v3h3V5zM3 14h7v7H3zM5 16v3h3v-3zM14 14h3v3h-3zM19 14h2v2h-2zM14 19h2v2h-2zM18 18h3v3h-3zM19 16h2v2h-2z" /></svg>
-        <span>{busy ? "Opening…" : pairing ? deviceCount > 0 ? "Phone paired" : "Share active" : "Share"}</span>
+        <span>{busy ? "Opening…" : networkProblem && pairing ? "Reconnect phone" : pairing ? deviceCount > 0 ? "Phone paired" : "Share active" : "Share"}</span>
       </button>
 
       {open && (
@@ -254,16 +334,17 @@ export default function LocalSessionPairing({ snapshot, onCommand }: Props) {
                     </select>
                   </label>
                 )}
-                <div className="wy-sync-qr">
+                {networkProblem ? <p className="wy-sync-error" role="alert">{networkProblem}</p> : <div className="wy-sync-qr">
                   <QRCodeSVG value={inviteUrl} size={232} level="H" includeMargin title="Scan to control this Waveyard session from your phone" />
-                </div>
+                </div>}
                 <div className="wy-sync-status" role="status">
                   <span className={deviceCount > 0 ? "is-on" : ""} />
                   {deviceCount > 0 ? `${deviceCount} phone${deviceCount === 1 ? "" : "s"} paired` : "Waiting for your phone"}
                   <small>Same private Wi-Fi · invitation expires after 60 minutes</small>
                 </div>
                 <div className="wy-sync-actions">
-                  <button type="button" onClick={() => void copyInvite()}>Copy private link</button>
+                  <button type="button" disabled={!!networkProblem} onClick={() => void copyInvite()}>Copy private link</button>
+                  <button type="button" disabled={busy} onClick={() => void startSharing()}>Generate fresh QR</button>
                   <button className="danger" type="button" onClick={() => void stopSharing(pairing.hostToken)}>End sharing</button>
                 </div>
               </>
