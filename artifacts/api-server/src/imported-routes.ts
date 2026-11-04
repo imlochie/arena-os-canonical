@@ -22,6 +22,7 @@ export const importedRoutes = [
   { path: "/library/conversions", methods: ["GET","POST"], load: () => import("./imported/library/conversions/route.ts") },
   { path: "/library/audio-capture", methods: ["GET","POST"], load: () => import("./imported/library/audio-capture/route.ts") },
   { path: "/library/audio-capture/recoveries", methods: ["GET"], load: () => import("./imported/library/audio-capture/recoveries/route.ts") },
+  { path: "/library/audio-capture/recoveries/:id/preview", methods: ["GET"], load: () => import("./imported/library/audio-capture/recoveries/[id]/preview/route.ts") },
   { path: "/library/audio-capture/recoveries/:id/import", methods: ["POST"], load: () => import("./imported/library/audio-capture/recoveries/[id]/import/route.ts") },
   { path: "/library/audio-capture/:id", methods: ["GET","POST"], load: () => import("./imported/library/audio-capture/[id]/route.ts") },
   { path: "/library/audio-capture/:id/stop", methods: ["POST"], load: () => import("./imported/library/audio-capture/[id]/stop/route.ts") },

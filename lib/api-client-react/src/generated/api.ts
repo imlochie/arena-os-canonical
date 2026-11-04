@@ -1719,6 +1719,83 @@ export function useGetLibraryAudioCaptureRecoveries<TData = Awaited<ReturnType<t
 
 
 
+export const getPreviewLibraryAudioCaptureRecoveryUrl = (id: string,) => {
+
+
+
+
+  return `/api/library/audio-capture/recoveries/${id}/preview`
+}
+
+/**
+ * @summary Stream a preserved recording without importing it
+ */
+export const previewLibraryAudioCaptureRecovery = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<Blob> => {
+
+  return customFetch<Blob>(getPreviewLibraryAudioCaptureRecoveryUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getPreviewLibraryAudioCaptureRecoveryQueryKey = (id: string,) => {
+    return [
+    `/api/library/audio-capture/recoveries/${id}/preview`
+    ] as const;
+    }
+
+
+export const getPreviewLibraryAudioCaptureRecoveryQueryOptions = <TData = Awaited<ReturnType<typeof previewLibraryAudioCaptureRecovery>>, TError = ErrorType<ApiError>>(id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof previewLibraryAudioCaptureRecovery>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getPreviewLibraryAudioCaptureRecoveryQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof previewLibraryAudioCaptureRecovery>>> = ({ signal }) => previewLibraryAudioCaptureRecovery(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof previewLibraryAudioCaptureRecovery>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type PreviewLibraryAudioCaptureRecoveryQueryResult = NonNullable<Awaited<ReturnType<typeof previewLibraryAudioCaptureRecovery>>>
+export type PreviewLibraryAudioCaptureRecoveryQueryError = ErrorType<ApiError>
+
+
+/**
+ * @summary Stream a preserved recording without importing it
+ */
+
+export function usePreviewLibraryAudioCaptureRecovery<TData = Awaited<ReturnType<typeof previewLibraryAudioCaptureRecovery>>, TError = ErrorType<ApiError>>(
+ id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof previewLibraryAudioCaptureRecovery>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getPreviewLibraryAudioCaptureRecoveryQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export const getImportLibraryAudioCaptureRecoveryUrl = (id: string,) => {
 
 

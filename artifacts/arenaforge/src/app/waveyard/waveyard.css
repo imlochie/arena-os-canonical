@@ -580,6 +580,10 @@
 .library-audio-capture-warning{color:#ef9b76!important;font-size:11px}
 .library-audio-capture-recoveries{display:grid;gap:8px;padding-top:10px;border-top:1px solid var(--line)}
 .library-audio-capture-recovery{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px;border-radius:9px;background:color-mix(in srgb,var(--panel),transparent 8%)}
+.library-audio-capture-recovery-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.library-audio-capture-preview{display:grid;gap:6px;margin-top:6px}
+.library-audio-capture-preview audio{width:min(100%,360px);height:38px}
+.library-audio-capture-preview button{justify-self:start}
 .library-audio-capture-recovery button{background:transparent;color:var(--text)}
 .optional-label{color:var(--muted);font-weight:400}
 @media(max-width:640px){.library-audio-capture-heading,.library-audio-capture-session,.library-audio-capture-recovery{align-items:stretch;flex-direction:column}.library-audio-capture-live{white-space:normal}.library-audio-capture-form{grid-template-columns:1fr}}

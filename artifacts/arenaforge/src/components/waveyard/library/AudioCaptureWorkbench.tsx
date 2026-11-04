@@ -192,6 +192,8 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   const [watchMediaSession, setWatchMediaSession] = useState(false);
   const [mediaWatchStatus, setMediaWatchStatus] = useState<string | null>(null);
   const [mediaSuggestion, setMediaSuggestion] = useState<MediaTrackSuggestion | null>(null);
+  const [previewRecoveryId, setPreviewRecoveryId] = useState<string | null>(null);
+  const recoveryPreviewRef = useRef<HTMLAudioElement | null>(null);
   const metadataRequest = useRef<AbortController | null>(null);
   const mediaWatchLastKey = useRef("");
   const mediaWatchInitialTitle = useRef("");
@@ -480,6 +482,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
 
   const importRecovery = async (recovery: Recovery) => {
     if (busy) return;
+    stopRecoveryPreview();
     setBusy(true);
     setMessage(null);
     try {
@@ -497,6 +500,17 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     } finally {
       setBusy(false);
     }
+  };
+
+  const stopRecoveryPreview = () => {
+    const player = recoveryPreviewRef.current;
+    if (player) {
+      player.pause();
+      player.currentTime = 0;
+      player.removeAttribute("src");
+      player.load();
+    }
+    setPreviewRecoveryId(null);
   };
 
   const refreshDevices = async () => {
@@ -935,10 +949,42 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                     : "No signal above -80 dBFS was detected; check playback before relying on this recording."}
                 </span>
                 <span>{new Date(recovery.createdAt).toLocaleString()}</span>
+                {previewRecoveryId === recovery.sessionId && (
+                  <div className="library-audio-capture-preview">
+                    <audio
+                      ref={recoveryPreviewRef}
+                      controls
+                      preload="none"
+                      src={`/api/library/audio-capture/recoveries/${encodeURIComponent(recovery.sessionId)}/preview`}
+                      aria-label={`Preview ${recovery.title}`}
+                      onError={() => setMessage(`Could not play the preserved recording “${recovery.title}”.`)}
+                    />
+                    <span role="status">Preview only; this recording has not been imported.</span>
+                    <button type="button" onClick={stopRecoveryPreview}>Stop preview</button>
+                  </div>
+                )}
               </div>
-              <button type="button" onClick={() => void importRecovery(recovery)} disabled={busy}>
-                {busy ? "Importing…" : "Recover to library"}
-              </button>
+              <div className="library-audio-capture-recovery-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (previewRecoveryId === recovery.sessionId) {
+                      stopRecoveryPreview();
+                    } else {
+                      stopRecoveryPreview();
+                      setPreviewRecoveryId(recovery.sessionId);
+                      setMessage(null);
+                    }
+                  }}
+                  disabled={busy}
+                  aria-expanded={previewRecoveryId === recovery.sessionId}
+                >
+                  {previewRecoveryId === recovery.sessionId ? "Hide preview" : "Preview"}
+                </button>
+                <button type="button" onClick={() => void importRecovery(recovery)} disabled={busy}>
+                  {busy ? "Importing…" : "Recover to library"}
+                </button>
+              </div>
             </div>
           ))}
         </div>

@@ -457,6 +457,49 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LibraryAudioCaptureRecoveriesResponse"
+  /library/audio-capture/recoveries/{id}/preview:
+    get:
+      operationId: previewLibraryAudioCaptureRecovery
+      tags: [waveyard]
+      summary: Stream a preserved recording without importing it
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional single byte range for playback seeking
+      responses:
+        "200":
+          description: Preserved WAV recording
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: Requested portion of the preserved WAV recording
+          headers:
+            Content-Range:
+              schema:
+                type: string
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Recoverable recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /library/audio-capture/recoveries/{id}/import:
     post:
       operationId: importLibraryAudioCaptureRecovery

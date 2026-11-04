@@ -819,6 +819,20 @@ export const GetLibraryAudioCaptureRecoveriesResponse = zod.object({
 
 
 /**
+ * @summary Stream a preserved recording without importing it
+ */
+export const PreviewLibraryAudioCaptureRecoveryParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const PreviewLibraryAudioCaptureRecoveryHeader = zod.object({
+  "Range": zod.string().optional().describe('Optional single byte range for playback seeking')
+})
+
+export const PreviewLibraryAudioCaptureRecoveryResponse = zod.unknown()
+
+
+/**
  * @summary Add a preserved recording to the Waveyard library
  */
 export const ImportLibraryAudioCaptureRecoveryParams = zod.object({
