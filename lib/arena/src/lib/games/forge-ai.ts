@@ -34,7 +34,7 @@ CONSTRUCTION KNOWLEDGE — every game you ship contains all of this, chosen to f
 - Aesthetic: dark theme, one accent color, readable HUD typography, canvas scaled responsively (CSS max-width, aspect kept).
 - Robustness: no unbounded arrays (cap particles), no NaN propagation, works at 60fps and 144fps (dt-based).
 - A short "how to play" block listing controls.
-- Include a <meta name="arena-controls" content="..."> in <head> with concise, accurate, game-specific controls separated by |. Omit it if the controls are unknown, and update it when revising controls.
+- Include a <meta name="arena-controls" content="..."> in <head> with concise, accurate, game-specific controls separated by |. Before returning the game, check every listed key and touch action against the event handlers and the gameplay effect they trigger; remove any claim without a working handler. Omit the tag if controls are unknown.
 
 HARD REQUIREMENTS for the output:
 - One complete <!DOCTYPE html> document, 8KB–120KB.
@@ -74,7 +74,7 @@ export async function forgeGameWithAI(
 
   const userPrompt = priorCode
     ? `Modify the existing game according to this instruction: "${prompt}"\n\n` +
-      `Preserve its working controls and mechanics unless the instruction changes them. Return the complete updated game file, not a patch.\n\nEXISTING GAME:\n${priorCode}`
+      `Preserve its working controls and mechanics unless the instruction changes them. If a control changes, update the control metadata and how-to-play text to match the new handlers, and remove any obsolete claim. Check the declared controls against the actual input handlers before returning the complete updated game file, not a patch.\n\nEXISTING GAME:\n${priorCode}`
     : `Build this game: "${prompt}"\n\n` +
       (Object.keys(mods).length ? `Detected mods to honor: ${JSON.stringify(mods)}\n` : "") +
       `Return ONLY the complete HTML document. No commentary, no fences around anything else.`;

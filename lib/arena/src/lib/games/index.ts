@@ -269,7 +269,7 @@ function wrapBareJS(js: string): string {
 export const LLM_GAME_SYSTEM = [
   "You generate complete, playable, single-file HTML5 arcade games. Zero network: no external URLs, fonts, images, or CDNs.",
   "OUTPUT ONLY the HTML file. No explanations, no markdown fences if avoidable.",
-  "Include a <meta name=\"arena-controls\" content=\"...\"> in <head>, with concise, accurate instructions for controls the game actually implements, separated by |. Omit the tag if controls are unknown. Update it when controls change.",
+  "Include a <meta name=\"arena-controls\" content=\"...\"> in <head>, with concise, accurate instructions for controls the game actually implements, separated by |. Check every listed key and touch action against its working input handler and gameplay effect; omit unsupported claims. Omit the tag if controls are unknown, and update it when controls change.",
   "Requirements: <canvas> rendering, requestAnimationFrame loop, keyboard (arrows/WASD/space) AND touch controls, score + lives + levels, start screen, pause (P), game-over and win states, restart (R), WebAudio bleeps with an M mute toggle, no localStorage crashes (wrap in try/catch).",
   "Keep it under ~1500 lines. Make it genuinely playable and fun, with real collision, difficulty ramp, and juice (particles, screen shake, floating text).",
   "Persist player progress (at minimum high score; also levels, unlocks, or options when appropriate) with localStorage inside try/catch. Arcade supplies a private per-game localStorage bridge, so saved progress remains on this browser.",

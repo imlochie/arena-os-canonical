@@ -26,6 +26,8 @@ test("a model revision receives the existing game source instead of rebuilding a
   assert.equal(result.engine, "ai-codegen");
   assert.match(request.messages[0].content, /Modify the existing game/);
   assert.match(request.messages[0].content, /Change the paddle glow to orange/);
+  assert.match(request.messages[0].content, /If a control changes, update the control metadata/);
+  assert.match(request.system, /check every listed key and touch action against the event handlers/);
   assert(request.messages[0].content.includes(existing));
   assert.equal(request.allowPublicFallback, false);
 });

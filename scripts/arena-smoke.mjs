@@ -3859,7 +3859,7 @@ try {
   let heldGenerationHasSource = false;
   let generationStartedResolve = null;
   let releaseHeldGeneration = null;
-  const generatedPong = '<!doctype html><html><head><title>Generated Pong</title><meta name="arena-controls" content="ArrowRight — move the paddle"></head><body><p id="generated-pong">AI Pong</p><canvas width="320" height="180"></canvas><script>let x=0;const c=document.querySelector("canvas"),ctx=c.getContext("2d");addEventListener("keydown",e=>{if(e.key==="ArrowRight")x++});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(x,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>';
+  const generatedPong = `<!doctype html><html><head><title>Generated Pong</title><meta name="arena-controls" content="ArrowRight — move the paddle | Tap canvas — serve"><style>canvas{touch-action:none}</style></head><body><p id="generated-pong">AI Pong</p><p id="input-state">Paddle: 0 · Served: no</p><canvas width="320" height="180" tabindex="0"></canvas><script>let paddle=0,served=false;const canvas=document.querySelector("canvas"),state=document.querySelector("#input-state"),ctx=canvas.getContext("2d");function updateState(){state.textContent="Paddle: "+paddle+" · Served: "+(served?"yes":"no")}addEventListener("keydown",event=>{if(event.key==="ArrowRight"){paddle++;updateState()}});canvas.addEventListener("touchstart",event=>{event.preventDefault();served=true;updateState()},{passive:false});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(8+paddle*8,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>`;
   const passedStartupVerification = {
     status: "passed",
     scope: "startup-render-only",
@@ -3957,7 +3957,7 @@ try {
   </script>
 </body>
 </html>`;
-  const revisedGeneratedPong = generatedPong.replace("AI Pong", "AI Pong with multi-ball");
+  const revisedGeneratedPong = `<!doctype html><html><head><title>Revised Pong</title><meta name="arena-controls" content="ArrowLeft — move the paddle left | Tap canvas — add multi-ball"><style>canvas{touch-action:none}</style></head><body><p id="generated-pong">AI Pong with multi-ball</p><p id="input-state">Paddle: 0 · Multi-ball: no</p><canvas width="320" height="180" tabindex="0"></canvas><script>let paddle=0,multiBall=false;const canvas=document.querySelector("canvas"),state=document.querySelector("#input-state"),ctx=canvas.getContext("2d");function updateState(){state.textContent="Paddle: "+paddle+" · Multi-ball: "+(multiBall?"yes":"no")}addEventListener("keydown",event=>{if(event.key==="ArrowLeft"){paddle--;updateState()}});canvas.addEventListener("touchstart",event=>{event.preventDefault();multiBall=true;updateState()},{passive:false});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(8+(160+paddle*8),20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>`;
   const revisedOfflinePlatformer = '<!doctype html><html><head><title>Revised local platformer</title></head><body><p id="offline-revision-marker">Double jump added</p><canvas width="320" height="180"></canvas><script>let jumps=2;addEventListener("keydown",e=>{if(e.key===" ")jumps--});requestAnimationFrame(function loop(){requestAnimationFrame(loop)});</script></body></html>';
   await page.route("**/api/arcade/forge", async route => {
     const body = route.request().postDataJSON();
@@ -4105,8 +4105,25 @@ try {
   await page.getByText("✨ AI codegen").waitFor({ timeout: 10000 });
   assert(promptGenerationSeen, "Automatic prompt generation must call the code-writing model instead of a preset core");
   await page.getByTestId("game-controls").getByText("ArrowRight — move the paddle").waitFor();
+  await page.getByTestId("game-controls").getByText("Tap canvas — serve").waitFor();
   await page.locator('iframe[title="Pong"]').waitFor();
-  report.push("Automatic creation routes a bare Pong prompt and the selected model source to generated game code instead of a preset.");
+  const generatedPongFrame = page.frameLocator('iframe[title="Pong"]');
+  const generatedPongCanvas = generatedPongFrame.locator("canvas");
+  await generatedPongFrame.locator("#input-state").waitFor();
+  await generatedPongCanvas.evaluate(canvas => canvas.focus());
+  await page.keyboard.press("ArrowRight");
+  assert.equal(
+    await generatedPongFrame.locator("#input-state").innerText(),
+    "Paddle: 1 · Served: no",
+    "The displayed ArrowRight control must move the generated game's paddle",
+  );
+  await tapCenter(generatedPongCanvas);
+  assert.equal(
+    await generatedPongFrame.locator("#input-state").innerText(),
+    "Paddle: 1 · Served: yes",
+    "The displayed touch control must trigger the generated game's serve action",
+  );
+  report.push("Generated Pong's displayed ArrowRight and touch-to-serve controls both produce their stated in-game effects.");
   await page.getByRole("button", { name: /Code/ }).click();
   await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -4155,6 +4172,36 @@ try {
   await page.getByRole("button", { name: "Apply change" }).click();
   await page.getByText(/Revised Pong passed the isolated startup check/).waitFor({ timeout: 10000 });
   assert(localServerRevisionSeen, "Local Mode edits must route the existing source to the selected local model");
+  await page.getByTestId("game-controls").getByText("ArrowLeft — move the paddle left").waitFor();
+  await page.getByTestId("game-controls").getByText("Tap canvas — add multi-ball").waitFor();
+  assert.equal(
+    await page.getByTestId("game-controls").getByText("ArrowRight — move the paddle").count(),
+    0,
+    "Revised instructions must remove the superseded ArrowRight control",
+  );
+  const revisedPongFrame = page.frameLocator('iframe[title="Add a multi-ball mode"]');
+  const revisedPongCanvas = revisedPongFrame.locator("canvas");
+  await revisedPongFrame.locator("#input-state").waitFor();
+  await revisedPongCanvas.evaluate(canvas => canvas.focus());
+  await page.keyboard.press("ArrowRight");
+  assert.equal(
+    await revisedPongFrame.locator("#input-state").innerText(),
+    "Paddle: 0 · Multi-ball: no",
+    "A control removed by revision must no longer affect gameplay",
+  );
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(
+    await revisedPongFrame.locator("#input-state").innerText(),
+    "Paddle: -1 · Multi-ball: no",
+    "The revised ArrowLeft instruction must match the new keyboard handler",
+  );
+  await tapCenter(revisedPongCanvas);
+  assert.equal(
+    await revisedPongFrame.locator("#input-state").innerText(),
+    "Paddle: -1 · Multi-ball: yes",
+    "The revised touch instruction must match the new multi-ball action",
+  );
+  report.push("Revising generated Pong replaces its control notes and handlers together; removed keys stop working and new keyboard/touch actions work.");
   report.push("Local Mode routed new-game and source-revision requests to the selected local TurboAgent model with no provider keys (mocked inference endpoint).");
   const prepareHeldGeneration = (hasSource) => {
     heldGenerationHasSource = hasSource;
