@@ -20,6 +20,11 @@ const frontendNodeModules = fileURLToPath(new URL(
   import.meta.url,
 ));
 const LONG_AUDIO_SECONDS = 90;
+const LONG_STEM_SECONDS = 300;
+const PCM_RATE = 44_100;
+const PCM_CHANNELS = 2;
+const LONG_STEM_DATA_BYTES = LONG_STEM_SECONDS * PCM_RATE * PCM_CHANNELS * 2;
+const LONG_STEM_FILE_BYTES = 44 + LONG_STEM_DATA_BYTES;
 
 function tone() {
   const rate = 44_100;
@@ -44,6 +49,48 @@ function tone() {
     );
   }
   return wav;
+}
+
+function longStemHeader() {
+  const header = Buffer.alloc(44);
+  header.write("RIFF");
+  header.writeUInt32LE(LONG_STEM_FILE_BYTES - 8, 4);
+  header.write("WAVEfmt ", 8);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(PCM_CHANNELS, 22);
+  header.writeUInt32LE(PCM_RATE, 24);
+  header.writeUInt32LE(PCM_RATE * PCM_CHANNELS * 2, 28);
+  header.writeUInt16LE(PCM_CHANNELS * 2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(LONG_STEM_DATA_BYTES, 40);
+  return header;
+}
+
+function longStemRange(rangeHeader) {
+  const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader ?? "");
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (start < 0 || end < start || end >= LONG_STEM_FILE_BYTES) return null;
+  const bytes = Buffer.alloc(end - start + 1);
+  const header = longStemHeader();
+  for (let index = 0; index < bytes.length; index += 1) {
+    const position = start + index;
+    if (position < header.length) {
+      bytes[index] = header[position];
+      continue;
+    }
+    const pcmOffset = position - header.length;
+    const sampleIndex = Math.floor(pcmOffset / 2);
+    const frame = Math.floor(sampleIndex / PCM_CHANNELS);
+    const channel = sampleIndex % PCM_CHANNELS;
+    const sample = Math.round(8192 * Math.sin(2 * Math.PI * (330 + channel * 110) * frame / PCM_RATE));
+    const unsigned = sample & 0xffff;
+    bytes[index] = pcmOffset % 2 === 0 ? unsigned & 0xff : unsigned >>> 8;
+  }
+  return { start, end, bytes, fileSize: LONG_STEM_FILE_BYTES };
 }
 
 async function chromiumProcessMemory() {
@@ -82,6 +129,7 @@ let url;
 let tempRoot;
 let longEncodedAudio;
 const assetRequests = [];
+const assetRangeRequests = [];
 
 async function openFixture(t) {
   const page = await browser.newPage();
@@ -140,11 +188,29 @@ before(async () => {
     if (request.url?.startsWith("/api/assets/")) {
       const assetId = new URL(request.url, "http://localhost").pathname.split("/").at(-1);
       assetRequests.push(assetId);
+      assetRangeRequests.push({ assetId, range: request.headers.range ?? null });
       response.setHeader("Cache-Control", "no-store");
       if (assetId === "preview-long-encoded") {
         response.setHeader("Content-Type", "audio/mpeg");
         response.setHeader("Content-Length", longEncodedAudio.length);
         response.end(longEncodedAudio);
+        return;
+      }
+      if (assetId === "preview-long" || assetId?.startsWith("preview-many-")) {
+        const ranged = longStemRange(request.headers.range);
+        if (!ranged) {
+          response.writeHead(416, { "Content-Range": `bytes */${LONG_STEM_FILE_BYTES}` });
+          response.end();
+          return;
+        }
+        response.writeHead(206, {
+          "Content-Type": "audio/wav",
+          "Content-Length": ranged.bytes.length,
+          "Content-Range": `bytes ${ranged.start}-${ranged.end}/${ranged.fileSize}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "no-store",
+        });
+        response.end(ranged.bytes);
         return;
       }
       response.setHeader("Content-Type", "audio/wav");
@@ -258,32 +324,157 @@ test("blocked foreground arrangement recovery exposes a working retry", { timeou
   assert.equal(await page.evaluate(() => document.visibilityState), "visible");
 });
 
-test("long and many-stem arrangements are rejected before any full asset is fetched", { timeout: 20_000 }, async (t) => {
+test("long and multi-stem arrangements play from bounded PCM ranges and remain seekable", { timeout: 30_000 }, async (t) => {
   const page = await openFixture(t);
-  const before = assetRequests.length;
+  const beforeRanges = assetRangeRequests.length;
   await page.getByRole("button", { name: "Play long preview" }).click();
-  await page.waitForTimeout(500);
-  const longStatus = await page.evaluate(() => ({
-    error: window.preview.error,
-    pending: window.preview.pending,
-    playing: window.preview.playing,
-  }));
-  assert.match(
-    longStatus.error ?? "",
-    /estimated to need/i,
-    JSON.stringify({ longStatus, requests: assetRequests.slice(before) }),
-  );
-  assert.equal(assetRequests.length, before, "a long source is rejected before downloading or decoding");
+  await waitForOutput(page, "playing", "true");
+  await waitForOutput(page, "error", "");
+  const firstWindowRanges = assetRangeRequests.slice(beforeRanges);
+  assert.ok(firstWindowRanges.length >= 4, "a bounded header and PCM ranges are fetched");
+  assert.ok(firstWindowRanges.every((request) => request.assetId === "preview-long" && request.range),
+    JSON.stringify(firstWindowRanges));
+  assert.ok(firstWindowRanges.every((request) => {
+    const range = /^bytes=(\d+)-(\d+)$/.exec(request.range ?? "");
+    return range && Number(range[2]) - Number(range[1]) + 1 <= 5 * PCM_RATE * PCM_CHANNELS * 2;
+  }), "every request is a short header or audio window, never the full long WAV");
 
+  await page.evaluate(() => window.preview.seek(12_000));
+  await waitForOutput(page, "pending", "true");
+  await page.waitForFunction(() =>
+    window.preview.playing &&
+    !window.preview.pending &&
+    window.previewPosition >= 12_000,
+  null, { timeout: 10_000 });
+  const seekRanges = assetRangeRequests.slice(beforeRanges + firstWindowRanges.length);
+  const seekDataRanges = seekRanges
+    .filter((request) => request.assetId === "preview-long" && request.range !== "bytes=0-43")
+    .map((request) => Number(/^bytes=(\d+)-/.exec(request.range ?? "")?.[1]));
+  assert.ok(seekDataRanges.some((start) => start >= 44 + 12 * PCM_RATE * PCM_CHANNELS * 2),
+    JSON.stringify({ firstWindowRanges, seekRanges }));
+  await page.waitForFunction(() => window.previewPosition >= 17_250, null, { timeout: 10_000 });
+  assert.equal(await page.locator('[data-testid="error"]').innerText(), "");
+  const prefetchedLaterWindow = assetRangeRequests
+    .slice(beforeRanges)
+    .filter((request) => request.assetId === "preview-long" && request.range !== "bytes=0-43")
+    .some((request) => Number(/^bytes=(\d+)-/.exec(request.range ?? "")?.[1])
+      >= 44 + 27 * PCM_RATE * PCM_CHANNELS * 2);
+  assert.equal(prefetchedLaterWindow, true, "playhead crosses a segment and schedules the next one ahead");
+
+  const beforeMany = assetRangeRequests.length;
+  await page.evaluate(() => {
+    const starts = [];
+    const curves = [];
+    const buffers = [];
+    const nativeStart = AudioBufferSourceNode.prototype.start;
+    const nativeCurve = AudioParam.prototype.setValueCurveAtTime;
+    const nativeCreateBuffer = AudioContext.prototype.createBuffer;
+    AudioBufferSourceNode.prototype.start = function (when, offset, duration) {
+      starts.push({ when, offset, duration });
+      return nativeStart.call(this, when, offset, duration);
+    };
+    AudioParam.prototype.setValueCurveAtTime = function (values, startTime, duration) {
+      curves.push({ values: Array.from(values), startTime, duration });
+      return nativeCurve.call(this, values, startTime, duration);
+    };
+    AudioContext.prototype.createBuffer = function (channels, frames, sampleRate) {
+      const buffer = nativeCreateBuffer.call(this, channels, frames, sampleRate);
+      buffers.push({
+        ref: new WeakRef(buffer),
+        bytes: buffer.length * buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT,
+      });
+      return buffer;
+    };
+    Object.defineProperty(window, "__segmentScheduleProbe", {
+      configurable: true,
+      value: { starts, curves, buffers },
+    });
+  });
   await page.getByRole("button", { name: "Play many-stem preview" }).click();
-  await page.waitForTimeout(500);
-  const manyStatus = await page.evaluate(() => ({
-    error: window.preview.error,
-    pending: window.preview.pending,
-    playing: window.preview.playing,
+  await waitForOutput(page, "pending", "true");
+  await waitForOutput(page, "pending", "false");
+  await waitForOutput(page, "playing", "true");
+  await waitForOutput(page, "error", "");
+  const multiStemRanges = assetRangeRequests.slice(beforeMany);
+  assert.equal(new Set(multiStemRanges.map((request) => request.assetId)).size, 4, JSON.stringify(multiStemRanges));
+  assert.ok(multiStemRanges.every((request) => request.range), JSON.stringify(multiStemRanges));
+  const firstDataRanges = multiStemRanges
+    .filter((request) => request.range !== "bytes=0-43")
+    .reduce((byAsset, request) => {
+      if (!byAsset.has(request.assetId)) {
+        byAsset.set(request.assetId, Number(/^bytes=(\d+)-/.exec(request.range ?? "")?.[1]));
+      }
+      return byAsset;
+    }, new Map());
+  assert.deepEqual(
+    [...firstDataRanges.values()].sort((left, right) => left - right),
+    [44, 44 + PCM_RATE * PCM_CHANNELS * 2, 44 + 2 * PCM_RATE * PCM_CHANNELS * 2, 44 + 3 * PCM_RATE * PCM_CHANNELS * 2],
+    "each aligned stem starts at its clip's own source offset",
+  );
+  const scheduleProbe = await page.evaluate(() => ({
+    starts: window.__segmentScheduleProbe.starts,
+    curves: window.__segmentScheduleProbe.curves,
+    liveSegmentBuffers: window.__segmentScheduleProbe.buffers.filter((entry) => entry.ref.deref() !== undefined).length,
+    liveSegmentBytes: window.__segmentScheduleProbe.buffers
+      .filter((entry) => entry.ref.deref() !== undefined)
+      .reduce((sum, entry) => sum + entry.bytes, 0),
   }));
-  assert.match(manyStatus.error ?? "", /estimated to need/i, JSON.stringify(manyStatus));
-  assert.equal(assetRequests.length, before, "many audible long stems are rejected before any decode");
+  assert.ok(scheduleProbe.liveSegmentBuffers <= 12,
+    `four tracks should retain only three lookahead windows; got ${scheduleProbe.liveSegmentBuffers}`);
+  assert.ok(scheduleProbe.liveSegmentBytes < 128 * 1024 * 1024,
+    `bounded PCM windows remain under the 128 MiB ceiling; got ${scheduleProbe.liveSegmentBytes}`);
+  const firstStemStarts = scheduleProbe.starts.slice(0, 4).map((entry) => entry.when);
+  assert.equal(firstStemStarts.length, 4);
+  assert.ok(Math.max(...firstStemStarts) - Math.min(...firstStemStarts) < 0.001,
+    JSON.stringify(firstStemStarts));
+  const firstTrackWindowStarts = [0, 4, 8].map((index) => scheduleProbe.starts[index]?.when);
+  assert.ok(firstTrackWindowStarts.every(Number.isFinite), JSON.stringify(firstTrackWindowStarts));
+  assert.ok(Math.abs((firstTrackWindowStarts[1] - firstTrackWindowStarts[0]) - 5) < 0.01);
+  assert.ok(Math.abs((firstTrackWindowStarts[2] - firstTrackWindowStarts[1]) - 5) < 0.01);
+  assert.ok(scheduleProbe.curves.some((curve) => curve.values[0] <= 0.01 && curve.values.at(-1) >= 0.99),
+    "segmented playback preserves the clip fade-in");
+  assert.ok(scheduleProbe.curves.some((curve) => curve.values[0] >= 0.99 && curve.values.at(-1) <= 0.01),
+    "segmented playback preserves the clip fade-out");
+});
+
+test("seeking long arrangements does not accumulate decoded segment buffers", { timeout: 30_000 }, async (t) => {
+  const page = await openFixture(t);
+  await page.evaluate(() => {
+    const nativeCreateBuffer = AudioContext.prototype.createBuffer;
+    const refs = [];
+    AudioContext.prototype.createBuffer = function (channels, frames, sampleRate) {
+      const buffer = nativeCreateBuffer.call(this, channels, frames, sampleRate);
+      refs.push({
+        ref: new WeakRef(buffer),
+        bytes: buffer.length * buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT,
+      });
+      return buffer;
+    };
+    Object.defineProperty(window, "__segmentBufferRefs", { configurable: true, value: refs });
+  });
+  await page.getByRole("button", { name: "Play long preview" }).click();
+  await waitForOutput(page, "playing", "true");
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("HeapProfiler.enable");
+  try {
+    for (const positionMs of [12_000, 20_000, 8_000]) {
+      await page.evaluate((position) => window.preview.seek(position), positionMs);
+      await waitForOutput(page, "pending", "true");
+      await page.waitForFunction((position) =>
+        window.preview.playing &&
+        !window.preview.pending &&
+        window.previewPosition >= position,
+      positionMs, { timeout: 10_000 });
+      await page.waitForTimeout(100);
+      await cdp.send("HeapProfiler.collectGarbage");
+      const retained = await page.evaluate(() =>
+        window.__segmentBufferRefs.filter((entry) => entry.ref.deref() !== undefined).length,
+      );
+      assert.ok(retained <= 4, `only the active bounded lookahead should remain; retained=${retained}`);
+    }
+  } finally {
+    await cdp.detach();
+  }
 });
 
 test("realistic long encoded preview reports browser memory and releases its buffer after a switch", {

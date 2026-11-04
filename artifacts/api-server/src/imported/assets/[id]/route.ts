@@ -24,13 +24,33 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (!asset) return Response.json({ error: "Audio asset not found." }, { status: 404 });
     await requireProjectRole(user.id, asset.projectId, "viewer");
     const download = new URL(request.url).searchParams.get("download") === "1";
+    const range = request.headers.get("range");
     const downloadName = source ? source.originalFilename : `${stem!.stemType}.wav`;
     const storage = getStorage();
     const signed = await storage.createDownloadUrl(asset.storageKey, 60, download ? downloadName : undefined);
-    if (signed) return Response.redirect(signed);
+    if (signed) {
+      if (!range) return Response.redirect(signed);
+      const upstream = await fetch(signed, { headers: { Range: range }, cache: "no-store" });
+      if (upstream.status !== 206 || !upstream.body) {
+        return Response.json({ error: "Audio storage does not support bounded preview reads." }, { status: 502 });
+      }
+      const headers = new Headers({
+        "Content-Type": source ? (source.mimeType ?? "application/octet-stream") : "audio/wav",
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, no-store",
+      });
+      const contentLength = upstream.headers.get("content-length");
+      const contentRange = upstream.headers.get("content-range");
+      if (contentLength) headers.set("Content-Length", contentLength);
+      if (contentRange) headers.set("Content-Range", contentRange);
+      return new Response(upstream.body, {
+        status: 206,
+        headers,
+      });
+    }
     const localPath = storage.getLocalPath(asset.storageKey);
     if (!localPath) return Response.json({ error: "Storage cannot serve this asset." }, { status: 500 });
-    const file = await stat(localPath); const range = request.headers.get("range"); const contentType = stem ? "audio/wav" : (source?.mimeType ?? "application/octet-stream");
+    const file = await stat(localPath); const contentType = stem ? "audio/wav" : (source?.mimeType ?? "application/octet-stream");
     if (range) {
       const [startRaw, endRaw] = range.replace(/bytes=/, "").split("-"); const start = Number(startRaw); const end = endRaw ? Number(endRaw) : file.size - 1;
       if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end >= file.size || start > end) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}` } });

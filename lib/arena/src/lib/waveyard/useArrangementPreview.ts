@@ -8,10 +8,17 @@ import {
   ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
   arrangementPreviewBufferBytes,
   estimateArrangementPreviewMemory,
+  estimateArrangementPreviewSegmentMemory,
   formatArrangementPreviewMiB,
   releaseInactiveArrangementPreviewBuffers,
   type ArrangementPreviewAssetMetadata,
 } from "./arrangement-preview-memory";
+import {
+  parseHttpContentRange,
+  parsePcm16WavHeader,
+  pcm16WavSegmentRange,
+  type Pcm16WavHeader,
+} from "./arrangement-preview-segments";
 import type { RemixTrackInput } from "./remix";
 
 type PreviewClip = RemixTrackInput["clips"][number];
@@ -25,7 +32,20 @@ type PreviewState = {
 };
 
 const EMPTY_PREVIEW_ASSETS: ArrangementPreviewAssetMetadata[] = [];
+const PREVIEW_SEGMENT_MS = 5_000;
+const PREVIEW_LOOKAHEAD_SEGMENTS = 3;
 type ScheduledSource = { source: AudioBufferSourceNode; gain: GainNode };
+type PlannedSegment = {
+  key: string;
+  assetId: string;
+  clip: PreviewClip;
+  track: PreviewTrack;
+  timelineStartMs: number;
+  durationMs: number;
+  sourceOffsetMs: number;
+  clipElapsedMs: number;
+};
+type ReadySegment = PlannedSegment & { buffer: AudioBuffer };
 
 function clipLevelAt(clip: PreviewClip, offsetMs: number) {
   const shape = clipFadeShapeOrLinear(clip.fadeShape);
@@ -47,8 +67,14 @@ export function useArrangementPreview(
   const context = useRef<AudioContext | null>(null);
   const buffers = useRef(new Map<string, AudioBuffer>());
   const decodeQueue = useRef<Promise<void>>(Promise.resolve());
+  const wavHeaders = useRef(new Map<string, Pcm16WavHeader>());
   const scheduled = useRef<ScheduledSource[]>([]);
   const graphNodes = useRef(new Set<AudioNode>());
+  const masterGain = useRef<GainNode | null>(null);
+  const nextBufferKey = useRef(0);
+  const scheduledUntilMs = useRef(0);
+  const segmentedMode = useRef(false);
+  const segmentPreparationInFlight = useRef(false);
   const raf = useRef<number | null>(null);
   const origin = useRef({ contextTime: 0, positionMs: 0 });
   const currentState = useRef<PreviewState | null>(null);
@@ -66,9 +92,11 @@ export function useArrangementPreview(
     raf.current = null;
     for (const item of scheduled.current) {
       try { item.source.stop(); } catch { /* already finished */ }
+      try { item.source.buffer = null; } catch { /* already released */ }
     }
     clearArrangementPreviewGraph(graphNodes.current);
     scheduled.current = [];
+    masterGain.current = null;
   }, []);
 
   const ensureContext = useCallback(() => {
@@ -99,41 +127,307 @@ export function useArrangementPreview(
     return pending;
   }, [ensureContext]);
 
+  const ensurePcmWavHeader = useCallback(async (assetId: string, generation: number) => {
+    const cached = wavHeaders.current.get(assetId);
+    if (cached) return cached;
+    const response = await fetch(`/api/assets/${assetId}`, {
+      headers: { Range: "bytes=0-43" },
+      cache: "no-store",
+    });
+    if (response.status !== 206) {
+      throw new Error("Studio couldn't read a bounded PCM preview range for this stem.");
+    }
+    const contentRange = parseHttpContentRange(response.headers.get("content-range"));
+    if (!contentRange || contentRange.start !== 0 || contentRange.end !== 43) {
+      throw new Error("Studio received invalid byte-range metadata for this stem.");
+    }
+    const bytes = await response.arrayBuffer();
+    const header = parsePcm16WavHeader(bytes, contentRange.total);
+    if (!header) {
+      throw new Error("This long source is not a supported PCM16 WAV stem. Separate it to a Waveyard stem before previewing.");
+    }
+    if (generation !== playbackGeneration.current) return null;
+    wavHeaders.current.set(assetId, header);
+    return header;
+  }, []);
+
+  const loadPcmWavSegment = useCallback(async (
+    audio: AudioContext,
+    segment: PlannedSegment,
+    generation: number,
+  ): Promise<ReadySegment | null> => {
+    if (generation !== playbackGeneration.current) return null;
+    const header = await ensurePcmWavHeader(segment.assetId, generation);
+    if (!header || generation !== playbackGeneration.current) return null;
+    const range = pcm16WavSegmentRange(header, segment.sourceOffsetMs, segment.durationMs);
+    if (!range) return null;
+    const response = await fetch(`/api/assets/${segment.assetId}`, {
+      headers: { Range: `bytes=${range.byteStart}-${range.byteEnd}` },
+      cache: "no-store",
+    });
+    if (response.status !== 206) {
+      throw new Error("Studio couldn't load a bounded audio segment. Check the asset storage range support and try again.");
+    }
+    const contentRange = parseHttpContentRange(response.headers.get("content-range"));
+    if (!contentRange || contentRange.start !== range.byteStart || contentRange.end !== range.byteEnd) {
+      throw new Error("Studio received an audio range that does not match the requested clip position.");
+    }
+    const encoded = await response.arrayBuffer();
+    if (encoded.byteLength !== range.frameCount * header.blockAlign) {
+      throw new Error("Studio received an incomplete PCM preview segment.");
+    }
+    if (generation !== playbackGeneration.current) return null;
+
+    const buffer = audio.createBuffer(header.channels, range.frameCount, header.sampleRate);
+    const view = new DataView(encoded);
+    for (let channel = 0; channel < header.channels; channel += 1) {
+      const output = buffer.getChannelData(channel);
+      for (let frame = 0; frame < range.frameCount; frame += 1) {
+        output[frame] = view.getInt16(frame * header.blockAlign + channel * 2, true) / 32768;
+      }
+    }
+    const key = `segment:${generation}:${nextBufferKey.current++}`;
+    buffers.current.set(key, buffer);
+    return {
+      ...segment,
+      key,
+      buffer,
+      sourceOffsetMs: range.sourceOffsetMs,
+      durationMs: range.durationMs,
+    };
+  }, [ensurePcmWavHeader]);
+
+  const planSegmentWindow = useCallback((
+    tracks: PreviewTrack[],
+    windowStartMs: number,
+    windowEndMs: number,
+    scheduleFromMs: number,
+  ): PlannedSegment[] => {
+    const plans: PlannedSegment[] = [];
+    for (const track of tracks) {
+      for (const clip of track.clips) {
+        const timelineStartMs = Math.max(windowStartMs, scheduleFromMs, clip.timelineStartMs);
+        const timelineEndMs = Math.min(windowEndMs, clip.timelineStartMs + clip.durationMs);
+        if (timelineEndMs <= timelineStartMs) continue;
+        plans.push({
+          key: `plan:${nextBufferKey.current++}`,
+          assetId: clip.stemAssetId,
+          clip,
+          track,
+          timelineStartMs,
+          durationMs: timelineEndMs - timelineStartMs,
+          sourceOffsetMs: clip.sourceOffsetMs + timelineStartMs - clip.timelineStartMs,
+          clipElapsedMs: timelineStartMs - clip.timelineStartMs,
+        });
+      }
+    }
+    return plans;
+  }, []);
+
+  const checkSegmentMemory = useCallback((
+    plans: PlannedSegment[],
+    metadataById: Map<string, ArrangementPreviewAssetMetadata>,
+    audio: AudioContext,
+  ) => {
+    const requests = plans.map((plan) => {
+      const asset = metadataById.get(plan.assetId);
+      if (!asset) return { assetId: plan.assetId, durationMs: plan.durationMs, encodedBytes: 0 };
+      const frames = Math.ceil(plan.durationMs * asset.sampleRate / 1_000);
+      return {
+        assetId: plan.assetId,
+        durationMs: plan.durationMs,
+        encodedBytes: frames * asset.channels * 2,
+      };
+    });
+    const estimate = estimateArrangementPreviewSegmentMemory(
+      requests,
+      [...metadataById.values()],
+      audio.sampleRate,
+      arrangementPreviewBufferBytes(buffers.current),
+    );
+    if (!estimate.ok) {
+      throw new Error(
+        "Studio can't safely estimate this preview window. Reopen the session to refresh its stem details, then try again.",
+      );
+    }
+    if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
+      throw new Error(
+        `This preview window is estimated to need ${formatArrangementPreviewMiB(estimate.estimatedPeakBytes)} MiB, above Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB safety limit. Mute or solo fewer stems, or reduce overlapping clips.`,
+      );
+    }
+  }, []);
+
+  const loadSegmentPlans = useCallback(async (
+    plans: PlannedSegment[],
+    audio: AudioContext,
+    generation: number,
+  ) => {
+    const ready: ReadySegment[] = [];
+    for (const plan of plans) {
+      if (generation !== playbackGeneration.current) return null;
+      const segment = await loadPcmWavSegment(audio, plan, generation);
+      if (generation !== playbackGeneration.current) return null;
+      if (segment) ready.push(segment);
+      if (arrangementPreviewBufferBytes(buffers.current) > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
+        throw new Error(
+          `Decoded preview windows exceeded Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB memory ceiling.`,
+        );
+      }
+    }
+    return ready;
+  }, [loadPcmWavSegment]);
+
+  const scheduleReadySegments = useCallback((
+    ready: ReadySegment[],
+    state: PreviewState,
+    audio: AudioContext,
+    generation: number,
+  ) => {
+    let master = masterGain.current;
+    if (!master) {
+      master = audio.createGain();
+      master.gain.value = state.masterVolume;
+      master.connect(audio.destination);
+      graphNodes.current.add(master);
+      masterGain.current = master;
+    }
+    for (const segment of ready) {
+      if (generation !== playbackGeneration.current) return;
+      const intendedStartAt = origin.current.contextTime
+        + (segment.timelineStartMs - origin.current.positionMs) / 1_000;
+      const lateMs = Math.max(0, (audio.currentTime - intendedStartAt) * 1_000);
+      if (lateMs >= segment.durationMs) {
+        buffers.current.delete(segment.key);
+        continue;
+      }
+      const startAt = Math.max(audio.currentTime, intendedStartAt);
+      const sourceOffsetSeconds = lateMs / 1_000;
+      const remainingMs = segment.durationMs - lateMs;
+      const playDurationSeconds = Math.min(remainingMs / 1_000, segment.buffer.duration - sourceOffsetSeconds);
+      if (playDurationSeconds <= 0) {
+        buffers.current.delete(segment.key);
+        continue;
+      }
+      const source = audio.createBufferSource();
+      const gain = audio.createGain();
+      const panner = "createStereoPanner" in audio ? audio.createStereoPanner() : null;
+      graphNodes.current.add(source);
+      graphNodes.current.add(gain);
+      if (panner) graphNodes.current.add(panner);
+      source.buffer = segment.buffer;
+      source.connect(gain);
+      if (panner) { gain.connect(panner); panner.pan.value = segment.track.pan; panner.connect(master); }
+      else gain.connect(master);
+
+      const baseGain = segment.track.volume * segment.clip.gain;
+      const clipElapsedMs = segment.clipElapsedMs + lateMs;
+      const curve = new Float32Array(33);
+      for (let index = 0; index < curve.length; index += 1) {
+        const offset = clipElapsedMs + remainingMs * index / (curve.length - 1);
+        curve[index] = baseGain * clipLevelAt(segment.clip, offset);
+      }
+      gain.gain.setValueCurveAtTime(curve, startAt, playDurationSeconds);
+      source.start(startAt, sourceOffsetSeconds, playDurationSeconds);
+      source.onended = () => {
+        source.disconnect();
+        source.buffer = null;
+        gain.disconnect();
+        panner?.disconnect();
+        graphNodes.current.delete(source);
+        graphNodes.current.delete(gain);
+        if (panner) graphNodes.current.delete(panner);
+        if (buffers.current.get(segment.key) === segment.buffer) buffers.current.delete(segment.key);
+        scheduled.current = scheduled.current.filter((item) => item.source !== source);
+      };
+      scheduled.current.push({ source, gain });
+    }
+  }, []);
+
+  const prepareSegmentWindow = useCallback(async (
+    state: PreviewState,
+    windowStartMs: number,
+    windowEndMs: number,
+    scheduleFromMs: number,
+    generation: number,
+    audio: AudioContext,
+    metadataById: Map<string, ArrangementPreviewAssetMetadata>,
+  ) => {
+    const { audibleTracks } = selectArrangementPreviewTracks(state.tracks);
+    const plans = planSegmentWindow(audibleTracks, windowStartMs, windowEndMs, scheduleFromMs);
+    checkSegmentMemory(plans, metadataById, audio);
+    const ready = await loadSegmentPlans(plans, audio, generation);
+    if (!ready || generation !== playbackGeneration.current) return false;
+    scheduleReadySegments(ready, state, audio, generation);
+    return true;
+  }, [checkSegmentMemory, loadSegmentPlans, planSegmentWindow, scheduleReadySegments]);
+
   const schedule = useCallback(async (state: PreviewState, startMs: number, generation: number) => {
     if (generation !== playbackGeneration.current) return false;
     pendingStartMs.current = startMs;
     setPending(true);
+    segmentPreparationInFlight.current = false;
     const audio = ensureContext();
     const { audibleTracks, assetIds } = selectArrangementPreviewTracks(state.tracks);
     const activeAssetIds = new Set(assetIds);
-    // Stop the old graph before releasing donor buffers. This prevents old and
-    // new arrangements from retaining two sets of AudioBuffers during a switch.
     clear();
-    releaseInactiveArrangementPreviewBuffers(buffers.current, activeAssetIds);
     await decodeQueue.current;
     if (generation !== playbackGeneration.current) return false;
 
     const metadataById = new Map(
       [...supplementalAssets, ...(state.previewAssets ?? [])].map((asset) => [asset.id, asset]),
     );
-    const estimate = estimateArrangementPreviewMemory(
-      assetIds,
-      [...metadataById.values()],
-      audio.sampleRate,
-    );
+    const metadata = [...metadataById.values()];
+    const estimate = estimateArrangementPreviewMemory(assetIds, metadata, audio.sampleRate);
     if (!estimate.ok) {
       buffers.current.clear();
       throw new Error(
         "Studio can't safely estimate the memory needed for this arrangement. Reopen the session to refresh its audio details, then try again.",
       );
     }
+
+    if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
+      segmentedMode.current = true;
+      buffers.current.clear();
+      const endMs = Math.max(0, ...state.tracks.flatMap((track) =>
+        track.clips.map((clip) => clip.timelineStartMs + clip.durationMs),
+      ));
+      const segmentEndMs = Math.min(
+        endMs,
+        state.loopEndMs !== null && state.loopEndMs > startMs ? state.loopEndMs : Infinity,
+      );
+      const initialEndMs = Math.min(
+        segmentEndMs,
+        startMs + PREVIEW_SEGMENT_MS * PREVIEW_LOOKAHEAD_SEGMENTS,
+      );
+      const plans: PlannedSegment[] = [];
+      for (let windowStartMs = startMs; windowStartMs < initialEndMs; windowStartMs += PREVIEW_SEGMENT_MS) {
+        plans.push(...planSegmentWindow(
+          audibleTracks,
+          windowStartMs,
+          Math.min(initialEndMs, windowStartMs + PREVIEW_SEGMENT_MS),
+          startMs,
+        ));
+      }
+      checkSegmentMemory(plans, metadataById, audio);
+      const ready = await loadSegmentPlans(plans, audio, generation);
+      if (!ready || generation !== playbackGeneration.current) return false;
+      origin.current = { contextTime: audio.currentTime + 0.03, positionMs: startMs };
+      scheduledUntilMs.current = initialEndMs;
+      scheduleReadySegments(ready, state, audio, generation);
+      pendingStartMs.current = null;
+      setPending(false);
+      return true;
+    }
+
+    segmentedMode.current = false;
+    scheduledUntilMs.current = 0;
+    releaseInactiveArrangementPreviewBuffers(buffers.current, activeAssetIds);
     if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
       buffers.current.clear();
       throw new Error(
-        `This arrangement is estimated to need ${formatArrangementPreviewMiB(estimate.estimatedPeakBytes)} MiB for browser preview, above the ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB safety limit. Mute or solo fewer stems, or choose shorter audio source files; Studio decodes each whole source even when a clip uses only a short section.`,
+        `This arrangement needs more than Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB browser preview budget.`,
       );
     }
-
     for (const assetId of assetIds) {
       if (generation !== playbackGeneration.current) return false;
       const buffer = await ensureBuffer(assetId, generation);
@@ -141,7 +435,7 @@ export function useArrangementPreview(
       if (arrangementPreviewBufferBytes(buffers.current) > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
         buffers.current.clear();
         throw new Error(
-          `The decoded audio exceeded Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB preview safety limit. Mute or solo fewer stems, or choose shorter audio source files; Studio decodes each whole source even when a clip uses only a short section.`,
+          `The decoded audio exceeded Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB preview safety limit.`,
         );
       }
     }
@@ -150,6 +444,7 @@ export function useArrangementPreview(
     master.gain.value = state.masterVolume;
     master.connect(audio.destination);
     graphNodes.current.add(master);
+    masterGain.current = master;
     for (const track of audibleTracks) {
       for (const clip of track.clips) {
         const elapsedMs = Math.max(0, startMs - clip.timelineStartMs);
@@ -185,9 +480,6 @@ export function useArrangementPreview(
             } else gain.gain.linearRampToValueAtTime(0, endAt);
           }
         } else {
-          // Shaped fades: exact curve segments sampled from the same
-          // fadeGainAt the ffmpeg render uses (qsin/hsin), so preview and
-          // export agree by construction.
           if (clip.fadeInMs > elapsedMs) {
             const curve = fadeCurveSamples(fadeShape, elapsedMs / clip.fadeInMs, 1, 65);
             for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
@@ -198,7 +490,6 @@ export function useArrangementPreview(
             for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
             gain.gain.setValueCurveAtTime(curve, startAt + (fadeOutStart - elapsedMs) / 1000, clip.fadeOutMs / 1000);
           } else if (clip.fadeOutMs > 0) {
-            // Resuming inside the fade-out: curve from the current position.
             const curve = fadeCurveSamples(fadeShape, remainingMs / clip.fadeOutMs, 0, 65);
             for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
             gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1000);
@@ -207,11 +498,13 @@ export function useArrangementPreview(
         source.start(startAt, (clip.sourceOffsetMs + elapsedMs) / 1000, remainingMs / 1000);
         source.onended = () => {
           source.disconnect();
+          source.buffer = null;
           gain.disconnect();
           panner?.disconnect();
           graphNodes.current.delete(source);
           graphNodes.current.delete(gain);
           if (panner) graphNodes.current.delete(panner);
+          scheduled.current = scheduled.current.filter((item) => item.source !== source);
         };
         scheduled.current.push({ source, gain });
       }
@@ -220,13 +513,26 @@ export function useArrangementPreview(
     pendingStartMs.current = null;
     setPending(false);
     return true;
-  }, [clear, ensureBuffer, ensureContext, supplementalAssets]);
+  }, [
+    checkSegmentMemory,
+    clear,
+    ensureBuffer,
+    ensureContext,
+    loadSegmentPlans,
+    planSegmentWindow,
+    scheduleReadySegments,
+    supplementalAssets,
+  ]);
 
   const failPreview = useCallback((cause: unknown, generation: number) => {
     if (generation !== playbackGeneration.current) return;
     pendingStartMs.current = null;
     currentState.current = null;
     clear();
+    buffers.current.clear();
+    segmentedMode.current = false;
+    scheduledUntilMs.current = 0;
+    segmentPreparationInFlight.current = false;
     setPending(false);
     setPlaying(false);
     setError(cause instanceof Error ? cause.message : "Arrangement preview could not start.");
@@ -241,6 +547,10 @@ export function useArrangementPreview(
     pendingStartMs.current = null;
     currentState.current = null;
     clear();
+    if (segmentedMode.current) buffers.current.clear();
+    segmentedMode.current = false;
+    scheduledUntilMs.current = 0;
+    segmentPreparationInFlight.current = false;
     origin.current = { contextTime: context.current?.currentTime ?? 0, positionMs: next };
     onPosition(next);
     setPending(false);
@@ -263,13 +573,45 @@ export function useArrangementPreview(
           .catch((cause) => failPreview(cause, generation));
         return;
       }
-      const endMs = Math.max(0, ...active.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)));
+      const naturalEndMs = Math.max(0, ...active.tracks.flatMap((track) =>
+        track.clips.map((clip) => clip.timelineStartMs + clip.durationMs),
+      ));
+      const endMs = active.loopEndMs !== null && active.loopEndMs > active.loopStartMs
+        ? Math.min(naturalEndMs, active.loopEndMs)
+        : naturalEndMs;
       if (positionMs >= endMs) { pause(); return; }
       onPosition(positionMs);
+      if (
+        segmentedMode.current &&
+        !segmentPreparationInFlight.current &&
+        scheduledUntilMs.current < endMs &&
+        scheduledUntilMs.current - positionMs <= PREVIEW_SEGMENT_MS * 2
+      ) {
+        const windowStartMs = scheduledUntilMs.current;
+        const windowEndMs = Math.min(endMs, windowStartMs + PREVIEW_SEGMENT_MS);
+        scheduledUntilMs.current = windowEndMs;
+        segmentPreparationInFlight.current = true;
+        const metadataById = new Map(
+          [...supplementalAssets, ...(active.previewAssets ?? [])].map((asset) => [asset.id, asset]),
+        );
+        void prepareSegmentWindow(
+          active,
+          windowStartMs,
+          windowEndMs,
+          positionMs,
+          generation,
+          audio,
+          metadataById,
+        )
+          .catch((cause) => failPreview(cause, generation))
+          .finally(() => {
+            if (generation === playbackGeneration.current) segmentPreparationInFlight.current = false;
+          });
+      }
       raf.current = requestAnimationFrame(tick);
     };
     raf.current = requestAnimationFrame(tick);
-  }, [failPreview, onPosition, pause, schedule]);
+  }, [failPreview, onPosition, pause, prepareSegmentWindow, schedule, supplementalAssets]);
 
   const play = useCallback(async (state: PreviewState, fromMs: number) => {
     const generation = ++playbackGeneration.current;
@@ -362,6 +704,10 @@ export function useArrangementPreview(
     pendingStartMs.current = null;
     currentState.current = null;
     clear();
+    buffers.current.clear();
+    segmentedMode.current = false;
+    scheduledUntilMs.current = 0;
+    segmentPreparationInFlight.current = false;
     origin.current = { contextTime: 0, positionMs: 0 };
     onPosition(0);
     setPending(false);

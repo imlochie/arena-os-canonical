@@ -23,6 +23,13 @@ export type ArrangementPreviewMemoryEstimate =
       assetId: string;
     };
 
+export type ArrangementPreviewSegmentMemoryRequest = {
+  assetId: string;
+  durationMs: number;
+  /** Bytes fetched for this PCM segment; only the largest is live during decode. */
+  encodedBytes: number;
+};
+
 /**
  * decodeAudioData creates float32 PCM at the AudioContext's sample rate.
  * Chromium's measured renderer peak for a long encoded preview exceeded 3x
@@ -71,6 +78,65 @@ export function estimateArrangementPreviewMemory(
     return { ok: false, reason: "missing-metadata", assetId: uniqueIds[0] ?? "unknown" };
   }
 
+  return {
+    ok: true,
+    decodedBytes,
+    estimatedPeakBytes: Math.ceil(decodedBytes * ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR)
+      + largestEncodedFileBytes,
+  };
+}
+
+/**
+ * Estimate bounded PCM preview windows plus buffers already retained for
+ * scheduled windows. WAV ranges are decoded directly into AudioBuffers, so
+ * the decoder headroom still covers browser-side copies and resampling.
+ */
+export function estimateArrangementPreviewSegmentMemory(
+  segments: readonly ArrangementPreviewSegmentMemoryRequest[],
+  assets: readonly ArrangementPreviewAssetMetadata[],
+  outputSampleRate: number,
+  retainedDecodedBytes = 0,
+): ArrangementPreviewMemoryEstimate {
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  if (
+    !Number.isFinite(outputSampleRate) ||
+    outputSampleRate <= 0 ||
+    !Number.isFinite(retainedDecodedBytes) ||
+    retainedDecodedBytes < 0
+  ) {
+    return { ok: false, reason: "missing-metadata", assetId: segments[0]?.assetId ?? "unknown" };
+  }
+
+  let decodedBytes = retainedDecodedBytes;
+  let largestEncodedFileBytes = 0;
+  for (const segment of segments) {
+    const asset = byId.get(segment.assetId);
+    if (
+      !asset ||
+      !Number.isFinite(asset.sampleRate) ||
+      asset.sampleRate <= 0 ||
+      !Number.isFinite(asset.durationSeconds) ||
+      asset.durationSeconds <= 0 ||
+      !Number.isInteger(asset.channels) ||
+      asset.channels < 1 ||
+      !Number.isFinite(segment.durationMs) ||
+      segment.durationMs <= 0 ||
+      !Number.isFinite(segment.encodedBytes) ||
+      segment.encodedBytes < 0
+    ) {
+      return { ok: false, reason: "missing-metadata", assetId: segment.assetId };
+    }
+    decodedBytes += Math.ceil(
+      segment.durationMs / 1_000 *
+      Math.max(outputSampleRate, asset.sampleRate) *
+      asset.channels *
+      FLOAT32_BYTES_PER_SAMPLE,
+    );
+    largestEncodedFileBytes = Math.max(largestEncodedFileBytes, segment.encodedBytes);
+  }
+  if (!Number.isFinite(decodedBytes)) {
+    return { ok: false, reason: "missing-metadata", assetId: segments[0]?.assetId ?? "unknown" };
+  }
   return {
     ok: true,
     decodedBytes,

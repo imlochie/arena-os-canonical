@@ -7,8 +7,8 @@ import {
 } from "./arrangement-preview-memory";
 import { useArrangementPreview } from "./useArrangementPreview";
 
-function asset(id: string, durationSeconds: number, fileSizeBytes = 1_000_000) {
-  return { id, durationSeconds, sampleRate: 44_100, channels: 2, fileSizeBytes };
+function asset(id: string, durationSeconds: number, fileSizeBytes = 1_000_000, channels = 2) {
+  return { id, durationSeconds, sampleRate: 44_100, channels, fileSizeBytes };
 }
 
 function stateFor(
@@ -16,6 +16,9 @@ function stateFor(
   previewAssets: ReturnType<typeof asset>[],
   mutedAssetIds: string[] = [],
   clipDurationMs = 8_000,
+  sourceOffsetsMs: number[] = [],
+  fadeInMs = 0,
+  fadeOutMs = 0,
 ) {
   return {
     masterVolume: 1,
@@ -36,10 +39,11 @@ function stateFor(
         timelineStartMs: 0,
         // Web Audio decodes the full source even when the clip uses only part.
         durationMs: clipDurationMs,
-        sourceOffsetMs: 0,
+        sourceOffsetMs: sourceOffsetsMs[index] ?? 0,
         gain: 1,
-        fadeInMs: 0,
-        fadeOutMs: 0,
+        fadeInMs,
+        fadeOutMs,
+        fadeShape: "linear",
         tempoSyncEnabled: false,
         keySyncEnabled: false,
         beatSnapEnabled: false,
@@ -72,7 +76,12 @@ const longAudioConfig = window.__previewFixtureConfig ?? {
 
 const previewScenarios: Record<PreviewScenarioName, PreviewInput> = {
   normal: stateFor(["fixture-stem"], [asset("fixture-stem", 8, 705_644)]),
-  long: stateFor(["preview-long"], [asset("preview-long", 300, 5_000_000)]),
+  long: stateFor(
+    ["preview-long"],
+    [asset("preview-long", 300, 44 + 300 * 44_100 * 2 * 2)],
+    [],
+    30_000,
+  ),
   longEncoded: stateFor(
     ["preview-long-encoded"],
     [asset("preview-long-encoded", longAudioConfig.longAudioSeconds, longAudioConfig.longAudioFileSizeBytes)],
@@ -81,7 +90,13 @@ const previewScenarios: Record<PreviewScenarioName, PreviewInput> = {
   ),
   many: stateFor(
     ["preview-many-vocals", "preview-many-bass", "preview-many-drums", "preview-many-melody"],
-    ["vocals", "bass", "drums", "melody"].map((stem) => asset(`preview-many-${stem}`, 80)),
+    ["vocals", "bass", "drums", "melody"].map((stem) =>
+      asset(`preview-many-${stem}`, 80, 44 + 80 * 44_100 * 2 * 2)),
+    [],
+    15_000,
+    [0, 1_000, 2_000, 3_000],
+    500,
+    5_000,
   ),
   muted: stateFor(
     ["preview-muted-vocals", "preview-muted-bass", "preview-muted-drums", "preview-muted-melody"],
