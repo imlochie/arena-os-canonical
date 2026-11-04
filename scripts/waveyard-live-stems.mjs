@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { runAutomaticFadeAcceptance, runLoudAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
 const studioConflictOnly = process.argv.includes("--studio-conflict-only");
+const studioSelectionFreshnessOnly = process.argv.includes("--studio-selection-freshness-only");
 const requireBrowserEngines = process.env.WAVEYARD_REQUIRE_BROWSER_ENGINES === "1"
   || process.argv.includes("--require-browser-engines");
 if (process.argv.includes("--live-stem-timing-matrix")) {
@@ -703,8 +704,24 @@ try {
         return route.fulfill({ json: { session: parallelSave.snapshot } });
       }
     } else if (url.pathname.endsWith("/tracks") && request.method() === "POST") {
-      const item = tracks.find(t => t.track.id === body.trackId);
-      session.tracks.push({ ...item, id: `session-${session.tracks.length + 1}`, position: body.position });
+      const template = body.trackId === "d"
+        ? {
+            ...tracks[0],
+            id: "d",
+            sourceAssetId: "d-source",
+            track: { ...tracks[0].track, id: "d", title: "Test D" },
+            stems: externalStemKeys,
+            playback: { kind: "stems", assetIds: externalStemKeys.map(stem => stem.id) },
+          }
+        : tracks.find(t => t.track.id === body.trackId);
+      if (template) {
+        session.tracks.push({
+          ...template,
+          id: `session-${session.tracks.length + 1}`,
+          position: Number.isInteger(body.position) ? body.position : session.tracks.length,
+        });
+        session.tracks.forEach((item, index) => { item.position = index; });
+      }
     } else if (url.pathname.endsWith("/tracks") && request.method() === "PATCH") {
       const from = session.tracks.findIndex(item => item.id === body.sessionTrackId);
       const to = Math.max(0, Math.min(session.tracks.length - 1, Number(body.position)));
@@ -713,6 +730,10 @@ try {
         session.tracks.splice(to, 0, item);
         session.tracks.forEach((track, index) => { track.position = index; });
       }
+    } else if (url.pathname.endsWith("/tracks") && request.method() === "DELETE") {
+      const sessionTrackId = url.searchParams.get("sessionTrackId");
+      session.tracks = session.tracks.filter(item => item.id !== sessionTrackId);
+      session.tracks.forEach((item, index) => { item.position = index; });
     } else if (request.method() === "DELETE") {
       parallelSwapDeleteRequests.push(url.searchParams.get("swapId"));
       if (pendingSwapDeleteGate) await pendingSwapDeleteGate;
@@ -1624,6 +1645,70 @@ try {
     assert.equal(session.tracks[0].stemMix.drums, 0.61,
       "the restored drums level is saved back to the session");
     console.log("PASS: stem levels and mute state survive a full-track round trip and session reload; unmuting recalls the prior fader level");
+  } else if (studioSelectionFreshnessOnly) {
+    session.tracks = [sourceOnlyTrack, ...tracks.slice(1)];
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    session.swaps = [];
+    exposeSeparatedSource = false;
+    libraryRows[0] = {
+      ...libraryRows[0],
+      stemAvailability: { status: "source-only", reason: "Separation has not started." },
+    };
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 1 && audio[0].readyState === 4;
+    });
+    assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(),
+      "2 selected of 3 selectable tracks", "the picker initially selects ready tracks, not the source-only current entry");
+    const sourceOnlyChoice = page.getByRole("checkbox", { name: /Include session entry 1, Test a/ });
+    assert.equal(await sourceOnlyChoice.isDisabled(), false, "the current original source can be selected for Studio");
+    await sourceOnlyChoice.check();
+    assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(),
+      "3 selected of 3 selectable tracks");
+
+    await page.locator("summary").filter({ hasText: "Session order" }).click();
+    await page.getByRole("button", { name: "Remove Test b", exact: true }).click();
+    await page.getByRole("button", { name: "Remove Test b", exact: true }).waitFor({ state: "detached" });
+    assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(),
+      "2 selected of 2 selectable tracks", "removing an entry immediately filters its selected ID");
+    await page.locator("#sess-add").selectOption("d");
+    await page.getByTestId("session-add-track").click();
+    const addedChoice = page.getByRole("checkbox", { name: /Include session entry 3, Test D/ });
+    await addedChoice.waitFor();
+    assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(),
+      "2 selected of 3 selectable tracks", "a newly added ready entry is visible but does not silently join an explicit selection");
+    assert.equal(await addedChoice.isChecked(), false);
+
+    const nowUnavailable = session.tracks.find(item => item.id === "a");
+    assert.ok(nowUnavailable, "the selected original-source entry remains in the server session");
+    nowUnavailable.sourceAssetId = null;
+    nowUnavailable.playback = { kind: "source", assetIds: [] };
+    libraryRows[0] = {
+      ...libraryRows[0],
+      stemAvailability: { status: "unavailable", reason: "The original source was removed." },
+    };
+    await page.waitForFunction(() => {
+      const count = document.querySelector('[data-testid="studio-track-selection-count"]')?.textContent?.trim();
+      const source = [...document.querySelectorAll('input[aria-label^="Include session entry"]')]
+        .find(input => input.getAttribute("aria-label")?.includes("Test a"));
+      return count === "1 selected of 2 selectable tracks" && source?.disabled && !source.checked;
+    }, undefined, { timeout: 15_000 });
+    const currentReadyChoice = page.getByRole("checkbox", { name: /Include session entry 2, Test c/ });
+    assert.equal(await currentReadyChoice.isChecked(), true, "the surviving ready selection remains selected");
+    assert.equal(await addedChoice.isChecked(), false, "the newly added session entry stays unselected");
+    assert.equal(await sourceOnlyChoice.isDisabled(), true, "source readiness loss disables the stale selection");
+
+    studioHandoffRequests = 0;
+    lastStudioHandoffSelection = [];
+    await page.getByTestId("session-handoff").click();
+    await page.getByRole("link", { name: "Open in Studio" }).waitFor();
+    assert.deepEqual(lastStudioHandoffSelection, ["c"],
+      "the handoff contains only the selected entry still present and selectable");
+    assert.equal(studioRemixData.tracks.length, 4,
+      "the derived Studio project contains only the surviving selected entry");
+    console.log("PASS: Studio handoff choices track session removal/addition and source-readiness changes");
   } else if (process.argv.includes("--studio-persistence-only")) {
     tracks[0].stemMix = { vocals: 0.42 };
     const originalAssets = assetSnapshot();

@@ -3289,8 +3289,22 @@ export default function SessionExperience({
           return item;
         });
         // Only replace state when something actually changed.
-        const before = JSON.stringify(prev.tracks.map((t) => [t.id, t.playback?.kind, t.playbackPreference, t.stems.length, t.analysis?.bpm ?? null]));
-        const after = JSON.stringify(merged.map((t) => [t.id, t.playback?.kind, t.playbackPreference, t.stems.length, t.analysis?.bpm ?? null]));
+        const before = JSON.stringify(prev.tracks.map((t) => [
+          t.id,
+          t.sourceAssetId,
+          t.playback?.kind,
+          t.playbackPreference,
+          t.stems.map((stem) => stem.id),
+          t.analysis?.bpm ?? null,
+        ]));
+        const after = JSON.stringify(merged.map((t) => [
+          t.id,
+          t.sourceAssetId,
+          t.playback?.kind,
+          t.playbackPreference,
+          t.stems.map((stem) => stem.id),
+          t.analysis?.bpm ?? null,
+        ]));
         if (before !== after || prev.tracks.length !== merged.length) {
           const next = { ...prev, tracks: merged, swaps: fresh.swaps };
           sessionRef.current = next;

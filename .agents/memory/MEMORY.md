@@ -49,5 +49,6 @@
 - [Waveyard broker drain lifecycle](waveyard-broker-drain.md) — each drain call must observe newly submitted work, not reuse a fulfilled wait.
 - [Waveyard compact listener](waveyard-compact-listener.md) — keep compact controls in the shared session engine; do not mount a second deck for dock-only actions.
 - [Waveyard Studio async edits](waveyard-studio-async-edits.md) — merge delayed mutation responses into the latest same-session remix and test canonical state through undo, not just visible controls.
+- [Waveyard Studio readiness refresh](waveyard-studio-readiness-refresh.md) — compare source and stem asset identities in session refreshes so disappearing or replaced audio cannot leave picker readiness stale.
 - [Waveyard keyboard selection](waveyard-keyboard-selection.md) — separate focus from membership so arbitrary clip groups do not require hijacking browser shortcuts.
 - [Waveyard fullscreen focus](waveyard-fullscreen-focus.md) — check post-exit layout, hit testing and overlay visibility, not just activeElement.
