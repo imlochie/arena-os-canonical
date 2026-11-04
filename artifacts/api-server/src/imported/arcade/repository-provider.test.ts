@@ -137,39 +137,61 @@ freely, subject to the following restrictions:
   assert.equal(zlib.license?.spdx, "Zlib");
 });
 
-test("SourceForge review pins feed file IDs but blocks RSS-only code without verified source and license", async () => {
+test("SourceForge review matches publisher SHA-256 and keeps unlicensed, uninspected archives review-only", async () => {
   const feed = `<?xml version="1.0"?>
     <rss><channel><item>
       <title><![CDATA[/blockout/BlockOut 2.5/bl25-src.tar.gz]]></title>
       <link>https://sourceforge.net/projects/blockout/files/blockout/BlockOut%202.5/bl25-src.tar.gz/download</link>
-      <pubDate>Tue, 06 May 2014 12:38:30 UT</pubDate>
-      <files:sf-file-id>12530468</files:sf-file-id>
-      <media:content type="application/gzip" filesize="10240">
-        <media:hash algo="md5">f7e0fc24fa04e0d8a343ff2742c92427</media:hash>
+      <pubDate>Tue, 06 May 2014 10:05:26 UT</pubDate>
+      <files:sf-file-id>12530023</files:sf-file-id>
+      <media:content type="application/gzip" filesize="479743">
+        <media:hash algo="md5">c68a6d6f1f42aa61dbce84b100f19351</media:hash>
       </media:content>
     </item></channel></rss>`;
-  let requested = "";
+  const sourceforgeSha = "b".repeat(64);
+  const fileIndex = `<script>net.sf.files = ${JSON.stringify({
+    "bl25-src.tar.gz": {
+      name: "bl25-src.tar.gz",
+      full_path: "blockout/BlockOut 2.5/bl25-src.tar.gz",
+      download_url: "https://sourceforge.net/projects/blockout/files/blockout/BlockOut%202.5/bl25-src.tar.gz/download",
+      md5: "c68a6d6f1f42aa61dbce84b100f19351",
+      sha256: sourceforgeSha,
+    },
+  })}; net.sf.staging_days = 3;</script>`;
+  const requested: string[] = [];
   const assessment = await assessSourceForgeRepository(
     "https://sourceforge.net/projects/blockout/files/blockout/BlockOut%202.5",
     signal(),
     async (url, limit) => {
-      requested = url;
-      assert.ok(Buffer.byteLength(feed) <= limit);
-      return Buffer.from(feed);
+      requested.push(url);
+      const content = url.includes("/rss?") ? feed : fileIndex;
+      assert.ok(Buffer.byteLength(content) <= limit);
+      return Buffer.from(content);
     },
   );
-  assert.equal(new URL(requested).searchParams.get("path"), "/blockout/BlockOut 2.5");
+  assert.equal(new URL(requested[0]).searchParams.get("path"), "/blockout/BlockOut 2.5");
+  assert.match(requested[1], /\/projects\/blockout\/files\/blockout\/BlockOut%202\.5\/$/);
   assert.equal(assessment.provider, "sourceforge");
   assert.equal(assessment.repository, "sourceforge/blockout");
-  assert.match(assessment.revision, /^sf-rss-[a-f0-9]{64}$/);
+  assert.match(assessment.revision, /^sf-files-[a-f0-9]{64}$/);
   assert.equal(assessment.reference, "BlockOut 2.5");
   assert.equal(assessment.license, null);
   assert.equal(assessment.releases[0].tag, "BlockOut 2.5");
-  assert.equal(assessment.releases[0].assets[0].sha256, null);
-  assert.match(assessment.evidence.map(item => item.detail).join(" "), /MD5/);
-  assert.match(assessment.blockers.join(" "), /SHA-256/);
+  assert.equal(assessment.releases[0].assets[0].sha256, sourceforgeSha);
+  assert.match(assessment.evidence.map(item => item.detail).join(" "), /SHA-256 was matched against the official SourceForge directory index/i);
+  assert.doesNotMatch(assessment.blockers.join(" "), /No matching provider-owned SHA-256/);
   assert.match(assessment.blockers.join(" "), /license text/i);
+  assert.match(assessment.blockers.join(" "), /archive-content preflight/i);
   assert.match(assessment.releases[0].reviewUrl, /\/files\/blockout\/BlockOut%202\.5$/);
+
+  const mismatched = await assessSourceForgeRepository(
+    "https://sourceforge.net/projects/blockout/files/blockout/BlockOut%202.5",
+    signal(),
+    async url => Buffer.from(url.includes("/rss?") ? feed : fileIndex.replace("c68a6d6f1f42aa61dbce84b100f19351", "a".repeat(32))),
+  );
+  assert.equal(mismatched.releases[0].assets[0].sha256, null, "a path match without the RSS digest match is not accepted");
+  assert.match(mismatched.evidence.map(item => item.detail).join(" "), /RSS MD5/);
+  assert.match(mismatched.blockers.join(" "), /No matching provider-owned SHA-256/);
 
   let fetched = false;
   await assert.rejects(assessSourceForgeRepository("https://sourceforge.net.evil/projects/blockout", signal(), async () => {
@@ -208,4 +230,7 @@ test("Codeberg and SourceForge readers keep exact provider hosts and reject redi
   const sourceforge = createSourceForgeReader(dns, makeRequest(302));
   await assert.rejects(sourceforge("https://sourceforge.net/projects/demo/rss?path=%2F", 100, signal()), /redirect/i);
   await assert.rejects(sourceforge("https://downloads.sourceforge.net/project/demo/file.zip", 100, signal()), /unsafe/i);
+  const listing = createSourceForgeReader(dns, makeRequest(200));
+  await listing("https://sourceforge.net/projects/demo/files/demo/releases/v1/", 100, signal());
+  await assert.rejects(listing("https://sourceforge.net/projects/demo/files/demo/%2e%2e%2fprivate/", 100, signal()), /unsafe/i);
 });

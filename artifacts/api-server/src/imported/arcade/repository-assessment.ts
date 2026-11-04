@@ -218,6 +218,49 @@ function sourceForgeFolderFromItem(path: string, project: string) {
   return parts.slice(0, -1);
 }
 
+type SourceForgeFileIndexEntry = {
+  name: string;
+  full_path: string;
+  download_url: string;
+  md5?: string;
+  sha256?: string;
+};
+
+function parseSourceForgeFileIndex(html: string): SourceForgeFileIndexEntry[] | null {
+  const marker = "net.sf.files";
+  const markerAt = html.indexOf(marker);
+  if (markerAt < 0 || html.indexOf(marker, markerAt + marker.length) >= 0) return null;
+  const equalsAt = html.indexOf("=", markerAt + marker.length);
+  if (equalsAt < 0) return null;
+  let start = equalsAt + 1;
+  while (/\s/.test(html[start] ?? "")) start++;
+  if (html[start] !== "{") return null;
+
+  let depth = 0, quoted = false, escaped = false, end = -1;
+  for (let index = start; index < html.length; index++) {
+    const char = html[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === "\"") quoted = false;
+      continue;
+    }
+    if (char === "\"") quoted = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) { end = index + 1; break; }
+  }
+  if (end < 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(html.slice(start, end));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return Object.values(parsed).filter((value): value is SourceForgeFileIndexEntry =>
+      !!value && typeof value === "object" && !Array.isArray(value) &&
+      typeof (value as SourceForgeFileIndexEntry).name === "string" &&
+      typeof (value as SourceForgeFileIndexEntry).full_path === "string" &&
+      typeof (value as SourceForgeFileIndexEntry).download_url === "string");
+  } catch { return null; }
+}
+
 export async function assessSourceForgeRepository(
   value: string,
   signal: AbortSignal,
@@ -249,12 +292,42 @@ export async function assessSourceForgeRepository(
     const digestValue = digest?.[2]?.trim().toLowerCase() ?? "";
     const md5 = algorithm === "md5" && /^[a-f0-9]{32}$/.test(digestValue) ? digestValue : null;
     const sha256 = algorithm === "sha256" && /^[a-f0-9]{64}$/.test(digestValue) ? digestValue : null;
-    return { path: rawPath, id, size: Number(sizeText), url: link.toString(), md5, sha256, pubDate };
+    return { path: rawPath, id, size: Number(sizeText), url: link.toString(), md5, sha256, filePageSha256: false, digestConflict: false, pubDate };
   }).filter((item): item is NonNullable<typeof item> => item !== null);
   const requestedFolder = (folder[0]?.toLowerCase() === project ? folder.slice(1) : folder).join("/");
   const rows = requestedFolder ? allRows.filter(item =>
     sourceForgeFolderFromItem(item.path, project)?.join("/") === requestedFolder) : allRows;
   if (!rows.length) throw new RepositoryImportError("The SourceForge feed contained no safely reviewable release files.", 404);
+
+  const fileIndexes = new Map<string, SourceForgeFileIndexEntry[] | null>();
+  const folders = [...new Set(rows.map(row => sourceForgeFolderFromItem(row.path, project)?.join("/") ?? "").filter(Boolean))];
+  for (const releaseFolder of folders.slice(0, 12)) {
+    const pageUrl = `https://sourceforge.net/projects/${project}/files/${[project, ...releaseFolder.split("/")].map(encodeURIComponent).join("/")}/`;
+    try {
+      const html = (await read(pageUrl, 512 * 1024, signal)).toString("utf8");
+      fileIndexes.set(releaseFolder, parseSourceForgeFileIndex(html));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      fileIndexes.set(releaseFolder, null);
+    }
+  }
+  for (const row of rows) {
+    const releaseFolder = sourceForgeFolderFromItem(row.path, project)?.join("/") ?? "";
+    const fileName = row.path.split("/").filter(Boolean).at(-1);
+    const expectedPath = row.path.replace(/^\/+/, "");
+    const matches = (fileIndexes.get(releaseFolder) ?? []).filter(file =>
+      file.name === fileName && file.full_path === expectedPath && file.download_url === row.url &&
+      (!row.md5 || file.md5?.toLowerCase() === row.md5));
+    if (matches.length !== 1 || !/^[a-f0-9]{64}$/i.test(matches[0].sha256 ?? "")) continue;
+    const pageSha256 = matches[0].sha256!.toLowerCase();
+    if (row.sha256 && row.sha256 !== pageSha256) {
+      row.sha256 = null;
+      row.digestConflict = true;
+    } else {
+      row.sha256 = pageSha256;
+      row.filePageSha256 = true;
+    }
+  }
 
   const releasesByPath = new Map<string, RepositoryRelease>();
   const evidence: Evidence[] = [];
@@ -271,25 +344,30 @@ export async function assessSourceForgeRepository(
     if (!release || release.assets.length >= 24) continue;
     const name = pathParts.at(-1) ?? "unnamed";
     release.assets.push({ name, url: row.url, bytes: row.size, sha256: row.sha256 });
-    const checksums = [row.sha256 ? `SHA-256 ${row.sha256}` : null, row.md5 ? `MD5 ${row.md5}` : null].filter(Boolean).join(" and ");
-    evidence.push({ path: row.path, detail: `SourceForge RSS file #${row.id}${checksums ? ` publishes ${checksums}` : " has no publisher checksum"}${row.pubDate ? `; listed ${row.pubDate}` : ""}. This is release metadata, not a verified source tree.` });
+    const checksums = [row.sha256 ? `SHA-256 ${row.sha256}` : null, row.md5 ? `RSS MD5 ${row.md5}` : null].filter(Boolean).join(" and ");
+    const digestSource = row.digestConflict
+      ? "The RSS and official file-list digest metadata disagree, so no SHA-256 is accepted."
+      : row.filePageSha256
+        ? "The SHA-256 was matched against the official SourceForge directory index using the exact path, download URL and RSS MD5."
+        : "This is release metadata, not a verified source tree.";
+    evidence.push({ path: row.path, detail: `SourceForge RSS file #${row.id}${checksums ? `; ${checksums}` : " has no publisher checksum"}${row.pubDate ? `; listed ${row.pubDate}` : ""}. ${digestSource}` });
   }
   const exactFolder = (folder[0]?.toLowerCase() === project ? folder.slice(1) : folder).join("/");
   const manifest = rows.map(row => [row.path, row.id, row.size, row.md5 ?? "", row.sha256 ?? "", row.pubDate].join("\0")).join("\n");
-  const revision = `sf-rss-${createHash("sha256").update(manifest).digest("hex")}`;
-  evidence.unshift({ path: `/projects/${project}/rss?path=${feedPath}`, detail: `Pinned this RSS metadata snapshot with a SHA-256 fingerprint over ${rows.length} SourceForge file IDs. It does not checksum the files themselves.` });
+  const revision = `sf-files-${createHash("sha256").update(manifest).digest("hex")}`;
+  evidence.unshift({ path: `/projects/${project}/rss?path=${feedPath}`, detail: `Pinned ${rows.length} SourceForge file IDs, paths and provider checksums in a SHA-256 review fingerprint. Each file digest is separately verified from its publisher metadata when available.` });
   return {
     provider: "sourceforge", repository: `sourceforge/${project}`, revision,
     reference: exactFolder || revision,
     sourceUrl: `https://sourceforge.net/projects/${project}/files/${folder.map(encodeURIComponent).join("/")}`,
     folder: exactFolder, projectType: "unknown", confidence: "low",
-    languages: [], buildSystems: ["SourceForge release-feed metadata only"], dependencies: [], sdks: [], targets: [], modHooks: [],
+    languages: [], buildSystems: ["SourceForge release-feed and file-page metadata; not a source tree"], dependencies: [], sdks: [], targets: [], modHooks: [],
     evidence: evidence.slice(0, 48),
     blockers: [
-      "This catalog link identifies SourceForge project files, not a pinned source commit. The feed’s file ID and release path are provenance, not a source tree.",
-      ...(rows.some(row => row.sha256) ? [] : ["The feed has no SHA-256 publisher digest. Its MD5 values are recorded as evidence but are not accepted as integrity verification."]),
-      "No license text tied to a pinned source revision was verified. Source import and installation are blocked.",
-      "Archives are not downloaded or executed during this review; archive paths, game data, and a supported runnable layout remain unverified.",
+      ...(rows.every(row => !row.sha256) ? ["No matching provider-owned SHA-256 was found for these SourceForge files. RSS MD5 is evidence only and cannot authorize a download."] : []),
+      ...(rows.some(row => !row.sha256) ? ["Files without a matching provider SHA-256 remain review-only."] : []),
+      "No full license text from a SHA-256-pinned source archive was verified. Source import and installation are blocked.",
+      "Arcade has not completed a bounded archive-content preflight for this release. Paths, links, expanded size and supported layout must be checked before extraction or install.",
     ],
     license: null, files: [], totalBytes: 0, releases: [...releasesByPath.values()],
   };

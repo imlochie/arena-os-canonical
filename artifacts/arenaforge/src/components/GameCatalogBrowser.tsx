@@ -144,7 +144,7 @@ export default function GameCatalogBrowser({ disabled, onChooseRepository }: {
       <p><strong className="text-slate-100">{chosen.entry.title}</strong>{" "}
         {safeHref(chosen.entry.detailsUrl) && <a className="underline" href={safeHref(chosen.entry.detailsUrl)} target="_blank" rel="noreferrer noopener">catalog details</a>}</p>
       {chosen.supported
-        ? <p className="mt-1 text-slate-400">Provider source found. Its pinned review decides whether anything can be imported; SourceForge downloads stay blocked without verified source and license evidence.</p>
+        ? <p className="mt-1 text-slate-400">Provider source found. Its pinned review decides whether anything can be imported; SourceForge files stay review-only until publisher SHA-256, full license, and archive-safety checks pass.</p>
         : <p data-testid="catalog-unsupported" className="mt-1 text-amber-100">
             {chosen.entry.sourceUrl ? <>Source is hosted at <a className="underline break-all" href={safeHref(chosen.entry.sourceUrl)} target="_blank" rel="noreferrer noopener">{chosen.entry.sourceUrl}</a>, which</> : "No source link is listed, so"} Arcade can't review or install it. Supported sources are GitHub, Codeberg, and SourceForge project pages.
           </p>}

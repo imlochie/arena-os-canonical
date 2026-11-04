@@ -18,7 +18,7 @@ function canInspectRepository(value: string) {
 function repositoryInspectionHint(value: string) {
   try {
     if (new URL(value).hostname === "sourceforge.net") {
-      return "SourceForge metadata can be reviewed, but no package is acquired without a pinned source tree.";
+      return "SourceForge releases can be reviewed, but install stays blocked until a publisher SHA-256, full license and safe archive preflight are verified.";
     }
   } catch { /* the generic hint below explains invalid input */ }
   return "Enter a public GitHub or Codeberg HTTPS repository link.";
@@ -96,7 +96,7 @@ export default function RepositoryGameImport({ disabled, onImport, onBuildSource
   };
   return <section className="rounded-xl border border-emerald-300/20 bg-emerald-300/5 p-4" aria-label="Import game from repository">
     <h3 className="text-sm font-extrabold text-emerald-100">Import open-source game</h3>
-    <p className="mt-1 text-xs text-slate-400">GitHub and Codeberg source is pinned to a commit and checked against its license. SourceForge links show their release evidence, but stay blocked without a verified source revision, checksum, and license. Browser games: up to 64 files / 2 MB.</p>
+    <p className="mt-1 text-xs text-slate-400">GitHub and Codeberg source is pinned to a commit and checked against its license. SourceForge files show publisher SHA-256 when available; installs stay blocked until the full license and safe archive preflight are verified. Browser games: up to 64 files / 2 MB.</p>
     <GameCatalogBrowser disabled={disabled || phase !== null} onChooseRepository={chosen => {
       if (disabled || phase) return; setUrl(chosen); void run("assess", chosen); }} />
     <label className="mt-3 block text-xs text-slate-300" htmlFor="arcade-repository-url">Repository, project, or release-tag link</label>

@@ -158,8 +158,24 @@ export function createCodebergReader(resolveHost = lookup, openRequest = request
 }
 export function createSourceForgeReader(resolveHost = lookup, openRequest = request): ReadBytes {
   return createPinnedReader("SourceForge",
-    url => url.hostname === "sourceforge.net" && /^\/projects\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/rss$/.test(url.pathname),
-    "application/rss+xml, application/xml, text/xml", resolveHost, openRequest);
+    url => {
+      if (url.hostname !== "sourceforge.net" || url.port || url.username || url.password) return false;
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (parts[0] !== "projects" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(parts[1] ?? "")) return false;
+      if (parts[2] === "rss") {
+        const path = url.searchParams.get("path");
+        return parts.length === 3 && !url.hash && [...url.searchParams.keys()].join(",") === "path" &&
+          !!path?.startsWith("/") && !path.split("/").some(part => part === "." || part === ".." || /[\\\u0000-\u001f\u007f]/.test(part));
+      }
+      if (parts[2] !== "files" || url.search || url.hash || !url.pathname.endsWith("/") || parts.length > 16) return false;
+      return parts.slice(3).every(raw => {
+        try {
+          const part = decodeURIComponent(raw);
+          return !!part && part !== "." && part !== ".." && !/[\\/%:\u0000-\u001f\u007f]/.test(part);
+        } catch { return false; }
+      });
+    },
+    "application/rss+xml, application/xml, text/xml, text/html", resolveHost, openRequest);
 }
 export const safeGithubBytes = createGithubReader();
 export const safeCodebergBytes = createCodebergReader();
