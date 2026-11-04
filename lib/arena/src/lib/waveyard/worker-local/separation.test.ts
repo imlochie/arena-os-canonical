@@ -9,7 +9,7 @@ import path, { basename, dirname, join } from "node:path";
 import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 
 import {
@@ -1133,6 +1133,97 @@ test("waveform recovery reclaims a queue claim left by a stopped process", async
     assert.deepEqual(recovery.requeuedJobIds, [job.id]);
     assert.deepEqual(recovery.failedJobIds, []);
     assert.deepEqual(dispatched, [job.id]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform recovery reclaims malformed owner IDs and claim stages", async () => {
+  const f = await fixture();
+  try {
+    const malformedStages = [
+      "recovery-submitting:999999999999999999999999999999:instance:claim",
+      "recovery-submitting:not-a-pid:legacy-claim",
+      "recovery-submitting:123",
+      "recovery-submitting:123::claim",
+      "recovery-submitting:123:instance:claim:extra",
+    ];
+    const jobs = [];
+    for (const [index, stage] of malformedStages.entries()) {
+      const [job] = await f.database
+        .insert(waveformJobs)
+        .values({
+          projectId: f.project.id,
+          sourceAssetId: f.source.id,
+          status: "queued",
+          stage,
+          idempotencyKey: `waveform:malformed-recovery-claim:${index}:${f.source.id}`,
+        })
+        .returning();
+      jobs.push(job!);
+    }
+    let checkedOwnerPid = false;
+
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      await handleWaveformJob(payload, {
+        db: f.database,
+        generateWaveform: async () => validWaveformDocument(),
+      });
+    }, {
+      pid: 10842,
+      instanceId: randomUUID(),
+      isProcessAlive: (pid) => {
+        checkedOwnerPid = true;
+        assert.ok(Number.isSafeInteger(pid) && pid > 0);
+        return true;
+      },
+      instanceIdForPid: () => null,
+      now: Date.now,
+    });
+
+    assert.equal(checkedOwnerPid, false, "malformed owner metadata is rejected before process checks");
+    assert.deepEqual(recovery.requeuedJobIds, jobs.map((job) => job.id));
+    assert.deepEqual(recovery.failedJobIds, []);
+    const recovered = await f.database.select().from(waveformJobs).where(inArray(waveformJobs.id, jobs.map((job) => job.id)));
+    assert.equal(recovered.length, jobs.length);
+    assert.ok(recovered.every((job) => job.status === "complete" && job.stage === "complete"));
+  } finally {
+    await f.close();
+  }
+});
+
+test("malformed waveform recovery claims get a visible terminal error when enqueue fails", async () => {
+  const f = await fixture();
+  try {
+    const [job] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "queued",
+        stage: "recovery-submitting:123:instance:claim:extra",
+        idempotencyKey: `waveform:malformed-recovery-queue-failure:${f.source.id}`,
+      })
+      .returning();
+
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async () => {
+      throw new Error("The waveform queue is unavailable.");
+    }, {
+      pid: 10842,
+      instanceId: randomUUID(),
+      isProcessAlive: () => true,
+      instanceIdForPid: () => "instance",
+      now: Date.now,
+    });
+
+    assert.deepEqual(recovery.requeuedJobIds, []);
+    assert.deepEqual(recovery.failedJobIds, [job!.id]);
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job!.id));
+    assert.equal(failed!.status, "failed");
+    assert.equal(failed!.stage, "queue-unavailable");
+    assert.equal(failed!.errorCode, "queue_unavailable");
+    assert.equal(failed!.errorMessage, "The waveform queue is unavailable.");
+    assert.ok(failed!.completedAt);
   } finally {
     await f.close();
   }
