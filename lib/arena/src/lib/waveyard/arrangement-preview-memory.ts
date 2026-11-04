@@ -4,9 +4,13 @@ export type ArrangementPreviewAssetMetadata = {
   sampleRate: number;
   channels: number;
   fileSizeBytes?: number;
+  codec?: string;
 };
 
 export const ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES = 128 * 1024 * 1024;
+export const ARRANGEMENT_PREVIEW_STREAM_WINDOW_MS = 15_000;
+export const ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES = 64 * 1024 * 1024;
+export const ARRANGEMENT_PREVIEW_STREAM_OVERHEAD_BYTES = 1 * 1024 * 1024;
 
 export const ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR = 3.5;
 const FLOAT32_BYTES_PER_SAMPLE = Float32Array.BYTES_PER_ELEMENT;
@@ -21,6 +25,12 @@ export type ArrangementPreviewMemoryEstimate =
       ok: false;
       reason: "missing-metadata";
       assetId: string;
+    }
+  | {
+      ok: false;
+      reason: "asset-too-large";
+      assetId: string;
+      fileSizeBytes: number;
     };
 
 export type ArrangementPreviewSegmentMemoryRequest = {
@@ -142,6 +152,70 @@ export function estimateArrangementPreviewSegmentMemory(
     decodedBytes,
     estimatedPeakBytes: Math.ceil(decodedBytes * ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR)
       + largestEncodedFileBytes,
+  };
+}
+
+/**
+ * Media elements decode encoded files incrementally instead of materializing
+ * full-duration AudioBuffers. Budget a conservative playback window per
+ * stream, its encoded window, and per-element overhead; cap the source file
+ * size before assigning it to a media element.
+ */
+export function estimateArrangementPreviewStreamingMemory(
+  streamAssetIds: readonly string[],
+  assets: readonly ArrangementPreviewAssetMetadata[],
+  outputSampleRate: number,
+): ArrangementPreviewMemoryEstimate {
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  if (!Number.isFinite(outputSampleRate) || outputSampleRate <= 0) {
+    return { ok: false, reason: "missing-metadata", assetId: streamAssetIds[0] ?? "unknown" };
+  }
+
+  let decodedWindowBytes = 0;
+  let encodedBytes = 0;
+  for (const assetId of streamAssetIds) {
+    const asset = byId.get(assetId);
+    if (
+      !asset ||
+      !Number.isFinite(asset.sampleRate) ||
+      asset.sampleRate <= 0 ||
+      !Number.isFinite(asset.durationSeconds) ||
+      asset.durationSeconds <= 0 ||
+      !Number.isInteger(asset.channels) ||
+      asset.channels < 1 ||
+      !Number.isSafeInteger(asset.fileSizeBytes) ||
+      asset.fileSizeBytes! <= 0
+    ) {
+      return { ok: false, reason: "missing-metadata", assetId };
+    }
+    if (asset.fileSizeBytes! > ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES) {
+      return {
+        ok: false,
+        reason: "asset-too-large",
+        assetId,
+        fileSizeBytes: asset.fileSizeBytes!,
+      };
+    }
+    const windowMs = Math.min(ARRANGEMENT_PREVIEW_STREAM_WINDOW_MS, asset.durationSeconds * 1_000);
+    decodedWindowBytes += Math.ceil(
+      windowMs / 1_000 *
+      Math.max(outputSampleRate, asset.sampleRate) *
+      asset.channels *
+      FLOAT32_BYTES_PER_SAMPLE,
+    );
+    encodedBytes += asset.fileSizeBytes!;
+  }
+  if (!Number.isFinite(decodedWindowBytes) || !Number.isFinite(encodedBytes)) {
+    return { ok: false, reason: "missing-metadata", assetId: streamAssetIds[0] ?? "unknown" };
+  }
+
+  const estimatedPeakBytes = Math.ceil(decodedWindowBytes * ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR)
+    + encodedBytes
+    + streamAssetIds.length * ARRANGEMENT_PREVIEW_STREAM_OVERHEAD_BYTES;
+  return {
+    ok: true,
+    decodedBytes: decodedWindowBytes,
+    estimatedPeakBytes,
   };
 }
 

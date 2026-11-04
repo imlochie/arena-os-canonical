@@ -5,6 +5,7 @@ import {
   arrangementPreviewBufferBytes,
   estimateArrangementPreviewMemory,
   estimateArrangementPreviewSegmentMemory,
+  estimateArrangementPreviewStreamingMemory,
   releaseInactiveArrangementPreviewBuffers,
   type ArrangementPreviewAssetMetadata,
 } from "./arrangement-preview-memory";
@@ -63,6 +64,32 @@ test("a four-minute encoded stereo preview is rejected before decode at 44.1 and
     assert.ok(estimate.decodedBytes > 80_000_000);
     assert.ok(estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES);
   }
+});
+
+test("a four-minute encoded stereo stream fits the bounded preview budget at 44.1 and 48 kHz", () => {
+  for (const outputSampleRate of [44_100, 48_000]) {
+    const estimate = estimateArrangementPreviewStreamingMemory(
+      ["full-track"],
+      [asset("full-track", 240, 4_000_000)],
+      outputSampleRate,
+    );
+    assert.equal(estimate.ok, true);
+    if (!estimate.ok) continue;
+    assert.ok(estimate.decodedBytes < 10_000_000);
+    assert.ok(estimate.estimatedPeakBytes < ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES);
+  }
+});
+
+test("oversized encoded assets are rejected by the streaming budget before loading", () => {
+  const oversizedBytes = 64 * 1024 * 1024 + 1;
+  assert.deepEqual(
+    estimateArrangementPreviewStreamingMemory(
+      ["oversized"],
+      [asset("oversized", 3_600, oversizedBytes)],
+      48_000,
+    ),
+    { ok: false, reason: "asset-too-large", assetId: "oversized", fileSizeBytes: oversizedBytes },
+  );
 });
 
 test("many audible long stems exceed the whole-file decode budget", () => {

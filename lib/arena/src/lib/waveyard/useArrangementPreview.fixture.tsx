@@ -3,12 +3,21 @@ import { createRoot } from "react-dom/client";
 
 import {
   ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR,
+  ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES,
   ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
+  ARRANGEMENT_PREVIEW_STREAM_OVERHEAD_BYTES,
+  ARRANGEMENT_PREVIEW_STREAM_WINDOW_MS,
 } from "./arrangement-preview-memory";
 import { useArrangementPreview } from "./useArrangementPreview";
 
-function asset(id: string, durationSeconds: number, fileSizeBytes = 1_000_000, channels = 2) {
-  return { id, durationSeconds, sampleRate: 44_100, channels, fileSizeBytes };
+function asset(
+  id: string,
+  durationSeconds: number,
+  fileSizeBytes = 1_000_000,
+  channels = 2,
+  codec = "pcm_s16le",
+) {
+  return { id, durationSeconds, sampleRate: 44_100, channels, fileSizeBytes, codec };
 }
 
 function stateFor(
@@ -53,7 +62,7 @@ function stateFor(
   };
 }
 
-type PreviewScenarioName = "normal" | "long" | "longEncoded" | "many" | "muted" | "switchA" | "switchB";
+type PreviewScenarioName = "normal" | "long" | "longEncoded" | "oversized" | "many" | "muted" | "switchA" | "switchB";
 type PreviewInput = Parameters<ReturnType<typeof useArrangementPreview>["play"]>[0];
 
 declare global {
@@ -61,6 +70,7 @@ declare global {
     __previewFixtureConfig?: {
       longAudioSeconds: number;
       longAudioFileSizeBytes: number;
+      oversizedAudioFileSizeBytes: number;
     };
     __previewMemoryBudget?: {
       limitBytes: number;
@@ -72,6 +82,7 @@ declare global {
 const longAudioConfig = window.__previewFixtureConfig ?? {
   longAudioSeconds: 240,
   longAudioFileSizeBytes: 4_000_000,
+  oversizedAudioFileSizeBytes: ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES + 1,
 };
 
 const previewScenarios: Record<PreviewScenarioName, PreviewInput> = {
@@ -84,9 +95,15 @@ const previewScenarios: Record<PreviewScenarioName, PreviewInput> = {
   ),
   longEncoded: stateFor(
     ["preview-long-encoded"],
-    [asset("preview-long-encoded", longAudioConfig.longAudioSeconds, longAudioConfig.longAudioFileSizeBytes)],
+    [asset("preview-long-encoded", longAudioConfig.longAudioSeconds, longAudioConfig.longAudioFileSizeBytes, 2, "mp3")],
     [],
     longAudioConfig.longAudioSeconds * 1_000,
+  ),
+  oversized: stateFor(
+    ["preview-oversized"],
+    [asset("preview-oversized", 3_600, longAudioConfig.oversizedAudioFileSizeBytes, 2, "mp3")],
+    [],
+    3_600_000,
   ),
   many: stateFor(
     ["preview-many-vocals", "preview-many-bass", "preview-many-drums", "preview-many-melody"],
@@ -125,6 +142,9 @@ function Fixture() {
     __previewMemoryBudget: {
       limitBytes: ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
       decodeHeadroomFactor: ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR,
+      maxStreamAssetBytes: ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES,
+      streamWindowMs: ARRANGEMENT_PREVIEW_STREAM_WINDOW_MS,
+      streamElementOverheadBytes: ARRANGEMENT_PREVIEW_STREAM_OVERHEAD_BYTES,
     },
     playPreview: () => void preview.play(previewScenarios.normal, position),
     playPreviewScenario: (scenario: keyof typeof previewScenarios) =>
@@ -136,6 +156,7 @@ function Fixture() {
       <button onClick={() => void preview.play(previewScenarios.normal, position)}>Play preview</button>
       <button onClick={() => void preview.play(previewScenarios.long, 0)}>Play long preview</button>
       <button onClick={() => void preview.play(previewScenarios.longEncoded, 0)}>Play realistic long encoded preview</button>
+      <button onClick={() => void preview.play(previewScenarios.oversized, 0)}>Reject oversized encoded preview</button>
       <button onClick={() => void preview.play(previewScenarios.many, 0)}>Play many-stem preview</button>
       <button onClick={() => void preview.play(previewScenarios.muted, 0)}>Play muted arrangement</button>
       <button onClick={() => void preview.play(previewScenarios.switchA, 0)}>Play switch arrangement A</button>

@@ -6,9 +6,11 @@ import { clearArrangementPreviewGraph } from "./arrangement-preview-graph";
 import { selectArrangementPreviewTracks } from "./arrangement-preview-selection";
 import {
   ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
+  ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES,
   arrangementPreviewBufferBytes,
   estimateArrangementPreviewMemory,
   estimateArrangementPreviewSegmentMemory,
+  estimateArrangementPreviewStreamingMemory,
   formatArrangementPreviewMiB,
   releaseInactiveArrangementPreviewBuffers,
   type ArrangementPreviewAssetMetadata,
@@ -34,7 +36,16 @@ type PreviewState = {
 const EMPTY_PREVIEW_ASSETS: ArrangementPreviewAssetMetadata[] = [];
 const PREVIEW_SEGMENT_MS = 5_000;
 const PREVIEW_LOOKAHEAD_SEGMENTS = 3;
-type ScheduledSource = { source: AudioBufferSourceNode; gain: GainNode };
+type ScheduledSource = {
+  source?: AudioBufferSourceNode;
+  media?: HTMLAudioElement;
+  mediaSource?: MediaElementAudioSourceNode;
+  gain: GainNode;
+  panner?: StereoPannerNode | null;
+  startTimer?: number | null;
+  stopTimer?: number | null;
+  cleanup?: () => void;
+};
 type PlannedSegment = {
   key: string;
   assetId: string;
@@ -55,6 +66,69 @@ function clipLevelAt(clip: PreviewClip, offsetMs: number) {
   return 1;
 }
 
+function previewMimeTypeForCodec(codec: string) {
+  const value = codec.trim().toLowerCase();
+  if (/mp3|mpeg/.test(value)) return "audio/mpeg";
+  if (/aac|mp4a/.test(value)) return "audio/mp4";
+  if (/flac/.test(value)) return "audio/flac";
+  if (/opus|vorbis/.test(value)) return "audio/ogg";
+  if (/pcm|wav/.test(value)) return "audio/wav";
+  return null;
+}
+
+function waitForMediaMetadata(media: HTMLAudioElement, signal: AbortSignal) {
+  if (media.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      media.removeEventListener("loadedmetadata", onLoaded);
+      media.removeEventListener("error", onError);
+      signal.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onLoaded = () => finish();
+    const onError = () => finish(new Error("The browser couldn't read this encoded audio file."));
+    const onAbort = () => finish(new DOMException("Preview loading was cancelled.", "AbortError"));
+    const timeout = window.setTimeout(
+      () => finish(new Error("Studio timed out loading the encoded audio preview.")),
+      15_000,
+    );
+    media.addEventListener("loadedmetadata", onLoaded, { once: true });
+    media.addEventListener("error", onError, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function seekMediaElement(media: HTMLAudioElement, seconds: number, signal: AbortSignal) {
+  if (seconds <= 0.02 || Math.abs(media.currentTime - seconds) <= 0.02) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      media.removeEventListener("seeked", onSeeked);
+      media.removeEventListener("error", onError);
+      signal.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onSeeked = () => finish();
+    const onError = () => finish(new Error("Studio couldn't seek within the encoded audio preview."));
+    const onAbort = () => finish(new DOMException("Preview loading was cancelled.", "AbortError"));
+    const timeout = window.setTimeout(
+      () => finish(new Error("Studio timed out seeking within the encoded audio preview.")),
+      15_000,
+    );
+    media.addEventListener("seeked", onSeeked, { once: true });
+    media.addEventListener("error", onError, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      media.currentTime = seconds;
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error("Studio couldn't seek within the encoded audio preview."));
+    }
+  });
+}
+
 /**
  * A deliberately browser-only audition graph. It reads the same private asset
  * route as the stem inspector but never writes audio or becomes an export
@@ -69,6 +143,8 @@ export function useArrangementPreview(
   const decodeQueue = useRef<Promise<void>>(Promise.resolve());
   const wavHeaders = useRef(new Map<string, Pcm16WavHeader>());
   const scheduled = useRef<ScheduledSource[]>([]);
+  const mediaElements = useRef(new Set<HTMLAudioElement>());
+  const mediaAbort = useRef<AbortController | null>(null);
   const graphNodes = useRef(new Set<AudioNode>());
   const masterGain = useRef<GainNode | null>(null);
   const nextBufferKey = useRef(0);
@@ -90,10 +166,28 @@ export function useArrangementPreview(
   const clear = useCallback(() => {
     if (raf.current !== null) cancelAnimationFrame(raf.current);
     raf.current = null;
-    for (const item of scheduled.current) {
-      try { item.source.stop(); } catch { /* already finished */ }
-      try { item.source.buffer = null; } catch { /* already released */ }
+    mediaAbort.current?.abort();
+    mediaAbort.current = null;
+    for (const item of [...scheduled.current]) {
+      if (item.startTimer !== undefined && item.startTimer !== null) clearTimeout(item.startTimer);
+      if (item.stopTimer !== undefined && item.stopTimer !== null) clearTimeout(item.stopTimer);
+      if (item.cleanup) item.cleanup();
+      if (item.source) {
+        try { item.source.stop(); } catch { /* already finished */ }
+        try { item.source.buffer = null; } catch { /* already released */ }
+      }
+      if (item.media) item.media.pause();
     }
+    for (const media of mediaElements.current) {
+      try {
+        media.pause();
+        media.removeAttribute("src");
+        media.load();
+      } catch {
+        // A detached media element may already be releasing its decoder.
+      }
+    }
+    mediaElements.current.clear();
     clearArrangementPreviewGraph(graphNodes.current);
     scheduled.current = [];
     masterGain.current = null;
@@ -361,6 +455,200 @@ export function useArrangementPreview(
     return true;
   }, [checkSegmentMemory, loadSegmentPlans, planSegmentWindow, scheduleReadySegments]);
 
+  const scheduleMediaPlans = useCallback(async (
+    plans: PlannedSegment[],
+    state: PreviewState,
+    startMs: number,
+    audio: AudioContext,
+    generation: number,
+  ) => {
+    const aborter = new AbortController();
+    mediaAbort.current = aborter;
+    let master = masterGain.current;
+    if (!master) {
+      master = audio.createGain();
+      master.gain.value = state.masterVolume;
+      master.connect(audio.destination);
+      graphNodes.current.add(master);
+      masterGain.current = master;
+    }
+
+    const release = (item: ScheduledSource) => {
+      if (item.startTimer !== undefined && item.startTimer !== null) clearTimeout(item.startTimer);
+      if (item.stopTimer !== undefined && item.stopTimer !== null) clearTimeout(item.stopTimer);
+      item.startTimer = null;
+      item.stopTimer = null;
+      if (item.media) {
+        item.media.pause();
+        item.media.removeAttribute("src");
+        try { item.media.load(); } catch { /* decoder may already be detached */ }
+        mediaElements.current.delete(item.media);
+      }
+      for (const node of [item.mediaSource, item.gain, item.panner]) {
+        if (!node) continue;
+        try { node.disconnect(); } catch { /* already detached */ }
+        graphNodes.current.delete(node);
+      }
+      scheduled.current = scheduled.current.filter((candidate) => candidate !== item);
+    };
+    const failDelayedPlay = (cause: unknown) => {
+      if (generation !== playbackGeneration.current) return;
+      pendingStartMs.current = null;
+      currentState.current = null;
+      clear();
+      setPending(false);
+      setPlaying(false);
+      setError(cause instanceof Error ? cause.message : "Encoded arrangement preview could not start.");
+    };
+
+    const ready: Array<{
+      plan: PlannedSegment;
+      item: ScheduledSource;
+      playDurationMs: number;
+    }> = [];
+    try {
+      for (const plan of plans) {
+        if (generation !== playbackGeneration.current) return null;
+        const asset = [...(state.previewAssets ?? []), ...supplementalAssets]
+          .find((candidate) => candidate.id === plan.assetId);
+        const mimeType = asset?.codec ? previewMimeTypeForCodec(asset.codec) : null;
+        if (!mimeType) {
+          throw new Error("Studio can't safely stream this audio format. Convert it to PCM WAV or refresh its audio details.");
+        }
+        const media = document.createElement("audio");
+        media.preload = "metadata";
+        if (!media.canPlayType(mimeType)) {
+          throw new Error(`This browser can't preview ${asset?.codec ?? "this encoded audio format"}.`);
+        }
+        media.src = `/api/assets/${encodeURIComponent(plan.assetId)}`;
+        mediaElements.current.add(media);
+        media.load();
+        await waitForMediaMetadata(media, aborter.signal);
+        if (generation !== playbackGeneration.current) return null;
+        if (!Number.isFinite(media.duration) || media.duration <= 0) {
+          throw new Error("The encoded audio file has no readable duration.");
+        }
+        const sourceOffsetSeconds = plan.sourceOffsetMs / 1_000;
+        if (sourceOffsetSeconds >= media.duration) continue;
+        await seekMediaElement(media, sourceOffsetSeconds, aborter.signal);
+        if (generation !== playbackGeneration.current) return null;
+        const source = audio.createMediaElementSource(media);
+        const gain = audio.createGain();
+        const panner = "createStereoPanner" in audio ? audio.createStereoPanner() : null;
+        graphNodes.current.add(source);
+        graphNodes.current.add(gain);
+        if (panner) graphNodes.current.add(panner);
+        source.connect(gain);
+        if (panner) {
+          gain.connect(panner);
+          panner.pan.value = plan.track.pan;
+          panner.connect(master);
+        } else gain.connect(master);
+
+        const item: ScheduledSource = {
+          media,
+          mediaSource: source,
+          gain,
+          panner,
+          startTimer: null,
+          stopTimer: null,
+        };
+        item.cleanup = () => release(item);
+        scheduled.current.push(item);
+        const remainingMediaMs = Math.max(0, (media.duration * 1_000) - plan.sourceOffsetMs);
+        ready.push({
+          plan,
+          item,
+          playDurationMs: Math.min(plan.durationMs, remainingMediaMs),
+        });
+      }
+
+      if (generation !== playbackGeneration.current) return null;
+      const startContextTime = audio.currentTime + 0.03;
+      const immediatePlay: Promise<void>[] = [];
+      for (const { plan, item, playDurationMs } of ready) {
+        const media = item.media!;
+        const delayMs = Math.max(0, plan.timelineStartMs - startMs);
+        const startAt = startContextTime + delayMs / 1_000;
+        const remainingMs = playDurationMs;
+        const clipElapsedMs = plan.clipElapsedMs;
+        const baseGain = plan.track.volume * plan.clip.gain;
+        const initialGain = baseGain * clipLevelAt(plan.clip, clipElapsedMs);
+        item.gain.gain.setValueAtTime(0, audio.currentTime);
+        item.gain.gain.setValueAtTime(initialGain, startAt);
+        const fadeShape = clipFadeShapeOrLinear(plan.clip.fadeShape);
+        const fadeOutStart = plan.clip.durationMs - plan.clip.fadeOutMs;
+        if (fadeShape === "linear") {
+          if (plan.clip.fadeInMs > clipElapsedMs) {
+            item.gain.gain.linearRampToValueAtTime(
+              baseGain,
+              startAt + (plan.clip.fadeInMs - clipElapsedMs) / 1_000,
+            );
+          }
+          if (plan.clip.fadeOutMs > 0) {
+            const untilFadeMs = fadeOutStart - clipElapsedMs;
+            const endAt = startAt + remainingMs / 1_000;
+            if (untilFadeMs > 0) {
+              item.gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1_000);
+            }
+            item.gain.gain.linearRampToValueAtTime(0, endAt);
+          }
+        } else {
+          if (plan.clip.fadeInMs > clipElapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, clipElapsedMs / plan.clip.fadeInMs, 1, 65);
+            for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
+            item.gain.gain.setValueCurveAtTime(
+              curve,
+              startAt,
+              (plan.clip.fadeInMs - clipElapsedMs) / 1_000,
+            );
+          }
+          if (plan.clip.fadeOutMs > 0 && fadeOutStart > clipElapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, 1, 0, 65);
+            for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
+            item.gain.gain.setValueCurveAtTime(
+              curve,
+              startAt + (fadeOutStart - clipElapsedMs) / 1_000,
+              plan.clip.fadeOutMs / 1_000,
+            );
+          } else if (plan.clip.fadeOutMs > 0) {
+            const curve = fadeCurveSamples(fadeShape, remainingMs / plan.clip.fadeOutMs, 0, 65);
+            for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
+            item.gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1_000);
+          }
+        }
+
+        item.stopTimer = window.setTimeout(() => release(item), delayMs + playDurationMs);
+        if (delayMs === 0) {
+          immediatePlay.push(media.play());
+        } else {
+          item.startTimer = window.setTimeout(() => {
+            item.startTimer = null;
+            void media.play().catch(failDelayedPlay);
+          }, delayMs);
+        }
+      }
+      await Promise.all(immediatePlay);
+      if (generation !== playbackGeneration.current) return null;
+      origin.current = { contextTime: startContextTime, positionMs: startMs };
+      return startContextTime;
+    } catch (cause) {
+      if (generation === playbackGeneration.current) {
+        for (const item of [...scheduled.current]) item.cleanup?.();
+        for (const media of mediaElements.current) {
+          media.pause();
+          media.removeAttribute("src");
+          try { media.load(); } catch { /* decoder may already be detached */ }
+        }
+        mediaElements.current.clear();
+        clearArrangementPreviewGraph(graphNodes.current);
+        scheduled.current = [];
+        masterGain.current = null;
+      }
+      throw cause;
+    }
+  }, [clear, supplementalAssets]);
+
   const schedule = useCallback(async (state: PreviewState, startMs: number, generation: number) => {
     if (generation !== playbackGeneration.current) return false;
     pendingStartMs.current = startMs;
@@ -386,6 +674,53 @@ export function useArrangementPreview(
     }
 
     if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
+      const hasEncodedCodec = assetIds.some((assetId) => {
+        const codec = metadataById.get(assetId)?.codec;
+        return Boolean(codec && !/^(pcm|wav)/i.test(codec.trim()));
+      });
+      const mediaCodecsKnown = assetIds.every((assetId) => {
+        const codec = metadataById.get(assetId)?.codec;
+        return typeof codec === "string" && Boolean(previewMimeTypeForCodec(codec));
+      });
+      if (hasEncodedCodec && mediaCodecsKnown) {
+        const endMs = Math.max(0, ...state.tracks.flatMap((track) =>
+          track.clips.map((clip) => clip.timelineStartMs + clip.durationMs),
+        ));
+        const streamEndMs = Math.min(
+          endMs,
+          state.loopEndMs !== null && state.loopEndMs > startMs ? state.loopEndMs : Infinity,
+        );
+        const mediaPlans = planSegmentWindow(audibleTracks, startMs, streamEndMs, startMs);
+        const streamEstimate = estimateArrangementPreviewStreamingMemory(
+          mediaPlans.map((plan) => plan.assetId),
+          metadata,
+          audio.sampleRate,
+        );
+        if (!streamEstimate.ok) {
+          buffers.current.clear();
+          if (streamEstimate.reason === "asset-too-large") {
+            throw new Error(
+              `This encoded file is larger than Studio's safe ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES)} MiB streaming limit.`,
+            );
+          }
+          throw new Error("Studio can't safely estimate the memory needed to stream this arrangement. Refresh its audio details and try again.");
+        }
+        if (streamEstimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES) {
+          buffers.current.clear();
+          throw new Error(
+            `This arrangement exceeds Studio's ${formatArrangementPreviewMiB(ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES)} MiB streaming preview budget.`,
+          );
+        }
+        buffers.current.clear();
+        segmentedMode.current = false;
+        scheduledUntilMs.current = 0;
+        const streamStart = await scheduleMediaPlans(mediaPlans, state, startMs, audio, generation);
+        if (streamStart === null || generation !== playbackGeneration.current) return false;
+        pendingStartMs.current = null;
+        setPending(false);
+        return true;
+      }
+
       segmentedMode.current = true;
       buffers.current.clear();
       const endMs = Math.max(0, ...state.tracks.flatMap((track) =>
@@ -520,6 +855,7 @@ export function useArrangementPreview(
     ensureContext,
     loadSegmentPlans,
     planSegmentWindow,
+    scheduleMediaPlans,
     scheduleReadySegments,
     supplementalAssets,
   ]);

@@ -108,8 +108,8 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
   const sourceDurationById = useMemo(() => new Map(stems.map((stem) => [stem.id, Math.round(stem.durationSeconds * 1000)])), [stems]);
   const previewAssets = useMemo(
-    () => stems.map(({ id, durationSeconds, sampleRate, channels, fileSizeBytes }) => ({
-      id, durationSeconds, sampleRate, channels, fileSizeBytes,
+    () => stems.map(({ id, durationSeconds, sampleRate, channels, fileSizeBytes, codec }) => ({
+      id, durationSeconds, sampleRate, channels, fileSizeBytes, codec,
     })),
     [stems],
   );
