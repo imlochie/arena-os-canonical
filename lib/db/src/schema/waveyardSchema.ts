@@ -886,6 +886,10 @@ export const listenSessions = pgTable("wy_listen_sessions", {
   currentTrackId: uuid("current_track_id"),
   /** Restore point: position within the current track (seconds). */
   positionSeconds: real("position_seconds").notNull().default(0),
+  /** Harmonic mode restored with this listening session. */
+  keyMatchMode: text("key_match_mode").notNull().default("off"),
+  /** JSON map of session-track ID to { trackId, semitones }, identity-checked on load. */
+  keyShifts: text("key_shifts").notNull().default("{}"),
   ...timestamps,
 }, (table) => [index("wy_listen_sessions_owner_id_idx").on(table.ownerId)]);
 

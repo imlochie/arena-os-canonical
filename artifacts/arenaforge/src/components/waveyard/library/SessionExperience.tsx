@@ -47,6 +47,7 @@ import {
   resolveSessionKeyMatch,
   shiftMusicalKey,
   type SessionKeyMode,
+  type SessionKeyShifts,
 } from "@workspace/arena/lib/waveyard/library/session-key-matching";
 import {
   defaultPerformance,
@@ -104,6 +105,8 @@ interface SessionDetail {
   name: string;
   currentSessionTrackId: string | null;
   positionSeconds: number;
+  keyMatchMode?: SessionKeyMode;
+  keyShifts?: SessionKeyShifts;
   tracks: SessionTrackItem[];
   swaps: Array<{
     id: string;
@@ -123,6 +126,18 @@ interface SessionDetail {
   }>;
   createdAt: string;
   updatedAt: string;
+}
+
+function savedKeyShiftFor(item: SessionTrackItem | null, shifts: SessionKeyShifts): number {
+  if (item === null) return 0;
+  const saved = shifts[item.id];
+  return saved?.trackId === item.track.id ? saved.semitones : 0;
+}
+
+function keyShiftsForTracks(shifts: SessionKeyShifts, tracks: SessionTrackItem[]): SessionKeyShifts {
+  const tracksById = new Map(tracks.map((item) => [item.id, item.track.id]));
+  return Object.fromEntries(Object.entries(shifts).filter(([sessionTrackId, shift]) =>
+    tracksById.get(sessionTrackId) === shift.trackId));
 }
 
 function stemsPlaybackTarget(item: SessionTrackItem): SessionTrackItem | null {
@@ -1341,7 +1356,7 @@ export default function SessionExperience({
   const [pitchLockBusy, setPitchLockBusy] = useState(false);
   const [pitchLockMessage, setPitchLockMessage] = useState<string | null>(null);
   const [keyMode, setKeyMode] = useState<SessionKeyMode>("off");
-  const [keyShiftByTrack, setKeyShiftByTrack] = useState<Record<string, number>>({});
+  const [keyShiftByTrack, setKeyShiftByTrack] = useState<SessionKeyShifts>({});
   const [keyMatchBusy, setKeyMatchBusy] = useState(false);
   const [keyMatchError, setKeyMatchError] = useState<string | null>(null);
   useEffect(() => {
@@ -1456,6 +1471,14 @@ export default function SessionExperience({
   }, [session, currentId]);
 
   const currentItem = currentIndex >= 0 ? session?.tracks[currentIndex] ?? null : null;
+  const validKeyShifts = useMemo(
+    () => keyShiftsForTracks(keyShiftByTrack, session?.tracks ?? []),
+    [keyShiftByTrack, session?.tracks],
+  );
+  useEffect(() => {
+    if (!session) return;
+    setKeyShiftByTrack((previous) => keyShiftsForTracks(previous, session.tracks));
+  }, [session?.tracks]);
   useEffect(() => {
     setOpenSwapStem(null);
   }, [currentItem?.id]);
@@ -1465,7 +1488,12 @@ export default function SessionExperience({
   const currentTransition = currentItem ? transitions[currentItem.id] ?? currentItem.transition : null;
 
   // ------------------------------------------------------------ persistence
-  const persistState = useCallback(async (override?: { id?: string | null; position?: number }) => {
+  const persistState = useCallback(async (override?: {
+    id?: string | null;
+    position?: number;
+    keyMatchMode?: SessionKeyMode;
+    keyShifts?: SessionKeyShifts;
+  }) => {
     const s = sessionRef.current;
     if (s === null) return;
     const id = override?.id !== undefined ? override.id : currentIdRef.current;
@@ -1475,14 +1503,19 @@ export default function SessionExperience({
       const response = await fetch(`/api/library/sessions/${s.id}/state`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ currentSessionTrackId: id, positionSeconds: Math.max(0, Number.isFinite(raw) ? raw : 0) }),
+        body: JSON.stringify({
+          currentSessionTrackId: id,
+          positionSeconds: Math.max(0, Number.isFinite(raw) ? raw : 0),
+          keyMatchMode: override?.keyMatchMode ?? keyMode,
+          keyShifts: keyShiftsForTracks(override?.keyShifts ?? keyShiftByTrack, s.tracks),
+        }),
         keepalive: true,
       });
       setSaveState(response.ok ? "saved" : "error");
     } catch {
       setSaveState("error");
     }
-  }, []);
+  }, [keyMode, keyShiftByTrack]);
 
   // ------------------------------------------------------------------- load
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -1529,6 +1562,8 @@ export default function SessionExperience({
           })));
           setTransitions(nextTransitions);
           setCurrentId(restoredCurrent);
+          setKeyMode(detail.keyMatchMode ?? "off");
+          setKeyShiftByTrack(detail.keyShifts ?? {});
           setSession(detail);
           if (libraryResponse.ok) {
             const tracks = ((await libraryResponse.json()).tracks ?? []) as LibraryTrackOption[];
@@ -1592,7 +1627,7 @@ export default function SessionExperience({
     () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds),
     [session, nextItem, library, cancelledSwapIds],
   );
-  const currentKeyShift = currentItem ? keyShiftByTrack[currentItem.id] ?? 0 : 0;
+  const currentKeyShift = savedKeyShiftFor(currentItem, validKeyShifts);
   const leadEffectiveKey = currentItem
     ? shiftMusicalKey(currentItem.analysis?.musicalKey, currentKeyShift)
     : null;
@@ -1607,10 +1642,21 @@ export default function SessionExperience({
   const nextKeyShift = nextKeyMatch.semitones ?? 0;
   useEffect(() => {
     if (!nextItem || nextKeyMatch.semitones === null) return;
-    setKeyShiftByTrack((previous) => previous[nextItem.id] === nextKeyMatch.semitones
-      ? previous
-      : { ...previous, [nextItem.id]: nextKeyMatch.semitones! });
-  }, [nextItem, nextKeyMatch.semitones]);
+    if (
+      validKeyShifts[nextItem.id]?.trackId === nextItem.track.id
+      && validKeyShifts[nextItem.id]?.semitones === nextKeyMatch.semitones
+    ) return;
+    const shifts = {
+      ...validKeyShifts,
+      [nextItem.id]: { trackId: nextItem.track.id, semitones: nextKeyMatch.semitones },
+    };
+    setKeyShiftByTrack(shifts);
+    void persistState({
+      id: currentIdRef.current,
+      position: decksRef.current[activeDeckRef.current]?.transport.position ?? session?.positionSeconds ?? 0,
+      keyShifts: shifts,
+    });
+  }, [validKeyShifts, nextItem, nextKeyMatch.semitones, persistState, session]);
   const changeKeyMatchingMode = useCallback(async (requestedMode: SessionKeyMode) => {
     if (keyMatchBusy) return;
     if (!currentItem || !nextItem) {
@@ -1632,9 +1678,13 @@ export default function SessionExperience({
 
     const otherDeck = activeDeck === 0 ? 1 : 0;
     const previousShifts = [
-      { deck: activeDeck, item: currentItem, semitones: keyShiftByTrack[currentItem.id] ?? 0 },
-      { deck: otherDeck, item: nextItem, semitones: keyShiftByTrack[nextItem.id] ?? 0 },
+      { deck: activeDeck, item: currentItem, semitones: savedKeyShiftFor(currentItem, keyShiftByTrack) },
+      { deck: otherDeck, item: nextItem, semitones: savedKeyShiftFor(nextItem, keyShiftByTrack) },
     ] as const;
+    const shifts: SessionKeyShifts = {
+      [currentItem.id]: { trackId: currentItem.track.id, semitones: 0 },
+      [nextItem.id]: { trackId: nextItem.track.id, semitones: requestedMatch.semitones ?? 0 },
+    };
     const requestedShifts = [
       { deck: activeDeck, item: currentItem, semitones: 0 },
       { deck: otherDeck, item: nextItem, semitones: requestedMatch.semitones ?? 0 },
@@ -1651,11 +1701,9 @@ export default function SessionExperience({
         if (request.semitones !== 0 && assetIds.length > 0) api.transport.prepareChannels(assetIds);
         await api.transport.setKeyShiftSemitones(request.semitones);
       }
-      setKeyShiftByTrack({
-        [currentItem.id]: 0,
-        [nextItem.id]: requestedMatch.semitones ?? 0,
-      });
+      setKeyShiftByTrack(shifts);
       setKeyMode(requestedMode);
+      void persistState({ keyMatchMode: requestedMode, keyShifts: shifts });
     } catch (error) {
       await Promise.all(previousShifts.map(async (previous) => {
         const api = decksRef.current[previous.deck];
@@ -1667,7 +1715,7 @@ export default function SessionExperience({
     } finally {
       setKeyMatchBusy(false);
     }
-  }, [activeDeck, currentItem, keyMatchBusy, keyShiftByTrack, liveKeyMatchingAvailable, nextItem]);
+  }, [activeDeck, currentItem, keyMatchBusy, keyShiftByTrack, liveKeyMatchingAvailable, nextItem, persistState]);
   const activeSwaps = currentSwapSetup.swaps;
   const activeSwapTempoStretchRatios = currentSwapSetup.tempoStretchRatios;
 
@@ -4070,7 +4118,7 @@ export default function SessionExperience({
         ? currentKeyShift
         : item?.id === nextItem?.id
           ? nextKeyShift
-          : item ? keyShiftByTrack[item.id] ?? 0 : 0,
+          : savedKeyShiftFor(item, keyShiftByTrack),
       onKeyShiftFailure: reportKeyShiftFailure,
       onPerformanceAction: item ? actionForItem(item.id, deckIndex) : () => undefined,
       onSnapChange: item ? (snap: PerformanceSnap) => updateSnap(item, snap) : () => undefined,

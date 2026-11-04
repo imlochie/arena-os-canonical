@@ -238,6 +238,7 @@ let pendingSwapDeleteGate = null;
 let timedAssetId = null;
 let timedAssetDelayMs = 0;
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
+  keyMatchMode: "off", keyShifts: {},
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const pitchAcceptanceTrackSnapshot = structuredClone(tracks);
 const studioProjectId = "00000000-0000-4000-8000-000000000008";
@@ -1463,6 +1464,8 @@ try {
     }));
     session.currentSessionTrackId = "a";
     session.positionSeconds = 0;
+    session.keyMatchMode = "off";
+    session.keyShifts = {};
     session.swaps = [];
     await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
     await page.waitForFunction(() => document.querySelectorAll('[data-role="current"] audio').length === 4);
@@ -3032,6 +3035,11 @@ try {
       [...document.querySelectorAll('[data-role="current"] audio')]
         .find(audio => audio.currentSrc.endsWith("/a-drums"))?.currentTime ?? 0,
     );
+    const matchingModeSave = page.waitForResponse(response =>
+      response.url().endsWith(`/api/library/sessions/${sessionId}/state`)
+        && response.request().method() === "PUT"
+        && response.request().postDataJSON()?.keyMatchMode === "match",
+    );
     await page.getByTestId("session-key-mode-match").click();
     await page.waitForFunction(() =>
       document.querySelector('[data-testid="session-key-mode-match"]')?.getAttribute("aria-pressed") === "true"
@@ -3073,6 +3081,55 @@ try {
       `key matching cannot pause or reset the audible lead: ${JSON.stringify({ before, ...after })}`);
     assert.equal(after.incomingKey, "A major",
       `the incoming key display reflects the actual transposition: ${JSON.stringify(after)}`);
+    await matchingModeSave;
+    assert.equal(session.keyMatchMode, "match", "the selected mode is saved with the session");
+    assert.equal(session.keyShifts.b?.trackId, "b", "the saved shift is bound to the matching session track identity");
+    assert.equal(session.keyShifts.b?.semitones, -3);
+    assert.equal(session.currentSessionTrackId, "a", "saving key matching does not switch the current song");
+    const savedPosition = session.positionSeconds;
+    assert.ok(savedPosition > 0, "the current playhead is saved with the key mode");
+
+    await page.reload();
+    await keyCurrent.getByText("Test a", { exact: true }).waitFor();
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('[data-role="current"] audio')].length === 4
+        && [...document.querySelectorAll('[data-role="current"] audio')].every(audio => audio.readyState === 4),
+    );
+    assert.equal(await page.getByTestId("session-key-mode-match").getAttribute("aria-pressed"), "true",
+      "reopening restores the selected key mode");
+    assert.equal(session.currentSessionTrackId, "a");
+    assert.equal(session.positionSeconds, savedPosition);
+    await page.waitForFunction(() =>
+      window.audioProbe.worklets.some(node => node.probeName === "waveyard-key-shift" && node.probeConnections.length > 0)
+        && window.audioProbe.keyShifts.some(message => message.semitones === -3),
+    );
+    const restoredTimes = await page.locator('[data-role="current"] audio').evaluateAll(elements =>
+      elements.map(audio => audio.currentTime),
+    );
+    assert.ok(restoredTimes.length > 0 && restoredTimes.every(time => Math.abs(time - savedPosition) < 0.5),
+      `reload resumes the saved song at its prior position: ${JSON.stringify({ savedPosition, restoredTimes })}`);
+    if (await play.getAttribute("aria-pressed") !== "true") {
+      await play.click();
+      await page.waitForFunction(() =>
+        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+      );
+    }
+    const beforeHandoff = await page.locator('[data-role="current"] audio').first().evaluate(audio => audio.currentTime);
+    await page.getByRole("button", { name: "Current only" }).click();
+    const handoffResponse = page.waitForResponse(response =>
+      response.url().endsWith(`/api/library/sessions/${sessionId}/studio-handoff`)
+        && response.request().method() === "POST",
+    );
+    await page.getByTestId("session-handoff").click();
+    await handoffResponse;
+    await page.getByTestId("session-status").filter({ hasText: "Sent to Studio" }).waitFor();
+    assert.equal(session.currentSessionTrackId, "a", "Studio handoff does not switch the session entry");
+    const afterHandoff = await page.locator('[data-role="current"] audio').first().evaluate(audio => ({
+      time: audio.currentTime,
+      paused: audio.paused,
+    }));
+    assert.ok(!afterHandoff.paused && afterHandoff.time > beforeHandoff + 0.2,
+      `Studio handoff leaves the active track playing from its advancing cue: ${JSON.stringify({ beforeHandoff, afterHandoff })}`);
 
     await page.getByTestId("session-transition").click();
     await keyCurrent.getByText("Test b", { exact: true }).waitFor({ timeout: 12_000 });
@@ -3082,7 +3139,7 @@ try {
         && window.audioProbe.worklets.filter(node =>
           node.probeName === "waveyard-key-shift" && node.probeConnections.length > 0).length >= 4,
     );
-    console.log("PASS: key-match worklets transpose the incoming deck without interrupting the lead and remain active across the deck transition");
+    console.log("PASS: key-match mode and correction survive reload without changing the current song or cue, and worklets remain active across the deck transition");
     await browser.close();
     process.exit(0);
   }

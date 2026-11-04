@@ -52,6 +52,11 @@ import {
   validateStemSwap,
   type TransitionConfig,
 } from "./session-logic";
+import {
+  normalizeSessionKeyMode,
+  type SessionKeyMode,
+  type SessionKeyShifts,
+} from "./session-key-matching";
 import { getTrack, QueueItemNotFoundError, removeQueueItem, type TrackDetail, type TrackStem, type TrackSummary } from "./service";
 import { assertExpectedOrder, withOrderingLock, type OrderingTransaction } from "./ordering";
 export { OrderingConflictError } from "./ordering";
@@ -121,10 +126,48 @@ export interface SessionDetailPayload {
   name: string;
   currentSessionTrackId: string | null;
   positionSeconds: number;
+  keyMatchMode: SessionKeyMode;
+  keyShifts: SessionKeyShifts;
   tracks: SessionTrackPayload[];
   swaps: SessionSwapPayload[];
   createdAt: string;
   updatedAt: string;
+}
+
+function parseSessionKeyShifts(
+  serialized: string | null | undefined,
+  tracks: Array<{ id: string; trackId: string }>,
+): SessionKeyShifts {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized ?? "{}");
+  } catch {
+    return {};
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const trackBySessionId = new Map(tracks.map((track) => [track.id, track.trackId]));
+  const shifts: SessionKeyShifts = {};
+  for (const [sessionTrackId, value] of Object.entries(parsed)) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const shift = value as { trackId?: unknown; semitones?: unknown };
+    if (
+      trackBySessionId.get(sessionTrackId) !== shift.trackId
+      || typeof shift.trackId !== "string"
+      || typeof shift.semitones !== "number"
+      || !Number.isInteger(shift.semitones)
+      || shift.semitones < -11
+      || shift.semitones > 11
+    ) continue;
+    shifts[sessionTrackId] = { trackId: shift.trackId, semitones: shift.semitones };
+  }
+  return shifts;
+}
+
+function serializeSessionKeyShifts(
+  shifts: SessionKeyShifts,
+  tracks: Array<{ id: string; trackId: string }>,
+): string {
+  return JSON.stringify(parseSessionKeyShifts(JSON.stringify(shifts), tracks));
 }
 
 export interface SessionSummaryPayload {
@@ -192,6 +235,18 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
   const [session] = await db.select().from(listenSessions).where(eq(listenSessions.id, sessionId)).limit(1);
   if (session === undefined) throw new SessionNotFoundError();
   const trackRows = await loadSessionTracks(sessionId);
+  const keyShifts = parseSessionKeyShifts(session.keyShifts, trackRows);
+  const sanitizedKeyShifts = JSON.stringify(keyShifts);
+  if (sanitizedKeyShifts !== session.keyShifts) {
+    // Compare-and-swap so pruning removed/replaced entries can never overwrite
+    // a concurrent, newer key-mode save.
+    await db.update(listenSessions)
+      .set({ keyShifts: sanitizedKeyShifts })
+      .where(and(
+        eq(listenSessions.id, sessionId),
+        eq(listenSessions.keyShifts, session.keyShifts),
+      ));
+  }
   // getTrack returns null for deleted tracks — failSummary keeps those
   // visible in the payload instead of silently dropping them.
   const details = new Map<string, TrackDetail>();
@@ -231,6 +286,8 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
     name: session.name,
     currentSessionTrackId: session.currentTrackId,
     positionSeconds: session.positionSeconds,
+    keyMatchMode: normalizeSessionKeyMode(session.keyMatchMode),
+    keyShifts,
     tracks: trackRows.map((row) => {
       const detail = details.get(row.trackId) ?? null;
       return {
@@ -735,26 +792,33 @@ export async function saveSessionState(
   sessionId: string,
   currentSessionTrackId: string | null,
   positionSeconds: number,
+  keyMatchState?: { mode: SessionKeyMode; shifts: SessionKeyShifts },
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
-  let validId = currentSessionTrackId;
-  if (validId !== null) {
-    const [row] = await db
-      .select({ id: listenSessionTracks.id })
+  await db.transaction(async (tx) => {
+    const trackRows = await tx
+      .select({ id: listenSessionTracks.id, trackId: listenSessionTracks.trackId })
       .from(listenSessionTracks)
-      .where(and(eq(listenSessionTracks.id, validId), eq(listenSessionTracks.sessionId, sessionId)))
-      .limit(1);
-    if (row === undefined) validId = null;
-  }
-  await db
-    .update(listenSessions)
-    .set({
-      currentTrackId: validId,
-      positionSeconds:
-        Number.isFinite(positionSeconds) && positionSeconds > 0 ? Math.min(positionSeconds, 86_400) : 0,
-      updatedAt: new Date(),
-    })
-    .where(eq(listenSessions.id, sessionId));
+      .where(eq(listenSessionTracks.sessionId, sessionId))
+      .for("update");
+    const trackBySessionId = new Map(trackRows.map((row) => [row.id, row.trackId]));
+    const validId = currentSessionTrackId !== null && trackBySessionId.has(currentSessionTrackId)
+      ? currentSessionTrackId
+      : null;
+    await tx
+      .update(listenSessions)
+      .set({
+        currentTrackId: validId,
+        positionSeconds:
+          Number.isFinite(positionSeconds) && positionSeconds > 0 ? Math.min(positionSeconds, 86_400) : 0,
+        ...(keyMatchState === undefined ? {} : {
+          keyMatchMode: normalizeSessionKeyMode(keyMatchState.mode),
+          keyShifts: serializeSessionKeyShifts(keyMatchState.shifts, trackRows),
+        }),
+        updatedAt: new Date(),
+      })
+      .where(eq(listenSessions.id, sessionId));
+  });
   return sessionPayload(sessionId);
 }
 

@@ -9,7 +9,15 @@ export const runtime = "nodejs";
 const stateSchema = z.object({
   currentSessionTrackId: z.string().uuid().nullable(),
   positionSeconds: z.number().min(0),
-});
+  keyMatchMode: z.enum(["camelot", "match", "preserve", "off"]).optional(),
+  keyShifts: z.record(z.string().uuid(), z.object({
+    trackId: z.string().uuid(),
+    semitones: z.number().int().min(-11).max(11),
+  })).optional(),
+}).refine(
+  (value) => (value.keyMatchMode === undefined) === (value.keyShifts === undefined),
+  "Key mode and track shifts must be saved together.",
+);
 
 /** PUT /api/library/sessions/[id]/state — persist the restore point (which
  * session track was playing, and where). Live transport never waits on this. */
@@ -25,6 +33,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       id,
       parsed.data.currentSessionTrackId,
       parsed.data.positionSeconds,
+      parsed.data.keyMatchMode === undefined || parsed.data.keyShifts === undefined
+        ? undefined
+        : { mode: parsed.data.keyMatchMode, shifts: parsed.data.keyShifts },
     );
     return Response.json({ session });
   } catch (error) {

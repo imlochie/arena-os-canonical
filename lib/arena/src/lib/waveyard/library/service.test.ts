@@ -1758,6 +1758,55 @@ test("session: restore state persists and round-trips; foreign session tracks ne
   await sessions.deleteSession(OWNER, created.id);
 });
 
+test("session: key mode and track shifts survive reload but stale identities are cleared", async () => {
+  const created = await sessions.createSession(OWNER, "Saved key match");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const withB = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+  const [entryA, entryB] = withB.tracks;
+
+  const saved = await sessions.saveSessionState(OWNER, created.id, entryA.id, 73.5, {
+    mode: "match",
+    shifts: {
+      [entryA.id]: { trackId: trackA.id, semitones: 0 },
+      [entryB.id]: { trackId: trackB.id, semitones: -3 },
+      ["33333333-3333-4333-8333-333333333333"]: { trackId: trackB.id, semitones: 6 },
+    },
+  });
+  assert.equal(saved.keyMatchMode, "match");
+  assert.deepEqual(saved.keyShifts, {
+    [entryA.id]: { trackId: trackA.id, semitones: 0 },
+    [entryB.id]: { trackId: trackB.id, semitones: -3 },
+  }, "foreign session-entry shifts cannot be saved");
+  assert.equal(saved.currentSessionTrackId, entryA.id);
+  assert.equal(saved.positionSeconds, 73.5);
+
+  const reloaded = await sessions.getSession(OWNER, created.id);
+  assert.equal(reloaded.keyMatchMode, "match");
+  assert.deepEqual(reloaded.keyShifts, saved.keyShifts);
+  assert.equal(reloaded.currentSessionTrackId, entryA.id, "saving key settings never changes the current entry");
+  assert.equal(reloaded.positionSeconds, 73.5, "saving key settings never seeks the playhead");
+
+  // Simulate a session entry being rebound to another library track. Its old
+  // correction must not return if the entry is later loaded or saved again.
+  await db.db.update(schema.listenSessionTracks)
+    .set({ trackId: trackA.id })
+    .where(eq(schema.listenSessionTracks.id, entryB.id));
+  const replaced = await sessions.getSession(OWNER, created.id);
+  assert.deepEqual(replaced.keyShifts, {
+    [entryA.id]: { trackId: trackA.id, semitones: 0 },
+  }, "the shift for a replaced source identity is dropped");
+  const [persistedSession] = await db.db.select().from(schema.listenSessions)
+    .where(eq(schema.listenSessions.id, created.id)).limit(1);
+  assert.equal(persistedSession.keyShifts, JSON.stringify(replaced.keyShifts),
+    "stale shift data is physically pruned from the saved session");
+
+  const removed = await sessions.removeSessionTrack(OWNER, created.id, entryA.id);
+  assert.deepEqual(removed.keyShifts, {}, "removing a session entry clears its shift");
+  assert.equal(removed.currentSessionTrackId, null);
+  assert.equal(removed.positionSeconds, 0);
+  await sessions.deleteSession(OWNER, created.id);
+});
+
 test("session: a missing original can be restored without changing stems or session state", async () => {
   const sourceId = sourceIdByTrackId.get(trackA.id)!;
   const [originalSource] = await db.db.select().from(schema.sourceAssets)

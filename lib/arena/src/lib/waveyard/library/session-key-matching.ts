@@ -3,6 +3,20 @@ import { CANONICAL_PITCH_CLASSES, normaliseMusicalKey, semitoneShift, type Music
 
 export type SessionKeyMode = "camelot" | "match" | "preserve" | "off";
 
+/** A saved correction belongs to a specific session entry and source track. */
+export interface SessionKeyShiftState {
+  trackId: string;
+  semitones: number;
+}
+
+export type SessionKeyShifts = Record<string, SessionKeyShiftState>;
+
+export function normalizeSessionKeyMode(value: unknown): SessionKeyMode {
+  return value === "camelot" || value === "match" || value === "preserve" || value === "off"
+    ? value
+    : "off";
+}
+
 export type SessionKeyMatch = {
   semitones: number | null;
   sourceKey: MusicalKey | null;
