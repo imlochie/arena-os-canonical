@@ -3,9 +3,21 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { runAutomaticFadeAcceptance, runLoudAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
+const mashupEvaluationOnly = process.argv.includes("--mashup-evaluation-only");
+const mashupManifestPath = process.env.WAVEYARD_MASHUP_MANIFEST?.trim();
+const mashupManifest = mashupEvaluationOnly
+  && mashupManifestPath
+  ? JSON.parse(readFileSync(resolve(mashupManifestPath), "utf8"))
+  : null;
+if (mashupEvaluationOnly && (!mashupManifestPath || !Array.isArray(mashupManifest?.tracks)
+  || mashupManifest.tracks.length < 2 || mashupManifest.tracks.length > 26
+  || !Array.isArray(mashupManifest?.combinations))) {
+  throw new Error("--mashup-evaluation-only requires WAVEYARD_MASHUP_MANIFEST with 2–26 tracks and combinations.");
+}
 const studioConflictOnly = process.argv.includes("--studio-conflict-only");
 const studioSelectionFreshnessOnly = process.argv.includes("--studio-selection-freshness-only");
 const requireBrowserEngines = process.env.WAVEYARD_REQUIRE_BROWSER_ENGINES === "1"
@@ -155,25 +167,60 @@ function downsampleFixtureWav(data, sampleRate = 8000) {
   return converted;
 }
 const assets = new Map();
-assets.set("a-source", wav(20, 130));
-assets.set("b-source", wav(8, 230));
-const tracks = ["a", "b", "c"].map((id, index) => {
-  const duration = [20, 8, 12][index];
-  const stems = types.map((stemType, i) => {
-    const key = `${id}-${stemType}`;
-    assets.set(key, wav(duration, 130 + index * 100 + i * 40));
-    return { id: key, stemType, engine: "synthetic-test" };
+let tracks;
+if (mashupEvaluationOnly) {
+  tracks = mashupManifest.tracks.map((item, index) => {
+    const id = String.fromCharCode(97 + index);
+    const stems = types.map(stemType => {
+      const key = `${id}-${stemType}`;
+      const assetPath = item.stems?.[stemType]?.path;
+      if (!assetPath) throw new Error(`Mashup manifest is missing ${item.id}.${stemType}.path`);
+      assets.set(key, readFileSync(resolve(dirname(resolve(mashupManifestPath)), assetPath)));
+      return { id: key, stemType, engine: "waveyard-four-stem-local" };
+    });
+    return {
+      id,
+      position: index,
+      sourceAssetId: null,
+      track: {
+        id,
+        title: item.title,
+        artist: item.artist,
+        album: item.album ?? "",
+        durationSeconds: item.excerpt?.durationSeconds ?? 12,
+      },
+      stems,
+      playback: { kind: "stems", assetIds: stems.map(stem => stem.id) },
+      stemMix: { vocals: 1, drums: 1, bass: 1, other: 1 },
+      transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
+      analysis: {
+        bpm: item.analysis?.bpm ?? null,
+        musicalKey: item.analysis?.musicalKey ?? null,
+        beatGridMs: item.analysis?.beatGridMs ?? null,
+      },
+    };
   });
-  return { id, position: index, sourceAssetId: id === "a" ? "a-source" : null,
-    track: { id, title: `Test ${id}`, artist: "Synthetic fixture", durationSeconds: duration },
-    stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
-    transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
-    analysis: {
-      bpm: index === 1 ? 124 : 120,
-      musicalKey: ["A minor", "C major", "C# major"][index],
-      beatGridMs: index === 0 ? Array.from({ length: 6 }, (_, beat) => beat * 4_000) : null,
-    } };
-});
+} else {
+  assets.set("a-source", wav(20, 130));
+  assets.set("b-source", wav(8, 230));
+  tracks = ["a", "b", "c"].map((id, index) => {
+    const duration = [20, 8, 12][index];
+    const stems = types.map((stemType, i) => {
+      const key = `${id}-${stemType}`;
+      assets.set(key, wav(duration, 130 + index * 100 + i * 40));
+      return { id: key, stemType, engine: "synthetic-test" };
+    });
+    return { id, position: index, sourceAssetId: id === "a" ? "a-source" : null,
+      track: { id, title: `Test ${id}`, artist: "Synthetic fixture", durationSeconds: duration },
+      stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
+      transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
+      analysis: {
+        bpm: index === 1 ? 124 : 120,
+        musicalKey: ["A minor", "C major", "C# major"][index],
+        beatGridMs: index === 0 ? Array.from({ length: 6 }, (_, beat) => beat * 4_000) : null,
+      } };
+  });
+}
 const sourceOnlyTrack = { ...tracks[0], stems: [], playback: { kind: "source", assetIds: ["a-source"] } };
 const externalStemKeys = types.map(stem => {
   const key = `d-${stem}`;
@@ -187,7 +234,7 @@ const webkitAudioFixtures = engineName === "webkit" && mobileBrowserEmulation
     ]))
   : {};
 const libraryRows = tracks.map((item, index) => ({
-  id: item.track.id, title: item.track.title, artist: "Synthetic fixture", album: "",
+  id: item.track.id, title: item.track.title, artist: item.track.artist, album: item.track.album ?? "",
   durationSeconds: item.track.durationSeconds, playCount: 0, rating: 0, labels: [], lastPlayedAt: null,
   addedAt: new Date().toISOString(), stemAvailability: { status: "separated", stemCount: 4, stemTypes: types },
   studioProjectId: `fixture-project-${index}`,
@@ -237,7 +284,8 @@ let signalPendingSwapSaveStarted = null;
 let pendingSwapDeleteGate = null;
 let timedAssetId = null;
 let timedAssetDelayMs = 0;
-const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
+const session = { id: sessionId, name: mashupEvaluationOnly ? "Real track mashup evaluation" : "Live layer regression",
+  currentSessionTrackId: tracks[0]?.id ?? "a", positionSeconds: 0,
   keyMatchMode: "off", keyShifts: {},
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const pitchAcceptanceTrackSnapshot = structuredClone(tracks);
@@ -324,6 +372,7 @@ try {
   await context.addInitScript(({
     fixtureSessionId,
     probeAutoFades,
+    captureRenderedAudio,
     disableBroadcastChannel,
     webkitAudioFixtures,
   }) => {
@@ -382,9 +431,60 @@ try {
     window.audioProbe = {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [], decodedAudio: [],
       combinedInputs: [], combinedOutputs: [], playStarts: [],
+      renderCaptureDestinations: [],
       workletLoads: [], workletSeeks: [], workletRates: [], keyShifts: [], transportMessages: [],
       storageTransportMessages: [], storageTransportReceives: [], contexts: [],
     };
+    if (captureRenderedAudio) {
+      const nativeConnect = AudioNode.prototype.connect;
+      AudioNode.prototype.connect = function (target, ...args) {
+        const result = nativeConnect.call(this, target, ...args);
+        const captureDestination = this.context?.__waveyardCaptureDestination;
+        if (captureDestination && target === this.context.destination && !this.__waveyardCaptureConnected) {
+          this.__waveyardCaptureConnected = true;
+          nativeConnect.call(this, captureDestination);
+        }
+        return result;
+      };
+      window.audioProbe.startRenderedCapture = async () => {
+        if (typeof MediaRecorder !== "function") throw new Error("This browser cannot record the rendered audio graph.");
+        const context = window.audioProbe.contexts.find(item => item.__waveyardCaptureDestination);
+        if (!context) throw new Error("No Waveyard AudioContext is available for rendered capture.");
+        await context.resume();
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "";
+        const recorder = mimeType
+          ? new MediaRecorder(context.__waveyardCaptureDestination.stream, { mimeType })
+          : new MediaRecorder(context.__waveyardCaptureDestination.stream);
+        const chunks = [];
+        recorder.addEventListener("dataavailable", event => {
+          if (event.data.size > 0) chunks.push(event.data);
+        });
+        await new Promise((resolve, reject) => {
+          recorder.addEventListener("start", resolve, { once: true });
+          recorder.addEventListener("error", reject, { once: true });
+          recorder.start(250);
+        });
+        window.audioProbe.renderCapture = { recorder, chunks };
+      };
+      window.audioProbe.stopRenderedCapture = async () => {
+        const capture = window.audioProbe.renderCapture;
+        if (!capture) throw new Error("Rendered capture has not started.");
+        await new Promise(resolve => {
+          capture.recorder.addEventListener("stop", resolve, { once: true });
+          capture.recorder.stop();
+        });
+        const blob = new Blob(capture.chunks, { type: capture.recorder.mimeType || "audio/webm" });
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.addEventListener("load", () => resolve(reader.result), { once: true });
+          reader.addEventListener("error", reject, { once: true });
+          reader.readAsDataURL(blob);
+        });
+        return String(dataUrl).slice(String(dataUrl).indexOf(",") + 1);
+      };
+    }
     window.audioProbe.currentStemGain = stemType => {
       const deck = document.querySelector('[data-role="current"]');
       const audio = [...(deck?.querySelectorAll("audio") ?? [])]
@@ -481,6 +581,10 @@ try {
     window.AudioContext = class extends Base {
       constructor(...args) {
         super(...args);
+        if (captureRenderedAudio) {
+          this.__waveyardCaptureDestination = super.createMediaStreamDestination();
+          window.audioProbe.renderCaptureDestinations.push(this.__waveyardCaptureDestination);
+        }
         window.audioProbe.contexts.push(this);
       }
       decodeAudioData(...args) {
@@ -622,7 +726,8 @@ try {
     }
   }, {
     fixtureSessionId: sessionId,
-    probeAutoFades: automaticFadesOnly,
+    probeAutoFades: automaticFadesOnly || mashupEvaluationOnly,
+    captureRenderedAudio: mashupEvaluationOnly,
     disableBroadcastChannel,
     webkitAudioFixtures,
   });
@@ -1453,7 +1558,152 @@ try {
     return reloaded;
   }
 
-  if (studioConflictOnly) {
+  if (mashupEvaluationOnly) {
+    const outputDirectory = resolve(
+      dirname(resolve(mashupManifestPath)),
+      mashupManifest.outputDirectory ?? "live-captures",
+    );
+    mkdirSync(outputDirectory, { recursive: true });
+    const captureSeconds = Math.min(8, mashupManifest.captureSeconds ?? 8);
+    const trackById = new Map(mashupManifest.tracks.map((item, index) => [
+      item.id,
+      { ...item, browserId: String.fromCharCode(97 + index) },
+    ]));
+    const captures = [];
+    const getPlaybackSnapshot = () => page.evaluate(() =>
+      [...document.querySelectorAll('[data-role="current"] audio')].map(element => ({
+        source: new URL(element.src).pathname.split("/").at(-1),
+        currentTime: element.currentTime,
+        paused: element.paused,
+      })),
+    );
+    const capture = async (combination, version) => {
+      const lead = trackById.get(combination.leadTrackId);
+      if (!lead) throw new Error(`Unknown lead track ${combination.leadTrackId}`);
+      const donor = version === "swap" ? trackById.get(combination.donorTrackId) : null;
+      if (version === "swap" && !donor) throw new Error(`Unknown donor track ${combination.donorTrackId}`);
+      const donorMetadata = trackById.get(combination.donorTrackId);
+      session.currentSessionTrackId = lead.browserId;
+      session.positionSeconds = 0;
+      session.swaps = [];
+      session.keyMatchMode = combination.keyMatchMode === "camelot"
+        && lead.analysis?.musicalKey && donorMetadata?.analysis?.musicalKey
+        ? "camelot"
+        : "off";
+      await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+      await page.waitForFunction((browserId) => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(element => element.readyState >= 2
+          && new URL(element.src).pathname.includes(`/api/assets/${browserId}-`));
+      }, lead.browserId, { timeout: 20_000 });
+      await page.evaluate(() => window.audioProbe.startRenderedCapture());
+      await page.getByTestId("session-play").click();
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll('[data-role="current"] audio')].some(element =>
+          !element.paused && element.currentTime > 0.1),
+      { timeout: 10_000 });
+
+      let swapDetails = null;
+      const captureStartedAt = Date.now();
+      if (version === "swap") {
+        await page.waitForFunction(() =>
+          [...document.querySelectorAll('[data-role="current"] audio')].some(element =>
+            !element.paused && element.currentTime >= 1.1),
+        { timeout: 5_000 });
+        const beforeSwap = await getPlaybackSnapshot();
+        const timingCount = await page.evaluate(() => window.liveStemTimings.length);
+        const bufferCount = await page.evaluate(() => window.audioProbe.buffers.length);
+        const current = page.locator('[data-role="current"]');
+        await current.getByTestId(`open-live-swap-${combination.stemType}`).click();
+        const candidate = current.getByTestId(
+          `live-swap-candidate-${combination.stemType}-${donor.browserId}`,
+        );
+        await candidate.waitFor({ timeout: 10_000 });
+        const save = page.waitForResponse(response =>
+          response.url().endsWith("/swaps") && response.request().method() === "POST",
+        );
+        await candidate.click();
+        await save;
+        await page.waitForFunction(({ bufferCount, stemType }) => {
+          const audibleDonor = window.audioProbe.buffers.slice(bufferCount)
+            .some(node => node.inputNode?.gain?.value > 0.03 && node.buffer?.duration > 0);
+          return audibleDonor && document.querySelector(`[data-testid="restore-live-swap-${stemType}"]`);
+        }, { bufferCount, stemType: combination.stemType }, { timeout: 20_000 });
+        await page.waitForTimeout(300);
+        const afterSwap = await getPlaybackSnapshot();
+        const advancingOriginalClocks = beforeSwap
+          .filter(item => item.source.startsWith(`${lead.browserId}-`) && !item.source.endsWith(`-${combination.stemType}`))
+          .map(before => {
+            const after = afterSwap.find(item => item.source === before.source);
+            return after ? { source: before.source, from: before.currentTime, to: after.currentTime, paused: after.paused } : null;
+          })
+          .filter(Boolean);
+        assert.ok(advancingOriginalClocks.length > 0, "unreplaced lead stems remain present during the swap");
+        assert.ok(advancingOriginalClocks.every(item => !item.paused && item.to > item.from),
+          `the live swap preserves advancing lead audio: ${JSON.stringify(advancingOriginalClocks)}`);
+        const timing = await page.evaluate(index => window.liveStemTimings[index] ?? null, timingCount);
+        swapDetails = {
+          donorTrackId: combination.donorTrackId,
+          stemType: combination.stemType,
+          keyMatchMode: session.keyMatchMode,
+          advancingOriginalClocks,
+          timing,
+          requestedTempoStretchRatio: combination.requestedTempoStretchRatio ?? null,
+          expectedTempoStretchRatio: combination.expectedTempoStretchRatio ?? null,
+          tempoMatchApplied: typeof timing?.tempoMatchMs === "number" && timing.tempoMatchMs > 0,
+        };
+        if (swapDetails.expectedTempoStretchRatio !== null) {
+          assert.ok(swapDetails.tempoMatchApplied,
+            `compatible tempos must run pitch-preserving tempo matching: ${JSON.stringify(swapDetails)}`);
+          assert.ok(Math.abs((timing?.tempoStretchRatio ?? 0) - swapDetails.expectedTempoStretchRatio) < 0.02,
+            `the swap applies the expected BPM ratio: ${JSON.stringify(swapDetails)}`);
+        } else {
+          assert.equal(swapDetails.tempoMatchApplied, false,
+            `incompatible tempos must remain at the donor's native tempo: ${JSON.stringify(swapDetails)}`);
+          assert.equal(timing?.tempoStretchRatio, 1,
+            `an incompatible live swap must report its native tempo ratio: ${JSON.stringify(swapDetails)}`);
+        }
+      }
+      await page.waitForTimeout(Math.max(0, captureSeconds * 1000 - (Date.now() - captureStartedAt)));
+      const base64 = await page.evaluate(() => window.audioProbe.stopRenderedCapture());
+      const bytes = Buffer.from(base64, "base64");
+      assert.ok(bytes.length > 12_000, `${version} capture must contain rendered audio bytes`);
+      const filename = `${combination.id}-${version}.webm`;
+      writeFileSync(join(outputDirectory, filename), bytes);
+      return {
+        version,
+        filename,
+        bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        capturedSeconds: Number(((Date.now() - captureStartedAt) / 1000).toFixed(2)),
+        ...(swapDetails ? { liveSwap: swapDetails } : {}),
+      };
+    };
+
+    for (const combination of mashupManifest.combinations) {
+      if (!/^[a-z0-9-]+$/.test(combination.id ?? "")
+        || !types.includes(combination.stemType)) {
+        throw new Error(`Invalid mashup combination: ${JSON.stringify(combination)}`);
+      }
+      const baseline = await capture(combination, "baseline");
+      const swapped = await capture(combination, "swap");
+      captures.push({ id: combination.id, leadTrackId: combination.leadTrackId, donorTrackId: combination.donorTrackId,
+        stemType: combination.stemType, baseline, swapped });
+    }
+    const report = {
+      schemaVersion: 1,
+      testPath: "Waveyard SessionExperience in Chromium; session API is fixture-backed and all audio bytes are separated CC BY 4.0 track excerpts.",
+      browserEngine: engineName,
+      browserVersion: browser.version(),
+      captureSeconds,
+      capturedAt: new Date().toISOString(),
+      captures,
+      evidenceLimit: "This confirms browser playback and donor substitution on Linux. It is not Windows, iOS, physical-device, or human listening evidence.",
+    };
+    writeFileSync(join(outputDirectory, "browser-live-swap-captures.json"), `${JSON.stringify(report, null, 2)}\n`);
+    console.log("WAVEYARD_MASHUP_CAPTURE_REPORT", JSON.stringify(report));
+    console.log("PASS: real separated audio played and live-swapped through Waveyard SessionExperience");
+  } else if (studioConflictOnly) {
     session.tracks = tracks.slice(0, 2).map((item, index) => ({
       ...item,
       position: index,

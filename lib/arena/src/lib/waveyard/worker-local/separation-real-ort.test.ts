@@ -1457,8 +1457,6 @@ if (realAudioInputPath) {
       assert.equal(job.status, "complete");
       const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
       assert.equal(stems.length, 4, "the recipe persists vocals, drums, bass, and melody");
-      assert.ok(playbackTicks >= 5, `playback timer advanced ${playbackTicks} times during real-audio separation`);
-      assert.ok(maxPlaybackGapMs < 1_000, `playback timer's longest pause was ${maxPlaybackGapMs}ms`);
 
       const measuredStems: Record<string, ReturnType<typeof audioMetrics>> = {};
       const outputIntegrity: Record<string, { readablePcm16Stereo44100: boolean; correctDuration: boolean; finiteSamples: boolean; inPcmRange: boolean }> = {};
@@ -1600,6 +1598,7 @@ if (realAudioInputPath) {
           measuredInputToStemsMs: audioDecodeMs + excerptPreparationMs + elapsedMs,
           playbackTimerTicks: playbackTicks,
           maxPlaybackTimerGapMs: maxPlaybackGapMs,
+          playbackResponsivenessPassed: playbackTicks >= 5 && maxPlaybackGapMs < 1_000,
           inferenceStageTotals: stageTotals,
           inferenceTimeSharePercent: Number((stageTotals.inferenceMs / Math.max(1, stageTotals.totalMs) * 100).toFixed(1)),
           modelInferenceStages: inferenceStageTimings,
@@ -1684,6 +1683,8 @@ if (realAudioInputPath) {
         await writeFile(resolve(reportPath), `${JSON.stringify(report, null, 2)}\n`);
       }
       t.diagnostic(JSON.stringify(report));
+      assert.ok(playbackTicks >= 5, `playback timer advanced ${playbackTicks} times during real-audio separation`);
+      assert.ok(maxPlaybackGapMs < 1_000, `playback timer's longest pause was ${maxPlaybackGapMs}ms`);
     } finally {
       await harness?.restore();
       await fixtureState?.close();

@@ -1,5 +1,7 @@
 # Waveyard four-stem reference evaluation
 
+> **Authorization correction (2026-11-04):** the older MUSDB18-HQ source-license claim in this document was wrong. SigSep's official track list marks both “BKS - Bulldozer” and “Angels In Amplifiers - I'm Alright” as DSD/Restricted, and SigSep says MUSDB18 access is limited to academic use. The historical numbers below are retained only for audit; do not use them as authorized product-quality evidence or redistribute the audio. The current live-mashup assessment uses separately licensed CC BY 4.0 recordings.
+
 ## Result
 
 The pinned `stems_4` recipe was run on two 8-second, 44.1 kHz stereo excerpts from the MUSDB18-HQ held-out test split. All four model files matched the registry SHA-256 values and ran through the production local worker on Linux x64 CPU. The output was compared to its aligned reference stem and the unseparated mixture.
@@ -47,16 +49,16 @@ Example tracks manifest:
   "schemaVersion": 1,
   "tracks": [
     {
-      "id": "bks-bulldozer",
-      "label": "BKS - Bulldozer",
-      "inputPath": "audio/BKS - Bulldozer-mix-30-38.wav",
-      "referenceManifestPath": "references/BKS - Bulldozer.json"
+      "id": "authorized-track-a",
+      "label": "Authorized track A",
+      "inputPath": "audio/authorized-track-a-mix.wav",
+      "referenceManifestPath": "references/authorized-track-a.json"
     },
     {
-      "id": "angels-im-alright",
-      "label": "Angels In Amplifiers - I'm Alright",
-      "inputPath": "audio/Angels In Amplifiers - Im Alright-mix-30-38.wav",
-      "referenceManifestPath": "references/Angels In Amplifiers - Im Alright.json"
+      "id": "authorized-track-b",
+      "label": "Authorized track B",
+      "inputPath": "audio/authorized-track-b-mix.wav",
+      "referenceManifestPath": "references/authorized-track-b.json"
     }
   ]
 }
@@ -66,19 +68,21 @@ Each referenced per-track manifest has the existing single-track shape:
 
 ```json
 {
-  "dataset": "MUSDB18-HQ (FLAC Optimized)",
-  "datasetUrl": "https://huggingface.co/datasets/roro128/musdb18-hq-flac",
-  "track": "BKS - Bulldozer",
-  "license": "CC BY-NC-SA 4.0",
-  "attribution": "MUSDB18-HQ; distributed by roro128/musdb18-hq-flac, derived from danjacobellis/musdb18HQ",
+  "dataset": "<authorized dataset and release>",
+  "datasetUrl": "<official dataset page>",
+  "track": "<authorized track title>",
+  "license": "<terms confirmed by the rights holder>",
+  "attribution": "<complete required attribution>",
   "referenceStems": {
-    "vocals": "BKS - Bulldozer-vocals-30-38.wav",
-    "drums": "BKS - Bulldozer-drums-30-38.wav",
-    "bass": "BKS - Bulldozer-bass-30-38.wav",
-    "other": "BKS - Bulldozer-other-30-38.wav"
+    "vocals": "<aligned-vocals.wav>",
+    "drums": "<aligned-drums.wav>",
+    "bass": "<aligned-bass.wav>",
+    "other": "<aligned-other.wav>"
   }
 }
 ```
+
+The strings in angle brackets are placeholders. Do not run the reference benchmark until the source terms permit the intended use and all four reference stems are authorized.
 
 Run it with:
 
@@ -106,12 +110,12 @@ node scripts/waveyard-blind-listening-report.mjs \
 
 The summary reports valid response files and per-stem counts, rating distributions, and setting preferences. It does not claim a verified unique-person count; use an optional anonymous listener code to help an organizer identify repeat submissions.
 
-## Licensed reference material
+## Historical source authorization
 
-- Dataset: [MUSDB18-HQ (FLAC Optimized)](https://huggingface.co/datasets/roro128/musdb18-hq-flac), derived from [MUSDB18-HQ](https://huggingface.co/datasets/danjacobellis/musdb18HQ).
-- Tracks: “BKS - Bulldozer” and “Angels In Amplifiers - I'm Alright”, held-out test split.
-- License: [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). The source dataset's non-commercial and share-alike terms apply; do not reuse these references in a commercial evaluation or redistribute them outside the license.
-- Attribution: MUSDB18-HQ; distributed by `roro128/musdb18-hq-flac`, derived from `danjacobellis/musdb18HQ`.
+- The official [SigSep track list](https://github.com/sigsep/website/blob/master/content/datasets/assets/tracklist.csv) marks both tracks above as `DSD, Restricted`; neither is CC BY-NC-SA.
+- The official [MUSDB18 page](https://sigsep.github.io/datasets/musdb.html) says dataset access is restricted to academic use and requires an access request.
+- The earlier Hugging Face mirror metadata was not sufficient authority to relabel those source tracks. Their audio and derived listening files are excluded from the new study and from any claim about commercially usable product capability.
+- The previous “licensed reference material” and listener notes are not a valid authorization record. Preserve the numeric history only as a record of what was measured, with the access limitation above.
 
 ## Human listening review
 

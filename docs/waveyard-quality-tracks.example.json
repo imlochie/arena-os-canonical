@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "tracks": [
     {
-      "id": "bks-bulldozer",
-      "label": "BKS - Bulldozer",
-      "inputPath": "audio/BKS - Bulldozer-mix-30-38.wav",
-      "referenceManifestPath": "references/BKS - Bulldozer.json"
+      "id": "authorized-track-a",
+      "label": "Authorized track A",
+      "inputPath": "audio/authorized-track-a-mix.wav",
+      "referenceManifestPath": "references/authorized-track-a.json"
     },
     {
-      "id": "angels-im-alright",
-      "label": "Angels In Amplifiers - I'm Alright",
-      "inputPath": "audio/Angels In Amplifiers - Im Alright-mix-30-38.wav",
-      "referenceManifestPath": "references/Angels In Amplifiers - Im Alright.json"
+      "id": "authorized-track-b",
+      "label": "Authorized track B",
+      "inputPath": "audio/authorized-track-b-mix.wav",
+      "referenceManifestPath": "references/authorized-track-b.json"
     }
   ]
 }
