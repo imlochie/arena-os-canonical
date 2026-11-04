@@ -659,6 +659,51 @@ test("coalesced decoding cannot detach the bytes retained for another stem chann
   }
 });
 
+test("idle compressed donor bytes expire after reuse without affecting another active stem", async () => {
+  const f = fixture(async (_context, buffer) => buffer, undefined, undefined, ["vocals", "drums"]);
+  const fetches: string[] = [];
+  globalThis.fetch = async url => {
+    fetches.push(String(url));
+    return new Response(new Uint8Array([1, 2, 3, 4, 5, 6]));
+  };
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await f.layers.preloadAsset("/compressed-donor");
+    assert.equal(lifecycleState(f.layers).prefetchedAssetBytes, 6);
+
+    await f.layers.preload("/compressed-donor", 0.8);
+    await f.layers.preload("/compressed-donor", 1.2);
+    await f.layers.replace("vocals", "/active-stem");
+    const activeStem = f.sources[0];
+
+    mock.timers.tick(20_000);
+    await f.layers.preloadAsset("/compressed-donor");
+    await f.layers.preload("/compressed-donor", 1.1);
+    assert.equal(
+      fetches.filter(url => url === "/compressed-donor").length,
+      1,
+      "compressed bytes are reused by repeated reads before the original expiry",
+    );
+    assert.equal(lifecycleState(f.layers).prefetchedAssetBytes, 6,
+      "re-reading the asset does not double-count its bytes");
+
+    mock.timers.tick(10_000);
+    assert.equal(lifecycleState(f.layers).prefetchedAssets.has("/compressed-donor"), false,
+      "the compressed entry is released at its original expiry");
+    assert.equal(lifecycleState(f.layers).prefetchedAssetBytes, 0,
+      "expiry returns the compressed bytes to the cache budget");
+    assert.equal(activeStem.stopped, false, "expiring an idle prefetch does not stop another active stem");
+
+    await f.layers.preloadAsset("/compressed-donor");
+    assert.equal(fetches.filter(url => url === "/compressed-donor").length, 2,
+      "a later preload fetches fresh bytes after expiry");
+    assert.equal(activeStem.stopped, false, "refetching the expired asset leaves playback running");
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
+});
+
 test("a warmed donor's audible timing starts when the user selects it, not when warming began", async () => {
   const f = fixture(undefined, timing => timings.push(timing));
   const timings: Array<{ selectionToAudibleMs: number }> = [];
