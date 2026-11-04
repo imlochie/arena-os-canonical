@@ -332,15 +332,21 @@ for (const [firstId, secondId] of [["vocals", "drums"], ["drums", "vocals"]] as 
   });
 }
 
-test("parallel donor failures preserve the other channel across cancel, reject, and timeout", async t => {
+const allStemIds = ["vocals", "drums", "bass", "other"] as const;
+const stemPairs = allStemIds.flatMap(failedId =>
+  allStemIds.filter(successId => successId !== failedId).map(successId => [failedId, successId] as const),
+);
+
+test("parallel donor failures preserve every other stem across cancel, reject, and timeout", async t => {
   for (const failure of ["cancel", "reject", "timeout"] as const) {
-    for (const failedId of ["vocals", "drums"] as const) {
+    for (const [failedId, successId] of stemPairs) {
       for (const retainedMode of ["original", "donor"] as const) {
-        await t.test(`${failure} ${failedId} while retaining its ${retainedMode}`, async () => {
-          const f = fixture(undefined, undefined, undefined, ["vocals", "drums"]);
-          const channelIds = ["vocals", "drums"] as const;
+        await t.test(`${failure} ${failedId} while ${successId} succeeds, retaining ${retainedMode}`, async () => {
+          const retainedBuffer = { duration: 17, length: 816_000, numberOfChannels: 2 } as AudioBuffer;
+          const successBuffer = { duration: 11, length: 528_000, numberOfChannels: 2 } as AudioBuffer;
+          const buffers = retainedMode === "donor" ? [retainedBuffer, successBuffer] : [successBuffer];
+          const f = fixture(undefined, undefined, () => buffers.shift()!, allStemIds);
           const failedChannel = f.channels.get(failedId)!;
-          const successId = channelIds.find(id => id !== failedId)!;
           const successChannel = f.channels.get(successId)!;
           failedChannel.source.mediaElement.currentTime = 8.75;
           successChannel.source.mediaElement.currentTime = 23.5;
@@ -408,9 +414,13 @@ test("parallel donor failures preserve the other channel across cancel, reject, 
             const successInput = f.gains.at(-1)!;
             assert.equal(f.sources.length, sourceCountBefore + 1,
               "only the successful donor installs; a failed donor never creates a source");
+            assert.equal(successSource.buffer, successBuffer,
+              "the successful channel installs its own decoded donor");
             assert.equal(successSource.connectedTo, successInput);
             assert.equal(successInput.connectedTo, successChannel.gain,
               "the surviving donor routes only to its own stem ID");
+            assert.equal(successSource.offset, 23.5 % successBuffer.duration,
+              "the successful donor follows its peer channel's independent clock");
             assert.equal(successChannel.inputGain.gain.value, 0);
             assert.equal(successSource.stopped, false,
               "the successful donor stays installed after the other channel fails");
@@ -428,6 +438,10 @@ test("parallel donor failures preserve the other channel across cancel, reject, 
             } else {
               assert.equal(retainedSource?.stopped, false,
                 "the prior donor is not retired when its replacement on this channel fails");
+              assert.equal(retainedSource?.buffer, retainedBuffer,
+                "the exact previously audible donor identity remains selected");
+              assert.equal(retainedSource?.offset, 8.75 % retainedBuffer.duration,
+                "the retained donor keeps its own channel's clock alignment");
               assert.equal(failedChannel.inputGain.gain.value, 0,
                 "the previous donor remains selected instead of falling back to the original");
             }
