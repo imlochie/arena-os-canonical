@@ -4,9 +4,15 @@ import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { ARENA_BACKUP_SCOPES, dataRoot } from "./data-paths.mjs";
+import { ARENA_BACKUP_SCOPES, ARENA_WAVEYARD_BACKUP_PARTS, dataRoot } from "./data-paths.mjs";
 import { DesktopDatabase } from "./database.mjs";
-import { backupContentSummary, createArenaBackup, readArenaBackupManifest, restoreArenaBackup } from "./arena-backup.mjs";
+import {
+  backupContentSummary,
+  createArenaBackup,
+  readArenaBackupManifest,
+  restoreArenaBackup,
+  waveyardSelectionFromManifest,
+} from "./arena-backup.mjs";
 import { killProcessTree } from "./process-tree.mjs";
 import { stopBeforeQuit, stopDesktopServices } from "./shutdown.mjs";
 import { createArcadeControl } from "./arcade/control.mjs";
@@ -165,10 +171,14 @@ function backupScopeDialog() {
     },
   });
   const choices = [
-    ["waveyard-storage", "Waveyard audio, stems, and capture recordings", "Waveyard library audio and local capture recordings."],
-    ["waveyard-models", "Downloaded Waveyard models", "Locally downloaded model files; these can be large."],
-    ["workspace-files", "Workspace files", "Local project and workspace files. Browser profiles remain excluded."],
-    ["browser-profiles", "Browser profiles", "Highly sensitive: may include cookies, saved sessions, browsing history, and logged-in accounts. Excluded unless you check this box."],
+    ...ARENA_WAVEYARD_BACKUP_PARTS.map(part => [part.id, part.label, part.description]),
+    ...ARENA_BACKUP_SCOPES
+      .filter(scope => scope.id !== "waveyard-storage")
+      .map(scope => [scope.id, scope.label, scope.id === "waveyard-models"
+        ? "Locally downloaded model files; these can be large."
+        : scope.id === "workspace-files"
+          ? "Local project and workspace files. Browser profiles remain excluded."
+          : "Highly sensitive: may include cookies, saved sessions, browsing history, and logged-in accounts. Excluded unless you check this box."]),
   ];
   const rows = choices.map(([id, title, description]) =>
     `<label class="${id === "browser-profiles" ? "sensitive" : ""}"><input type="checkbox" value="${id}"><span><strong>${title}</strong><small>${description}</small></span></label>`,
@@ -202,7 +212,10 @@ function backupScopeDialog() {
       resolve(value);
     };
     const onSubmit = (event, value) => {
-      if (event.sender === prompt.webContents && Array.isArray(value) && value.every(id => ARENA_BACKUP_SCOPES.some(scope => scope.id === id))) {
+      const validChoice = id =>
+        ARENA_WAVEYARD_BACKUP_PARTS.some(part => part.id === id) ||
+        ARENA_BACKUP_SCOPES.some(scope => scope.id === id && scope.id !== "waveyard-storage");
+      if (event.sender === prompt.webContents && Array.isArray(value) && value.every(validChoice)) {
         finish([...new Set(value)]);
       }
     };
@@ -226,8 +239,17 @@ function relaunch(dataDir = null) {
 
 function setDataMenu(root) {
   const backup = async () => {
-    const localFolders = await backupScopeDialog();
-    if (!localFolders) return;
+    const selectedFolders = await backupScopeDialog();
+    if (!selectedFolders) return;
+    const waveyardSelection = selectedFolders.filter(id =>
+      ARENA_WAVEYARD_BACKUP_PARTS.some(part => part.id === id),
+    );
+    const localFolders = selectedFolders.filter(id => !waveyardSelection.includes(id));
+    const selectedFolderLabels = selectedFolders.map(id =>
+      ARENA_WAVEYARD_BACKUP_PARTS.find(part => part.id === id)?.label ??
+      ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ??
+      id,
+    );
     const folder = await dialog.showOpenDialog(window, {
       title: "Choose where to save the Arena backup",
       properties: ["openDirectory", "createDirectory"],
@@ -243,7 +265,7 @@ function setDataMenu(root) {
       type: "warning",
       title: "Create Arena data backup",
       message: "Arena will pause and restart to make a safe database copy.",
-      detail: `Includes Arena database records and selected folders: ${localFolders.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label).join(", ") || "none"}. The passphrase encrypts every included file. Browser profiles ${localFolders.includes("browser-profiles") ? "can contain cookies, saved sessions, browsing history, and logged-in accounts; include them only if you accept copying that sensitive data." : "are excluded."}`,
+      detail: `Includes Arena database records and selected folders: ${selectedFolderLabels.join(", ") || "none"}. The passphrase encrypts every included file. Browser profiles ${localFolders.includes("browser-profiles") ? "can contain cookies, saved sessions, browsing history, and logged-in accounts; include them only if you accept copying that sensitive data." : "are excluded."}`,
       buttons: ["Create backup", "Cancel"],
       defaultId: 0,
       cancelId: 1,
@@ -257,6 +279,7 @@ function setDataMenu(root) {
         passphrase,
         databaseStopped: true,
         localFolders,
+        waveyardSelection,
       });
       const summary = result.summary;
       await dialog.showMessageBox({
@@ -291,30 +314,39 @@ function setDataMenu(root) {
     });
     if (target.canceled || !target.filePaths[0]) return;
     const summary = backupContentSummary(manifest);
-    const includesWaveyardFiles = manifest.includesWaveyardFiles === true;
+    const waveyardSelection = waveyardSelectionFromManifest(manifest);
+    const includesWaveyardFiles = waveyardSelection.length > 0;
     const waveyardFileCount = summary?.waveyardFileCount ?? null;
     const legacyReadableBackup = manifest.version === 1;
     const backupScopes = manifest.localFolders ??
       (includesWaveyardFiles ? ["waveyard-storage"] : []);
+    const selectedFolderLabels = [
+      ...waveyardSelection.map(id =>
+        ARENA_WAVEYARD_BACKUP_PARTS.find(part => part.id === id)?.label ?? id,
+      ),
+      ...backupScopes
+        .filter(id => id !== "waveyard-storage")
+        .map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ?? id),
+    ];
     const waveyardRestoreDetail = !includesWaveyardFiles
       ? "This backup does not contain Waveyard files."
       : legacyReadableBackup
         ? waveyardFileCount === 0
           ? "No Waveyard files were present."
-          : "Waveyard audio, stems, and capture recordings are included."
-        : "Waveyard files were selected; any files present will be restored.";
+          : `Included Waveyard folders: ${waveyardSelection.map(id => ARENA_WAVEYARD_BACKUP_PARTS.find(part => part.id === id)?.label ?? id).join(", ")}.`
+        : `Only files in these selected Waveyard folders are restored: ${waveyardSelection.map(id => ARENA_WAVEYARD_BACKUP_PARTS.find(part => part.id === id)?.label ?? id).join(", ")}.`;
     const passphrase = await passphraseDialog({
       title: "Unlock the Arena backup",
       description: legacyReadableBackup
-        ? `This older backup encrypts only the database credential; its database and optional files are readable. Included folders: ${backupScopes.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ?? id).join(", ") || "none"}.`
-        : `Enter the passphrase used when this backup was created. It encrypts all included files. Included folders: ${backupScopes.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ?? id).join(", ") || "none"}. Browser profiles ${backupScopes.includes("browser-profiles") ? "may contain cookies, saved sessions, browsing history, and logged-in accounts" : "are not included"}.`,
+        ? `This older backup encrypts only the database credential; its database and optional files are readable. Included folders: ${selectedFolderLabels.join(", ") || "none"}.`
+        : `Enter the passphrase used when this backup was created. It encrypts all included files. Included folders: ${selectedFolderLabels.join(", ") || "none"}. Browser profiles ${backupScopes.includes("browser-profiles") ? "may contain cookies, saved sessions, browsing history, and logged-in accounts" : "are not included"}.`,
     });
     if (!passphrase) return;
     const confirmation = await dialog.showMessageBox(window, {
       type: "warning",
       title: "Restore into a new data folder",
       message: "Arena will stop and restart using the selected folder.",
-      detail: `Restore target: ${target.filePaths[0]}\nSelected folders: ${backupScopes.map(id => ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ?? id).join(", ") || "none"}. ${legacyReadableBackup ? "This older backup contains readable database and optional files." : "Files are encrypted and will be decrypted locally into the new folder."} ${backupScopes.includes("browser-profiles") ? "Included browser profiles may contain cookies, saved sessions, history, and logged-in accounts." : "Browser profiles are not included."}\n${waveyardRestoreDetail}\nThe current Arena data folder will not be overwritten. The destination must be empty.`,
+      detail: `Restore target: ${target.filePaths[0]}\nSelected folders: ${selectedFolderLabels.join(", ") || "none"}. ${legacyReadableBackup ? "This older backup contains readable database and optional files." : "Files are encrypted and will be decrypted locally into the new folder."} ${backupScopes.includes("browser-profiles") ? "Included browser profiles may contain cookies, saved sessions, history, and logged-in accounts." : "Browser profiles are not included."}\n${waveyardRestoreDetail}\nThe current Arena data folder will not be overwritten. The destination must be empty.`,
       buttons: ["Restore and restart", "Cancel"],
       defaultId: 0,
       cancelId: 1,

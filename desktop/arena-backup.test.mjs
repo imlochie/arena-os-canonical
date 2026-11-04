@@ -91,6 +91,7 @@ test("v2 encrypts the database and credential, verifies all files, and restores 
     assert.equal(manifest.version, 2);
     assert.equal(manifest.pgVersion, "16");
     assert.equal(manifest.includesWaveyardFiles, false);
+    assert.deepEqual(manifest.waveyardSelection, []);
     assert.match(manifest.scope, /Encrypted PostgreSQL database.*selected local folders/);
     assert.equal(Object.hasOwn(manifest, "summary"), false);
     assert.equal(Object.keys(manifest.files).some((relative) => relative.startsWith("database/") || relative.startsWith("waveyard/")), false);
@@ -104,6 +105,9 @@ test("v2 encrypts the database and credential, verifies all files, and restores 
     assert.equal(backupFiles.some(contents => contents.includes(Buffer.from("matching-database-password-123"))), false);
     assert.equal(backupFiles.some(contents => contents.includes(Buffer.from("preserved arena record"))), false);
     assert.equal(backupFiles.some(contents => contents.includes(Buffer.from("PG_VERSION"))), false);
+    const legacyManifest = { ...manifest };
+    delete legacyManifest.waveyardSelection;
+    await writeFile(path.join(backupDir, "backup-manifest.json"), `${JSON.stringify(legacyManifest, null, 2)}\n`);
     assert.deepEqual((await verifyArenaBackup(backupDir)).mismatches, []);
 
     const restoredRoot = path.join(parent, "restored");
@@ -151,10 +155,11 @@ test("optional Waveyard storage and captures are verified and restored without m
       parentDir: parent,
       passphrase,
       databaseStopped: true,
-      localFolders: ["waveyard-storage"],
+      waveyardSelection: ["storage", "capture"],
       now: () => new Date("2026-11-01T12:00:00.000Z"),
     });
     assert.equal(manifest.includesWaveyardFiles, true);
+    assert.deepEqual(manifest.waveyardSelection, ["storage", "capture"]);
     assert.deepEqual(manifest.localFolders, ["waveyard-storage"]);
     assert.match(manifest.scope, /selected local folders \(waveyard-storage\)/);
     assert.equal(summary.waveyardFileCount, 3);
@@ -194,6 +199,73 @@ test("optional Waveyard storage and captures are verified and restored without m
   }
 });
 
+test("Waveyard library and capture selections restore independently", async () => {
+  const { parent, root } = await fixture();
+  const audio = Buffer.from("selected library audio");
+  const capture = Buffer.from("selected capture recording");
+  try {
+    await mkdir(path.join(root, "waveyard/storage/library"), { recursive: true });
+    await mkdir(path.join(root, "waveyard/capture/session"), { recursive: true });
+    await mkdir(path.join(root, "waveyard/models"), { recursive: true });
+    await writeFile(path.join(root, "waveyard/storage/library/track.wav"), audio);
+    await writeFile(path.join(root, "waveyard/capture/session/take.pcm"), capture);
+    await writeFile(path.join(root, "waveyard/models/model.onnx"), "never include model caches");
+
+    const cases = [
+      {
+        selection: ["storage"],
+        selectedPath: "waveyard/storage/library/track.wav",
+        selectedBytes: audio,
+        excludedPath: "waveyard/capture/session/take.pcm",
+      },
+      {
+        selection: ["capture"],
+        selectedPath: "waveyard/capture/session/take.pcm",
+        selectedBytes: capture,
+        excludedPath: "waveyard/storage/library/track.wav",
+      },
+    ];
+    for (const [index, scenario] of cases.entries()) {
+      const { backupDir, manifest, summary } = await createArenaBackup({
+        root,
+        parentDir: parent,
+        passphrase,
+        databaseStopped: true,
+        waveyardSelection: scenario.selection,
+        now: () => new Date(Date.UTC(2026, 10, 2, 12, 0, index)),
+      });
+      assert.deepEqual(manifest.waveyardSelection, scenario.selection);
+      assert.equal(manifest.includesWaveyardFiles, true);
+      assert.deepEqual(manifest.localFolders, ["waveyard-storage"]);
+      assert.equal(summary.waveyardFileCount, 1);
+      assert.equal((await verifyArenaBackup(backupDir)).ok, true);
+
+      const target = path.join(parent, `restored-selection-${index}`);
+      const restored = await restoreArenaBackup({ backupDir, targetRoot: target, passphrase });
+      assert.equal(restored.waveyardFileCount, 1);
+      assert.deepEqual(await readFile(path.join(target, scenario.selectedPath)), scenario.selectedBytes);
+      await assert.rejects(readFile(path.join(target, scenario.excludedPath)), { code: "ENOENT" });
+      await assert.rejects(readFile(path.join(target, "waveyard/models/model.onnx")), { code: "ENOENT" });
+      if (index === 0) {
+        const manifestPath = path.join(backupDir, "backup-manifest.json");
+        const editedManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        editedManifest.waveyardSelection = ["capture"];
+        await writeFile(manifestPath, `${JSON.stringify(editedManifest, null, 2)}\n`);
+        await assert.rejects(
+          restoreArenaBackup({
+            backupDir,
+            targetRoot: path.join(parent, "mismatched-selection-restore"),
+            passphrase,
+          }),
+          /index does not match its manifest/,
+        );
+      }
+    }
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("legacy v1 backups remain restorable and clearly identifiable", async () => {
   const { parent, root } = await fixture();
   try {
@@ -226,6 +298,40 @@ test("legacy v1 backups remain restorable and clearly identifiable", async () =>
       JSON.parse(await readFile(path.join(restoredRoot, "runtime/db-password.json"), "utf8")),
       { password: "matching-database-password-123" },
     );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("legacy database-only backups restore without Waveyard or optional folders", async () => {
+  const { parent, root } = await fixture();
+  const legacyDir = path.join(parent, "legacy-database-only-v1");
+  try {
+    await mkdir(path.join(legacyDir, "database"), { recursive: true });
+    await cp(path.join(root, "data/postgres"), path.join(legacyDir, "database"), { recursive: true });
+    const credential = await readFile(path.join(root, "runtime/db-password.json"));
+    await writeFile(path.join(legacyDir, "credential.enc"), legacyCredential(credential));
+    const files = await hashFiles(legacyDir);
+    await writeFile(path.join(legacyDir, "backup-manifest.json"), JSON.stringify({
+      format: "arena-data-backup",
+      version: 1,
+      createdAt: "2026-11-02T12:00:00.000Z",
+      pgVersion: "16",
+      includesWaveyardFiles: false,
+      localFolders: [],
+      credentialSha256: createHash("sha256").update(credential).digest("hex"),
+      files,
+    }));
+
+    assert.equal((await verifyArenaBackup(legacyDir)).ok, true);
+    const target = path.join(parent, "legacy-database-only-restored");
+    const restored = await restoreArenaBackup({ backupDir: legacyDir, targetRoot: target, passphrase });
+    assert.equal(restored.pgVersion, "16");
+    assert.equal(restored.waveyardFileCount, 0);
+    assert.equal(restored.localFileCount, 0);
+    assert.equal(await readFile(path.join(target, "data/postgres/base/1/record"), "utf8"), "preserved arena record");
+    await assert.rejects(readFile(path.join(target, "waveyard/storage")), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(target, "waveyard/capture")), { code: "ENOENT" });
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -307,6 +413,21 @@ test("backup refuses unsupported scopes and unsafe manifest paths", async () => 
     await assert.rejects(
       createArenaBackup({ root, parentDir: parent, passphrase, databaseStopped: true, localFolders: ["arbitrary-folder"] }),
       /scope is invalid/,
+    );
+    await assert.rejects(
+      createArenaBackup({ root, parentDir: parent, passphrase, databaseStopped: true, waveyardSelection: ["models"] }),
+      /Waveyard backup folders are invalid/,
+    );
+    await assert.rejects(
+      createArenaBackup({
+        root,
+        parentDir: parent,
+        passphrase,
+        databaseStopped: true,
+        includeWaveyardFiles: false,
+        waveyardSelection: ["capture"],
+      }),
+      /both selected and excluded/,
     );
     const { backupDir } = await createArenaBackup({ root, parentDir: parent, passphrase, databaseStopped: true });
     const manifestPath = path.join(backupDir, "backup-manifest.json");

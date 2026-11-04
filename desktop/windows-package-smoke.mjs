@@ -193,10 +193,11 @@ async function run() {
     parentDir: path.dirname(dataRoot),
     passphrase: "Windows package smoke backup passphrase",
     databaseStopped: true,
-    includeWaveyardFiles: true,
+    waveyardSelection: ["storage", "capture"],
   });
   assert.equal(backup.manifest.version, 2, "new backups must use the encrypted format");
   assert.equal(backup.manifest.includesWaveyardFiles, true);
+  assert.deepEqual(backup.manifest.waveyardSelection, ["storage", "capture"]);
   assert(
     Object.keys(backup.manifest.files).every(relative => relative.startsWith("payload/")),
     "the public file list must not reveal original database or media paths",

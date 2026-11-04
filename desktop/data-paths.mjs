@@ -1,5 +1,20 @@
 import path from "node:path";
 
+export const ARENA_WAVEYARD_BACKUP_PARTS = [
+  {
+    id: "storage",
+    label: "Waveyard library audio and stems",
+    description: "Original library audio and separated stem files.",
+    relativePath: "waveyard/storage",
+  },
+  {
+    id: "capture",
+    label: "Waveyard capture recordings",
+    description: "Audio files created by Waveyard's capture tool.",
+    relativePath: "waveyard/capture",
+  },
+];
+
 export const ARENA_BACKUP_SCOPES = [
   {
     id: "waveyard-storage",

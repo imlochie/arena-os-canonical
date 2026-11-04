@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { Transform, Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import { ARENA_BACKUP_SCOPES } from "./data-paths.mjs";
+import { ARENA_BACKUP_SCOPES, ARENA_WAVEYARD_BACKUP_PARTS } from "./data-paths.mjs";
 
 const FORMAT = "arena-data-backup";
 const VERSION = 2;
@@ -82,11 +82,43 @@ async function hashTree(root) {
 }
 
 const validScopeIds = new Set(ARENA_BACKUP_SCOPES.map(scope => scope.id));
+const validWaveyardSelectionIds = new Set(ARENA_WAVEYARD_BACKUP_PARTS.map(part => part.id));
 function normalizeScopes(scopes = []) {
   if (!Array.isArray(scopes) || scopes.some(id => !validScopeIds.has(id)) || new Set(scopes).size !== scopes.length) {
     throw new Error("The selected local backup scope is invalid.");
   }
   return [...scopes].sort();
+}
+
+function normalizeWaveyardSelection(selection = []) {
+  if (!Array.isArray(selection) ||
+    selection.some(id => !validWaveyardSelectionIds.has(id)) ||
+    new Set(selection).size !== selection.length) {
+    throw new Error("The selected Waveyard backup folders are invalid.");
+  }
+  return ARENA_WAVEYARD_BACKUP_PARTS.map(part => part.id).filter(id => selection.includes(id));
+}
+
+export function waveyardSelectionFromManifest(manifest) {
+  if (manifest.waveyardSelection !== undefined) {
+    const selection = normalizeWaveyardSelection(manifest.waveyardSelection);
+    if (typeof manifest.includesWaveyardFiles !== "boolean" ||
+      manifest.includesWaveyardFiles !== (selection.length > 0)) {
+      throw new Error("This Arena backup has an invalid Waveyard-file selection.");
+    }
+    return selection;
+  }
+  if (manifest.version === LEGACY_VERSION) {
+    const paths = Object.keys(manifest.files ?? {}).map(relative =>
+      relative.startsWith("local/") ? relative.slice("local/".length) : relative,
+    );
+    return ARENA_WAVEYARD_BACKUP_PARTS
+      .filter(part => paths.some(relative => relative.startsWith(`${part.relativePath}/`)))
+      .map(part => part.id);
+  }
+  return manifest.includesWaveyardFiles === true
+    ? ARENA_WAVEYARD_BACKUP_PARTS.map(part => part.id)
+    : [];
 }
 
 function scopesFromManifest(manifest) {
@@ -198,6 +230,11 @@ function isAllowedPlainPath(relative, scopesOrLegacyFlag) {
     !relative.split("/").includes("browser-profile")) return true;
   return scopes.includes("browser-profiles") &&
     /^data\/space-workspaces\/[^/]+\/browser-profile\/.+/.test(relative);
+}
+
+function isAllowedByWaveyardSelection(relative, selection) {
+  const match = /^waveyard\/(storage|capture)\//.exec(relative);
+  return match === null || selection.includes(match[1]);
 }
 
 function validateFileMap(files, label = "backup") {
@@ -365,8 +402,10 @@ export function backupContentSummary(manifest) {
 function validateV2Manifest(manifest) {
   validateFileMap(manifest.files);
   const scopes = scopesFromManifest(manifest);
+  const waveyardSelection = waveyardSelectionFromManifest(manifest);
   if (typeof manifest.includesWaveyardFiles !== "boolean" ||
     manifest.includesWaveyardFiles !== scopes.includes("waveyard-storage") ||
+    manifest.includesWaveyardFiles !== (waveyardSelection.length > 0) ||
     !/^\d+$/.test(String(manifest.pgVersion)) ||
     !manifest.encryption ||
     manifest.encryption.algorithm !== ENCRYPTION_ALGORITHM ||
@@ -391,10 +430,15 @@ function validateV2Manifest(manifest) {
 }
 
 function validateEncryptedIndex(index, manifest) {
+  const manifestWaveyardSelection = waveyardSelectionFromManifest(manifest);
+  const indexWaveyardSelection = index?.waveyardSelection === undefined
+    ? (index?.includesWaveyardFiles === true ? ARENA_WAVEYARD_BACKUP_PARTS.map(part => part.id) : [])
+    : normalizeWaveyardSelection(index.waveyardSelection);
   if (index?.format !== FORMAT ||
     index.version !== VERSION ||
     index.pgVersion !== manifest.pgVersion ||
     index.includesWaveyardFiles !== manifest.includesWaveyardFiles ||
+    JSON.stringify(indexWaveyardSelection) !== JSON.stringify(manifestWaveyardSelection) ||
     JSON.stringify(normalizeScopes(index.localFolders ?? (index.includesWaveyardFiles ? ["waveyard-storage"] : []))) !==
       JSON.stringify(scopesFromManifest(manifest)) ||
     !Array.isArray(index.entries)) {
@@ -407,6 +451,7 @@ function validateEncryptedIndex(index, manifest) {
   for (const entry of index.entries) {
     if (!entry ||
       !isAllowedPlainPath(entry.path, scopesFromManifest(manifest)) ||
+      !isAllowedByWaveyardSelection(entry.path, manifestWaveyardSelection) ||
       typeof entry.encryptedPath !== "string" ||
       !/^payload\/[a-f0-9]{32}\.enc$/.test(entry.encryptedPath) ||
       entry.encryptedPath === "payload/index.enc" ||
@@ -700,6 +745,7 @@ export async function createArenaBackup({
   passphrase,
   databaseStopped,
   includeWaveyardFiles,
+  waveyardSelection: requestedWaveyardSelection,
   localFolders,
   now = () => new Date(),
   processExists: exists = processExists,
@@ -708,11 +754,24 @@ export async function createArenaBackup({
   if (includeWaveyardFiles !== undefined && typeof includeWaveyardFiles !== "boolean") {
     throw new Error("Choose whether Waveyard files should be included in the Arena backup.");
   }
-  const scopes = normalizeScopes(localFolders ?? (includeWaveyardFiles === true ? ["waveyard-storage"] : []));
-  if (includeWaveyardFiles && !scopes.includes("waveyard-storage")) scopes.push("waveyard-storage");
-  if (localFolders !== undefined && includeWaveyardFiles === false && scopes.includes("waveyard-storage")) {
+  const scopes = normalizeScopes(localFolders ?? []);
+  const waveyardSelection = requestedWaveyardSelection === undefined
+    ? (includeWaveyardFiles === true || scopes.includes("waveyard-storage")
+      ? ARENA_WAVEYARD_BACKUP_PARTS.map(part => part.id)
+      : [])
+    : normalizeWaveyardSelection(requestedWaveyardSelection);
+  if (includeWaveyardFiles === false &&
+    (scopes.includes("waveyard-storage") || waveyardSelection.length > 0)) {
     throw new Error("Waveyard files cannot be both selected and excluded from this backup.");
   }
+  if (includeWaveyardFiles === true && waveyardSelection.length === 0) {
+    throw new Error("Waveyard files cannot be both excluded and selected from this backup.");
+  }
+  if (requestedWaveyardSelection !== undefined &&
+    scopes.includes("waveyard-storage") && waveyardSelection.length === 0) {
+    throw new Error("Waveyard files cannot be both selected and excluded from this backup.");
+  }
+  if (waveyardSelection.length > 0 && !scopes.includes("waveyard-storage")) scopes.push("waveyard-storage");
   scopes.sort();
   if (databaseStopped !== true) {
     throw new Error("Arena has not confirmed a clean database shutdown; refusing the backup.");
@@ -734,10 +793,13 @@ export async function createArenaBackup({
     ...databaseFiles,
     { source: credentialPath, relative: "runtime/db-password.json", buffer: credential },
   ];
-  if (scopes.includes("waveyard-storage")) {
-    for (const directory of WAVEYARD_BACKUP_DIRS) {
-      sourceFiles.push(...await collectDirectoryFiles(path.join(root, "waveyard", directory), `waveyard/${directory}`, { optional: true }));
-    }
+  for (const part of ARENA_WAVEYARD_BACKUP_PARTS) {
+    if (!waveyardSelection.includes(part.id)) continue;
+    sourceFiles.push(...await collectDirectoryFiles(
+      path.join(root, ...part.relativePath.split("/")),
+      part.relativePath,
+      { optional: true },
+    ));
   }
   if (scopes.includes("waveyard-models")) {
     sourceFiles.push(...await collectDirectoryFiles(path.join(root, "waveyard/models"), "waveyard/models", { optional: true }));
@@ -807,7 +869,8 @@ export async function createArenaBackup({
       format: FORMAT,
       version: VERSION,
       pgVersion: version,
-      includesWaveyardFiles: scopes.includes("waveyard-storage"),
+      includesWaveyardFiles: waveyardSelection.length > 0,
+      waveyardSelection,
       localFolders: scopes,
       summary,
       entries,
@@ -834,7 +897,8 @@ export async function createArenaBackup({
       version: VERSION,
       createdAt: now().toISOString(),
       pgVersion: version,
-      includesWaveyardFiles: scopes.includes("waveyard-storage"),
+      includesWaveyardFiles: waveyardSelection.length > 0,
+      waveyardSelection,
       localFolders: scopes,
       scope: `Encrypted PostgreSQL database, matching credential, and selected local folders (${scopes.join(", ") || "none"}). Browser profiles are excluded unless explicitly selected.`,
       encryption: {
