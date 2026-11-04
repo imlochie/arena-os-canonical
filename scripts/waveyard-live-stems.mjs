@@ -1564,7 +1564,7 @@ try {
       mashupManifest.outputDirectory ?? "live-captures",
     );
     mkdirSync(outputDirectory, { recursive: true });
-    const captureSeconds = Math.min(8, mashupManifest.captureSeconds ?? 8);
+    const captureSeconds = Math.min(12, mashupManifest.captureSeconds ?? 8);
     const trackById = new Map(mashupManifest.tracks.map((item, index) => [
       item.id,
       { ...item, browserId: String.fromCharCode(97 + index) },
@@ -1604,12 +1604,13 @@ try {
       { timeout: 10_000 });
 
       let swapDetails = null;
+      const recordingStartedAt = Date.now();
       const captureStartedAt = Date.now();
       if (version === "swap") {
-        await page.waitForFunction(() =>
+        await page.waitForFunction(swapAtSeconds =>
           [...document.querySelectorAll('[data-role="current"] audio')].some(element =>
-            !element.paused && element.currentTime >= 1.1),
-        { timeout: 5_000 });
+            !element.paused && element.currentTime >= swapAtSeconds),
+        combination.swapAtSeconds ?? 1.1, { timeout: 8_000 });
         const beforeSwap = await getPlaybackSnapshot();
         const timingCount = await page.evaluate(() => window.liveStemTimings.length);
         const bufferCount = await page.evaluate(() => window.audioProbe.buffers.length);
@@ -1622,6 +1623,7 @@ try {
         const save = page.waitForResponse(response =>
           response.url().endsWith("/swaps") && response.request().method() === "POST",
         );
+        const selectedAtSeconds = (Date.now() - recordingStartedAt) / 1000;
         await candidate.click();
         await save;
         await page.waitForFunction(({ bufferCount, stemType }) => {
@@ -1641,12 +1643,32 @@ try {
         assert.ok(advancingOriginalClocks.length > 0, "unreplaced lead stems remain present during the swap");
         assert.ok(advancingOriginalClocks.every(item => !item.paused && item.to > item.from),
           `the live swap preserves advancing lead audio: ${JSON.stringify(advancingOriginalClocks)}`);
+        const layerGains = await page.evaluate(({ leadId, bufferCount }) => ({
+          original: Object.fromEntries(["vocals", "drums", "bass", "other"].map(stemType => [
+            stemType,
+            window.audioProbe.sources.find(source =>
+              source.mediaElement.src.endsWith(`/${leadId}-${stemType}`))?.inputNode?.gain?.value ?? null,
+          ])),
+          donor: window.audioProbe.buffers.slice(bufferCount).map(source => ({
+            gain: source.inputNode?.gain?.value ?? null,
+            stopped: (source.stopCount ?? 0) > 0,
+          })),
+        }), { leadId: lead.browserId, bufferCount });
+        if (combination.verifyLayerIdentity === true) {
+          assert.ok(layerGains.original[combination.stemType] < 0.02,
+            `the outgoing ${combination.stemType} must be muted, not layered under its donor`);
+          assert.ok(types.filter(type => type !== combination.stemType)
+            .every(type => layerGains.original[type] > 0.9),
+          `all three non-swapped lead channels stay audible: ${JSON.stringify(layerGains)}`);
+        }
         const timing = await page.evaluate(index => window.liveStemTimings[index] ?? null, timingCount);
         swapDetails = {
           donorTrackId: combination.donorTrackId,
           stemType: combination.stemType,
           keyMatchMode: session.keyMatchMode,
           advancingOriginalClocks,
+          selectedAtSeconds,
+          layerGains,
           timing,
           requestedTempoStretchRatio: combination.requestedTempoStretchRatio ?? null,
           expectedTempoStretchRatio: combination.expectedTempoStretchRatio ?? null,
@@ -1662,6 +1684,25 @@ try {
             `incompatible tempos must remain at the donor's native tempo: ${JSON.stringify(swapDetails)}`);
           assert.equal(timing?.tempoStretchRatio, 1,
             `an incompatible live swap must report its native tempo ratio: ${JSON.stringify(swapDetails)}`);
+        }
+        if (typeof combination.restoreAtSeconds === "number") {
+          await page.waitForFunction(restoreAtSeconds =>
+            [...document.querySelectorAll('[data-role="current"] audio')].some(element =>
+              !element.paused && element.currentTime >= restoreAtSeconds),
+          combination.restoreAtSeconds, { timeout: 10_000 });
+          swapDetails.restoreSelectedAtSeconds = (Date.now() - recordingStartedAt) / 1000;
+          await current.getByTestId(`restore-live-swap-${combination.stemType}`).click();
+          await page.waitForFunction(({ leadId, stemType, bufferCount }) => {
+            const original = window.audioProbe.sources.find(source =>
+              source.mediaElement.src.endsWith(`/${leadId}-${stemType}`));
+            return original?.inputNode?.gain?.value > 0.9
+              && window.audioProbe.buffers.slice(bufferCount).every(source =>
+                (source.stopCount ?? 0) > 0 || (source.inputNode?.gain?.value ?? 0) < 0.02);
+          }, { leadId: lead.browserId, stemType: combination.stemType, bufferCount }, { timeout: 5_000 });
+          swapDetails.restoredAtSeconds = (Date.now() - recordingStartedAt) / 1000;
+          swapDetails.restoredPlayback = await getPlaybackSnapshot();
+          assert.ok(swapDetails.restoredPlayback.every(channel => !channel.paused),
+            "restoring the original stem must leave every lead channel playing");
         }
       }
       await page.waitForTimeout(Math.max(0, captureSeconds * 1000 - (Date.now() - captureStartedAt)));
@@ -1692,7 +1733,8 @@ try {
     }
     const report = {
       schemaVersion: 1,
-      testPath: "Waveyard SessionExperience in Chromium; session API is fixture-backed and all audio bytes are separated CC BY 4.0 track excerpts.",
+      testPath: mashupManifest.evidenceDescription
+        ?? "Waveyard SessionExperience in Chromium; session API is fixture-backed and all audio bytes are separated CC BY 4.0 track excerpts.",
       browserEngine: engineName,
       browserVersion: browser.version(),
       captureSeconds,

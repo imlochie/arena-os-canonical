@@ -15,6 +15,12 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **How to apply:** Any streaming tempo-match optimization must verify BPM alignment and both speed pitch modes independently before replacing the existing path.
 
+**Audible remix evidence:** A running media clock or a donor replacement event is not proof of fluid mashups. Demonstrations must make the changed stem recognisable while the other song's identifiable vocals or backing continue, and show restoration in the same recording.
+
+**Why:** The user could not distinguish the earlier melody-swap clips from one song interrupting another and specifically requested contrasting drums or vocals. They reiterated that understanding STEM.FM's actual combined workflow matters more than a replacement-mechanism demonstration.
+
+**How to apply:** Separate channel-identity diagnostics from musical-quality claims. Show the source stems and an uninterrupted swap/restore, verify retained channels are audible rather than merely advancing, and do not claim STEM.FM parity without the paired-song controls, timing and harmonic behaviour working together.
+
 **Device-sync privacy rule:** Prefer QR-paired, direct laptop-to-device live-session sync; do not depend on paid cloud storage. Any optional cloud relay must be free and end-to-end encrypted. The fixed local-owner identity is not an access-control boundary.
 
 **Why:** The user wants to scan a QR code to sync the live session, with the laptop hosting it or a free service as fallback, and prioritizes personal privacy.
