@@ -43,7 +43,21 @@ try {
       name: `WorkerProcess${String(index).padStart(3, "0")}.exe`,
     })),
   ];
-  let applicationRecords = baseApplications;
+  const limitApplications = [
+    ...baseApplications,
+    ...Array.from({ length: 8008 }, (_, index) => ({
+      processId: 100_000 + index,
+      processStartTime: String(1_000_000 + index),
+      name: `BulkWorker${String(index).padStart(4, "0")}.exe`,
+    })),
+    {
+      processId: 4_294_900_000,
+      processStartTime: "98765432101234567890",
+      name: "ZzzAtLimit.exe",
+    },
+  ];
+  assert.equal(limitApplications.length, 8192);
+  let applicationRecords = limitApplications;
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -216,15 +230,56 @@ try {
   await appPicker.focus();
   const appList = page.getByRole("listbox", { name: "All accessible Windows processes" });
   await appList.waitFor();
-  assert((await appList.getByRole("option").count()) >= 180,
-    "the picker keeps a searchable view of the full accessible process list");
+  await page.getByText("All accessible processes · 8192", { exact: true }).waitFor();
+  const initialRenderedRows = await appList.getByRole("option").count();
+  assert(initialRenderedRows <= 30,
+    `the 8,192-process list should render only viewport rows (rendered ${initialRenderedRows})`);
   const longListBounds = await appList.boundingBox();
   const listDimensions = await appList.evaluate((element) => ({
     clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
   }));
   assert(longListBounds && longListBounds.x >= 0 && longListBounds.x + longListBounds.width <= 1280);
-  assert(listDimensions.scrollHeight > listDimensions.clientHeight && listDimensions.clientHeight <= 250,
+  assert(listDimensions.scrollHeight >= 8192 * 48 && listDimensions.clientHeight <= 250,
     "long process lists scroll inside a bounded selector");
+
+  const filterStart = Date.now();
+  await appPicker.fill("ZzzAtLimit.exe");
+  await page.getByText("Matching processes · 1 of 8192", { exact: true }).waitFor();
+  assert.equal(await appList.getByRole("option").count(), 1,
+    "search can find a process at the 8,192-entry limit");
+  const filterMs = Date.now() - filterStart;
+
+  await appPicker.fill("");
+  await page.getByText("All accessible processes · 8192", { exact: true }).waitFor();
+  const scrollStart = Date.now();
+  await appList.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const lastOption = appList.getByRole("option").filter({ hasText: "ZzzAtLimit.exe" });
+  await lastOption.waitFor();
+  assert.equal(await lastOption.getAttribute("aria-posinset"), "8192");
+  assert.equal(await lastOption.getAttribute("aria-setsize"), "8192");
+  const scrollMs = Date.now() - scrollStart;
+
+  await appList.evaluate((element) => { element.scrollTop = 0; });
+  await page.waitForFunction(() => {
+    const list = document.querySelector("#library-capture-application-list");
+    return list?.scrollTop === 0 && !!list.querySelector('[role="option"][aria-posinset="1"]');
+  });
+  const keyboardStart = Date.now();
+  await appPicker.press("End");
+  await page.waitForFunction(() => {
+    const list = document.querySelector("#library-capture-application-list");
+    return document.querySelector("#library-capture-application-search")?.getAttribute("aria-activedescendant") ===
+      "capture-process-option-8191" &&
+      Number(list?.scrollTop) > 0 &&
+      !!list?.querySelector('[role="option"][aria-posinset="8192"]');
+  });
+  await appPicker.press("Enter");
+  await page.getByText("Selected: ZzzAtLimit.exe · PID 4294900000", { exact: true }).waitFor();
+  const keyboardMs = Date.now() - keyboardStart;
+  assert(filterMs < 3000 && scrollMs < 3000 && keyboardMs < 3000,
+    `8,192-process interactions exceeded 3s: filter ${filterMs}ms, scroll ${scrollMs}ms, keyboard ${keyboardMs}ms`);
+  console.log(`PROCESS PICKER 8192: filter ${filterMs}ms; scroll ${scrollMs}ms; End+Enter ${keyboardMs}ms; ${initialRenderedRows} initial option nodes`);
+
   await appPicker.fill("browser.exe");
   const duplicateBrowserOptions = appList.getByRole("option");
   assert.equal(await duplicateBrowserOptions.count(), 2, "duplicate executable names remain separately selectable");
@@ -237,7 +292,7 @@ try {
   await appPicker.press("Enter");
   await page.getByText("Selected: AuthorizedPlayer.exe · PID 4242", { exact: true }).waitFor();
 
-  applicationRecords = baseApplications.map((app) => app.processId === 4242
+  applicationRecords = limitApplications.map((app) => app.processId === 4242
     ? { ...app, processStartTime: "999999999" } : app);
   await page.getByRole("button", { name: "Refresh devices" }).click();
   await page.getByText(/selected process ended or restarted/i).waitFor();
@@ -246,10 +301,10 @@ try {
     "a reused PID does not preserve the old creation-time identity or switch to whole output");
   assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true,
     "an expired process selection cannot start a recording even when authorization and a title are present");
-  applicationRecords = baseApplications;
+  applicationRecords = limitApplications;
   await page.getByRole("button", { name: "Refresh devices" }).click();
   await appPicker.focus();
-  await page.getByText("All accessible processes · 183", { exact: true }).waitFor();
+  await page.getByText("All accessible processes · 8192", { exact: true }).waitFor();
   await appPicker.fill("AuthorizedPlayer.exe");
   await appPicker.press("ArrowDown");
   await appPicker.press("Enter");

@@ -120,12 +120,14 @@ type ApplicationRow = {
   app: LibraryAudioCaptureApplication;
   parent?: LibraryAudioCaptureApplication;
   depth: number;
+  searchText: string;
 };
 
-function applicationRows(
-  applications: LibraryAudioCaptureApplication[],
-  search: string,
-): ApplicationRow[] {
+const APPLICATION_ROW_HEIGHT = 48;
+const APPLICATION_LIST_HEIGHT = 240;
+const APPLICATION_LIST_OVERSCAN = 8;
+
+function applicationRows(applications: LibraryAudioCaptureApplication[]): ApplicationRow[] {
   const byIdentity = new Map(applications.map((app) => [
     `${app.processId}:${app.processStartTime}`,
     app,
@@ -149,28 +151,47 @@ function applicationRows(
   const sortedChildren = (key: string) => (children.get(key) ?? []).sort(compare);
   const rows: ApplicationRow[] = [];
   const visited = new Set<string>();
-  const append = (app: LibraryAudioCaptureApplication, depth: number) => {
-    const identity = `${app.processId}:${app.processStartTime}`;
-    if (visited.has(identity)) return;
-    visited.add(identity);
-    rows.push({ app, ...(parents.has(identity) ? { parent: parents.get(identity) } : {}), depth });
-    for (const child of sortedChildren(identity)) append(child, depth + 1);
+  const sortedApplications = [...applications].sort(compare);
+  const appendFrom = (root: LibraryAudioCaptureApplication) => {
+    const pending: Array<{ app: LibraryAudioCaptureApplication; depth: number }> = [
+      { app: root, depth: 0 },
+    ];
+    while (pending.length) {
+      const { app, depth } = pending.pop()!;
+      const identity = `${app.processId}:${app.processStartTime}`;
+      if (visited.has(identity)) continue;
+      visited.add(identity);
+      const parent = parents.get(identity);
+      rows.push({
+        app,
+        ...(parent ? { parent } : {}),
+        depth,
+        searchText: [
+          app.name,
+          String(app.processId),
+          parent?.name ?? "",
+          parent ? String(parent.processId) : "",
+        ].join("\u0000").toLocaleLowerCase(),
+      });
+      const descendants = children.get(identity) ?? [];
+      for (let index = descendants.length - 1; index >= 0; index -= 1) {
+        pending.push({ app: descendants[index], depth: depth + 1 });
+      }
+    }
   };
-  for (const app of [...applications].sort(compare)) {
+  for (const app of sortedApplications) {
     const identity = `${app.processId}:${app.processStartTime}`;
-    if (!parents.has(identity)) append(app, 0);
+    if (!parents.has(identity)) appendFrom(app);
   }
   // A malformed cycle should not hide otherwise accessible processes.
-  for (const app of [...applications].sort(compare)) append(app, 0);
+  for (const app of sortedApplications) appendFrom(app);
+  return rows;
+}
 
+function filterApplicationRows(rows: ApplicationRow[], search: string): ApplicationRow[] {
   const normalizedSearch = search.trim().toLocaleLowerCase();
   if (!normalizedSearch) return rows;
-  return rows.filter(({ app, parent }) => [
-    app.name,
-    String(app.processId),
-    parent?.name ?? "",
-    parent ? String(parent.processId) : "",
-  ].some((value) => value.toLocaleLowerCase().includes(normalizedSearch)));
+  return rows.filter(({ searchText }) => searchText.includes(normalizedSearch));
 }
 
 export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }) {
@@ -182,6 +203,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   const [applicationSearch, setApplicationSearch] = useState("");
   const [applicationListOpen, setApplicationListOpen] = useState(false);
   const [activeApplicationIndex, setActiveApplicationIndex] = useState(-1);
+  const [applicationScrollTop, setApplicationScrollTop] = useState(0);
   const [applicationSelectionExpired, setApplicationSelectionExpired] = useState(false);
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
@@ -208,9 +230,24 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const applications = options?.applications ?? [];
+  const allApplicationRows = useMemo(() => applicationRows(applications), [applications]);
   const visibleApplicationRows = useMemo(
-    () => applicationRows(applications, applicationSearch),
-    [applications, applicationSearch],
+    () => filterApplicationRows(allApplicationRows, applicationSearch),
+    [allApplicationRows, applicationSearch],
+  );
+  const applicationListRef = useRef<HTMLDivElement>(null);
+  const firstRenderedApplicationIndex = Math.max(
+    0,
+    Math.floor(applicationScrollTop / APPLICATION_ROW_HEIGHT) - APPLICATION_LIST_OVERSCAN,
+  );
+  const lastRenderedApplicationIndex = Math.min(
+    visibleApplicationRows.length,
+    Math.ceil((applicationScrollTop + APPLICATION_LIST_HEIGHT) / APPLICATION_ROW_HEIGHT) +
+      APPLICATION_LIST_OVERSCAN,
+  );
+  const renderedApplicationRows = visibleApplicationRows.slice(
+    firstRenderedApplicationIndex,
+    lastRenderedApplicationIndex,
   );
   const selectedApplication = applications.find((app) =>
     `${app.processId}:${app.processStartTime}` === applicationKey);
@@ -218,9 +255,15 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
 
   useEffect(() => {
     if (!applicationListOpen || activeApplicationIndex < 0) return;
-    document.getElementById(`capture-process-option-${activeApplicationIndex}`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [activeApplicationIndex, applicationListOpen, visibleApplicationRows.length]);
+    const list = applicationListRef.current;
+    if (!list) return;
+    const optionTop = activeApplicationIndex * APPLICATION_ROW_HEIGHT;
+    const optionBottom = optionTop + APPLICATION_ROW_HEIGHT;
+    if (optionTop < list.scrollTop) list.scrollTop = optionTop;
+    else if (optionBottom > list.scrollTop + list.clientHeight) {
+      list.scrollTop = optionBottom - list.clientHeight;
+    }
+  }, [activeApplicationIndex, applicationListOpen]);
 
   const chooseApplication = (app: LibraryAudioCaptureApplication) => {
     setApplicationKey(`${app.processId}:${app.processStartTime}`);
@@ -816,14 +859,21 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                 setApplicationSearch("");
                 setApplicationListOpen(true);
                 setActiveApplicationIndex(applications.length ? 0 : -1);
+                setApplicationScrollTop(0);
+                if (applicationListRef.current) applicationListRef.current.scrollTop = 0;
               }}
               onChange={(event) => {
                 setApplicationSearch(event.target.value);
                 setApplicationListOpen(true);
-                setActiveApplicationIndex(applicationRows(applications, event.target.value).length ? 0 : -1);
+                const normalizedSearch = event.target.value.trim().toLocaleLowerCase();
+                setActiveApplicationIndex(allApplicationRows.some(({ searchText }) =>
+                  searchText.includes(normalizedSearch)) ? 0 : -1);
+                setApplicationScrollTop(0);
+                if (applicationListRef.current) applicationListRef.current.scrollTop = 0;
               }}
               onKeyDown={handleApplicationKeyDown}
               onBlur={() => window.setTimeout(() => {
+                if (document.activeElement === applicationInputRef.current) return;
                 setApplicationListOpen(false);
                 setActiveApplicationIndex(-1);
               }, 100)}
@@ -856,13 +906,23 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                   : `All accessible processes · ${applications.length}`}
               </div>
               <div
+                ref={applicationListRef}
                 className="library-capture-application-list"
                 id="library-capture-application-list"
                 role="listbox"
                 aria-label="All accessible Windows processes"
                 aria-busy={busy}
+                onScroll={(event) => setApplicationScrollTop(event.currentTarget.scrollTop)}
+                style={{
+                  height: `${Math.min(APPLICATION_LIST_HEIGHT, visibleApplicationRows.length * APPLICATION_ROW_HEIGHT)}px`,
+                }}
               >
-                {visibleApplicationRows.map(({ app, parent, depth }, index) => {
+                <div
+                  role="presentation"
+                  style={{ height: `${visibleApplicationRows.length * APPLICATION_ROW_HEIGHT}px`, position: "relative" }}
+                >
+                {renderedApplicationRows.map(({ app, parent, depth }, renderedIndex) => {
+                  const index = firstRenderedApplicationIndex + renderedIndex;
                   const identity = `${app.processId}:${app.processStartTime}`;
                   const parentLabel = parent ? `${parent.name} · PID ${parent.processId}` : "";
                   return <div
@@ -870,9 +930,14 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                     key={identity}
                     role="option"
                     aria-selected={applicationKey === identity}
+                    aria-posinset={index + 1}
+                    aria-setsize={visibleApplicationRows.length}
                     aria-label={`${app.name}, PID ${app.processId}${parent ? `, child of ${parentLabel}` : ""}`}
                     className={`library-capture-application-option${activeApplicationIndex === index ? " is-active" : ""}`}
-                    style={{ paddingInlineStart: `${10 + Math.min(depth, 4) * 14}px` }}
+                    style={{
+                      top: `${index * APPLICATION_ROW_HEIGHT}px`,
+                      paddingInlineStart: `${10 + Math.min(depth, 4) * 14}px`,
+                    }}
                     onMouseDown={(event) => event.preventDefault()}
                     onMouseEnter={() => setActiveApplicationIndex(index)}
                     onClick={() => chooseApplication(app)}
@@ -881,6 +946,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                     {parent && <small>Child of {parentLabel}</small>}
                   </div>;
                 })}
+                </div>
               </div>
               {visibleApplicationRows.length === 0 && <p className="library-capture-application-empty" role="status">
                 {applications.length
