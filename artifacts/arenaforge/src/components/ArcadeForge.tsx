@@ -60,8 +60,9 @@ type ArcadeServerModel = {
 
 type LocalRuntimeProbe = {
   modelId: string;
-  status: "checking" | "online" | "offline" | "model-missing" | "unknown";
+  status: "checking" | "online" | "offline" | "model-missing" | "model-unavailable" | "malformed" | "unconfigured" | "unknown";
   detail?: string;
+  recovery?: string;
 };
 
 function isServerRoutedLocalModel(model: Pick<ArcadeServerModel, "backend"> | undefined): boolean {
@@ -82,6 +83,16 @@ function parseLocalRuntimeTarget(model: ArcadeServerModel | undefined) {
     };
   } catch {
     return null;
+  }
+}
+
+function turboAgentModelId(model: ArcadeServerModel): string {
+  const prefix = "__turboagent__:";
+  if (!model.pollinationsId?.startsWith(prefix)) return model.id;
+  try {
+    return decodeURIComponent(model.pollinationsId.slice(prefix.length));
+  } catch {
+    return model.id;
   }
 }
 
@@ -209,6 +220,8 @@ export default function ArcadeForge() {
   const [serverModelId, setServerModelId] = useState("");
   const [serverModels, setServerModels] = useState<ArcadeServerModel[]>([]);
   const [localRuntimeProbe, setLocalRuntimeProbe] = useState<LocalRuntimeProbe | null>(null);
+  const [turboAgentProbe, setTurboAgentProbe] = useState<LocalRuntimeProbe | null>(null);
+  const [turboAgentUrl, setTurboAgentUrl] = useState("");
   const [providerRouteConfigured, setProviderRouteConfigured] = useState(false);
 
   const [busy, setBusy] = useState(false);
@@ -336,9 +349,13 @@ export default function ArcadeForge() {
 
   useEffect(() => {
     const refreshProviderRoute = () => {
+      const keys = loadKeys();
       setProviderRouteConfigured(
-        Object.values(loadKeys()).some((value) => typeof value === "string" && value.trim().length > 0),
+        Object.entries(keys).some(([name, value]) =>
+          name !== "turboagent" && typeof value === "string" && value.trim().length > 0,
+        ),
       );
+      setTurboAgentUrl(keys.turboagent?.trim() ?? "");
     };
     refreshProviderRoute();
     window.addEventListener("storage", refreshProviderRoute);
@@ -406,6 +423,53 @@ export default function ArcadeForge() {
     });
     return () => controller.abort();
   }, [serverModelId, serverModels]);
+
+  useEffect(() => {
+    const selected = serverModels.find((model) => model.id === serverModelId);
+    if (!selected || selected.backend !== "turboagent") {
+      setTurboAgentProbe(null);
+      return;
+    }
+    const controller = new AbortController();
+    setTurboAgentProbe({ modelId: selected.id, status: "checking" });
+    fetch("/api/runtime/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: "arcade-turboagent",
+        turboagent: turboAgentUrl || null,
+        modelId: turboAgentModelId(selected),
+        localOnly: true,
+      }),
+      signal: controller.signal,
+    }).then(async (response) => {
+      const body = await response.json().catch(() => ({}));
+      const probe = body?.probe;
+      if (
+        !response.ok ||
+        !probe ||
+        !["online", "offline", "model-unavailable", "malformed", "unconfigured"].includes(probe.status)
+      ) {
+        throw new Error("TurboAgent status could not be checked.");
+      }
+      setTurboAgentProbe({
+        modelId: selected.id,
+        status: probe.status as LocalRuntimeProbe["status"],
+        detail: typeof probe.detail === "string" ? probe.detail : undefined,
+        recovery: typeof probe.recovery === "string" ? probe.recovery : undefined,
+      });
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setTurboAgentProbe({
+          modelId: selected.id,
+          status: "unknown",
+          detail: "Arcade could not check the local TurboAgent endpoint.",
+          recovery: "Confirm Arena is running, then retry the check.",
+        });
+      }
+    });
+    return () => controller.abort();
+  }, [serverModelId, serverModels, turboAgentUrl]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -1067,17 +1131,29 @@ export default function ArcadeForge() {
   async function run(p?: string) {
     const q = (p ?? prompt).trim();
     if (!q || busy) return;
-    if (strategy !== "instant" && !engineOn) {
+    if (strategy !== "instant") {
       const flags = privacyFlags();
-      const savedProvider = Object.values(loadKeys()).some((value) => typeof value === "string" && value.trim().length > 0);
+      const savedProvider = Object.entries(loadKeys()).some(
+        ([name, value]) => name !== "turboagent" && typeof value === "string" && value.trim().length > 0,
+      );
       const selected = serverModels.find((model) => model.id === serverModelId);
       const selectedCanRoute = strategy === "auto" &&
         selected &&
         (!flags.localOnly || isServerRoutedLocalModel(selected)) &&
         (!selected.requiresKey || savedProvider);
       const providerCanRoute = strategy === "auto" && !flags.localOnly && savedProvider;
-      const browserCanRoute = gpu?.ok === true;
+      const browserCanRoute = engineOn || gpu?.ok === true;
       const selectedProbe = localRuntimeProbe?.modelId === selected?.id ? localRuntimeProbe : null;
+      const selectedTurboAgentProbe = turboAgentProbe?.modelId === selected?.id ? turboAgentProbe : null;
+      if (strategy === "auto" && selected?.backend === "turboagent" && (!selectedTurboAgentProbe || selectedTurboAgentProbe.status === "checking")) {
+        setError("Arcade is checking the selected TurboAgent endpoint. Wait for the result before sending a custom prompt.");
+        return;
+      }
+      if (strategy === "auto" && selected?.backend === "turboagent" && selectedTurboAgentProbe?.status !== "online") {
+        openModelSetup();
+        setError(`The selected TurboAgent is not ready: ${selectedTurboAgentProbe?.detail ?? "the endpoint or model is unavailable"} ${selectedTurboAgentProbe?.recovery ?? "Check the local TurboAgent setup; your prompt has not been sent."}`);
+        return;
+      }
       if (strategy === "auto" && selected?.backend === "local-server" && (!selectedProbe || selectedProbe.status === "checking")) {
         setError("Arcade is checking the selected local runtime. Wait for the result before sending a custom prompt.");
         return;
@@ -1112,7 +1188,9 @@ export default function ArcadeForge() {
         await runAI(q);
       } else {
         const flags = privacyFlags();
-        const hasConnectedProvider = Object.values(loadKeys()).some((key) => typeof key === "string" && key.length > 0);
+        const hasConnectedProvider = Object.entries(loadKeys()).some(
+          ([name, key]) => name !== "turboagent" && typeof key === "string" && key.trim().length > 0,
+        );
         if (
           strategy === "auto" &&
           shouldRouteToServerModel(flags.localOnly, hasConnectedProvider)
@@ -1361,15 +1439,24 @@ export default function ArcadeForge() {
   const localOnlyMode = privacySettings.localMode || !privacySettings.online;
   const selectedSourceModel = serverModels.find((model) => model.id === serverModelId);
   const selectedLocalRuntimeProbe = localRuntimeProbe?.modelId === selectedSourceModel?.id ? localRuntimeProbe : null;
+  const selectedTurboAgentProbe = turboAgentProbe?.modelId === selectedSourceModel?.id ? turboAgentProbe : null;
   const selectedLocalModel = serverModels.some(
     (model) => model.id === serverModelId && isServerRoutedLocalModel(model),
   );
   const selectedLocalRuntimeChecking = strategy === "auto" &&
-    selectedSourceModel?.backend === "local-server" &&
-    (!selectedLocalRuntimeProbe || selectedLocalRuntimeProbe.status === "checking");
+    ((selectedSourceModel?.backend === "local-server" &&
+      (!selectedLocalRuntimeProbe || selectedLocalRuntimeProbe.status === "checking")) ||
+     (selectedSourceModel?.backend === "turboagent" &&
+      (!selectedTurboAgentProbe || selectedTurboAgentProbe.status === "checking")));
   const selectedLocalRuntimeUnavailable = strategy === "auto" &&
-    selectedSourceModel?.backend === "local-server" &&
-    (selectedLocalRuntimeProbe?.status === "offline" || selectedLocalRuntimeProbe?.status === "model-missing");
+    ((selectedSourceModel?.backend === "local-server" &&
+      (selectedLocalRuntimeProbe?.status === "offline" || selectedLocalRuntimeProbe?.status === "model-missing")) ||
+     (selectedSourceModel?.backend === "turboagent" &&
+      (selectedTurboAgentProbe?.status === "offline" ||
+       selectedTurboAgentProbe?.status === "model-unavailable" ||
+       selectedTurboAgentProbe?.status === "malformed" ||
+       selectedTurboAgentProbe?.status === "unconfigured" ||
+       selectedTurboAgentProbe?.status === "unknown")));
   const selectedSourceAllowed = Boolean(
     strategy === "auto" &&
     selectedSourceModel &&
@@ -1411,10 +1498,16 @@ export default function ArcadeForge() {
         ? "Local Mode blocks the selected remote model. Choose a local Model Hub runtime, or turn off Local Mode to use a remote provider."
         : selectedSourceModel && strategy === "auto" && selectedSourceModel.requiresKey && !providerRouteConfigured
           ? `Selected model ${selectedSourceModel.name} needs a provider key. Save the matching key in Arena's provider settings, or choose a keyless/local model.`
+        : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "turboagent" && selectedLocalRuntimeUnavailable
+          ? `Selected TurboAgent is not ready: ${selectedTurboAgentProbe?.detail ?? "the endpoint or model is unavailable"} ${selectedTurboAgentProbe?.recovery ?? "Check the local TurboAgent setup."} Your prompt has not been sent.`
         : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "local-server" && selectedLocalRuntimeUnavailable
           ? `Selected local model is not ready: ${selectedLocalRuntimeProbe?.detail ?? "the runtime or model is unavailable"}. Start the runtime or install the model in Model Hub; your prompt has not been sent.`
           : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "local-server" && selectedLocalRuntimeChecking
             ? "Checking whether the selected Model Hub runtime is online and has this model. No prompt has been sent."
+        : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "turboagent" && selectedLocalRuntimeChecking
+          ? "Checking the saved local TurboAgent endpoint and selected model. No prompt has been sent."
+        : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "turboagent" && selectedTurboAgentProbe?.status === "online"
+          ? "TurboAgent answered and listed the selected model. This check sent no game prompt."
             : selectedSourceModel && strategy === "auto" && selectedSourceModel.backend === "local-server" && selectedLocalRuntimeProbe?.status === "online"
               ? `Model Hub answered and listed ${selectedSourceModel.name} on the Arena API machine. Use “Test selected local model” to verify game generation; results identify the actual runtime and model.`
               : selectedSourceModel && strategy === "auto" && isServerRoutedLocalModel(selectedSourceModel)
@@ -1539,6 +1632,23 @@ export default function ArcadeForge() {
               </div>
               <p className="mt-1 truncate text-[11px] text-slate-400">{loadText}</p>
             </div>
+          )}
+          {selectedSourceModel?.backend === "turboagent" && selectedTurboAgentProbe && (
+            <p
+              data-testid="arcade-turboagent-preflight"
+              role={selectedLocalRuntimeUnavailable ? "alert" : "status"}
+              className={`mt-2 rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${
+                selectedTurboAgentProbe.status === "online"
+                  ? "border-emerald-400/20 bg-emerald-500/5 text-emerald-200"
+                  : selectedLocalRuntimeUnavailable
+                    ? "border-amber-400/20 bg-amber-500/5 text-amber-100"
+                    : "border-white/10 bg-black/20 text-slate-300"
+              }`}
+            >
+              {selectedTurboAgentProbe.status === "checking"
+                ? "Checking the saved local TurboAgent endpoint and selected model. No game prompt has been sent."
+                : `${selectedTurboAgentProbe.detail ?? "TurboAgent status is unknown"}${selectedTurboAgentProbe.recovery ? ` ${selectedTurboAgentProbe.recovery}` : ""}`}
+            </p>
           )}
           <div data-testid="local-generation-check-panel" className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

@@ -63,6 +63,12 @@ WebGPU API exposure is not proof that an adapter is usable: Chromium can leave `
 
 Model backend labels are a runtime contract. Keep model selection, Local Mode routing, the local-model proof action, cancellation, and runtime provenance aligned for every server-routed local backend. Restrict local inference to loopback and never disguise an unreachable model as generated game code.
 
+Arcade's TurboAgent readiness check must probe only the saved loopback endpoint's model list. Do not reuse a broad runtime-status request that also checks remote providers, and never return the saved URL in status text.
+
+**Why:** Local Mode must not cause remote-provider probes, and the saved endpoint is user configuration that should remain private.
+
+**How to apply:** Keep Arcade's preflight on its dedicated local-only status path; report reachability, selected-model availability, and recovery steps without echoing the endpoint.
+
 **Why:** A catalogued TurboAgent model was being routed differently from Model Hub models: Local Mode chose the WebGPU path, and the local proof control did not recognize it.
 
 **How to apply:** For each local backend, test a real loopback inference request, refusal of a non-loopback URL, upstream cancellation, and the browser flow; do not count a mocked browser response as model-generation evidence.

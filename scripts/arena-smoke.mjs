@@ -3611,6 +3611,7 @@ let liveDrumDonorResponseBodyLength = 0;
         name: "qwen2.5:3b (TurboAgent)",
         provider: "local · smoke fixture",
         backend: "turboagent",
+        pollinationsId: "__turboagent__:qwen2.5%3A3b",
         kind: "text",
         requiresKey: false,
         requiresNetwork: false,
@@ -3676,6 +3677,26 @@ let liveDrumDonorResponseBodyLength = 0;
         }],
         agentBridge: { connected: false, name: null, lastPolledAt: null },
       }),
+    });
+  });
+  let turboAgentProbeFixture = {
+    status: "online",
+    detail: "TurboAgent is reachable and lists the selected model.",
+    recovery: "No recovery is needed.",
+  };
+  const turboAgentPreflightRequests = [];
+  await page.route("**/api/runtime/status", async route => {
+    const request = route.request().postDataJSON();
+    if (request.scope !== "arcade-turboagent") return route.fallback();
+    assert.equal(request.localOnly, true, "Arcade TurboAgent checks must stay in Local Mode");
+    assert.equal(request.modelId, "qwen2.5:3b", "preflight must check the selected model");
+    assert.equal(request.prompt, undefined, "TurboAgent preflight must never include the user's game prompt");
+    assert.equal(request.messages, undefined, "TurboAgent preflight must never include model messages");
+    turboAgentPreflightRequests.push(request);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ probe: turboAgentProbeFixture }),
     });
   });
   const historyFixture = {
@@ -3834,7 +3855,7 @@ let liveDrumDonorResponseBodyLength = 0;
   const preflightText = await modelPreflight.innerText();
   assert.match(
     preflightText,
-    /Checking whether this browser|No custom-game model route is ready|WebGPU is available|Ready: browser model|Route target: (local|remote)|provider connection is saved/,
+    /Checking whether this browser|No custom-game model route is ready|WebGPU is available|Ready: browser model|Route target: (local|remote)|provider connection is saved|TurboAgent answered and listed/,
     "Arcade should state the current model route before custom generation",
   );
   if (preflightText.includes("No custom-game model route is ready")) {
@@ -3855,6 +3876,84 @@ let liveDrumDonorResponseBodyLength = 0;
   assert(await page.getByRole("link", { name: "Open Model Hub" }).isVisible(), "offline Model Hub preflight must offer a direct recovery action");
   report.push("An offline selected Model Hub runtime is detected before prompt submission and links directly to runtime setup.");
   report.push("Arcade shows the selected model route or the missing WebGPU/provider/Model Hub requirement before custom prompts; blocked generation links to setup.");
+  const turboAgentPreflight = page.getByTestId("arcade-turboagent-preflight");
+  const waitForTurboAgentStatus = endpoint => page.waitForResponse(response => {
+    if (!response.url().endsWith("/api/runtime/status") || response.request().method() !== "POST") return false;
+    const body = response.request().postDataJSON();
+    return body.scope === "arcade-turboagent" && body.turboagent === endpoint;
+  });
+  const setTurboAgentProbeFixture = async (fixture, endpoint) => {
+    turboAgentProbeFixture = fixture;
+    await page.evaluate(({ endpoint }) => {
+      if (endpoint === null) localStorage.removeItem("af_url_turboagent");
+      else localStorage.setItem("af_url_turboagent", endpoint);
+      localStorage.setItem("af_local_mode", "1");
+      window.dispatchEvent(new Event("af-model-keys-updated"));
+      window.dispatchEvent(new Event("af-privacy"));
+    }, { endpoint });
+  };
+  await page.getByLabel("Game prompt").fill("Build a maze with a timer");
+  const onlineCheckResponse = waitForTurboAgentStatus("http://127.0.0.1:7860");
+  await setTurboAgentProbeFixture({
+    status: "online",
+    detail: "TurboAgent is reachable and lists the selected model.",
+    recovery: "No recovery is needed.",
+  }, "http://127.0.0.1:7860");
+  await page.getByLabel("Connected model source").selectOption(localHubModelId);
+  await onlineCheckResponse;
+  await turboAgentPreflight.getByText(/reachable and lists the selected model/).waitFor();
+  assert(
+    !(await turboAgentPreflight.innerText()).includes("127.0.0.1"),
+    "the saved TurboAgent URL must never appear in Arcade status text",
+  );
+  assert(turboAgentPreflightRequests.length > 0, "selecting TurboAgent must trigger its status-only check");
+
+  const offlineCheckResponse = waitForTurboAgentStatus("http://127.0.0.1:7861");
+  await setTurboAgentProbeFixture({
+    status: "offline",
+    detail: "The saved TurboAgent endpoint did not answer.",
+    recovery: "Start TurboAgent with `turboagent serve`, then retry.",
+  }, "http://127.0.0.1:7861");
+  await offlineCheckResponse;
+  await turboAgentPreflight.getByText(/endpoint did not answer/).waitFor();
+  assert(await page.getByRole("button", { name: "🎮 Create & play" }).isDisabled(),
+    "an unreachable TurboAgent must block custom game prompts");
+
+  const malformedCheckResponse = waitForTurboAgentStatus("not a URL");
+  await setTurboAgentProbeFixture({
+    status: "malformed",
+    detail: "The saved TurboAgent URL is invalid or is not a loopback address.",
+    recovery: "Use a local URL such as http://127.0.0.1:7860 in Optional free key boost, then save.",
+  }, "not a URL");
+  await malformedCheckResponse;
+  await turboAgentPreflight.getByText(/invalid or is not a loopback address/).waitFor();
+  assert(await page.getByRole("button", { name: "🎮 Create & play" }).isDisabled(),
+    "a malformed TurboAgent URL must block custom game prompts");
+
+  const missingModelResponse = waitForTurboAgentStatus("http://127.0.0.1:7862");
+  await setTurboAgentProbeFixture({
+    status: "model-unavailable",
+    detail: "TurboAgent is reachable, but it does not list the selected model.",
+    recovery: "Load the selected model in TurboAgent, or choose a model that its /v1/models list includes.",
+  }, "http://127.0.0.1:7862");
+  await missingModelResponse;
+  await turboAgentPreflight.getByText(/does not list the selected model/).waitFor();
+  assert(await page.getByRole("button", { name: "🎮 Create & play" }).isDisabled(),
+    "a reachable TurboAgent without the selected model must block custom prompts");
+  assert(
+    turboAgentPreflightRequests.every(request => request.localOnly === true),
+    "TurboAgent preflight must not probe a remote provider while Local Mode is enabled",
+  );
+  assert(
+    turboAgentPreflightRequests.every(request => request.prompt === undefined && request.messages === undefined),
+    "TurboAgent preflight must never send the user's game prompt",
+  );
+  report.push("Arcade checks only the saved local TurboAgent endpoint, distinguishes offline, malformed, and missing-model states, hides the URL, and blocks prompts until ready.");
+
+  await page.evaluate(() => {
+    localStorage.setItem("af_local_mode", "0");
+    window.dispatchEvent(new Event("af-privacy"));
+  });
   await page.getByLabel("Connected model source").selectOption("openai");
   let promptGenerationSeen = false;
   let localServerGenerationSeen = false;
@@ -4159,8 +4258,15 @@ let liveDrumDonorResponseBodyLength = 0;
   report.push("Arcade copy reports denied clipboard access honestly, confirms real copies, and downloads game source as HTML.");
   expectedModelId = localHubModelId;
   expectedLocalOnly = true;
-  await page.evaluate(() => localStorage.setItem("af_local_mode", "1"));
+  const localGenerationStatusCheck = waitForTurboAgentStatus("http://127.0.0.1:7860");
+  await setTurboAgentProbeFixture({
+    status: "online",
+    detail: "TurboAgent is reachable and lists the selected model.",
+    recovery: "No recovery is needed.",
+  }, "http://127.0.0.1:7860");
   await page.getByLabel("Connected model source").selectOption(localHubModelId);
+  await localGenerationStatusCheck;
+  await turboAgentPreflight.getByText(/reachable and lists the selected model/).waitFor();
   assert(
     await page.getByTestId("button-local-server-generation-check").isEnabled(),
     "the local-model proof button must recognize TurboAgent models",

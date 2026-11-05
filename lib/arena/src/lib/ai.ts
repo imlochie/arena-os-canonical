@@ -80,6 +80,95 @@ export interface GenerateDeps {
 
 export type { GenerateResult };
 
+export type TurboAgentProbe = {
+  status: "online" | "offline" | "model-unavailable" | "malformed" | "unconfigured";
+  detail: string;
+  recovery: string;
+};
+
+/** Check a saved TurboAgent endpoint without sending user content. */
+export async function probeTurboAgent(
+  fetchImpl: typeof fetch,
+  endpoint: string | null | undefined,
+  modelId: string,
+): Promise<TurboAgentProbe> {
+  const raw = endpoint?.trim() ?? "";
+  if (!raw) {
+    return {
+      status: "unconfigured",
+      detail: "No TurboAgent URL is saved in this browser.",
+      recovery: "Enter a local TurboAgent URL in Optional free key boost and save it.",
+    };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("invalid protocol");
+    if (url.username || url.password || url.search || url.hash) throw new Error("invalid endpoint format");
+    assertUrlDestination(url, "loopback");
+  } catch {
+    return {
+      status: "malformed",
+      detail: "The saved TurboAgent URL is invalid or is not a loopback address.",
+      recovery: "Use a local URL such as http://127.0.0.1:7860 in Optional free key boost, then save.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetchImpl(`${url.href.replace(/\/+$/, "")}/v1/models`, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      return {
+        status: "model-unavailable",
+        detail: "TurboAgent answered, but its model list could not be read.",
+        recovery: "Start or repair TurboAgent, then confirm it serves the OpenAI-compatible /v1/models route.",
+      };
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+    const rows = Array.isArray(record.data) ? record.data : Array.isArray(record.models) ? record.models : [];
+    const listedModels = rows.flatMap((row) => {
+      if (typeof row === "string") return [row];
+      if (!row || typeof row !== "object") return [];
+      const item = row as Record<string, unknown>;
+      const name = item.id ?? item.name ?? item.model;
+      return typeof name === "string" && name.trim() ? [name.trim()] : [];
+    });
+    const available = listedModels.some((listed) => listed.toLowerCase() === modelId.trim().toLowerCase());
+    if (!available) {
+      return {
+        status: "model-unavailable",
+        detail: "TurboAgent is reachable, but it does not list the selected model.",
+        recovery: "Load the selected model in TurboAgent, or choose a model that its /v1/models list includes.",
+      };
+    }
+    return {
+      status: "online",
+      detail: "TurboAgent is reachable and lists the selected model.",
+      recovery: "No recovery is needed.",
+    };
+  } catch {
+    return {
+      status: "offline",
+      detail: "The saved TurboAgent endpoint did not answer.",
+      recovery: "Start TurboAgent with `turboagent serve`, then retry.",
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const FALLBACK_NOTICE = (requested: string, reason: string) =>
   `\n\n---\n⚠️ **Fallback: Local Engine** — ${requested} was unavailable (${reason}). The answer above is deterministic offline output, **not** model output.`;
 
@@ -520,7 +609,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
         const reason = error instanceof Error ? error.message : "unreachable";
         return localEngineResult(
           localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
-            FALLBACK_NOTICE(`${model.name} (${url})`, reason),
+            FALLBACK_NOTICE(model.name, reason),
           "offline-fallback",
           ms(),
           { fallback: true, fallbackFrom: wanted, note: `TurboAgent unreachable: ${reason}` },

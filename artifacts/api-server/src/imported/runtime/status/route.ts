@@ -1,3 +1,4 @@
+import { probeTurboAgent } from "@workspace/arena/lib/ai";
 import { probeRuntimeStatus } from "@workspace/arena/lib/runtimeStatus";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,22 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {}
+  if (body?.scope === "arcade-turboagent") {
+    const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+    if (!modelId) {
+      return Response.json({
+        probe: {
+          status: "model-unavailable",
+          detail: "No selected TurboAgent model could be identified.",
+          recovery: "Choose a listed TurboAgent model in Arcade model setup.",
+        },
+      });
+    }
+    // This scope intentionally probes only the saved local endpoint. It must
+    // never run the remote-provider probes used by the general runtime page.
+    const probe = await probeTurboAgent(fetch, typeof body.turboagent === "string" ? body.turboagent : null, modelId);
+    return Response.json({ probe });
+  }
   const report = await probeRuntimeStatus(fetch, { turboagentUrl: body.turboagent });
   return Response.json(report);
 }

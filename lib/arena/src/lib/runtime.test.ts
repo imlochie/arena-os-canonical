@@ -13,7 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { generate } from "./ai";
+import { generate, probeTurboAgent } from "./ai";
 import {
   FREE_MODELS,
   LOCAL_CANVAS_ID,
@@ -194,6 +194,7 @@ test("level 1: TurboAgent failures fall back visibly, never silently", async () 
   assert.equal(unreachable.fallback, true);
   assert.equal(unreachable.fallbackFrom?.backend, "turboagent");
   assert.ok(unreachable.text.includes("**Fallback: Local Engine**"), "visible notice in the text");
+  assert.ok(!unreachable.text.includes("127.0.0.1:9"), "TurboAgent fallback text must not expose its saved URL");
 });
 
 // 7 ─────────────────────────────────────────────────────────────────────────
@@ -338,6 +339,41 @@ test("local LLM availability is runtime-detected (probes), not catalog claims", 
   const remoteDown = await probeRuntimeStatus(countingFetch({ fail: true }).impl, { turboagentUrl: null });
   const poll = remoteDown.probes.find((p) => p.backend === "pollinations")!;
   assert.equal(poll.status, "network-unavailable");
+});
+
+test("TurboAgent preflight checks only the local model endpoint without sending prompts", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const onlineFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    return new Response(JSON.stringify({
+      data: [{ id: "Qwen/Qwen2.5-7B-Instruct" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+
+  const online = await probeTurboAgent(onlineFetch, "http://127.0.0.1:7860", "Qwen/Qwen2.5-7B-Instruct");
+  assert.equal(online.status, "online");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:7860/v1/models");
+  assert.equal(calls[0].init?.method, "GET");
+  assert.equal(calls[0].init?.body, undefined, "preflight must not send a game prompt");
+
+  const unavailableModel = await probeTurboAgent(onlineFetch, "http://127.0.0.1:7860", "Qwen/Qwen2.5-32B-Instruct");
+  assert.equal(unavailableModel.status, "model-unavailable");
+  assert.match(unavailableModel.recovery, /Load the selected model/);
+
+  const offline = await probeTurboAgent((async () => {
+    throw new Error("connection refused");
+  }) as typeof fetch, "http://127.0.0.1:7860", "Qwen/Qwen2.5-7B-Instruct");
+  assert.equal(offline.status, "offline");
+  assert.match(offline.recovery, /turboagent serve/);
+
+  let malformedFetchCalled = false;
+  const malformed = await probeTurboAgent((async () => {
+    malformedFetchCalled = true;
+    throw new Error("must not fetch");
+  }) as typeof fetch, "not a URL", "Qwen/Qwen2.5-7B-Instruct");
+  assert.equal(malformed.status, "malformed");
+  assert.equal(malformedFetchCalled, false, "malformed endpoints must be rejected before any network request");
 });
 
 // UI helpers ────────────────────────────────────────────────────────────────
