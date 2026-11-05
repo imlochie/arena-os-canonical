@@ -28,6 +28,24 @@ function measureAudioBufferRmsDbfs(buffer: {
   const rms = Math.sqrt(sumSquares / sampleCount);
   return rms > 0 ? 20 * Math.log10(rms) : Number.NEGATIVE_INFINITY;
 }
+export const LIVE_STEM_PITCH_LOCK_SESSION_BUDGET_BYTES = 512 * 1024 * 1024;
+
+const MEBIBYTE = 1024 * 1024;
+
+export function estimateLiveStemPitchLockMemory(pcmBytes: number[]) {
+  const retainedBytes = pcmBytes.reduce((total, bytes) => total + Math.max(0, bytes), 0);
+  const migrationCopyBytes = Math.max(0, ...pcmBytes);
+  return {
+    retainedBytes,
+    // Budget both the active transfer copy and one decoded donor whose backing
+    // store has not been reclaimed yet by the browser.
+    peakBytes: retainedBytes + migrationCopyBytes * 2,
+  };
+}
+
+function audioBufferPcmBytes(buffer: AudioBuffer) {
+  return buffer.length * buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT;
+}
 
 export function normalizeSessionPlaybackRate(value: number): number {
   if (!Number.isFinite(value)) return 1;
@@ -50,6 +68,15 @@ export class LiveStemSwitchTimeoutError extends Error {
   }
 }
 
+export class LiveStemPitchMemoryBudgetError extends Error {
+  constructor(estimatedBytes: number) {
+    super(
+      `Pitch lock needs about ${(estimatedBytes / MEBIBYTE).toFixed(1)} MiB for this mix, above the ${LIVE_STEM_PITCH_LOCK_SESSION_BUDGET_BYTES / MEBIBYTE} MiB session limit. The current mix is unchanged; shorten or remove donor stems, then try again.`,
+    );
+    this.name = "LiveStemPitchMemoryBudgetError";
+  }
+}
+
 type Channel = {
   source: MediaElementAudioSourceNode;
   inputGain: GainNode;
@@ -62,6 +89,7 @@ type Layer = {
   keyShiftSemitones: number;
   keyShiftNode: AudioWorkletNode | null;
   buffer: AudioBuffer | null;
+  pcmBytes: number;
   duration: number;
   sampleRate: number;
   input: GainNode;
@@ -139,6 +167,7 @@ const MAX_PREFETCHED_ASSETS = 2;
 const MAX_PREFETCHED_ASSET_BYTES = 8 * 1024 * 1024;
 const WORKLET_READY_TIMEOUT_MS = 5_000;
 const workletModules = new WeakMap<AudioContext, Promise<void>>();
+const pitchLockBudgetOwners = new WeakMap<AudioContext, Set<LiveStemLayers>>();
 
 export function ensureLiveStemWorklet(context: AudioContext, workletUrl: string) {
   if (!context.audioWorklet || typeof AudioWorkletNode === "undefined") {
@@ -233,6 +262,7 @@ export class LiveStemLayers {
   private playbackRate = 1;
   private pitchPreserving = false;
   private disposed = false;
+  private pitchBudgetContext: AudioContext | null = null;
 
   constructor(
     private context: () => AudioContext,
@@ -279,9 +309,11 @@ export class LiveStemLayers {
       this.pitchPreserving = true;
       return;
     }
+    this.assertPitchLockMemoryBudget();
     const context = this.context();
     await ensureLiveStemWorklet(context, this.workletUrl);
     if (this.disposed) return;
+    this.assertPitchLockMemoryBudget();
     const migrated: Array<{ layer: Layer; source: AudioWorkletNode }> = [];
     for (const [id, layer] of this.layers) {
       if (layer.sourceMode === "worklet" && layer.source) {
@@ -290,6 +322,12 @@ export class LiveStemLayers {
       }
       const channel = this.channel(id);
       if (!channel || !layer.buffer) continue;
+      try {
+        this.assertPitchLockMemoryBudget();
+      } catch (error) {
+        for (const item of migrated) item.source.port.postMessage({ type: "pitch", enabled: false });
+        throw error;
+      }
       const media = channel.source.mediaElement;
       const offset = layer.duration > 0
         ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate
@@ -357,6 +395,55 @@ export class LiveStemLayers {
     for (const item of migrated) item.source.port.postMessage({ type: "pitch", enabled: true });
   }
 
+  private assertPitchLockMemoryBudget(additionalPcmBytes = 0) {
+    const context = this.context();
+    this.registerPitchBudgetOwner(context);
+    const owners = pitchLockBudgetOwners.get(context) ?? new Set([this]);
+    const retainedPcmBytes: number[] = [];
+    const migrationPcmBytes: number[] = [];
+    for (const owner of owners) {
+      for (const layer of [...owner.layers.values(), ...owner.retired]) {
+        retainedPcmBytes.push(owner.layerPcmBytes(layer));
+      }
+      if (owner === this) {
+        migrationPcmBytes.push(...[...owner.layers.values()]
+          .filter((layer) => layer.sourceMode !== "worklet" && layer.buffer)
+          .map((layer) => owner.layerPcmBytes(layer)));
+      }
+    }
+    if (additionalPcmBytes > 0) retainedPcmBytes.push(additionalPcmBytes);
+    const retainedEstimate = estimateLiveStemPitchLockMemory(retainedPcmBytes);
+    const peakBytes = retainedEstimate.retainedBytes
+      + Math.max(additionalPcmBytes, 0, ...migrationPcmBytes) * 2;
+    if (peakBytes > LIVE_STEM_PITCH_LOCK_SESSION_BUDGET_BYTES) {
+      throw new LiveStemPitchMemoryBudgetError(peakBytes);
+    }
+  }
+
+  private layerPcmBytes(layer: Layer) {
+    return layer.pcmBytes || (layer.buffer ? audioBufferPcmBytes(layer.buffer) : 0);
+  }
+
+  private registerPitchBudgetOwner(context: AudioContext) {
+    if (this.pitchBudgetContext === context) return;
+    if (this.pitchBudgetContext) {
+      pitchLockBudgetOwners.get(this.pitchBudgetContext)?.delete(this);
+    }
+    let owners = pitchLockBudgetOwners.get(context);
+    if (!owners) {
+      owners = new Set();
+      pitchLockBudgetOwners.set(context, owners);
+    }
+    owners.add(this);
+    this.pitchBudgetContext = context;
+  }
+
+  private unregisterPitchBudgetOwner() {
+    if (!this.pitchBudgetContext) return;
+    pitchLockBudgetOwners.get(this.pitchBudgetContext)?.delete(this);
+    this.pitchBudgetContext = null;
+  }
+
   private ramp(gain: GainNode, value: number) {
     const now = gain.context.currentTime;
     if (typeof gain.gain.cancelAndHoldAtTime === "function") {
@@ -404,10 +491,12 @@ export class LiveStemLayers {
     startFrame: number,
     playing: boolean,
     pitchPreserving: boolean,
+    additionalPcmBytes = 0,
   ) {
     const context = this.context();
     await ensureLiveStemWorklet(context, this.workletUrl);
     if (this.disposed) throw new DOMException("Live stem session was closed.", "AbortError");
+    if (additionalPcmBytes > 0) this.assertPitchLockMemoryBudget(additionalPcmBytes);
     const node = new AudioWorkletNode(context, "waveyard-live-stem", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -525,16 +614,22 @@ export class LiveStemLayers {
     if (media.paused || media.ended) return;
     if (!layer.buffer) throw new Error("The prepared live stem audio is no longer available.");
     if (this.pitchPreserving) {
+      const pcmBytes = audioBufferPcmBytes(layer.buffer);
+      const additionalPcmBytes = [...this.layers.values()].includes(layer) ? 0 : pcmBytes;
+      this.assertPitchLockMemoryBudget(additionalPcmBytes);
       const offset = layer.duration > 0
         ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate
         : 0;
-      const source = await this.createWorkletSource(layer.buffer, layer.input, offset, true, true);
+      const source = await this.createWorkletSource(
+        layer.buffer, layer.input, offset, true, true, additionalPcmBytes,
+      );
       if (this.disposed) {
         this.stopEngine(source, "worklet");
         return;
       }
       layer.source = source;
       layer.sourceMode = "worklet";
+      layer.pcmBytes = audioBufferPcmBytes(layer.buffer);
       this.discardRecent(this.preparedKey(layer.url, layer.tempoStretchRatio));
       layer.buffer = null;
       return;
@@ -960,6 +1055,7 @@ export class LiveStemLayers {
         throw new DOMException("Stem correction cancelled.", "AbortError");
       }
       const ctx = this.context();
+      this.registerPitchBudgetOwner(ctx);
       const channel = this.channel(id);
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
       const input = ctx.createGain();
@@ -974,6 +1070,7 @@ export class LiveStemLayers {
         keyShiftSemitones,
         keyShiftNode: replacementKeyNode,
         buffer: prepared.buffer,
+        pcmBytes: audioBufferPcmBytes(prepared.buffer),
         duration: prepared.buffer.duration,
         sampleRate: prepared.buffer.sampleRate,
         input,
@@ -1059,5 +1156,6 @@ export class LiveStemLayers {
     for (const cleanup of this.pendingEngineCleanups) cleanup();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
+    this.unregisterPitchBudgetOwner();
   }
 }

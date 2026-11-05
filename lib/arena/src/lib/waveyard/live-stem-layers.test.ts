@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
-import { LIVE_STEM_MIN_DONOR_RMS_DBFS, LIVE_STEM_SWITCH_TIMEOUT_MS, LiveStemLayers } from "./live-stem-layers";
+import {
+  LIVE_STEM_MIN_DONOR_RMS_DBFS,
+  LIVE_STEM_PITCH_LOCK_SESSION_BUDGET_BYTES,
+  LIVE_STEM_SWITCH_TIMEOUT_MS,
+  LiveStemLayers,
+} from "./live-stem-layers";
 import { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 const originalFetch = globalThis.fetch;
@@ -1389,6 +1394,111 @@ test("disposal during pitch-lock migration releases the worklet when it becomes 
     f.layers.dispose();
     if (originalAudioWorkletNode === undefined) delete globals.AudioWorkletNode;
     else globals.AudioWorkletNode = originalAudioWorkletNode;
+  }
+});
+
+test("an over-budget pitch-lock request leaves all four live donors audible", async () => {
+  const donorIds = ["vocals", "drums", "bass", "other"];
+  const fourMinuteStereoBuffer = {
+    duration: 240,
+    length: 48_000 * 240,
+    numberOfChannels: 2,
+    sampleRate: 48_000,
+  };
+  const f = fixture(undefined, undefined, fourMinuteStereoBuffer, donorIds);
+  globalThis.fetch = async () => response();
+  try {
+    for (const id of donorIds) await f.layers.replace(id, `/over-budget-${id}`);
+    const originalSources = [...f.sources];
+    assert.equal(originalSources.length, donorIds.length);
+    assert.ok(originalSources.every(source => !source.stopped && source.buffer === fourMinuteStereoBuffer));
+
+    await assert.rejects(f.layers.setPitchPreserving(true), error => {
+      assert.equal((error as Error).name, "LiveStemPitchMemoryBudgetError");
+      assert.match((error as Error).message, /above the 512 MiB session limit/);
+      assert.match((error as Error).message, /current mix is unchanged/);
+      return true;
+    });
+
+    assert.ok(
+      originalSources.every(source => !source.stopped && source.buffer === fourMinuteStereoBuffer),
+      "the existing audio-buffer sources stay active and retain their audio",
+    );
+    assert.equal(
+      (f.context as unknown as { audioWorklet?: unknown }).audioWorklet,
+      undefined,
+      "the budget rejection happens before worklet migration begins",
+    );
+    assert.ok(
+      6 * 240 * 48_000 * 2 * Float32Array.BYTES_PER_ELEMENT
+        > LIVE_STEM_PITCH_LOCK_SESSION_BUDGET_BYTES,
+      "four four-minute stereo donors plus migration overlap exceed the configured cap",
+    );
+  } finally {
+    f.layers.dispose();
+  }
+});
+
+test("a live pitch-locked session rejects a donor that would exceed its aggregate cap", async () => {
+  const f = fixture(undefined, undefined, {
+    duration: 600,
+    length: 48_000 * 600,
+    numberOfChannels: 2,
+    sampleRate: 48_000,
+  });
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.setPitchPreserving(true);
+    await assert.rejects(f.layers.replace("vocals", "/too-large-for-pitch-lock"), error => {
+      assert.equal((error as Error).name, "LiveStemPitchMemoryBudgetError");
+      assert.match((error as Error).message, /above the 512 MiB session limit/);
+      return true;
+    });
+    assert.equal(f.sources.length, 0, "an over-budget donor never replaces the active original audio");
+    assert.equal(f.channel.inputGain.gain.value, 1, "the current original mix remains unmuted");
+  } finally {
+    f.layers.dispose();
+  }
+});
+
+test("both decks sharing a session audio context share one pitch-lock memory cap", async () => {
+  const donorIds = ["vocals", "drums", "bass", "other"];
+  const threeMinuteStereoBuffer = {
+    duration: 180,
+    length: 48_000 * 180,
+    numberOfChannels: 2,
+    sampleRate: 48_000,
+  };
+  const f = fixture(undefined, undefined, threeMinuteStereoBuffer, donorIds);
+  const nextDeck = new LiveStemLayers(
+    () => f.context as unknown as AudioContext,
+    id => (f.channels.get(id) ?? null) as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
+    undefined,
+    undefined,
+    "/test/live-stem-worklet.js",
+  );
+  globalThis.fetch = async () => response();
+  try {
+    for (const id of donorIds) {
+      await f.layers.replace(id, `/current-${id}`);
+      await nextDeck.replace(id, `/next-${id}`);
+    }
+    const originalSources = [...f.sources];
+    assert.equal(originalSources.length, donorIds.length * 2);
+
+    await assert.rejects(f.layers.setPitchPreserving(true), error => {
+      assert.equal((error as Error).name, "LiveStemPitchMemoryBudgetError");
+      assert.match((error as Error).message, /above the 512 MiB session limit/);
+      return true;
+    });
+
+    assert.ok(
+      originalSources.every(source => !source.stopped && source.buffer === threeMinuteStereoBuffer),
+      "the current and next deck layers remain audible when their combined donors exceed the cap",
+    );
+  } finally {
+    f.layers.dispose();
+    nextDeck.dispose();
   }
 });
 

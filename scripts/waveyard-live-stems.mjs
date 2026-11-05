@@ -665,11 +665,20 @@ try {
           this.port.postMessage = (message, ...postArgs) => {
             if (message?.type === "load") {
               const channelCount = message.channels?.length ?? 0;
-              const firstChannel = channelCount > 0 ? new Float32Array(message.channels[0]) : new Float32Array();
+              const sampleLimit = channelCount > 0
+                ? Math.min(
+                    message.channels[0].byteLength / Float32Array.BYTES_PER_ELEMENT,
+                    Math.round(this.context.sampleRate * 0.25),
+                  )
+                : 0;
+              // Inspect only a short view; copying the full channel here would
+              // distort the PCM peak measured by this harness.
+              const firstChannel = channelCount > 0
+                ? new Float32Array(message.channels[0], 0, sampleLimit)
+                : new Float32Array();
               let firstCrossing = null;
               let lastCrossing = null;
               let crossingCount = 0;
-              const sampleLimit = Math.min(firstChannel.length, Math.round(this.context.sampleRate * 0.25));
               for (let index = 1; index < sampleLimit; index += 1) {
                 const previous = firstChannel[index - 1], current = firstChannel[index];
                 if (previous <= 0 && current > 0) {

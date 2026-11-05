@@ -48,6 +48,7 @@
 - [Partial task updates](task-update-failures.md) — task descriptions can persist despite dependency-update errors; verify before retrying and never equate edits with archival.
 - [Task queue direction](task-queue-ownership.md) — follow existing priorities, avoid duplicate work, and don't add tasks without clear direction.
 - [Waveyard preview memory budgets](waveyard-preview-memory-budget.md) — budget using the live AudioContext rate, and make long-stem fixtures exceed limits at 44.1 and 48 kHz.
+- [Waveyard pitch-lock memory](waveyard-pitch-lock-memory.md) — include retained PCM, migration copies, and unreclaimed buffers in one session-wide pitch-lock estimate.
 - [Waveyard broker drain lifecycle](waveyard-broker-drain.md) — each drain call must observe newly submitted work, not reuse a fulfilled wait.
 - [Waveyard compact listener](waveyard-compact-listener.md) — keep compact controls in the shared session engine; do not mount a second deck for dock-only actions.
 - [Waveyard Studio async edits](waveyard-studio-async-edits.md) — merge delayed mutation responses into the latest same-session remix and test canonical state through undo, not just visible controls.
