@@ -30,6 +30,10 @@ export type AnalysisResult = {
   beatConfidence: number | null;
 };
 
+const TEMPO_WINDOW_MS = 30_000;
+const TEMPO_WINDOW_OVERLAP_MS = 15_000;
+const TEMPO_WINDOW_AGREEMENT = 0.04;
+
 export async function decodeMonoPcm(path: string, maxSeconds = 900): Promise<Float32Array> {
   const dir = await mkdtemp(join(tmpdir(), "arena-analysis-"));
   try {
@@ -106,6 +110,74 @@ export function estimateBpm(envelope: Float32Array, frameMs: number): { bpm: num
   if (bpm < 40 || bpm > 300) return { bpm: null, confidence: null };
   const confidence = Math.max(0, Math.min(1, best.score));
   return { bpm, confidence: confidence < 0.05 ? null : Math.round(confidence * 1000) / 1000 };
+}
+
+function foldTempoForMixing(bpm: number): number | null {
+  let folded = bpm;
+  while (folded < 70 && folded <= 150) folded *= 2;
+  while (folded > 180 && folded >= 80) folded /= 2;
+  return folded >= 70 && folded <= 180 ? Math.round(folded * 1000) / 1000 : null;
+}
+
+/**
+ * Aggregate local tempo readings instead of letting one autocorrelation peak
+ * across an entire song dictate the session BPM. Half/double-time readings
+ * are folded into the same DJ tempo range; readings that disagree reduce the
+ * evidence score rather than being presented as a confident global tempo.
+ */
+export function estimateTrackTempo(
+  envelope: Float32Array,
+  frameMs: number,
+): { bpm: number | null; confidence: number | null } {
+  if (!Number.isFinite(frameMs) || frameMs <= 0 || envelope.length === 0) {
+    return { bpm: null, confidence: null };
+  }
+  const windowFrames = Math.max(1, Math.round(TEMPO_WINDOW_MS / frameMs));
+  if (envelope.length <= windowFrames) {
+    const estimate = estimateBpm(envelope, frameMs);
+    const bpm = estimate.bpm === null ? null : foldTempoForMixing(estimate.bpm);
+    return { bpm, confidence: bpm === null ? null : estimate.confidence };
+  }
+
+  const stepFrames = Math.max(1, Math.round(TEMPO_WINDOW_OVERLAP_MS / frameMs));
+  const starts: number[] = [];
+  for (let start = 0; start + windowFrames <= envelope.length; start += stepFrames) starts.push(start);
+  const finalStart = envelope.length - windowFrames;
+  if (finalStart - (starts.at(-1) ?? 0) >= Math.floor(windowFrames / 2)) starts.push(finalStart);
+
+  const readings = starts.flatMap((start) => {
+    const estimate = estimateBpm(envelope.subarray(start, start + windowFrames), frameMs);
+    if (estimate.bpm === null || estimate.confidence === null) return [];
+    const bpm = foldTempoForMixing(estimate.bpm);
+    return bpm === null ? [] : [{ bpm, confidence: estimate.confidence }];
+  });
+  if (readings.length === 0) return { bpm: null, confidence: null };
+
+  const clusters = readings.map((seed) =>
+    readings.filter((reading) => Math.abs(reading.bpm - seed.bpm) / seed.bpm <= TEMPO_WINDOW_AGREEMENT),
+  );
+  const cluster = clusters.sort((left, right) =>
+    right.length - left.length
+      || right.reduce((sum, reading) => sum + reading.confidence, 0)
+        - left.reduce((sum, reading) => sum + reading.confidence, 0),
+  )[0];
+  const ordered = [...cluster].sort((left, right) => left.bpm - right.bpm);
+  const weight = ordered.reduce((sum, reading) => sum + Math.max(0.01, reading.confidence), 0);
+  let cumulativeWeight = 0;
+  let bpm = ordered[0].bpm;
+  for (const reading of ordered) {
+    cumulativeWeight += Math.max(0.01, reading.confidence);
+    if (cumulativeWeight >= weight / 2) {
+      bpm = reading.bpm;
+      break;
+    }
+  }
+  const averageConfidence = cluster.reduce((sum, reading) => sum + reading.confidence, 0) / cluster.length;
+  const support = cluster.length / readings.length;
+  return {
+    bpm: Math.round(bpm * 1000) / 1000,
+    confidence: Math.round(Math.max(0, Math.min(1, averageConfidence * support)) * 1000) / 1000,
+  };
 }
 
 /** Beat grid: phase of the envelope against the detected period. */
@@ -219,7 +291,7 @@ export function keyFromChroma(chroma: number[]): { key: string | null; confidenc
 
 export function analysePcm(pcm: Float32Array): AnalysisResult {
   const { envelope, frameMs } = onsetEnvelope(pcm);
-  const { bpm, confidence: bpmConfidence } = estimateBpm(envelope, frameMs);
+  const { bpm, confidence: bpmConfidence } = estimateTrackTempo(envelope, frameMs);
   let beatGridMs: number[] | null = null;
   let beatConfidence: number | null = null;
   if (bpm !== null) {
@@ -245,13 +317,15 @@ function normaliseConfidence(value: number): number {
   return Math.max(0, Math.min(1, Math.round(value * 1000) / 1000));
 }
 
-/** 55% BPM confidence plus 45% regularity of ordered source beat timing. (worker port) */
-export function beatConfidenceFromGrid(bpmConfidence: number | null, beatGridMs: number[]): number | null {
+/** Combine tempo evidence with the measured audio-to-grid phase fit. */
+export function beatConfidenceFromGrid(
+  bpmConfidence: number | null,
+  beatGridMs: number[],
+  alignmentConfidence: number | null,
+): number | null {
   if (beatGridMs.length < 3) return 0;
-  const intervals = beatGridMs.slice(1).map((value, index) => value - beatGridMs[index]);
-  const mean = intervals.reduce((total, value) => total + value, 0) / intervals.length;
-  if (mean <= 0) return 0;
-  const variance = intervals.reduce((total, value) => total + (value - mean) ** 2, 0) / intervals.length;
-  const regularity = Math.max(0, Math.min(1, 1 - (4 * Math.sqrt(variance)) / mean));
-  return normaliseConfidence(0.55 * Math.max(0, Math.min(1, bpmConfidence ?? 0)) + 0.45 * regularity);
+  if (alignmentConfidence === null || !Number.isFinite(alignmentConfidence)) return null;
+  const tempoEvidence = Math.max(0, Math.min(1, bpmConfidence ?? 0));
+  const gridEvidence = Math.max(0, Math.min(1, alignmentConfidence));
+  return normaliseConfidence(0.55 * tempoEvidence + 0.45 * gridEvidence);
 }

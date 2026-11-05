@@ -31,7 +31,7 @@ export default function SessionKeyMatchingControls({
   onChange: (mode: SessionKeyMode) => void;
 }) {
   const harmonicMode = mode === "camelot" || mode === "match";
-  const unavailable = harmonicMode && (!supported || !leadKey || !complementKey);
+  const unavailable = harmonicMode && (!supported || !leadKey || !complementKey || match.semitones === null);
   const status = error
     ?? (!hasComplement
       ? "Choose a next track to set its key."
@@ -60,7 +60,7 @@ export default function SessionKeyMatchingControls({
               type="button"
               className={mode === option.value ? "is-selected" : ""}
               aria-pressed={mode === option.value}
-              disabled={busy || !hasComplement || (requiresKeys && (!supported || !leadKey || !complementKey))}
+              disabled={busy || !hasComplement || (requiresKeys && (!supported || !leadKey || !complementKey || match.semitones === null))}
               data-testid={`session-key-mode-${option.value}`}
               onClick={() => onChange(option.value)}
             >

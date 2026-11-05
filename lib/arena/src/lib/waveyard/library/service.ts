@@ -22,7 +22,7 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 
 import { db, pool } from "@workspace/db";
-import { currentKeyConfidence } from "../types/analysis-provenance";
+import { currentBeatConfidence, currentBpmConfidence, currentKeyConfidence } from "../types/analysis-provenance";
 import { assertExpectedOrder, withOrderingLock, type OrderingTransaction } from "./ordering";
 export { OrderingConflictError } from "./ordering";
 import {
@@ -260,8 +260,8 @@ async function analysisBySource(sourceAssetIds: string[]): Promise<Map<string, T
     {
       status: row.status,
       bpm: row.bpm,
-      bpmConfidence: row.bpmConfidence,
-      beatConfidence: row.beatConfidence,
+      bpmConfidence: currentBpmConfidence(row),
+      beatConfidence: currentBeatConfidence(row),
       keyConfidence: currentKeyConfidence(row),
       musicalKey: row.musicalKey,
     },
@@ -625,8 +625,8 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
     analysis: analysis === undefined ? null : {
       status: analysis.status,
       bpm: analysis.bpm,
-      bpmConfidence: analysis.bpmConfidence,
-      beatConfidence: analysis.beatConfidence,
+      bpmConfidence: currentBpmConfidence(analysis),
+      beatConfidence: currentBeatConfidence(analysis),
       keyConfidence: currentKeyConfidence(analysis),
       musicalKey: analysis.musicalKey,
     },

@@ -75,11 +75,11 @@ For automatic stem swaps, treat a near-2:1 BPM estimate as a possible half/doubl
 
 **How to apply:** Keep the automatic tempo policy separate from the engine's wider processing limits, and verify that the picker and saved-swap status clearly distinguish native pace from a true tempo stretch.
 
-Treat BPM confidence and beat-grid confidence as separate decisions: confident BPM estimates may support a modest tempo match, but phase and section alignment require confident beat grids. Weak BPM evidence keeps the donor at native pace; weak beat evidence suppresses sync claims without unnecessarily disabling a safe tempo match.
+Treat full-track tempo as a consensus across local windows, not one global autocorrelation peak. Fold clear half/double-time readings into a common DJ range, lower confidence when windows disagree, and treat generated grid regularity as no evidence of audio alignment. Only current-version tempo confidence may authorize automatic stretching; beat alignment needs measured onset-to-grid fit, and stale beat grids must not drive automatic cues.
 
-**Why:** Requiring beat-grid confidence for tempo changes prevented unsafe warps, but also rejected tempo evidence that can be reliable even when phase timing is not. The user needs both musical usefulness and honest sync status.
+**Why:** Real uploaded mixes produced confident-looking but contradictory local tempo readings, including half-time and double-time peaks. A grid derived from an estimate is evenly spaced by construction, so regularity alone can falsely imply synchronization.
 
-**How to apply:** Keep separate confidence checks in swap logic and labels, propagate both metrics through library/session responses, and test high-BPM/low-beat cases separately from low-BPM cases.
+**How to apply:** Keep BPM and beat-fit confidence separate in swap logic and labels; version-gate both metrics and grids at session/library boundaries; preserve native donor pace when current tempo evidence is weak.
 
 Key confidence must measure both profile fit and the margin over competing key profiles; a strong single chord can fit several keys and is not a confident song-key estimate.
 

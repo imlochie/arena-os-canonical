@@ -1,4 +1,12 @@
 export const SESSION_DJ_LOOP_LENGTHS = [1, 2, 4, 8] as const;
+export const SESSION_MIN_BEAT_CONFIDENCE = 0.5;
+
+export function hasReliableSessionBeatEvidence(value: unknown): boolean {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value <= 1
+    && value >= SESSION_MIN_BEAT_CONFIDENCE;
+}
 
 export type SessionBeatLoop = {
   start: number;
@@ -13,8 +21,12 @@ export function nextSessionBeatLoop(
   beatGridMs: readonly number[] | null | undefined,
   positionSeconds: number,
   beats: number,
+  beatConfidence: number | null | undefined,
 ): SessionBeatLoop | null {
-  if (!beatGridMs || !Number.isFinite(positionSeconds) || positionSeconds < 0
+  if (!hasReliableSessionBeatEvidence(beatConfidence)
+    || !beatGridMs
+    || !Number.isFinite(positionSeconds)
+    || positionSeconds < 0
     || !Number.isInteger(beats) || beats < 1) return null;
 
   const grid = beatGridMs.filter((value) => Number.isFinite(value) && value >= 0);

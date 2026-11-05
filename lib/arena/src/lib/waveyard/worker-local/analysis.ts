@@ -185,7 +185,9 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
     const beatGridMs = raw.beatGridMs == null ? null : normaliseBeatGrid(raw.beatGridMs, source.durationSeconds);
     if (raw.beatGridMs != null && beatGridMs === null)
       throw new Error("Desktop analysis produced an invalid beat grid for this source.");
-    const beatConfidence = beatGridMs == null ? raw.beatConfidence : beatConfidenceFromGrid(raw.bpmConfidence, beatGridMs);
+    const beatConfidence = beatGridMs == null
+      ? raw.beatConfidence
+      : beatConfidenceFromGrid(raw.bpmConfidence, beatGridMs, raw.beatConfidence);
     if (!beatGridMs && beatConfidence !== null)
       throw new Error("Desktop analysis reported beat confidence without a beat grid.");
     const analyzedAt = new Date();

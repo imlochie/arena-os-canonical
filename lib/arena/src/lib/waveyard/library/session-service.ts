@@ -19,7 +19,12 @@ import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
 import { extname } from "node:path";
 
 import { db } from "@workspace/db";
-import { currentKeyConfidence } from "../types/analysis-provenance";
+import {
+  currentBeatConfidence,
+  currentBpmConfidence,
+  currentKeyConfidence,
+  isCurrentDesktopAnalysis,
+} from "../types/analysis-provenance";
 import {
   listenSessionSwaps,
   listenSessions,
@@ -1388,9 +1393,10 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       sections: null,
     };
   }
+  const analysisIsCurrent = isCurrentDesktopAnalysis(analysis);
   let beatGridMs: number[] | null = null;
   try {
-    const parsed = JSON.parse(analysis.beatGrid ?? "null");
+    const parsed = JSON.parse(analysisIsCurrent ? analysis.beatGrid ?? "null" : "null");
     if (Array.isArray(parsed)) beatGridMs = parsed.filter((beat) => Number.isSafeInteger(beat));
   } catch {
     beatGridMs = null;
@@ -1479,8 +1485,8 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
   }
   return {
     bpm: analysis.bpm,
-    bpmConfidence: analysis.bpmConfidence,
-    beatConfidence: analysis.beatConfidence,
+    bpmConfidence: currentBpmConfidence(analysis),
+    beatConfidence: currentBeatConfidence(analysis),
     keyConfidence: currentKeyConfidence(analysis),
     musicalKey: analysis.musicalKey,
     beatGridMs,

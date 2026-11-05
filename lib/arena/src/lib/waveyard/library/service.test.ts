@@ -23,6 +23,7 @@ import { Readable } from "node:stream";
 import { and, asc, eq } from "drizzle-orm";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import { DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 import { getStorage } from "../storage";
 import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
 import { restoreVerifiedAudioBackupZip } from "./audio-restore";
@@ -1311,7 +1312,7 @@ test("analysis surfaces tempo and key when the engine completed it", async () =>
     status: "complete",
     stage: "complete",
     analysisEngine: "arena-js-dsp",
-    analysisEngineVersion: "test",
+    analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
     sourceChecksumSha256: "checksum",
     idempotencyKey: `analysis-test:${sourceId}`,
     bpm: 128.5,
@@ -2932,7 +2933,7 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
     status: "complete",
     stage: "complete",
     analysisEngine: "arena-js-dsp",
-    analysisEngineVersion: "test",
+    analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
     sourceChecksumSha256: "checksum-b",
     idempotencyKey: `analysis-test-b:${sourceB}`,
     bpm: 129,

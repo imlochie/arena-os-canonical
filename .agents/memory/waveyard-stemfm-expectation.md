@@ -27,6 +27,12 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **How to apply:** Separate channel-identity diagnostics from musical-quality claims. Show the source stems and an uninterrupted swap/restore, verify retained channels are audible rather than merely advancing, and do not claim STEM.FM parity without the paired-song controls, timing and harmonic behaviour working together.
 
+**Stem.fm research boundary (checked 2026-11-05):** its public site describes real-time stem control, but the DAW endpoint returned 401 without a session. Public pages do not establish the product's internal timing or audio algorithms.
+
+**Why:** the supplied mobile screenshots show concrete user-facing controls, while the authenticated app could not be inspected; assuming hidden implementation details would repeat unsupported parity claims.
+
+**How to apply:** Treat the user's screenshots and accessible public pages as evidence of visible workflows. Separate those observations from unverified internals, and do not claim algorithmic equivalence without direct evidence.
+
 **Device-sync privacy rule:** Prefer QR-paired, direct laptop-to-device live-session sync; do not depend on paid cloud storage. Any optional cloud relay must be free and end-to-end encrypted. The fixed local-owner identity is not an access-control boundary.
 
 **Why:** The user wants to scan a QR code to sync the live session, with the laptop hosting it or a free service as fallback, and prioritizes personal privacy.

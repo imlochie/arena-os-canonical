@@ -15,7 +15,11 @@ import {
   SessionAudioAssetPool,
   type SessionAudioMediaLease,
 } from "@workspace/arena/lib/waveyard/useStemTransport";
-import { nextSessionBeatLoop, SESSION_DJ_LOOP_LENGTHS } from "@workspace/arena/lib/waveyard/session-dj-controls";
+import {
+  hasReliableSessionBeatEvidence,
+  nextSessionBeatLoop,
+  SESSION_DJ_LOOP_LENGTHS,
+} from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
@@ -592,7 +596,12 @@ function SessionDeck({
       setSelectedLoopBeats(null);
       return;
     }
-    const range = nextSessionBeatLoop(item?.analysis?.beatGridMs, transport.position, beats);
+    const range = nextSessionBeatLoop(
+      item?.analysis?.beatGridMs,
+      transport.position,
+      beats,
+      item?.analysis?.beatConfidence,
+    );
     if (!range) return;
     transport.setLoop({ enabled: true, ...range });
     setSelectedLoopBeats(beats);
@@ -1061,7 +1070,12 @@ function SessionDeck({
               <div className="wy-dj-loop-buttons" role="group" aria-label="Beat loops">
                 <span>Loop</span>
                 {SESSION_DJ_LOOP_LENGTHS.map((beats) => {
-                  const range = nextSessionBeatLoop(item.analysis?.beatGridMs, transport.position, beats);
+                  const range = nextSessionBeatLoop(
+                    item.analysis?.beatGridMs,
+                    transport.position,
+                    beats,
+                    item.analysis?.beatConfidence,
+                  );
                   return (
                     <button
                       key={beats}
@@ -1105,9 +1119,11 @@ function SessionDeck({
                 Cue {formatClock(cuePosition)}
               </button>
               <small>
-                {item.analysis?.beatGridMs?.length
-                  ? "Loops enter on the next analyzed beat."
-                  : "Analyze this track to enable beat loops."}
+                {hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)
+                  ? "Loops enter on the next measured beat."
+                  : item.analysis?.beatGridMs?.length
+                    ? "Beat evidence is low confidence; beat loops are disabled."
+                    : "Analyze this track to enable beat loops."}
               </small>
             </div>
           )}
@@ -1224,9 +1240,9 @@ function SessionDeck({
                       onChange={(event) => onSnapChange(event.target.value as PerformanceSnap)}
                     >
                       <option value="off">Off</option>
-                      <option value="quarter">¼ beat</option>
-                      <option value="half">½ beat</option>
-                      <option value="beat">Beat</option>
+                      <option value="quarter" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>¼ beat</option>
+                      <option value="half" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>½ beat</option>
+                      <option value="beat" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>Beat</option>
                       <option value="bar" disabled>Bar unavailable</option>
                     </select>
                   </label>
@@ -1245,6 +1261,9 @@ function SessionDeck({
                       {pendingPerformanceLabel}
                       <button type="button" onClick={onCancelPendingPerformance}>Cancel</button>
                     </span>
+                  )}
+                  {performanceSettings.snap !== "off" && !hasReliableSessionBeatEvidence(item.analysis?.beatConfidence) && (
+                    <span className="wy-performance-note">Snap needs a beat grid with measured confidence of at least 0.50.</span>
                   )}
                   {performanceSettings.snap === "bar" && (
                     <span className="wy-performance-note">Bar snap needs verified downbeat data.</span>
@@ -1702,7 +1721,7 @@ export default function SessionExperience({
   const leadEffectiveKey = currentItem
     ? shiftMusicalKey(currentItem.analysis?.musicalKey, currentKeyShift)
     : null;
-  const nextKeyMatch = nextItem
+  const resolvedNextKeyMatch = nextItem
     ? resolveSessionKeyMatch(keyMode, leadEffectiveKey, nextItem.analysis?.musicalKey)
     : {
         semitones: null,
@@ -1710,6 +1729,24 @@ export default function SessionExperience({
         targetKey: null,
         reason: "Choose a next track to calculate a key match.",
       };
+  const nextKeyEvidence = nextItem
+    ? keyCompatibilityEvidence(
+        leadEffectiveKey,
+        currentItem?.analysis?.keyConfidence,
+        nextItem.analysis?.musicalKey ?? null,
+        nextItem.analysis?.keyConfidence,
+      )
+    : null;
+  const nextKeyMatch = nextItem
+    && (keyMode === "camelot" || keyMode === "match")
+    && nextKeyEvidence?.confidenceLevel !== "confident"
+    ? {
+        ...resolvedNextKeyMatch,
+        semitones: null,
+        targetKey: null,
+        reason: "Key analysis confidence is too low for automatic pitch correction; preserve source pitch.",
+      }
+    : resolvedNextKeyMatch;
   const nextKeyShift = nextKeyMatch.semitones ?? 0;
   const currentSwapSetup = useMemo(
     () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds, keyMode, currentKeyShift),
@@ -1743,15 +1780,27 @@ export default function SessionExperience({
       return;
     }
     const matchingMode = requestedMode === "camelot" || requestedMode === "match";
+    const requestedEvidence = keyCompatibilityEvidence(
+      leadEffectiveKey,
+      currentItem.analysis?.keyConfidence,
+      nextItem.analysis?.musicalKey ?? null,
+      nextItem.analysis?.keyConfidence,
+    );
     const requestedMatch = resolveSessionKeyMatch(
       requestedMode,
-      currentItem.analysis?.musicalKey,
+      leadEffectiveKey,
       nextItem.analysis?.musicalKey,
     );
-    if (matchingMode && (!liveKeyMatchingAvailable || requestedMatch.semitones === null)) {
+    if (matchingMode && (
+      !liveKeyMatchingAvailable
+      || requestedMatch.semitones === null
+      || requestedEvidence.confidenceLevel !== "confident"
+    )) {
       setKeyMatchError(!liveKeyMatchingAvailable
         ? "Live key matching needs AudioWorklet support in a secure browser context."
-        : requestedMatch.reason);
+        : requestedEvidence.confidenceLevel !== "confident"
+          ? "Key matching needs confident analysis for both tracks; no pitch shift was applied."
+          : requestedMatch.reason);
       return;
     }
 
@@ -1794,7 +1843,7 @@ export default function SessionExperience({
     } finally {
       setKeyMatchBusy(false);
     }
-  }, [activeDeck, currentItem, keyMatchBusy, keyShiftByTrack, liveKeyMatchingAvailable, nextItem, persistState]);
+  }, [activeDeck, currentItem, keyMatchBusy, keyShiftByTrack, leadEffectiveKey, liveKeyMatchingAvailable, nextItem, persistState]);
   const activeSwaps = currentSwapSetup.swaps;
   const activeSwapTempoStretchRatios = currentSwapSetup.tempoStretchRatios;
 
@@ -2090,14 +2139,20 @@ export default function SessionExperience({
     const restoring = action.kind === "restore"
       || (action.kind === "isolate" && settings.isolatedStem === action.stem)
       || (action.kind === "mute" && (currentLevels[action.stem] ?? 1) <= 0.0001);
-    const shouldSnap = deckIndex === activeDeck
+    const wantsSnap = deckIndex === activeDeck
       && item.id === currentIdRef.current
       && deck?.transport.playing === true
-      && settings.snap !== "off"
+      && settings.snap !== "off";
+    const beatEvidenceReliable = hasReliableSessionBeatEvidence(item.analysis?.beatConfidence);
+    const shouldSnap = wantsSnap
+      && beatEvidenceReliable
       && !(restoring && settings.instantRestore);
     if (!shouldSnap) {
       cancelPendingPerformance();
       applyPerformanceActions(item, deckIndex, [action]);
+      if (wantsSnap && !beatEvidenceReliable) {
+        setStatus("Beat snap unavailable: this track’s measured beat confidence is low. The stem change was applied immediately.");
+      }
       return;
     }
 

@@ -15,6 +15,7 @@ import {
   chromaFromPcm,
   estimateBeatGrid,
   estimateBpm,
+  estimateTrackTempo,
   keyFromChroma,
   normaliseBeatGrid,
   onsetEnvelope,
@@ -23,6 +24,8 @@ import {
 } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
   currentKeyConfidence,
+  currentBpmConfidence,
+  currentBeatConfidence,
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
 } from "../types/analysis-provenance";
@@ -44,6 +47,19 @@ function clickTrack(bpm: number, seconds: number): Float32Array {
     const phase = i % period;
     if (phase < RATE * 0.01) {
       samples[i] = 0.9 * Math.sin((2 * Math.PI * 1000 * i) / RATE) * (1 - phase / (RATE * 0.01));
+    }
+  }
+  return samples;
+}
+
+function accentedClickTrack(bpm: number, seconds: number): Float32Array {
+  const samples = new Float32Array(Math.round(seconds * RATE));
+  const period = (60 / bpm) * RATE;
+  for (let i = 0; i < samples.length; i += 1) {
+    const phase = i % period;
+    const accent = Math.floor(i / period) % 2 === 0 ? 0.9 : 0.25;
+    if (phase < RATE * 0.01) {
+      samples[i] = accent * Math.sin((2 * Math.PI * 1000 * i) / RATE) * (1 - phase / (RATE * 0.01));
     }
   }
   return samples;
@@ -84,6 +100,28 @@ test("estimateBeatGrid returns evenly spaced beats near the true tempo", () => {
   }
 });
 
+test("track tempo folds half-time readings and reports disagreement honestly", () => {
+  const pcm = accentedClickTrack(86, 90);
+  const { envelope, frameMs } = onsetEnvelope(pcm);
+  const raw = estimateBpm(envelope, frameMs);
+  const full = estimateTrackTempo(envelope, frameMs);
+  assert.ok(raw.bpm !== null && raw.bpm < 60, `the sparse accent pattern should expose the half-time ambiguity, got ${raw.bpm}`);
+  assert.ok(full.bpm !== null && Math.abs(full.bpm - 86) < 3, `track tempo ${full.bpm} should stay near the audible pulse`);
+  assert.ok((full.confidence ?? 0) > 0.5, "a stable repeated pulse should retain useful confidence");
+
+  const mixed = clickTrack(86, 90);
+  for (let index = Math.round(30 * RATE); index < mixed.length; index += Math.round(30 * RATE)) {
+    const end = Math.min(mixed.length, index + Math.round(30 * RATE));
+    const slower = clickTrack(104, (end - index) / RATE);
+    mixed.set(slower, index);
+    index = end - Math.round(30 * RATE);
+  }
+  const mixedEnvelope = onsetEnvelope(mixed);
+  const mixedEstimate = estimateTrackTempo(mixedEnvelope.envelope, mixedEnvelope.frameMs);
+  assert.ok(mixedEstimate.bpm !== null);
+  assert.ok((mixedEstimate.confidence ?? 1) < (full.confidence ?? 0), "tempo changes must lower global confidence");
+});
+
 test("silence produces honest nulls, never invented values", () => {
   const result = analysePcm(new Float32Array(RATE * 5));
   assert.equal(result.bpm, null);
@@ -122,16 +160,21 @@ test("key confidence separates clear tonal evidence from ambiguous chords", () =
 });
 
 test("legacy key confidence is not trusted under the revised key-analysis version", () => {
-  assert.equal(currentKeyConfidence({
+  const current = {
     analysisEngine: DESKTOP_ANALYSIS_ENGINE,
     analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+  };
+  assert.equal(currentKeyConfidence({
+    ...current,
     keyConfidence: 0.73,
   }), 0.73);
   assert.equal(currentKeyConfidence({
-    analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+    ...current,
     analysisEngineVersion: "1.0.0",
     keyConfidence: 0.98,
   }), null);
+  assert.equal(currentBpmConfidence({ ...current, analysisEngineVersion: "1.1.0", bpmConfidence: 0.95 }), null);
+  assert.equal(currentBeatConfidence({ ...current, analysisEngineVersion: "1.1.0", beatConfidence: 0.95 }), null);
 });
 
 test("normaliseBeatGrid rejects unordered and out-of-range grids", () => {
@@ -142,10 +185,13 @@ test("normaliseBeatGrid rejects unordered and out-of-range grids", () => {
   assert.deepEqual(normaliseBeatGrid("nope" as unknown, 2), null);
 });
 
-test("beatConfidenceFromGrid rewards regular grids", () => {
+test("beat confidence uses measured audio alignment, not generated-grid regularity", () => {
   const regular: number[] = Array.from({ length: 40 }, (_, i) => i * 500);
-  const jittered: number[] = Array.from({ length: 40 }, (_, i) => i * 500 + (i % 2 === 0 ? 0 : 90));
-  assert.ok(beatConfidenceFromGrid(0.8, regular)! > beatConfidenceFromGrid(0.8, jittered)!);
+  const weakAlignment = beatConfidenceFromGrid(0.8, regular, 0.05);
+  const strongAlignment = beatConfidenceFromGrid(0.8, regular, 0.9);
+  assert.ok(weakAlignment !== null && weakAlignment < 0.5, "a perfectly spaced generated grid cannot mask weak audio evidence");
+  assert.ok(strongAlignment !== null && strongAlignment > weakAlignment);
+  assert.equal(beatConfidenceFromGrid(0.8, regular, null), null, "missing alignment evidence stays unknown");
 });
 
 test("decodeMonoPcm decodes real audio through bundled ffmpeg (or PATH)", async () => {
