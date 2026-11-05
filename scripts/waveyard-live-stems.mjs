@@ -1718,10 +1718,15 @@ try {
           tempoMatchApplied: typeof timing?.tempoMatchMs === "number" && timing.tempoMatchMs > 0,
         };
         if (swapDetails.expectedTempoStretchRatio !== null) {
-          assert.ok(swapDetails.tempoMatchApplied,
-            `compatible tempos must run pitch-preserving tempo matching: ${JSON.stringify(swapDetails)}`);
           assert.ok(Math.abs((timing?.tempoStretchRatio ?? 0) - swapDetails.expectedTempoStretchRatio) < 0.02,
             `the swap applies the expected BPM ratio: ${JSON.stringify(swapDetails)}`);
+          if (Math.abs(swapDetails.expectedTempoStretchRatio - 1) < 0.001) {
+            assert.equal(swapDetails.tempoMatchApplied, false,
+              `native-pace half/double locks must not invoke an extreme time stretch: ${JSON.stringify(swapDetails)}`);
+          } else {
+            assert.ok(swapDetails.tempoMatchApplied,
+              `modest tempo changes must run pitch-preserving tempo matching: ${JSON.stringify(swapDetails)}`);
+          }
         } else {
           assert.equal(swapDetails.tempoMatchApplied, false,
             `incompatible tempos must remain at the donor's native tempo: ${JSON.stringify(swapDetails)}`);

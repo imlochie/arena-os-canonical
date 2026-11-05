@@ -131,6 +131,8 @@ export interface TempoCompatibility {
 
 const BPM_NEAR_TOLERANCE = 6;
 const RATIO_LOCK_TOLERANCE = 0.03;
+const LIVE_STEM_AUTO_STRETCH_MIN_RATIO = 0.8;
+const LIVE_STEM_AUTO_STRETCH_MAX_RATIO = 1.25;
 
 /** Deterministic tempo compatibility: near-equal BPMs, or a 0.5×/1×/2× lock. */
 export function tempoCompatibility(aBpm: number | null, bBpm: number | null): TempoCompatibility {
@@ -155,11 +157,21 @@ export function tempoCompatibility(aBpm: number | null, bBpm: number | null): Te
   };
 }
 
+/** A near-2:1 BPM pair is often a half/double-time analysis choice, not a request to stretch vocals by 2×. */
+export function isHalfDoubleTempoPair(
+  recipientBpm: number | null,
+  donorBpm: number | null,
+): boolean {
+  const ratio = tempoRatioForBpm(donorBpm ?? NaN, recipientBpm ?? NaN);
+  return ratio !== null
+    && (Math.abs(ratio - 0.5) <= RATIO_LOCK_TOLERANCE || Math.abs(ratio - 2) <= RATIO_LOCK_TOLERANCE);
+}
+
 /**
- * Pitch-preserving live-stem stretch factor (output duration / donor duration)
- * across the live engine's supported 0.5–2 duration range. Natural transition
- * compatibility is not a processing limit: a distant BPM can still be matched.
- * This is a timing transform, not a guarantee of musical fit or audio quality.
+ * Safe automatic live-stem stretch factor (output duration / donor duration).
+ * Keep half/double-time pairs at the donor's native pace; only modestly stretch
+ * other pairs automatically. The low-level engine still supports wider manual
+ * ratios, but an automatic 2× vocal warp is not a quality match.
  */
 export function liveStemTempoStretchRatio(
   recipientBpm: number | null,
@@ -167,7 +179,11 @@ export function liveStemTempoStretchRatio(
 ): number | null {
   if (recipientBpm === null || donorBpm === null) return null;
   const ratio = tempoRatioForBpm(donorBpm, recipientBpm);
-  return ratio !== null && ratio >= 0.5 && ratio <= 2 ? ratio : null;
+  if (ratio === null) return null;
+  if (isHalfDoubleTempoPair(recipientBpm, donorBpm)) return 1;
+  return ratio >= LIVE_STEM_AUTO_STRETCH_MIN_RATIO && ratio <= LIVE_STEM_AUTO_STRETCH_MAX_RATIO
+    ? ratio
+    : null;
 }
 
 /** Offset in stretched-donor seconds. Beat zero is not necessarily a downbeat. */

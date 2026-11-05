@@ -2,7 +2,7 @@
 
 import Link from "@/routing/Link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { keyCompatibility, liveStemTempoStretchRatio } from "@workspace/arena/lib/waveyard/library/session-logic";
+import { isHalfDoubleTempoPair, keyCompatibility, liveStemTempoStretchRatio } from "@workspace/arena/lib/waveyard/library/session-logic";
 
 export interface LiveStemDonorOption {
   id: string;
@@ -201,8 +201,11 @@ export default function LiveStemSwapPicker({
     const tempoKnown = currentBpm !== null && candidate.bpm !== null
       && Number.isFinite(currentBpm) && Number.isFinite(candidate.bpm)
       && currentBpm > 0 && candidate.bpm > 0;
+    const halfDoubleTempo = tempoKnown && isHalfDoubleTempoPair(currentBpm, candidate.bpm);
+    const tempoMatchUnavailable = tempoKnown && stretchRatio === null && !halfDoubleTempo;
     const keyKnown = currentKey !== null && candidate.musicalKey !== null;
     const tempoLabel = !tempoKnown ? "BPM unknown"
+      : halfDoubleTempo ? "Half/double-time · no stretch"
       : stretchRatio === null ? "Outside tempo-match range"
       : Math.abs(stretchRatio - 1) < 0.001 ? "Same tempo"
       : `Match ${candidate.bpm} → ${currentBpm} BPM`;
@@ -218,9 +221,11 @@ export default function LiveStemSwapPicker({
         ref={index === 0 ? firstCandidateRef : undefined}
         className={`wy-swap-candidate${selected ? " selected" : ""}`}
         type="button"
+        disabled={tempoMatchUnavailable}
+        title={tempoMatchUnavailable ? "Live swap is disabled because matching would require an extreme tempo change." : undefined}
         aria-pressed={selected}
         aria-busy={isWarming}
-        aria-label={`Use ${candidate.title} for ${stemType}; ${tempoLabel}; ${keyLabel}${isWarming ? `; ${warmStatus}` : ""}`}
+        aria-label={`${tempoMatchUnavailable ? "Unavailable; " : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${isWarming ? `; ${warmStatus}` : ""}`}
         data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
         onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
         onPointerEnter={() => scheduleHoverWarm(candidate.id)}

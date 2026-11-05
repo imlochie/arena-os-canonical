@@ -34,6 +34,7 @@ import {
   compatibilityEvidence,
   crossfadeCancel,
   crossfadeEnvelope,
+  isHalfDoubleTempoPair,
   keyCompatibility,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
@@ -4100,9 +4101,17 @@ export default function SessionExperience({
       ?? library.find((item) => item.id === swap?.toTrackId)?.title
       ?? swap?.donorTrack?.title
       ?? null;
+    const recipientBpm = currentItem.analysis?.bpm ?? null;
+    const halfDoubleTempo = isHalfDoubleTempoPair(recipientBpm, selectedDonorBpm);
+    const unsafeTempoGap = recipientBpm !== null && selectedDonorBpm !== null
+      && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
     const tempoStatus = swap === undefined ? null
       : pendingSwap
         ? "Preparing live layer…"
+        : halfDoubleTempo
+          ? "Half/double-time · donor pace retained"
+          : unsafeTempoGap
+            ? `Tempo gap too wide · native ${Math.round(selectedDonorBpm!)} BPM`
         : activeSwapTempoStretchRatios[stemType] !== undefined
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
             ? currentSwapSetup.sectionPositionMatches[stemType]

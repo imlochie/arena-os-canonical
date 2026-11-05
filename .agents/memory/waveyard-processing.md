@@ -68,3 +68,9 @@ Do not treat non-zero stems, correct layer gains, or advancing clocks as proof o
 **Why:** Real remix vocal estimates passed a `>-90 dBFS` non-silence check while measuring roughly `-64` to `-70 dBFS`, so the browser routing test passed without a meaningful vocal change.
 
 **How to apply:** Measure bounded RMS during donor preparation, apply the same audibility floor in real-audio reports, and keep routing evidence separate from human A/B quality checks.
+
+For automatic stem swaps, treat a near-2:1 BPM estimate as a possible half/double-time interpretation, not an instruction to stretch the donor vocals by 2×. Keep the donor at its native pace and label that choice; reserve large warps for an explicit manual action.
+
+**Why:** A low-confidence real-track estimate triggered a half-duration vocal warp that sounded unusable even though the browser routing test passed.
+
+**How to apply:** Keep the automatic tempo policy separate from the engine's wider processing limits, and verify that the picker and saved-swap status clearly distinguish native pace from a true tempo stretch.

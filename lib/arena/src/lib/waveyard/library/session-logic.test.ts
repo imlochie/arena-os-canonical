@@ -276,12 +276,16 @@ test("tempo compatibility: missing analysis is honest, never guessed", () => {
 
 test("live stem tempo sync only stretches compatible analyzed tempos", () => {
   assert.equal(liveStemTempoStretchRatio(120, 124), 124 / 120);
-  assert.equal(liveStemTempoStretchRatio(120, 60), 0.5);
+  assert.equal(liveStemTempoStretchRatio(120, 60), 1, "half/double BPM locks keep donor pace instead of forcing a 2× vocal warp");
+  assert.equal(liveStemTempoStretchRatio(60, 120), 1, "the inverse half/double lock also keeps native pace");
+  assert.equal(liveStemTempoStretchRatio(103.359, 52.202), 1, "the tested low-confidence 2:1 estimate must not be stretched to half duration");
   assert.equal(liveStemTempoStretchRatio(120, 140), 140 / 120, "different tempos are processed rather than left unsynchronised");
   assert.equal(liveStemTempoStretchRatio(126, 101), 101 / 126);
   assert.equal(liveStemTempoStretchRatio(101, 126), 126 / 101);
-  assert.equal(liveStemTempoStretchRatio(120, 59), null, "do not exceed the engine's supported duration range");
-  assert.equal(liveStemTempoStretchRatio(120, 241), null);
+  assert.equal(liveStemTempoStretchRatio(120, 90), null, "a 25%+ change is not forced automatically");
+  assert.equal(liveStemTempoStretchRatio(120, 150), 1.25, "the safe automatic boundary is inclusive");
+  assert.equal(liveStemTempoStretchRatio(120, 55), null, "a tempo ratio too far from a half-time lock is not stretched automatically");
+  assert.equal(liveStemTempoStretchRatio(120, 250), null, "a tempo ratio too far from a double-time lock is not stretched automatically");
   assert.equal(liveStemTempoStretchRatio(0, 120), null);
   assert.equal(liveStemTempoStretchRatio(120, NaN), null);
   assert.equal(liveStemTempoStretchRatio(120, null), null, "missing donor analysis is not guessed");
