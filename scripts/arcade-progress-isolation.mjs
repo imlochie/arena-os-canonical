@@ -158,6 +158,11 @@ try {
     await fault(mode);
     await attempt(`pending-${mode}`);
     await warning.waitFor();
+    assert.match(
+      await warning.innerText(),
+      mode === "quota" ? /browser storage is full/i : /browser storage access is blocked/i,
+      `${mode}: the UI must identify why progress could not be saved`,
+    );
     if (mode === "quota") {
       await warning.scrollIntoViewIfNeeded();
       await page.screenshot({ path: new URL("save-warning.png", output).pathname });
@@ -195,6 +200,7 @@ try {
       if (body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== true) throw new Error("Successful retry was not confirmed");
     });
     await warning.waitFor({ state: "detached" });
+    await page.getByText(/Progress saves in this browser/).waitFor();
     assert.equal(JSON.parse(await committed()).progress, `pending-${mode}`);
     assert.equal(await frame().locator("body").getAttribute("data-failure-live-marker"), "same-running-game");
     assert.equal((await saves())[second.id], blue);

@@ -95,6 +95,7 @@ export function useArcadeGameSave(
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
   const [canRetrySave, setCanRetrySave] = useState(true);
   const [hasRevisionConflict, setHasRevisionConflict] = useState(false);
+  const storageFailure = useRef<"quota" | "blocked" | null>(null);
   const retryToken = useRef<string | null>(null);
   const reconcileToken = useRef<string | null>(null);
   const needsSnapshot = useRef(false);
@@ -116,6 +117,7 @@ export function useArcadeGameSave(
     setPersistenceWarning(null);
     setCanRetrySave(true);
     setHasRevisionConflict(false);
+    storageFailure.current = null;
     revisionConflict.current = false;
     sessionRevision.current = initialRevision;
     retryToken.current = null;
@@ -130,6 +132,7 @@ export function useArcadeGameSave(
     let baselineReadable = true;
     try { localStorage.getItem(storageKey(gameId)); } catch {
       baselineReadable = false;
+      storageFailure.current = "blocked";
       setPersistenceWarning("Progress storage is blocked. New progress is not being saved. Keep this game open while restoring browser storage access.");
     }
 
@@ -155,18 +158,30 @@ export function useArcadeGameSave(
       }
       setCanRetrySave(needsSnapshot.current || !oversized);
       setPersistenceWarning(needsSnapshot.current
-        ? `Progress could not be saved. The last committed save is retained. Keep this game open, free browser storage or allow storage access, then retry.${oversized ? " An oversized checkpoint also needs a smaller replacement or an explicit clear." : ""}`
+        ? `${storageFailure.current === "quota"
+          ? "Browser storage is full. Progress could not be saved. The last committed save is retained. Keep this game open, free browser storage, then retry."
+          : storageFailure.current === "blocked"
+            ? "Browser storage access is blocked. Progress could not be saved. The last committed save is retained. Keep this game open, allow storage access, then retry."
+            : "Progress could not be saved. The last committed save is retained. Keep this game open, free browser storage or allow storage access, then retry."}${oversized ? " An oversized checkpoint also needs a smaller replacement or an explicit clear." : ""}`
         : oversized
           ? "A checkpoint exceeds the 64 KiB save limit. Its last committed value is unchanged. Save a smaller replacement for that checkpoint or explicitly clear it. Saving a different key does not resolve this."
           : null);
     };
-    const reject = (oversized = false, key?: unknown, reason?: string) => {
+    const reject = (oversized = false, key?: unknown, reason?: string, cause?: unknown) => {
       if (reason === "revision-conflict") {
         markRevisionConflict();
         reply(false, reason, (() => { try { return readProgressRevision(gameId); } catch { return null; } })());
         return;
       }
-      if (!oversized) needsSnapshot.current = true;
+      if (!oversized) {
+        needsSnapshot.current = true;
+        if (reason === "storage-unavailable") {
+          const name = cause && typeof cause === "object" && "name" in cause ? String(cause.name) : "";
+          storageFailure.current = name === "QuotaExceededError"
+            ? "quota"
+            : name === "SecurityError" ? "blocked" : null;
+        }
+      }
       else if (typeof key === "string" && key.length > 0 && key.length <= MAX_KEY_LENGTH &&
         (oversizedKeys.current.has(key) || oversizedKeys.current.size < 256)) {
         oversizedKeys.current.add(key);
@@ -256,6 +271,7 @@ export function useArcadeGameSave(
           if (message.op === "clear") {
             pendingExplicitClear.current = false;
             needsSnapshot.current = false;
+            storageFailure.current = null;
             oversizedKeys.current.clear();
             oversizedReplacements.current.clear();
             unknownOversizedKey.current = false;
@@ -277,7 +293,7 @@ export function useArcadeGameSave(
           }
           reply(true, undefined, nextRevision);
         });
-      } catch { reject(); }
+      } catch (error) { reject(false, undefined, "storage-unavailable", error); }
     };
 
     let writeQueue = Promise.resolve();
@@ -347,6 +363,7 @@ export function useArcadeGameSave(
     setHasSavedProgress(false);
     setPersistenceWarning(null);
     needsSnapshot.current = false;
+    storageFailure.current = null;
     oversizedKeys.current.clear();
     oversizedReplacements.current.clear();
     unknownOversizedKey.current = false;
@@ -404,6 +421,7 @@ export function useArcadeGameSave(
     retiredSaveWindow.current = frameRef.current?.contentWindow ?? null;
     setHasSavedProgress(Object.keys(data).length > 0);
     setPersistenceWarning(null);
+    storageFailure.current = null;
     revisionConflict.current = false;
     setHasRevisionConflict(false);
     needsSnapshot.current = false;

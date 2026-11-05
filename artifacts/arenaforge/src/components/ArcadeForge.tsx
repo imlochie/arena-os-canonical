@@ -1936,7 +1936,7 @@ export default function ArcadeForge() {
                   className="h-[640px] w-full bg-black"
                 />
                 <div className="flex items-center justify-between gap-3 border-t border-white/5 px-3 py-2">
-                  <p className="text-[10px] text-slate-500">
+                  <p data-testid="status-game-progress" className="text-[10px] text-slate-500">
                     {gameSaves.persistenceWarning ? "Progress persistence needs attention." : `Progress saves in this browser${gameSaves.hasSavedProgress ? " · save data found" : ""}.`}
                   </p>
                   {(gameSaves.hasSavedProgress || gameSaves.persistenceWarning) && (
