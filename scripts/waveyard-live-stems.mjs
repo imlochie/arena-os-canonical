@@ -4358,10 +4358,13 @@ try {
   if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
   await page.evaluate(() => { window.liveStemAssetFetchTrace.length = 0; });
   const buffersBeforeWarm = await page.evaluate(() => window.audioProbe.buffers.length);
-  const warmedDonorResponse = mobileBrowserEmulation ? null : page.waitForResponse(
-    response => new URL(response.url()).pathname === "/api/assets/c-vocals" && response.ok(),
-    { timeout: 5000 },
-  );
+  const cacheControlSession = !mobileBrowserEmulation && engineName === "chromium"
+    ? await page.context().newCDPSession(page)
+    : null;
+  if (cacheControlSession) {
+    await cacheControlSession.send("Network.enable");
+    await cacheControlSession.send("Network.setCacheDisabled", { cacheDisabled: true });
+  }
   await current.getByTestId("open-live-swap-vocals").click();
   const warmedDonor = current.getByTestId("live-swap-candidate-vocals-c");
   await warmedDonor.waitFor();
@@ -4369,8 +4372,36 @@ try {
     assert.ok(await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => !audio.paused),
       "opening the touch source picker does not interrupt the current mix");
   } else {
+    await page.mouse.move(1, 1);
+    const warmedDonorResponse = page.waitForResponse(
+      response => new URL(response.url()).pathname === "/api/assets/c-vocals" && response.ok(),
+      { timeout: 5000 },
+    );
     await warmedDonor.hover();
-    const warmResponse = await warmedDonorResponse;
+    let warmResponse;
+    try {
+      warmResponse = await warmedDonorResponse;
+    } catch (error) {
+      const state = await page.evaluate(() => {
+        const candidate = document.querySelector('[data-testid="live-swap-candidate-vocals-c"]');
+        const bounds = candidate?.getBoundingClientRect();
+        return {
+          candidateHovered: candidate?.matches(":hover") ?? false,
+          candidateVisible: bounds ? bounds.width > 0 && bounds.height > 0 : false,
+          candidateBounds: bounds ? { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height } : null,
+          fetchTrace: window.liveStemAssetFetchTrace.filter(path => path.endsWith("/c-vocals")),
+          decodedBufferCount: window.audioProbe.buffers.length,
+        };
+      });
+      console.log("LIVE_STEM_HOVER_PREFETCH_DIAGNOSTIC", JSON.stringify({
+        state,
+        requests: assetRequestTrace.filter(request => request.id === "c-vocals").slice(-4),
+        error: String(error),
+      }));
+      await cacheControlSession?.detach();
+      throw error;
+    }
+    await cacheControlSession?.detach();
     assert.ok(warmResponse?.ok(), "hovering a donor successfully warms its audio");
     assert.equal(await page.evaluate(() =>
       window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,

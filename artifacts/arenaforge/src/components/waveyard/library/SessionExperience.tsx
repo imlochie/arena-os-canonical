@@ -2049,17 +2049,29 @@ export default function SessionExperience({
     }
 
     const position = deck?.transport.currentPosition() ?? NaN;
-    const target = nextPerformanceBoundary(
+    let target = nextPerformanceBoundary(
       position,
       item.analysis?.beatGridMs,
       settings.snap,
       undefined,
       PERFORMANCE_MINIMUM_LEAD_SECONDS,
     );
+    if (target === null && settings.snap === "bar") {
+      target = nextPerformanceBoundary(
+        position,
+        item.analysis?.beatGridMs,
+        "beat",
+        undefined,
+        PERFORMANCE_MINIMUM_LEAD_SECONDS,
+      );
+      if (target !== null) setStatus("No verified bar boundary is available; using the next verified beat.");
+    }
     if (target === null) {
+      cancelPendingPerformance();
+      applyPerformanceActions(item, deckIndex, [action]);
       setStatus(settings.snap === "bar"
-        ? "Bar snap unavailable: this track has no verified downbeat data. Choose Beat or Off."
-        : "Beat snap unavailable: this track has no verified beat grid. Choose Off for immediate stem changes.");
+        ? "No verified bar or beat boundary is available; applied immediately."
+        : "No upcoming verified beat is available; applied immediately.");
       return;
     }
     const previous = pendingPerformanceRef.current;
