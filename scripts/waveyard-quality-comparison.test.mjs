@@ -25,6 +25,15 @@ function run(mode, repetition, offset = 0) {
       referenceEvaluation: {
         referenceSha256: { ...referenceSha256 },
         metrics: {
+          referenceAlignment: {
+            status: "verified",
+            method: "reference-sum-cross-correlation",
+            zeroLagCorrelation: 0.98,
+            bestLagCorrelation: 0.98,
+            bestOffsetFrames: 0,
+            bestOffsetSeconds: 0,
+            searchRangeSeconds: 5,
+          },
           perStem,
           recombinedMixSiSdrDb: base,
           recombinedMixResidualSdrDb: base - 2,
@@ -93,6 +102,20 @@ test("quality reports require checksummed references and finite objective metric
   const invalidMetric = run("parallel", 1);
   invalidMetric.result.referenceEvaluation.metrics.perStem.drums.siSdrDb = Number.NaN;
   assert.throws(() => assertQualityReport(invalidMetric), /finite drums.siSdrDb/);
+
+  const missingAlignment = run("sequential", 1);
+  delete missingAlignment.result.referenceEvaluation.metrics.referenceAlignment;
+  assert.throws(() => assertQualityReport(missingAlignment), /alignment evidence/);
+
+  const sampleCountOnly = run("sequential", 1);
+  sampleCountOnly.result.referenceEvaluation.metrics.referenceAlignment = {
+    status: "sample-count-only",
+    method: "reference-sum-cross-correlation",
+    zeroLagCorrelation: 0.01,
+    bestLagCorrelation: 0.03,
+    bestOffsetSeconds: 0.04,
+  };
+  assert.equal(assertQualityReport(sampleCountOnly).referenceAlignment.status, "sample-count-only");
 });
 
 test("paired CPU listening comparisons can omit reference-based metrics", () => {

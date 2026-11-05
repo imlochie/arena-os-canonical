@@ -30,9 +30,44 @@ test("four-stem evaluation reports reference improvement and recombination error
 
   const metrics = evaluateFourStemSeparation(mixture, references, estimates);
   assert.deepEqual(Object.keys(metrics.perStem).sort(), ["bass", "drums", "other", "vocals"]);
+  assert.equal(metrics.referenceAlignment.status, "verified");
+  assert.equal(metrics.referenceAlignment.method, "reference-sum-cross-correlation");
   for (const stem of Object.values(metrics.perStem)) assert.ok(stem.siSdrImprovementDb > 0);
   assert.ok(metrics.recombinedMixResidualSdrDb > 100);
   assert.ok(metrics.recombinedMixResidualRmsDbfs < -100);
+  assert.deepEqual(evaluateFourStemSeparation(mixture, references, estimates), metrics);
+});
+
+test("four-stem evaluation rejects equal-length references shifted in time", () => {
+  const sampleRate = 1_000;
+  const frameCount = 2_000;
+  const shiftFrames = 150;
+  const mixture = new Float32Array(frameCount * 2);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const value =
+      Math.sin(frame * 0.071) * 0.5 +
+      Math.sin(frame * 0.173) * 0.25 +
+      Math.cos(frame * 0.037) * 0.15;
+    mixture[frame * 2] = value;
+    mixture[frame * 2 + 1] = value * 0.8;
+  }
+  const shiftedVocals = new Float32Array(mixture.length);
+  for (let frame = shiftFrames; frame < frameCount; frame += 1) {
+    shiftedVocals[frame * 2] = mixture[(frame - shiftFrames) * 2];
+    shiftedVocals[frame * 2 + 1] = mixture[(frame - shiftFrames) * 2 + 1];
+  }
+  const silence = new Float32Array(mixture.length);
+  const shiftedReferences: FourStemSamples = {
+    vocals: shiftedVocals,
+    drums: silence,
+    bass: silence,
+    other: silence,
+  };
+
+  assert.throws(
+    () => evaluateFourStemSeparation(mixture, shiftedReferences, shiftedReferences, 0, sampleRate),
+    /time-shifted by .*quality metrics were not calculated/,
+  );
 });
 
 test("four-stem evaluation rejects unaligned buffers and invalid edge trims", () => {

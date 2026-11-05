@@ -266,6 +266,7 @@ try {
             license: reference.license,
             attribution: reference.attribution,
             referenceSha256: reference.referenceSha256,
+            alignment: reference.metrics.referenceAlignment,
           }
         : null,
     };
@@ -296,6 +297,7 @@ try {
                 license: evaluation.license,
                 attribution: evaluation.attribution,
                 referenceSha256: evaluation.referenceSha256,
+                alignment: evaluation.metrics.referenceAlignment,
               }
             : null,
         },
@@ -342,8 +344,9 @@ try {
       summary: trackSummary,
       qualityComparison: {
         pairedMetricSummaries: pairedMetrics,
+        referenceAlignment: inputIdentity.referenceEvaluation?.alignment ?? null,
         interpretation:
-          "parallelMinusSequential values are paired by repetition. Objective scores are not proof of equivalence and do not replace listening review.",
+          "Reference alignment is reported per track: verified is supported by mixture/reference-sum correlation, while sample-count-only means the signal evidence was inconclusive. parallelMinusSequential values are paired by repetition. Objective scores are not proof of equivalence and do not replace listening review.",
       },
       blindListening: {
         participantPage: listeningKit.participantPage,

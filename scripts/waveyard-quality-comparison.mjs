@@ -36,6 +36,14 @@ export function assertQualityReport(run) {
   if (!evaluation && !metrics) return null;
   assert.ok(metrics, `${run.mode} run has incomplete reference-based quality metrics.`);
   assert.ok(
+    ["verified", "sample-count-only"].includes(metrics.referenceAlignment?.status) &&
+      metrics.referenceAlignment.method === "reference-sum-cross-correlation" &&
+      Number.isFinite(metrics.referenceAlignment.zeroLagCorrelation) &&
+      Number.isFinite(metrics.referenceAlignment.bestLagCorrelation) &&
+      Number.isFinite(metrics.referenceAlignment.bestOffsetSeconds),
+    `${run.mode} run must report reference alignment evidence separately from matching sample counts.`,
+  );
+  assert.ok(
     stems.every((stem) =>
       typeof evaluation.referenceSha256?.[stem] === "string" &&
       /^[a-f0-9]{64}$/i.test(evaluation.referenceSha256[stem]),

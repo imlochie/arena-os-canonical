@@ -1662,6 +1662,7 @@ if (realAudioInputPath) {
           referencePcm,
           estimatePcm,
           Math.min(22_050, Math.floor(processedFrames / 4)),
+          sourceDecoded.sampleRate,
         );
         Object.assign(report.result, {
           referenceEvaluation: {
