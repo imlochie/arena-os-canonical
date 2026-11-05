@@ -34,6 +34,8 @@ type Layer = {
   url: string;
   tempoStretchRatio: number;
   beatOffsetSeconds: number;
+  keyShiftSemitones: number;
+  keyShiftNode: AudioWorkletNode | null;
   buffer: AudioBuffer | null;
   duration: number;
   sampleRate: number;
@@ -269,7 +271,7 @@ export class LiveStemLayers {
         : 0;
       const nextInput = context.createGain();
       nextInput.gain.value = 0;
-      nextInput.connect(channel.gain);
+      nextInput.connect(layer.keyShiftNode ?? channel.gain);
       let nextSource: AudioWorkletNode;
       try {
         nextSource = await this.createWorkletSource(
@@ -419,13 +421,57 @@ export class LiveStemLayers {
     }
   }
 
+  private disconnectLayer(layer: Layer) {
+    layer.input.disconnect();
+    if (layer.keyShiftNode) {
+      layer.keyShiftNode.port.postMessage({ type: "dispose" });
+      layer.keyShiftNode.port.close();
+      layer.keyShiftNode.disconnect();
+      layer.keyShiftNode = null;
+    }
+  }
+
+  private async createKeyShiftNode(semitones: number, signal: AbortSignal) {
+    const context = this.context();
+    await ensureLiveStemWorklet(context, this.workletUrl);
+    if (this.disposed || signal.aborted) throw new DOMException("Stem correction cancelled.", "AbortError");
+    const node = new AudioWorkletNode(context, "waveyard-key-shift", {
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const finish = (error?: Error) => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", abort);
+          node.port.onmessage = null;
+          if (error) reject(error);
+          else resolve();
+        };
+        const abort = () => finish(new DOMException("Stem correction cancelled.", "AbortError"));
+        const timer = setTimeout(() => finish(new Error("The donor key processor did not become ready.")), WORKLET_READY_TIMEOUT_MS);
+        signal.addEventListener("abort", abort, { once: true });
+        node.port.onmessage = (event: MessageEvent<{ type?: string; message?: string }>) => {
+          if (event.data.type === "key-ready") finish();
+          else if (event.data.type === "error") finish(new Error(event.data.message ?? "Donor key matching failed."));
+        };
+      });
+      node.port.postMessage({ type: "key-shift", semitones });
+      return node;
+    } catch (error) {
+      node.port.postMessage({ type: "dispose" });
+      node.port.close();
+      node.disconnect();
+      throw error;
+    }
+  }
+
   private retire(layer: Layer) {
     this.rememberRecent(layer);
     this.ramp(layer.input, 0);
     this.retired.add(layer);
     const timer = setTimeout(() => {
       this.stop(layer);
-      layer.input.disconnect();
+      this.disconnectLayer(layer);
       this.retired.delete(layer);
       this.timers.delete(timer);
     }, 80);
@@ -803,13 +849,14 @@ export class LiveStemLayers {
     }
   }
 
-  async replace(id: string, url: string | null, tempoStretchRatio = 1, selectedAt = performance.now(), beatOffsetSeconds = 0) {
+  async replace(id: string, url: string | null, tempoStretchRatio = 1, selectedAt = performance.now(), beatOffsetSeconds = 0, keyShiftSemitones = 0) {
     if (!Number.isFinite(beatOffsetSeconds)) throw new Error("The donor beat offset must be finite.");
+    if (!Number.isInteger(keyShiftSemitones) || Math.abs(keyShiftSemitones) > 11) throw new Error("The donor key correction must be an integer from -11 to +11.");
     if (url && (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2)) {
       throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
     }
     if (this.disposed) return false;
-    const key = url ? `${this.preparedKey(url, tempoStretchRatio)}:${beatOffsetSeconds}` : "";
+    const key = url ? `${this.preparedKey(url, tempoStretchRatio)}:${beatOffsetSeconds}:${keyShiftSemitones}` : "";
     const currentPending = this.pending.get(id);
     if (key && currentPending?.key === key) return currentPending.promise;
     currentPending?.controller.abort();
@@ -824,14 +871,14 @@ export class LiveStemLayers {
       return;
     }
     if (previous?.url === url && Math.abs(previous.tempoStretchRatio - tempoStretchRatio) < 0.001
-      && previous.beatOffsetSeconds === beatOffsetSeconds) return;
+      && previous.beatOffsetSeconds === beatOffsetSeconds && previous.keyShiftSemitones === keyShiftSemitones) return;
     const operation: PendingSwap = {
       controller: new AbortController(),
       key,
       promise: Promise.resolve(),
     };
     this.pending.set(id, operation);
-    operation.promise = this.installReplacement(id, url, tempoStretchRatio, selectedAt, previous, operation, beatOffsetSeconds);
+    operation.promise = this.installReplacement(id, url, tempoStretchRatio, selectedAt, previous, operation, beatOffsetSeconds, keyShiftSemitones);
     return operation.promise;
   }
 
@@ -849,11 +896,13 @@ export class LiveStemLayers {
     previous: Layer | undefined,
     operation: PendingSwap,
     beatOffsetSeconds: number,
+    keyShiftSemitones: number,
   ) {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
     let replacementInput: GainNode | null = null;
+    let replacementKeyNode: AudioWorkletNode | null = null;
     try {
       const deadline = new Promise<never>((_resolve, reject) => {
         onAbort = () => reject(new DOMException("Live stem preparation was cancelled.", "AbortError"));
@@ -864,22 +913,36 @@ export class LiveStemLayers {
           reject(new LiveStemSwitchTimeoutError());
         }, LIVE_STEM_SWITCH_TIMEOUT_MS);
       });
+      const retainedBuffer = previous?.url === url
+        && previous.tempoStretchRatio === tempoStretchRatio ? previous.buffer : null;
       const prepared = await Promise.race([
-        this.getPreparedBuffer(url, tempoStretchRatio, operation.controller.signal, selectedAt),
+        retainedBuffer ? Promise.resolve({
+          buffer: retainedBuffer, selectedAt, downloadMs: 0, decodeMs: 0,
+          tempoMatchMs: 0, transferBytes: 0,
+        }) : this.getPreparedBuffer(url, tempoStretchRatio, operation.controller.signal, selectedAt),
         deadline,
       ]);
       if (operation.controller.signal.aborted || this.pending.get(id) !== operation) return false;
+      if (keyShiftSemitones !== 0) {
+        replacementKeyNode = await this.createKeyShiftNode(keyShiftSemitones, operation.controller.signal);
+      }
+      if (operation.controller.signal.aborted || this.pending.get(id) !== operation || this.disposed) {
+        throw new DOMException("Stem correction cancelled.", "AbortError");
+      }
       const ctx = this.context();
       const channel = this.channel(id);
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
       const input = ctx.createGain();
       replacementInput = input;
       input.gain.value = 0;
-      input.connect(channel.gain);
+      input.connect(replacementKeyNode ?? channel.gain);
+      replacementKeyNode?.connect(channel.gain);
       const layer: Layer = {
         url,
         tempoStretchRatio,
         beatOffsetSeconds,
+        keyShiftSemitones,
+        keyShiftNode: replacementKeyNode,
         buffer: prepared.buffer,
         duration: prepared.buffer.duration,
         sampleRate: prepared.buffer.sampleRate,
@@ -891,7 +954,8 @@ export class LiveStemLayers {
       await this.start(layer, channel);
       if (this.disposed || operation.controller.signal.aborted || this.pending.get(id) !== operation) {
         this.stop(layer);
-        input.disconnect();
+        this.disconnectLayer(layer);
+        replacementKeyNode = null;
         replacementInput = null;
         return false;
       }
@@ -900,9 +964,15 @@ export class LiveStemLayers {
       this.ramp(channel.inputGain, 0);
       if (layer.source) this.reportAudible(layer);
       if (previous) this.retire(previous);
+      replacementKeyNode = null; // The installed layer owns the processor.
       return undefined;
     } catch (error) {
       replacementInput?.disconnect();
+      if (replacementKeyNode) {
+        replacementKeyNode.port.postMessage({ type: "dispose" });
+        replacementKeyNode.port.close();
+        replacementKeyNode.disconnect();
+      }
       if (timedOut) throw new LiveStemSwitchTimeoutError();
       if (!operation.controller.signal.aborted) throw error;
       return false;
@@ -936,7 +1006,7 @@ export class LiveStemLayers {
     const layer = this.layers.get(id);
     if (layer) {
       this.stop(layer);
-      layer.input.disconnect();
+      this.disconnectLayer(layer);
       this.layers.delete(id);
     }
   }
@@ -953,7 +1023,7 @@ export class LiveStemLayers {
     this.inFlightAssets.clear();
     for (const layer of this.retired) {
       this.stop(layer);
-      layer.input.disconnect();
+      this.disconnectLayer(layer);
     }
     this.retired.clear();
     for (const cleanup of this.pendingEngineCleanups) cleanup();

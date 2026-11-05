@@ -46,6 +46,7 @@ import {
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 import {
   resolveSessionKeyMatch,
+  resolveLiveStemKeyCorrection,
   shiftMusicalKey,
   type SessionKeyMode,
   type SessionKeyShifts,
@@ -212,11 +213,14 @@ function getPersistedSwapSetup(
   item: SessionTrackItem | null,
   library: LibraryTrackOption[],
   cancelledSwapIds: Set<string>,
+  keyMode: SessionKeyMode,
+  deckSemitones: number,
 ) {
   const swaps: Record<string, string> = {};
   const tempoStretchRatios: Record<string, number> = {};
   const beatOffsets: Record<string, number> = {};
-  if (session === null || item === null) return { swaps, tempoStretchRatios, beatOffsets };
+  const keyCorrections: Record<string, number> = {};
+  if (session === null || item === null) return { swaps, tempoStretchRatios, beatOffsets, keyCorrections };
 
   for (const swap of session.swaps) {
     if (swap.sessionTrackId !== item.id || cancelledSwapIds.has(swap.id)) continue;
@@ -237,8 +241,15 @@ function getPersistedSwapSetup(
       ratio,
     );
     if (offset !== null) beatOffsets[swap.stemType] = offset;
+    const correction = resolveLiveStemKeyCorrection(
+      keyMode, item.analysis?.musicalKey,
+      donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
+        ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey,
+      deckSemitones, swap.stemType,
+    );
+    if (correction !== null) keyCorrections[swap.stemType] = correction;
   }
-  return { swaps, tempoStretchRatios, beatOffsets };
+  return { swaps, tempoStretchRatios, beatOffsets, keyCorrections };
 }
 
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
@@ -357,6 +368,7 @@ function SessionDeck({
   swapSelectionTimes,
   tempoStretchRatios,
   beatOffsets,
+  keyCorrections,
   masterLevel,
   autoPlay,
   onAutoPlayed,
@@ -407,6 +419,7 @@ function SessionDeck({
   swapSelectionTimes: Record<string, number>;
   tempoStretchRatios: Record<string, number>;
   beatOffsets: Record<string, number>;
+  keyCorrections: Record<string, number>;
   masterLevel: number;
   autoPlay: boolean;
   onAutoPlayed: () => void;
@@ -593,15 +606,15 @@ function SessionDeck({
     const stemType = stemTypeByAsset.get(id) ?? "source";
     const donor = swaps[stemType] ?? null;
     const selectedAt = donor === null ? null : swapSelectionTimes[stemType] ?? null;
-    return [id, donor, donor === null ? 1 : tempoStretchRatios[stemType] ?? 1, selectedAt, beatOffsets[stemType] ?? 0];
+    return [id, donor, donor === null ? 1 : tempoStretchRatios[stemType] ?? 1, selectedAt, beatOffsets[stemType] ?? 0, keyCorrections[stemType] ?? 0];
   }));
   useEffect(() => {
     let stale = false;
-    const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null, number]>;
+    const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null, number, number]>;
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
-    const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt, beatOffset]) => {
+    const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt, beatOffset, keyCorrection]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
-      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined, beatOffset).then((installed) => {
+      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined, beatOffset, keyCorrection).then((installed) => {
         if (!stale && installed !== false && donor !== null && item !== null) {
           onLiveLayerReady?.(item.id, stemType, selectedAt);
         }
@@ -1631,14 +1644,6 @@ export default function SessionExperience({
     return 0;
   };
 
-  const currentSwapSetup = useMemo(
-    () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds),
-    [session, currentItem, library, cancelledSwapIds],
-  );
-  const nextSwapSetup = useMemo(
-    () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds),
-    [session, nextItem, library, cancelledSwapIds],
-  );
   const currentKeyShift = savedKeyShiftFor(currentItem, validKeyShifts);
   const leadEffectiveKey = currentItem
     ? shiftMusicalKey(currentItem.analysis?.musicalKey, currentKeyShift)
@@ -1652,6 +1657,14 @@ export default function SessionExperience({
         reason: "Choose a next track to calculate a key match.",
       };
   const nextKeyShift = nextKeyMatch.semitones ?? 0;
+  const currentSwapSetup = useMemo(
+    () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds, keyMode, currentKeyShift),
+    [session, currentItem, library, cancelledSwapIds, keyMode, currentKeyShift],
+  );
+  const nextSwapSetup = useMemo(
+    () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds, keyMode, nextKeyShift),
+    [session, nextItem, library, cancelledSwapIds, keyMode, nextKeyShift],
+  );
   useEffect(() => {
     if (!nextItem || nextKeyMatch.semitones === null) return;
     if (
@@ -4112,6 +4125,7 @@ export default function SessionExperience({
         : {},
       tempoStretchRatios: swapSetup.tempoStretchRatios,
       beatOffsets: swapSetup.beatOffsets,
+      keyCorrections: swapSetup.keyCorrections,
       masterLevel,
       autoPlay: item !== null && autoPlayId === item.id && (isActive || resumeAt?.itemId === item.id),
       onAutoPlayed: () => {

@@ -33,6 +33,24 @@ export function shiftMusicalKey(value: unknown, semitones: number): MusicalKey |
   return `${CANONICAL_PITCH_CLASSES[targetIndex]} ${mode}` as MusicalKey;
 }
 
+/** Correction before the receiving deck's own pitch processor. */
+export function resolveLiveStemKeyCorrection(
+  mode: SessionKeyMode,
+  leadKey: unknown,
+  donorKey: unknown,
+  deckSemitones: number,
+  stemType: string,
+): number | null {
+  if (!Number.isInteger(deckSemitones) || Math.abs(deckSemitones) > 11) return null;
+  const match = stemType === "drums"
+    ? { semitones: 0 }
+    : resolveSessionKeyMatch(mode, shiftMusicalKey(leadKey, deckSemitones), donorKey);
+  if (match.semitones === null) return null;
+  const relative = match.semitones - deckSemitones;
+  // Equivalent pitch-class correction within the real-time processor's range.
+  return relative > 11 ? relative - 12 : relative < -11 ? relative + 12 : relative;
+}
+
 export function resolveSessionKeyMatch(
   mode: SessionKeyMode,
   leadValue: unknown,

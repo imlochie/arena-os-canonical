@@ -105,6 +105,96 @@ function response(ok = true) {
   return { ok, status: ok ? 200 : 503, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
 }
 
+test("donor harmonic correction is connected before takeover, changes independently, and is released on restore", async () => {
+  const globals = globalThis as unknown as { AudioWorkletNode?: unknown };
+  const original = globals.AudioWorkletNode;
+  const nodes: Array<{
+    messages: Array<{ type: string; semitones?: number }>;
+    ready(): void;
+    connected: unknown;
+    closed: boolean;
+  }> = [];
+  globals.AudioWorkletNode = class {
+    messages: Array<{ type: string; semitones?: number }> = [];
+    connected: unknown = null;
+    closed = false;
+    port = {
+      onmessage: null as ((event: unknown) => void) | null,
+      postMessage: (message: { type: string; semitones?: number }) => { this.messages.push(message); },
+      close: () => { this.closed = true; },
+    };
+    constructor(_context: unknown, name: string) {
+      assert.equal(name, "waveyard-key-shift");
+      nodes.push(this);
+    }
+    ready() { this.port.onmessage?.({ data: { type: "key-ready" } }); }
+    connect(destination: unknown) { this.connected = destination; }
+    disconnect() { this.connected = null; }
+  };
+  const f = fixture();
+  (f.context as unknown as { audioWorklet: unknown }).audioWorklet = { addModule: async () => {} };
+  globalThis.fetch = async () => response();
+  const nextNode = async (count: number) => {
+    for (let i = 0; i < 30 && nodes.length < count; i++) await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(nodes.length, count);
+    return nodes[count - 1];
+  };
+  try {
+    const first = f.layers.replace("vocals", "/harmonic-donor", 1, undefined, 0, -2);
+    const a = await nextNode(1);
+    assert.equal(f.channel.inputGain.gain.value, 1, "preparing pitch must not mute the current stem");
+    a.ready();
+    await first;
+    assert.equal(a.connected, f.channel.gain);
+    assert.equal(f.gains.at(-1)!.connectedTo, a);
+    assert.ok(a.messages.some(message => message.type === "key-shift" && message.semitones === -2));
+    const changed = f.layers.replace("vocals", "/harmonic-donor", 1, undefined, 0, 3);
+    const b = await nextNode(2);
+    assert.equal(a.closed, false, "keep the old corrected donor until the new correction is ready");
+    b.ready();
+    await changed;
+    assert.equal(f.decodeCount, 1, "changing key does not download or decode another full-song copy");
+    await f.layers.replace("vocals", null);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(f.channel.inputGain.gain.value, 1);
+    assert.equal(a.closed, true);
+    assert.equal(b.closed, true);
+  } finally {
+    f.layers.dispose();
+    if (original === undefined) delete globals.AudioWorkletNode;
+    else globals.AudioWorkletNode = original;
+  }
+});
+
+test("cancelling donor harmonic preparation keeps the original audible and releases its processor", async () => {
+  const f = fixture();
+  (f.context as unknown as { audioWorklet: unknown }).audioWorklet = { addModule: async () => {} };
+  const globals = globalThis as unknown as { AudioWorkletNode?: unknown };
+  const original = globals.AudioWorkletNode;
+  let closed = false;
+  let constructed = false;
+  globals.AudioWorkletNode = class {
+    constructor() { constructed = true; }
+    port = { onmessage: null, postMessage() {}, close() { closed = true; } };
+    disconnect() {}
+  };
+  globalThis.fetch = async () => response();
+  try {
+    const pending = f.layers.replace("vocals", "/cancelled-harmonic-donor", 1, undefined, 0, 2);
+    for (let i = 0; i < 30 && !constructed; i++) await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(constructed, true);
+    f.layers.cancelPending("vocals");
+    assert.equal(await pending, false);
+    assert.equal(closed, true);
+    assert.equal(f.channel.inputGain.gain.value, 1);
+    assert.equal(f.sources.length, 0);
+  } finally {
+    f.layers.dispose();
+    if (original === undefined) delete globals.AudioWorkletNode;
+    else globals.AudioWorkletNode = original;
+  }
+});
+
 test("live donors retain measured beat phase through replacement and seek, including negative offsets", async () => {
   globalThis.fetch = async () => response();
   const f = fixture();

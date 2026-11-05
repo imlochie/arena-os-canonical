@@ -3411,6 +3411,41 @@ try {
         document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
       );
     }
+    const beforeDonorCorrection = await page.evaluate(() => window.audioProbe.keyShifts.length);
+    await page.getByTestId("open-live-swap-vocals").click();
+    await page.getByTestId("live-swap-candidate-vocals-b").click();
+    await page.waitForFunction(before => window.audioProbe.keyShifts.slice(before).some(message =>
+      message.semitones === -3 && message.node.probeConnections.length > 0),
+    beforeDonorCorrection);
+    const donorCorrection = await page.evaluate(async before => {
+      const correction = window.audioProbe.keyShifts.slice(before).find(message =>
+        message.semitones === -3 && message.node.probeConnections.length > 0);
+      if (!correction) throw new Error("The donor harmonic processor was not connected.");
+      const analyser = correction.context.createAnalyser();
+      analyser.fftSize = 32768;
+      correction.node.connect(analyser);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        const spectrum = new Float32Array(analyser.frequencyBinCount);
+        analyser.getFloatFrequencyData(spectrum);
+        const binHz = correction.context.sampleRate / analyser.fftSize;
+        let peakBin = Math.ceil(100 / binHz);
+        for (let bin = peakBin; bin <= 300 / binHz; bin++) {
+          if (spectrum[bin] > spectrum[peakBin]) peakBin = bin;
+        }
+        return {
+          frequencyHz: peakBin * binHz,
+          levelDb: spectrum[peakBin],
+          playing: [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
+        };
+      } finally { correction.node.disconnect(analyser); }
+    }, beforeDonorCorrection);
+    const expectedDonorHz = 230 * 2 ** (-3 / 12);
+    assert.ok(donorCorrection.levelDb > -70 && Math.abs(donorCorrection.frequencyHz - expectedDonorHz) < 5,
+      `the actual donor output must transpose 230Hz to ${expectedDonorHz}Hz: ${JSON.stringify(donorCorrection)}`);
+    assert.equal(donorCorrection.playing, true, "harmonic donor preparation retains the playing lead");
+    await page.getByTestId("restore-live-swap-vocals").click();
+    console.log("PASS: a live vocal swap routes through its own harmonic processor and its measured output changes pitch without pausing the lead", donorCorrection);
     const beforeHandoff = await page.locator('[data-role="current"] audio').first().evaluate(audio => audio.currentTime);
     await page.getByRole("button", { name: "Current only" }).click();
     const handoffResponse = page.waitForResponse(response =>
