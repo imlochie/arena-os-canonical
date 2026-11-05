@@ -98,3 +98,9 @@ Local onset analysis can identify repeated rhythmic fingerprints, but that is wi
 **Why:** A repeated drum pattern can occur under different harmony and arrangement roles, so using it alone for cross-track swaps could recreate the abrupt, musically mismatched results the user rejected.
 
 **How to apply:** Display rhythmic repeats as such, retain their measured similarity score, and keep live cross-track section alignment disabled unless both tracks have comparable high-confidence structural roles.
+
+An automatic hybrid must contain at least one real donor stem; never save an anchor-only fallback under a hybrid label.
+
+**Why:** A nominally successful hybrid that reuses only the anchor misrepresents what Waveyard actually produced and erodes trust in its musical intelligence.
+
+**How to apply:** Require current tempo, key, beat, and comparable-role evidence before selecting a donor. If no donor passes, return a specific failure and keep the faithful original option available rather than persisting a mislabeled hybrid.
