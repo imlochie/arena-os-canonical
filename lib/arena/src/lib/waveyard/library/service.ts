@@ -99,6 +99,9 @@ export interface TrackStem {
 export interface TrackAnalysis {
   status: string;
   bpm: number | null;
+  bpmConfidence: number | null;
+  beatConfidence: number | null;
+  keyConfidence: number | null;
   musicalKey: string | null;
 }
 
@@ -242,13 +245,23 @@ async function analysisBySource(sourceAssetIds: string[]): Promise<Map<string, T
       sourceAssetId: sourceAnalyses.sourceAssetId,
       status: sourceAnalyses.status,
       bpm: sourceAnalyses.bpm,
+      bpmConfidence: sourceAnalyses.bpmConfidence,
+      beatConfidence: sourceAnalyses.beatConfidence,
+      keyConfidence: sourceAnalyses.keyConfidence,
       musicalKey: sourceAnalyses.musicalKey,
     })
     .from(sourceAnalyses)
     .where(inArray(sourceAnalyses.sourceAssetId, uniqueIds));
   return new Map(rows.map((row) => [
     row.sourceAssetId,
-    { status: row.status, bpm: row.bpm, musicalKey: row.musicalKey },
+    {
+      status: row.status,
+      bpm: row.bpm,
+      bpmConfidence: row.bpmConfidence,
+      beatConfidence: row.beatConfidence,
+      keyConfidence: row.keyConfidence,
+      musicalKey: row.musicalKey,
+    },
   ]));
 }
 
@@ -559,6 +572,9 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
     .select({
       status: sourceAnalyses.status,
       bpm: sourceAnalyses.bpm,
+      bpmConfidence: sourceAnalyses.bpmConfidence,
+      beatConfidence: sourceAnalyses.beatConfidence,
+      keyConfidence: sourceAnalyses.keyConfidence,
       musicalKey: sourceAnalyses.musicalKey,
     })
     .from(sourceAnalyses)

@@ -1339,6 +1339,9 @@ export async function sendSessionToStudio(
 /** Analysis for the compatibility panel: BPM/key/beat grid per session track. */
 export interface SessionTrackAnalysis {
   bpm: number | null;
+  bpmConfidence: number | null;
+  beatConfidence: number | null;
+  keyConfidence: number | null;
   musicalKey: string | null;
   beatGridMs: number[] | null;
   sections: SourceSection[] | null;
@@ -1361,6 +1364,9 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     .select({
       id: sourceAnalyses.id,
       bpm: sourceAnalyses.bpm,
+      bpmConfidence: sourceAnalyses.bpmConfidence,
+      beatConfidence: sourceAnalyses.beatConfidence,
+      keyConfidence: sourceAnalyses.keyConfidence,
       musicalKey: sourceAnalyses.musicalKey,
       beatGrid: sourceAnalyses.beatGrid,
       sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
@@ -1368,7 +1374,17 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     .from(sourceAnalyses)
     .where(and(eq(sourceAnalyses.sourceAssetId, sourceTrack.sourceAssetId), eq(sourceAnalyses.status, "complete")))
     .limit(1);
-  if (analysis === undefined) return { bpm: null, musicalKey: null, beatGridMs: null, sections: null };
+  if (analysis === undefined) {
+    return {
+      bpm: null,
+      bpmConfidence: null,
+      beatConfidence: null,
+      keyConfidence: null,
+      musicalKey: null,
+      beatGridMs: null,
+      sections: null,
+    };
+  }
   let beatGridMs: number[] | null = null;
   try {
     const parsed = JSON.parse(analysis.beatGrid ?? "null");
@@ -1456,5 +1472,13 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       }
     }
   }
-  return { bpm: analysis.bpm, musicalKey: analysis.musicalKey, beatGridMs, sections };
+  return {
+    bpm: analysis.bpm,
+    bpmConfidence: analysis.bpmConfidence,
+    beatConfidence: analysis.beatConfidence,
+    keyConfidence: analysis.keyConfidence,
+    musicalKey: analysis.musicalKey,
+    beatGridMs,
+    sections,
+  };
 }

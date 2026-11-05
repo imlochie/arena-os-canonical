@@ -103,6 +103,19 @@ test("key detection identifies a pure C major triad as C major-ish", () => {
   assert.notEqual(confidence, null);
 });
 
+test("key confidence separates clear tonal evidence from ambiguous chords", () => {
+  const uniform = keyFromChroma(Array(12).fill(1));
+  assert.deepEqual(uniform, { key: null, confidence: null }, "equal chroma has no tonic evidence");
+
+  const triad = keyFromChroma([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]);
+  assert.notEqual(triad.key, null);
+  assert.ok((triad.confidence ?? 1) < 0.5, "one major chord is too ambiguous to claim a confident song key");
+
+  const cMajorScale = keyFromChroma([2, 0.3, 1, 0.2, 2, 1, 0.2, 2, 0.3, 1, 0.2, 0.8]);
+  assert.equal(cMajorScale.key, "C major");
+  assert.ok((cMajorScale.confidence ?? 0) >= 0.5, "a broader diatonic pitch profile supports the key more strongly");
+});
+
 test("normaliseBeatGrid rejects unordered and out-of-range grids", () => {
   assert.deepEqual(normaliseBeatGrid([0, 500, 400], 10), null);
   assert.deepEqual(normaliseBeatGrid([0, -5, 1000], 10), null);

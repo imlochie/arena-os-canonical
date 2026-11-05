@@ -34,8 +34,11 @@ import {
   compatibilityEvidence,
   crossfadeCancel,
   crossfadeEnvelope,
+  hasReliableLiveStemBeatEvidence,
+  hasReliableLiveStemTempoEvidence,
   isHalfDoubleTempoPair,
   keyCompatibility,
+  keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
   liveStemSectionOffsetSeconds,
@@ -103,6 +106,9 @@ interface SessionTrackItem {
   transition: TransitionConfig;
   analysis: {
     bpm: number | null;
+    bpmConfidence: number | null;
+    beatConfidence: number | null;
+    keyConfidence: number | null;
     musicalKey: string | null;
     beatGridMs: number[] | null;
     sections: Array<{
@@ -181,6 +187,8 @@ interface PendingLiveSwap {
     title: string;
     stems?: SessionTrackItem["stems"];
     bpm?: number | null;
+    bpmConfidence?: number | null;
+    beatConfidence?: number | null;
   };
   previousSwap?: SessionDetail["swaps"][number];
   failed?: boolean;
@@ -247,20 +255,26 @@ function getPersistedSwapSetup(
       ?? swap.donorTrack?.stems.find((stem) => stem.stemType === swap.stemType);
     if (donorStem) swaps[swap.stemType] = donorStem.id;
 
-    const donorBpm = donor?.analysis?.bpm
-      ?? swap.donorTrack?.analysis?.bpm
-      ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.bpm
-      ?? null;
-    const ratio = liveStemTempoStretchRatio(item.analysis?.bpm ?? null, donorBpm);
-    if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
+    const libraryDonorAnalysis = library.find((track) => track.id === swap.toTrackId)?.analysis ?? null;
     const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? null;
-    const sectionOffset = ratio === null ? null : liveStemSectionOffsetSeconds(
+    const donorBpm = donorAnalysis?.bpm ?? libraryDonorAnalysis?.bpm ?? null;
+    const tempoEvidence = {
+      recipientBpmConfidence: item.analysis?.bpmConfidence,
+      donorBpmConfidence: donorAnalysis?.bpmConfidence ?? libraryDonorAnalysis?.bpmConfidence,
+      recipientBeatConfidence: item.analysis?.beatConfidence,
+      donorBeatConfidence: donorAnalysis?.beatConfidence ?? libraryDonorAnalysis?.beatConfidence,
+    };
+    const reliableTempoEvidence = hasReliableLiveStemTempoEvidence(tempoEvidence);
+    const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
+    const ratio = liveStemTempoStretchRatio(item.analysis?.bpm ?? null, donorBpm, tempoEvidence);
+    if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
+    const sectionOffset = ratio === null || !reliableBeatEvidence ? null : liveStemSectionOffsetSeconds(
       item.analysis?.sections,
       donorAnalysis?.sections,
       swap.atSeconds,
       ratio,
     );
-    const beatOffset = ratio === null ? null : liveStemBeatOffsetSeconds(
+    const beatOffset = ratio === null || !reliableBeatEvidence ? null : liveStemBeatOffsetSeconds(
       item.analysis?.beatGridMs,
       donorAnalysis?.beatGridMs,
       ratio,
@@ -270,11 +284,22 @@ function getPersistedSwapSetup(
     if (sectionOffset !== null) sectionPositionMatches[swap.stemType] = true;
     const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
+    const donorKeyConfidence = donor?.analysis?.keyConfidence ?? swap.donorTrack?.analysis?.keyConfidence
+      ?? libraryDonorAnalysis?.keyConfidence;
     const leadKey = shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
-    const match = resolveSessionKeyMatch(keyMode, leadKey, donorKey);
-    const correction = resolveLiveStemKeyCorrection(
-      keyMode, item.analysis?.musicalKey, donorKey, deckSemitones, swap.stemType,
+    const keyEvidence = keyCompatibilityEvidence(
+      leadKey,
+      item.analysis?.keyConfidence,
+      donorKey,
+      donorKeyConfidence,
     );
+    const keyEvidenceConfident = keyEvidence.confidenceLevel === "confident";
+    const match = keyEvidenceConfident
+      ? resolveSessionKeyMatch(keyMode, leadKey, donorKey)
+      : { targetKey: null, semitones: null };
+    const correction = keyEvidenceConfident
+      ? resolveLiveStemKeyCorrection(keyMode, item.analysis?.musicalKey, donorKey, deckSemitones, swap.stemType)
+      : null;
     if (correction !== null) keyCorrections[swap.stemType] = correction;
     const matchedMode = match.targetKey?.split(" ")[1];
     const leadMode = leadKey?.split(" ")[1];
@@ -285,7 +310,9 @@ function getPersistedSwapSetup(
       : keyMode === "preserve" || keyMode === "off"
         ? "Donor pitch preserved"
         : match.semitones === null
-          ? "Key analysis unavailable · donor pitch preserved"
+          ? keyEvidence.confidenceLevel === "tentative"
+            ? "Key uncertain · donor pitch preserved"
+            : "Key confidence unavailable · donor pitch preserved"
           : modeDiffers
             ? "Tonic matched · mode preserved"
             : match.semitones === 0
@@ -2904,7 +2931,13 @@ export default function SessionExperience({
   );
 
   const warmLiveSwap = useCallback(
-    (stemType: string, donor: { id: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
+    (stemType: string, donor: {
+      id: string;
+      stems?: SessionTrackItem["stems"];
+      bpm?: number | null;
+      bpmConfidence?: number | null;
+      beatConfidence?: number | null;
+    }) => {
       if (session === null || currentItem === null) return Promise.resolve();
       const recipientStemId = currentItem.stems.find((stem) => stem.stemType === stemType)?.id;
       if (!recipientStemId) return Promise.resolve();
@@ -2916,6 +2949,12 @@ export default function SessionExperience({
       const tempoStretchRatio = liveStemTempoStretchRatio(
         currentItem.analysis?.bpm ?? null,
         donor.bpm ?? null,
+        {
+          recipientBpmConfidence: currentItem.analysis?.bpmConfidence,
+          donorBpmConfidence: donor.bpmConfidence,
+          recipientBeatConfidence: currentItem.analysis?.beatConfidence,
+          donorBeatConfidence: donor.beatConfidence,
+        },
       ) ?? 1;
       setWarmingLiveSwap({
         key,
@@ -2971,7 +3010,14 @@ export default function SessionExperience({
 
   // ------------------------------------------------------------------ swaps
   const requestSwap = useCallback(
-    async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
+    async (stemType: string, donor: {
+      id: string;
+      title: string;
+      stems?: SessionTrackItem["stems"];
+      bpm?: number | null;
+      bpmConfidence?: number | null;
+      beatConfidence?: number | null;
+    }) => {
       if (session === null || currentItem === null) return;
       const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
       if (validation && !validation.ok) {
@@ -3005,7 +3051,14 @@ export default function SessionExperience({
         sessionTrackId: currentItem.id,
         stemType,
         donorTitle: donor.title,
-        retryDonor: { id: donor.id, title: donor.title, stems: donor.stems, bpm: donor.bpm },
+        retryDonor: {
+          id: donor.id,
+          title: donor.title,
+          stems: donor.stems,
+          bpm: donor.bpm,
+          bpmConfidence: donor.bpmConfidence,
+          beatConfidence: donor.beatConfidence,
+        },
         previousSwap,
         savePending: true,
       };
@@ -4050,11 +4103,20 @@ export default function SessionExperience({
     const donors = session.tracks.filter((item) =>
       item.track.id !== currentItem.track.id && validateStemSwap(currentItem.stems, item.stems, stemType).ok,
     );
-    const selectedDonorBpm = swap === undefined ? null
-      : session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis?.bpm
-        ?? swap.donorTrack?.analysis?.bpm
-        ?? library.find((item) => item.id === swap.toTrackId)?.analysis?.bpm
+    const selectedDonorAnalysis = swap === undefined ? null
+      : session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis
+        ?? swap.donorTrack?.analysis
+        ?? library.find((item) => item.id === swap.toTrackId)?.analysis
         ?? null;
+    const selectedDonorBpm = selectedDonorAnalysis?.bpm ?? null;
+    const tempoEvidence = {
+      recipientBpmConfidence: currentItem.analysis?.bpmConfidence,
+      donorBpmConfidence: selectedDonorAnalysis?.bpmConfidence,
+      recipientBeatConfidence: currentItem.analysis?.beatConfidence,
+      donorBeatConfidence: selectedDonorAnalysis?.beatConfidence,
+    };
+    const reliableTempoEvidence = hasReliableLiveStemTempoEvidence(tempoEvidence);
+    const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
     const inSession = new Set(session.tracks.map((item) => item.track.id));
     const libraryDonors = library.filter((item) => !inSession.has(item.id) &&
       item.id !== currentItem.track.id &&
@@ -4084,7 +4146,10 @@ export default function SessionExperience({
         title: donor.track.title,
         artist: donor.track.artist,
         bpm: donor.analysis?.bpm ?? null,
+        bpmConfidence: donor.analysis?.bpmConfidence ?? null,
+        beatConfidence: donor.analysis?.beatConfidence ?? null,
         musicalKey: donor.analysis?.musicalKey ?? null,
+        keyConfidence: donor.analysis?.keyConfidence ?? null,
         collection: "session" as const,
       })),
       ...libraryDonors.map((donor) => ({
@@ -4092,7 +4157,10 @@ export default function SessionExperience({
         title: donor.title,
         artist: donor.artist,
         bpm: donor.analysis?.bpm ?? null,
+        bpmConfidence: donor.analysis?.bpmConfidence ?? null,
+        beatConfidence: donor.analysis?.beatConfidence ?? null,
         musicalKey: donor.analysis?.musicalKey ?? null,
+        keyConfidence: donor.analysis?.keyConfidence ?? null,
         collection: "library" as const,
       })),
     ];
@@ -4102,16 +4170,23 @@ export default function SessionExperience({
       ?? swap?.donorTrack?.title
       ?? null;
     const recipientBpm = currentItem.analysis?.bpm ?? null;
-    const halfDoubleTempo = isHalfDoubleTempoPair(recipientBpm, selectedDonorBpm);
-    const unsafeTempoGap = recipientBpm !== null && selectedDonorBpm !== null
+    const lowTempoConfidence = recipientBpm !== null && selectedDonorBpm !== null && !reliableTempoEvidence;
+    const lowBeatConfidence = recipientBpm !== null && selectedDonorBpm !== null
+      && reliableTempoEvidence && !reliableBeatEvidence;
+    const halfDoubleTempo = reliableTempoEvidence && isHalfDoubleTempoPair(recipientBpm, selectedDonorBpm);
+    const unsafeTempoGap = reliableTempoEvidence && recipientBpm !== null && selectedDonorBpm !== null
       && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
     const tempoStatus = swap === undefined ? null
       : pendingSwap
         ? "Preparing live layer…"
+        : lowTempoConfidence
+          ? "Low tempo confidence · native pace; no beat sync"
         : halfDoubleTempo
-          ? "Half/double-time · donor pace retained"
+          ? `Half/double-time · donor pace retained${lowBeatConfidence ? " · no beat sync" : ""}`
           : unsafeTempoGap
             ? `Tempo gap too wide · native ${Math.round(selectedDonorBpm!)} BPM`
+        : lowBeatConfidence
+          ? "Beat sync unavailable · analysis confidence is low"
         : activeSwapTempoStretchRatios[stemType] !== undefined
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
             ? currentSwapSetup.sectionPositionMatches[stemType]
@@ -4128,7 +4203,10 @@ export default function SessionExperience({
       <LiveStemSwapPicker
         stemType={stemType}
         currentBpm={currentItem.analysis?.bpm ?? null}
+        currentBpmConfidence={currentItem.analysis?.bpmConfidence ?? null}
+        currentBeatConfidence={currentItem.analysis?.beatConfidence ?? null}
         currentKey={currentItem.analysis?.musicalKey ?? null}
+        currentKeyConfidence={currentItem.analysis?.keyConfidence ?? null}
         candidates={candidates}
         preparationCandidates={preparationCandidates}
         preparingTrackIds={preparingSeparationTrackIds}
@@ -4150,11 +4228,18 @@ export default function SessionExperience({
               id: donor.track.id,
               stems: donor.stems,
               bpm: donor.analysis?.bpm ?? null,
+              bpmConfidence: donor.analysis?.bpmConfidence ?? null,
+              beatConfidence: donor.analysis?.beatConfidence ?? null,
             });
             return;
           }
           const source = libraryDonors.find((item) => item.id === donorId);
-          if (source) void warmLiveSwap(stemType, { id: source.id, bpm: source.analysis?.bpm ?? null });
+          if (source) void warmLiveSwap(stemType, {
+            id: source.id,
+            bpm: source.analysis?.bpm ?? null,
+            bpmConfidence: source.analysis?.bpmConfidence ?? null,
+            beatConfidence: source.analysis?.beatConfidence ?? null,
+          });
         }}
         onPrefetch={(donorId) => prefetchLiveSwapAsset(stemType, donorId)}
         onChoose={(donorId) => {
@@ -4165,11 +4250,19 @@ export default function SessionExperience({
               title: donor.track.title,
               stems: donor.stems,
               bpm: donor.analysis?.bpm ?? null,
+              bpmConfidence: donor.analysis?.bpmConfidence ?? null,
+              beatConfidence: donor.analysis?.beatConfidence ?? null,
             });
             return;
           }
           const source = libraryDonors.find((item) => item.id === donorId);
-          if (source) void requestSwap(stemType, { id: source.id, title: source.title, bpm: source.analysis?.bpm ?? null });
+          if (source) void requestSwap(stemType, {
+            id: source.id,
+            title: source.title,
+            bpm: source.analysis?.bpm ?? null,
+            bpmConfidence: source.analysis?.bpmConfidence ?? null,
+            beatConfidence: source.analysis?.beatConfidence ?? null,
+          });
         }}
         onPrepare={(trackId) => { void startSessionTrackSeparation(trackId); }}
         onRestore={() => {

@@ -14,5 +14,9 @@ export type TrackAnalysis = {
   /** @nullable */
   bpm: number | null;
   /** @nullable */
+  bpmConfidence: number | null;
+  /** @nullable */
+  beatConfidence: number | null;
+  /** @nullable */
   musicalKey: string | null;
 } | null;

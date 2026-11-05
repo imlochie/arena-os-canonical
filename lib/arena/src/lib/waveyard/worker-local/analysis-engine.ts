@@ -17,8 +17,7 @@ import { join } from "node:path";
 
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 
-export const DESKTOP_ANALYSIS_ENGINE = "arena-js-dsp";
-export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.0.0";
+export { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 
 const ANALYSIS_PCM_RATE = 22_050; // mono analysis rate (enough to 10 kHz)
 
@@ -176,26 +175,46 @@ export function chromaFromPcm(pcm: Float32Array): number[] {
 }
 
 export function keyFromChroma(chroma: number[]): { key: string | null; confidence: number | null } {
+  if (chroma.length !== 12 || chroma.some((value) => !Number.isFinite(value) || value < 0)) {
+    return { key: null, confidence: null };
+  }
   const total = chroma.reduce((sum, value) => sum + value, 0);
   if (total <= 1e-9) return { key: null, confidence: null };
   const normalised = chroma.map((value) => (value / total) * 12);
-  let best: { name: string; score: number } | null = null;
+  const mean = normalised.reduce((sum, value) => sum + value, 0) / normalised.length;
+  const centred = normalised.map((value) => value - mean);
+  const chromaNorm = Math.sqrt(centred.reduce((sum, value) => sum + value * value, 0));
+  if (chromaNorm <= 1e-9) return { key: null, confidence: null };
+
+  const candidates: Array<{ name: string; score: number }> = [];
   for (let root = 0; root < 12; root += 1) {
     for (const mode of ["major", "minor"] as const) {
       const profile = mode === "major" ? MAJOR_PROFILE : MINOR_PROFILE;
-      let score = 0;
-      for (let interval = 0; interval < 12; interval += 1) {
-        score += normalised[(root + interval) % 12] * profile[interval];
-      }
-      if (best === null || score > best.score) {
-        best = { name: `${PITCH_CLASSES[root]} ${mode}`, score };
-      }
+      const rotated = profile.map((_, pitchClass) => profile[(pitchClass - root + 12) % 12]);
+      const profileMean = rotated.reduce((sum, value) => sum + value, 0) / rotated.length;
+      const profileCentred = rotated.map((value) => value - profileMean);
+      const profileNorm = Math.sqrt(profileCentred.reduce((sum, value) => sum + value * value, 0));
+      const covariance = centred.reduce((sum, value, index) => sum + value * profileCentred[index], 0);
+      candidates.push({
+        name: `${PITCH_CLASSES[root]} ${mode}`,
+        score: covariance / Math.max(1e-9, chromaNorm * profileNorm),
+      });
     }
   }
-  if (best === null) return { key: null, confidence: null };
-  const scorePerBin = best.score / 12; // theoretical max ≈ max(profile) ≈ 6.35
-  const confidence = Math.max(0, Math.min(1, scorePerBin / 4.2));
-  return { key: best.name, confidence: Math.round(confidence * 1000) / 1000 };
+  candidates.sort((left, right) => right.score - left.score);
+  const best = candidates[0];
+  const runnerUp = candidates[1];
+  if (!best || !runnerUp || best.score <= 0) return { key: null, confidence: null };
+
+  // A high profile fit is not enough when several keys fit almost equally
+  // well (for example, a single major triad). Confidence is an evidence index,
+  // not a probability: profile fit × margin over the nearest competing key.
+  const margin = Math.max(0, best.score - Math.max(0, runnerUp.score));
+  const confidence = Math.max(0, Math.min(1, best.score * Math.min(1, margin / 0.2)));
+  return {
+    key: best.name,
+    confidence: Math.round(confidence * 1000) / 1000,
+  };
 }
 
 export function analysePcm(pcm: Float32Array): AnalysisResult {

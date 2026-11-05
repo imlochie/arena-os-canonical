@@ -74,3 +74,9 @@ For automatic stem swaps, treat a near-2:1 BPM estimate as a possible half/doubl
 **Why:** A low-confidence real-track estimate triggered a half-duration vocal warp that sounded unusable even though the browser routing test passed.
 
 **How to apply:** Keep the automatic tempo policy separate from the engine's wider processing limits, and verify that the picker and saved-swap status clearly distinguish native pace from a true tempo stretch.
+
+Treat BPM confidence and beat-grid confidence as separate decisions: confident BPM estimates may support a modest tempo match, but phase and section alignment require confident beat grids. Weak BPM evidence keeps the donor at native pace; weak beat evidence suppresses sync claims without unnecessarily disabling a safe tempo match.
+
+**Why:** Requiring beat-grid confidence for tempo changes prevented unsafe warps, but also rejected tempo evidence that can be reliable even when phase timing is not. The user needs both musical usefulness and honest sync status.
+
+**How to apply:** Keep separate confidence checks in swap logic and labels, propagate both metrics through library/session responses, and test high-BPM/low-beat cases separately from low-BPM cases.

@@ -60,7 +60,10 @@ import {
   crossfadeEnvelope,
   scaleCrossfadeStemVolumes,
   defaultTransitionConfig,
+  hasReliableLiveStemBeatEvidence,
+  hasReliableLiveStemTempoEvidence,
   keyCompatibility,
+  keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   nextSessionTrack,
   normalizeTransitionConfig,
@@ -291,6 +294,33 @@ test("live stem tempo sync only stretches compatible analyzed tempos", () => {
   assert.equal(liveStemTempoStretchRatio(120, null), null, "missing donor analysis is not guessed");
 });
 
+test("low-confidence timing analysis keeps swaps at native pace", () => {
+  const reliable = {
+    recipientBpmConfidence: 0.8,
+    donorBpmConfidence: 0.7,
+    recipientBeatConfidence: 0.6,
+    donorBeatConfidence: 0.5,
+  };
+  const weakBeat = { ...reliable, recipientBeatConfidence: 0.197 };
+  const testedTracks = {
+    recipientBpmConfidence: 0.154,
+    donorBpmConfidence: 0.437,
+    recipientBeatConfidence: 0.156,
+    donorBeatConfidence: 0.197,
+  };
+
+  assert.equal(hasReliableLiveStemTempoEvidence(reliable), true);
+  assert.equal(hasReliableLiveStemBeatEvidence(reliable), true);
+  assert.equal(hasReliableLiveStemTempoEvidence(weakBeat), true);
+  assert.equal(hasReliableLiveStemBeatEvidence(weakBeat), false);
+  assert.equal(hasReliableLiveStemTempoEvidence(testedTracks), false);
+  assert.equal(hasReliableLiveStemBeatEvidence(testedTracks), false);
+  assert.equal(hasReliableLiveStemTempoEvidence({ ...reliable, donorBpmConfidence: null }), false);
+  assert.equal(liveStemTempoStretchRatio(120, 108, reliable), 0.9);
+  assert.equal(liveStemTempoStretchRatio(120, 108, weakBeat), 0.9);
+  assert.equal(liveStemTempoStretchRatio(103.359, 52.202, testedTracks), 1);
+});
+
 test("key compatibility: same key, fifth, and relative relationships", () => {
   assert.equal(keyCompatibility("A minor", "A minor").compatible, true);
   assert.equal(keyCompatibility("A minor", "A minor").relationship, "same");
@@ -316,6 +346,19 @@ test("key compatibility: missing or malformed keys say so", () => {
   assert.match(missing.reason, /not complete/);
   const malformed = keyCompatibility("definitely not a key", "C major");
   assert.equal(malformed.relationship, "unknown");
+});
+
+test("harmonic fit is tentative when either analyzed key is ambiguous", () => {
+  const confident = keyCompatibilityEvidence("A minor", 0.82, "E minor", 0.74);
+  assert.equal(confident.relationship, "fifth");
+  assert.equal(confident.confidenceLevel, "confident");
+
+  const ambiguous = keyCompatibilityEvidence("A minor", 0.82, "E minor", 0.31);
+  assert.equal(ambiguous.compatible, true, "the theory relationship remains available");
+  assert.equal(ambiguous.confidenceLevel, "tentative", "a low-confidence estimate must not be advertised as a proven fit");
+
+  const oldAnalysis = keyCompatibilityEvidence("A minor", null, "E minor", 0.74);
+  assert.equal(oldAnalysis.confidenceLevel, "unavailable", "legacy or missing confidence is not silently treated as reliable");
 });
 
 // ------------------------------------------------------------ beat alignment

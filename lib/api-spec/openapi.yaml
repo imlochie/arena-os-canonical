@@ -1579,9 +1579,15 @@ components:
           type: string
         bpm:
           type: ["number", "null"]
+        bpmConfidence:
+          type: ["number", "null"]
+        beatConfidence:
+          type: ["number", "null"]
+        keyConfidence:
+          type: ["number", "null"]
         musicalKey:
           type: ["string", "null"]
-      required: [status, bpm, musicalKey]
+      required: [status, bpm, bpmConfidence, beatConfidence, keyConfidence, musicalKey]
     StemAvailability:
       oneOf:
         - type: object

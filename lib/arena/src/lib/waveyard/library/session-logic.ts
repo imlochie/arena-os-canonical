@@ -167,6 +167,35 @@ export function isHalfDoubleTempoPair(
     && (Math.abs(ratio - 0.5) <= RATIO_LOCK_TOLERANCE || Math.abs(ratio - 2) <= RATIO_LOCK_TOLERANCE);
 }
 
+export interface LiveStemTempoEvidence {
+  recipientBpmConfidence: number | null | undefined;
+  donorBpmConfidence: number | null | undefined;
+  recipientBeatConfidence: number | null | undefined;
+  donorBeatConfidence: number | null | undefined;
+}
+
+const LIVE_STEM_MIN_TEMPO_CONFIDENCE = 0.5;
+
+function hasConfidenceAtLeastHalf(confidence: number | null | undefined): boolean {
+  return typeof confidence === "number"
+    && Number.isFinite(confidence)
+    && confidence >= LIVE_STEM_MIN_TEMPO_CONFIDENCE;
+}
+
+export function hasReliableLiveStemTempoEvidence(evidence: LiveStemTempoEvidence): boolean {
+  return [
+    evidence.recipientBpmConfidence,
+    evidence.donorBpmConfidence,
+  ].every(hasConfidenceAtLeastHalf);
+}
+
+export function hasReliableLiveStemBeatEvidence(evidence: LiveStemTempoEvidence): boolean {
+  return hasReliableLiveStemTempoEvidence(evidence) && [
+    evidence.recipientBeatConfidence,
+    evidence.donorBeatConfidence,
+  ].every(hasConfidenceAtLeastHalf);
+}
+
 /**
  * Safe automatic live-stem stretch factor (output duration / donor duration).
  * Keep half/double-time pairs at the donor's native pace; only modestly stretch
@@ -176,10 +205,12 @@ export function isHalfDoubleTempoPair(
 export function liveStemTempoStretchRatio(
   recipientBpm: number | null,
   donorBpm: number | null,
+  evidence?: LiveStemTempoEvidence,
 ): number | null {
   if (recipientBpm === null || donorBpm === null) return null;
   const ratio = tempoRatioForBpm(donorBpm, recipientBpm);
   if (ratio === null) return null;
+  if (evidence !== undefined && !hasReliableLiveStemTempoEvidence(evidence)) return 1;
   if (isHalfDoubleTempoPair(recipientBpm, donorBpm)) return 1;
   return ratio >= LIVE_STEM_AUTO_STRETCH_MIN_RATIO && ratio <= LIVE_STEM_AUTO_STRETCH_MAX_RATIO
     ? ratio
@@ -290,6 +321,40 @@ export function keyCompatibility(aKey: string | null, bKey: string | null): KeyC
   return {
     aKey: a, bKey: b, shiftSemitones: shift, relationship: "other", compatible: false,
     reason: `Keys ${a} and ${b} share no simple relationship (${shift !== null && shift > 0 ? "+" : ""}${shift} semitones) — the transition may sound clashy.`,
+  };
+}
+
+export type KeyConfidenceLevel = "confident" | "tentative" | "unavailable";
+export interface KeyCompatibilityEvidence extends KeyCompatibility {
+  confidenceLevel: KeyConfidenceLevel;
+  confidence: number | null;
+}
+
+const KEY_COMPATIBILITY_MIN_CONFIDENCE = 0.5;
+
+/** Keep harmonic labels tentative when either source key is ambiguous or stale. */
+export function keyCompatibilityEvidence(
+  aKey: string | null,
+  aConfidence: number | null | undefined,
+  bKey: string | null,
+  bConfidence: number | null | undefined,
+): KeyCompatibilityEvidence {
+  const compatibility = keyCompatibility(aKey, bKey);
+  const validConfidence = (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+  if (
+    compatibility.relationship === "unknown"
+    || !validConfidence(aConfidence)
+    || !validConfidence(bConfidence)
+  ) {
+    return { ...compatibility, confidenceLevel: "unavailable", confidence: null };
+  }
+
+  const confidence = Math.min(aConfidence, bConfidence);
+  return {
+    ...compatibility,
+    confidenceLevel: confidence >= KEY_COMPATIBILITY_MIN_CONFIDENCE ? "confident" : "tentative",
+    confidence,
   };
 }
 

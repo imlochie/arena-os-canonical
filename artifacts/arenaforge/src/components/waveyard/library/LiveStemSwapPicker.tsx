@@ -2,14 +2,23 @@
 
 import Link from "@/routing/Link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isHalfDoubleTempoPair, keyCompatibility, liveStemTempoStretchRatio } from "@workspace/arena/lib/waveyard/library/session-logic";
+import {
+  hasReliableLiveStemTempoEvidence,
+  hasReliableLiveStemBeatEvidence,
+  isHalfDoubleTempoPair,
+  keyCompatibilityEvidence,
+  liveStemTempoStretchRatio,
+} from "@workspace/arena/lib/waveyard/library/session-logic";
 
 export interface LiveStemDonorOption {
   id: string;
   title: string;
   artist: string;
   bpm: number | null;
+  bpmConfidence: number | null;
+  beatConfidence: number | null;
   musicalKey: string | null;
+  keyConfidence: number | null;
   collection: "session" | "library";
 }
 
@@ -24,7 +33,10 @@ export interface LiveStemPreparationOption {
 interface LiveStemSwapPickerProps {
   stemType: string;
   currentBpm: number | null;
+  currentBpmConfidence: number | null;
+  currentBeatConfidence: number | null;
   currentKey: string | null;
+  currentKeyConfidence: number | null;
   candidates: LiveStemDonorOption[];
   preparationCandidates: LiveStemPreparationOption[];
   preparingTrackIds: ReadonlySet<string>;
@@ -58,7 +70,10 @@ function usesCompactPickerViewport() {
 export default function LiveStemSwapPicker({
   stemType,
   currentBpm,
+  currentBpmConfidence,
+  currentBeatConfidence,
   currentKey,
+  currentKeyConfidence,
   candidates,
   preparationCandidates,
   preparingTrackIds,
@@ -196,20 +211,40 @@ export default function LiveStemSwapPicker({
   const visiblePreparationCandidates = filteredPreparationCandidates.slice(0, 12);
 
   const renderCandidate = (candidate: LiveStemDonorOption, index: number) => {
-    const stretchRatio = liveStemTempoStretchRatio(currentBpm, candidate.bpm);
-    const key = keyCompatibility(currentKey, candidate.musicalKey);
+    const tempoEvidence = {
+      recipientBpmConfidence: currentBpmConfidence,
+      donorBpmConfidence: candidate.bpmConfidence,
+      recipientBeatConfidence: currentBeatConfidence,
+      donorBeatConfidence: candidate.beatConfidence,
+    };
+    const reliableTempoEvidence = hasReliableLiveStemTempoEvidence(tempoEvidence);
+    const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
+    const stretchRatio = liveStemTempoStretchRatio(currentBpm, candidate.bpm, tempoEvidence);
+    const key = keyCompatibilityEvidence(
+      currentKey,
+      currentKeyConfidence,
+      candidate.musicalKey,
+      candidate.keyConfidence,
+    );
     const tempoKnown = currentBpm !== null && candidate.bpm !== null
       && Number.isFinite(currentBpm) && Number.isFinite(candidate.bpm)
       && currentBpm > 0 && candidate.bpm > 0;
-    const halfDoubleTempo = tempoKnown && isHalfDoubleTempoPair(currentBpm, candidate.bpm);
-    const tempoMatchUnavailable = tempoKnown && stretchRatio === null && !halfDoubleTempo;
+    const halfDoubleTempo = tempoKnown && reliableTempoEvidence && isHalfDoubleTempoPair(currentBpm, candidate.bpm);
+    const lowTempoConfidence = tempoKnown && !reliableTempoEvidence;
+    const lowBeatConfidence = tempoKnown && !reliableBeatEvidence;
+    const tempoMatchUnavailable = tempoKnown && !lowTempoConfidence && stretchRatio === null && !halfDoubleTempo;
     const keyKnown = currentKey !== null && candidate.musicalKey !== null;
     const tempoLabel = !tempoKnown ? "BPM unknown"
+      : lowTempoConfidence ? "Low confidence · native pace"
       : halfDoubleTempo ? "Half/double-time · no stretch"
       : stretchRatio === null ? "Outside tempo-match range"
       : Math.abs(stretchRatio - 1) < 0.001 ? "Same tempo"
       : `Match ${candidate.bpm} → ${currentBpm} BPM`;
-    const keyLabel = matchLabel("Key", keyKnown, key.compatible);
+    const keyLabel = !keyKnown ? "Key unknown"
+      : key.confidenceLevel === "confident" ? matchLabel("Key", true, key.compatible)
+      : key.confidenceLevel === "tentative"
+        ? `Tentative key · possible ${key.compatible ? "fit" : "clash"}`
+        : "Key confidence unavailable";
     const selected = candidate.id === selectedDonorId;
     const isWarming = candidate.id === warmingDonorId;
     const warmStatus = tempoKnown && stretchRatio !== null && Math.abs(stretchRatio - 1) > 0.001
@@ -225,7 +260,7 @@ export default function LiveStemSwapPicker({
         title={tempoMatchUnavailable ? "Live swap is disabled because matching would require an extreme tempo change." : undefined}
         aria-pressed={selected}
         aria-busy={isWarming}
-        aria-label={`${tempoMatchUnavailable ? "Unavailable; " : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${isWarming ? `; ${warmStatus}` : ""}`}
+        aria-label={`${tempoMatchUnavailable ? "Unavailable; " : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${lowBeatConfidence ? "; beat sync unavailable because analysis confidence is low" : ""}${isWarming ? `; ${warmStatus}` : ""}`}
         data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
         onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
         onPointerEnter={() => scheduleHoverWarm(candidate.id)}
@@ -245,12 +280,15 @@ export default function LiveStemSwapPicker({
           </small>
         </span>
         <span className="wy-swap-fit">
-          <span className={`wy-swap-fit-chip ${tempoKnown ? (stretchRatio !== null ? "match" : "different") : "unknown"}`}>
+          <span className={`wy-swap-fit-chip ${!tempoKnown || lowTempoConfidence ? "unknown" : (stretchRatio !== null ? "match" : "different")}`}>
             {tempoLabel}
           </span>
           <span className={`wy-swap-fit-chip ${keyKnown ? (key.compatible ? "match" : "different") : "unknown"}`}>
             {keyLabel}
           </span>
+          {lowBeatConfidence && (
+            <span className="wy-swap-fit-chip unknown">Beat sync unavailable</span>
+          )}
           {isWarming && <span className="wy-swap-fit-chip unknown" role="status">{warmStatus}</span>}
         </span>
       </button>
