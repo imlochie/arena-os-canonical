@@ -218,14 +218,18 @@ logged-in accounts. Select them only if you accept that sensitive information
 being included.
 
 The backup stays in the destination folder you select; nothing is uploaded.
-Creating a backup pauses Arena, confirms a clean PostgreSQL shutdown, and
-verifies every included file. Unsupported entries such as symbolic links fail
-closed. The current version encrypts file contents with AES-256-GCM and derives
-the key from the passphrase with scrypt. Files are processed as streams, and an
-encrypted index protects their original paths. The public manifest shows the
-selected scope and opaque encrypted-file sizes and hashes, not included file
-names or contents. Older version 1 backups encrypt only the matching database
-credential; their database and optional local files remain readable.
+Before Arena pauses, the confirmation shows estimated file counts and sizes for
+the database and each selected folder. A progress window reports file-copy and
+verification progress and can cancel the operation. Canceling or encountering an
+error removes the incomplete backup folder and restarts Arena with its original
+data. Estimates may change if files change before copying. Unsupported entries
+such as symbolic links fail closed. The current version encrypts file contents
+with AES-256-GCM and derives the key from the passphrase with scrypt. Files are
+processed as streams, and an encrypted index protects their original paths. The
+public manifest shows the selected scope and opaque encrypted-file sizes and
+hashes, not included file names or contents. Older version 1 backups encrypt
+only the matching database credential; their database and optional local files
+remain readable.
 
 Restore verifies the backup and protected credential, requires a new empty data
 folder, and restores selected files only under that new Arena data root. The

@@ -9,6 +9,7 @@ import { DesktopDatabase } from "./database.mjs";
 import {
   backupContentSummary,
   createArenaBackup,
+  estimateArenaBackup,
   readArenaBackupManifest,
   restoreArenaBackup,
   waveyardSelectionFromManifest,
@@ -229,6 +230,74 @@ function backupScopeDialog() {
   });
 }
 
+async function backupProgressDialog(controller) {
+  const prompt = new BrowserWindow({
+    parent: window,
+    modal: true,
+    width: 470,
+    height: 370,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: "Creating Arena backup",
+    webPreferences: {
+      preload: path.join(__dirname, "backup-preload.mjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  const html = `<!doctype html><meta charset="utf-8"><title>Creating Arena backup</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;padding:24px;background:#111820;color:#f4f3ed;font:14px system-ui}
+    p{color:#b7c0c7;line-height:1.5}.track{height:12px;background:#29343c;border-radius:8px;overflow:hidden}
+    .bar{height:100%;width:0;background:#a6e85c;transition:width .12s}.section{margin:20px 0}
+    .label{display:flex;justify-content:space-between;margin-bottom:7px}footer{display:flex;justify-content:flex-end;margin-top:22px}
+    button{padding:9px 16px;border:1px solid #46545c;border-radius:7px;background:#1b252d;color:#fff;font:inherit}
+  </style><h2>Creating Arena backup</h2><p id="status">Preparing to stop Arena safely…</p>
+  <div class="section"><div class="label"><strong>Copying files</strong><span id="copy-count">Waiting</span></div><div class="track"><div class="bar" id="copy-bar"></div></div><p id="copy-size">Not started</p></div>
+  <div class="section"><div class="label"><strong>Verifying backup</strong><span id="verify-count">Waiting</span></div><div class="track"><div class="bar" id="verify-bar"></div></div><p id="verify-size">Not started</p></div>
+  <footer><button id="cancel" type="button">Cancel backup</button></footer>
+  <script>
+    const format=n=>{if(!Number.isFinite(n))return "—";if(n<1024)return n+" B";const u=["KiB","MiB","GiB","TiB"];let v=n,i=-1;do{v/=1024;i++;}while(v>=1024&&i<u.length-1);return v.toFixed(1)+" "+u[i];};
+    window.arenaBackupDialog.onProgress(value=>{
+      const phase=value.phase==="verify"?"verify":"copy";
+      const count=document.getElementById(phase+"-count"),size=document.getElementById(phase+"-size"),bar=document.getElementById(phase+"-bar");
+      const done=value.completedFiles||0,total=value.totalFiles||0,bytes=value.completedBytes||0,totalBytes=value.totalBytes||0;
+      count.textContent=done+" / "+total+" files";
+      size.textContent=format(bytes)+" / "+format(totalBytes);
+      bar.style.width=(totalBytes>0?Math.min(100,bytes/totalBytes*100):(total>0?done/total*100:0))+"%";
+      document.getElementById("status").textContent=phase==="copy"?"Encrypting selected files…":"Checking every backup file…";
+    });
+    document.getElementById("cancel").onclick=()=>{document.getElementById("cancel").disabled=true;document.getElementById("status").textContent="Canceling safely…";window.arenaBackupDialog.cancelBackup();};
+  </script>`;
+  prompt.setMenuBarVisibility(false);
+  let closedNormally = false;
+  const onCancel = event => {
+    if (event.sender === prompt.webContents && !controller.signal.aborted) {
+      controller.abort(new Error("Arena backup canceled."));
+    }
+  };
+  ipcMain.on("arena-backup-progress-cancel", onCancel);
+  prompt.once("closed", () => {
+    ipcMain.removeListener("arena-backup-progress-cancel", onCancel);
+    if (!closedNormally && !controller.signal.aborted) {
+      controller.abort(new Error("Arena backup canceled."));
+    }
+  });
+  await prompt.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  return {
+    update: value => {
+      if (!prompt.isDestroyed()) prompt.webContents.send("arena-backup-progress", value);
+    },
+    close: () => {
+      closedNormally = true;
+      if (!prompt.isDestroyed()) prompt.close();
+      ipcMain.removeListener("arena-backup-progress-cancel", onCancel);
+    },
+  };
+}
+
 function relaunch(dataDir = null) {
   const env = { ...process.env };
   if (dataDir) env.ARENA_DATA_DIR = dataDir;
@@ -250,6 +319,13 @@ function setDataMenu(root) {
       ARENA_BACKUP_SCOPES.find(scope => scope.id === id)?.label ??
       id,
     );
+    let estimate;
+    try {
+      estimate = await estimateArenaBackup({ root, localFolders, waveyardSelection });
+    } catch (error) {
+      dialog.showErrorBox("Arena backup estimate failed", `${error.message}\n\nArena has not paused and no backup was created.`);
+      return;
+    }
     const folder = await dialog.showOpenDialog(window, {
       title: "Choose where to save the Arena backup",
       properties: ["openDirectory", "createDirectory"],
@@ -264,15 +340,20 @@ function setDataMenu(root) {
     const confirmation = await dialog.showMessageBox(window, {
       type: "warning",
       title: "Create Arena data backup",
-      message: "Arena will pause and restart to make a safe database copy.",
-      detail: `Includes Arena database records and selected folders: ${selectedFolderLabels.join(", ") || "none"}. The passphrase encrypts every included file. Browser profiles ${localFolders.includes("browser-profiles") ? "can contain cookies, saved sessions, browsing history, and logged-in accounts; include them only if you accept copying that sensitive data." : "are excluded."}`,
+      message: `Arena will pause and restart to make a safe database copy. Estimated total: ${estimate.fileCount} files (${formatBackupBytes(estimate.totalBytes)}).`,
+      detail: `Estimated files by folder:\n${estimate.folderEstimates.map(group => `${group.label}: ${group.fileCount} files (${formatBackupBytes(group.totalBytes)})`).join("\n")}\n\nIncludes selected folders: ${selectedFolderLabels.join(", ") || "none"}. Sizes are estimates and may change before copying. The passphrase encrypts every included file. Browser profiles ${localFolders.includes("browser-profiles") ? "can contain cookies, saved sessions, browsing history, and logged-in accounts; include them only if you accept copying that sensitive data." : "are excluded."}`,
       buttons: ["Create backup", "Cancel"],
       defaultId: 0,
       cancelId: 1,
     });
     if (confirmation.response !== 0) return;
+    const controller = new AbortController();
+    let progress;
     try {
+      progress = await backupProgressDialog(controller);
       await stop();
+      if (controller.signal.aborted) throw controller.signal.reason;
+      progress.update({ phase: "copy", completedFiles: 0, totalFiles: estimate.fileCount, completedBytes: 0, totalBytes: estimate.totalBytes });
       const result = await createArenaBackup({
         root,
         parentDir: folder.filePaths[0],
@@ -280,7 +361,11 @@ function setDataMenu(root) {
         databaseStopped: true,
         localFolders,
         waveyardSelection,
+        signal: controller.signal,
+        onProgress: value => progress.update(value),
       });
+      progress.close();
+      progress = null;
       const summary = result.summary;
       await dialog.showMessageBox({
         type: "info",
@@ -290,7 +375,12 @@ function setDataMenu(root) {
       });
       relaunch();
     } catch (error) {
-      dialog.showErrorBox("Arena backup failed", `${error.message}\n\nNo live database was copied. Arena will restart with the original data.`);
+      progress?.close();
+      const canceled = controller.signal.aborted;
+      dialog.showErrorBox(
+        canceled ? "Arena backup canceled" : "Arena backup failed",
+        `${canceled ? "The incomplete backup was removed." : error.message}\n\nArena will restart with the original data.`,
+      );
       relaunch();
     }
   };

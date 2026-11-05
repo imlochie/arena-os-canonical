@@ -58,22 +58,63 @@ export function postmasterState(dataDir, exists = processExists) {
   return running ? "running" : "stopped";
 }
 
-async function hashFile(file) {
+async function hashFile(file, { onBytes, signal } = {}) {
   return new Promise((resolve, reject) => {
     const hash = createHash("sha256");
-    createReadStream(file).on("data", chunk => hash.update(chunk)).on("error", reject).on("end", () => resolve(hash.digest("hex")));
+    const stream = createReadStream(file, { signal });
+    stream.on("data", chunk => {
+      try {
+        hash.update(chunk);
+        onBytes?.(chunk.length);
+        throwIfAborted(signal);
+      } catch (error) {
+        stream.destroy(error);
+      }
+    }).on("error", error => {
+      reject(signal?.aborted && signal.reason instanceof Error ? signal.reason : error);
+    }).on("end", () => resolve(hash.digest("hex")));
   });
 }
 
-async function hashTree(root) {
+async function hashTree(root, { onProgress, signal, totalFiles, totalBytes } = {}) {
   const files = {};
+  let completedFiles = 0;
+  let completedBytes = 0;
   async function walk(current) {
+    throwIfAborted(signal);
     for (const entry of await readdir(current, { withFileTypes: true })) {
+      throwIfAborted(signal);
       const full = path.join(current, entry.name);
       const relative = path.relative(root, full).split(path.sep).join("/");
       const stat = await lstat(full);
       if (stat.isDirectory()) await walk(full);
-      else if (stat.isFile()) files[relative] = { bytes: stat.size, sha256: await hashFile(full) };
+      else if (stat.isFile()) {
+        if (relative === "backup-manifest.json") continue;
+        files[relative] = {
+          bytes: stat.size,
+          sha256: await hashFile(full, {
+            signal,
+            onBytes: bytes => {
+              completedBytes += bytes;
+              onProgress?.({
+                phase: "verify",
+                completedFiles,
+                totalFiles,
+                completedBytes,
+                totalBytes,
+              });
+            },
+          }),
+        };
+        completedFiles += 1;
+        onProgress?.({
+          phase: "verify",
+          completedFiles,
+          totalFiles,
+          completedBytes,
+          totalBytes,
+        });
+      }
       else throw new Error(`Unsupported database backup entry: ${relative}`);
     }
   }
@@ -255,30 +296,51 @@ function validateFileMap(files, label = "backup") {
   }
 }
 
-function makeMeter(hash, count) {
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Arena backup canceled.");
+  }
+}
+
+function makeMeter(hash, count, onBytes, signal) {
   return new Transform({
     transform(chunk, encoding, callback) {
       hash.update(chunk);
       count.bytes += chunk.length;
+      try {
+        onBytes?.(chunk.length);
+        throwIfAborted(signal);
+      } catch (error) {
+        callback(error);
+        return;
+      }
       callback(null, chunk);
     },
   });
 }
 
-async function encryptStreamToFile(source, destination, key) {
+async function encryptStreamToFile(source, destination, key, { onBytes, signal } = {}) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const plainHash = createHash("sha256");
   const encryptedHash = createHash("sha256");
   const plainCount = { bytes: 0 };
   const encryptedCount = { bytes: 0 };
-  await pipeline(
-    source,
-    makeMeter(plainHash, plainCount),
-    cipher,
-    makeMeter(encryptedHash, encryptedCount),
-    createWriteStream(destination, { flags: "wx", mode: 0o600 }),
-  );
+  try {
+    await pipeline(
+      source,
+      makeMeter(plainHash, plainCount, onBytes, signal),
+      cipher,
+      makeMeter(encryptedHash, encryptedCount),
+      createWriteStream(destination, { flags: "wx", mode: 0o600 }),
+      { signal },
+    );
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Arena backup canceled.");
+    throw error;
+  }
   return {
     iv: iv.toString("base64"),
     tag: cipher.getAuthTag().toString("base64"),
@@ -289,8 +351,8 @@ async function encryptStreamToFile(source, destination, key) {
   };
 }
 
-async function encryptFileToFile(source, destination, key) {
-  return encryptStreamToFile(createReadStream(source), destination, key);
+async function encryptFileToFile(source, destination, key, options) {
+  return encryptStreamToFile(createReadStream(source, { signal: options?.signal }), destination, key, options);
 }
 
 async function encryptBufferToFile(contents, destination, key) {
@@ -339,7 +401,8 @@ async function decryptFileToFile(source, destination, key, ivText, tagText) {
   return { bytes: plainCount.bytes, sha256: plainHash.digest("hex") };
 }
 
-async function collectDirectoryFiles(directory, prefix, { optional = false, excludeBrowserProfiles = false } = {}) {
+async function collectDirectoryFiles(directory, prefix, { optional = false, excludeBrowserProfiles = false, signal } = {}) {
+  throwIfAborted(signal);
   let rootStat;
   try {
     rootStat = await lstat(directory);
@@ -353,13 +416,14 @@ async function collectDirectoryFiles(directory, prefix, { optional = false, excl
     const entries = await readdir(current, { withFileTypes: true });
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
+      throwIfAborted(signal);
       if (excludeBrowserProfiles && entry.name === "browser-profile") continue;
       const full = path.join(current, entry.name);
       const stat = await lstat(full);
       const subpath = path.relative(directory, full).split(path.sep).join("/");
       const relative = `${prefix}/${subpath}`;
       if (stat.isDirectory()) await walk(full);
-      else if (stat.isFile()) files.push({ source: full, relative });
+      else if (stat.isFile()) files.push({ source: full, relative, bytes: stat.size });
       else throw new Error(`Unsupported Arena backup entry: ${relative}`);
     }
   }
@@ -530,6 +594,151 @@ function assertNewPassphrase(passphrase) {
   }
 }
 
+function resolveBackupSelection({
+  includeWaveyardFiles,
+  requestedWaveyardSelection,
+  localFolders,
+}) {
+  if (includeWaveyardFiles !== undefined && typeof includeWaveyardFiles !== "boolean") {
+    throw new Error("Choose whether Waveyard files should be included in the Arena backup.");
+  }
+  const scopes = normalizeScopes(localFolders ?? []);
+  const waveyardSelection = requestedWaveyardSelection === undefined
+    ? (includeWaveyardFiles === true || scopes.includes("waveyard-storage")
+      ? ARENA_WAVEYARD_BACKUP_PARTS.map(part => part.id)
+      : [])
+    : normalizeWaveyardSelection(requestedWaveyardSelection);
+  if (includeWaveyardFiles === false &&
+    (scopes.includes("waveyard-storage") || waveyardSelection.length > 0)) {
+    throw new Error("Waveyard files cannot be both selected and excluded from this backup.");
+  }
+  if (includeWaveyardFiles === true && waveyardSelection.length === 0) {
+    throw new Error("Waveyard files cannot be both excluded and selected from this backup.");
+  }
+  if (requestedWaveyardSelection !== undefined &&
+    scopes.includes("waveyard-storage") && waveyardSelection.length === 0) {
+    throw new Error("Waveyard files cannot be both selected and excluded from this backup.");
+  }
+  if (waveyardSelection.length > 0 && !scopes.includes("waveyard-storage")) scopes.push("waveyard-storage");
+  scopes.sort();
+  return { scopes, waveyardSelection };
+}
+
+async function collectBackupSourceFiles(root, scopes, waveyardSelection, { signal } = {}) {
+  throwIfAborted(signal);
+  const dataDir = path.join(root, "data/postgres");
+  const sourceFiles = await collectDirectoryFiles(dataDir, "database", { signal });
+  const credentialPath = path.join(root, "runtime/db-password.json");
+  const credentialStat = await lstat(credentialPath);
+  if (!credentialStat.isFile()) throw new Error("The database credential must be a regular file.");
+  sourceFiles.push({
+    source: credentialPath,
+    relative: "runtime/db-password.json",
+    bytes: credentialStat.size,
+  });
+
+  for (const part of ARENA_WAVEYARD_BACKUP_PARTS) {
+    if (!waveyardSelection.includes(part.id)) continue;
+    sourceFiles.push(...await collectDirectoryFiles(
+      path.join(root, ...part.relativePath.split("/")),
+      part.relativePath,
+      { optional: true, signal },
+    ));
+  }
+  if (scopes.includes("waveyard-models")) {
+    sourceFiles.push(...await collectDirectoryFiles(
+      path.join(root, "waveyard/models"),
+      "waveyard/models",
+      { optional: true, signal },
+    ));
+  }
+  if (scopes.includes("workspace-files")) {
+    sourceFiles.push(...await collectDirectoryFiles(
+      path.join(root, "data/space-workspaces"),
+      "data/space-workspaces",
+      { optional: true, excludeBrowserProfiles: true, signal },
+    ));
+  }
+  if (scopes.includes("browser-profiles")) {
+    for (const relative of await findBrowserProfiles(root)) {
+      throwIfAborted(signal);
+      sourceFiles.push(...await collectDirectoryFiles(
+        path.join(root, ...relative.split("/")),
+        relative,
+        { signal },
+      ));
+    }
+  }
+  const sourcePaths = new Set();
+  for (const file of sourceFiles) {
+    if (!isAllowedPlainPath(file.relative, scopes) || sourcePaths.has(file.relative)) {
+      throw new Error(`Unsupported or duplicate Arena backup entry: ${file.relative}`);
+    }
+    sourcePaths.add(file.relative);
+  }
+  return sourceFiles;
+}
+
+export async function estimateArenaBackup({
+  root,
+  includeWaveyardFiles,
+  waveyardSelection: requestedWaveyardSelection,
+  localFolders,
+  signal,
+}) {
+  const { scopes, waveyardSelection } = resolveBackupSelection({
+    includeWaveyardFiles,
+    requestedWaveyardSelection,
+    localFolders,
+  });
+  const files = await collectBackupSourceFiles(root, scopes, waveyardSelection, { signal });
+  const databaseFiles = files.filter(file => file.relative.startsWith("database/"));
+  const optionalFiles = files.filter(file =>
+    !file.relative.startsWith("database/") && file.relative !== "runtime/db-password.json",
+  );
+  const groups = new Map();
+  const addGroup = (id, label) => {
+    if (!groups.has(id)) groups.set(id, { id, label, fileCount: 0, totalBytes: 0 });
+  };
+  addGroup("database", "Arena database and credential");
+  for (const id of waveyardSelection) {
+    const part = ARENA_WAVEYARD_BACKUP_PARTS.find(candidate => candidate.id === id);
+    addGroup(id, part?.label ?? id);
+  }
+  for (const id of scopes.filter(scope => scope !== "waveyard-storage")) {
+    const scope = ARENA_BACKUP_SCOPES.find(candidate => candidate.id === id);
+    addGroup(id, scope?.label ?? id);
+  }
+  for (const file of files) {
+    let groupId = "database";
+    if (!file.relative.startsWith("database/") && file.relative !== "runtime/db-password.json") {
+      const part = ARENA_WAVEYARD_BACKUP_PARTS.find(candidate =>
+        file.relative.startsWith(`${candidate.relativePath}/`),
+      );
+      if (part) groupId = part.id;
+      else if (file.relative.startsWith("waveyard/models/")) groupId = "waveyard-models";
+      else if (/^data\/space-workspaces\/[^/]+\/browser-profile\//.test(file.relative)) groupId = "browser-profiles";
+      else groupId = "workspace-files";
+    }
+    const group = groups.get(groupId);
+    if (group) {
+      group.fileCount += 1;
+      group.totalBytes += file.bytes;
+    }
+  }
+  return {
+    fileCount: files.length,
+    totalBytes: files.reduce((total, file) => total + file.bytes, 0),
+    databaseFileCount: databaseFiles.length,
+    databaseBytes: databaseFiles.reduce((total, file) => total + file.bytes, 0),
+    localFileCount: optionalFiles.length,
+    localBytes: optionalFiles.reduce((total, file) => total + file.bytes, 0),
+    folderEstimates: [...groups.values()],
+    waveyardSelection,
+    localFolders: scopes,
+  };
+}
+
 async function readManifest(backupDir) {
   let manifest;
   try {
@@ -556,10 +765,16 @@ export async function readArenaBackupManifest(backupDir) {
   return readManifest(backupDir);
 }
 
-export async function verifyArenaBackup(backupDir) {
+export async function verifyArenaBackup(backupDir, { onProgress, signal } = {}) {
   const manifest = await readManifest(backupDir);
-  const actual = await hashTree(backupDir);
-  delete actual["backup-manifest.json"];
+  const expectedFiles = Object.values(manifest.files);
+  const actual = await hashTree(backupDir, {
+    onProgress,
+    signal,
+    totalFiles: expectedFiles.length,
+    totalBytes: expectedFiles.reduce((total, file) => total + file.bytes, 0),
+  });
+  throwIfAborted(signal);
   const mismatches = [];
   for (const [relative, expected] of Object.entries(manifest.files)) {
     if (!actual[relative]) mismatches.push(`${relative}: missing`);
@@ -749,30 +964,16 @@ export async function createArenaBackup({
   localFolders,
   now = () => new Date(),
   processExists: exists = processExists,
+  onProgress,
+  signal,
 }) {
   assertNewPassphrase(passphrase);
-  if (includeWaveyardFiles !== undefined && typeof includeWaveyardFiles !== "boolean") {
-    throw new Error("Choose whether Waveyard files should be included in the Arena backup.");
-  }
-  const scopes = normalizeScopes(localFolders ?? []);
-  const waveyardSelection = requestedWaveyardSelection === undefined
-    ? (includeWaveyardFiles === true || scopes.includes("waveyard-storage")
-      ? ARENA_WAVEYARD_BACKUP_PARTS.map(part => part.id)
-      : [])
-    : normalizeWaveyardSelection(requestedWaveyardSelection);
-  if (includeWaveyardFiles === false &&
-    (scopes.includes("waveyard-storage") || waveyardSelection.length > 0)) {
-    throw new Error("Waveyard files cannot be both selected and excluded from this backup.");
-  }
-  if (includeWaveyardFiles === true && waveyardSelection.length === 0) {
-    throw new Error("Waveyard files cannot be both excluded and selected from this backup.");
-  }
-  if (requestedWaveyardSelection !== undefined &&
-    scopes.includes("waveyard-storage") && waveyardSelection.length === 0) {
-    throw new Error("Waveyard files cannot be both selected and excluded from this backup.");
-  }
-  if (waveyardSelection.length > 0 && !scopes.includes("waveyard-storage")) scopes.push("waveyard-storage");
-  scopes.sort();
+  const { scopes, waveyardSelection } = resolveBackupSelection({
+    includeWaveyardFiles,
+    requestedWaveyardSelection,
+    localFolders,
+  });
+  throwIfAborted(signal);
   if (databaseStopped !== true) {
     throw new Error("Arena has not confirmed a clean database shutdown; refusing the backup.");
   }
@@ -780,48 +981,15 @@ export async function createArenaBackup({
   if (postmasterState(dataDir, exists) !== "stopped") {
     throw new Error("PostgreSQL is still running; Arena will not copy a live database.");
   }
-  const databaseFiles = await collectDirectoryFiles(dataDir, "database");
+  const sourceFiles = await collectBackupSourceFiles(root, scopes, waveyardSelection, { signal });
+  const databaseFiles = sourceFiles.filter(file => file.relative.startsWith("database/"));
   if (!databaseFiles.some(file => file.relative === "database/PG_VERSION")) {
     throw new Error("The database version marker is missing; refusing the backup.");
   }
   const version = (await readFile(path.join(dataDir, "PG_VERSION"), "utf8")).trim();
   if (!/^\d+$/.test(version)) throw new Error("The database version could not be verified; refusing the backup.");
-  const credentialPath = path.join(root, "runtime/db-password.json");
-  const credential = await readFile(credentialPath);
-  validateCredential(credential);
-  const sourceFiles = [
-    ...databaseFiles,
-    { source: credentialPath, relative: "runtime/db-password.json", buffer: credential },
-  ];
-  for (const part of ARENA_WAVEYARD_BACKUP_PARTS) {
-    if (!waveyardSelection.includes(part.id)) continue;
-    sourceFiles.push(...await collectDirectoryFiles(
-      path.join(root, ...part.relativePath.split("/")),
-      part.relativePath,
-      { optional: true },
-    ));
-  }
-  if (scopes.includes("waveyard-models")) {
-    sourceFiles.push(...await collectDirectoryFiles(path.join(root, "waveyard/models"), "waveyard/models", { optional: true }));
-  }
-  if (scopes.includes("workspace-files")) {
-    sourceFiles.push(...await collectDirectoryFiles(path.join(root, "data/space-workspaces"), "data/space-workspaces", {
-      optional: true,
-      excludeBrowserProfiles: true,
-    }));
-  }
-  if (scopes.includes("browser-profiles")) {
-    for (const relative of await findBrowserProfiles(root)) {
-      sourceFiles.push(...await collectDirectoryFiles(path.join(root, ...relative.split("/")), relative));
-    }
-  }
-  const sourcePaths = new Set();
-  for (const file of sourceFiles) {
-    if (!isAllowedPlainPath(file.relative, scopes) || sourcePaths.has(file.relative)) {
-      throw new Error(`Unsupported or duplicate Arena backup entry: ${file.relative}`);
-    }
-    sourcePaths.add(file.relative);
-  }
+  const credentialFile = sourceFiles.find(file => file.relative === "runtime/db-password.json");
+  if (!credentialFile) throw new Error("The database credential is missing from the backup selection.");
 
   const timestamp = now().toISOString().replace(/[:.]/g, "-");
   const backupDir = path.join(parentDir, `Arena-data-${timestamp}`);
@@ -831,26 +999,69 @@ export async function createArenaBackup({
   }
   await mkdir(backupDir, { recursive: false });
   let key;
+  let credential;
   try {
+    throwIfAborted(signal);
+    credential = await readFile(credentialFile.source);
+    validateCredential(credential);
+    credentialFile.buffer = credential;
     const payloadDir = path.join(backupDir, "payload");
     await mkdir(payloadDir, { mode: 0o700 });
     const salt = randomBytes(16);
     key = backupKey(passphrase, salt);
     const entries = [];
     const files = {};
+    const totalBytes = sourceFiles.reduce((total, file) => total + file.bytes, 0);
+    let completedFiles = 0;
+    let completedBytes = 0;
+    onProgress?.({
+      phase: "copy",
+      completedFiles,
+      totalFiles: sourceFiles.length,
+      completedBytes,
+      totalBytes,
+    });
     for (const file of sourceFiles) {
+      throwIfAborted(signal);
       const encryptedPath = `payload/${randomBytes(16).toString("hex")}.enc`;
       const destination = path.join(backupDir, encryptedPath);
       let encrypted;
       if (file.buffer) {
         try {
-          encrypted = await encryptBufferToFile(file.buffer, destination, key);
+          encrypted = await encryptStreamToFile(Readable.from([file.buffer]), destination, key, {
+            signal,
+            onBytes: bytes => onProgress?.({
+              phase: "copy",
+              completedFiles,
+              totalFiles: sourceFiles.length,
+              completedBytes: completedBytes + bytes,
+              totalBytes,
+            }),
+          });
         } finally {
           file.buffer.fill(0);
         }
       } else {
-        encrypted = await encryptFileToFile(file.source, destination, key);
+        encrypted = await encryptFileToFile(file.source, destination, key, {
+          signal,
+          onBytes: bytes => onProgress?.({
+            phase: "copy",
+            completedFiles,
+            totalFiles: sourceFiles.length,
+            completedBytes: completedBytes + bytes,
+            totalBytes,
+          }),
+        });
       }
+      completedFiles += 1;
+      completedBytes += encrypted.plainBytes;
+      onProgress?.({
+        phase: "copy",
+        completedFiles,
+        totalFiles: sourceFiles.length,
+        completedBytes,
+        totalBytes,
+      });
       entries.push({
         path: file.relative,
         encryptedPath,
@@ -919,7 +1130,8 @@ export async function createArenaBackup({
       files,
     };
     await writeFile(path.join(backupDir, "backup-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-    const verified = await verifyArenaBackup(backupDir);
+    throwIfAborted(signal);
+    const verified = await verifyArenaBackup(backupDir, { onProgress, signal });
     if (!verified.ok) throw new Error(`Backup verification failed: ${verified.mismatches.slice(0, 5).join("; ")}`);
     return { backupDir, manifest, summary };
   } catch (error) {
@@ -927,7 +1139,7 @@ export async function createArenaBackup({
     throw error;
   } finally {
     key?.fill(0);
-    credential.fill(0);
+    credential?.fill(0);
   }
 }
 

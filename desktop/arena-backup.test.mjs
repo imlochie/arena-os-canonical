@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createArenaBackup, postmasterState, restoreArenaBackup, verifyArenaBackup } from "./arena-backup.mjs";
+import { createArenaBackup, estimateArenaBackup, postmasterState, restoreArenaBackup, verifyArenaBackup } from "./arena-backup.mjs";
 
 const passphrase = "correct horse battery staple";
 const legacyScrypt = { N: 32_768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -131,6 +131,79 @@ test("v2 encrypts the database and credential, verifies all files, and restores 
       restoreArenaBackup({ backupDir, targetRoot: restoredRoot, passphrase }),
       /new, empty/,
     );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("backup estimates selected folders before shutdown and reports copy and verification progress", async () => {
+  const { parent, root } = await fixture();
+  try {
+    await mkdir(path.join(root, "waveyard/storage/library"), { recursive: true });
+    await mkdir(path.join(root, "waveyard/models"), { recursive: true });
+    await writeFile(path.join(root, "waveyard/storage/library/song.wav"), Buffer.alloc(2048, 0x31));
+    await writeFile(path.join(root, "waveyard/models/model.onnx"), Buffer.alloc(4096, 0x52));
+    const estimate = await estimateArenaBackup({
+      root,
+      localFolders: ["waveyard-models"],
+      waveyardSelection: ["storage"],
+    });
+    assert.equal(estimate.fileCount, 5);
+    assert.equal(estimate.totalBytes, 3 + Buffer.byteLength("preserved arena record") +
+      Buffer.byteLength(JSON.stringify({ password: "matching-database-password-123" })) + 2048 + 4096);
+    assert.deepEqual(
+      estimate.folderEstimates.map(({ id, fileCount }) => [id, fileCount]),
+      [["database", 3], ["storage", 1], ["waveyard-models", 1]],
+    );
+    assert.equal(estimate.folderEstimates.some(group => group.id === "workspace-files"), false);
+    const progress = [];
+    const { backupDir } = await createArenaBackup({
+      root,
+      parentDir: parent,
+      passphrase,
+      databaseStopped: true,
+      localFolders: ["waveyard-models"],
+      waveyardSelection: ["storage"],
+      onProgress: value => progress.push(value),
+    });
+    assert.ok(progress.some(value => value.phase === "copy" && value.completedBytes > 0));
+    assert.ok(progress.some(value => value.phase === "copy" && value.completedFiles === value.totalFiles));
+    assert.ok(progress.some(value => value.phase === "verify" && value.completedBytes > 0));
+    assert.ok(progress.some(value => value.phase === "verify" && value.completedFiles === value.totalFiles));
+    assert.equal((await verifyArenaBackup(backupDir)).ok, true);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("canceling a large backup removes its incomplete output and preserves source data", async () => {
+  const { parent, root } = await fixture();
+  try {
+    await mkdir(path.join(root, "waveyard/storage"), { recursive: true });
+    await writeFile(path.join(root, "waveyard/storage/large-audio.bin"), Buffer.alloc(2 * 1024 * 1024, 0x6a));
+    const sourceBefore = await hashFiles(root);
+    for (const [index, cancelPhase] of ["copy", "verify"].entries()) {
+      const controller = new AbortController();
+      await assert.rejects(
+        createArenaBackup({
+          root,
+          parentDir: parent,
+          passphrase,
+          databaseStopped: true,
+          waveyardSelection: ["storage"],
+          now: () => new Date(`2026-11-01T12:00:0${index}.000Z`),
+          signal: controller.signal,
+          onProgress: value => {
+            if (value.phase === cancelPhase && value.completedBytes > 0 && !controller.signal.aborted) {
+              controller.abort(new Error("Arena backup canceled."));
+            }
+          },
+        }),
+        /canceled/,
+      );
+      assert.deepEqual(await hashFiles(root), sourceBefore);
+      assert.deepEqual(await readdir(parent), ["source"]);
+    }
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
