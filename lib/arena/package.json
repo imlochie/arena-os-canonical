@@ -447,6 +447,7 @@
     "./lib/waveyard/types/__tests__/musical-meeting-points.test": "./src/lib/waveyard/types/__tests__/musical-meeting-points.test.ts",
     "./lib/waveyard/types/__tests__/section-arrangement.test": "./src/lib/waveyard/types/__tests__/section-arrangement.test.ts",
     "./lib/waveyard/types/__tests__/visual-state.test": "./src/lib/waveyard/types/__tests__/visual-state.test.ts",
+    "./lib/waveyard/types/analysis-provenance": "./src/lib/waveyard/types/analysis-provenance.ts",
     "./lib/waveyard/types/arrangement-automation": "./src/lib/waveyard/types/arrangement-automation.ts",
     "./lib/waveyard/types/arrangement-extensions": "./src/lib/waveyard/types/arrangement-extensions.ts",
     "./lib/waveyard/types/automatic-remix": "./src/lib/waveyard/types/automatic-remix.ts",

@@ -30,6 +30,7 @@ import {
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueSourceAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
+import { desktopAnalysisIdempotencyKey } from "../types/analysis-provenance";
 import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "./analysis-engine";
 
 export const ORPHAN_WAVEFORM_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
@@ -61,10 +62,6 @@ const TRANSIENT_WAVEFORM_ERROR_CODES = new Set([
   "57P03",
   "53300",
 ]);
-
-export function desktopAnalysisIdempotencyKey(sourceAssetId: string) {
-  return `analysis:${sourceAssetId}:${DESKTOP_ANALYSIS_ENGINE}:${DESKTOP_ANALYSIS_ENGINE_VERSION}`;
-}
 
 /**
  * Remove only old, generated waveform objects that have no canonical asset row.

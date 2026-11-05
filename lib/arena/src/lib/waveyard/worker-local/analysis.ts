@@ -28,7 +28,7 @@ import {
 } from "./analysis-engine";
 
 export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
-export const DESKTOP_SECTION_ENGINE_VERSION = "1.1.0";
+export const DESKTOP_SECTION_ENGINE_VERSION = "1.3.0";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;

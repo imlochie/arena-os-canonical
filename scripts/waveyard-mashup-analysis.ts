@@ -2,9 +2,11 @@ import { writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import {
   analysePcm,
+  beatConfidenceFromGrid,
   decodeMonoPcm,
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
+  normaliseBeatGrid,
 } from "../lib/arena/src/lib/waveyard/worker-local/analysis-engine";
 
 const args = process.argv.slice(2).filter((value) => value !== "--");
@@ -24,13 +26,26 @@ for (const sourcePath of sourcePaths) {
   const absolutePath = resolve(sourcePath);
   const pcm = await decodeMonoPcm(absolutePath, Math.max(60, excerptStartSeconds + excerptDurationSeconds + 15));
   const analysis = analysePcm(pcm);
+  const analyzedDurationSeconds = Math.round((pcm.length / 22_050) * 100) / 100;
+  const beatGridMs = analysis.beatGridMs === null
+    ? null
+    : normaliseBeatGrid(analysis.beatGridMs, analyzedDurationSeconds);
+  if (analysis.beatGridMs !== null && beatGridMs === null) {
+    throw new Error(`Analysis returned an invalid beat grid for ${basename(absolutePath)}.`);
+  }
+  const combinedBeatConfidence = beatGridMs === null
+    ? analysis.beatConfidence
+    : beatConfidenceFromGrid(analysis.bpmConfidence, beatGridMs, analysis.beatConfidence);
+  if (beatGridMs === null && combinedBeatConfidence !== null) {
+    throw new Error(`Analysis returned beat confidence without a beat grid for ${basename(absolutePath)}.`);
+  }
   const startMs = Math.round(excerptStartSeconds * 1000);
   const endMs = startMs + Math.round(excerptDurationSeconds * 1000);
   tracks.push({
     filename: basename(absolutePath),
     analysisEngine: DESKTOP_ANALYSIS_ENGINE,
     analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
-    analyzedDurationSeconds: Math.round((pcm.length / 22_050) * 100) / 100,
+    analyzedDurationSeconds,
     bpm: analysis.bpm,
     bpmConfidence: analysis.bpmConfidence,
     musicalKey: analysis.musicalKey,
@@ -38,11 +53,12 @@ for (const sourcePath of sourcePaths) {
     excerpt: {
       startSeconds: excerptStartSeconds,
       durationSeconds: excerptDurationSeconds,
-      beatGridMs: analysis.beatGridMs
+      beatGridMs: beatGridMs
         ?.filter((beatMs) => beatMs >= startMs && beatMs <= endMs)
         .map((beatMs) => beatMs - startMs) ?? null,
     },
-    beatConfidence: analysis.beatConfidence,
+    rawBeatGridConfidence: analysis.beatConfidence,
+    beatConfidence: combinedBeatConfidence,
   });
 }
 await writeFile(resolve(outputPath), `${JSON.stringify({

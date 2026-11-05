@@ -49,23 +49,91 @@ export async function decodeMonoPcm(path: string, maxSeconds = 900): Promise<Flo
   }
 }
 
-/** Onset envelope: half-wave-rectified energy flux over ~11.6 ms frames. */
-export function onsetEnvelope(pcm: Float32Array): { envelope: Float32Array; frameMs: number } {
-  const frameSize = 256; // 22050/256 ≈ 11.6 ms
-  const frames = Math.floor(pcm.length / frameSize);
-  const envelope = new Float32Array(Math.max(0, frames - 1));
-  const frameMs = (frameSize / ANALYSIS_PCM_RATE) * 1000;
-  let previousEnergy = 0;
-  for (let frame = 0; frame < frames; frame += 1) {
-    let energy = 0;
-    const start = frame * frameSize;
-    for (let i = 0; i < frameSize; i += 1) {
-      const sample = pcm[start + i];
-      energy += sample * sample;
+const ONSET_WINDOW_SIZE = 512;
+const ONSET_HOP_SIZE = 256;
+
+function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
+  const size = real.length;
+  let reversed = 0;
+  for (let index = 1; index < size; index += 1) {
+    let bit = size >> 1;
+    while ((reversed & bit) !== 0) {
+      reversed ^= bit;
+      bit >>= 1;
     }
-    energy = Math.sqrt(energy / frameSize);
-    if (frame > 0) envelope[frame - 1] = Math.max(0, energy - previousEnergy);
-    previousEnergy = energy;
+    reversed ^= bit;
+    if (index < reversed) {
+      [real[index], real[reversed]] = [real[reversed], real[index]];
+      [imaginary[index], imaginary[reversed]] = [imaginary[reversed], imaginary[index]];
+    }
+  }
+
+  for (let length = 2; length <= size; length <<= 1) {
+    const angle = -2 * Math.PI / length;
+    const stepReal = Math.cos(angle);
+    const stepImaginary = Math.sin(angle);
+    for (let start = 0; start < size; start += length) {
+      let twiddleReal = 1;
+      let twiddleImaginary = 0;
+      for (let offset = 0; offset < length / 2; offset += 1) {
+        const even = start + offset;
+        const odd = even + length / 2;
+        const oddReal = real[odd] * twiddleReal - imaginary[odd] * twiddleImaginary;
+        const oddImaginary = real[odd] * twiddleImaginary + imaginary[odd] * twiddleReal;
+        const evenReal = real[even];
+        const evenImaginary = imaginary[even];
+        real[even] = evenReal + oddReal;
+        imaginary[even] = evenImaginary + oddImaginary;
+        real[odd] = evenReal - oddReal;
+        imaginary[odd] = evenImaginary - oddImaginary;
+        const nextTwiddleReal = twiddleReal * stepReal - twiddleImaginary * stepImaginary;
+        twiddleImaginary = twiddleReal * stepImaginary + twiddleImaginary * stepReal;
+        twiddleReal = nextTwiddleReal;
+      }
+    }
+  }
+}
+
+/**
+ * Positive spectral flux over overlapping 512-sample Hann windows (11.6 ms
+ * hop). RMS-only flux misses beat attacks when sustained and percussive parts
+ * trade energy without changing the whole-frame loudness.
+ */
+export function onsetEnvelope(pcm: Float32Array): { envelope: Float32Array; frameMs: number } {
+  const frameMs = (ONSET_HOP_SIZE / ANALYSIS_PCM_RATE) * 1000;
+  const frameCount = Math.max(0, Math.floor((pcm.length - ONSET_WINDOW_SIZE) / ONSET_HOP_SIZE) + 1);
+  const envelope = new Float32Array(Math.max(0, frameCount - 1));
+  if (frameCount < 2) return { envelope, frameMs };
+
+  const window = Float64Array.from({ length: ONSET_WINDOW_SIZE }, (_, index) =>
+    0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (ONSET_WINDOW_SIZE - 1)),
+  );
+  const real = new Float64Array(ONSET_WINDOW_SIZE);
+  const imaginary = new Float64Array(ONSET_WINDOW_SIZE);
+  const previousMagnitudes = new Float64Array(ONSET_WINDOW_SIZE / 2 + 1);
+  let previousTotal = 0;
+
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const start = frame * ONSET_HOP_SIZE;
+    for (let index = 0; index < ONSET_WINDOW_SIZE; index += 1) {
+      real[index] = (pcm[start + index] ?? 0) * window[index];
+      imaginary[index] = 0;
+    }
+    fftInPlace(real, imaginary);
+
+    let total = 0;
+    let positiveFlux = 0;
+    for (let bin = 1; bin < ONSET_WINDOW_SIZE / 2; bin += 1) {
+      const magnitude = Math.hypot(real[bin], imaginary[bin]);
+      total += magnitude;
+      if (frame > 0) positiveFlux += Math.max(0, magnitude - previousMagnitudes[bin]);
+      previousMagnitudes[bin] = magnitude;
+    }
+    if (frame > 0) {
+      const scale = (total + previousTotal) / 2;
+      envelope[frame - 1] = scale > 1e-8 ? Math.min(1, positiveFlux / scale) : 0;
+    }
+    previousTotal = total;
   }
   return { envelope, frameMs };
 }
@@ -219,29 +287,79 @@ function midiOfPitchClassIndex(index: number, octave: number): number {
   return 12 * (octave + 1) + index;
 }
 
-/** Chroma via Goertzel filters over C3–B4 (the musically dense octaves). */
+/**
+ * Harmonic salience chroma from overlapping long-window spectra.
+ *
+ * The former full-track Goertzel probe sampled only C3–B4 exact frequencies.
+ * That misses bass fundamentals and lets one spectral bin dominate a whole
+ * song. Here, frame-local harmonic stacks contribute to each candidate note,
+ * then normalize per frame so a loud chorus cannot erase a quieter key change.
+ */
 export function chromaFromPcm(pcm: Float32Array): number[] {
   const chroma = new Array<number>(12).fill(0);
-  const n = pcm.length;
-  if (n === 0) return chroma;
-  for (let pitchClass = 0; pitchClass < 12; pitchClass += 1) {
-    let magnitude = 0;
-    for (const octave of [3, 4]) {
-      const midi = midiOfPitchClassIndex(pitchClass, octave);
-      const frequency = 440 * Math.pow(2, (midi - 69) / 12);
-      if (frequency > ANALYSIS_PCM_RATE / 2) continue;
-      const k = Math.round((n * frequency) / ANALYSIS_PCM_RATE);
-      const w = (2 * Math.PI * k) / n;
-      const coeff = 2 * Math.cos(w);
-      let s0 = 0, s1 = 0, s2 = 0;
-      for (let i = 0; i < n; i += 1) {
-        s0 = pcm[i] + coeff * s1 - s2;
-        s2 = s1;
-        s1 = s0;
-      }
-      magnitude += Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2)) / n;
+  if (pcm.length === 0) return chroma;
+
+  const fftSize = 8192;
+  // Key changes occur over musical phrases, so analyze about 2.7 frames/sec
+  // rather than paying onset-detector rates for a much slower-changing signal.
+  const hopSize = 8192;
+  const minMidi = 36; // C2
+  const maxMidi = 95; // B6
+  const frameCount = pcm.length <= fftSize
+    ? 1
+    : Math.floor((pcm.length - fftSize) / hopSize) + 1;
+  const window = Float64Array.from({ length: fftSize }, (_, index) =>
+    0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (fftSize - 1)),
+  );
+  const real = new Float64Array(fftSize);
+  const imaginary = new Float64Array(fftSize);
+  const magnitudes = new Float64Array(fftSize / 2 + 1);
+  let activeFrames = 0;
+
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const start = Math.min(frame * hopSize, Math.max(0, pcm.length - fftSize));
+    for (let index = 0; index < fftSize; index += 1) {
+      real[index] = (pcm[start + index] ?? 0) * window[index];
+      imaginary[index] = 0;
     }
-    chroma[pitchClass] = magnitude;
+    fftInPlace(real, imaginary);
+
+    let totalSpectrum = 0;
+    for (let bin = 1; bin < fftSize / 2; bin += 1) {
+      const magnitude = Math.hypot(real[bin], imaginary[bin]);
+      magnitudes[bin] = magnitude;
+      totalSpectrum += magnitude;
+    }
+    if (totalSpectrum <= 1e-8) continue;
+
+    const frameChroma = new Array<number>(12).fill(0);
+    for (let midi = minMidi; midi <= maxMidi; midi += 1) {
+      const fundamentalHz = 440 * Math.pow(2, (midi - 69) / 12);
+      let salience = 0;
+      for (let harmonic = 1; harmonic <= 6; harmonic += 1) {
+        const frequency = fundamentalHz * harmonic;
+        if (frequency >= ANALYSIS_PCM_RATE / 2) break;
+        const exactBin = (frequency * fftSize) / ANALYSIS_PCM_RATE;
+        const lowerBin = Math.floor(exactBin);
+        const upperBin = Math.min(fftSize / 2 - 1, lowerBin + 1);
+        const fraction = exactBin - lowerBin;
+        const magnitude = (magnitudes[lowerBin] ?? 0) * (1 - fraction)
+          + (magnitudes[upperBin] ?? 0) * fraction;
+        salience += magnitude / Math.sqrt(harmonic);
+      }
+      frameChroma[((midi % 12) + 12) % 12] += salience;
+    }
+
+    const frameTotal = frameChroma.reduce((sum, value) => sum + value, 0);
+    if (frameTotal <= 1e-8) continue;
+    for (let pitchClass = 0; pitchClass < 12; pitchClass += 1) {
+      chroma[pitchClass] += frameChroma[pitchClass] / frameTotal;
+    }
+    activeFrames += 1;
+  }
+
+  if (activeFrames > 0) {
+    for (let pitchClass = 0; pitchClass < 12; pitchClass += 1) chroma[pitchClass] /= activeFrames;
   }
   return chroma;
 }

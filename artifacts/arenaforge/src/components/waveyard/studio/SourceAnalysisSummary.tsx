@@ -1,6 +1,9 @@
 "use client";
 
 import type { Source, SourceAnalysis } from "./types";
+import {
+  isStaleDesktopAnalysis,
+} from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 
 function confidenceLabel(value: number | null) {
   if (value === null) return "Confidence unavailable";
@@ -18,6 +21,7 @@ export function analysisDisplayState(analysis: SourceAnalysis | null | undefined
   if (!analysis) return "legacy" as const;
   if (["queued", "preparing", "processing", "finalizing"].includes(analysis.status))
     return "running" as const;
+  if (analysis.status === "complete" && isStaleDesktopAnalysis(analysis)) return "outdated" as const;
   return analysis.status;
 }
 
@@ -43,6 +47,18 @@ export function SourceAnalysisSummary({
         <p className="notice">Analysis has not been recorded for this source.</p>
       )}
       {displayState === "running" && analysis && <p className="notice">Analyzing music… {analysis.stage}</p>}
+      {displayState === "outdated" && analysis && (
+        <div>
+          <p className="notice">
+            A newer local analysis is available. Refresh this source to update its beat grid and key evidence.
+          </p>
+          {onRetry && (
+            <button className="button secondary" onClick={() => onRetry(analysis)}>
+              Refresh analysis
+            </button>
+          )}
+        </div>
+      )}
       {displayState === "failed" && analysis && (
         <div>
           <p className="error">Analysis unavailable{analysis.analysisError ? `: ${analysis.analysisError}` : "."}</p>

@@ -100,12 +100,12 @@ test("estimateBeatGrid returns evenly spaced beats near the true tempo", () => {
   }
 });
 
-test("track tempo folds half-time readings and reports disagreement honestly", () => {
+test("spectral onset flux recovers quieter intervening beats and reports tempo changes honestly", () => {
   const pcm = accentedClickTrack(86, 90);
   const { envelope, frameMs } = onsetEnvelope(pcm);
   const raw = estimateBpm(envelope, frameMs);
   const full = estimateTrackTempo(envelope, frameMs);
-  assert.ok(raw.bpm !== null && raw.bpm < 60, `the sparse accent pattern should expose the half-time ambiguity, got ${raw.bpm}`);
+  assert.ok(raw.bpm !== null && Math.abs(raw.bpm - 86) < 3, `the quiet beats should remain visible between accents, got ${raw.bpm}`);
   assert.ok(full.bpm !== null && Math.abs(full.bpm - 86) < 3, `track tempo ${full.bpm} should stay near the audible pulse`);
   assert.ok((full.confidence ?? 0) > 0.5, "a stable repeated pulse should retain useful confidence");
 
@@ -120,6 +120,33 @@ test("track tempo folds half-time readings and reports disagreement honestly", (
   const mixedEstimate = estimateTrackTempo(mixedEnvelope.envelope, mixedEnvelope.frameMs);
   assert.ok(mixedEstimate.bpm !== null);
   assert.ok((mixedEstimate.confidence ?? 1) < (full.confidence ?? 0), "tempo changes must lower global confidence");
+});
+
+test("spectral onset flux detects repeated timbre changes at nearly constant signal level", () => {
+  const bpm = 120;
+  const seconds = 8;
+  const samples = new Float32Array(Math.round(seconds * RATE));
+  const beatSamples = Math.round((60 / bpm) * RATE);
+  let phase = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const frequency = Math.floor(index / beatSamples) % 2 === 0 ? 220 : 880;
+    phase += (2 * Math.PI * frequency) / RATE;
+    samples[index] = 0.4 * Math.sin(phase);
+  }
+
+  const { envelope, frameMs } = onsetEnvelope(samples);
+  const peakNearMs = (timeMs: number) => {
+    const center = Math.round(timeMs / frameMs);
+    let peak = 0;
+    for (let frame = Math.max(0, center - 3); frame <= Math.min(envelope.length - 1, center + 3); frame += 1) {
+      peak = Math.max(peak, envelope[frame] ?? 0);
+    }
+    return peak;
+  };
+  const beatPeaks = Array.from({ length: 15 }, (_, index) => peakNearMs((index + 1) * (60_000 / bpm)));
+  const offbeatPeaks = Array.from({ length: 15 }, (_, index) => peakNearMs((index + 1.5) * (60_000 / bpm)));
+  const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  assert.ok(mean(beatPeaks) > mean(offbeatPeaks) * 2, "spectral changes at pulse times should stand out without RMS attacks");
 });
 
 test("silence produces honest nulls, never invented values", () => {
@@ -144,6 +171,26 @@ test("key detection identifies a pure C major triad as C major-ish", () => {
   assert.notEqual(key, null);
   assert.ok(key === "C major" || key === "A minor" || key!.startsWith("C") || key!.startsWith("E") || key!.startsWith("G"), `plausible key ${key}`);
   assert.notEqual(confidence, null);
+});
+
+test("harmonic-salience chroma recognizes a bass-register I–IV–V progression", () => {
+  const chords = [
+    [65.406, 82.407, 97.999], // C2–E2–G2
+    [87.307, 110, 130.813], // F2–A2–C3
+    [97.999, 123.471, 146.832], // G2–B2–D3
+    [65.406, 82.407, 97.999],
+  ];
+  const samples = new Float32Array(RATE * 12);
+  for (let index = 0; index < samples.length; index += 1) {
+    const chord = chords[Math.min(chords.length - 1, Math.floor(index / (RATE * 3)))];
+    samples[index] = chord.reduce(
+      (sum, frequency) => sum + 0.2 * Math.sin((2 * Math.PI * frequency * index) / RATE),
+      0,
+    );
+  }
+  const result = keyFromChroma(chromaFromPcm(samples));
+  assert.equal(result.key, "C major");
+  assert.ok((result.confidence ?? 0) >= 0.5, "the repeated diatonic progression should support a confident key");
 });
 
 test("key confidence separates clear tonal evidence from ambiguous chords", () => {

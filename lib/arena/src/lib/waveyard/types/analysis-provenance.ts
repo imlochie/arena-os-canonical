@@ -1,5 +1,17 @@
 export const DESKTOP_ANALYSIS_ENGINE = "arena-js-dsp";
-export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.2.0";
+export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.4.0";
+
+export function isStaleDesktopAnalysis(analysis: {
+  analysisEngine: string | null;
+  analysisEngineVersion: string | null;
+}): boolean {
+  return analysis.analysisEngine === DESKTOP_ANALYSIS_ENGINE
+    && analysis.analysisEngineVersion !== DESKTOP_ANALYSIS_ENGINE_VERSION;
+}
+
+export function desktopAnalysisIdempotencyKey(sourceAssetId: string): string {
+  return `analysis:${sourceAssetId}:${DESKTOP_ANALYSIS_ENGINE}:${DESKTOP_ANALYSIS_ENGINE_VERSION}`;
+}
 
 export function isCurrentDesktopAnalysis(analysis: {
   analysisEngine: string | null;
