@@ -56,6 +56,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { evaluateFourStemSeparation, type FourStemSamples } from "@workspace/arena/lib/waveyard/separation/quality";
+import { LIVE_STEM_MIN_DONOR_RMS_DBFS } from "../live-stem-layers";
 import { requestSeparationCancellation } from "@workspace/arena/lib/waveyard/separation/cancel";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine } from "./separation";
@@ -1587,7 +1588,11 @@ if (realAudioInputPath) {
             allFourStemsMatchExcerptDuration: Object.values(outputIntegrity).every((checks) => checks.correctDuration),
             allSamplesFinite: Object.values(outputIntegrity).every((checks) => checks.finiteSamples),
             allSamplesWithinPcmRange: Object.values(outputIntegrity).every((checks) => checks.inPcmRange),
-            nonSilentStems: Object.keys(measuredStems).filter((stemType) => measuredStems[stemType]!.rmsDbfs > -90),
+            nonZeroSampleStems: Object.keys(measuredStems).filter((stemType) => measuredStems[stemType]!.rmsDbfs > -90),
+            minimumLiveSwapRmsDbfs: LIVE_STEM_MIN_DONOR_RMS_DBFS,
+            belowLiveSwapEnergyFloorStems: Object.entries(measuredStems)
+              .filter(([, metrics]) => metrics.rmsDbfs < LIVE_STEM_MIN_DONOR_RMS_DBFS)
+              .map(([stemType]) => stemType),
             perStem: outputIntegrity,
             soundQualityEvaluated: false,
           },

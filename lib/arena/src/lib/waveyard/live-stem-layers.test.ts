@@ -1,17 +1,25 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
-import { LIVE_STEM_SWITCH_TIMEOUT_MS, LiveStemLayers } from "./live-stem-layers";
+import { LIVE_STEM_MIN_DONOR_RMS_DBFS, LIVE_STEM_SWITCH_TIMEOUT_MS, LiveStemLayers } from "./live-stem-layers";
 import { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
+type DecodedAudioFixture = {
+  duration: number;
+  length: number;
+  numberOfChannels: number;
+  sampleRate?: number;
+  getChannelData?: (channel: number) => Float32Array;
+};
+
 function fixture(
   stretchBuffer?: ConstructorParameters<typeof LiveStemLayers>[2],
   onTiming?: ConstructorParameters<typeof LiveStemLayers>[3],
   decodedAudio:
-    | { duration: number; length: number; numberOfChannels: number }
-    | (() => { duration: number; length: number; numberOfChannels: number }) = {
+    | DecodedAudioFixture
+    | (() => DecodedAudioFixture) = {
       duration: 3,
       length: 144_000,
       numberOfChannels: 2,
@@ -104,6 +112,43 @@ function fixture(
 function response(ok = true) {
   return { ok, status: ok ? 200 : 503, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
 }
+
+test("a nearly silent donor is rejected without interrupting the audible layer", async () => {
+  const loudSamples = new Float32Array(144_000).fill(0.1);
+  const quietSamples = new Float32Array(144_000).fill(0.0001);
+  let decodeCount = 0;
+  const f = fixture(undefined, undefined, () => {
+    decodeCount += 1;
+    const samples = decodeCount === 1 ? loudSamples : quietSamples;
+    return {
+      duration: 3,
+      length: samples.length,
+      numberOfChannels: 2,
+      sampleRate: 48_000,
+      getChannelData: () => samples,
+    };
+  });
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/audible-donor");
+    const activeDonor = f.sources.at(-1);
+    assert.ok(activeDonor);
+    const sourceCount = f.sources.length;
+    assert.equal(f.channel.inputGain.gain.value, 0, "the original is muted only after the audible donor takes over");
+
+    await assert.rejects(
+      f.layers.replace("vocals", "/nearly-silent-donor"),
+      new RegExp(`nearly silent \\(-80\\.0 dBFS\\).*separation may have failed`),
+    );
+
+    assert.equal(LIVE_STEM_MIN_DONOR_RMS_DBFS, -55);
+    assert.equal(activeDonor.stopped, false, "the previously installed donor keeps playing");
+    assert.equal(f.sources.length, sourceCount, "a quiet replacement never creates or starts a new source");
+    assert.equal(f.channel.inputGain.gain.value, 0, "a failed replacement does not unmute or interrupt the retained layer");
+  } finally {
+    f.layers.dispose();
+  }
+});
 
 test("donor harmonic correction is connected before takeover, changes independently, and is released on restore", async () => {
   const globals = globalThis as unknown as { AudioWorkletNode?: unknown };
@@ -1295,7 +1340,7 @@ test("disposal during pitch-lock migration releases the worklet when it becomes 
     duration: 3,
     length: 144_000,
     numberOfChannels: 2,
-    getChannelData: () => new Float32Array(144_000),
+    getChannelData: () => new Float32Array(144_000).fill(0.1),
   } as unknown as AudioBuffer;
   const f = fixture(undefined, undefined, workletBuffer);
   const globals = globalThis as unknown as { AudioWorkletNode?: unknown };

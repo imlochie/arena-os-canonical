@@ -62,3 +62,9 @@ Use the built API in an isolated child process for whole-stack CPU-load evidence
 **Why:** Direct database probes and manually invoked handlers bypass production routing, desktop host checks, serialization and worker startup. Those boundaries are part of a usable desktop application.
 
 **How to apply:** Probe valid response bodies throughout each real model pass with explicit deadlines. Retain long-running acceptance logs under the ignored workspace output directory so a workspace restart cannot erase the evidence. Synthetic Linux responsiveness evidence is not full-song throughput, audio quality or Windows proof.
+
+Do not treat non-zero stems, correct layer gains, or advancing clocks as proof of an audible or musically successful live swap. Reject an effectively silent donor before takeover and preserve the currently audible layer; report low-energy stems separately from file-integrity checks.
+
+**Why:** Real remix vocal estimates passed a `>-90 dBFS` non-silence check while measuring roughly `-64` to `-70 dBFS`, so the browser routing test passed without a meaningful vocal change.
+
+**How to apply:** Measure bounded RMS during donor preparation, apply the same audibility floor in real-audio reports, and keep routing evidence separate from human A/B quality checks.

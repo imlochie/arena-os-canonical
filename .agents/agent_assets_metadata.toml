@@ -210,3 +210,17 @@ mtime_ms = 1793862379548
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/0b43b41a-f0f4-4d76-9504-2eb0baf77103/8513ce49-33ff-4d61-87db-55163df1adcf"
 storage_version_token = "1793862390724658"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "EtoV7CCn2J_aHkWE4Zg7J"
+uri = "file://generated-artifacts/waveyard-real-mashup/stayin-weeknd-vocals-audible-ab.wav"
+type = "audio"
+title = "Stayin’ Alive + I Feel It Coming — signal check"
+description = "First 8 seconds: baseline mix. After a short gap: the Weeknd vocal estimate replaces the Bee Gees vocal layer at 0.505×. This donor stem has measurable energy (−23.7 dBFS), unlike the earlier Queen/Bee Gees donor-vocal samples. It is a routing/signal check only—not proof of a musically good mashup."
+logical_id = "5ac505f9-b99b-46c1-b140-8ab42d145216"
+content_hash = "sha256:d62e57752471975f8526574d38eca7682120dda00ee50aa65f4e0a0ede86e081"
+size = 2905386
+mtime_ms = 1793863849958
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5ac505f9-b99b-46c1-b140-8ab42d145216/25323f6d-b162-4bbb-b031-88e3da5320e7"
+storage_version_token = "1793864092251520"
+content_type = "audio/wav"

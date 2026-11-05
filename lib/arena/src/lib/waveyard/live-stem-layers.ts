@@ -1,8 +1,33 @@
 import type { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
+export const LIVE_STEM_MIN_DONOR_RMS_DBFS = -55;
 export const SESSION_PLAYBACK_RATE_MIN = 0.8;
 export const SESSION_PLAYBACK_RATE_MAX = 1.2;
+
+function measureAudioBufferRmsDbfs(buffer: {
+  numberOfChannels: number;
+  getChannelData?: (channel: number) => Float32Array;
+}): number | null {
+  if (!Number.isInteger(buffer.numberOfChannels) || buffer.numberOfChannels < 1) return null;
+  if (typeof buffer.getChannelData !== "function") return null;
+  const maximumSamplesPerChannel = 48_000;
+  let sumSquares = 0;
+  let sampleCount = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const samples = buffer.getChannelData(channel);
+    const stride = Math.max(1, Math.floor(samples.length / maximumSamplesPerChannel));
+    for (let index = 0; index < samples.length; index += stride) {
+      const sample = samples[index]!;
+      if (!Number.isFinite(sample)) return null;
+      sumSquares += sample * sample;
+      sampleCount += 1;
+    }
+  }
+  if (sampleCount === 0) return Number.NEGATIVE_INFINITY;
+  const rms = Math.sqrt(sumSquares / sampleCount);
+  return rms > 0 ? 20 * Math.log10(rms) : Number.NEGATIVE_INFINITY;
+}
 
 export function normalizeSessionPlaybackRate(value: number): number {
   if (!Number.isFinite(value)) return 1;
@@ -769,6 +794,11 @@ export class LiveStemLayers {
     }
     const decodeMs = performance.now() - decodeStartedAt;
     if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
+    const donorRmsDbfs = measureAudioBufferRmsDbfs(decoded);
+    if (donorRmsDbfs !== null && donorRmsDbfs < LIVE_STEM_MIN_DONOR_RMS_DBFS) {
+      const level = Number.isFinite(donorRmsDbfs) ? `${donorRmsDbfs.toFixed(1)} dBFS` : "silence";
+      throw new Error(`The donor stem is nearly silent (${level}); its separation may have failed.`);
+    }
     let buffer = decoded;
     let tempoMatchMs = 0;
     if (Math.abs(tempoStretchRatio - 1) >= 0.001) {
