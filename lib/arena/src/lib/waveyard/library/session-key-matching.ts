@@ -45,8 +45,9 @@ export function resolveLiveStemKeyCorrection(
   const match = stemType === "drums"
     ? { semitones: 0 }
     : resolveSessionKeyMatch(mode, shiftMusicalKey(leadKey, deckSemitones), donorKey);
-  if (match.semitones === null) return null;
-  const relative = match.semitones - deckSemitones;
+  // If analysis is missing, the donor cannot be harmonically matched. Cancel
+  // the receiving deck's shift instead of silently transposing the donor.
+  const relative = (match.semitones ?? 0) - deckSemitones;
   // Equivalent pitch-class correction within the real-time processor's range.
   return relative > 11 ? relative - 12 : relative < -11 ? relative + 12 : relative;
 }

@@ -358,6 +358,9 @@ try {
   page.on("console", message => {
     if (message.type() === "error") console.log("BROWSER_CONSOLE_ERROR", message.text());
   });
+  if (keyMatchingOnly) page.on("response", response => {
+    if (response.status() >= 400) console.log("BROWSER_HTTP_ERROR", response.status(), response.url());
+  });
   if (engineName === "webkit") {
     page.on("requestfailed", request => console.log("WEBKIT_REQUEST_FAILED", JSON.stringify({
       url: request.url(),
@@ -853,6 +856,14 @@ try {
     stems: externalStemKeys,
     analysis: null,
   } } }));
+  await context.route("**/api/library/tracks/c", route => {
+    const donor = tracks.find(item => item.id === "c");
+    return route.fulfill({ json: { track: {
+      id: "c",
+      stems: donor?.stems ?? [],
+      analysis: donor?.analysis ?? null,
+    } } });
+  });
   await context.route(`**/api/library/tracks/${preparationDonorId}/separation`, route => {
     if (route.request().method() !== "POST") return route.fallback();
     preparationStartRequests += 1;
@@ -3411,41 +3422,80 @@ try {
         document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
       );
     }
-    const beforeDonorCorrection = await page.evaluate(() => window.audioProbe.keyShifts.length);
+    const beforeDonorCorrection = await page.evaluate(() => ({
+      keyShiftCount: window.audioProbe.keyShifts.length,
+      bufferCount: window.audioProbe.buffers.length,
+    }));
     await page.getByTestId("open-live-swap-vocals").click();
     await page.getByTestId("live-swap-candidate-vocals-b").click();
-    await page.waitForFunction(before => window.audioProbe.keyShifts.slice(before).some(message =>
-      message.semitones === -3 && message.node.probeConnections.length > 0),
-    beforeDonorCorrection);
-    const donorCorrection = await page.evaluate(async before => {
-      const correction = window.audioProbe.keyShifts.slice(before).find(message =>
-        message.semitones === -3 && message.node.probeConnections.length > 0);
-      if (!correction) throw new Error("The donor harmonic processor was not connected.");
-      const analyser = correction.context.createAnalyser();
-      analyser.fftSize = 32768;
-      correction.node.connect(analyser);
-      try {
-        await new Promise(resolve => setTimeout(resolve, 900));
-        const spectrum = new Float32Array(analyser.frequencyBinCount);
-        analyser.getFloatFrequencyData(spectrum);
-        const binHz = correction.context.sampleRate / analyser.fftSize;
-        let peakBin = Math.ceil(100 / binHz);
-        for (let bin = peakBin; bin <= 300 / binHz; bin++) {
-          if (spectrum[bin] > spectrum[peakBin]) peakBin = bin;
-        }
-        return {
-          frequencyHz: peakBin * binHz,
-          levelDb: spectrum[peakBin],
-          playing: [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
-        };
-      } finally { correction.node.disconnect(analyser); }
+    await page.waitForFunction(before => window.audioProbe.buffers.slice(before)
+      .some(source => source.inputNode?.nextNode?.probeName === "waveyard-key-shift"
+        && source.startedOffset !== undefined),
+    beforeDonorCorrection.bufferCount);
+    await page.getByTestId("restore-live-swap-vocals").waitFor();
+    assert.match(
+      await page.getByTestId("live-stem-tempo-vocals").textContent(),
+      /Tonic matched · mode preserved/,
+      "the live swap does not imply that tonic matching also changed major/minor mode",
+    );
+    await page.waitForFunction(({ keyShiftCount, bufferCount }) => {
+      const source = window.audioProbe.buffers.slice(bufferCount).find(item =>
+        item.inputNode?.nextNode?.probeName === "waveyard-key-shift" && item.startedOffset !== undefined);
+      return source !== undefined && window.audioProbe.keyShifts.slice(keyShiftCount).some(message =>
+        message.node === source.inputNode.nextNode && message.semitones === -3);
     }, beforeDonorCorrection);
+    const donorSignal = await page.evaluate(async ({ before, bufferCount }) => {
+      const source = window.audioProbe.buffers.slice(bufferCount).find(node =>
+        node.inputNode?.nextNode?.probeName === "waveyard-key-shift" && node.startedOffset !== undefined);
+      const shift = source && window.audioProbe.keyShifts.slice(before).find(message =>
+        message.node === source.inputNode.nextNode && message.semitones === -3);
+      const measure = node => {
+        const analyser = node.context.createAnalyser();
+        analyser.fftSize = 32768;
+        node.connect(analyser);
+        return { analyser, sample: () => {
+          const spectrum = new Float32Array(analyser.frequencyBinCount);
+          analyser.getFloatFrequencyData(spectrum);
+          const binHz = node.context.sampleRate / analyser.fftSize;
+          let peakBin = 1;
+          for (let bin = 1; bin < spectrum.length; bin++) {
+            if (spectrum[bin] > spectrum[peakBin]) peakBin = bin;
+          }
+          return { frequencyHz: peakBin * binHz, levelDb: spectrum[peakBin] };
+        } };
+      };
+      if (!shift || !source) return { hasProcessor: !!shift, hasDonorSource: !!source };
+      const layerInputNode = source.inputNode;
+      const input = measure(source);
+      const layerInput = measure(layerInputNode);
+      const output = measure(shift.node);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      return {
+        hasProcessor: true,
+        hasDonorSource: true,
+        input: input.sample(),
+        layerInput: layerInput.sample(),
+        output: output.sample(),
+        playing: [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
+        contextState: shift.context.state,
+        inputGain: layerInputNode.gain?.value ?? null,
+        inputNodeType: layerInputNode.constructor.name,
+        hasGainParam: Boolean(layerInputNode.gain),
+        correctionConnections: shift.node.probeConnections.map(target => target.constructor.name),
+        sourceDuration: source.buffer.duration,
+      };
+    }, { before: beforeDonorCorrection.keyShiftCount, bufferCount: beforeDonorCorrection.bufferCount });
+    assert.ok(donorSignal.hasProcessor && donorSignal.hasDonorSource,
+      `the donor itself must run through the measured correction node: ${JSON.stringify(donorSignal)}`);
+    assert.ok(donorSignal.input.levelDb > -70 && donorSignal.output.levelDb > -70,
+      `the donor and its corrected output must both contain audible signal: ${JSON.stringify(donorSignal)}`);
+    const donorCorrection = donorSignal.output;
     const expectedDonorHz = 230 * 2 ** (-3 / 12);
-    assert.ok(donorCorrection.levelDb > -70 && Math.abs(donorCorrection.frequencyHz - expectedDonorHz) < 5,
-      `the actual donor output must transpose 230Hz to ${expectedDonorHz}Hz: ${JSON.stringify(donorCorrection)}`);
-    assert.equal(donorCorrection.playing, true, "harmonic donor preparation retains the playing lead");
+    assert.ok(Math.abs(donorCorrection.frequencyHz - expectedDonorHz) < 5,
+      `the actual donor output must transpose 230Hz to ${expectedDonorHz}Hz: ${JSON.stringify(donorSignal)}`);
+    assert.equal(donorSignal.playing, true, "harmonic donor preparation retains the playing lead");
     await page.getByTestId("restore-live-swap-vocals").click();
-    console.log("PASS: a live vocal swap routes through its own harmonic processor and its measured output changes pitch without pausing the lead", donorCorrection);
+    console.log("PASS: a live vocal swap routes through its own harmonic processor and its measured output changes pitch without pausing the lead", donorSignal);
     const beforeHandoff = await page.locator('[data-role="current"] audio').first().evaluate(audio => audio.currentTime);
     await page.getByRole("button", { name: "Current only" }).click();
     const handoffResponse = page.waitForResponse(response =>

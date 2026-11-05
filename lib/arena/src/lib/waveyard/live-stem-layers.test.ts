@@ -73,7 +73,7 @@ function fixture(
     },
   };
   const channels = new Map(channelIds.map(id => {
-    const media = { currentTime: 7, paused: false, ended: false };
+    const media = Object.assign(new EventTarget(), { currentTime: 7, paused: false, ended: false });
     return [id, {
       source: { mediaElement: media },
       inputGain: context.createGain(),

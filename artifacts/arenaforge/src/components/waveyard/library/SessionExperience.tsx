@@ -220,7 +220,10 @@ function getPersistedSwapSetup(
   const tempoStretchRatios: Record<string, number> = {};
   const beatOffsets: Record<string, number> = {};
   const keyCorrections: Record<string, number> = {};
-  if (session === null || item === null) return { swaps, tempoStretchRatios, beatOffsets, keyCorrections };
+  const keyMatchStatuses: Record<string, string> = {};
+  if (session === null || item === null) {
+    return { swaps, tempoStretchRatios, beatOffsets, keyCorrections, keyMatchStatuses };
+  }
 
   for (const swap of session.swaps) {
     if (swap.sessionTrackId !== item.id || cancelledSwapIds.has(swap.id)) continue;
@@ -241,15 +244,31 @@ function getPersistedSwapSetup(
       ratio,
     );
     if (offset !== null) beatOffsets[swap.stemType] = offset;
+    const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
+      ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
+    const leadKey = shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
+    const match = resolveSessionKeyMatch(keyMode, leadKey, donorKey);
     const correction = resolveLiveStemKeyCorrection(
-      keyMode, item.analysis?.musicalKey,
-      donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
-        ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey,
-      deckSemitones, swap.stemType,
+      keyMode, item.analysis?.musicalKey, donorKey, deckSemitones, swap.stemType,
     );
     if (correction !== null) keyCorrections[swap.stemType] = correction;
+    const matchedMode = match.targetKey?.split(" ")[1];
+    const leadMode = leadKey?.split(" ")[1];
+    const modeDiffers = keyMode === "match" && matchedMode !== undefined && leadMode !== undefined
+      && matchedMode !== leadMode;
+    keyMatchStatuses[swap.stemType] = swap.stemType === "drums"
+      ? "Drum pitch preserved"
+      : keyMode === "preserve" || keyMode === "off"
+        ? "Donor pitch preserved"
+        : match.semitones === null
+          ? "Key analysis unavailable · donor pitch preserved"
+          : modeDiffers
+            ? "Tonic matched · mode preserved"
+            : match.semitones === 0
+            ? "Key already aligned"
+            : keyMode === "camelot" ? "Camelot-compatible key matched" : "Key matched to lead";
   }
-  return { swaps, tempoStretchRatios, beatOffsets, keyCorrections };
+  return { swaps, tempoStretchRatios, beatOffsets, keyCorrections, keyMatchStatuses };
 }
 
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
@@ -4033,7 +4052,7 @@ export default function SessionExperience({
       ?? library.find((item) => item.id === swap?.toTrackId)?.title
       ?? swap?.donorTrack?.title
       ?? null;
-    const swapStatus = swap === undefined ? null
+    const tempoStatus = swap === undefined ? null
       : pendingSwap
         ? "Preparing live layer…"
         : activeSwapTempoStretchRatios[stemType] !== undefined
@@ -4043,6 +4062,9 @@ export default function SessionExperience({
           : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
             : "Tempo unavailable · native tempo";
+    const keyMatchStatus = currentSwapSetup.keyMatchStatuses[stemType];
+    const swapStatus = tempoStatus === null ? null
+      : keyMatchStatus ? `${tempoStatus} · ${keyMatchStatus}` : tempoStatus;
     return (
       <LiveStemSwapPicker
         stemType={stemType}

@@ -7,7 +7,10 @@ test("swapped tonal stems match the audible lead rather than inheriting the rece
   assert.equal(resolveLiveStemKeyCorrection("match", "C major", "D major", 2, "bass"), -2,
     "the donor already matches the shifted lead D; cancel the deck's additional +2 correction");
   assert.equal(resolveLiveStemKeyCorrection("camelot", "C major", "G major", 0, "other"), 0);
-  assert.equal(resolveLiveStemKeyCorrection("match", "C major", null, 0, "vocals"), null);
+  assert.equal(resolveLiveStemKeyCorrection("match", "C major", null, 2, "vocals"), -2,
+    "missing key analysis leaves a donor at its original pitch instead of inheriting the deck shift");
+  assert.equal(resolveLiveStemKeyCorrection("camelot", null, "A minor", -3, "bass"), 3,
+    "Camelot mode leaves a donor at its original pitch when the lead key is unknown");
   assert.equal(resolveLiveStemKeyCorrection("preserve", "C major", "D major", 2, "vocals"), -2);
   assert.equal(resolveLiveStemKeyCorrection("off", "C major", "D major", 2, "bass"), -2);
   assert.equal(resolveLiveStemKeyCorrection("match", "C major", "D major", 2, "drums"), -2,
