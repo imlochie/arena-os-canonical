@@ -28,9 +28,30 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const asset = stem ?? source;
     if (!asset) return Response.json({ error: "Audio asset not found." }, { status: 404 });
     await requireProjectRole(user.id, asset.projectId, "viewer");
-    const [waveform] = stem
+    const [waveformRecord] = stem
       ? await db.select().from(waveformAssets).where(eq(waveformAssets.stemAssetId, stem.id)).limit(1)
-      : await db.select().from(waveformAssets).where(eq(waveformAssets.sourceAssetId, source!.id)).limit(1);
+      : await db.select().from(waveformAssets)
+        .where(eq(waveformAssets.sourceAssetId, source!.id))
+        .orderBy(desc(waveformAssets.createdAt))
+        .limit(1);
+    let waveform: typeof waveformAssets.$inferSelect | undefined = waveformRecord;
+    if (source && waveformRecord) {
+      let metadata: Record<string, unknown> | null = null;
+      try {
+        const parsed = JSON.parse(waveformRecord.metadata);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          metadata = parsed as Record<string, unknown>;
+        }
+      } catch {
+        metadata = null;
+      }
+      const waveformSourceChecksum = metadata?.sourceChecksumSha256;
+      // Legacy waveform rows have no provenance; restore removes these rows
+      // before queuing work, while new workers pin the source checksum.
+      const matchesCurrentSource = typeof waveformSourceChecksum !== "string"
+        || waveformSourceChecksum === source.checksumSha256;
+      if (!matchesCurrentSource) waveform = undefined;
+    }
     if (!waveform) {
       const [job] = await db
         .select({

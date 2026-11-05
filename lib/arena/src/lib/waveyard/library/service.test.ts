@@ -1306,6 +1306,9 @@ test("passthrough bridge = honest source-only playback", async () => {
 
 test("analysis surfaces tempo and key when the engine completed it", async () => {
   const sourceId = sourceIdByTrackId.get(trackA.id)!;
+  const [source] = await db.db.select().from(schema.sourceAssets)
+    .where(eq(schema.sourceAssets.id, sourceId)).limit(1);
+  assert.ok(source);
   await db.db.insert(schema.sourceAnalyses).values({
     projectId: trackA.studioProjectId,
     sourceAssetId: sourceId,
@@ -1313,7 +1316,7 @@ test("analysis surfaces tempo and key when the engine completed it", async () =>
     stage: "complete",
     analysisEngine: "arena-js-dsp",
     analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
-    sourceChecksumSha256: "checksum",
+    sourceChecksumSha256: source.checksumSha256,
     idempotencyKey: `analysis-test:${sourceId}`,
     bpm: 128.5,
     musicalKey: "A minor",
@@ -1816,7 +1819,10 @@ test("session: a missing original can be restored without changing stems or sess
     .where(eq(schema.tracks.id, trackA.id)).limit(1);
   const [originalAcquisition] = await db.db.select().from(schema.sourceAcquisitions)
     .where(eq(schema.sourceAcquisitions.sourceAssetId, sourceId)).limit(1);
-  assert.ok(originalSource && originalTrack && originalAcquisition);
+  const [originalAnalysis] = await db.db.select().from(schema.sourceAnalyses)
+    .where(eq(schema.sourceAnalyses.sourceAssetId, sourceId)).limit(1);
+  assert.ok(originalSource && originalTrack && originalAcquisition && originalAnalysis);
+  assert.equal(originalAnalysis.sourceChecksumSha256, originalSource.checksumSha256);
   const originalStems = await db.db.select().from(schema.stemAssets)
     .where(eq(schema.stemAssets.sourceAssetId, sourceId));
   assert.ok(originalStems.length > 0);
@@ -1830,6 +1836,23 @@ test("session: a missing original can be restored without changing stems or sess
     transition: { mode: "bar", crossfadeSeconds: 6, keepStems: ["vocals"] },
   });
   await sessions.saveSessionState(OWNER, created.id, sessionTrackId, 37.5);
+  const oldWaveformKey = `test/restore-waveform-${randomUUID()}.json`;
+  const [oldWaveformJob] = await db.db.insert(schema.waveformJobs).values({
+    projectId: originalSource.projectId,
+    sourceAssetId: sourceId,
+    status: "complete",
+    stage: "complete",
+    idempotencyKey: `waveform:restore-existing:${sourceId}`,
+  }).returning();
+  await getStorage().putBuffer(oldWaveformKey, JSON.stringify({ old: true }));
+  await db.db.insert(schema.waveformAssets).values({
+    projectId: originalSource.projectId,
+    sourceAssetId: sourceId,
+    waveformJobId: oldWaveformJob.id,
+    storageKey: oldWaveformKey,
+    checksumSha256: "old-waveform-checksum",
+    metadata: JSON.stringify({ format: "waveyard-peaks-v1" }),
+  });
   const replacementPath = path.join(root!, "replacement-original.wav");
   writeWav(replacementPath, 2, 880);
   try {
@@ -1856,6 +1879,36 @@ test("session: a missing original can be restored without changing stems or sess
       .where(eq(schema.sourceAssets.id, sourceId)).limit(1);
     assert.equal(await getStorage().exists(updatedSource.storageKey), true);
     assert.notEqual(updatedSource.checksumSha256, originalSource.checksumSha256);
+    const [updatedAnalysis] = await db.db.select().from(schema.sourceAnalyses)
+      .where(eq(schema.sourceAnalyses.sourceAssetId, sourceId)).limit(1);
+    assert.equal(updatedAnalysis.sourceChecksumSha256, updatedSource.checksumSha256);
+    assert.ok(["queued", "preparing", "processing", "complete", "failed"].includes(updatedAnalysis.status));
+    if (updatedAnalysis.status !== "complete") {
+      assert.equal(updatedAnalysis.bpm, null);
+      assert.equal(updatedAnalysis.musicalKey, null);
+      assert.equal(updatedAnalysis.beatGrid, null);
+    }
+    assert.deepEqual(await sessions.sessionTrackAnalysis(OWNER, trackA.id), {
+      bpm: null,
+      bpmConfidence: null,
+      beatConfidence: null,
+      keyConfidence: null,
+      musicalKey: null,
+      beatGridMs: null,
+      sections: null,
+    });
+    const updatedTrack = await service.getTrack(OWNER, trackA.id);
+    assert.equal(updatedTrack?.analysis?.bpm, null);
+    assert.equal(updatedTrack?.analysis?.musicalKey, null);
+    const oldWaveformAssets = await db.db.select().from(schema.waveformAssets)
+      .where(eq(schema.waveformAssets.sourceAssetId, sourceId));
+    assert.equal(oldWaveformAssets.some((asset) => asset.storageKey === oldWaveformKey), false);
+    assert.equal(await getStorage().exists(oldWaveformKey), false);
+    const sourceWaveformJobs = await db.db.select().from(schema.waveformJobs)
+      .where(eq(schema.waveformJobs.sourceAssetId, sourceId));
+    assert.ok(sourceWaveformJobs.some((job) =>
+      job.idempotencyKey.startsWith(`waveform:source:${sourceId}:restore:${updatedSource.checksumSha256}:`),
+    ), "replacement bytes receive a distinct waveform job without creating new stems");
   } finally {
     await sessions.deleteSession(OWNER, created.id);
     const [updatedSource] = await db.db.select().from(schema.sourceAssets)
@@ -1885,6 +1938,37 @@ test("session: a missing original can be restored without changing stems or sess
       resolver: originalAcquisition.resolver,
       metadata: originalAcquisition.metadata,
     }).where(eq(schema.sourceAcquisitions.id, originalAcquisition.id));
+    await db.db.update(schema.sourceAnalyses).set({
+      status: originalAnalysis.status,
+      stage: originalAnalysis.stage,
+      attempts: originalAnalysis.attempts,
+      idempotencyKey: originalAnalysis.idempotencyKey,
+      analysisEngine: originalAnalysis.analysisEngine,
+      analysisEngineVersion: originalAnalysis.analysisEngineVersion,
+      sourceChecksumSha256: originalAnalysis.sourceChecksumSha256,
+      bpm: originalAnalysis.bpm,
+      bpmConfidence: originalAnalysis.bpmConfidence,
+      musicalKey: originalAnalysis.musicalKey,
+      keyConfidence: originalAnalysis.keyConfidence,
+      beatGrid: originalAnalysis.beatGrid,
+      beatConfidence: originalAnalysis.beatConfidence,
+      analysisError: originalAnalysis.analysisError,
+      errorCode: originalAnalysis.errorCode,
+      startedAt: originalAnalysis.startedAt,
+      analyzedAt: originalAnalysis.analyzedAt,
+      completedAt: originalAnalysis.completedAt,
+      updatedAt: originalAnalysis.updatedAt,
+    }).where(eq(schema.sourceAnalyses.id, originalAnalysis.id));
+    await getStorage().delete(oldWaveformKey).catch(() => undefined);
+    await db.db.delete(schema.waveformJobs).where(eq(schema.waveformJobs.id, oldWaveformJob.id));
+    const restoredWaveformJobs = await db.db.select().from(schema.waveformJobs)
+      .where(eq(schema.waveformJobs.sourceAssetId, sourceId));
+    for (const job of restoredWaveformJobs.filter((row) => row.idempotencyKey.startsWith(`waveform:source:${sourceId}:restore:`))) {
+      const assets = await db.db.select().from(schema.waveformAssets)
+        .where(eq(schema.waveformAssets.waveformJobId, job.id));
+      for (const asset of assets) await getStorage().delete(asset.storageKey).catch(() => undefined);
+      await db.db.delete(schema.waveformJobs).where(eq(schema.waveformJobs.id, job.id));
+    }
   }
 });
 
@@ -2927,6 +3011,9 @@ test("session: Studio handoff checks selected and live-donor audio files, keepin
 test("session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)", async () => {
   // trackA has a complete analysis (128.5 BPM, A minor). Give trackB one too.
   const sourceB = sourceIdByTrackId.get(trackB.id)!;
+  const [sourceAssetB] = await db.db.select().from(schema.sourceAssets)
+    .where(eq(schema.sourceAssets.id, sourceB)).limit(1);
+  assert.ok(sourceAssetB);
   await db.db.insert(schema.sourceAnalyses).values({
     projectId: trackB.studioProjectId,
     sourceAssetId: sourceB,
@@ -2934,7 +3021,7 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
     stage: "complete",
     analysisEngine: "arena-js-dsp",
     analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
-    sourceChecksumSha256: "checksum-b",
+    sourceChecksumSha256: sourceAssetB.checksumSha256,
     idempotencyKey: `analysis-test-b:${sourceB}`,
     bpm: 129,
     musicalKey: "C major",

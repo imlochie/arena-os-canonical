@@ -252,18 +252,21 @@ async function analysisBySource(sourceAssetIds: string[]): Promise<Map<string, T
       analysisEngine: sourceAnalyses.analysisEngine,
       analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
       musicalKey: sourceAnalyses.musicalKey,
+      sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
+      currentChecksumSha256: sourceAssets.checksumSha256,
     })
     .from(sourceAnalyses)
+    .innerJoin(sourceAssets, eq(sourceAssets.id, sourceAnalyses.sourceAssetId))
     .where(inArray(sourceAnalyses.sourceAssetId, uniqueIds));
   return new Map(rows.map((row) => [
     row.sourceAssetId,
     {
-      status: row.status,
-      bpm: row.bpm,
-      bpmConfidence: currentBpmConfidence(row),
-      beatConfidence: currentBeatConfidence(row),
-      keyConfidence: currentKeyConfidence(row),
-      musicalKey: row.musicalKey,
+      status: row.sourceChecksumSha256 === row.currentChecksumSha256 ? row.status : "stale",
+      bpm: row.sourceChecksumSha256 === row.currentChecksumSha256 ? row.bpm : null,
+      bpmConfidence: row.sourceChecksumSha256 === row.currentChecksumSha256 ? currentBpmConfidence(row) : null,
+      beatConfidence: row.sourceChecksumSha256 === row.currentChecksumSha256 ? currentBeatConfidence(row) : null,
+      keyConfidence: row.sourceChecksumSha256 === row.currentChecksumSha256 ? currentKeyConfidence(row) : null,
+      musicalKey: row.sourceChecksumSha256 === row.currentChecksumSha256 ? row.musicalKey : null,
     },
   ]));
 }
@@ -581,6 +584,7 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
       analysisEngine: sourceAnalyses.analysisEngine,
       analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
       musicalKey: sourceAnalyses.musicalKey,
+      sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
     })
     .from(sourceAnalyses)
     .where(eq(sourceAnalyses.sourceAssetId, row.sourceAssetId))
@@ -623,12 +627,12 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
     },
     stems: stemRows,
     analysis: analysis === undefined ? null : {
-      status: analysis.status,
-      bpm: analysis.bpm,
-      bpmConfidence: currentBpmConfidence(analysis),
-      beatConfidence: currentBeatConfidence(analysis),
-      keyConfidence: currentKeyConfidence(analysis),
-      musicalKey: analysis.musicalKey,
+      status: analysis.sourceChecksumSha256 === source.checksumSha256 ? analysis.status : "stale",
+      bpm: analysis.sourceChecksumSha256 === source.checksumSha256 ? analysis.bpm : null,
+      bpmConfidence: analysis.sourceChecksumSha256 === source.checksumSha256 ? currentBpmConfidence(analysis) : null,
+      beatConfidence: analysis.sourceChecksumSha256 === source.checksumSha256 ? currentBeatConfidence(analysis) : null,
+      keyConfidence: analysis.sourceChecksumSha256 === source.checksumSha256 ? currentKeyConfidence(analysis) : null,
+      musicalKey: analysis.sourceChecksumSha256 === source.checksumSha256 ? analysis.musicalKey : null,
     },
     playback,
   };

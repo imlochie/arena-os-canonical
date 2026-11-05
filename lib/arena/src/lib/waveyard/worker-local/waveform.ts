@@ -146,16 +146,27 @@ type AssetTarget = {
   storageKey: string;
   sourceAssetId: string | null;
   stemAssetId: string | null;
+  sourceChecksumSha256: string | null;
 };
 
 async function resolveTarget(database: ReturnType<typeof drizzle>, payload: WaveformJobPayload): Promise<AssetTarget | null> {
   if (payload.stemAssetId) {
     const [stem] = await database.select().from(stemAssets).where(eq(stemAssets.id, payload.stemAssetId)).limit(1);
-    return stem ? { storageKey: stem.storageKey, sourceAssetId: stem.sourceAssetId, stemAssetId: stem.id } : null;
+    return stem ? {
+      storageKey: stem.storageKey,
+      sourceAssetId: stem.sourceAssetId,
+      stemAssetId: stem.id,
+      sourceChecksumSha256: null,
+    } : null;
   }
   if (payload.sourceAssetId) {
     const [source] = await database.select().from(sourceAssets).where(eq(sourceAssets.id, payload.sourceAssetId)).limit(1);
-    return source ? { storageKey: source.storageKey, sourceAssetId: source.id, stemAssetId: null } : null;
+    return source ? {
+      storageKey: source.storageKey,
+      sourceAssetId: source.id,
+      stemAssetId: null,
+      sourceChecksumSha256: source.checksumSha256,
+    } : null;
   }
   return null;
 }
@@ -306,9 +317,23 @@ export async function handleWaveformJob(
         sampleRate: waveform.sampleRate,
         channels: waveform.channels,
         resolutions: Object.keys(waveform.resolutions).map(Number),
+        ...(asset.stemAssetId === null && asset.sourceChecksumSha256 !== null
+          ? { sourceChecksumSha256: asset.sourceChecksumSha256 }
+          : {}),
       });
 
       await database.transaction(async (tx) => {
+        if (asset.stemAssetId === null && asset.sourceAssetId !== null) {
+          const [currentSource] = await tx
+            .select({ checksumSha256: sourceAssets.checksumSha256 })
+            .from(sourceAssets)
+            .where(eq(sourceAssets.id, asset.sourceAssetId))
+            .for("update")
+            .limit(1);
+          if (!currentSource || currentSource.checksumSha256 !== asset.sourceChecksumSha256) {
+            throw new Error("Source audio changed before its waveform could be saved.");
+          }
+        }
         await tx.insert(waveformAssets).values({
           projectId: job.projectId,
           sourceAssetId: asset.sourceAssetId,

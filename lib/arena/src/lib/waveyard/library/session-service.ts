@@ -15,6 +15,7 @@
  * explicitly named object the user then edits with the normal Studio tools.
  */
 
+import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
 import { extname } from "node:path";
 
@@ -41,11 +42,15 @@ import {
   sourceSections,
   stemAssets,
   tracks,
+  waveformAssets,
+  waveformJobs,
 } from "@workspace/db/waveyardSchema";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { checksumFile, probeAudio, sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage, privateObjectKey } from "../storage";
 import { sourceObjectLockQuery } from "../source-object-lock";
+import { desktopAnalysisIdempotencyKey, DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
+import { enqueueSourceAnalysis, enqueueWaveform } from "../queue";
 import { sourceSectionsAreValid, type SourceSection } from "../types/source-sections";
 import {
   normalizeStemMix,
@@ -406,8 +411,22 @@ export async function restoreSessionTrackOriginalAudio(
   const checksum = await checksumFile(input.filePath);
   const storageKey = privateObjectKey(entry.projectId, "source", extname(filename));
   let stored = false;
+  let restoreWork: {
+    reanalysis: {
+      id: string;
+      projectId: string;
+      sourceAssetId: string;
+      analysisEngine: string;
+      analysisEngineVersion: string;
+    } | null;
+    replacementWaveformJobId: string | null;
+    obsoleteWaveformKeys: string[];
+  } = { reanalysis: null, replacementWaveformJobId: null, obsoleteWaveformKeys: [] };
   try {
-    await db.transaction(async (tx) => {
+    restoreWork = await db.transaction(async (tx) => {
+      let reanalysis: typeof restoreWork.reanalysis = null;
+      let replacementWaveformJobId: string | null = null;
+      const obsoleteWaveformKeys: string[] = [];
       await tx.execute(sourceObjectLockQuery(entry.source.storageKey));
       await tx.execute(sourceObjectLockQuery(storageKey));
       const [current] = await tx
@@ -469,6 +488,98 @@ export async function restoreSessionTrackOriginalAudio(
         resolver: null,
         metadata: JSON.stringify({ intake: "waveyard-session-original-restore" }),
       }).where(eq(sourceAcquisitions.sourceAssetId, current.id));
+
+      // A byte-identical restore keeps its existing source-derived evidence.
+      // A replacement with different bytes invalidates source analysis and
+      // source waveforms only; retained stem files and their waveforms remain.
+      if (current.checksumSha256 !== checksum) {
+        const obsoleteWaveforms = await tx
+          .select({ storageKey: waveformAssets.storageKey })
+          .from(waveformAssets)
+          .where(eq(waveformAssets.sourceAssetId, current.id));
+        obsoleteWaveformKeys.push(...obsoleteWaveforms.map((asset) => asset.storageKey));
+        await tx.delete(waveformAssets).where(eq(waveformAssets.sourceAssetId, current.id));
+
+        await tx.update(waveformJobs).set({
+          status: "cancelled",
+          stage: "source-replaced",
+          errorCode: "source_replaced",
+          errorMessage: "The source audio changed before this waveform could be used.",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(and(
+          eq(waveformJobs.sourceAssetId, current.id),
+          ne(waveformJobs.status, "complete"),
+          ne(waveformJobs.status, "cancelled"),
+        ));
+        await tx.update(sourceSectionAnalyses).set({
+          status: "cancelled",
+          stage: "source-replaced",
+          errorCode: "source_replaced",
+          errorMessage: "The source audio changed before this structural analysis could be used.",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(sourceSectionAnalyses.sourceAssetId, current.id));
+        await tx.delete(sourceSections).where(eq(sourceSections.sourceAssetId, current.id));
+
+        const analysisValues = {
+          status: "queued",
+          stage: "queued",
+          attempts: 0,
+          idempotencyKey: desktopAnalysisIdempotencyKey(current.id),
+          analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+          analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+          sourceChecksumSha256: checksum,
+          bpm: null,
+          bpmConfidence: null,
+          musicalKey: null,
+          keyConfidence: null,
+          beatGrid: null,
+          beatConfidence: null,
+          analysisError: null,
+          errorCode: null,
+          startedAt: null,
+          analyzedAt: null,
+          completedAt: null,
+          updatedAt: new Date(),
+        };
+        const [analysis] = await tx
+          .insert(sourceAnalyses)
+          .values({
+            projectId: entry.projectId,
+            sourceAssetId: current.id,
+            ...analysisValues,
+          })
+          .onConflictDoUpdate({
+            target: sourceAnalyses.sourceAssetId,
+            set: analysisValues,
+          })
+          .returning({
+            id: sourceAnalyses.id,
+            analysisEngine: sourceAnalyses.analysisEngine,
+            analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
+          });
+        reanalysis = {
+          id: analysis.id,
+          projectId: entry.projectId,
+          sourceAssetId: current.id,
+          analysisEngine: analysis.analysisEngine,
+          analysisEngineVersion: analysis.analysisEngineVersion,
+        };
+
+        const [waveformJob] = await tx
+          .insert(waveformJobs)
+          .values({
+            projectId: entry.projectId,
+            sourceAssetId: current.id,
+            status: "queued",
+            stage: "queued",
+            idempotencyKey: `waveform:source:${current.id}:restore:${checksum}:${randomUUID()}`,
+          })
+          .returning({ id: waveformJobs.id });
+        replacementWaveformJobId = waveformJob.id;
+      }
+      return { reanalysis, replacementWaveformJobId, obsoleteWaveformKeys };
     });
   } catch (error) {
     if (stored) {
@@ -481,6 +592,50 @@ export async function restoreSessionTrackOriginalAudio(
       if (referenced === undefined) await storage.delete(storageKey).catch(() => undefined);
     }
     throw error;
+  }
+  for (const obsoleteKey of restoreWork.obsoleteWaveformKeys) {
+    await storage.delete(obsoleteKey).catch(() => undefined);
+  }
+  const { reanalysis, replacementWaveformJobId } = restoreWork;
+  if (replacementWaveformJobId !== null && reanalysis !== null) {
+    try {
+      await enqueueWaveform({
+        waveformJobId: replacementWaveformJobId,
+        projectId: reanalysis.projectId,
+        sourceAssetId: reanalysis.sourceAssetId,
+      });
+    } catch (error) {
+      await db.update(waveformJobs).set({
+        status: "failed",
+        stage: "queue-unavailable",
+        errorCode: "queue_unavailable",
+        errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(waveformJobs.id, replacementWaveformJobId));
+      // Analysis is independent of waveform display. If waveform dispatch is
+      // unavailable, still try to queue it directly; failures stay visible.
+      try {
+        await enqueueSourceAnalysis({
+          sourceAnalysisId: reanalysis.id,
+          projectId: reanalysis.projectId,
+          sourceAssetId: reanalysis.sourceAssetId,
+          analysisEngine: reanalysis.analysisEngine,
+          analysisEngineVersion: reanalysis.analysisEngineVersion,
+        });
+      } catch (analysisError) {
+        await db.update(sourceAnalyses).set({
+          status: "failed",
+          stage: "queue-unavailable",
+          errorCode: "queue_unavailable",
+          analysisError: analysisError instanceof Error
+            ? analysisError.message.slice(0, 1000)
+            : "Analysis queue unavailable.",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(sourceAnalyses.id, reanalysis.id));
+      }
+    }
   }
   return sessionPayload(sessionId);
 }
@@ -1383,6 +1538,19 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     .where(and(eq(sourceAnalyses.sourceAssetId, sourceTrack.sourceAssetId), eq(sourceAnalyses.status, "complete")))
     .limit(1);
   if (analysis === undefined) {
+    return {
+      bpm: null,
+      bpmConfidence: null,
+      beatConfidence: null,
+      keyConfidence: null,
+      musicalKey: null,
+      beatGridMs: null,
+      sections: null,
+    };
+  }
+  const analysisMatchesSource = sourceTrack.checksumSha256 !== null
+    && analysis.sourceChecksumSha256 === sourceTrack.checksumSha256;
+  if (!analysisMatchesSource) {
     return {
       bpm: null,
       bpmConfidence: null,

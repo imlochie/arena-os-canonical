@@ -39,8 +39,19 @@ function parseBeatGrid(value: string | null) {
   }
 }
 
-async function updateJob(id: string, patch: Partial<typeof sourceAnalyses.$inferInsert>) {
-  await db.update(sourceAnalyses).set({ ...patch, updatedAt: new Date() }).where(eq(sourceAnalyses.id, id));
+async function updateJob(
+  id: string,
+  patch: Partial<typeof sourceAnalyses.$inferInsert>,
+  expectedSourceChecksumSha256?: string,
+) {
+  await db.update(sourceAnalyses)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(expectedSourceChecksumSha256 === undefined
+      ? eq(sourceAnalyses.id, id)
+      : and(
+        eq(sourceAnalyses.id, id),
+        eq(sourceAnalyses.sourceChecksumSha256, expectedSourceChecksumSha256),
+      ));
 }
 
 export function desktopSectionIdempotencyKey(sourceAssetId: string) {
@@ -143,7 +154,7 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       errorCode: "invalid_payload",
       analysisError: "Analysis queue payload does not match its durable source target.",
       completedAt: new Date(),
-    });
+    }, job.sourceChecksumSha256);
     throw new Error("Analysis payload does not match its durable source target.");
   }
 
@@ -159,7 +170,7 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       errorCode: source ? "source_changed" : "source_missing",
       analysisError: source ? "Source checksum no longer matches analysis provenance." : "Authorized source asset is missing.",
       completedAt: new Date(),
-    });
+    }, job.sourceChecksumSha256);
     throw new Error("Authorized source asset is unavailable for analysis.");
   }
 
@@ -174,9 +185,9 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       analysisError: null,
       errorCode: null,
       completedAt: null,
-    });
+    }, job.sourceChecksumSha256);
     await getStorage().getToFile(source.storageKey, inputPath);
-    await updateJob(job.id, { status: "processing", stage: "analyzing" });
+    await updateJob(job.id, { status: "processing", stage: "analyzing" }, job.sourceChecksumSha256);
 
     // arena-js-dsp: real DSP over decoded PCM; unavailable evidence stays null.
     const pcm = await decodeMonoPcm(inputPath);
@@ -192,22 +203,36 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       throw new Error("Desktop analysis reported beat confidence without a beat grid.");
     const analyzedAt = new Date();
 
-    await updateJob(job.id, {
-      status: "complete",
-      stage: "complete",
-      analysisEngine: DESKTOP_ANALYSIS_ENGINE,
-      analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
-      bpm: raw.bpm,
-      bpmConfidence: raw.bpmConfidence,
-      musicalKey: raw.musicalKey,
-      keyConfidence: raw.keyConfidence,
-      beatGrid: beatGridMs ? JSON.stringify(beatGridMs) : null,
-      beatConfidence,
-      analysisError: null,
-      errorCode: null,
-      analyzedAt,
-      completedAt: analyzedAt,
+    const completed = await db.transaction(async (tx) => {
+      const [currentSource] = await tx.select({ checksumSha256: sourceAssets.checksumSha256 })
+        .from(sourceAssets)
+        .where(and(eq(sourceAssets.id, payload.sourceAssetId), eq(sourceAssets.projectId, payload.projectId)))
+        .for("update")
+        .limit(1);
+      if (!currentSource || currentSource.checksumSha256 !== job.sourceChecksumSha256) return false;
+      const [updated] = await tx.update(sourceAnalyses).set({
+        status: "complete",
+        stage: "complete",
+        analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+        analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+        bpm: raw.bpm,
+        bpmConfidence: raw.bpmConfidence,
+        musicalKey: raw.musicalKey,
+        keyConfidence: raw.keyConfidence,
+        beatGrid: beatGridMs ? JSON.stringify(beatGridMs) : null,
+        beatConfidence,
+        analysisError: null,
+        errorCode: null,
+        analyzedAt,
+        completedAt: analyzedAt,
+        updatedAt: analyzedAt,
+      }).where(and(
+        eq(sourceAnalyses.id, job.id),
+        eq(sourceAnalyses.sourceChecksumSha256, job.sourceChecksumSha256),
+      )).returning({ id: sourceAnalyses.id });
+      return updated !== undefined;
     });
+    if (!completed) return;
     // Downstream structural work is isolated metadata: a queue outage must
     // never turn a completed BPM/key/beat analysis into a failed analysis.
     await provisionDesktopSectionAnalysis({ ...job, status: "complete", beatGrid: beatGridMs ? JSON.stringify(beatGridMs) : null }, source).catch(
@@ -228,7 +253,7 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       beatConfidence: null,
       analyzedAt: null,
       completedAt: new Date(),
-    });
+    }, job.sourceChecksumSha256);
     const [sourceRow] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, job.sourceAssetId)).limit(1);
     if (sourceRow)
       await provisionDesktopSectionAnalysis({ ...job, status: "failed", beatGrid: null }, sourceRow).catch((sectionError) =>
