@@ -1,5 +1,7 @@
 export const DESKTOP_ANALYSIS_ENGINE = "arena-js-dsp";
 export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.4.0";
+export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
+export const DESKTOP_SECTION_ENGINE_VERSION = "1.3.0";
 
 export function isStaleDesktopAnalysis(analysis: {
   analysisEngine: string | null;
@@ -19,6 +21,14 @@ export function isCurrentDesktopAnalysis(analysis: {
 }): boolean {
   return analysis.analysisEngine === DESKTOP_ANALYSIS_ENGINE
     && analysis.analysisEngineVersion === DESKTOP_ANALYSIS_ENGINE_VERSION;
+}
+
+export function isCurrentDesktopSectionAnalysis(analysis: {
+  analysisEngine: string | null;
+  analysisEngineVersion: string | null;
+}): boolean {
+  return analysis.analysisEngine === DESKTOP_SECTION_ENGINE
+    && analysis.analysisEngineVersion === DESKTOP_SECTION_ENGINE_VERSION;
 }
 
 export function currentBpmConfidence(analysis: {
