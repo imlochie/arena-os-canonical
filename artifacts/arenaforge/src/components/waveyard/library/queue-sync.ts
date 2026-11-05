@@ -11,8 +11,9 @@ export interface WaveyardTransportSnapshot {
   trackId: string | null;
   positionSeconds: number;
   playing: boolean;
-  action: "state" | "seek" | "speed";
+  action: "state" | "seek" | "speed" | "pitch";
   playbackRate?: number;
+  pitchPreserving?: boolean;
   priority: "control" | "heartbeat";
   clock: number;
   updatedAt: number;
@@ -77,9 +78,11 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
       || !Number.isFinite(value.positionSeconds)
       || value.positionSeconds < 0
       || typeof value.playing !== "boolean"
-      || (value.action !== "state" && value.action !== "seek" && value.action !== "speed")
+      || (value.action !== "state" && value.action !== "seek" && value.action !== "speed" && value.action !== "pitch")
       || (value.playbackRate !== undefined && (typeof value.playbackRate !== "number" || !Number.isFinite(value.playbackRate)))
+      || (value.pitchPreserving !== undefined && typeof value.pitchPreserving !== "boolean")
       || (value.action === "speed" && typeof value.playbackRate !== "number")
+      || (value.action === "pitch" && typeof value.pitchPreserving !== "boolean")
       || (value.priority !== "control" && value.priority !== "heartbeat")
       || typeof value.clock !== "number"
       || !Number.isSafeInteger(value.clock)
@@ -94,6 +97,7 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
       playing: value.playing,
       action: value.action,
       ...(typeof value.playbackRate === "number" ? { playbackRate: value.playbackRate } : {}),
+      ...(typeof value.pitchPreserving === "boolean" ? { pitchPreserving: value.pitchPreserving } : {}),
       priority: value.priority,
       clock: value.clock,
       updatedAt: value.updatedAt,

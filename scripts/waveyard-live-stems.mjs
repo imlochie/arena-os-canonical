@@ -126,6 +126,15 @@ async function waitForSessionRateInPage(targetPage, rate, bpm) {
     throw error;
   }
 }
+async function waitForSessionPitchModeInPage(targetPage, enabled) {
+  await targetPage.waitForFunction(expected => {
+    const button = document.querySelector('[data-testid="session-pitch-lock"]');
+    const audios = [...document.querySelectorAll('[data-role="current"] audio')];
+    return button?.getAttribute("aria-pressed") === String(expected)
+      && audios.length === 4
+      && audios.every(audio => audio.preservesPitch === expected);
+  }, enabled, { timeout: 8_000 });
+}
 function wav(seconds, frequency, amplitude = 2000 / 32767, held = false, channels = 1) {
   const n = 22050 * seconds, data = Buffer.alloc(44 + n * 2 * channels);
   data.write("RIFF"); data.writeUInt32LE(data.length - 8, 4); data.write("WAVEfmt ", 8);
@@ -288,7 +297,10 @@ const session = { id: sessionId, name: mashupEvaluationOnly ? "Real track mashup
   currentSessionTrackId: tracks[0]?.id ?? "a", positionSeconds: 0,
   keyMatchMode: "off", keyShifts: {},
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-const pitchAcceptanceTrackSnapshot = structuredClone(tracks);
+const pitchAcceptanceTrackSnapshot = structuredClone(tracks).map(track => ({
+  ...track,
+  analysis: { ...track.analysis, bpmConfidence: 0.9, beatConfidence: 0.9 },
+}));
 const studioProjectId = "00000000-0000-4000-8000-000000000008";
 const studioRemixId = "00000000-0000-4000-8000-000000000009";
 const secondStudioProjectId = "00000000-0000-4000-8000-000000000010";
@@ -435,7 +447,7 @@ try {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [], decodedAudio: [],
       combinedInputs: [], combinedOutputs: [], playStarts: [],
       renderCaptureDestinations: [],
-      workletLoads: [], workletSeeks: [], workletRates: [], keyShifts: [], transportMessages: [],
+      workletLoads: [], workletSeeks: [], workletRates: [], workletPitchModes: [], keyShifts: [], transportMessages: [],
       storageTransportMessages: [], storageTransportReceives: [], contexts: [],
     };
     if (captureRenderedAudio) {
@@ -719,6 +731,13 @@ try {
                 rate: message.value,
                 at: performance.now(),
                 contextTime: this.context.currentTime,
+              });
+            } else if (message?.type === "pitch") {
+              window.audioProbe.workletPitchModes.push({
+                node: this,
+                context: this.context,
+                enabled: message.enabled,
+                at: performance.now(),
               });
             } else if (message?.type === "key-shift") {
               window.audioProbe.keyShifts.push({ node: this, context: this.context, semitones: message.semitones, at: performance.now() });
@@ -1850,7 +1869,7 @@ try {
     await browser.close();
     process.exit(0);
   } else if (timingOnly) {
-    session.tracks = tracks;
+    session.tracks = pitchAcceptanceTrackSnapshot;
     session.swaps = [];
     session.currentSessionTrackId = "a";
     session.positionSeconds = 0;
@@ -3981,6 +4000,63 @@ try {
     waitForSessionRateInPage(firstPage, 0.8, 96),
     waitForSessionRateInPage(secondPage, 0.8, 96),
   ]);
+  const ownerPitchButton = firstPage.getByTestId("session-pitch-lock");
+  assert.equal(await ownerPitchButton.isEnabled(), true, "the two-tab regression requires supported pitch controls");
+  await ownerPitchButton.click();
+  await Promise.all([
+    waitForSessionPitchModeInPage(firstPage, true),
+    waitForSessionPitchModeInPage(secondPage, true),
+  ]);
+  const ownerPitchControl = await firstPage.evaluate(() =>
+    window.audioProbe.transportMessages
+      .filter(message => message.transport?.action === "pitch"
+        && message.transport.priority === "control"
+        && message.transport.pitchPreserving === true)
+      .at(-1) ?? null,
+  );
+  assert.ok(ownerPitchControl, "the owner publishes its pitch-lock selection as a transport control");
+  const stalePitchHeartbeatId = await firstPage.evaluate(({ control, useStorageFallback }) => {
+    const stale = JSON.parse(JSON.stringify(control));
+    stale.id = `stale-pitch-heartbeat-${crypto.randomUUID()}`;
+    stale.transport = {
+      ...stale.transport,
+      action: "state",
+      priority: "heartbeat",
+      pitchPreserving: false,
+      updatedAt: stale.transport.updatedAt - 1,
+    };
+    if (useStorageFallback) {
+      localStorage.setItem("waveyard:queue-change", JSON.stringify(stale));
+    } else {
+      const channel = new BroadcastChannel("waveyard:queue-sync");
+      channel.postMessage(stale);
+      channel.close();
+    }
+    return stale.id;
+  }, { control: ownerPitchControl, useStorageFallback: disableBroadcastChannel });
+  if (disableBroadcastChannel) {
+    await secondPage.waitForFunction(id =>
+      window.audioProbe.storageTransportReceives.some(message => message.id === id),
+    stalePitchHeartbeatId);
+  } else {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  await Promise.all([
+    waitForSessionPitchModeInPage(firstPage, true),
+    waitForSessionPitchModeInPage(secondPage, true),
+  ]);
+  await secondPage.getByTestId("session-pitch-lock").click();
+  await Promise.all([
+    waitForSessionPitchModeInPage(firstPage, false),
+    waitForSessionPitchModeInPage(secondPage, false),
+  ]);
+  const pitchOwnership = await Promise.all([firstPage, secondPage].map(targetPage =>
+    targetPage.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')]
+      .map(audio => !audio.paused)),
+  ));
+  assert.ok(pitchOwnership[0].every(Boolean) && pitchOwnership[1].every(value => !value),
+    "pitch controls mirror between tabs without starting another audio engine");
+  console.log("PASS: both tabs share pitch-lock and pitch-follow controls; an older pitch heartbeat is ignored");
   console.log("PASS: speed changes from either tab update both UIs while only the owner plays; stale heartbeat is ignored");
 
   if (crossTabSpeedOnly) {
@@ -4088,13 +4164,53 @@ try {
   }, donorBuffersBeforeSpeed);
   assert.ok(donorAlignmentAfterRemoteSpeed && donorAlignmentAfterRemoteSpeed.errorSeconds < 0.3,
     `the active donor stays aligned after the other tab changes speed: ${JSON.stringify(donorAlignmentAfterRemoteSpeed)}`);
+  const workletLoadsBeforePitch = await page.evaluate(() => window.audioProbe.workletLoads.length);
+  await secondPage.getByTestId("session-pitch-lock").click();
+  await Promise.all([
+    waitForSessionPitchModeInPage(page, true),
+    waitForSessionPitchModeInPage(secondPage, true),
+    page.waitForFunction(({ baseline }) =>
+      window.audioProbe.workletLoads.slice(baseline)
+        .some(load => load.pitchPreserving === true && Math.abs(load.duration - 12) < 0.05),
+    { baseline: workletLoadsBeforePitch }),
+    page.waitForFunction(() =>
+      window.audioProbe.workletPitchModes.some(message => message.enabled === true),
+    ),
+  ]);
+  const liveDonorPitchState = await page.evaluate(() => ({
+    donorLoadedPitchPreserving: window.audioProbe.workletLoads
+      .some(load => load.pitchPreserving === true && Math.abs(load.duration - 12) < 0.05),
+    pitchModeMessages: window.audioProbe.workletPitchModes.map(message => message.enabled),
+    playing: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => !audio.paused),
+  }));
+  assert.ok(liveDonorPitchState.donorLoadedPitchPreserving
+    && liveDonorPitchState.pitchModeMessages.includes(true),
+  `a mirror-tab pitch change migrates the audible donor into pitch-preserving processing: ${JSON.stringify(liveDonorPitchState)}`);
+  assert.ok(liveDonorPitchState.playing.some(Boolean),
+    "the pitch-preserving donor stays attached to the already-playing owner deck");
+  await firstPage.getByTestId("session-pitch-lock").click();
+  await Promise.all([
+    waitForSessionPitchModeInPage(page, false),
+    waitForSessionPitchModeInPage(secondPage, false),
+    page.waitForFunction(() =>
+      window.audioProbe.workletPitchModes.some(message => message.enabled === false),
+    ),
+  ]);
   await setSessionRateInPage(secondPage, 1);
   await Promise.all([
     waitForSessionRateInPage(page, 1, 120),
     waitForSessionRateInPage(secondPage, 1, 120),
-    page.waitForFunction((baseline) => window.audioProbe.buffers.slice(baseline)
-      .some(source => source.buffer && Math.abs(source.buffer.duration - 12) < 0.05
-        && Math.abs(source.playbackRate.value - 1) < 0.001), donorBuffersBeforeSpeed),
+    page.waitForFunction((baseline) => {
+      const donorWorklets = window.audioProbe.workletLoads
+        .filter(load => Math.abs(load.duration - 12) < 0.05)
+        .map(load => load.node);
+      return window.audioProbe.buffers.slice(baseline)
+        .some(source => source.buffer && Math.abs(source.buffer.duration - 12) < 0.05
+          && Math.abs(source.playbackRate.value - 1) < 0.001)
+        || window.audioProbe.workletRates.some(entry =>
+          donorWorklets.includes(entry.node) && Math.abs(entry.rate - 1) < 0.001,
+        );
+    }, donorBuffersBeforeSpeed),
   ]);
   await current.getByTestId("restore-live-swap-vocals").click();
   await page.waitForFunction(() => !document.querySelector('[data-testid="restore-live-swap-vocals"]'));

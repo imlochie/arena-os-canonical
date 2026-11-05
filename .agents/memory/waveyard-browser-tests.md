@@ -176,3 +176,9 @@ For cross-tab speed tests, inspect the active owner's rate and playback after th
 **Why:** Mobile-emulated Chromium once kept the owner at 1.20× while the mirror showed 0.80×; WebKit synchronized 0.80× but did not resume the owner after focus returned.
 
 **How to apply:** Assert the sender UI, active receiver rate, media paused states, and sampled output separately before treating cross-tab pitch as verified.
+
+Tempo-match browser fixtures must provide confidence values as well as BPM numbers. To test tempo matching without beat alignment, give both tracks reliable BPM and beat confidence while leaving the beat grid absent.
+
+**Why:** BPM values without confidence metadata intentionally fall back to native donor pace, and low beat confidence reports a different status even when tempo matching is reliable.
+
+**How to apply:** Set confidence metadata explicitly in tempo-match fixtures; omit beat-grid data only when the test expects tempo matching without beat synchronization.

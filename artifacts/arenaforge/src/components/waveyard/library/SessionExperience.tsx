@@ -1455,6 +1455,7 @@ export default function SessionExperience({
   const [pitchModesAvailable] = useState(() => supportsSessionPitchModes());
   const [liveKeyMatchingAvailable] = useState(() => supportsLiveKeyMatching());
   const [pitchPreserving, setPitchPreserving] = useState(false);
+  const pitchPreservingRef = useRef(pitchPreserving);
   const [pitchLockBusy, setPitchLockBusy] = useState(false);
   const [pitchLockMessage, setPitchLockMessage] = useState<string | null>(null);
   const [keyMode, setKeyMode] = useState<SessionKeyMode>("off");
@@ -1483,30 +1484,6 @@ export default function SessionExperience({
 
   const decksRef = useRef<Array<DeckApi | null>>([null, null]);
 
-  const changePitchPreserving = useCallback(async (enabled: boolean) => {
-    if (pitchLockBusy || !pitchModesAvailable || enabled === pitchPreserving) return;
-    const previous = pitchPreserving;
-    const active = decksRef.current[activeDeck];
-    const standby = decksRef.current[activeDeck === 0 ? 1 : 0];
-    setPitchLockBusy(true);
-    setPitchLockMessage(null);
-    try {
-      if (!active) throw new Error("The active deck is not ready.");
-      await active.transport.setPitchPreserving(enabled);
-      if (standby) await standby.transport.setPitchPreserving(enabled);
-      setPitchPreserving(enabled);
-    } catch (error) {
-      await Promise.all([
-        active?.transport.setPitchPreserving(previous).catch(() => undefined),
-        standby?.transport.setPitchPreserving(previous).catch(() => undefined),
-      ]);
-      setPitchLockMessage(error instanceof Error
-        ? `${error.message} Playback was left running.`
-        : "Pitch mode could not be changed. Playback was left running.");
-    } finally {
-      setPitchLockBusy(false);
-    }
-  }, [activeDeck, pitchLockBusy, pitchModesAvailable, pitchPreserving]);
   const reportKeyShiftFailure = useCallback((_itemId: string | null, message: string) => {
     setKeyMatchError(`${message} The current mix and playhead were kept.`);
   }, []);
@@ -1825,18 +1802,20 @@ export default function SessionExperience({
     trackId: string | null;
     positionSeconds: number;
     playing: boolean;
-    action: "state" | "seek" | "speed";
+    action: "state" | "seek" | "speed" | "pitch";
     playbackRate?: number;
+    pitchPreserving?: boolean;
     priority?: "control" | "heartbeat";
   }) => {
-    // Speed is a direct user control even while a passive remote heartbeat is
-    // applying its playhead. Suppressing it here makes the mirror's slider
-    // appear to change briefly, then the next owner heartbeat resets it.
-    if (applyingRemoteTransportRef.current && snapshot.action !== "speed") return null;
+    // Speed and pitch are direct user controls even while a passive remote
+    // snapshot is applying its playhead. Suppressing either command makes the
+    // mirror's control appear to change briefly before the owner resets it.
+    if (applyingRemoteTransportRef.current && snapshot.action !== "speed" && snapshot.action !== "pitch") return null;
     const published = publishWaveyardTransportChange({
       sessionId,
       ...snapshot,
       playbackRate: snapshot.playbackRate ?? playbackRateRef.current,
+      pitchPreserving: snapshot.pitchPreserving ?? pitchPreservingRef.current,
       priority: snapshot.priority ?? "control",
     });
     if (published !== null && published.priority === "control") {
@@ -1870,6 +1849,45 @@ export default function SessionExperience({
       playbackRate: rate,
     });
   }, [publishTransport, sessionId]);
+
+  const changePitchPreserving = useCallback(async (enabled: boolean) => {
+    if (pitchLockBusy || !pitchModesAvailable || enabled === pitchPreservingRef.current) return;
+    const previous = pitchPreservingRef.current;
+    const active = decksRef.current[activeDeck];
+    const standby = decksRef.current[activeDeck === 0 ? 1 : 0];
+    setPitchLockBusy(true);
+    setPitchLockMessage(null);
+    try {
+      if (!active) throw new Error("The active deck is not ready.");
+      await active.transport.setPitchPreserving(enabled);
+      if (standby) await standby.transport.setPitchPreserving(enabled);
+      pitchPreservingRef.current = enabled;
+      setPitchPreserving(enabled);
+      const remote = remoteTransportRef.current;
+      const activeApi = decksRef.current[activeDeckRef.current];
+      const useRemoteState = activeApi?.transport.playing !== true && remote?.sessionId === sessionId;
+      publishTransport({
+        trackId: useRemoteState ? remote.trackId : currentIdRef.current,
+        positionSeconds: useRemoteState
+          ? remote.positionSeconds
+          : activeApi?.transport.position ?? 0,
+        playing: useRemoteState ? remote.playing : activeApi?.transport.playing ?? false,
+        action: "pitch",
+        pitchPreserving: enabled,
+      });
+    } catch (error) {
+      await Promise.all([
+        active?.transport.setPitchPreserving(previous).catch(() => undefined),
+        standby?.transport.setPitchPreserving(previous).catch(() => undefined),
+      ]);
+      pitchPreservingRef.current = previous;
+      setPitchLockMessage(error instanceof Error
+        ? `${error.message} Playback was left running.`
+        : "Pitch mode could not be changed. Playback was left running.");
+    } finally {
+      setPitchLockBusy(false);
+    }
+  }, [activeDeck, pitchLockBusy, pitchModesAvailable, publishTransport, sessionId]);
 
   const clearRemoteTransport = useCallback(() => {
     remoteTransportRef.current = null;
@@ -2585,6 +2603,7 @@ export default function SessionExperience({
     [cancelTransition, persistState, clearRemoteTransport, publishTransport],
   );
 
+  const remotePitchApplyRef = useRef(Promise.resolve());
   const receiveRemoteTransport = useCallback((incoming: WaveyardRemoteTransport) => {
     if (incoming.sessionId !== sessionId) return;
     const previous = transportOrderRef.current;
@@ -2606,18 +2625,53 @@ export default function SessionExperience({
       priority: incoming.priority,
       updatedAt: incoming.updatedAt,
     };
+    if (incoming.pitchPreserving !== undefined) {
+      const enabled = incoming.pitchPreserving;
+      remotePitchApplyRef.current = remotePitchApplyRef.current.then(async () => {
+        const previousMode = pitchPreservingRef.current;
+        if (enabled !== previousMode) {
+          setPitchLockBusy(true);
+          setPitchLockMessage(null);
+          try {
+            const decks = decksRef.current.filter((deck): deck is DeckApi => deck !== null);
+            await Promise.all(decks.map((deck) => deck.transport.setPitchPreserving(enabled)));
+            pitchPreservingRef.current = enabled;
+            setPitchPreserving(enabled);
+          } catch (error) {
+            await Promise.all(decksRef.current.map((deck) =>
+              deck?.transport.setPitchPreserving(previousMode).catch(() => undefined),
+            ));
+            setPitchLockMessage(error instanceof Error
+              ? `${error.message} Playback was left running.`
+              : "Pitch mode could not be changed. Playback was left running.");
+          } finally {
+            setPitchLockBusy(false);
+          }
+        }
+        if (incoming.action === "pitch") {
+          const activeApi = decksRef.current[activeDeckRef.current];
+          if (activeApi?.transport.playing) {
+            publishTransport({
+              trackId: currentIdRef.current,
+              positionSeconds: activeApi.transport.position,
+              playing: true,
+              action: "pitch",
+              pitchPreserving: pitchPreservingRef.current,
+            });
+          }
+        }
+      }).catch(() => undefined);
+    }
     if (incoming.playbackRate !== undefined) {
       const rate = normalizeSessionPlaybackRate(incoming.playbackRate);
       playbackRateRef.current = rate;
       setPlaybackRate(rate);
       for (const deck of decksRef.current) deck?.transport.setPlaybackRate(rate);
     }
-    if (incoming.action === "speed") {
-      // A mirror can request a speed change, but the tab that currently owns
-      // audible playback re-publishes it so future progress heartbeats still
-      // come from the playback owner rather than the mirror that requested it.
+    if (incoming.action === "speed" || incoming.action === "pitch") {
+      // A mirror can change speed without moving the active owner's playhead.
       const activeApi = decksRef.current[activeDeckRef.current];
-      if (activeApi?.transport.playing && incoming.playbackRate !== undefined) {
+      if (incoming.action === "speed" && activeApi?.transport.playing && incoming.playbackRate !== undefined) {
         publishTransport({
           trackId: currentIdRef.current,
           positionSeconds: activeApi.transport.position,
