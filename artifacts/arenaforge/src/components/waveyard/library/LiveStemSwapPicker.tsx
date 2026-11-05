@@ -2,7 +2,7 @@
 
 import Link from "@/routing/Link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { keyCompatibility, tempoCompatibility } from "@workspace/arena/lib/waveyard/library/session-logic";
+import { keyCompatibility, liveStemTempoStretchRatio } from "@workspace/arena/lib/waveyard/library/session-logic";
 
 export interface LiveStemDonorOption {
   id: string;
@@ -194,11 +194,16 @@ export default function LiveStemSwapPicker({
   const visiblePreparationCandidates = filteredPreparationCandidates.slice(0, 12);
 
   const renderCandidate = (candidate: LiveStemDonorOption, index: number) => {
-    const tempo = tempoCompatibility(currentBpm, candidate.bpm);
+    const stretchRatio = liveStemTempoStretchRatio(currentBpm, candidate.bpm);
     const key = keyCompatibility(currentKey, candidate.musicalKey);
-    const tempoKnown = currentBpm !== null && candidate.bpm !== null;
+    const tempoKnown = currentBpm !== null && candidate.bpm !== null
+      && Number.isFinite(currentBpm) && Number.isFinite(candidate.bpm)
+      && currentBpm > 0 && candidate.bpm > 0;
     const keyKnown = currentKey !== null && candidate.musicalKey !== null;
-    const tempoLabel = matchLabel("BPM", tempoKnown, tempo.compatible);
+    const tempoLabel = !tempoKnown ? "BPM unknown"
+      : stretchRatio === null ? "Outside tempo-match range"
+      : Math.abs(stretchRatio - 1) < 0.001 ? "Same tempo"
+      : `Match ${candidate.bpm} → ${currentBpm} BPM`;
     const keyLabel = matchLabel("Key", keyKnown, key.compatible);
     const selected = candidate.id === selectedDonorId;
     return (
@@ -228,7 +233,7 @@ export default function LiveStemSwapPicker({
           </small>
         </span>
         <span className="wy-swap-fit">
-          <span className={`wy-swap-fit-chip ${tempoKnown ? (tempo.compatible ? "match" : "different") : "unknown"}`}>
+          <span className={`wy-swap-fit-chip ${tempoKnown ? (stretchRatio !== null ? "match" : "different") : "unknown"}`}>
             {tempoLabel}
           </span>
           <span className={`wy-swap-fit-chip ${keyKnown ? (key.compatible ? "match" : "different") : "unknown"}`}>

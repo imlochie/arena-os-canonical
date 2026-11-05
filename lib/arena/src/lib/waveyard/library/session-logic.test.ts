@@ -248,7 +248,13 @@ test("tempo compatibility: missing analysis is honest, never guessed", () => {
 test("live stem tempo sync only stretches compatible analyzed tempos", () => {
   assert.equal(liveStemTempoStretchRatio(120, 124), 124 / 120);
   assert.equal(liveStemTempoStretchRatio(120, 60), 0.5);
-  assert.equal(liveStemTempoStretchRatio(120, 140), null, "large differences remain at donor tempo");
+  assert.equal(liveStemTempoStretchRatio(120, 140), 140 / 120, "different tempos are processed rather than left unsynchronised");
+  assert.equal(liveStemTempoStretchRatio(126, 101), 101 / 126);
+  assert.equal(liveStemTempoStretchRatio(101, 126), 126 / 101);
+  assert.equal(liveStemTempoStretchRatio(120, 59), null, "do not exceed the engine's supported duration range");
+  assert.equal(liveStemTempoStretchRatio(120, 241), null);
+  assert.equal(liveStemTempoStretchRatio(0, 120), null);
+  assert.equal(liveStemTempoStretchRatio(120, NaN), null);
   assert.equal(liveStemTempoStretchRatio(120, null), null, "missing donor analysis is not guessed");
 });
 

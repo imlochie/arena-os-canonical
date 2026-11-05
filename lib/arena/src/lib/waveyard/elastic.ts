@@ -193,6 +193,24 @@ export function timeStretch(
     return xy / Math.sqrt(yy);
   };
 
+  // Keep attack-bearing windows on the nominal tempo clock. Correlation with
+  // sustained tonal content can otherwise move short drum hits to low-weight
+  // Hann edges and attenuate or duplicate them. Inspect channels separately so
+  // stereo cancellation does not hide an attack from the timing decision.
+  const hasTransient = (position: number): boolean => {
+    let peak = 0;
+    let energy = 0;
+    const end = Math.min(frames, position + frame);
+    for (let i = position; i < end; i++) {
+      const l = left[i];
+      const r = right[i];
+      peak = Math.max(peak, Math.abs(l), Math.abs(r));
+      energy += l * l + r * r;
+    }
+    const samples = Math.max(1, (end - position) * 2);
+    return peak > 1e-5 && peak * peak > 12 * energy / samples;
+  };
+
   let prevIn = 0;
   let k = 0;
   for (;;) {
@@ -204,8 +222,9 @@ export function timeStretch(
     } else {
       const nominal = Math.round(outPos / r);
       const natural = prevIn + hop;
-      const lo = Math.max(nominal - tol, 0);
-      const hi = nominal + tol;
+      const transient = hasTransient(nominal);
+      const lo = Math.max(nominal - (transient ? 0 : tol), 0);
+      const hi = nominal + (transient ? 0 : tol);
       let best = Math.max(nominal, 0);
       let bestS = -Infinity;
       for (let p = lo; p <= hi; p += 4) {

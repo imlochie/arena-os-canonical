@@ -4160,9 +4160,9 @@ try {
   const donorCOption = current.getByTestId("live-swap-candidate-vocals-c");
   const donorBLabel = await donorBOption.innerText();
   const donorCLabel = await donorCOption.innerText();
-  assert.match(donorBLabel, /BPM match[\s\S]*Key match/,
+  assert.match(donorBLabel, /(?:Same tempo|Match [\d.]+ → [\d.]+ BPM)[\s\S]*Key match/,
     `the swap picker shows compatible BPM/key cues: ${donorBLabel}`);
-  assert.match(donorCLabel, /BPM match[\s\S]*Key differs/,
+  assert.match(donorCLabel, /(?:Same tempo|Match [\d.]+ → [\d.]+ BPM)[\s\S]*Key differs/,
     `the picker distinguishes a key mismatch from a tempo match: ${donorCLabel}`);
   // Playback/seek activity may save session state too; assert that selecting
   // the donor starts both its save request and its audio preparation.

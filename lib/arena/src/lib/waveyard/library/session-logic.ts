@@ -156,15 +156,17 @@ export function tempoCompatibility(aBpm: number | null, bBpm: number | null): Te
 
 /**
  * Pitch-preserving live-stem stretch factor (output duration / donor duration)
- * when the analyzed tempos are close or have a half/double-time lock.
+ * across the live engine's supported 0.5–2 duration range. Natural transition
+ * compatibility is not a processing limit: a distant BPM can still be matched.
+ * This is a timing transform, not a guarantee of musical fit or audio quality.
  */
 export function liveStemTempoStretchRatio(
   recipientBpm: number | null,
   donorBpm: number | null,
 ): number | null {
-  const compatibility = tempoCompatibility(recipientBpm, donorBpm);
-  if (!compatibility.compatible || recipientBpm === null || donorBpm === null) return null;
-  return donorBpm / recipientBpm;
+  if (recipientBpm === null || donorBpm === null) return null;
+  const ratio = tempoRatioForBpm(donorBpm, recipientBpm);
+  return ratio !== null && ratio >= 0.5 && ratio <= 2 ? ratio : null;
 }
 
 /** Offset in stretched-donor seconds. Beat zero is not necessarily a downbeat. */

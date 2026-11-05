@@ -8,9 +8,55 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { pitchShift, resampleBuffer, timeStretch } from "./elastic";
+import { liveStemTempoStretchRatio, liveStemBeatOffsetSeconds } from "./library/session-logic";
 import type { StereoBuffer } from "./mixer/dsp";
 
 const FS = 48000;
+
+for (const [sourceBpm, targetBpm] of [[101, 126], [126, 101]]) {
+test(`a ${sourceBpm} BPM drum donor is stretched onto ${targetBpm} BPM without pitching its tone`, () => {
+  const sourceBeatSeconds = 60 / sourceBpm;
+  const targetBeatSeconds = 60 / targetBpm;
+  const donorFirstBeat = 0.25;
+  const leadFirstBeat = 0.1;
+  const source = new Float32Array(FS * 8 * 2);
+  for (let frame = 0; frame < source.length / 2; frame++) {
+    const time = frame / FS;
+    const sinceBeat = time < donorFirstBeat ? Infinity : (time - donorFirstBeat) % sourceBeatSeconds;
+    source[frame * 2] = sinceBeat < 0.008 ? 0.9 * Math.exp(-sinceBeat * 500) : 0;
+    source[frame * 2 + 1] = 0.2 * Math.sin(2 * Math.PI * 440 * time);
+  }
+  const ratio = liveStemTempoStretchRatio(targetBpm, sourceBpm);
+  assert.notEqual(ratio, null, "this pair used to fall back to unsynchronised native-tempo playback");
+  const offset = liveStemBeatOffsetSeconds(
+    [100, 100 + Math.round(60_000 / targetBpm), 100 + Math.round(120_000 / targetBpm)],
+    [250, 250 + Math.round(60_000 / sourceBpm), 250 + Math.round(120_000 / sourceBpm)],
+    ratio!,
+  )!;
+  const output = timeStretch(source, ratio!, FS);
+  assert.equal(output.length, Math.round(source.length / 2 * ratio!) * 2);
+  let maximumErrorMs = 0;
+  for (let beat = 1; beat <= 10; beat++) {
+    const expected = (leadFirstBeat + beat * targetBeatSeconds + offset) * FS;
+    let peak = 0;
+    let peakFrame = 0;
+    for (let frame = Math.floor(expected - FS * 0.08); frame < expected + FS * 0.08; frame++) {
+      const amplitude = Math.abs(output[frame * 2]);
+      if (amplitude > peak) { peak = amplitude; peakFrame = frame; }
+    }
+    assert.ok(peak > 0.15, `beat ${beat} retains a drum transient`);
+    maximumErrorMs = Math.max(maximumErrorMs, Math.abs(peakFrame - expected) / FS * 1000);
+  }
+  // The right channel is the independent tonal reference.
+  const toneChannel = new Float32Array(output.length);
+  for (let frame = 0; frame < output.length / 2; frame++) {
+    toneChannel[frame * 2] = toneChannel[frame * 2 + 1] = output[frame * 2 + 1];
+  }
+  assert.ok(Math.abs(dominantHz(toneChannel, FS) - 440) < 5, "tempo matching preserves pitch");
+  assert.ok(maximumErrorMs < 35, `drum onset timing error ${maximumErrorMs.toFixed(2)}ms must remain bounded`);
+  console.log(`WAVEYARD_DISTANT_TEMPO ${JSON.stringify({ sourceBpm, targetBpm, maximumErrorMs })}`);
+});
+}
 
 function sine(seconds: number, freqHz: number, amplitude: number): StereoBuffer {
   const frames = Math.round(seconds * FS);
