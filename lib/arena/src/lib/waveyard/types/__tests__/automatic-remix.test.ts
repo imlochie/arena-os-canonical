@@ -2,7 +2,11 @@ import { describe, it } from "node:test";
 import { expect } from "../../test-shim";
 import { AUTOMATIC_REMIX_ENGINE, buildAutomaticRemixPlan, type AutomaticRemixSource } from "../index";
 
-function source(overrides: Partial<AutomaticRemixSource> & Pick<AutomaticRemixSource, "id">): AutomaticRemixSource {
+type SourceOverrides = Omit<Partial<AutomaticRemixSource>, "analysis"> & {
+  analysis?: Partial<NonNullable<AutomaticRemixSource["analysis"]>> | null;
+};
+
+function source(overrides: SourceOverrides & Pick<AutomaticRemixSource, "id">): AutomaticRemixSource {
   const id = overrides.id;
   const defaultAnalysis = {
     id: `${id}-analysis`, status: "complete", sourceChecksumSha256: `${id}-checksum`, bpm: 120, bpmConfidence: 0.9,
@@ -99,19 +103,14 @@ describe("deterministic automatic remix arranger", () => {
 
   it("refuses same-index generic sections as cross-song phrase evidence", () => {
     const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b" })], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
-    expect(result.plan.notices).toContain("No outside source had verified tempo, key, and matching high-confidence section roles, so the hybrid preserves the anchor arrangement.");
+    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
   });
 
   it("rejects reversed role order instead of mapping by ordinal position", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({ id: "b" }), ["chorus", "verse"]);
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
+    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
   });
 
   it("does not enable a hybrid from low-confidence tempo, key, or beat analysis", () => {
@@ -124,28 +123,34 @@ describe("deterministic automatic remix arranger", () => {
       },
     }));
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
+    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
+  });
+
+  it("does not beat-snap an anchor whose BPM confidence is below the trusted threshold", () => {
+    const uncertain = source({
+      id: "uncertain",
+      analysis: { bpmConfidence: 0.49 },
+    });
+    const result = buildAutomaticRemixPlan([uncertain]);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
+    expect(result.plan.tempoBpm).toBe(120);
+    expect(result.plan.tracks[0].clips).toEqual([
+      expect.objectContaining({ tempoSyncEnabled: false, beatSnapEnabled: false }),
+    ]);
+    expect(result.plan.notices).toContain("Tempo confidence is insufficient, so Waveyard will not claim BPM matching or beat snapping for this arrangement.");
   });
 
   it("does not force an incompatible second source into a hybrid", () => {
     const incompatible = source({ id: "b", analysis: { id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 168, musicalKey: "F# minor", beatGridMs: Array.from({ length: 33 }, (_, index) => index * 357) } });
     const result = buildAutomaticRemixPlan([source({ id: "a" }), incompatible], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
-    expect(result.plan.notices).toContain("No outside source had verified tempo, key, and matching high-confidence section roles, so the hybrid preserves the anchor arrangement.");
+    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
   });
 
-  it("falls back to preserved anchor material when evidence is insufficient", () => {
+  it("refuses a hybrid when anchor structural evidence is incomplete", () => {
     const unknown = source({ id: "unproven", analysis: { id: "unproven-analysis", status: "processing", sourceChecksumSha256: "unproven-checksum", bpm: null, musicalKey: null, beatGridMs: null }, sections: [] });
     const result = buildAutomaticRemixPlan([unknown], { variant: "hybrid", instrumental: true });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.plan.tracks.some((track) => track.stemType === "vocals")).toBe(false);
-    expect(result.plan.tracks.every((track) => track.clips.length === 1 && !track.clips[0].tempoSyncEnabled)).toBe(true);
-    expect(result.plan.notices[0]).toContain("Structural analysis is incomplete");
+    expect(result).toEqual({ ok: false, reason: "hybrid_evidence_unavailable" });
   });
 
   it("rejects an empty source set rather than inventing material", () => {

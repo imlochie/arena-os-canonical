@@ -116,6 +116,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!plan.ok) {
       const error = plan.reason === "no_stems"
         ? "No usable stems remain for this automatic arrangement."
+        : plan.reason === "hybrid_evidence_unavailable"
+          ? "A hybrid needs current, confident tempo and beat analysis with usable structural sections. Choose Original for a faithful single-source arrangement."
+          : plan.reason === "no_compatible_hybrid_source"
+            ? "No donor passed Waveyard’s current tempo, key, and high-confidence section-role checks, so no hybrid was created. Analyze compatible sources or choose Original."
         : plan.reason === "unsafe_hybrid_alignment"
           ? "Waveyard could not verify safe section-to-section alignment for this hybrid. Try different sources or choose the original arrangement."
           : "A completed source with real stems is required before Waveyard can build an arrangement.";

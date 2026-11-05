@@ -99,7 +99,15 @@ export type AutomaticRemixPlan = {
 
 export type AutomaticRemixResult =
   | { ok: true; plan: AutomaticRemixPlan }
-  | { ok: false; reason: "no_usable_source" | "no_stems" | "unsafe_hybrid_alignment" };
+  | {
+      ok: false;
+      reason:
+        | "no_usable_source"
+        | "no_stems"
+        | "hybrid_evidence_unavailable"
+        | "no_compatible_hybrid_source"
+        | "unsafe_hybrid_alignment";
+    };
 
 const roleOrder = ["drums", "percussion", "bass", "other", "melody", "vocals"];
 const defaultVolume: Record<string, number> = { vocals: 0.94, drums: 0.88, percussion: 0.82, bass: 0.84, other: 0.82, melody: 0.82 };
@@ -127,6 +135,7 @@ function sourceHasVerifiedAnalysis(source: AutomaticRemixSource) {
 
 function sourceCanStructure(source: AutomaticRemixSource) {
   return sourceHasVerifiedAnalysis(source)
+    && trustedBpm(source) !== null
     && confidenceAtLeast(source.analysis?.beatConfidence, 0.5)
     && usableSections(source).length > 0
     && Boolean(usableBeatGrid(source.analysis?.beatGridMs));
@@ -305,7 +314,9 @@ export function buildAutomaticRemixPlan(
   const targetKey = trustedKey(anchor);
   const notices: string[] = [];
   const decisions = ["anchored to one preserved source structure"];
+  if (variant === "hybrid" && !sourceCanStructure(anchor)) return { ok: false, reason: "hybrid_evidence_unavailable" };
   if (!sourceCanStructure(anchor)) notices.push("Structural analysis is incomplete, so Waveyard preserved the source as one continuous arrangement.");
+  if (!anchorBpm) notices.push("Tempo confidence is insufficient, so Waveyard will not claim BPM matching or beat snapping for this arrangement.");
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
   const counterpartsBySource = new Map<string, ReadonlyMap<string, AutomaticRemixSection>>();
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
@@ -338,7 +349,7 @@ export function buildAutomaticRemixPlan(
       }
     }
     if ([...selected.values()].some((choice) => choice.source.id !== anchor.id)) decisions.push("replaced only verified, structurally compatible featured stems");
-    else notices.push("No outside source had verified tempo, key, and matching high-confidence section roles, so the hybrid preserves the anchor arrangement.");
+    else return { ok: false, reason: "no_compatible_hybrid_source" };
   }
 
   if (constraints.instrumental) {
