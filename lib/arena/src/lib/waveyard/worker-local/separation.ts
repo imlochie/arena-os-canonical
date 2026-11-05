@@ -883,11 +883,18 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       completed = true;
       return;
     }
-    const [current] = await database
-      .select({ status: processingJobs.status, stage: processingJobs.stage })
-      .from(processingJobs)
-      .where(eq(processingJobs.id, job.id))
-      .limit(1);
+    let current: { status: string; stage: string } | undefined;
+    try {
+      const [currentJob] = await database
+        .select({ status: processingJobs.status, stage: processingJobs.stage })
+        .from(processingJobs)
+        .where(eq(processingJobs.id, job.id))
+        .limit(1);
+      current = currentJob;
+    } catch {
+      // A failed status read cannot override the original failure or establish
+      // that the job was cancelled. Keep the original error for reconciliation.
+    }
     if (
       error instanceof SeparationCancelledError ||
       deps.signal?.aborted ||

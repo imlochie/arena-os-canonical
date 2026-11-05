@@ -1601,6 +1601,86 @@ test("waveform recovery preserves the remaining attempt budget across repeated w
   }
 });
 
+test("waveform cleanup removes a partial-write orphan after every save retry fails", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const storage = getStorage();
+    const flakyStorage = Object.create(storage) as typeof storage;
+    const attemptedKeys: string[] = [];
+    const delays: number[] = [];
+    let generationCalls = 0;
+    flakyStorage.putFile = async (key, localPath, contentType) => {
+      attemptedKeys.push(key);
+      await storage.putFile(key, localPath, contentType);
+      throw Object.assign(new Error("Temporary object-store write acknowledgement lost"), { code: "EIO" });
+    };
+
+    await assert.rejects(
+      handleWaveformJob(sourceWaveformPayload(f, job.id), {
+        db: f.database,
+        storage: flakyStorage,
+        generateWaveform: async () => {
+          generationCalls += 1;
+          return validWaveformDocument();
+        },
+        sleep: async (milliseconds) => { delays.push(milliseconds); },
+      }),
+      /Temporary object-store write acknowledgement lost/,
+    );
+
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const failedJobAssets = await f.database
+      .select()
+      .from(waveformAssets)
+      .where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(generationCalls, WAVEFORM_MAX_ATTEMPTS);
+    assert.equal(attemptedKeys.length, WAVEFORM_MAX_ATTEMPTS);
+    assert.ok(attemptedKeys.every((key) => key === attemptedKeys[0]), "all attempts leave the same generated object key");
+    assert.deepEqual(delays, [...WAVEFORM_RETRY_BACKOFF_MS]);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.errorCode, "waveform_retry_exhausted");
+    assert.equal(failedJobAssets.length, 0);
+
+    const orphanKey = attemptedKeys[0]!;
+    const referencedKey = privateObjectKey(f.project.id, "waveform", "json");
+    await storage.putBuffer(referencedKey, "{}");
+    const [referencedJob] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "complete",
+        stage: "complete",
+        idempotencyKey: `waveform:referenced-cleanup:${randomUUID()}`,
+      })
+      .returning();
+    await f.database.insert(waveformAssets).values({
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      waveformJobId: referencedJob.id,
+      storageKey: referencedKey,
+      checksumSha256: "a".repeat(64),
+    });
+
+    const oldTime = new Date(Date.now() - ORPHAN_WAVEFORM_GRACE_PERIOD_MS - 60_000);
+    const orphanPath = storage.getLocalPath(orphanKey)!;
+    await utimes(orphanPath, oldTime, oldTime);
+
+    const removed = await cleanupOrphanedWaveformObjects({
+      db: f.database,
+      storage,
+      now: new Date(),
+    });
+
+    assert.deepEqual(removed, [orphanKey]);
+    assert.equal(await storage.exists(orphanKey), false, "the exhausted retry's old unreferenced object is removed");
+    assert.equal(await storage.exists(referencedKey), true, "an object referenced by a waveform asset is preserved");
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform stops after the bounded transient retry limit and keeps the failure visible", async () => {
   const f = await fixture();
   try {

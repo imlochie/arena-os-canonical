@@ -2009,8 +2009,14 @@ let liveDrumDonorResponseBodyLength = 0;
   });
   const clockBeforeCancel = await sourceVocals.evaluate((audio) => audio.currentTime);
   const cancelSlowSwap = page.getByRole("button", { name: "Cancel vocals switch to Donor track" });
+  const cancelResponse = page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === "DELETE" &&
+      new URL(response.url()).pathname === `/api/library/sessions/${liveSessionId}/swaps`;
+  }, { timeout: 8_000 });
   await cancelSlowSwap.click();
-  await page.getByTestId("session-status").filter({ hasText: "vocals switch cancelled" }).waitFor({ timeout: 8_000 });
+  assert.equal((await cancelResponse).status(), 200, "cancelling the pending donor must remove the saved choice");
+  await page.getByTestId("live-swap-pending-vocals").waitFor({ state: "detached", timeout: 8_000 });
   assert.equal(liveSwaps.length, 0, "cancelling removes the pending donor from the session");
   assert.equal(liveSwapDeleteRequestCount, 1, "cancelling sends one removal request for the pending donor");
   releaseFirstDonorFetch();
