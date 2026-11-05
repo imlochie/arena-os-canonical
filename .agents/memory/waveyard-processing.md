@@ -92,3 +92,9 @@ Never treat the same section index in two tracks as evidence that the musical ro
 **Why:** Equal section counts and ordinal positions can occur in unrelated arrangements, so mapping section 2 to section 2 can sound like a random jump while appearing structurally precise.
 
 **How to apply:** Preserve role labels and label confidence through analysis and UI boundaries, accept only comparable labels such as verse/chorus with strong confidence, and choose among repeated instances by relative position and duration.
+
+Local onset analysis can identify repeated rhythmic fingerprints, but that is within-track evidence only—not a verse/chorus label or proof that two songs have corresponding sections.
+
+**Why:** A repeated drum pattern can occur under different harmony and arrangement roles, so using it alone for cross-track swaps could recreate the abrupt, musically mismatched results the user rejected.
+
+**How to apply:** Display rhythmic repeats as such, retain their measured similarity score, and keep live cross-track section alignment disabled unless both tracks have comparable high-confidence structural roles.

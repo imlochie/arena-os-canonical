@@ -60,10 +60,16 @@ test("live stem section phase refuses weak, mismatched, or out-of-range maps", (
   ];
   const weak = [{ ...donor[0], structuralConfidence: 0.4 }];
   const generic = [{ ...recipient[0], label: "section", labelConfidence: 0 }];
+  const rhythmGroups = [{
+    ...recipient[0],
+    label: "rhythm-repeat-a",
+    labelConfidence: 0.98,
+  }];
 
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, weak, 4, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, generic, 4, 1), null);
+  assert.equal(liveStemSectionOffsetSeconds(rhythmGroups, rhythmGroups, 4, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 8, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, Number.NaN), null);
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { displaySourceSectionLabel } from "@workspace/arena/lib/waveyard/types/source-sections";
 import type { Source, SourceSection } from "./types";
 
 type ArrangementAction = "add" | "insert" | "loop";
@@ -65,7 +66,7 @@ export function SourceSectionMap({
   if (source.sectionAnalysis?.status !== "complete" || !sections.length) return eventPanel;
   const selected = sections.find((section) => section.id === selectedId) ?? null;
   const durationMs = Math.max(1, Math.round(source.durationSeconds * 1000));
-  const label = selected ? `Section ${String(selected.sectionIndex + 1).padStart(2, "0")}` : "";
+  const label = selected ? displaySourceSectionLabel(selected) : "";
   const act = async (action: ArrangementAction) => {
     if (!selected || !onArrangementAction) return;
     setActing(action);
@@ -95,9 +96,7 @@ export function SourceSectionMap({
     <div className="panel-title"><div><span className="eyebrow">Source-coordinate markers</span><h3>Detected structure</h3></div><span>{sections.length} sections</span></div>
     <div className="source-section-ruler" role="list" aria-label="Detected source sections">
       {sections.map((section) => {
-        const label = section.label === "section"
-          ? `Section ${section.sectionIndex + 1}`
-          : `${section.labelConfidence < 0.75 ? "Possible " : ""}${section.label}`;
+        const label = displaySourceSectionLabel(section);
         return <button
         type="button"
         role="listitem"
@@ -110,7 +109,7 @@ export function SourceSectionMap({
       })}
     </div>
     {selected ? <div className="source-section-inspection" data-testid={`source-section-inspection-${selected.id}`}>
-      <span className="eyebrow">Section</span>
+       <span className="eyebrow">Detected phrase</span>
       <h4>{label}</h4>
       <dl>
         <dt>Bars</dt><dd>{selected.startBar}–{selected.endBar}</dd>
@@ -118,9 +117,9 @@ export function SourceSectionMap({
         <dt>End</dt><dd>{sourceTime(selected.endMs)}</dd>
         <dt>Duration</dt><dd>{sourceTime(selected.endMs - selected.startMs)}</dd>
         <dt>Structural confidence</dt><dd>{selected.structuralConfidence.toFixed(2)}</dd>
-        {selected.labelConfidence > 0 && <><dt>Label confidence</dt><dd>{selected.labelConfidence.toFixed(2)}</dd></>}
+        {selected.labelConfidence > 0 && <><dt>{selected.label.startsWith("rhythm-repeat-") ? "Rhythm similarity" : "Label confidence"}</dt><dd>{selected.labelConfidence.toFixed(2)}</dd></>}
       </dl>
-      <p>Source beats {selected.startBeatIndex}–{selected.endBeatIndex}. This is a generic structural marker, not a semantic chorus or verse claim.</p>
+      <p>Source beats {selected.startBeatIndex}–{selected.endBeatIndex}. {selected.label.startsWith("rhythm-repeat-") ? "This phrase repeats a similar rhythmic pattern elsewhere in this track; it does not claim a verse/chorus role or cross-song match." : "This marks a bar-aligned boundary; it does not claim a semantic chorus or verse role."}</p>
       <div className="section-arrangement-actions">
         <button className="button secondary" onClick={() => onUseForSlice(selected)}>Use these beats in Slice</button>
         <button className="button" disabled={!onFindMeetingPoints || acting !== null} onClick={() => void findMeetingPoints()}>{acting === "meeting" ? "Finding…" : "Find where this fits"}</button>

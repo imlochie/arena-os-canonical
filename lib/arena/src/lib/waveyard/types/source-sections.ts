@@ -30,6 +30,15 @@ export type SourceSectionStatus =
 
 export type SourceSectionCandidate = Omit<SourceSection, "id" | "sectionIndex" | "startMs" | "endMs" | "startBar" | "endBar" | "analysisEngine" | "analysisEngineVersion" | "sourceChecksumSha256">;
 
+export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionIndex" | "label" | "labelConfidence">): string {
+  if (section.label === "section") return `Section ${section.sectionIndex + 1}`;
+  const repeatedRhythm = /^rhythm-repeat-([a-z]+)$/i.exec(section.label);
+  const readableLabel = repeatedRhythm
+    ? `Repeated rhythm ${repeatedRhythm[1].toUpperCase()}`
+    : section.label.replace(/(^|[\s-])([a-z])/g, (_match, separator: string, letter: string) => `${separator}${letter.toUpperCase()}`);
+  return `${section.labelConfidence < 0.75 ? "Possible " : ""}${readableLabel}`;
+}
+
 const clampUnit = (value: unknown) => typeof value === "number" && Number.isFinite(value)
   ? Math.max(0, Math.min(1, value)) : 0;
 

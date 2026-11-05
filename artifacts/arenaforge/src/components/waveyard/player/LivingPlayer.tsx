@@ -6,6 +6,7 @@ import type { WaveyardVisualState } from "@workspace/arena/lib/waveyard/types";
 import type { MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import type { Source, Stem } from "../studio/types";
 import { laneDisplayName } from "@workspace/arena/lib/waveyard/separation/stem-display";
+import { displaySourceSectionLabel } from "@workspace/arena/lib/waveyard/types/source-sections";
 import { derivePlayerPhase, formatPlayerTime, playerPhaseLabel, sectionWidths } from "./player-state";
 import { useFullscreenFocus } from "./useFullscreenFocus";
 
@@ -48,9 +49,9 @@ export function PlayerTimeline({ source, duration, position, onSeek, onRetryWave
     <div className="player-section-strip" aria-label="Detected source sections">
       {widths.length ? widths.map((section, index) => {
         const sourceSection = sections[index];
-        const label = sourceSection?.label && sourceSection.label !== "section"
-          ? `${sourceSection.labelConfidence < 0.75 ? "Possible " : ""}${sourceSection.label}`
-          : `Section ${(sourceSection?.sectionIndex ?? index) + 1}`;
+        const label = sourceSection
+          ? displaySourceSectionLabel(sourceSection)
+          : `Section ${index + 1}`;
         return <i key={sourceSection?.id ?? index} style={{ width: `${Math.max(3, section.widthPercent)}%` }} title={label} />;
       }) : <i className="unknown" />}
     </div>

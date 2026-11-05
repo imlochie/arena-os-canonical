@@ -1,7 +1,9 @@
 /**
  * Local section-analysis job handler — a faithful port of the worker's
  * processSourceSectionAnalysis, with the structure engine reimplemented in
- * JS: conservative bar-aligned boundaries chosen at onset-novelty peaks.
+ * JS: conservative bar-aligned boundaries chosen at onset-novelty peaks,
+ * annotated with repeated rhythmic fingerprints when the source supports them.
+ * Repetition is not mislabeled as verse/chorus or used to align other songs.
  * Candidates flow through the app's own normalizeSourceSections/
  * sourceSectionsAreValid validators, so rows are indistinguishable in shape
  * and constraints from worker-produced sections; only the engine provenance
@@ -22,6 +24,7 @@ import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
 import { decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
+import { labelRepeatedRhythmSections } from "./section-rhythm";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
@@ -45,8 +48,10 @@ export function desktopSectionId(sourceAssetId: string, sourceChecksum: string, 
 
 /**
  * Conservative structure engine: candidate boundaries only at bar edges
- * (4-beat groups) that coincide with onset-novelty peaks. A section spans
- * whole bars; the last section extends to the final beat. Returns null
+ * (4-beat groups) that coincide with onset-novelty peaks. Whole-bar sections
+ * with repeated 16th-note onset patterns receive a within-source repeat label.
+ * This detector does not infer verse, chorus, or cross-song equivalence.
+ * Returns null
  * when the evidence supports no conservative boundary (the caller records
  * the honest unavailable state, exactly like the worker).
  */
@@ -96,7 +101,7 @@ export function desktopSectionCandidates(beatGridMs: number[], envelope: Float32
       structuralConfidence: Math.round(Math.max(0.05, Math.min(1, strength)) * 1000) / 1000,
     });
   }
-  return candidates;
+  return labelRepeatedRhythmSections(candidates, beatGridMs, envelope, frameMs);
 }
 
 /** Local structural analysis using original source audio only. */

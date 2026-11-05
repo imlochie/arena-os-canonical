@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeSourceSections, sourceSectionsAreValid } from "./source-sections";
+import { displaySourceSectionLabel, normalizeSourceSections, sourceSectionsAreValid } from "./source-sections";
 
 test("source section normalization preserves a supported structural role label", () => {
   const beatGrid = Array.from({ length: 33 }, (_, index) => index * 500);
@@ -24,6 +24,7 @@ test("source section normalization preserves a supported structural role label",
 
   assert.equal(sections[0]?.label, "chorus");
   assert.equal(sourceSectionsAreValid(sections, beatGrid), true);
+  assert.equal(displaySourceSectionLabel(sections[0]), "Chorus");
 });
 
 test("source section normalization discards empty role labels", () => {
@@ -46,4 +47,10 @@ test("source section normalization discards empty role labels", () => {
   );
 
   assert.deepEqual(sections, []);
+});
+
+test("source section labels distinguish uncertain repeats from numbered cuts", () => {
+  assert.equal(displaySourceSectionLabel({ sectionIndex: 0, label: "rhythm-repeat-a", labelConfidence: 0.94 }), "Repeated rhythm A");
+  assert.equal(displaySourceSectionLabel({ sectionIndex: 1, label: "rhythm-repeat-b", labelConfidence: 0.7 }), "Possible Repeated rhythm B");
+  assert.equal(displaySourceSectionLabel({ sectionIndex: 2, label: "section", labelConfidence: 0 }), "Section 3");
 });
