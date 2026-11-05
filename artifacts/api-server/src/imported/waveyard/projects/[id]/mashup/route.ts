@@ -23,12 +23,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { db } from "@workspace/db";
-import { sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
+import { processingJobs, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import { loadSourceProfile } from "@workspace/arena/lib/waveyard/studio/mashup-sources";
+import {
+  INSTRUMENTAL_BED_STEM_TYPES,
+  InstrumentalBedError,
+  sumInstrumentalStems,
+  type InstrumentalBedStem,
+} from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import { planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
@@ -46,6 +52,22 @@ type MashupBody = {
   sectionLabel?: unknown;
   repeats?: unknown;
 };
+
+type BedSourceInfo = {
+  source: "separated" | "original-fallback";
+  separationJobId?: string;
+  includedStemTypes?: string[];
+  warning: string;
+};
+
+type BedSource = {
+  info: BedSourceInfo;
+  stems: Array<typeof stemAssets.$inferSelect>;
+};
+
+type BedLoadResult =
+  | { ok: true; pcm: Float32Array; info: BedSourceInfo }
+  | { ok: false; info: BedSourceInfo };
 
 /** Latest stem of a type for a source, or null. */
 async function latestStem(projectId: string, sourceAssetId: string, stemType: string) {
@@ -69,10 +91,179 @@ async function stemPcm(storageKey: string): Promise<Float32Array | null> {
   const bytes = await getStorage().getBuffer(storageKey, MAX_STEM_BYTES);
   const decoded = decodeWav16(new Uint8Array(bytes));
   if (decoded === null) return null;
-  if (decoded.sampleRate === RENDER_SAMPLE_RATE) return decoded.samples;
-  // Stems are rendered at 44.1 kHz; a foreign rate is resampled naively is
-  // NOT acceptable — refuse rather than degrade silently.
+  // Stems are rendered at 44.1 kHz stereo. A foreign rate or channel layout
+  // is NOT acceptable — refuse rather than degrade silently.
+  if (decoded.sampleRate === RENDER_SAMPLE_RATE && decoded.channels === 2) {
+    return decoded.samples;
+  }
   return null;
+}
+
+/**
+ * Find the authoritative bed source for a track.
+ *
+ * A future engine may provide a real "instrumental" stem; use it when its
+ * separation run is complete. Otherwise use the LATEST completed separation
+ * run and only its non-vocal stems. Never combine stems across runs.
+ */
+async function findBedSource(projectId: string, bedId: string): Promise<BedSource> {
+  const [instrumental] = await db
+    .select()
+    .from(stemAssets)
+    .where(
+      and(
+        eq(stemAssets.projectId, projectId),
+        eq(stemAssets.sourceAssetId, bedId),
+        eq(stemAssets.stemType, "instrumental"),
+      ),
+    )
+    .orderBy(desc(stemAssets.createdAt))
+    .limit(1);
+
+  if (instrumental) {
+    const [job] = await db
+      .select({ status: processingJobs.status })
+      .from(processingJobs)
+      .where(eq(processingJobs.id, instrumental.separationJobId))
+      .limit(1);
+    if (job?.status === "complete") {
+      return {
+        info: {
+          source: "separated",
+          separationJobId: instrumental.separationJobId,
+          includedStemTypes: ["instrumental"],
+          warning:
+            "The bed uses a separated instrumental stem. Separation is not perfect; residual leakage may remain.",
+        },
+        stems: [instrumental],
+      };
+    }
+  }
+
+  const [job] = await db
+    .select()
+    .from(processingJobs)
+    .where(
+      and(
+        eq(processingJobs.projectId, projectId),
+        eq(processingJobs.sourceAssetId, bedId),
+        eq(processingJobs.type, "separation"),
+        eq(processingJobs.status, "complete"),
+      ),
+    )
+    .orderBy(desc(processingJobs.completedAt), desc(processingJobs.createdAt))
+    .limit(1);
+
+  if (!job) {
+    return {
+      info: {
+        source: "original-fallback",
+        warning:
+          "No completed separation run is available for the bed. The original file is used and may contain the original vocal.",
+      },
+      stems: [],
+    };
+  }
+
+  const stems = await db
+    .select()
+    .from(stemAssets)
+    .where(
+      and(
+        eq(stemAssets.projectId, projectId),
+        eq(stemAssets.sourceAssetId, bedId),
+        eq(stemAssets.separationJobId, job.id),
+      ),
+    );
+  const bedStemTypes = new Set<string>(INSTRUMENTAL_BED_STEM_TYPES);
+  const usable = stems.filter((stem) => bedStemTypes.has(stem.stemType));
+  if (usable.length === 0) {
+    return {
+      info: {
+        source: "original-fallback",
+        warning:
+          "The completed separation run has no instrumental stems. The original file is used and may contain the original vocal.",
+      },
+      stems: [],
+    };
+  }
+
+  return {
+    info: {
+      source: "separated",
+      separationJobId: job.id,
+      includedStemTypes: usable.map((stem) => stem.stemType),
+      warning:
+        "The bed is synthesized from separated stems. Separation is not perfect; residual vocal or instrument leakage may remain.",
+    },
+    stems: usable,
+  };
+}
+
+/**
+ * Decode and sum the bed's separated non-vocal stems.
+ *
+ * Returns ok:false when the original-file fallback must be used. Throws
+ * InstrumentalBedError when stems exist but provenance or exact alignment
+ * cannot be established — those must not be silently replaced with the
+ * original file.
+ */
+async function loadInstrumentalBed(projectId: string, bedId: string): Promise<BedLoadResult> {
+  const { info, stems } = await findBedSource(projectId, bedId);
+  if (info.source === "original-fallback" || stems.length === 0) {
+    return { ok: false, info };
+  }
+
+  if (stems.length === 1 && stems[0]!.stemType === "instrumental") {
+    const pcm = await stemPcm(stems[0]!.storageKey);
+    if (pcm === null) {
+      return {
+        ok: false,
+        info: {
+          ...info,
+          source: "original-fallback",
+          warning:
+            "The separated instrumental stem could not be decoded. The original file is used and may contain the original vocal.",
+        },
+      };
+    }
+    return { ok: true, pcm, info };
+  }
+
+  const decodedStems: InstrumentalBedStem[] = [];
+  for (const stem of stems) {
+    const bytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
+    const decoded = decodeWav16(new Uint8Array(bytes));
+    if (decoded === null || decoded.sampleRate !== RENDER_SAMPLE_RATE) {
+      return {
+        ok: false,
+        info: {
+          ...info,
+          source: "original-fallback",
+          warning:
+            "A separated instrumental stem could not be decoded at the render rate. The original file is used and may contain the original vocal.",
+        },
+      };
+    }
+    decodedStems.push({
+      stemType: stem.stemType,
+      sourceAssetId: stem.sourceAssetId,
+      separationJobId: stem.separationJobId,
+      startMs: 0,
+      sampleRate: decoded.sampleRate,
+      channels: decoded.channels,
+      frames: decoded.frames,
+      samples: decoded.samples,
+    });
+  }
+
+  const bed = sumInstrumentalStems(decodedStems);
+  return { ok: true, pcm: bed.pcm, info };
+}
+
+async function inspectBed(projectId: string, bedId: string): Promise<BedSourceInfo> {
+  const { info } = await findBedSource(projectId, bedId);
+  return info;
 }
 
 /** Decode a source's ORIGINAL file (any codec) via the pcm pipeline. */
@@ -123,40 +314,56 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: planned.reason }, { status: 422 });
       }
       if (action === "plan") {
-        return Response.json({ plan: planned.plan }, { status: 200 });
+        const bedInfo = await inspectBed(projectId, bedId);
+        return Response.json({ plan: planned.plan, bed: bedInfo }, { status: 200 });
       }
 
-      // Render: vocals stem over the bed's instrumental stem (or its original).
+      // Render: donor vocal over a clean instrumental bed. The bed is built
+      // from the separated non-vocal stems of ONE completed separation run.
+      // If that is impossible, fall back to the original file and say so.
       if (planned.plan.durationMs / 1000 > MAX_RENDER_SECONDS) {
         return Response.json({ error: `Renders are limited to ${MAX_RENDER_SECONDS / 60} minutes.` }, { status: 413 });
       }
       await mkdir(tempDir, { recursive: true });
+
       const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
-      const bedStem = await latestStem(projectId, bedId, "instrumental");
-      const vocalsPcm = vocalsStem !== null ? await stemPcm(vocalsStem.storageKey) : null;
-      const bedPcm = bedStem !== null ? await stemPcm(bedStem.storageKey) : null;
-      if (vocalsPcm === null || bedPcm === null) {
-        // Fall back to the original files (any codec) through the pcm pipeline.
-        const [vocalsFile, bedFile] = await Promise.all([
-          vocalsPcm === null ? sourcePcm(projectId, vocalsId, tempDir) : Promise.resolve(null),
-          bedPcm === null ? sourcePcm(projectId, bedId, tempDir) : Promise.resolve(null),
-        ]);
-        if (vocalsPcm === null && vocalsFile === null) {
+      const decodedVocals = vocalsStem !== null ? await stemPcm(vocalsStem.storageKey) : null;
+      const warnings: string[] = [];
+      let vocalsPcm: Float32Array;
+      if (decodedVocals !== null) {
+        vocalsPcm = decodedVocals;
+      } else {
+        const vocalsFile = await sourcePcm(projectId, vocalsId, tempDir);
+        if (vocalsFile === null) {
           return Response.json({ error: "The vocal track's audio could not be decoded." }, { status: 500 });
         }
-        if (bedPcm === null && bedFile === null) {
+        vocalsPcm = vocalsFile.pcm;
+        warnings.push(
+          "The donor vocal uses the original file because no separated vocal stem is available; it may contain instrumental bleed.",
+        );
+      }
+
+      const bedResult = await loadInstrumentalBed(projectId, bedId);
+      let bedPcm: Float32Array;
+      let bedInfo: BedSourceInfo;
+      if (bedResult.ok) {
+        bedPcm = bedResult.pcm;
+        bedInfo = bedResult.info;
+      } else {
+        const bedFile = await sourcePcm(projectId, bedId, tempDir);
+        if (bedFile === null) {
           return Response.json({ error: "The instrumental's audio could not be decoded." }, { status: 500 });
         }
-        const mixed = renderMashup(planned.plan, {
-          vocals: (vocalsPcm ?? vocalsFile!.pcm) as Float32Array,
-          bed: (bedPcm ?? bedFile!.pcm) as Float32Array,
-          sampleRate: RENDER_SAMPLE_RATE,
-        });
-        const wav = encodeWav16(mixed, RENDER_SAMPLE_RATE);
-        return wavResponse(wav, "mashup");
+        bedPcm = bedFile.pcm;
+        bedInfo = bedResult.info;
       }
-      const mixed = renderMashup(planned.plan, { vocals: vocalsPcm, bed: bedPcm, sampleRate: RENDER_SAMPLE_RATE });
-      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup");
+
+      const mixed = renderMashup(planned.plan, {
+        vocals: vocalsPcm,
+        bed: bedPcm,
+        sampleRate: RENDER_SAMPLE_RATE,
+      });
+      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings);
     }
 
     if (action === "extend") {
@@ -187,6 +394,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return Response.json({ error: "Unknown action — use plan, render, or extend." }, { status: 400 });
   } catch (error) {
     if (error instanceof Response) return error;
+    if (error instanceof InstrumentalBedError) {
+      return Response.json({ error: error.message }, { status: 422 });
+    }
     console.error("mashup route failed", error);
     return Response.json({ error: "The mashup could not be produced." }, { status: 500 });
   } finally {
@@ -194,13 +404,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 }
 
-function wavResponse(wav: Uint8Array, kind: string): Response {
-  return new Response(wav as unknown as BodyInit, {
-    status: 200,
-    headers: {
-      "content-type": "audio/wav",
-      "cache-control": "no-store",
-      "content-disposition": `attachment; filename="waveyard-${kind}.wav"`,
-    },
+function wavResponse(
+  wav: Uint8Array,
+  kind: string,
+  bed?: BedSourceInfo,
+  warnings: string[] = [],
+): Response {
+  const headers = new Headers({
+    "content-type": "audio/wav",
+    "cache-control": "no-store",
+    "content-disposition": `attachment; filename="waveyard-${kind}.wav"`,
   });
+  if (bed) {
+    headers.set("x-waveyard-bed-source", bed.source);
+    headers.set("x-waveyard-bed-warning", encodeURIComponent(bed.warning));
+    if (bed.separationJobId) headers.set("x-waveyard-bed-job", bed.separationJobId);
+    if (bed.includedStemTypes?.length) {
+      headers.set("x-waveyard-bed-stems", bed.includedStemTypes.join(","));
+    }
+  }
+  for (const warning of warnings) {
+    headers.append("x-waveyard-warning", encodeURIComponent(warning));
+  }
+  return new Response(wav as unknown as BodyInit, { status: 200, headers });
 }

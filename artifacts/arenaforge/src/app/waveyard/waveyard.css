@@ -1515,3 +1515,5 @@
   .wy-swap-picker .wy-swap-candidate{min-height:52px}
   .wy-swap-picker .wy-swap-prepare-action{min-height:44px}
 }
+
+.mashup-bed-warning{margin:8px 0 0;padding:8px 10px;border:1px solid #6b5a2a;background:#1d1a10;color:var(--orange);font-size:12px;line-height:1.45}
