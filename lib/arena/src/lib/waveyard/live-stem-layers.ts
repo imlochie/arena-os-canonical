@@ -33,6 +33,7 @@ type Channel = {
 type Layer = {
   url: string;
   tempoStretchRatio: number;
+  beatOffsetSeconds: number;
   buffer: AudioBuffer | null;
   duration: number;
   sampleRate: number;
@@ -264,7 +265,7 @@ export class LiveStemLayers {
       if (!channel || !layer.buffer) continue;
       const media = channel.source.mediaElement;
       const offset = layer.duration > 0
-        ? (media.currentTime % layer.duration) * layer.sampleRate
+        ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate
         : 0;
       const nextInput = context.createGain();
       nextInput.gain.value = 0;
@@ -291,7 +292,7 @@ export class LiveStemLayers {
         continue;
       }
 
-      const currentOffset = layer.duration > 0 ? media.currentTime % layer.duration : media.currentTime;
+      const currentOffset = layer.duration > 0 ? this.alignedOffset(layer, media.currentTime) : media.currentTime;
       nextSource.port.postMessage({ type: "rate", value: this.playbackRate });
       nextSource.port.postMessage({ type: "seek", frame: Math.floor(currentOffset * layer.sampleRate) });
       nextSource.port.postMessage({ type: media.paused || media.ended ? "pause" : "play" });
@@ -431,6 +432,10 @@ export class LiveStemLayers {
     this.timers.add(timer);
   }
 
+  private alignedOffset(layer: Layer, position: number) {
+    return ((position + layer.beatOffsetSeconds) % layer.duration + layer.duration) % layer.duration;
+  }
+
   private async start(layer: Layer, channel: Channel) {
     if (this.disposed) return;
     if (layer.sourceMode === "worklet" && layer.source) {
@@ -439,7 +444,7 @@ export class LiveStemLayers {
       worklet.port.postMessage({ type: "rate", value: this.playbackRate });
       worklet.port.postMessage({
         type: "seek",
-        frame: layer.duration > 0 ? (media.currentTime % layer.duration) * layer.sampleRate : 0,
+        frame: layer.duration > 0 ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate : 0,
       });
       worklet.port.postMessage({ type: media.paused || media.ended ? "pause" : "play" });
       return;
@@ -450,7 +455,7 @@ export class LiveStemLayers {
     if (!layer.buffer) throw new Error("The prepared live stem audio is no longer available.");
     if (this.pitchPreserving) {
       const offset = layer.duration > 0
-        ? (media.currentTime % layer.duration) * layer.sampleRate
+        ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate
         : 0;
       const source = await this.createWorkletSource(layer.buffer, layer.input, offset, true, true);
       if (this.disposed) {
@@ -469,7 +474,7 @@ export class LiveStemLayers {
     // Short donors repeat without ending or resetting the recipient's clock.
     source.loop = true;
     source.connect(layer.input);
-    source.start(0, media.currentTime % layer.buffer.duration);
+    source.start(0, this.alignedOffset(layer, media.currentTime));
     layer.source = source;
     layer.sourceMode = "buffer";
   }
@@ -798,12 +803,13 @@ export class LiveStemLayers {
     }
   }
 
-  async replace(id: string, url: string | null, tempoStretchRatio = 1, selectedAt = performance.now()) {
+  async replace(id: string, url: string | null, tempoStretchRatio = 1, selectedAt = performance.now(), beatOffsetSeconds = 0) {
+    if (!Number.isFinite(beatOffsetSeconds)) throw new Error("The donor beat offset must be finite.");
     if (url && (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2)) {
       throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
     }
     if (this.disposed) return false;
-    const key = url ? this.preparedKey(url, tempoStretchRatio) : "";
+    const key = url ? `${this.preparedKey(url, tempoStretchRatio)}:${beatOffsetSeconds}` : "";
     const currentPending = this.pending.get(id);
     if (key && currentPending?.key === key) return currentPending.promise;
     currentPending?.controller.abort();
@@ -817,14 +823,15 @@ export class LiveStemLayers {
       this.retire(previous);
       return;
     }
-    if (previous?.url === url && Math.abs(previous.tempoStretchRatio - tempoStretchRatio) < 0.001) return;
+    if (previous?.url === url && Math.abs(previous.tempoStretchRatio - tempoStretchRatio) < 0.001
+      && previous.beatOffsetSeconds === beatOffsetSeconds) return;
     const operation: PendingSwap = {
       controller: new AbortController(),
       key,
       promise: Promise.resolve(),
     };
     this.pending.set(id, operation);
-    operation.promise = this.installReplacement(id, url, tempoStretchRatio, selectedAt, previous, operation);
+    operation.promise = this.installReplacement(id, url, tempoStretchRatio, selectedAt, previous, operation, beatOffsetSeconds);
     return operation.promise;
   }
 
@@ -841,6 +848,7 @@ export class LiveStemLayers {
     selectedAt: number,
     previous: Layer | undefined,
     operation: PendingSwap,
+    beatOffsetSeconds: number,
   ) {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -871,6 +879,7 @@ export class LiveStemLayers {
       const layer: Layer = {
         url,
         tempoStretchRatio,
+        beatOffsetSeconds,
         buffer: prepared.buffer,
         duration: prepared.buffer.duration,
         sampleRate: prepared.buffer.sampleRate,

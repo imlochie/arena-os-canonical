@@ -8,6 +8,19 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { liveStemBeatOffsetSeconds } from "./session-logic";
+
+test("live stem phase projects measured donor beats into tempo-stretched recipient time", () => {
+  // 120 BPM recipient begins at 100ms; 100 BPM donor begins at 420ms.
+  const ratio = 100 / 120;
+  const offset = liveStemBeatOffsetSeconds([100, 600, 1100], [420, 1020, 1620], ratio)!;
+  assert.ok(Math.abs(offset - 0.25) < 1e-10);
+  for (let beat = 0; beat < 3; beat++) {
+    assert.ok(Math.abs((0.1 + beat * 0.5 + offset) / ratio - (0.42 + beat * 0.6)) < 1e-10);
+  }
+  assert.equal(liveStemBeatOffsetSeconds(null, [0, 500], 1), null);
+  assert.equal(liveStemBeatOffsetSeconds([0, 500], [0, 500], NaN), null);
+});
 
 import {
   MAX_CROSSFADE_SECONDS,

@@ -36,6 +36,7 @@ import {
   crossfadeEnvelope,
   keyCompatibility,
   liveStemTempoStretchRatio,
+  liveStemBeatOffsetSeconds,
   nextSessionTrack,
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
@@ -122,6 +123,7 @@ interface SessionDetail {
       id: string;
       title: string;
       stems: Array<{ id: string; stemType: string; durationSeconds: number }>;
+      analysis?: SessionTrackItem["analysis"];
     } | null;
   }>;
   createdAt: string;
@@ -213,7 +215,8 @@ function getPersistedSwapSetup(
 ) {
   const swaps: Record<string, string> = {};
   const tempoStretchRatios: Record<string, number> = {};
-  if (session === null || item === null) return { swaps, tempoStretchRatios };
+  const beatOffsets: Record<string, number> = {};
+  if (session === null || item === null) return { swaps, tempoStretchRatios, beatOffsets };
 
   for (const swap of session.swaps) {
     if (swap.sessionTrackId !== item.id || cancelledSwapIds.has(swap.id)) continue;
@@ -223,12 +226,19 @@ function getPersistedSwapSetup(
     if (donorStem) swaps[swap.stemType] = donorStem.id;
 
     const donorBpm = donor?.analysis?.bpm
+      ?? swap.donorTrack?.analysis?.bpm
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.bpm
       ?? null;
     const ratio = liveStemTempoStretchRatio(item.analysis?.bpm ?? null, donorBpm);
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
+    const offset = ratio === null ? null : liveStemBeatOffsetSeconds(
+      item.analysis?.beatGridMs,
+      donor?.analysis?.beatGridMs ?? swap.donorTrack?.analysis?.beatGridMs,
+      ratio,
+    );
+    if (offset !== null) beatOffsets[swap.stemType] = offset;
   }
-  return { swaps, tempoStretchRatios };
+  return { swaps, tempoStretchRatios, beatOffsets };
 }
 
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
@@ -346,6 +356,7 @@ function SessionDeck({
   swaps,
   swapSelectionTimes,
   tempoStretchRatios,
+  beatOffsets,
   masterLevel,
   autoPlay,
   onAutoPlayed,
@@ -395,6 +406,7 @@ function SessionDeck({
   swaps: Record<string, string>;
   swapSelectionTimes: Record<string, number>;
   tempoStretchRatios: Record<string, number>;
+  beatOffsets: Record<string, number>;
   masterLevel: number;
   autoPlay: boolean;
   onAutoPlayed: () => void;
@@ -581,15 +593,15 @@ function SessionDeck({
     const stemType = stemTypeByAsset.get(id) ?? "source";
     const donor = swaps[stemType] ?? null;
     const selectedAt = donor === null ? null : swapSelectionTimes[stemType] ?? null;
-    return [id, donor, donor === null ? 1 : tempoStretchRatios[stemType] ?? 1, selectedAt];
+    return [id, donor, donor === null ? 1 : tempoStretchRatios[stemType] ?? 1, selectedAt, beatOffsets[stemType] ?? 0];
   }));
   useEffect(() => {
     let stale = false;
-    const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null]>;
+    const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null, number]>;
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
-    const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt]) => {
+    const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt, beatOffset]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
-      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined).then((installed) => {
+      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined, beatOffset).then((installed) => {
         if (!stale && installed !== false && donor !== null && item !== null) {
           onLiveLayerReady?.(item.id, stemType, selectedAt);
         }
@@ -4096,6 +4108,7 @@ export default function SessionExperience({
         }))
         : {},
       tempoStretchRatios: swapSetup.tempoStretchRatios,
+      beatOffsets: swapSetup.beatOffsets,
       masterLevel,
       autoPlay: item !== null && autoPlayId === item.id && (isActive || resumeAt?.itemId === item.id),
       onAutoPlayed: () => {

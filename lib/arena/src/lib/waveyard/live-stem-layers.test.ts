@@ -105,6 +105,22 @@ function response(ok = true) {
   return { ok, status: ok ? 200 : 503, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
 }
 
+test("live donors retain measured beat phase through replacement and seek, including negative offsets", async () => {
+  globalThis.fetch = async () => response();
+  const f = fixture();
+  f.media.currentTime = 1;
+  await f.layers.replace("vocals", "/donor", 1, undefined, 0.25);
+  assert.equal(f.sources.at(-1)!.offset, 1.25);
+  // A changed alignment is not mistaken for the already installed donor.
+  await f.layers.replace("vocals", "/donor", 1, undefined, -1.25);
+  assert.equal(f.sources.at(-1)!.offset, 2.75);
+  f.media.currentTime = 2;
+  f.layers.sync(["vocals"]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(f.sources.at(-1)!.offset, 0.75);
+  f.layers.dispose();
+});
+
 test("a rejected pooled donor downloads fresh bytes on retry without revoking the standby deck", async () => {
   let fetches = 0;
   globalThis.fetch = async () => {

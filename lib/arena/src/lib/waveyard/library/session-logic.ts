@@ -167,6 +167,19 @@ export function liveStemTempoStretchRatio(
   return donorBpm / recipientBpm;
 }
 
+/** Offset in stretched-donor seconds. Beat zero is not necessarily a downbeat. */
+export function liveStemBeatOffsetSeconds(
+  recipientBeats: unknown,
+  donorBeats: unknown,
+  stretchRatio: number,
+): number | null {
+  const recipient = usableBeatGrid(recipientBeats);
+  const donor = usableBeatGrid(donorBeats);
+  if (!recipient || !donor || !Number.isFinite(stretchRatio) || stretchRatio <= 0) return null;
+  // In output coordinates donorBeat * stretch = recipientBeat + offset.
+  return (donor[0] * stretchRatio - recipient[0]) / 1000;
+}
+
 export interface KeyCompatibility {
   aKey: string | null;
   bKey: string | null;

@@ -477,9 +477,9 @@ export function useStemTransport(
     }
   }
   liveLayers.current.setAssetPool(assetPool);
-  const replaceStem = useCallback((id: string, url: string | null, tempoStretchRatio = 1, selectedAt?: number) => {
+  const replaceStem = useCallback((id: string, url: string | null, tempoStretchRatio = 1, selectedAt?: number, beatOffsetSeconds = 0) => {
     if (url) ensureGraph(id);
-    return liveLayers.current!.replace(id, url, tempoStretchRatio, selectedAt);
+    return liveLayers.current!.replace(id, url, tempoStretchRatio, selectedAt, beatOffsetSeconds);
   }, [ensureGraph]);
   const preloadStem = useCallback((id: string, url: string, tempoStretchRatio = 1, selectedAt?: number) => {
     if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");

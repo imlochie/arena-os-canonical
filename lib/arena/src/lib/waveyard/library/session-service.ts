@@ -187,7 +187,7 @@ export interface SessionSwapPayload {
   toStemAssetId: string | null;
   atSeconds: number;
   createdAt: string;
-  donorTrack: { id: string; title: string; stems: TrackStem[] } | null;
+  donorTrack: { id: string; title: string; stems: TrackStem[]; analysis: SessionTrackAnalysis | null } | null;
 }
 
 interface SessionTrackRow {
@@ -308,7 +308,7 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
         analysis: analyses.get(row.id) ?? null,
       };
     }),
-    swaps: swapRows.map((row) => ({
+    swaps: await Promise.all(swapRows.map(async (row) => ({
       id: row.id,
       sessionTrackId: row.sessionTrackId,
       stemType: row.stemType,
@@ -322,8 +322,9 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
         id: row.toTrackId,
         title: details.get(row.toTrackId)!.title,
         stems: details.get(row.toTrackId)!.stems,
+        analysis: await sessionTrackAnalysis(session.ownerId, row.toTrackId),
       } : null,
-    })),
+    }))),
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
   };
