@@ -126,3 +126,73 @@ mtime_ms = 1793807050663
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/ff79ffd6-3f4e-4e13-8fbe-ceb5a613b7b6/646b4503-5fee-4b7c-8ea0-c9e3b1bda2e2"
 storage_version_token = "1793807492871612"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "HLMde7HU5TTO4XMFF_xBi"
+uri = "file://generated-artifacts/waveyard-real-mashup/september-vocal-donor-ab.wav"
+type = "audio"
+title = "September vocal swap — A/B"
+description = "First 8 seconds: original September. Then a short gap and 8 seconds of the live vocal stem swap from Another One Bites the Dust. Actual model-separated excerpts, captured through Waveyard SessionExperience in Chromium."
+logical_id = "546104d1-bdfc-42dc-8359-0818ff954fd6"
+content_hash = "sha256:6e5ae2cb218a27e4b099658906519766e5eb01912d7067f26f9f1ea151b3b3d7"
+size = 2912794
+mtime_ms = 1793861340846
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/546104d1-bdfc-42dc-8359-0818ff954fd6/0b1523e9-7d5a-4062-ab34-db415c971ba5"
+storage_version_token = "1793861374934805"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "eBa601jklfjdBA4L1wnTy"
+uri = "file://generated-artifacts/waveyard-real-mashup/another-vocal-donor-ab.wav"
+type = "audio"
+title = "Another One Bites the Dust vocal swap — A/B"
+description = "First 8 seconds: original Another One Bites the Dust. Then a short gap and 8 seconds of the live vocal stem swap from September. Actual model-separated excerpts, captured through Waveyard SessionExperience in Chromium."
+logical_id = "68dffff2-75ff-4cad-b61e-538e6bcf2e69"
+content_hash = "sha256:43004ebdeb3ef2d06f748e9f6297b90c7957b75e6f04c719e80058711bbca4b4"
+size = 2910234
+mtime_ms = 1793861343690
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/68dffff2-75ff-4cad-b61e-538e6bcf2e69/b6165b89-1a94-4e1a-af37-75cb11887691"
+storage_version_token = "1793861375709758"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "-iDUGlyzZyyUaKNoTAX86"
+uri = "file://generated-artifacts/waveyard-real-mashup/september-drum-donor-ab.wav"
+type = "audio"
+title = "September drum swap — A/B"
+description = "First 8 seconds: original September. Then a short gap and 8 seconds with the Another One Bites the Dust drum stem replacing September drums. Actual model-separated excerpts, captured through Waveyard SessionExperience in Chromium."
+logical_id = "f26ce81b-d869-4c4b-b8a2-2a1f0aa37620"
+content_hash = "sha256:ecd8f6a6c41d38c6208ff131b2871f072030f8cf4dca55d0ec5bfd33011f3a95"
+size = 2909970
+mtime_ms = 1793861346502
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/f26ce81b-d869-4c4b-b8a2-2a1f0aa37620/b8d9a377-82ea-4e61-8223-a357f968901b"
+storage_version_token = "1793861376251093"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "ol97WoylCKKC1Nh-b4bRd"
+uri = "file://generated-artifacts/waveyard-real-mashup/september-queen-vocals-ab.wav"
+type = "audio"
+title = "September + Queen vocals — A/B"
+description = "First 8 seconds: original September mix. After a short gap: the live mix with Queen’s separated vocal stem replacing September’s vocals. Captured in Chromium; 44.1 kHz stereo."
+logical_id = "829e23ed-9160-435c-831e-26b1c595b665"
+content_hash = "sha256:3dfd572d34634595109df0523c2522cb0a76c992fa4269af947e7020592350d2"
+size = 2910678
+mtime_ms = 1793861797054
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/829e23ed-9160-435c-831e-26b1c595b665/770c61e8-c8f1-485b-9a8f-87ea4f300a5d"
+storage_version_token = "1793861811169414"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "-1Jk2K8W7CwEMmFm0g3wQ"
+uri = "file://generated-artifacts/waveyard-real-mashup/september-queen-drums-ab.wav"
+type = "audio"
+title = "September + Queen drums — A/B"
+description = "First 8 seconds: original September mix. After a short gap: the live mix with Queen’s separated drum stem replacing September’s drums. Captured in Chromium; 44.1 kHz stereo."
+logical_id = "ae570902-97f6-46b0-9977-82440a87fe5d"
+content_hash = "sha256:d505b12bd564b682d8e0674b63665a72f619c07be938d3c776cb5b35c9ecbc09"
+size = 2911386
+mtime_ms = 1793861799954
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/ae570902-97f6-46b0-9977-82440a87fe5d/c8beb2ed-7f91-479f-9661-5b67ab0d3533"
+storage_version_token = "1793861811749584"
+content_type = "audio/wav"
