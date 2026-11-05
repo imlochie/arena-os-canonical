@@ -12,7 +12,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron } from "playwright-core";
-import { createArenaBackup, restoreArenaBackup } from "./arena-backup.mjs";
+import {
+  createArenaBackup,
+  restoreArenaBackup,
+  verifyArenaBackup,
+} from "./arena-backup.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.resolve(
@@ -31,6 +35,8 @@ const checkIds = [
   "waveyard_capture_runtime_wired",
   "database_backup_restore_round_trip",
   "restored_record_opens_in_ui",
+  "tampered_backup_rejected_in_data_menu",
+  "original_data_usable_after_failed_restore",
 ];
 const report = {
   passed: false,
@@ -45,6 +51,7 @@ let activeCheck = null;
 let dataRoot = null;
 let desktop = null;
 let restoreRoot = null;
+let damagedRestoreRoot = null;
 let backupDir = null;
 
 function begin(id) {
@@ -261,6 +268,178 @@ async function run() {
   );
   pass("restored_record_opens_in_ui");
 
+  await desktop.close();
+  desktop = await _electron.launch({
+    executablePath: executable,
+    args: [`--user-data-dir=${path.join(dataRoot, "original-electron-profile")}`],
+    timeout: 150_000,
+    env,
+  });
+  const originalPage = await desktop.firstWindow({ timeout: 150_000 });
+  await originalPage.waitForURL("**/spaces", { timeout: 150_000 });
+
+  const encryptedPath = Object.keys(backup.manifest.files)[0];
+  assert(encryptedPath, "the backup must contain an encrypted file to tamper with");
+  const encryptedFile = path.join(backupDir, encryptedPath);
+  const encryptedFileBytes = await readFile(encryptedFile);
+  await writeFile(
+    encryptedFile,
+    Buffer.concat([encryptedFileBytes, Buffer.from([0])]),
+  );
+  const damagedBackup = await verifyArenaBackup(backupDir);
+  assert.equal(damagedBackup.ok, false);
+  assert(
+    damagedBackup.mismatches.length > 0,
+    "backup verification must identify the changed encrypted file",
+  );
+
+  damagedRestoreRoot = await mkdtemp(
+    path.join(os.tmpdir(), "arenaforge-package-damaged-restore-"),
+  );
+  begin("tampered_backup_rejected_in_data_menu");
+  const unlockWindowPromise = desktop.waitForEvent("window", {
+    timeout: 15_000,
+  });
+  await desktop.evaluate(
+    ({ app, BrowserWindow, dialog, Menu }, { backupDir, targetRoot }) => {
+      const state = {
+        openDialogCount: 0,
+        confirmation: null,
+        error: null,
+        relaunchRequested: false,
+        relaunchDataRoot: null,
+        exitRequested: false,
+      };
+      globalThis.__arenaBackupSmokeDialogs = state;
+      dialog.showOpenDialog = async (_window, options) => {
+        state.openDialogCount += 1;
+        return {
+          canceled: false,
+          filePaths: [
+            state.openDialogCount === 1 ? backupDir : targetRoot,
+          ],
+        };
+      };
+      dialog.showMessageBox = async (_window, options) => {
+        state.confirmation = options;
+        return { response: 0 };
+      };
+      dialog.showErrorBox = (title, message) => {
+        state.error = { title, message };
+      };
+      app.relaunch = (options) => {
+        state.relaunchRequested = true;
+        state.relaunchDataRoot = options?.env?.ARENA_DATA_DIR ?? null;
+      };
+      app.exit = () => {
+        state.exitRequested = true;
+      };
+
+      const dataMenu = Menu.getApplicationMenu()?.getMenuItemByLabel("Data");
+      const restoreItem = dataMenu?.submenu?.getMenuItemByLabel(
+        "Restore backup to a new data folder…",
+      );
+      if (!restoreItem || typeof restoreItem.click !== "function") {
+        throw new Error("The Arena Data menu restore item is unavailable.");
+      }
+
+      // Invoke the callback attached to the packaged app's real Data menu item.
+      restoreItem.click(
+        restoreItem,
+        BrowserWindow.getFocusedWindow(),
+        { type: "key" },
+      );
+    },
+    { backupDir, targetRoot: damagedRestoreRoot },
+  );
+
+  const unlockWindow = await unlockWindowPromise;
+  await unlockWindow.getByLabel("Backup passphrase").fill(
+    "Windows package smoke backup passphrase",
+  );
+  await unlockWindow.getByRole("button", { name: "Continue" }).click();
+
+  let restoreFailure = null;
+  const failureDeadline = Date.now() + 45_000;
+  while (Date.now() < failureDeadline) {
+    restoreFailure = await desktop.evaluate(
+      () => globalThis.__arenaBackupSmokeDialogs?.error ?? null,
+    );
+    if (restoreFailure) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(restoreFailure, "the Data menu must show a restore failure");
+  assert.equal(restoreFailure.title, "Arena restore failed");
+  assert.match(restoreFailure.message, /Backup verification failed/i);
+  assert.match(restoreFailure.message, /changed/i);
+  assert.match(restoreFailure.message, /current data folder was not overwritten/i);
+  const restoreDialogState = await desktop.evaluate(
+    () => globalThis.__arenaBackupSmokeDialogs,
+  );
+  assert.equal(restoreDialogState.openDialogCount, 2);
+  assert.match(
+    restoreDialogState.confirmation.detail,
+    /current Arena data folder will not be overwritten/i,
+  );
+  assert.equal(restoreDialogState.relaunchRequested, true);
+  assert.equal(
+    path.resolve(restoreDialogState.relaunchDataRoot),
+    path.resolve(dataRoot),
+    "a rejected backup must relaunch Arena with its original data folder",
+  );
+  assert.equal(restoreDialogState.exitRequested, true);
+  assert.deepEqual(
+    await readdir(damagedRestoreRoot),
+    [],
+    "a rejected backup must not create partial data in the selected destination",
+  );
+  pass("tampered_backup_rejected_in_data_menu");
+
+  await desktop.close();
+  desktop = await _electron.launch({
+    executablePath: executable,
+    args: [`--user-data-dir=${path.join(dataRoot, "verified-original-profile")}`],
+    timeout: 150_000,
+    env,
+  });
+  const verifiedOriginalPage = await desktop.firstWindow({ timeout: 150_000 });
+  await verifiedOriginalPage.waitForURL("**/spaces", { timeout: 150_000 });
+  const originalOrigin = new URL(verifiedOriginalPage.url()).origin;
+  const originalSpacesResponse = await verifiedOriginalPage.request.get(
+    `${originalOrigin}/api/spaces`,
+    { timeout: 20_000 },
+  );
+  assert(originalSpacesResponse.ok());
+  const originalSpaces = await originalSpacesResponse.json();
+  const originalRecord = originalSpaces.spaces.find(
+    (space) => space.id === sentinel.id,
+  );
+  assert.equal(originalRecord?.title, sentinelTitle);
+  await verifiedOriginalPage.goto(`${originalOrigin}/spaces/${sentinel.id}`, {
+    waitUntil: "domcontentloaded",
+  });
+  await verifiedOriginalPage.getByRole("button", { name: /setup/i }).click();
+  const originalPrompt = verifiedOriginalPage.getByLabel(/task prompt/i);
+  await originalPrompt.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await originalPrompt.inputValue(),
+    sentinelPrompt,
+    "the original Arena record must remain usable and unchanged",
+  );
+  assert.deepEqual(
+    await readFile(path.join(dataRoot, "waveyard/storage/acceptance/source.wav")),
+    waveyardAudio,
+  );
+  assert.deepEqual(
+    await readFile(path.join(dataRoot, "waveyard/capture/acceptance/take.pcm")),
+    waveyardCapture,
+  );
+  assert.equal(
+    JSON.parse(await readFile(path.join(dataRoot, "runtime/db-password.json"), "utf8")).password,
+    databaseCredential.password,
+  );
+  pass("original_data_usable_after_failed_restore");
+
   report.passed = true;
 }
 
@@ -282,6 +461,8 @@ try {
     await rm(dataRoot, { recursive: true, force: true }).catch(() => {});
   if (restoreRoot)
     await rm(restoreRoot, { recursive: true, force: true }).catch(() => {});
+  if (damagedRestoreRoot)
+    await rm(damagedRestoreRoot, { recursive: true, force: true }).catch(() => {});
   if (backupDir)
     await rm(backupDir, { recursive: true, force: true }).catch(() => {});
   await mkdir(outputDir, { recursive: true });
