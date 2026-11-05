@@ -449,7 +449,8 @@ try {
       combinedInputs: [], combinedOutputs: [], playStarts: [],
       renderCaptureDestinations: [],
       workletLoads: [], workletSeeks: [], workletRates: [], workletPitchModes: [], keyShifts: [], transportMessages: [],
-      storageTransportMessages: [], storageTransportReceives: [], contexts: [],
+      storageTransportMessages: [], storageTransportReceives: [],
+      storageQueueMessages: [], storageQueueReceives: [], contexts: [],
     };
     if (captureRenderedAudio) {
       const nativeConnect = AudioNode.prototype.connect;
@@ -517,6 +518,7 @@ try {
       if (event.key !== "waveyard:queue-change" || event.newValue === null) return;
       try {
         const message = JSON.parse(event.newValue);
+        window.audioProbe.storageQueueReceives.push(message);
         if (message?.transport) window.audioProbe.storageTransportReceives.push(message);
       } catch {
         // The app independently ignores malformed storage events.
@@ -527,6 +529,7 @@ try {
       if (key === "waveyard:queue-change") {
         try {
           const message = JSON.parse(String(value));
+          window.audioProbe.storageQueueMessages.push(message);
           if (message?.transport) {
             window.audioProbe.transportMessages.push(message);
             window.audioProbe.storageTransportMessages.push(message);
@@ -787,6 +790,7 @@ try {
       range: route.request().headers().range ?? null,
       pageUrl: requestPageUrl,
       isMainTestPage,
+      heldAtIntercept: id === heldAssetId && heldAssetGate !== null,
       responseStatus: null,
     };
     assetRequestTrace.push(requestTrace);
@@ -1461,17 +1465,41 @@ try {
   }
 
   async function verifyCrossTabStemSwitchRecovery() {
+    suppressSessionStateWritesForStemSwitchFixture = true;
     for (const scenario of ["cancel", "timeout"]) {
       session.currentSessionTrackId = "a";
       session.positionSeconds = 0;
       session.swaps = [];
-      await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+      await page.addInitScript(() => {
+        Object.defineProperty(window, "BroadcastChannel", { configurable: true, value: undefined });
+      });
       const mirror = await context.newPage();
       mirror.on("pageerror", error => { throw error; });
+      await mirror.addInitScript(() => {
+        Object.defineProperty(window, "BroadcastChannel", { configurable: true, value: undefined });
+      });
       const pages = [page, mirror];
       const releases = [];
-      let holdDonor;
+      const requestedPages = new Set();
+      const finishedPages = new Set();
+      let signalBothRequested, signalBothFinished;
+      const bothRequested = new Promise(resolve => { signalBothRequested = resolve; });
+      const bothFinished = new Promise(resolve => { signalBothFinished = resolve; });
+      // Use one gate per page: each late response is released and checked
+      // independently, so a single successful request cannot stand in for two.
+      const gates = new Map(pages.map(target => [target, new Promise(resolve => { releases.push(resolve); })]));
+      heldAssetId = "b-vocals";
+      heldAssetGate = Promise.all([...gates.values()]);
+      signalHeldAssetRequest = request => {
+        requestedPages.add(request.frame().page());
+        if (pages.every(target => requestedPages.has(target))) signalBothRequested();
+      };
+      signalHeldAssetRouteFinished = request => {
+        finishedPages.add(request.frame().page());
+        if (pages.every(target => finishedPages.has(target))) signalBothFinished();
+      };
       try {
+        await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
         await mirror.goto(`http://localhost:80/waveyard/session/${sessionId}`);
         for (const target of pages) {
           await target.waitForFunction(() => {
@@ -1481,31 +1509,10 @@ try {
             );
           });
         }
-        const requestedPages = new Set();
-        const finishedPages = new Set();
-        let signalBothRequested, signalBothFinished;
-        const bothRequested = new Promise(resolve => { signalBothRequested = resolve; });
-        const bothFinished = new Promise(resolve => { signalBothFinished = resolve; });
-        // Use one gate per page: each late response is released and checked
-        // independently, so a single successful request cannot stand in for two.
-        const gates = new Map(pages.map(target => [target, new Promise(resolve => { releases.push(resolve); })]));
-        heldAssetId = "b-vocals";
-        heldAssetGate = Promise.resolve();
-        signalHeldAssetRequest = request => {
-          requestedPages.add(request.frame().page());
-          if (pages.every(target => requestedPages.has(target))) signalBothRequested();
-        };
-        signalHeldAssetRouteFinished = request => {
-          finishedPages.add(request.frame().page());
-          if (pages.every(target => finishedPages.has(target))) signalBothFinished();
-        };
-        holdDonor = async route => {
-          const target = route.request().frame().page();
-          signalHeldAssetRequest(route.request());
-          await gates.get(target);
-          await route.fallback();
-        };
-        await context.route("**/api/assets/b-vocals", holdDonor);
+        assert.ok(await Promise.all(pages.map(target =>
+          target.evaluate(() => typeof BroadcastChannel === "undefined"),
+        )).then(results => results.every(Boolean)),
+        `${scenario}: both pages force queue-sync's storage-event fallback`);
         // Keep HTTP responses in flight even when the layer is cancelled. This
         // exercises the generation guard, not just successful fetch abortion.
         await Promise.all(pages.map(target => target.evaluate(() => {
@@ -1521,12 +1528,47 @@ try {
         await mirror.waitForFunction(() =>
           document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
         );
+        const lifecycleBaseline = await Promise.all(pages.map(target => target.evaluate(() => {
+          const lifecycle = { focus: 0, blur: 0 };
+          window.addEventListener("focus", () => { lifecycle.focus += 1; });
+          window.addEventListener("blur", () => { lifecycle.blur += 1; });
+          window.__waveyardRecoveryLifecycle = lifecycle;
+          return {
+            url: location.href,
+            timeOrigin: performance.timeOrigin,
+            hasFocus: document.hasFocus(),
+            visibility: document.visibilityState,
+            focusEvents: lifecycle.focus,
+            blurEvents: lifecycle.blur,
+            sent: window.audioProbe.storageQueueMessages.length,
+            received: window.audioProbe.storageQueueReceives.length,
+          };
+        })));
         await page.locator('[data-role="current"]').getByTestId("open-live-swap-vocals").click();
         await page.getByTestId("live-swap-candidate-vocals-b").click();
         // The save notification must reach the mirror without a focus/reload.
         // Observe requests before releasing either page's response.
         await mirror.getByTestId("restore-live-swap-vocals").waitFor();
-        await waitForSignal(bothRequested, `both stalled ${scenario} donor requests`);
+        try {
+          await waitForSignal(bothRequested, `both stalled ${scenario} donor requests`);
+        } catch (error) {
+          console.error("CROSS_TAB_STEM_DONOR_REQUEST_DIAGNOSTIC", JSON.stringify({
+            scenario,
+            requestedPages: [...requestedPages].map(target => pages.indexOf(target)),
+            requests: assetRequestTrace.filter(request => request.id === "b-vocals"),
+            swaps: session.swaps,
+            tabs: await Promise.all(pages.map(async (target, index) => ({
+              index,
+              url: target.url(),
+              body: (await target.locator("body").innerText()).slice(-1000),
+              audio: await target.locator('[data-role="current"] audio').evaluateAll(elements =>
+                elements.map(audio => ({ src: audio.src, paused: audio.paused, time: audio.currentTime })),
+              ),
+              fetches: await target.evaluate(() => window.liveAssetFetchTrace.slice(-10)),
+            }))),
+          }));
+          throw error;
+        }
         assert.equal(session.swaps.length, 1, "both tabs prepare the same persisted donor");
         // A silent mirror creates its first media graph lazily when preparing.
         // Snapshot after that preparation begins, before either response arrives.
@@ -1544,22 +1586,68 @@ try {
           await target.getByTestId("live-swap-pending-vocals").waitFor({ state: "detached" });
         }
         assert.equal(session.swaps.length, 0, `${scenario} removes the saved choice in both tabs`);
+        const fallbackEvidence = await Promise.all(pages.map((target, index) => target.evaluate(baseline => ({
+          sent: window.audioProbe.storageQueueMessages.slice(baseline.sent),
+          received: window.audioProbe.storageQueueReceives.slice(baseline.received),
+        }), lifecycleBaseline[index])));
+        const sentSessionChanges = fallbackEvidence[0].sent.filter(message =>
+          message.affectedSessionIds?.includes(sessionId) && !message.transport,
+        );
+        const receivedSessionChanges = fallbackEvidence[1].received.filter(message =>
+          message.affectedSessionIds?.includes(sessionId) && !message.transport,
+        );
+        assert.ok(sentSessionChanges.length >= 2,
+          `${scenario}: owner publishes the saved choice and its removal through localStorage`);
+        assert.ok(receivedSessionChanges.length >= 2,
+          `${scenario}: mirror receives the saved choice and its removal through storage events`);
+        assert.ok(sentSessionChanges.some(message =>
+          receivedSessionChanges.some(received => received.id === message.id),
+        ), `${scenario}: a storage-event delivery reaches the mirror`);
         const clock = await page.locator('[data-role="current"] audio').first().evaluate(audio => audio.currentTime);
-        for (const [index, release] of releases.entries()) {
-          const responseFinished = pages[index].waitForResponse(response =>
+        const responseFinished = pages.map(target => target.waitForResponse(response =>
             new URL(response.url()).pathname === "/api/assets/b-vocals" && response.ok(),
-          );
-          release();
-          await responseFinished;
-        }
+          ));
+        releases.forEach(release => release());
+        await Promise.all(responseFinished);
         await waitForSignal(bothFinished, `both late ${scenario} donor responses`);
-        await context.unroute("**/api/assets/b-vocals", holdDonor);
-        await page.waitForFunction(before => {
-          const audio = document.querySelector('[data-role="current"] audio[data-waveyard-fixture-src$="/a-vocals"]');
-          return audio && !audio.paused && audio.currentTime > before + 0.3;
-        }, clock);
+        try {
+          await page.waitForFunction(before => {
+            const audio = [...document.querySelectorAll('[data-role="current"] audio')]
+              .find(element => new URL(element.src).pathname.endsWith("/a-vocals"));
+            return audio && !audio.paused && audio.currentTime > before + 0.3;
+          }, clock, { timeout: 5_000 });
+        } catch (error) {
+          console.error("CROSS_TAB_STEM_OWNER_CLOCK_DIAGNOSTIC", JSON.stringify({
+            scenario,
+            clock,
+            owner: await page.evaluate(() => ({
+              audio: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => ({
+                src: audio.src,
+                fixtureSrc: audio.dataset.waveyardFixtureSrc,
+                currentTime: audio.currentTime,
+                duration: audio.duration,
+                paused: audio.paused,
+                ended: audio.ended,
+              })),
+              playingButton: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
+              sources: window.audioProbe.sources.map(source => ({
+                src: source.mediaElement.src,
+                stopped: source.stopCount,
+                gain: source.inputNode?.gain?.value,
+              })),
+            })),
+            status: (await page.locator('[data-testid="session-status"]').allTextContents()).slice(-8),
+          }));
+          throw error;
+        }
         for (const [index, target] of pages.entries()) {
           const state = await target.evaluate(() => ({
+            location: location.href,
+            timeOrigin: performance.timeOrigin,
+            hasFocus: document.hasFocus(),
+            visibility: document.visibilityState,
+            focusEvents: window.__waveyardRecoveryLifecycle.focus,
+            blurEvents: window.__waveyardRecoveryLifecycle.blur,
             buffers: window.audioProbe.buffers.length,
             workletLoads: window.audioProbe.workletLoads.length,
             sources: window.audioProbe.sources.length,
@@ -1567,12 +1655,21 @@ try {
             current: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => ({
               time: audio.currentTime, paused: audio.paused,
               gain: window.audioProbe.sources.find(source => source.mediaElement === audio)?.inputNode?.gain.value,
+              source: audio.dataset.waveyardFixtureSrc ?? audio.src,
             })),
           }));
+          assert.equal(state.location, lifecycleBaseline[index].url, `${scenario}: tab ${index} stays on the same route`);
+          assert.equal(state.timeOrigin, lifecycleBaseline[index].timeOrigin, `${scenario}: tab ${index} does not reload`);
+          assert.equal(state.hasFocus, lifecycleBaseline[index].hasFocus, `${scenario}: tab ${index} focus does not change`);
+          assert.equal(state.visibility, lifecycleBaseline[index].visibility, `${scenario}: tab ${index} visibility does not change`);
+          assert.equal(state.focusEvents, lifecycleBaseline[index].focusEvents, `${scenario}: tab ${index} receives no focus event`);
+          assert.equal(state.blurEvents, lifecycleBaseline[index].blurEvents, `${scenario}: tab ${index} receives no blur event`);
           assert.equal(state.buffers, baseline[index].buffers, `${scenario}: late response creates no donor source in tab ${index}`);
           assert.equal(state.workletLoads, baseline[index].workletLoads, `${scenario}: late response loads no worklet in tab ${index}`);
           assert.equal(state.sources, baseline[index].sources, `${scenario}: original audio graph remains intact in tab ${index}`);
           assert.equal(state.playing, index === 0 ? 4 : 0, `${scenario}: only the owner plays`);
+          assert.ok(state.current.every(audio => new URL(audio.source).pathname.includes("/a-")),
+            `${scenario}: tab ${index} keeps the original donor selection`);
           if (index === 0) {
             assert.ok(state.current.every(audio => !audio.paused && audio.gain > 0.99), "all original channels stay audible");
             assert.ok(Math.max(...state.current.map(audio => audio.time)) - Math.min(...state.current.map(audio => audio.time)) < 0.2,
@@ -1580,10 +1677,9 @@ try {
           }
         }
         await page.getByTestId("session-play").click();
-        console.log(`PASS: cross-tab ${scenario} clears both saved choices; both late responses stay silent and only the original owner clock advances`);
+        console.log(`PASS: storage-fallback cross-tab ${scenario} removes both selections without focus/reload; late donors stay silent and only the owner plays`);
       } finally {
         releases.forEach(release => release());
-        if (holdDonor) await context.unroute("**/api/assets/b-vocals", holdDonor);
         heldAssetId = null;
         heldAssetGate = null;
         signalHeldAssetRequest = null;
