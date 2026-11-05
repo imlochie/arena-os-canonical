@@ -22,7 +22,7 @@ import {
 } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { clearResolvedToolCache, requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
-import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
+import { getStorage, LocalStorageProvider, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import {
   listenSessionTracks,
   listenSessions,
@@ -163,7 +163,8 @@ async function independentRecoveryPostgres(t: TestContext) {
 function startRecoveryProcess(
   connectionString: string,
   jobId: string,
-  mode: "hold" | "complete" | "claim-only",
+  mode: "hold" | "complete" | "claim-only" | "upload-before-commit",
+  storageDir?: string,
 ): ChildProcess & { send(message: unknown): boolean } {
   const importFlagIndex = process.execArgv.findIndex((arg, index, args) =>
     arg === "--import" && args[index + 1]?.includes("tsx/dist/loader.mjs"));
@@ -181,6 +182,7 @@ function startRecoveryProcess(
       DATABASE_URL: connectionString,
       WAVEFORM_RECOVERY_TEST_JOB_ID: jobId,
       WAVEFORM_RECOVERY_TEST_MODE: mode,
+      ...(storageDir ? { WAVEYARD_STORAGE_DIR: storageDir } : {}),
     },
     stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
@@ -1041,6 +1043,132 @@ test("waveform recovery records a genuine queue submission failure", async () =>
     assert.match(failed.errorMessage ?? "", /Local waveform queue is unavailable/);
   } finally {
     await f.close();
+  }
+});
+
+test("waveform recovery finalizes an upload left behind by a stopped API process", async (t) => {
+  const pg = await independentRecoveryPostgres(t);
+  if (!pg) return;
+  const f = await fixture();
+  const children: ChildProcess[] = [];
+  try {
+    const [project] = await pg.database
+      .insert(projects)
+      .values({ ownerId: randomUUID(), title: "Interrupted waveform finalization" })
+      .returning();
+    const sourceKey = `projects/${project.id}/source/recovery-source.wav`;
+    const storage = new LocalStorageProvider(f.storageDir);
+    await storage.putFile(sourceKey, f.sourcePath, "audio/wav");
+    const sourceDetails = await stat(f.sourcePath);
+    const [source] = await pg.database
+      .insert(sourceAssets)
+      .values({
+        projectId: project.id,
+        originalFilename: "recovery-source.wav",
+        mimeType: "audio/wav",
+        storageKey: sourceKey,
+        checksumSha256: await checksumFile(f.sourcePath),
+        durationSeconds: f.source.durationSeconds,
+        sampleRate: f.source.sampleRate,
+        channels: f.source.channels,
+        codec: f.source.codec,
+        fileSizeBytes: sourceDetails.size,
+      })
+      .returning();
+    const [job] = await pg.database
+      .insert(waveformJobs)
+      .values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `waveform:interrupted-finalization:${source.id}`,
+      })
+      .returning();
+
+    const stoppedApi = startRecoveryProcess(pg.connectionString, job.id, "upload-before-commit", f.storageDir);
+    children.push(stoppedApi);
+    const uploaded = await waitForRecoveryMessage(stoppedApi, "uploaded");
+    const canonicalKey = `projects/${project.id}/waveform/${job.id}.json`;
+    assert.equal(uploaded.key, canonicalKey);
+
+    const [interrupted] = await pg.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    const interruptedAssets = await pg.database
+      .select()
+      .from(waveformAssets)
+      .where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(interrupted.status, "finalizing");
+    assert.equal(interrupted.stage, "storing");
+    assert.equal(interruptedAssets.length, 0, "the process stopped before the asset/completion transaction");
+    assert.equal(await storage.exists(canonicalKey), true, "the waveform object was uploaded before the stop");
+
+    const processExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      if (stoppedApi.exitCode !== null || stoppedApi.signalCode !== null) {
+        resolve({ code: stoppedApi.exitCode, signal: stoppedApi.signalCode });
+        return;
+      }
+      stoppedApi.once("exit", (code, signal) => resolve({ code, signal }));
+      stoppedApi.once("error", reject);
+    });
+    stoppedApi.kill("SIGKILL");
+    const stopped = await processExit;
+    assert.equal(stopped.signal, "SIGKILL", "the old API process stops at the upload/transaction boundary");
+
+    const restartedBroker = new LocalJobBroker();
+    restartedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: pg.database,
+      storage,
+      generateWaveform: async () => validWaveformDocument(),
+    }));
+    const recovery = await recoverPendingLocalWaveformJobs(
+      pg.database,
+      (payload) => restartedBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+    assert.deepEqual(recovery.resetJobIds, [job.id]);
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.equal(await restartedBroker.drain(10_000), true);
+
+    const [completed] = await pg.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    const assets = await pg.database
+      .select()
+      .from(waveformAssets)
+      .where(eq(waveformAssets.waveformJobId, job.id));
+    const storedObjects = (await storage.listObjects("projects"))
+      .filter((object) => object.key.startsWith(`projects/${project.id}/waveform/`));
+    assert.equal(completed.status, "complete", completed.errorMessage ?? "recovered waveform job did not complete");
+    assert.equal(completed.stage, "complete");
+    assert.equal(assets.length, 1, "recovery records exactly one canonical waveform asset");
+    assert.equal(assets[0]?.storageKey, canonicalKey);
+    assert.deepEqual(
+      storedObjects.map((object) => object.key),
+      [canonicalKey],
+      "retrying finalization reuses the uploaded object instead of leaving a duplicate",
+    );
+    assert.equal(await storage.exists(canonicalKey), true);
+  } finally {
+    const childStops: Promise<void>[] = [];
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        childStops.push(new Promise<void>((resolve) => {
+          child.once("exit", () => resolve());
+          child.kill("SIGKILL");
+        }));
+      }
+    }
+    await Promise.all(childStops);
+    await f.close();
+    await pg.close();
   }
 });
 

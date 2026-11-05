@@ -26,3 +26,9 @@ For browser persistence checks against real Waveyard route handlers, use a dispo
 **Why:** The database pool captures its connection URL at module load, and a mocked route can make browser state look correct while the database remains stale.
 
 **How to apply:** Start PostgreSQL in a temporary directory, migrate it, set test-mode identity and storage paths, then dynamically import the DB and route handlers before driving the UI. Close all pools and remove the fixture directory afterward.
+
+When a Waveyard test crosses a child-process boundary, PGlite state is not shared, and the process-wide storage singleton can point at another concurrently running fixture.
+
+**Why:** A child cannot see in-memory database state, while parallel tests can replace environment paths after the parent has already cached its storage provider.
+
+**How to apply:** Use disposable local PostgreSQL, configure a shared temporary storage directory for the child, and inject an explicit provider into parent-side handlers and assertions.
