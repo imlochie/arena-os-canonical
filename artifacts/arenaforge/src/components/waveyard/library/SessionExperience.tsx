@@ -4057,8 +4057,8 @@ export default function SessionExperience({
         ? "Preparing live layer…"
         : activeSwapTempoStretchRatios[stemType] !== undefined
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
-            ? "Tempo matched · beat phase aligned"
-            : "Tempo matched · beat alignment unavailable"
+            ? "Tempo matched · pitch preserved · beat phase aligned"
+            : "Tempo matched · pitch preserved · beat alignment unavailable"
           : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
             : "Tempo unavailable · native tempo";

@@ -4144,6 +4144,17 @@ try {
   await page.waitForFunction(() => {
     const gain = type => window.audioProbe.currentStemGain(type);
     return gain("vocals") > 0.9 && ["drums", "bass", "other"].every(type => gain(type) < 0.01);
+  }, undefined, { timeout: 5000 }).catch(async error => {
+    console.log("MOMENTARY_ISOLATION_DIAGNOSTIC", JSON.stringify(await page.evaluate(() => ({
+      activeLabel: document.activeElement?.getAttribute("aria-label"),
+      heldPressed: document.querySelector('[aria-label="Hold to isolate vocals"]')?.getAttribute("aria-pressed"),
+      currentTitle: document.querySelector('[data-role="current"] h3')?.textContent,
+      playing: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
+      gains: Object.fromEntries(["vocals", "drums", "bass", "other"].map(type =>
+        [type, window.audioProbe.currentStemGain(type)])),
+      status: document.querySelector('[data-testid="session-status"]')?.textContent,
+    }))));
+    throw error;
   });
   await page.waitForTimeout(700);
   assert.deepEqual(session.tracks.find(item => item.id === "a").stemMix, mixBeforeHold,
@@ -4170,7 +4181,7 @@ try {
     return window.audioProbe.currentStemGain("drums") < 0.01;
   }, null, { timeout: 6000 }).catch(async error => {
     const diagnostic = await page.evaluate(() => {
-      const audio = document.querySelector('[data-role="current"] audio[data-waveyard-fixture-src$="/a-drums"]');
+      const audio = document.querySelector('[data-role="current"] audio[data-waveyard-asset-url$="/a-drums"]');
       return {
         playing: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
         mutePressed: document.querySelector('[aria-label="Mute drums"]')?.getAttribute("aria-pressed"),
@@ -4190,28 +4201,63 @@ try {
     console.log("LIVE_MUTE_DIAGNOSTIC", JSON.stringify(diagnostic));
     throw error;
   });
-  await current.getByLabel("Restore all current stems").click();
+  const restoreCurrentStems = current.getByLabel("Restore all current stems");
+  await restoreCurrentStems.scrollIntoViewIfNeeded();
+  console.log("LIVE_STEM_RESTORE_HIT_TEST", JSON.stringify(await restoreCurrentStems.evaluate(button => {
+    const bounds = button.getBoundingClientRect();
+    const x = bounds.left + bounds.width / 2;
+    const y = bounds.top + bounds.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return {
+      bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
+      viewport: { width: innerWidth, height: innerHeight },
+      hit: hit ? { tag: hit.tagName, label: hit.getAttribute("aria-label"), testId: hit.getAttribute("data-testid") } : null,
+    };
+  })));
+  await restoreCurrentStems.click();
   await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
     window.audioProbe.currentStemGain(type) > 0.9));
   await toggle();
 
-  if (await current.locator('audio[data-waveyard-fixture-src$="/a-vocals"]').evaluate(audio => audio.paused)) await toggle();
-  const playbackBeforePreparingDonor = await current.locator('audio[data-waveyard-fixture-src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  const currentVocalAudio = current.locator('audio[data-waveyard-asset-url$="/a-vocals"]');
+  const currentVocalCount = await currentVocalAudio.count();
+  if (currentVocalCount !== 1) {
+    const diagnostic = await page.evaluate(() => ({
+      currentTitle: document.querySelector('[data-role="current"] h3')?.textContent,
+      currentTrack: document.querySelector('[data-testid="session-track-id"]')?.textContent,
+      audio: [...document.querySelectorAll('[data-role="current"] audio')].map((element) => ({
+        label: element.getAttribute("aria-label"),
+        src: element.dataset.waveyardFixtureSrc ?? element.currentSrc ?? element.src,
+        readyState: element.readyState,
+        paused: element.paused,
+      })),
+    }));
+    console.log("MOBILE_LIVE_VOCAL_SOURCE_DIAGNOSTIC", JSON.stringify({
+      currentVocalCount,
+      failAsset,
+      failedAssetRequests,
+      requests: assetRequestTrace.slice(-8),
+      diagnostic,
+    }));
+  }
+  assert.equal(currentVocalCount, 1, "the live-swap scenario must still be on its original vocal stem");
+  if (await currentVocalAudio.evaluate(audio => audio.paused)) await toggle();
+  const playbackBeforePreparingDonor = await currentVocalAudio.evaluate(audio => audio.currentTime);
   await current.getByTestId("open-live-swap-vocals").click();
   await current.getByTestId(`prepare-live-swap-vocals-${preparationDonorId}`).click();
   await current.getByTestId(`live-swap-preparing-vocals-${preparationDonorId}`).waitFor();
   assert.equal(preparationStartRequests, 1, "the live-swap picker starts separation for a library source in place");
   await page.waitForFunction(before => {
-    const audio = document.querySelector('[data-role="current"] audio[data-waveyard-fixture-src$="/a-vocals"]');
+      const audio = document.querySelector('[data-role="current"] audio[data-waveyard-asset-url$="/a-vocals"]');
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
   }, playbackBeforePreparingDonor, { timeout: 5_000 });
   assert.equal(session.swaps.length, 0, "preparing a donor does not change the active live swap");
-  const playbackBeforeRetry = await current.locator('audio[data-waveyard-fixture-src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  const playbackBeforeRetry = await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => audio.currentTime);
   await current.getByTestId(`prepare-live-swap-vocals-${retryDonorId}`).click();
   await current.getByTestId(`live-swap-preparing-vocals-${retryDonorId}`).waitFor();
   assert.equal(preparationRetryRequests, 1, "the live-swap picker retries failed source separation in place");
   await page.waitForFunction(before => {
-    const audio = document.querySelector('[data-role="current"] audio[data-waveyard-fixture-src$="/a-vocals"]');
+    const audio = document.querySelector('[data-role="current"] audio[data-waveyard-asset-url$="/a-vocals"]');
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
   }, playbackBeforeRetry, { timeout: 5_000 });
   console.log("PASS: separation start and retry stay in the live-swap picker without interrupting the current mix");
@@ -4236,7 +4282,7 @@ try {
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
   await current.getByTestId("seek-deck-0").fill("0");
   if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
-  const playbackBeforeCancel = await current.locator('audio[data-waveyard-fixture-src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  const playbackBeforeCancel = await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => audio.currentTime);
   const buffersBeforeCancel = await page.evaluate(() => window.audioProbe.buffers.length);
   const slowSwapPicker = current.getByTestId("live-swap-picker-vocals");
   if (!(await slowSwapPicker.count())) await current.getByTestId("open-live-swap-vocals").click();
@@ -4272,15 +4318,15 @@ try {
   signalPendingSwapSaveStarted = null;
   await page.getByTestId("session-status").filter({ hasText: /vocals switch cancelled/i }).waitFor();
   await page.waitForFunction(before => {
-    const audio = document.querySelector('[data-role="current"] audio[data-waveyard-fixture-src$="/a-vocals"]');
+      const audio = document.querySelector('[data-role="current"] audio[data-waveyard-asset-url$="/a-vocals"]');
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.25;
   }, playbackBeforeCancel, { timeout: 5_000 });
   assert.ok(Math.abs(await page.evaluate(() =>
     window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0,
   ) - 1) < 0.01, "the original vocal layer remains audible while the donor is slow");
-  const playbackAtCancel = await current.locator('audio[data-waveyard-fixture-src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  const playbackAtCancel = await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => audio.currentTime);
   await page.waitForFunction(before => {
-    const audio = document.querySelector('[data-role="current"] audio[data-waveyard-fixture-src$="/a-vocals"]');
+    const audio = document.querySelector('[data-role="current"] audio[data-waveyard-asset-url$="/a-vocals"]');
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
   }, playbackAtCancel, { timeout: 5_000 });
   assert.equal(await current.getByTestId("restore-live-swap-vocals").count(), 0,
@@ -4312,33 +4358,54 @@ try {
   if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
   await page.evaluate(() => { window.liveStemAssetFetchTrace.length = 0; });
   const buffersBeforeWarm = await page.evaluate(() => window.audioProbe.buffers.length);
-  const warmedDonorResponse = page.waitForResponse(response =>
-    new URL(response.url()).pathname === "/api/assets/c-vocals" && response.ok(),
+  const warmedDonorResponse = mobileBrowserEmulation ? null : page.waitForResponse(
+    response => new URL(response.url()).pathname === "/api/assets/c-vocals" && response.ok(),
+    { timeout: 5000 },
   );
   await current.getByTestId("open-live-swap-vocals").click();
   const warmedDonor = current.getByTestId("live-swap-candidate-vocals-c");
   await warmedDonor.waitFor();
-  await warmedDonor.hover();
-  await warmedDonorResponse;
-  assert.equal(await page.evaluate(() =>
-    window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
-  ), 1, "focusing or deliberately hovering a donor starts one bounded warm request");
-  assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBeforeWarm,
-    "warming a donor never makes it audible before the user chooses it");
-  assert.ok(await current.locator('audio[data-waveyard-fixture-src$="/a-vocals"]').evaluate(audio => !audio.paused),
-    "the current mix remains playing while the donor warms");
+  if (mobileBrowserEmulation) {
+    assert.ok(await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => !audio.paused),
+      "opening the touch source picker does not interrupt the current mix");
+  } else {
+    await warmedDonor.hover();
+    const warmResponse = await warmedDonorResponse;
+    assert.ok(warmResponse?.ok(), "hovering a donor successfully warms its audio");
+    assert.equal(await page.evaluate(() =>
+      window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
+    ), 1, "hovering a donor starts one bounded warm request");
+    assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBeforeWarm,
+      "warming a donor never makes it audible before the user chooses it");
+    assert.ok(await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => !audio.paused),
+      "the current mix remains playing while the donor warms");
+  }
   const timingCountBeforeWarmSwap = await page.evaluate(() => window.liveStemTimings.length);
-  await warmedDonor.click();
+  if (mobileBrowserEmulation) {
+    await warmedDonor.scrollIntoViewIfNeeded();
+    const bounds = await warmedDonor.boundingBox();
+    assert.ok(bounds, "the touch donor is onscreen before selection");
+    await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  } else {
+    await warmedDonor.click();
+  }
   await page.waitForFunction((baseline) => window.audioProbe.buffers.length > baseline, buffersBeforeWarm);
   await page.waitForFunction((baseline) => window.liveStemTimings.length > baseline, timingCountBeforeWarmSwap);
-  assert.equal(await page.evaluate(() =>
-    window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
-  ), 1, "selecting the warmed donor reuses its in-flight or decoded buffer");
+  if (!mobileBrowserEmulation) {
+    assert.equal(await page.evaluate(() =>
+      window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
+    ), 1, "selecting the warmed donor reuses its in-flight or decoded buffer");
+  } else {
+    assert.ok(await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => !audio.paused),
+      "a touch-selected donor joins without interrupting the current audio deck");
+  }
   if (crossTabSpeedOnly) {
     await browser.close();
     process.exit(0);
   }
-  console.log("PASS: focusing or hovering warms one donor silently, then reuses it for the live swap");
+  console.log(mobileBrowserEmulation
+    ? "PASS: a touch selects a donor while the existing mix continues"
+    : "PASS: hovering warms one donor silently, then reuses it for the live swap");
 
   session.positionSeconds = 0;
   session.swaps = [];
@@ -4433,7 +4500,8 @@ try {
   await chooseLiveSource("vocals", tempoDonor.id);
   const buffersBeforeTempoSwap = await page.evaluate(() => window.audioProbe.buffers.length);
   await page.waitForFunction(() =>
-    document.querySelector('[data-testid="live-stem-tempo-vocals"]')?.textContent === "Tempo matched · pitch preserved",
+    document.querySelector('[data-testid="live-stem-tempo-vocals"]')?.textContent
+      ?.startsWith("Tempo matched · pitch preserved · beat alignment unavailable"),
   );
   await toggle();
   await page.waitForFunction(before => window.audioProbe.buffers.length > before, buffersBeforeTempoSwap);
@@ -4443,8 +4511,9 @@ try {
     (tempoDonor.analysis.bpm / tempoCurrentTrack.analysis.bpm);
   assert.ok(Math.abs(tempoMatchedDonorDuration - expectedTempoMatchedDuration) < 0.08,
     `the donor is pitch-preservingly matched to the recipient: ${tempoMatchedDonorDuration}`);
-  assert.equal(await current.getByTestId("live-stem-tempo-vocals").innerText(),
-    "Tempo matched · pitch preserved", "the UI confirms tempo sync only after preparation succeeds");
+  assert.match(await current.getByTestId("live-stem-tempo-vocals").innerText(),
+    /^Tempo matched · pitch preserved · beat alignment unavailable(?: · .+)?$/,
+    "the UI does not claim beat sync when the selected fixture lacks donor beat-grid evidence");
   await toggle();
   await seek.fill(String(initialSeekSeconds));
   await page.waitForTimeout(150);
