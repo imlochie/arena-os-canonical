@@ -4,17 +4,19 @@ import { AUTOMATIC_REMIX_ENGINE, buildAutomaticRemixPlan, type AutomaticRemixSou
 
 function source(overrides: Partial<AutomaticRemixSource> & Pick<AutomaticRemixSource, "id">): AutomaticRemixSource {
   const id = overrides.id;
+  const defaultAnalysis = {
+    id: `${id}-analysis`, status: "complete", sourceChecksumSha256: `${id}-checksum`, bpm: 120, bpmConfidence: 0.9,
+    musicalKey: "C major", keyConfidence: 0.9, beatConfidence: 0.9,
+    beatGridMs: Array.from({ length: 33 }, (_, index) => index * 500),
+  };
   return {
     originalFilename: `${id}.wav`,
     checksumSha256: `${id}-checksum`,
     durationMs: 16_000,
-    analysis: {
-      id: `${id}-analysis`, status: "complete", sourceChecksumSha256: `${id}-checksum`, bpm: 120, musicalKey: "C major",
-      beatGridMs: Array.from({ length: 33 }, (_, index) => index * 500),
-    },
+    analysis: defaultAnalysis,
     sections: [
-      { id: `${id}-a`, sectionIndex: 0, startMs: 0, endMs: 8_000 },
-      { id: `${id}-b`, sectionIndex: 1, startMs: 8_000, endMs: 16_000 },
+      { id: `${id}-a`, sectionIndex: 0, startMs: 0, endMs: 8_000, label: "section", labelConfidence: 0, structuralConfidence: 0.9 },
+      { id: `${id}-b`, sectionIndex: 1, startMs: 8_000, endMs: 16_000, label: "section", labelConfidence: 0, structuralConfidence: 0.9 },
     ],
     stems: [
       { id: `${id}-drums`, sourceAssetId: id, stemType: "drums", durationMs: 16_000 },
@@ -23,6 +25,19 @@ function source(overrides: Partial<AutomaticRemixSource> & Pick<AutomaticRemixSo
       { id: `${id}-vocals`, sourceAssetId: id, stemType: "vocals", durationMs: 16_000 },
     ],
     ...overrides,
+    analysis: overrides.analysis === null ? null : { ...defaultAnalysis, ...overrides.analysis },
+  };
+}
+
+function withRoles(input: AutomaticRemixSource, labels: string[] = ["verse", "chorus"]): AutomaticRemixSource {
+  return {
+    ...input,
+    sections: input.sections.map((section, index) => ({
+      ...section,
+      label: labels[index] ?? "section",
+      labelConfidence: labels[index] ? 0.9 : 0,
+      structuralConfidence: 0.9,
+    })),
   };
 }
 
@@ -68,13 +83,50 @@ describe("deterministic automatic remix arranger", () => {
   });
 
   it("uses a compatible alternate vocal with explicit transform intent", () => {
-    const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b", analysis: { id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 124, musicalKey: "D major", beatGridMs: Array.from({ length: 33 }, (_, index) => index * 484) } })], { variant: "hybrid" });
+    const anchor = withRoles(source({ id: "a" }));
+    const donor = withRoles(source({
+      id: "b",
+      analysis: { id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 124, musicalKey: "D major", beatGridMs: Array.from({ length: 33 }, (_, index) => index * 484) },
+    }));
+    const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const vocals = result.plan.tracks.find((track) => track.stemType === "vocals");
     expect(vocals?.stemAssetId).toBe("b-vocals");
     expect(vocals?.clips.every((clip) => clip.tempoSyncEnabled && clip.keySyncEnabled && clip.beatSnapEnabled)).toBe(true);
     expect(result.plan.provenance.decisions).toContain("replaced only verified, structurally compatible featured stems");
+  });
+
+  it("refuses same-index generic sections as cross-song phrase evidence", () => {
+    const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b" })], { variant: "hybrid" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
+    expect(result.plan.notices).toContain("No outside source had verified tempo, key, and matching high-confidence section roles, so the hybrid preserves the anchor arrangement.");
+  });
+
+  it("rejects reversed role order instead of mapping by ordinal position", () => {
+    const anchor = withRoles(source({ id: "a" }));
+    const donor = withRoles(source({ id: "b" }), ["chorus", "verse"]);
+    const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
+  });
+
+  it("does not enable a hybrid from low-confidence tempo, key, or beat analysis", () => {
+    const anchor = withRoles(source({ id: "a" }));
+    const donor = withRoles(source({
+      id: "b",
+      analysis: {
+        id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 120, bpmConfidence: 0.49,
+        musicalKey: "C major", keyConfidence: 0.49, beatConfidence: 0.49, beatGridMs: Array.from({ length: 33 }, (_, index) => index * 500),
+      },
+    }));
+    const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
   });
 
   it("does not force an incompatible second source into a hybrid", () => {

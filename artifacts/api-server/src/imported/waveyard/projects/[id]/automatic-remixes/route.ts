@@ -15,6 +15,13 @@ import {
   stemAssets,
 } from "@workspace/db/waveyardSchema";
 import { buildAutomaticRemixPlan, type AutomaticRemixConstraints } from "@workspace/arena/lib/waveyard/types";
+import {
+  currentBeatConfidence,
+  currentBpmConfidence,
+  currentKeyConfidence,
+  isCurrentDesktopAnalysis,
+  isCurrentDesktopSectionAnalysis,
+} from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 
@@ -66,10 +73,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const plan = buildAutomaticRemixPlan(sources.map((source) => {
       const analysis = analysisBySource.get(source.id);
       const sectionAnalysis = sectionAnalysisBySource.get(source.id);
-      const verifiedAnalysis = analysis?.status === "complete" && analysis.sourceChecksumSha256 === source.checksumSha256
+      const verifiedAnalysis = analysis?.status === "complete"
+        && isCurrentDesktopAnalysis(analysis)
+        && analysis.sourceChecksumSha256 === source.checksumSha256
         ? analysis
         : null;
       const verifiedSections = verifiedAnalysis && sectionAnalysis?.status === "complete"
+        && isCurrentDesktopSectionAnalysis(sectionAnalysis)
         && sectionAnalysis.sourceAnalysisId === verifiedAnalysis.id
         && sectionAnalysis.sourceChecksumSha256 === source.checksumSha256
         ? (sectionsBySource.get(source.id) ?? []).filter((section) => section.sourceAnalysisId === verifiedAnalysis.id
@@ -85,14 +95,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           status: verifiedAnalysis.status,
           sourceChecksumSha256: verifiedAnalysis.sourceChecksumSha256,
           bpm: verifiedAnalysis.bpm,
+          bpmConfidence: currentBpmConfidence(verifiedAnalysis),
           musicalKey: verifiedAnalysis.musicalKey,
+          keyConfidence: currentKeyConfidence(verifiedAnalysis),
+          beatConfidence: currentBeatConfidence(verifiedAnalysis),
           beatGridMs: parseBeatGrid(verifiedAnalysis.beatGrid),
         } : null,
-        sections: verifiedSections.map((section) => ({ id: section.id, sectionIndex: section.sectionIndex, startMs: section.startMs, endMs: section.endMs })),
+        sections: verifiedSections.map((section) => ({
+          id: section.id,
+          sectionIndex: section.sectionIndex,
+          startMs: section.startMs,
+          endMs: section.endMs,
+          label: section.label,
+          labelConfidence: section.labelConfidence,
+          structuralConfidence: section.structuralConfidence,
+        })),
         stems: stems.filter((stem) => stem.sourceAssetId === source.id).map((stem) => ({ id: stem.id, sourceAssetId: stem.sourceAssetId, stemType: stem.stemType, durationMs: stem.durationSeconds * 1000 })),
       };
     }), constraints);
-    if (!plan.ok) return Response.json({ error: plan.reason === "no_stems" ? "No usable stems remain for this automatic arrangement." : "A completed source with real stems is required before Waveyard can build an arrangement." }, { status: 409 });
+    if (!plan.ok) {
+      const error = plan.reason === "no_stems"
+        ? "No usable stems remain for this automatic arrangement."
+        : plan.reason === "unsafe_hybrid_alignment"
+          ? "Waveyard could not verify safe section-to-section alignment for this hybrid. Try different sources or choose the original arrangement."
+          : "A completed source with real stems is required before Waveyard can build an arrangement.";
+      return Response.json({ error }, { status: 409 });
+    }
 
     const result = await db.transaction(async (tx) => {
       const [remix] = await tx.insert(remixSessions).values({

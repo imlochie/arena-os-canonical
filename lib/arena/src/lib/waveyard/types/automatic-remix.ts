@@ -99,7 +99,7 @@ export type AutomaticRemixPlan = {
 
 export type AutomaticRemixResult =
   | { ok: true; plan: AutomaticRemixPlan }
-  | { ok: false; reason: "no_usable_source" | "no_stems" };
+  | { ok: false; reason: "no_usable_source" | "no_stems" | "unsafe_hybrid_alignment" };
 
 const roleOrder = ["drums", "percussion", "bass", "other", "melody", "vocals"];
 const defaultVolume: Record<string, number> = { vocals: 0.94, drums: 0.88, percussion: 0.82, bass: 0.84, other: 0.82, melody: 0.82 };
@@ -144,6 +144,7 @@ function roleRank(stem: AutomaticRemixStem) {
 
 const semanticRoles = new Set(["intro", "verse", "pre-chorus", "chorus", "post-chorus", "bridge", "breakdown", "instrumental", "outro"]);
 const STRUCTURAL_ROLE_CONFIDENCE = 0.75;
+const MAX_RELATIVE_POSITION_ERROR = 0.25;
 
 function confidenceAtLeast(value: number | null | undefined, minimum: number): boolean {
   return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= 1;
@@ -181,24 +182,27 @@ function matchStructuralCounterparts(
 ): Map<string, AutomaticRemixSection> | null {
   const available = new Set(candidateSections.filter((section) => semanticRole(section)).map((section) => section.id));
   const matches = new Map<string, AutomaticRemixSection>();
+  let lastCandidateStartMs = -1;
   for (const anchorSection of anchorSections) {
     const role = semanticRole(anchorSection);
     if (!role) return null;
     const anchorDuration = anchorSection.endMs - anchorSection.startMs;
     const anchorCenter = (anchorSection.startMs + anchorSection.endMs) / (2 * anchor.durationMs);
     const choices = candidateSections.flatMap((section) => {
-      if (!available.has(section.id) || semanticRole(section) !== role) return [];
+      if (!available.has(section.id) || semanticRole(section) !== role || section.startMs < lastCandidateStartMs) return [];
       const durationAfterStretch = (section.endMs - section.startMs) / tempoRatio;
       const durationTolerance = Math.max(750, anchorDuration * 0.12);
       const durationError = Math.abs(durationAfterStretch - anchorDuration);
       if (durationError > durationTolerance) return [];
       const candidateCenter = (section.startMs + section.endMs) / (2 * candidate.durationMs);
       const relativePositionError = Math.abs(candidateCenter - anchorCenter);
+      if (relativePositionError > MAX_RELATIVE_POSITION_ERROR) return [];
       return [{ section, score: durationError / durationTolerance + relativePositionError }];
     }).sort((left, right) => left.score - right.score);
     const selected = choices[0]?.section;
     if (!selected) return null;
     available.delete(selected.id);
+    lastCandidateStartMs = selected.startMs;
     matches.set(anchorSection.id, selected);
   }
   return matches;
@@ -209,19 +213,19 @@ function matchStructuralCounterparts(
  * tempo/key intent and one-to-one section correspondence. This deliberately
  * falls back to a complete faithful arrangement instead of guessing.
  */
-function compatibleHybridSource(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
-  if (anchor.id === candidate.id || !sourceCanStructure(anchor) || !sourceCanStructure(candidate)) return false;
+function compatibleHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
+  if (anchor.id === candidate.id || !sourceCanStructure(anchor) || !sourceCanStructure(candidate)) return null;
   const anchorBpm = trustedBpm(anchor);
   const candidateBpm = trustedBpm(candidate);
   const anchorKey = trustedKey(anchor);
   const candidateKey = trustedKey(candidate);
-  if (!anchorBpm || !candidateBpm || !anchorKey || !candidateKey) return false;
+  if (!anchorBpm || !candidateBpm || !anchorKey || !candidateKey) return null;
   const tempoRatio = anchorBpm / candidateBpm;
   const keyShift = semitoneShift(candidateKey, anchorKey);
-  if (tempoRatio < 0.92 || tempoRatio > 1.08 || keyShift === null || Math.abs(keyShift) > 2) return false;
+  if (tempoRatio < 0.92 || tempoRatio > 1.08 || keyShift === null || Math.abs(keyShift) > 2) return null;
   const anchorSections = usableSections(anchor);
   const candidateSections = usableSections(candidate);
-  return matchStructuralCounterparts(anchor, candidate, anchorSections, candidateSections, tempoRatio) !== null;
+  return matchStructuralCounterparts(anchor, candidate, anchorSections, candidateSections, tempoRatio);
 }
 
 function requestedStem(sources: AutomaticRemixSource[], stemId: string | undefined, stemType: string) {
@@ -240,20 +244,20 @@ function clipWindows(
   targetBpm: number | null,
   counterparts?: ReadonlyMap<string, AutomaticRemixSection>,
 ) {
-  const anchorSections = usableSections(anchor);
+  const anchorSections = sourceCanStructure(anchor) ? usableSections(anchor) : [];
   const foreign = source.id !== anchor.id;
-  const sourceSections = usableSections(source);
+  const sourceSections = sourceCanStructure(source) ? usableSections(source) : [];
   if (foreign && !counterparts) return null;
   const sourceBpm = trustedBpm(source);
   const ratio = foreign && targetBpm && sourceBpm ? targetBpm / sourceBpm : 1;
   const tempoSyncEnabled = foreign && ratio !== 1;
-  const targetKey = normaliseMusicalKey(anchor.analysis?.musicalKey);
+  const targetKey = trustedKey(anchor);
   const sourceKey = trustedKey(source);
   const keySyncEnabled = foreign && Boolean(targetKey && sourceKey && semitoneShift(sourceKey, targetKey));
   const beatSnapEnabled = sourceCanStructure(source);
   if (!anchorSections.length) return [{ timelineStartMs: 0, durationMs: source.durationMs, sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false }];
   let cursor = 0;
-  const clips = [];
+  const clips: Omit<AutomaticRemixClipPlan, "stemAssetId">[] = [];
   for (const anchorSection of anchorSections) {
     const section = foreign ? counterparts?.get(anchorSection.id) : anchorSection;
     if (!section || (foreign && !sourceSections.some((candidate) => candidate.id === section.id))) return null;
@@ -303,27 +307,38 @@ export function buildAutomaticRemixPlan(
   const decisions = ["anchored to one preserved source structure"];
   if (!sourceCanStructure(anchor)) notices.push("Structural analysis is incomplete, so Waveyard preserved the source as one continuous arrangement.");
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
+  const counterpartsBySource = new Map<string, ReadonlyMap<string, AutomaticRemixSection>>();
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
 
   if (variant === "hybrid" && sourceCanStructure(anchor)) {
     const requestedVocals = requestedStem(usableSources, constraints.vocalStemId, "vocals");
     const requestedDrums = requestedStem(usableSources, constraints.drumsStemId, "drums");
-    const candidates = [requestedVocals, requestedDrums]
-      .filter((value): value is { source: AutomaticRemixSource; stem: AutomaticRemixStem } => Boolean(value));
-    const defaultVocal = usableSources
-      .filter((source) => compatibleHybridSource(anchor, source))
-      .map((source) => ({ source, stem: firstStem(source, "vocals") }))
-      .find((candidate): candidate is { source: AutomaticRemixSource; stem: AutomaticRemixStem } => Boolean(candidate.stem));
-    if (defaultVocal) candidates.push(defaultVocal);
-    for (const candidate of candidates) {
-      if (!compatibleHybridSource(anchor, candidate.source)) {
-        notices.push(`${candidate.source.originalFilename} was kept out of the hybrid because its verified structure, tempo, or key does not align conservatively.`);
+    const candidates = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
+    for (const value of [requestedVocals, requestedDrums]) {
+      if (value) candidates.set(`${value.source.id}:${value.stem.stemType}`, value);
+    }
+    const defaultVocal = usableSources.flatMap((source) => {
+      const stem = firstStem(source, "vocals");
+      const counterparts = compatibleHybridCounterparts(anchor, source);
+      return stem && counterparts ? [{ source, stem, counterparts }] : [];
+    })[0] ?? null;
+    if (defaultVocal) {
+      candidates.set(`${defaultVocal.source.id}:vocals`, { source: defaultVocal.source, stem: defaultVocal.stem });
+      counterpartsBySource.set(defaultVocal.source.id, defaultVocal.counterparts);
+    }
+    for (const candidate of candidates.values()) {
+      const counterparts = compatibleHybridCounterparts(anchor, candidate.source);
+      if (!counterparts) {
+        notices.push(`${candidate.source.originalFilename} was kept out of the hybrid because current tempo, key, or high-confidence matching section roles were unavailable.`);
         continue;
       }
-      if (candidate.stem.stemType === "vocals" || candidate.stem.stemType === "drums") selected.set(candidate.stem.stemType, candidate);
+      if (candidate.stem.stemType === "vocals" || candidate.stem.stemType === "drums") {
+        selected.set(candidate.stem.stemType, candidate);
+        counterpartsBySource.set(candidate.source.id, counterparts);
+      }
     }
     if ([...selected.values()].some((choice) => choice.source.id !== anchor.id)) decisions.push("replaced only verified, structurally compatible featured stems");
-    else notices.push("No compatible outside source was available, so the hybrid preserves the anchor arrangement.");
+    else notices.push("No outside source had verified tempo, key, and matching high-confidence section roles, so the hybrid preserves the anchor arrangement.");
   }
 
   if (constraints.instrumental) {
@@ -332,22 +347,20 @@ export function buildAutomaticRemixPlan(
   }
   if (!selected.size) return { ok: false, reason: "no_stems" };
   const ordered = [...selected.values()].sort((left, right) => roleRank(left.stem) - roleRank(right.stem) || left.stem.id.localeCompare(right.stem.id));
-  const tracks = ordered.map(({ source, stem }, sortOrder) => ({
-    stemAssetId: stem.id,
-    stemType: stem.stemType,
-    name: sourceLabel(source, stem),
-    sortOrder,
-    volume: defaultVolume[stem.stemType] ?? 0.82,
-    pan: 0,
-      clips: (clipWindows(
-        source,
-        anchor,
-        anchorBpm,
-        source.id !== anchor.id
-          ? matchStructuralCounterparts(anchor, source, usableSections(anchor), usableSections(source), anchorBpm! / trustedBpm(source)!)
-          : undefined,
-      ) ?? []).map((clip) => ({ ...clip, stemAssetId: stem.id })),
-  }));
+  const tracks: AutomaticRemixTrackPlan[] = [];
+  for (const [sortOrder, { source, stem }] of ordered.entries()) {
+    const clips = clipWindows(source, anchor, anchorBpm, counterpartsBySource.get(source.id));
+    if (!clips) return { ok: false, reason: "unsafe_hybrid_alignment" };
+    tracks.push({
+      stemAssetId: stem.id,
+      stemType: stem.stemType,
+      name: sourceLabel(source, stem),
+      sortOrder,
+      volume: defaultVolume[stem.stemType] ?? 0.82,
+      pan: 0,
+      clips: clips.map((clip) => ({ ...clip, stemAssetId: stem.id })),
+    });
+  }
   const analysisIds = [...new Set(ordered.map((choice) => choice.source.analysis?.id).filter((id): id is string => Boolean(id)))];
   return {
     ok: true,

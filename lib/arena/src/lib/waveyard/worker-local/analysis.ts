@@ -18,6 +18,7 @@ import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueSourceSectionAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import type { SourceAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
+import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 import {
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
@@ -27,8 +28,7 @@ import {
   normaliseBeatGrid,
 } from "./analysis-engine";
 
-export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
-export const DESKTOP_SECTION_ENGINE_VERSION = "1.3.0";
+export { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
