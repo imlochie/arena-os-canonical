@@ -196,3 +196,17 @@ mtime_ms = 1793861799954
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/ae570902-97f6-46b0-9977-82440a87fe5d/c8beb2ed-7f91-479f-9661-5b67ab0d3533"
 storage_version_token = "1793861811749584"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "vQb4FywUlmNSyx5g5zSei"
+uri = "file://generated-artifacts/waveyard-real-mashup/feel-stayin-vocal-2x-ab.wav"
+type = "audio"
+title = "I Feel It Coming + Stayin’ Alive — 2× A/B"
+description = "First 8 seconds: original I Feel It Coming. After a short gap: a live vocal swap from Stayin’ Alive, using the analyzer’s near-2× tempo ratio. Actual model-separated stems captured in Waveyard SessionExperience on Chromium; this tests the half-time edge case, not subjective mix quality."
+logical_id = "0b43b41a-f0f4-4d76-9504-2eb0baf77103"
+content_hash = "sha256:25f0961cf891c0052406cbd4366182d070a846eed686857770f3df81026319e7"
+size = 2913326
+mtime_ms = 1793862379548
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/0b43b41a-f0f4-4d76-9504-2eb0baf77103/8513ce49-33ff-4d61-87db-55163df1adcf"
+storage_version_token = "1793862390724658"
+content_type = "audio/wav"
