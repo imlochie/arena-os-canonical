@@ -135,7 +135,7 @@ describe("deterministic automatic remix arranger", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("a-vocals");
-    expect(result.plan.notices).toContain("No compatible outside source was available, so the hybrid preserves the anchor arrangement.");
+    expect(result.plan.notices).toContain("No outside source had verified tempo, key, and matching high-confidence section roles, so the hybrid preserves the anchor arrangement.");
   });
 
   it("falls back to preserved anchor material when evidence is insufficient", () => {

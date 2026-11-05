@@ -3,8 +3,11 @@ import test from "node:test";
 import {
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
+  DESKTOP_SECTION_ENGINE,
+  DESKTOP_SECTION_ENGINE_VERSION,
   desktopAnalysisIdempotencyKey,
   isCurrentDesktopAnalysis,
+  isCurrentDesktopSectionAnalysis,
   isStaleDesktopAnalysis,
 } from "./analysis-provenance";
 
@@ -30,4 +33,14 @@ test("desktop analysis idempotency keys track the engine version", () => {
     desktopAnalysisIdempotencyKey("source-123"),
     `analysis:source-123:${DESKTOP_ANALYSIS_ENGINE}:${DESKTOP_ANALYSIS_ENGINE_VERSION}`,
   );
+});
+
+test("automatic remix accepts only current local section-analysis provenance", () => {
+  const current = {
+    analysisEngine: DESKTOP_SECTION_ENGINE,
+    analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+  };
+  assert.equal(isCurrentDesktopSectionAnalysis(current), true);
+  assert.equal(isCurrentDesktopSectionAnalysis({ ...current, analysisEngineVersion: "1.2.0" }), false);
+  assert.equal(isCurrentDesktopSectionAnalysis({ ...current, analysisEngine: "remote-worker" }), false);
 });
