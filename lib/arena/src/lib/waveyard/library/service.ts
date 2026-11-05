@@ -22,6 +22,7 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 
 import { db, pool } from "@workspace/db";
+import { currentKeyConfidence } from "../types/analysis-provenance";
 import { assertExpectedOrder, withOrderingLock, type OrderingTransaction } from "./ordering";
 export { OrderingConflictError } from "./ordering";
 import {
@@ -248,6 +249,8 @@ async function analysisBySource(sourceAssetIds: string[]): Promise<Map<string, T
       bpmConfidence: sourceAnalyses.bpmConfidence,
       beatConfidence: sourceAnalyses.beatConfidence,
       keyConfidence: sourceAnalyses.keyConfidence,
+      analysisEngine: sourceAnalyses.analysisEngine,
+      analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
       musicalKey: sourceAnalyses.musicalKey,
     })
     .from(sourceAnalyses)
@@ -259,7 +262,7 @@ async function analysisBySource(sourceAssetIds: string[]): Promise<Map<string, T
       bpm: row.bpm,
       bpmConfidence: row.bpmConfidence,
       beatConfidence: row.beatConfidence,
-      keyConfidence: row.keyConfidence,
+      keyConfidence: currentKeyConfidence(row),
       musicalKey: row.musicalKey,
     },
   ]));
@@ -575,6 +578,8 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
       bpmConfidence: sourceAnalyses.bpmConfidence,
       beatConfidence: sourceAnalyses.beatConfidence,
       keyConfidence: sourceAnalyses.keyConfidence,
+      analysisEngine: sourceAnalyses.analysisEngine,
+      analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
       musicalKey: sourceAnalyses.musicalKey,
     })
     .from(sourceAnalyses)
@@ -617,7 +622,14 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
       bitrate: source.bitrate,
     },
     stems: stemRows,
-    analysis: analysis ?? null,
+    analysis: analysis === undefined ? null : {
+      status: analysis.status,
+      bpm: analysis.bpm,
+      bpmConfidence: analysis.bpmConfidence,
+      beatConfidence: analysis.beatConfidence,
+      keyConfidence: currentKeyConfidence(analysis),
+      musicalKey: analysis.musicalKey,
+    },
     playback,
   };
 }

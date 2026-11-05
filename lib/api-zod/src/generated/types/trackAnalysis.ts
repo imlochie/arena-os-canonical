@@ -18,5 +18,7 @@ export type TrackAnalysis = {
   /** @nullable */
   beatConfidence: number | null;
   /** @nullable */
+  keyConfidence: number | null;
+  /** @nullable */
   musicalKey: string | null;
 } | null;

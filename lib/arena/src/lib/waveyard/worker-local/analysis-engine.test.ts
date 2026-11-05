@@ -21,6 +21,11 @@ import {
   beatConfidenceFromGrid,
   decodeMonoPcm,
 } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
+import {
+  currentKeyConfidence,
+  DESKTOP_ANALYSIS_ENGINE,
+  DESKTOP_ANALYSIS_ENGINE_VERSION,
+} from "../types/analysis-provenance";
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 
 const RATE = 22_050;
@@ -114,6 +119,19 @@ test("key confidence separates clear tonal evidence from ambiguous chords", () =
   const cMajorScale = keyFromChroma([2, 0.3, 1, 0.2, 2, 1, 0.2, 2, 0.3, 1, 0.2, 0.8]);
   assert.equal(cMajorScale.key, "C major");
   assert.ok((cMajorScale.confidence ?? 0) >= 0.5, "a broader diatonic pitch profile supports the key more strongly");
+});
+
+test("legacy key confidence is not trusted under the revised key-analysis version", () => {
+  assert.equal(currentKeyConfidence({
+    analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+    analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+    keyConfidence: 0.73,
+  }), 0.73);
+  assert.equal(currentKeyConfidence({
+    analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+    analysisEngineVersion: "1.0.0",
+    keyConfidence: 0.98,
+  }), null);
 });
 
 test("normaliseBeatGrid rejects unordered and out-of-range grids", () => {

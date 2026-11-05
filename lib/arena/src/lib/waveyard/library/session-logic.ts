@@ -350,7 +350,7 @@ export function keyCompatibilityEvidence(
     return { ...compatibility, confidenceLevel: "unavailable", confidence: null };
   }
 
-  const confidence = Math.min(aConfidence, bConfidence);
+  const confidence = Math.min(aConfidence as number, bConfidence as number);
   return {
     ...compatibility,
     confidenceLevel: confidence >= KEY_COMPATIBILITY_MIN_CONFIDENCE ? "confident" : "tentative",
@@ -459,30 +459,55 @@ export interface CompatibilityEvidence {
  * verified beat grids is start-time alignment only (the reason prose in the
  * compatibility panel always carries that scope). */
 export function compatibilityEvidence(
-  currentAnalysis: { bpm: number | null; musicalKey: string | null; beatGridMs: number[] | null } | null,
-  nextAnalysis: { bpm: number | null; musicalKey: string | null; beatGridMs: number[] | null } | null,
+  currentAnalysis: {
+    bpm: number | null;
+    bpmConfidence?: number | null;
+    musicalKey: string | null;
+    keyConfidence?: number | null;
+    beatGridMs: number[] | null;
+    beatConfidence?: number | null;
+  } | null,
+  nextAnalysis: {
+    bpm: number | null;
+    bpmConfidence?: number | null;
+    musicalKey: string | null;
+    keyConfidence?: number | null;
+    beatGridMs: number[] | null;
+    beatConfidence?: number | null;
+  } | null,
   mode: TransitionMode,
 ): CompatibilityEvidence {
   const bothBpm = currentAnalysis?.bpm != null && nextAnalysis?.bpm != null;
   const bothKey = currentAnalysis?.musicalKey != null && nextAnalysis?.musicalKey != null;
   const bothGrids = currentAnalysis?.beatGridMs != null && nextAnalysis?.beatGridMs != null;
+  const confident = (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0.5 && value <= 1;
+  const tempoConfident = bothBpm && confident(currentAnalysis?.bpmConfidence) && confident(nextAnalysis?.bpmConfidence);
+  const keyConfident = bothKey && confident(currentAnalysis?.keyConfidence) && confident(nextAnalysis?.keyConfidence);
+  const beatConfident = bothGrids && confident(currentAnalysis?.beatConfidence) && confident(nextAnalysis?.beatConfidence);
   let alignment: EvidenceLabel | null;
   if (mode === "manual") {
     alignment = null;
   } else if (mode === "beat" || mode === "bar") {
-    alignment = bothGrids
-      ? { level: "real", label: "REAL — verified beat grids (start-time alignment)" }
-      : { level: "unavailable", label: "UNAVAILABLE — beat grids missing; use a manual transition" };
+    alignment = !bothGrids
+      ? { level: "unavailable", label: "UNAVAILABLE — beat grids missing; use a manual transition" }
+      : beatConfident
+        ? { level: "real", label: "REAL — confident beat-grid estimates (start-time alignment only)" }
+        : { level: "approximate", label: "APPROXIMATE — beat grids exist, but confidence is low or unavailable" };
   } else {
     alignment = { level: "unavailable", label: "UNAVAILABLE — stored mode; section-aware cueing is not implemented" };
   }
   return {
-    tempo: bothBpm
-      ? { level: "real", label: "REAL — tempo analysis complete for both tracks" }
-      : { level: "unavailable", label: "UNAVAILABLE — tempo analysis missing for one or both tracks" },
-    key: bothKey
-      ? { level: "real", label: "REAL — key analysis complete for both tracks" }
-      : { level: "unavailable", label: "UNAVAILABLE — key analysis missing for one or both tracks" },
+    tempo: !bothBpm
+      ? { level: "unavailable", label: "UNAVAILABLE — tempo analysis missing for one or both tracks" }
+      : tempoConfident
+        ? { level: "real", label: "REAL — confident tempo estimates for both tracks" }
+        : { level: "approximate", label: "APPROXIMATE — tempo estimates exist, but confidence is low or unavailable" },
+    key: !bothKey
+      ? { level: "unavailable", label: "UNAVAILABLE — key analysis missing for one or both tracks" }
+      : keyConfident
+        ? { level: "real", label: "REAL — key profiles and competing-key margins support both estimates" }
+        : { level: "approximate", label: "APPROXIMATE — key estimates exist, but confidence is low or unavailable" },
     alignment,
   };
 }

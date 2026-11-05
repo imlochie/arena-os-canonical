@@ -756,6 +756,7 @@
 .sess-compat p{margin:0;font-size:12px}
 .sess-compat-ok{color:#9db85c}
 .sess-compat-bad{color:var(--muted)}
+.sess-compat-uncertain{color:#c9ad76}
 .wy-camelot-panel{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:10px}
 .wy-key-match{display:grid;gap:9px;padding:12px;border:1px solid var(--line);border-radius:14px;background:rgba(0,0,0,.16)}
 .wy-key-match-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}

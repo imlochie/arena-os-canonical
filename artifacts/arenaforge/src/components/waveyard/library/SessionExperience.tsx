@@ -37,7 +37,6 @@ import {
   hasReliableLiveStemBeatEvidence,
   hasReliableLiveStemTempoEvidence,
   isHalfDoubleTempoPair,
-  keyCompatibility,
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
@@ -290,7 +289,7 @@ function getPersistedSwapSetup(
     const keyEvidence = keyCompatibilityEvidence(
       leadKey,
       item.analysis?.keyConfidence,
-      donorKey,
+      donorKey ?? null,
       donorKeyConfidence,
     );
     const keyEvidenceConfident = keyEvidence.confidenceLevel === "confident";
@@ -3796,7 +3795,12 @@ export default function SessionExperience({
   const compatibility = useMemo(() => {
     if (currentItem === null || nextItem === null) return null;
     const tempo = tempoCompatibility(currentItem.analysis?.bpm ?? null, nextItem.analysis?.bpm ?? null);
-    const key = keyCompatibility(currentItem.analysis?.musicalKey ?? null, nextItem.analysis?.musicalKey ?? null);
+    const key = keyCompatibilityEvidence(
+      currentItem.analysis?.musicalKey ?? null,
+      currentItem.analysis?.keyConfidence,
+      nextItem.analysis?.musicalKey ?? null,
+      nextItem.analysis?.keyConfidence,
+    );
     const mode = currentTransition?.mode ?? "manual";
     const evidence = compatibilityEvidence(currentItem.analysis, nextItem.analysis, mode);
     let alignment: { ok: boolean; reason: string } | null = null;
@@ -4841,14 +4845,22 @@ export default function SessionExperience({
             )}
             {compatibility !== null && (
               <div className="sess-compat" data-testid="session-compat">
-                <p className={compatibility.tempo.compatible ? "sess-compat-ok" : "sess-compat-bad"}>
-                  <b className={`sess-evidence sess-evidence-${compatibility.evidence.tempo.level}`}>Tempo · {compatibility.evidence.tempo.level.toUpperCase()}</b> {compatibility.tempo.reason}
+                <p className={compatibility.evidence.tempo.level === "real"
+                  ? compatibility.tempo.compatible ? "sess-compat-ok" : "sess-compat-bad"
+                  : compatibility.evidence.tempo.level === "approximate" ? "sess-compat-uncertain" : "sess-compat-bad"}>
+                  <b className={`sess-evidence sess-evidence-${compatibility.evidence.tempo.level}`}>Tempo · {compatibility.evidence.tempo.level.toUpperCase()}</b>{" "}
+                  {compatibility.evidence.tempo.level === "real" ? compatibility.tempo.reason : compatibility.evidence.tempo.label}
                 </p>
-                <p className={compatibility.key.compatible ? "sess-compat-ok" : "sess-compat-bad"}>
-                  <b className={`sess-evidence sess-evidence-${compatibility.evidence.key.level}`}>Key · {compatibility.evidence.key.level.toUpperCase()}</b> {compatibility.key.reason}
+                <p className={compatibility.evidence.key.level === "real"
+                  ? compatibility.key.compatible ? "sess-compat-ok" : "sess-compat-bad"
+                  : "sess-compat-uncertain"}>
+                  <b className={`sess-evidence sess-evidence-${compatibility.evidence.key.level}`}>Key · {compatibility.evidence.key.level.toUpperCase()}</b>{" "}
+                  {compatibility.evidence.key.level === "real" ? compatibility.key.reason : compatibility.evidence.key.label}
                 </p>
                 {compatibility.alignment !== null && compatibility.evidence.alignment !== null && (
-                  <p className={compatibility.alignment.ok ? "sess-compat-ok" : "sess-compat-bad"}>
+                  <p className={compatibility.evidence.alignment.level === "real"
+                    ? compatibility.alignment.ok ? "sess-compat-ok" : "sess-compat-bad"
+                    : compatibility.evidence.alignment.level === "approximate" ? "sess-compat-uncertain" : "sess-compat-bad"}>
                     <b className={`sess-evidence sess-evidence-${compatibility.evidence.alignment.level}`}>Alignment · {compatibility.evidence.alignment.level.toUpperCase()}</b> {compatibility.alignment.reason}
                   </p>
                 )}

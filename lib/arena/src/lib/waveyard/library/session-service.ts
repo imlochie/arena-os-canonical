@@ -19,6 +19,7 @@ import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
 import { extname } from "node:path";
 
 import { db } from "@workspace/db";
+import { currentKeyConfidence } from "../types/analysis-provenance";
 import {
   listenSessionSwaps,
   listenSessions,
@@ -1367,6 +1368,8 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       bpmConfidence: sourceAnalyses.bpmConfidence,
       beatConfidence: sourceAnalyses.beatConfidence,
       keyConfidence: sourceAnalyses.keyConfidence,
+      analysisEngine: sourceAnalyses.analysisEngine,
+      analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
       musicalKey: sourceAnalyses.musicalKey,
       beatGrid: sourceAnalyses.beatGrid,
       sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
@@ -1476,7 +1479,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     bpm: analysis.bpm,
     bpmConfidence: analysis.bpmConfidence,
     beatConfidence: analysis.beatConfidence,
-    keyConfidence: analysis.keyConfidence,
+    keyConfidence: currentKeyConfidence(analysis),
     musicalKey: analysis.musicalKey,
     beatGridMs,
     sections,

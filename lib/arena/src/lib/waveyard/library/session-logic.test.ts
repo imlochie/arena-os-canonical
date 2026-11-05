@@ -493,16 +493,25 @@ test("stem swap: refuses when the donor cannot lend a REAL stem of that type", (
 
 // ------------------------------------------------- evidence labeling (P5) --
 
-test("evidence: REAL tempo/key only when both analyses exist", () => {
-  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+test("evidence: REAL tempo/key only when both analyses are confident", () => {
+  const full = {
+    bpm: 124, bpmConfidence: 0.82, musicalKey: "A minor", keyConfidence: 0.78,
+    beatGridMs: [0, 480, 960], beatConfidence: 0.88,
+  };
   const evidence = compatibilityEvidence(full, full, "manual");
   assert.equal(evidence.tempo.level, "real");
   assert.equal(evidence.key.level, "real");
 });
 
 test("evidence: UNAVAILABLE tempo/key when either analysis is missing", () => {
-  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
-  const none = { bpm: null, musicalKey: null, beatGridMs: null };
+  const full = {
+    bpm: 124, bpmConfidence: 0.82, musicalKey: "A minor", keyConfidence: 0.78,
+    beatGridMs: [0, 480, 960], beatConfidence: 0.88,
+  };
+  const none = {
+    bpm: null, bpmConfidence: null, musicalKey: null, keyConfidence: null,
+    beatGridMs: null, beatConfidence: null,
+  };
   const one = compatibilityEvidence(full, none, "manual");
   assert.equal(one.tempo.level, "unavailable");
   assert.equal(one.key.level, "unavailable");
@@ -511,13 +520,30 @@ test("evidence: UNAVAILABLE tempo/key when either analysis is missing", () => {
   assert.equal(other.key.level, "unavailable");
 });
 
+test("evidence: low or missing confidence stays APPROXIMATE, not REAL", () => {
+  const uncertain = {
+    bpm: 124, bpmConfidence: 0.3, musicalKey: "A minor", keyConfidence: 0.2,
+    beatGridMs: [0, 480, 960], beatConfidence: null,
+  };
+  const evidence = compatibilityEvidence(uncertain, uncertain, "bar");
+  assert.equal(evidence.tempo.level, "approximate");
+  assert.equal(evidence.key.level, "approximate");
+  assert.equal(evidence.alignment?.level, "approximate");
+});
+
 test("evidence: manual mode has no alignment concept (null)", () => {
-  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  const full = {
+    bpm: 124, bpmConfidence: 0.82, musicalKey: "A minor", keyConfidence: 0.78,
+    beatGridMs: [0, 480, 960], beatConfidence: 0.88,
+  };
   assert.equal(compatibilityEvidence(full, full, "manual").alignment, null);
 });
 
 test("evidence: beat/bar alignment REAL on verified grids, UNAVAILABLE without", () => {
-  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  const full = {
+    bpm: 124, bpmConfidence: 0.82, musicalKey: "A minor", keyConfidence: 0.78,
+    beatGridMs: [0, 480, 960], beatConfidence: 0.88,
+  };
   assert.equal(compatibilityEvidence(full, full, "bar").alignment?.level, "real");
   assert.match(compatibilityEvidence(full, full, "bar").alignment?.label ?? "", /start-time alignment/);
   const partial = { ...full, beatGridMs: null };
@@ -525,7 +551,10 @@ test("evidence: beat/bar alignment REAL on verified grids, UNAVAILABLE without",
 });
 
 test("evidence: never claims phase-locked sync in any label", () => {
-  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  const full = {
+    bpm: 124, bpmConfidence: 0.82, musicalKey: "A minor", keyConfidence: 0.78,
+    beatGridMs: [0, 480, 960], beatConfidence: 0.88,
+  };
   for (const mode of TRANSITION_MODES) {
     const evidence = compatibilityEvidence(full, full, mode);
     const text = [evidence.tempo.label, evidence.key.label, evidence.alignment?.label ?? ""].join(" ");

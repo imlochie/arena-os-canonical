@@ -444,6 +444,7 @@ export const GetLibraryTracksResponse = zod.object({
   "bpm": zod.number().nullable(),
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
+  "keyConfidence": zod.number().nullable(),
   "musicalKey": zod.string().nullable()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
@@ -902,6 +903,7 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
   "bpm": zod.number().nullable(),
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
+  "keyConfidence": zod.number().nullable(),
   "musicalKey": zod.string().nullable()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
@@ -943,6 +945,7 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
   "bpm": zod.number().nullable(),
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
+  "keyConfidence": zod.number().nullable(),
   "musicalKey": zod.string().nullable()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
@@ -1226,6 +1229,7 @@ export const StopLibraryAudioCaptureResponse = zod.object({
   "bpm": zod.number().nullable(),
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
+  "keyConfidence": zod.number().nullable(),
   "musicalKey": zod.string().nullable()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
@@ -1267,6 +1271,7 @@ export const StopLibraryAudioCaptureResponse = zod.object({
   "bpm": zod.number().nullable(),
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
+  "keyConfidence": zod.number().nullable(),
   "musicalKey": zod.string().nullable()
 }).nullish(),
   "studioProjectId": zod.string().uuid()

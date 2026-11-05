@@ -80,3 +80,9 @@ Treat BPM confidence and beat-grid confidence as separate decisions: confident B
 **Why:** Requiring beat-grid confidence for tempo changes prevented unsafe warps, but also rejected tempo evidence that can be reliable even when phase timing is not. The user needs both musical usefulness and honest sync status.
 
 **How to apply:** Keep separate confidence checks in swap logic and labels, propagate both metrics through library/session responses, and test high-BPM/low-beat cases separately from low-BPM cases.
+
+Key confidence must measure both profile fit and the margin over competing key profiles; a strong single chord can fit several keys and is not a confident song-key estimate.
+
+**Why:** Treating the winning profile score alone as confidence made ambiguous material look certain, which can produce misleading Camelot guidance or automatic pitch correction.
+
+**How to apply:** Return no key for uniform chroma, keep ambiguous keys tentative, and only advertise harmonic fit or apply automatic key correction when both tracks have current, sufficiently distinct key evidence. Legacy confidence values from an older algorithm version must not be treated as current.
