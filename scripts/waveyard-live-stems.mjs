@@ -743,11 +743,24 @@ try {
   let signalExternalDonorWarm;
   await context.route("**/api/assets/*", async route => {
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
-    assetRequestTrace.push({
+    let requestPageUrl = null;
+    let isMainTestPage = false;
+    try {
+      const requestPage = route.request().frame().page();
+      requestPageUrl = requestPage.url();
+      isMainTestPage = requestPage === page;
+    } catch {
+      // Worker-originated audio requests may not have a page frame.
+    }
+    const requestTrace = {
       id,
       resourceType: route.request().resourceType(),
       range: route.request().headers().range ?? null,
-    });
+      pageUrl: requestPageUrl,
+      isMainTestPage,
+      responseStatus: null,
+    };
+    assetRequestTrace.push(requestTrace);
     if (id === timedAssetId && timedAssetDelayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, timedAssetDelayMs));
     }
@@ -775,6 +788,7 @@ try {
     }
     if (id === failAsset) {
       failedAssetRequests += 1;
+      requestTrace.responseStatus = 503;
       try {
         await route.fulfill({ status: 503, headers: { "Cache-Control": "no-store" }, body: "Test failure" });
       } catch {
@@ -783,7 +797,10 @@ try {
       return;
     }
     const body = assets.get(id);
-    if (!body) return route.fulfill({ status: 404 });
+    if (!body) {
+      requestTrace.responseStatus = 404;
+      return route.fulfill({ status: 404 });
+    }
     const range = route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/);
     const start = range ? Number(range[1]) : 0, end = range?.[2] ? Math.min(Number(range[2]), body.length - 1) : body.length - 1;
     const response = {
@@ -792,6 +809,7 @@ try {
         "Cache-Control": "no-store",
         ...(range ? { "Content-Range": `bytes ${start}-${end}/${body.length}` } : {}) },
     };
+    requestTrace.responseStatus = response.status;
     if (!isHeldAssetRequest) {
       try {
         await route.fulfill(response);
@@ -4103,12 +4121,12 @@ try {
   assert.equal(await desktopSwapEntry.getAttribute("aria-expanded"), "false");
   console.log("PASS: desktop stem pad opens and closes its live source picker");
 
-  await current.getByLabel("Isolate vocals", { exact: true }).click();
+  await current.getByTestId("quick-isolate-vocals").click();
   await page.waitForFunction(() => {
     const get = type => window.audioProbe.currentStemGain(type);
     return get("vocals") > 0.9 && ["drums", "bass", "other"].every(type => get(type) < 0.01);
   });
-  await current.getByLabel("Isolate vocals", { exact: true }).click();
+  await current.getByTestId("quick-isolate-vocals").click();
   await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
     window.audioProbe.currentStemGain(type) > 0.9));
   await current.getByLabel("Mute drums", { exact: true }).click();
@@ -4116,7 +4134,7 @@ try {
     const get = type => window.audioProbe.currentStemGain(type);
     return get("drums") < 0.01 && ["vocals", "bass", "other"].every(type => get(type) > 0.9);
   });
-  await current.getByLabel("Restore all current stems", { exact: true }).click();
+  await current.getByTestId("quick-restore-mix").click();
   await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
     window.audioProbe.currentStemGain(type) > 0.9));
 
@@ -4201,19 +4219,8 @@ try {
     console.log("LIVE_MUTE_DIAGNOSTIC", JSON.stringify(diagnostic));
     throw error;
   });
-  const restoreCurrentStems = current.getByLabel("Restore all current stems");
+  const restoreCurrentStems = current.getByTestId("quick-restore-mix");
   await restoreCurrentStems.scrollIntoViewIfNeeded();
-  console.log("LIVE_STEM_RESTORE_HIT_TEST", JSON.stringify(await restoreCurrentStems.evaluate(button => {
-    const bounds = button.getBoundingClientRect();
-    const x = bounds.left + bounds.width / 2;
-    const y = bounds.top + bounds.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    return {
-      bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
-      viewport: { width: innerWidth, height: innerHeight },
-      hit: hit ? { tag: hit.tagName, label: hit.getAttribute("aria-label"), testId: hit.getAttribute("data-testid") } : null,
-    };
-  })));
   await restoreCurrentStems.click();
   await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type =>
     window.audioProbe.currentStemGain(type) > 0.9));
@@ -4356,6 +4363,9 @@ try {
   }, { timeout: 10_000 });
   current = page.locator('[data-role="current"]');
   if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
+  const donorWasFetchedBeforeWarm = await page.evaluate(() =>
+    window.liveStemAssetFetchTrace.includes("/api/assets/c-vocals"),
+  );
   await page.evaluate(() => { window.liveStemAssetFetchTrace.length = 0; });
   const buffersBeforeWarm = await page.evaluate(() => window.audioProbe.buffers.length);
   const cacheControlSession = !mobileBrowserEmulation && engineName === "chromium"
@@ -4365,6 +4375,7 @@ try {
     await cacheControlSession.send("Network.enable");
     await cacheControlSession.send("Network.setCacheDisabled", { cacheDisabled: true });
   }
+  const warmRequestStart = assetRequestTrace.length;
   await current.getByTestId("open-live-swap-vocals").click();
   const warmedDonor = current.getByTestId("live-swap-candidate-vocals-c");
   await warmedDonor.waitFor();
@@ -4373,15 +4384,31 @@ try {
       "opening the touch source picker does not interrupt the current mix");
   } else {
     await page.mouse.move(1, 1);
-    const warmedDonorResponse = page.waitForResponse(
-      response => new URL(response.url()).pathname === "/api/assets/c-vocals" && response.ok(),
-      { timeout: 5000 },
-    );
     await warmedDonor.hover();
-    let warmResponse;
-    try {
-      warmResponse = await warmedDonorResponse;
-    } catch (error) {
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="live-swap-candidate-vocals-c"]')?.getAttribute("aria-busy") === "true",
+    null, { timeout: 3000 });
+    assert.match(await warmedDonor.getAttribute("aria-label") ?? "", /Preparing (tempo match|stem audio)…/,
+      "the picker explains while a donor's audio or tempo match is being prepared");
+    const warmDeadline = Date.now() + 5000;
+    let warmRequests = [];
+    while (!donorWasFetchedBeforeWarm && Date.now() < warmDeadline) {
+      warmRequests = assetRequestTrace.slice(warmRequestStart).filter(request =>
+        request.id === "c-vocals" && request.isMainTestPage,
+      );
+      if (warmRequests.some(request => request.responseStatus === 200 || request.responseStatus === 206)) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    if (donorWasFetchedBeforeWarm) await page.waitForTimeout(200);
+    else {
+      warmRequests = assetRequestTrace.slice(warmRequestStart).filter(request =>
+        request.id === "c-vocals" && request.isMainTestPage,
+      );
+    }
+    const successfulWarmRequests = warmRequests.filter(request =>
+      request.responseStatus === 200 || request.responseStatus === 206,
+    );
+    if ((!donorWasFetchedBeforeWarm && successfulWarmRequests.length !== 1) || successfulWarmRequests.length > 1) {
       const state = await page.evaluate(() => {
         const candidate = document.querySelector('[data-testid="live-swap-candidate-vocals-c"]');
         const bounds = candidate?.getBoundingClientRect();
@@ -4394,18 +4421,15 @@ try {
         };
       });
       console.log("LIVE_STEM_HOVER_PREFETCH_DIAGNOSTIC", JSON.stringify({
+        donorWasFetchedBeforeWarm,
         state,
         requests: assetRequestTrace.filter(request => request.id === "c-vocals").slice(-4),
-        error: String(error),
       }));
-      await cacheControlSession?.detach();
-      throw error;
     }
     await cacheControlSession?.detach();
-    assert.ok(warmResponse?.ok(), "hovering a donor successfully warms its audio");
-    assert.equal(await page.evaluate(() =>
-      window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
-    ), 1, "hovering a donor starts one bounded warm request");
+    assert.ok(donorWasFetchedBeforeWarm || successfulWarmRequests.length === 1,
+      "opening and hovering either reuses a loaded donor or completes one warm request on the picker page");
+    assert.ok(successfulWarmRequests.length <= 1, "opening and hovering never duplicate the donor warm request");
     assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBeforeWarm,
       "warming a donor never makes it audible before the user chooses it");
     assert.ok(await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => !audio.paused),
@@ -4423,9 +4447,15 @@ try {
   await page.waitForFunction((baseline) => window.audioProbe.buffers.length > baseline, buffersBeforeWarm);
   await page.waitForFunction((baseline) => window.liveStemTimings.length > baseline, timingCountBeforeWarmSwap);
   if (!mobileBrowserEmulation) {
-    assert.equal(await page.evaluate(() =>
+    const selectedDonorFetches = await page.evaluate(() =>
       window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
-    ), 1, "selecting the warmed donor reuses its in-flight or decoded buffer");
+    );
+    assert.ok(
+      donorWasFetchedBeforeWarm
+        ? selectedDonorFetches <= 1
+        : selectedDonorFetches === 1,
+      "selection reuses a previously loaded donor or performs only one asset fetch",
+    );
   } else {
     assert.ok(await current.locator('audio[data-waveyard-asset-url$="/a-vocals"]').evaluate(audio => !audio.paused),
       "a touch-selected donor joins without interrupting the current audio deck");

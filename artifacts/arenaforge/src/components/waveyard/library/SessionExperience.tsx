@@ -1368,6 +1368,12 @@ export default function SessionExperience({
   const [sendingToStudio, setSendingToStudio] = useState(false);
   const studioHandoffInFlight = useRef(false);
   const liveSwapWarmupsRef = useRef(new Map<string, Promise<void>>());
+  const [warmingLiveSwap, setWarmingLiveSwap] = useState<{
+    key: string;
+    sessionTrackId: string;
+    stemType: string;
+    donorId: string;
+  } | null>(null);
   const [studioTrackSelection, setStudioTrackSelection] = useState<{ sessionId: string; trackIds: string[] } | null>(null);
   const studioReadyTrackIds = useMemo(
     () => session?.tracks.filter((item) => getStudioTrackReadiness(item, library).ready).map((item) => item.id) ?? [],
@@ -2910,6 +2916,12 @@ export default function SessionExperience({
         currentItem.analysis?.bpm ?? null,
         donor.bpm ?? null,
       ) ?? 1;
+      setWarmingLiveSwap({
+        key,
+        sessionTrackId: currentItem.id,
+        stemType,
+        donorId: donor.id,
+      });
       let warming!: Promise<void>;
       warming = (async () => {
         let donorStem = donor.stems?.find((stem) => stem.stemType === stemType);
@@ -2925,6 +2937,7 @@ export default function SessionExperience({
         // Warming is optional; the normal selection path still fetches and reports failures.
       }).finally(() => {
         if (liveSwapWarmupsRef.current.get(key) === warming) liveSwapWarmupsRef.current.delete(key);
+        setWarmingLiveSwap((current) => current?.key === key ? null : current);
       });
       liveSwapWarmupsRef.current.set(key, warming);
       return warming;
@@ -4112,6 +4125,9 @@ export default function SessionExperience({
         preparingTrackIds={preparingSeparationTrackIds}
         selectedDonorId={swap?.toTrackId ?? null}
         selectedDonorTitle={selectedDonorTitle}
+        warmingDonorId={warmingLiveSwap?.sessionTrackId === currentItem.id && warmingLiveSwap.stemType === stemType
+          ? warmingLiveSwap.donorId
+          : null}
         swapStatus={swapStatus}
         isOpen={openSwapStem === stemType}
         pending={pendingSwap !== undefined}

@@ -1959,7 +1959,7 @@ let liveDrumDonorResponseBodyLength = 0;
         !new URL(response.url()).pathname.endsWith(`/api/library/sessions/${liveSessionId}/tracks/${liveSessionTrackId}`)) return false;
     return request.postDataJSON()?.stemMixPatch?.vocals === 1;
   }, { timeout: 12_000 });
-  await page.getByRole("button", { name: "Restore all current stems" }).click();
+  await page.getByTestId("quick-restore-mix").click();
   await resetMixSave;
   assert.equal(liveCurrentItem.stemMix.vocals, 1, "smoke-test fader change is restored before unrelated mix checks");
 

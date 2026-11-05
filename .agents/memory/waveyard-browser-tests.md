@@ -15,6 +15,12 @@ For beat-snapped browser checks, schedule against a future synthetic boundary wi
 
 **How to apply:** Keep the browser assertion focused on audible gain and allow a realistic scheduling window. Do not treat a missed synthetic boundary under test contention as proof of a user-facing audio defect.
 
+Live-swap donor audio may be fetched before the picker opens because standby/session preloading shares the same asset pool. A later hover or selection can correctly reuse the cached bytes with zero new requests.
+
+**Why:** Requiring exactly one request made a successful browser-measured swap fail even though the selected donor decoded and became audible.
+
+**How to apply:** Record whether the donor was already loaded, allow cache reuse or at most one additional fetch, and assert audible selection plus no duplicate transfer.
+
 For app-background audio recovery tests, this workspace's Chromium build does not expose the CDP `Emulation.setPageVisibilityState` command. Override `document.visibilityState` in the test page and dispatch `visibilitychange`, while suspending real audio contexts and pausing actual media elements.
 
 **Why:** The CDP visibility command failed as unsupported before the Studio recovery assertions could run.

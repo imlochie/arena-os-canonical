@@ -30,6 +30,7 @@ interface LiveStemSwapPickerProps {
   preparingTrackIds: ReadonlySet<string>;
   selectedDonorId: string | null;
   selectedDonorTitle: string | null;
+  warmingDonorId: string | null;
   swapStatus: string | null;
   isOpen: boolean;
   pending: boolean;
@@ -63,6 +64,7 @@ export default function LiveStemSwapPicker({
   preparingTrackIds,
   selectedDonorId,
   selectedDonorTitle,
+  warmingDonorId,
   swapStatus,
   isOpen,
   pending,
@@ -206,6 +208,10 @@ export default function LiveStemSwapPicker({
       : `Match ${candidate.bpm} → ${currentBpm} BPM`;
     const keyLabel = matchLabel("Key", keyKnown, key.compatible);
     const selected = candidate.id === selectedDonorId;
+    const isWarming = candidate.id === warmingDonorId;
+    const warmStatus = tempoKnown && stretchRatio !== null && Math.abs(stretchRatio - 1) > 0.001
+      ? "Preparing tempo match…"
+      : "Preparing stem audio…";
     return (
       <button
         key={candidate.id}
@@ -213,7 +219,8 @@ export default function LiveStemSwapPicker({
         className={`wy-swap-candidate${selected ? " selected" : ""}`}
         type="button"
         aria-pressed={selected}
-        aria-label={`Use ${candidate.title} for ${stemType}; ${tempoLabel}; ${keyLabel}`}
+        aria-busy={isWarming}
+        aria-label={`Use ${candidate.title} for ${stemType}; ${tempoLabel}; ${keyLabel}${isWarming ? `; ${warmStatus}` : ""}`}
         data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
         onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
         onPointerEnter={() => scheduleHoverWarm(candidate.id)}
@@ -239,6 +246,7 @@ export default function LiveStemSwapPicker({
           <span className={`wy-swap-fit-chip ${keyKnown ? (key.compatible ? "match" : "different") : "unknown"}`}>
             {keyLabel}
           </span>
+          {isWarming && <span className="wy-swap-fit-chip unknown" role="status">{warmStatus}</span>}
         </span>
       </button>
     );
