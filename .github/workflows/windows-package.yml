@@ -43,8 +43,39 @@ jobs:
           --filter "@workspace/api-server..."
           --filter "@workspace/desktop..."
 
-      - name: Run desktop packaging unit tests
-        run: pnpm --filter @workspace/desktop test
+      - name: Run desktop packaging unit tests with per-file evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $root = (Get-Location).Path
+          $evidence = Join-Path $root "generated-artifacts/desktop-test-results"
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $results = @()
+          Push-Location desktop
+          try {
+            Get-ChildItem -Filter *.test.mjs | ForEach-Object {
+              $name = $_.Name
+              $output = & node --test $name 2>&1 | Out-String
+              $code = $LASTEXITCODE
+              $status = if ($code -eq 0) { "PASS" } else { "FAIL" }
+              $results += [pscustomobject]@{ file = $name; code = $code; status = $status; output = $output }
+              Set-Content -Path (Join-Path $evidence "$name.txt") -Value $output
+            }
+          } finally {
+            Pop-Location
+          }
+          $results | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $evidence "summary.json")
+          $failed = $results | Where-Object { $_.code -ne 0 }
+          if ($failed) { $failed | ForEach-Object { Write-Host "FAILED: $($_.file)" }; exit 1 }
+
+      - name: Upload desktop test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-test-evidence
+          path: generated-artifacts/desktop-test-results/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build previous Windows package for update test
         shell: pwsh
