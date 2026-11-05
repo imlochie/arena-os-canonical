@@ -1446,7 +1446,9 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
         ))
         .orderBy(asc(sourceSections.sectionIndex));
       const provenanceMatches = records.length > 0 && records.every((record) =>
-        record.label === "section"
+        typeof record.label === "string"
+        && record.label.trim().length > 0
+        && record.label.length <= 64
         && record.sourceAssetId === sourceTrack.sourceAssetId
         && record.sourceAnalysisId === analysis.id
         && record.sourceSectionAnalysisId === sectionAnalysis.id
@@ -1464,7 +1466,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
           endBeatIndex: record.endBeatIndex,
           startBar: record.startBar,
           endBar: record.endBar,
-          label: "section",
+          label: record.label,
           labelConfidence: record.labelConfidence,
           structuralConfidence: record.structuralConfidence,
           analysisEngine: record.analysisEngine,

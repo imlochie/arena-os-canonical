@@ -24,29 +24,46 @@ test("live stem phase projects measured donor beats into tempo-stretched recipie
 
 test("live stem section phase aligns corresponding, structurally compatible sections", () => {
   const recipient = [
-    { sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, structuralConfidence: 0.9 },
-    { sectionIndex: 1, startMs: 8_000, endMs: 16_000, startBeatIndex: 16, endBeatIndex: 32, structuralConfidence: 0.85 },
+    { sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "chorus", labelConfidence: 0.92, structuralConfidence: 0.9 },
+    { sectionIndex: 1, startMs: 8_000, endMs: 16_000, startBeatIndex: 16, endBeatIndex: 32, label: "chorus", labelConfidence: 0.9, structuralConfidence: 0.85 },
   ];
   const donor = [
-    { sectionIndex: 0, startMs: 1_000, endMs: 9_000, startBeatIndex: 0, endBeatIndex: 16, structuralConfidence: 0.8 },
-    { sectionIndex: 1, startMs: 9_000, endMs: 17_000, startBeatIndex: 16, endBeatIndex: 32, structuralConfidence: 0.8 },
+    { sectionIndex: 0, startMs: 1_000, endMs: 9_000, startBeatIndex: 0, endBeatIndex: 16, label: "chorus", labelConfidence: 0.88, structuralConfidence: 0.8 },
+    { sectionIndex: 1, startMs: 9_000, endMs: 17_000, startBeatIndex: 16, endBeatIndex: 32, label: "chorus", labelConfidence: 0.88, structuralConfidence: 0.8 },
   ];
 
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1.1), 1.1);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 12, 1.1), 1.9);
 });
 
-test("live stem section phase refuses weak, mismatched, or out-of-range maps", () => {
+test("live stem section mapping matches a confident role, not the same ordinal", () => {
   const recipient = [
-    { sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, structuralConfidence: 0.9 },
+    { sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "verse", labelConfidence: 0.9, structuralConfidence: 0.9 },
+    { sectionIndex: 1, startMs: 8_000, endMs: 16_000, startBeatIndex: 16, endBeatIndex: 32, label: "chorus", labelConfidence: 0.92, structuralConfidence: 0.9 },
   ];
   const donor = [
-    { sectionIndex: 0, startMs: 1_000, endMs: 9_000, startBeatIndex: 0, endBeatIndex: 24, structuralConfidence: 0.8 },
+    { sectionIndex: 0, startMs: 0, endMs: 4_000, startBeatIndex: 0, endBeatIndex: 8, label: "intro", labelConfidence: 0.9, structuralConfidence: 0.9 },
+    { sectionIndex: 1, startMs: 4_000, endMs: 12_000, startBeatIndex: 8, endBeatIndex: 24, label: "chorus", labelConfidence: 0.88, structuralConfidence: 0.9 },
+    { sectionIndex: 2, startMs: 12_000, endMs: 20_000, startBeatIndex: 24, endBeatIndex: 40, label: "verse", labelConfidence: 0.9, structuralConfidence: 0.9 },
+    { sectionIndex: 3, startMs: 20_000, endMs: 28_000, startBeatIndex: 40, endBeatIndex: 56, label: "chorus", labelConfidence: 0.9, structuralConfidence: 0.9 },
+  ];
+
+  assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 12, 1), 12);
+});
+
+test("live stem section phase refuses weak, mismatched, or out-of-range maps", () => {
+  const recipient = [
+    { sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "verse", labelConfidence: 0.9, structuralConfidence: 0.9 },
+  ];
+  const donor = [
+    { sectionIndex: 0, startMs: 1_000, endMs: 9_000, startBeatIndex: 0, endBeatIndex: 24, label: "chorus", labelConfidence: 0.9, structuralConfidence: 0.8 },
   ];
   const weak = [{ ...donor[0], structuralConfidence: 0.4 }];
+  const generic = [{ ...recipient[0], label: "section", labelConfidence: 0 }];
 
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, weak, 4, 1), null);
+  assert.equal(liveStemSectionOffsetSeconds(recipient, generic, 4, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 8, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, Number.NaN), null);
 });

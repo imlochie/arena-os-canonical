@@ -99,7 +99,7 @@ export function CinematicVisual({
         {metadataVisible && <><span className="eyebrow">{transport.playing ? "Live transport" : "Still frame"}</span><b>{source?.originalFilename ?? "Preparing source"}</b><small>{source?.analysis?.status === "complete" ? `${source.analysis.bpm?.toFixed(1) ?? "—"} BPM · ${source.analysis.musicalKey ?? "Key unavailable"}` : "Analysis unavailable"}</small></>}
       </div>
       <div className="visual-corner visual-corner-bottom">
-        {metadataVisible && <><span>{section ? `Section ${section.sectionIndex + 1}` : "Source overview"}</span><b>{Math.round(visualState.sectionProgress * 100)}%</b><small>{activeStems.length ? `${activeStems.length} stem${activeStems.length === 1 ? "" : "s"} in focus` : "No audible stems"}</small></>}
+        {metadataVisible && <><span>{section ? section.label === "section" ? `Section ${section.sectionIndex + 1}` : `${section.labelConfidence < 0.75 ? "Possible " : ""}${section.label}` : "Source overview"}</span><b>{Math.round(visualState.sectionProgress * 100)}%</b><small>{activeStems.length ? `${activeStems.length} stem${activeStems.length === 1 ? "" : "s"} in focus` : "No audible stems"}</small></>}
       </div>
       <div className="visual-overlay-controls" aria-label="Visual presentation controls">
         <div className="visual-preset-control" role="group" aria-label="Visual preset">

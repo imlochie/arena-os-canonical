@@ -153,7 +153,7 @@ export type SourceSection = {
   endBeatIndex: number;
   startBar: number;
   endBar: number;
-  label: "section";
+  label: string;
   labelConfidence: number;
   structuralConfidence: number;
   analysisEngine: string;

@@ -86,3 +86,9 @@ Key confidence must measure both profile fit and the margin over competing key p
 **Why:** Treating the winning profile score alone as confidence made ambiguous material look certain, which can produce misleading Camelot guidance or automatic pitch correction.
 
 **How to apply:** Return no key for uniform chroma, keep ambiguous keys tentative, and only advertise harmonic fit or apply automatic key correction when both tracks have current, sufficiently distinct key evidence. Legacy confidence values from an older algorithm version must not be treated as current.
+
+Never treat the same section index in two tracks as evidence that the musical roles match. Cross-track phrase alignment requires the same confidently detected structural role; generic novelty cuts must fall back to beat-phase alignment.
+
+**Why:** Equal section counts and ordinal positions can occur in unrelated arrangements, so mapping section 2 to section 2 can sound like a random jump while appearing structurally precise.
+
+**How to apply:** Preserve role labels and label confidence through analysis and UI boundaries, accept only comparable labels such as verse/chorus with strong confidence, and choose among repeated instances by relative position and duration.

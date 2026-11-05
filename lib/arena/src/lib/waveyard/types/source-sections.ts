@@ -10,7 +10,7 @@ export type SourceSection = {
   endBeatIndex: number;
   startBar: number;
   endBar: number;
-  label: "section";
+  label: string;
   labelConfidence: number;
   structuralConfidence: number;
   analysisEngine: string;
@@ -48,7 +48,9 @@ export function normalizeSourceSections(
   if (!beats || beats.length < 2) return [];
   const seen = new Set<string>();
   const sorted = [...candidates]
-    .filter((candidate) => Number.isInteger(candidate.startBeatIndex) && Number.isInteger(candidate.endBeatIndex)
+    .filter((candidate) => typeof candidate.label === "string" && candidate.label.trim().length > 0
+      && candidate.label.length <= 64
+      && Number.isInteger(candidate.startBeatIndex) && Number.isInteger(candidate.endBeatIndex)
       && candidate.startBeatIndex >= 0 && candidate.endBeatIndex > candidate.startBeatIndex
       && candidate.endBeatIndex < beats.length)
     .sort((left, right) => left.startBeatIndex - right.startBeatIndex || left.endBeatIndex - right.endBeatIndex);
@@ -70,7 +72,7 @@ export function normalizeSourceSections(
       endBeatIndex: candidate.endBeatIndex,
       startBar: Math.floor(candidate.startBeatIndex / 4) + 1,
       endBar: Math.max(1, Math.ceil(candidate.endBeatIndex / 4)),
-      label: "section",
+      label: candidate.label.trim(),
       labelConfidence: clampUnit(candidate.labelConfidence),
       structuralConfidence: clampUnit(candidate.structuralConfidence),
       ...provenance,
@@ -85,7 +87,9 @@ export function sourceSectionsAreValid(sections: readonly SourceSection[], beatG
   if (!beats) return sections.length === 0;
   return sections.every((section, index) =>
     section.sectionIndex === index
-    && section.label === "section"
+    && typeof section.label === "string"
+    && section.label.trim().length > 0
+    && section.label.length <= 64
     && Number.isInteger(section.startBeatIndex)
     && Number.isInteger(section.endBeatIndex)
     && section.startBeatIndex >= 0

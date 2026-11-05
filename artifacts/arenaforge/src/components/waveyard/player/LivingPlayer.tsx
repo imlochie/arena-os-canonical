@@ -46,7 +46,13 @@ export function PlayerTimeline({ source, duration, position, onSeek, onRetryWave
   return <section className="player-timeline" aria-label="Playback timeline">
     <div className="player-timeline-head"><span>{formatPlayerTime(position)}</span><span>{formatPlayerTime(duration)}</span></div>
     <div className="player-section-strip" aria-label="Detected source sections">
-      {widths.length ? widths.map((section, index) => <i key={sections[index]?.id ?? index} style={{ width: `${Math.max(3, section.widthPercent)}%` }} title={`Section ${(sections[index]?.sectionIndex ?? index) + 1}`} />) : <i className="unknown" />}
+      {widths.length ? widths.map((section, index) => {
+        const sourceSection = sections[index];
+        const label = sourceSection?.label && sourceSection.label !== "section"
+          ? `${sourceSection.labelConfidence < 0.75 ? "Possible " : ""}${sourceSection.label}`
+          : `Section ${(sourceSection?.sectionIndex ?? index) + 1}`;
+        return <i key={sourceSection?.id ?? index} style={{ width: `${Math.max(3, section.widthPercent)}%` }} title={label} />;
+      }) : <i className="unknown" />}
     </div>
     {source ? <WaveformCanvas assetId={source.id} label={`${source.originalFilename} player waveform`} position={position} duration={duration} onSeek={onSeek} onRetryJob={onRetryWaveformJob} /> : <div className="waveform-empty">Audio source is loading.</div>}
   </section>;

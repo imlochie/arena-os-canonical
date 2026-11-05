@@ -232,13 +232,24 @@ export function liveStemBeatOffsetSeconds(
 
 type LiveStemSection = Pick<
   SourceSection,
-  "sectionIndex" | "startMs" | "endMs" | "startBeatIndex" | "endBeatIndex" | "structuralConfidence"
+  | "sectionIndex" | "startMs" | "endMs" | "startBeatIndex" | "endBeatIndex"
+  | "label" | "labelConfidence" | "structuralConfidence"
 >;
 
+const COMPARABLE_SECTION_LABELS = new Set([
+  "verse", "chorus", "pre chorus", "bridge", "intro", "outro", "drop",
+  "breakdown", "refrain", "hook", "instrumental",
+]);
+
+function comparableSectionLabel(label: string): string | null {
+  const normalized = label.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+\d+$/, "").trim();
+  return COMPARABLE_SECTION_LABELS.has(normalized) ? normalized : null;
+}
+
 /**
- * Map the selected recipient section to the donor section at the same structural
- * position. This only aligns source position; it does not claim semantic or
- * harmonic compatibility. Incompatible or low-confidence maps fall back to beat phase.
+ * Map by a confident, comparable musical role—not section ordinal. Generic
+ * novelty cuts and per-track A/B labels are not cross-track structural evidence.
+ * Missing or weak roles fall back to verified beat phase.
  */
 export function liveStemSectionOffsetSeconds(
   recipientSections: readonly LiveStemSection[] | null | undefined,
@@ -250,7 +261,7 @@ export function liveStemSectionOffsetSeconds(
     !Array.isArray(recipientSections)
     || !Array.isArray(donorSections)
     || recipientSections.length === 0
-    || recipientSections.length !== donorSections.length
+    || donorSections.length === 0
     || !Number.isFinite(recipientPositionSeconds)
     || recipientPositionSeconds < 0
     || !Number.isFinite(stretchRatio)
@@ -265,8 +276,14 @@ export function liveStemSectionOffsetSeconds(
     && Number.isInteger(section.startBeatIndex)
     && Number.isInteger(section.endBeatIndex)
     && section.endBeatIndex > section.startBeatIndex
+    && typeof section.label === "string"
+    && section.label.trim().length > 0
+    && Number.isFinite(section.labelConfidence)
+    && section.labelConfidence >= 0
+    && section.labelConfidence <= 1
     && Number.isFinite(section.structuralConfidence)
     && section.structuralConfidence >= 0.6
+    && section.structuralConfidence <= 1
     && (index === 0 || section.startMs >= sections[index - 1].endMs),
   );
   if (!validSections(recipientSections) || !validSections(donorSections)) return null;
@@ -276,11 +293,23 @@ export function liveStemSectionOffsetSeconds(
     recipientMs >= section.startMs && recipientMs < section.endMs,
   );
   if (!recipient) return null;
-  const donor = donorSections[recipient.sectionIndex];
-  if (!donor) return null;
+  const role = comparableSectionLabel(recipient.label);
+  if (!role || recipient.labelConfidence < 0.75) return null;
   const recipientBeatLength = recipient.endBeatIndex - recipient.startBeatIndex;
-  const donorBeatLength = donor.endBeatIndex - donor.startBeatIndex;
-  if (Math.abs(recipientBeatLength - donorBeatLength) > 4) return null;
+  const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
+  const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
+  if (recipientTrackEnd <= 0 || donorTrackEnd <= 0) return null;
+  const recipientPhase = recipient.startBeatIndex / recipientTrackEnd;
+  const donor = donorSections
+    .filter((candidate) => comparableSectionLabel(candidate.label) === role
+      && candidate.labelConfidence >= 0.75
+      && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 4)
+    .sort((left, right) => {
+      const leftDistance = Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase);
+      const rightDistance = Math.abs(right.startBeatIndex / donorTrackEnd - recipientPhase);
+      return leftDistance - rightDistance;
+    })[0];
+  if (!donor) return null;
 
   // Output-coordinate offset: donor section start * stretch = recipient section start + offset.
   return (donor.startMs * stretchRatio - recipient.startMs) / 1000;

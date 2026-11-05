@@ -94,15 +94,20 @@ export function SourceSectionMap({
   return <section className="source-section-map" aria-label="Source structure markers" data-testid={`source-section-map-${source.id}`}>
     <div className="panel-title"><div><span className="eyebrow">Source-coordinate markers</span><h3>Detected structure</h3></div><span>{sections.length} sections</span></div>
     <div className="source-section-ruler" role="list" aria-label="Detected source sections">
-      {sections.map((section) => <button
+      {sections.map((section) => {
+        const label = section.label === "section"
+          ? `Section ${section.sectionIndex + 1}`
+          : `${section.labelConfidence < 0.75 ? "Possible " : ""}${section.label}`;
+        return <button
         type="button"
         role="listitem"
         className={`source-section-marker ${selected?.id === section.id ? "selected" : ""}`}
         key={section.id}
         style={{ width: `${Math.max(2, ((section.endMs - section.startMs) / durationMs) * 100)}%` }}
         onClick={() => { setSelectedId(section.id); setActionMessage(null); }}
-        title={`Section ${section.sectionIndex + 1}, bars ${section.startBar} to ${section.endBar}`}
-      >Section {section.sectionIndex + 1}</button>)}
+        title={`${label}, bars ${section.startBar} to ${section.endBar}`}
+      >{label}</button>;
+      })}
     </div>
     {selected ? <div className="source-section-inspection" data-testid={`source-section-inspection-${selected.id}`}>
       <span className="eyebrow">Section</span>

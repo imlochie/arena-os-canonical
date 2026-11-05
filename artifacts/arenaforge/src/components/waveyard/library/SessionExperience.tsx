@@ -116,6 +116,8 @@ interface SessionTrackItem {
       endMs: number;
       startBeatIndex: number;
       endBeatIndex: number;
+      label: string;
+      labelConfidence: number;
       structuralConfidence: number;
     }> | null;
   } | null;
