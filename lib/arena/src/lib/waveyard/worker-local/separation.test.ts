@@ -669,6 +669,48 @@ test("waveform save retry reuses its object key after a partial write", async ()
   }
 });
 
+test("concurrent duplicate waveform deliveries keep the completed asset and object", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let generationCalls = 0;
+    let releaseGeneration!: () => void;
+    const bothHandlersGenerating = new Promise<void>((resolve) => {
+      releaseGeneration = resolve;
+    });
+    const generateWaveform = async () => {
+      generationCalls += 1;
+      if (generationCalls === 2) releaseGeneration();
+      await bothHandlersGenerating;
+      return validWaveformDocument();
+    };
+    const payload = sourceWaveformPayload(f, job.id);
+    const dependencies = { db: f.database, generateWaveform, sleep: async () => {} };
+
+    const results = await Promise.allSettled([
+      handleWaveformJob(payload, dependencies),
+      handleWaveformJob(payload, dependencies),
+    ]);
+
+    const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    const storedObjects = (await getStorage().listObjects("projects"))
+      .filter((object) => object.key.startsWith(`projects/${f.project.id}/waveform/`));
+    const canonicalKey = `projects/${f.project.id}/waveform/${job.id}.json`;
+
+    assert.equal(generationCalls, 2, "both real handlers process the same queued job concurrently");
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"],
+      "a duplicate delivery that loses the asset insert is handled as successful work");
+    assert.equal(completed.status, "complete");
+    assert.equal(assets.length, 1, "the unique waveform asset is preserved");
+    assert.equal(storedObjects.length, 1, "only one waveform object remains for the project");
+    assert.equal(storedObjects[0]?.key, canonicalKey, "the shared object uses the job's canonical key");
+    assert.equal(await getStorage().exists(assets[0]!.storageKey), true);
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform recovery resumes the persisted retry after a local worker restart", async () => {
   const f = await fixture();
   try {

@@ -17,7 +17,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db } from "@workspace/db";
@@ -109,7 +109,14 @@ export async function cleanupOrphanedWaveformObjects(
 }
 
 async function updateJob(database: ReturnType<typeof drizzle>, id: string, patch: Partial<typeof waveformJobs.$inferInsert>) {
-  await database.update(waveformJobs).set({ ...patch, updatedAt: new Date() }).where(eq(waveformJobs.id, id));
+  await database
+    .update(waveformJobs)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(and(
+      eq(waveformJobs.id, id),
+      ne(waveformJobs.status, "complete"),
+      ne(waveformJobs.status, "cancelled"),
+    ));
 }
 
 export function isTransientWaveformFailure(error: unknown): boolean {
@@ -337,6 +344,16 @@ export async function handleWaveformJob(
       }
       return;
     } catch (error) {
+      const [latestJob] = await database
+        .select({ status: waveformJobs.status })
+        .from(waveformJobs)
+        .where(eq(waveformJobs.id, job.id))
+        .limit(1);
+      // Another delivery may have committed the asset and completed the job
+      // while this handler was storing its own copy. Treat that unique-key
+      // conflict as successful duplicate delivery, not a failed job.
+      if (latestJob?.status === "complete") return;
+
       const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown waveform failure.";
       const retryable = isTransientWaveformFailure(error);
       const permanentPcmLimit = error instanceof WaveformPcmLimitError;
