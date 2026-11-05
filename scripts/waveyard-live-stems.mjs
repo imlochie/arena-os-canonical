@@ -225,6 +225,7 @@ if (mashupEvaluationOnly) {
       transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
       analysis: {
         bpm: index === 1 ? 124 : 120,
+        beatConfidence: index === 0 ? 0.9 : null,
         musicalKey: ["A minor", "C major", "C# major"][index],
         beatGridMs: index === 0 ? Array.from({ length: 6 }, (_, beat) => beat * 4_000) : null,
       } };
@@ -3690,6 +3691,11 @@ try {
   await resetSpeed.click();
   assert.equal(await page.getByTestId("session-speed-value").textContent(), "1.00×",
     "reset returns to the original tempo after any slider adjustment");
+  await page.getByTestId("seek-deck-0").fill("0");
+  await page.waitForFunction(() => {
+    const seek = document.querySelector('[data-testid="seek-deck-0"]');
+    return seek?.value === "0";
+  });
   assert.equal(await page.getByTestId("session-loop-4").isEnabled(), true,
     "a four-beat loop should be available when the analyzed grid covers it");
   assert.equal(await page.getByTestId("session-loop-8").isEnabled(), false,

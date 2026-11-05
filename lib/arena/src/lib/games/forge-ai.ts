@@ -15,6 +15,7 @@
  */
 
 import { generate } from "@workspace/arena/lib/ai";
+import { getModel } from "@workspace/arena/lib/models";
 import { extractImportedHtml, importedHtmlSafetyIssue } from "./imported-html";
 import { detectGameType, extractGameCode, validateGameCode, type Mods, parseMods } from "./index";
 
@@ -52,6 +53,55 @@ export interface ForgeAIResult {
   runtime: { backend?: string; modelId: string; via?: string; fallback?: boolean; ms: number };
   repairRuntime?: { backend?: string; modelId?: string };
   title: string;
+}
+
+export interface RemoteModelTestResult {
+  response: string;
+  runtime: { backend: string; modelId: string; via?: string; ms: number };
+}
+
+const REMOTE_MODEL_TEST_REQUEST =
+  "For a tiny HTML5 game, name one thing to draw, one key control, and one way to score. Reply in one short sentence.";
+
+/**
+ * Verify only the selected remote text model. This deliberately avoids the
+ * game-generation pipeline, fallback routes, validation, preview, and storage.
+ */
+export async function testRemoteGameModel(
+  modelId: string,
+  opts: { signal?: AbortSignal } = {},
+  deps: { generate?: typeof generate } = {},
+): Promise<RemoteModelTestResult> {
+  const model = getModel(modelId);
+  if (model.id !== modelId || model.level !== "remote" || model.backend !== "pollinations" || model.kind !== "text") {
+    throw new Error("The selected model is not a supported remote text model.");
+  }
+
+  const result = await (deps.generate ?? generate)({
+    modelId,
+    messages: [{ role: "user", content: REMOTE_MODEL_TEST_REQUEST }],
+    system: "Answer only with one concise sentence. Do not produce code.",
+    temperature: 0,
+    maxTokens: 48,
+    signal: opts.signal,
+    strictRoute: true,
+    allowPublicFallback: false,
+  });
+
+  if (result.fallback || result.runtimeLevel !== "remote" || result.backend !== "pollinations") {
+    throw new Error("Pollinations did not run the selected remote model; no fallback was accepted.");
+  }
+  if (!result.text.trim()) throw new Error("Pollinations returned an empty response.");
+
+  return {
+    response: result.text.trim().slice(0, 400),
+    runtime: {
+      backend: result.backend,
+      modelId: result.modelId,
+      via: result.via,
+      ms: result.ms,
+    },
+  };
 }
 
 function titleFromPrompt(prompt: string): string {

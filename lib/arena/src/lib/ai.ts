@@ -223,8 +223,12 @@ async function tryPollinationsOpenAI(
   temperature: number,
   maxTokens?: number,
   timeoutMs = 45000,
+  signal?: AbortSignal,
 ): Promise<string> {
   const ctrl = new AbortController();
+  const abortFromCaller = () => ctrl.abort(signal?.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetchImpl("https://text.pollinations.ai/openai", {
@@ -239,7 +243,12 @@ async function tryPollinationsOpenAI(
       }),
       signal: ctrl.signal,
     });
-    if (!res.ok) throw new Error(`pollinations-openai ${res.status}`);
+    if (!res.ok) {
+      throw Object.assign(new Error(`Pollinations returned HTTP ${res.status}`), {
+        provider: "pollinations",
+        status: res.status,
+      });
+    }
     const data = await res.json();
     const text =
       data?.choices?.[0]?.message?.content ??
@@ -249,6 +258,7 @@ async function tryPollinationsOpenAI(
     return String(text);
   } finally {
     clearTimeout(t);
+    signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -434,7 +444,15 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
   // worker executor; switching provider/model requires a new explicit assignment.
   // Offline models fall through to the local engine tier below (zero network).
   if (opts.strictRoute && model.pollinationsId !== "__offline__") {
-    const text = await tryPollinationsOpenAI(fetch, model.pollinationsId, fullMessages, temperature);
+    const text = await tryPollinationsOpenAI(
+      fetchImpl,
+      model.pollinationsId,
+      fullMessages,
+      temperature,
+      opts.maxTokens,
+      45_000,
+      opts.signal,
+    );
     return {
       text,
       runtimeLevel: "remote",

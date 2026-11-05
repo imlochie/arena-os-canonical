@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildPong } from "./classics";
-import { forgeGameWithAI, reviseImportedHtmlWithAI } from "./forge-ai";
+import { forgeGameWithAI, reviseImportedHtmlWithAI, testRemoteGameModel } from "./forge-ai";
 import { isClassicCorePrompt } from "./index";
 
 test("classic titles inside custom requests never select a preset core", () => {
@@ -61,6 +61,65 @@ test("local Model Hub generation stays on the selected model with remote fallbac
   assert.equal(request.keys, undefined);
   assert.equal(request.allowPublicFallback, false);
   assert.equal(request.signal, signal);
+});
+
+test("remote model test sends only a fixed small request through the selected provider", async () => {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  let request: any;
+  const result = await testRemoteGameModel("deepseek", { signal }, {
+    generate: (async (input: any) => {
+      request = input;
+      return {
+        text: "Draw a player, move with arrows, and score by collecting stars.",
+        runtimeLevel: "remote",
+        backend: "pollinations",
+        modelId: "deepseek",
+        via: "pollinations:deepseek",
+        fallback: false,
+        ms: 12,
+      };
+    }) as any,
+  });
+
+  assert.equal(request.modelId, "deepseek");
+  assert.deepEqual(request.messages, [{
+    role: "user",
+    content: "For a tiny HTML5 game, name one thing to draw, one key control, and one way to score. Reply in one short sentence.",
+  }]);
+  assert.equal(request.signal, signal);
+  assert.equal(request.strictRoute, true);
+  assert.equal(request.allowPublicFallback, false);
+  assert.equal(request.maxTokens, 48);
+  assert.equal(request.keys, undefined);
+  assert.equal(result.runtime.backend, "pollinations");
+  assert.equal(result.runtime.modelId, "deepseek");
+});
+
+test("remote model test rejects local selections and provider fallback results", async () => {
+  let called = false;
+  await assert.rejects(
+    () => testRemoteGameModel("turboagent-32b", {}, {
+      generate: (async () => { called = true; throw new Error("must not run"); }) as any,
+    }),
+    /not a supported remote text model/,
+  );
+  assert.equal(called, false);
+
+  await assert.rejects(
+    () => testRemoteGameModel("deepseek", {}, {
+      generate: (async () => ({
+        text: "fallback text",
+        runtimeLevel: "arena-local",
+        backend: "arena-local-engine",
+        modelId: "offline-sage",
+        via: "offline-fallback",
+        fallback: true,
+        ms: 1,
+      })) as any,
+    }),
+    /no fallback was accepted/,
+  );
 });
 
 test("oversized revision source is refused before calling a model", async () => {

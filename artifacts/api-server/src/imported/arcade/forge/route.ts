@@ -1,6 +1,7 @@
 import { db } from "@workspace/db";
 import { insertArcadeGame } from "@workspace/arena/lib/arcadeStore";
-import { forgeGameWithAI } from "@workspace/arena/lib/games/forge-ai";
+import { forgeGameWithAI, testRemoteGameModel } from "@workspace/arena/lib/games/forge-ai";
+import { getModel } from "@workspace/arena/lib/models";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireApiAccess } from "@workspace/arena/lib/security/api-access";
 import { verifyArcadeRuntime } from "../runtime-verification";
@@ -22,6 +23,41 @@ export async function POST(req: Request) {
     return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const user = await requireUser();
+  if (body?.remoteModelTest === true) {
+    if (body?.localOnly === true) {
+      return Response.json({ error: "Remote model tests are unavailable in Local Mode." }, { status: 403 });
+    }
+    const modelId = typeof body?.modelId === "string" ? body.modelId : "";
+    const selected = getModel(modelId);
+    const provider = selected.id === modelId ? selected.provider : "selected provider";
+    try {
+      const result = await testRemoteGameModel(modelId, { signal: req.signal });
+      if (req.signal.aborted) return new Response(null, { status: 499 });
+      return Response.json({ ephemeral: true, provider: result.runtime.backend, ...result });
+    } catch (e) {
+      if (req.signal.aborted || (e instanceof Error && e.name === "AbortError")) {
+        return new Response(null, { status: 499 });
+      }
+      const message = e instanceof Error ? e.message : "The remote provider could not complete the test.";
+      const statusCode = Number((e as any)?.status);
+      const failureKind =
+        statusCode === 401 || statusCode === 403 || /unauthorized|forbidden|authorization|api key/i.test(message)
+          ? "authorization"
+          : e instanceof TypeError || /network|fetch failed|timed? ?out|timeout|unreachable|aborterror|aborted/i.test(message)
+            ? "network"
+            : "provider";
+      const detail = failureKind === "authorization"
+        ? `${provider} rejected authorization${statusCode ? ` (HTTP ${statusCode})` : ""}. Check the provider's access requirements.`
+        : failureKind === "network"
+          ? `${provider} could not be reached. Check the network connection and retry.`
+          : `${provider} could not complete the test: ${message}`;
+      return Response.json(
+        { error: detail, failureKind, provider, modelId, ephemeral: true },
+        { status: failureKind === "network" ? 504 : 502 },
+      );
+    }
+  }
+
   const prompt = String(body?.prompt ?? "").trim();
   if (!prompt || prompt.length > 2000) return Response.json({ error: "Prompt must contain 1–2,000 characters." }, { status: 400 });
   const priorCode = typeof body?.priorCode === "string" ? body.priorCode : undefined;

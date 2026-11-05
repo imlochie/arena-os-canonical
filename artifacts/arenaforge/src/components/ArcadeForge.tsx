@@ -52,10 +52,11 @@ type ArcadeServerModel = {
   name: string;
   provider?: string;
   backend: string;
+  level?: string;
+  kind?: string;
   pollinationsId?: string;
   requiresKey?: boolean;
   requiresNetwork?: boolean;
-  kind?: string;
 };
 
 type LocalRuntimeProbe = {
@@ -117,6 +118,17 @@ const LOCAL_CHECK_CHANNEL = "arenaforge-local-model-check";
 const STARTUP_CHECK_CHANNEL = "arenaforge-game-startup-check";
 const LOCAL_CHECK_PROMPT =
   "Create a tiny original HTML5 game for a local model test: draw a blue square on a canvas, move it with arrow keys, let it collect one gold coin, and show a score HUD. Use requestAnimationFrame. Make it one complete offline HTML file with no external URLs or assets.";
+
+const REMOTE_MODEL_TEST_RESULT_LIMIT = 400;
+
+type RemoteModelTestState = {
+  modelId: string;
+  provider: string;
+  backend: string;
+  actualModelId: string;
+  response: string;
+  ms: number;
+} | null;
 
 type LocalModelCheck = {
   id: string;
@@ -264,6 +276,9 @@ export default function ArcadeForge() {
   const [activeCheckSource, setActiveCheckSource] = useState<"webllm" | "model-hub" | null>(null);
   const [localCheckError, setLocalCheckError] = useState<string | null>(null);
   const [localModelCheck, setLocalModelCheck] = useState<LocalModelCheck | null>(null);
+  const [remoteModelTest, setRemoteModelTest] = useState<RemoteModelTestState>(null);
+  const [remoteModelTestError, setRemoteModelTestError] = useState<string | null>(null);
+  const [remoteModelTestRunning, setRemoteModelTestRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const gameFrameRef = useRef<HTMLIFrameElement>(null);
   const localCheckFrameRef = useRef<HTMLIFrameElement>(null);
@@ -576,6 +591,8 @@ export default function ArcadeForge() {
 
   function chooseServerModel(id: string) {
     setServerModelId(id);
+    setRemoteModelTest(null);
+    setRemoteModelTestError(null);
     setModelHandoffMessage(null);
     try {
       if (id) localStorage.setItem(SERVER_MODEL_PREFERENCE, id);
@@ -744,6 +761,73 @@ export default function ArcadeForge() {
       setBusy(false);
       setPhase("");
       setStreamed("");
+    }
+  }
+
+  async function runRemoteModelTest() {
+    const selected = serverModels.find((model) => model.id === serverModelId);
+    if (
+      !selected ||
+      selected.level !== "remote" ||
+      selected.backend !== "pollinations" ||
+      selected.kind !== "text" ||
+      localOnlyMode ||
+      remoteModelTestRunning ||
+      localCheckRunning ||
+      busy ||
+      iterating
+    ) return;
+
+    setRemoteModelTest(null);
+    setRemoteModelTestError(null);
+    setRemoteModelTestRunning(true);
+    try {
+      const response = await fetch("/api/arcade/forge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          remoteModelTest: true,
+          modelId: selected.id,
+          localOnly: false,
+          ephemeral: true,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const failureKind = body.failureKind ??
+          (response.status === 401 || response.status === 403
+            ? "authorization"
+            : response.status === 504
+              ? "network"
+              : "provider");
+        const issue = failureKind === "authorization"
+          ? `Authorization issue: ${body.error ?? `${selected.provider ?? "The provider"} rejected the request.`}`
+          : failureKind === "network"
+            ? `Network issue: ${body.error ?? `${selected.provider ?? "The provider"} could not be reached.`}`
+            : `Provider issue: ${body.error ?? `${selected.provider ?? "The provider"} could not answer.`}`;
+        throw new Error(issue);
+      }
+
+      const result = body.runtime ?? {};
+      if (body.ephemeral !== true || typeof body.response !== "string" || !body.response.trim()) {
+        throw new Error("The provider response was incomplete; no game was created or saved.");
+      }
+      setRemoteModelTest({
+        modelId: selected.id,
+        provider: String(body.provider ?? selected.provider ?? selected.backend),
+        backend: String(result.backend ?? selected.backend),
+        actualModelId: String(result.modelId ?? selected.id),
+        response: body.response.slice(0, REMOTE_MODEL_TEST_RESULT_LIMIT),
+        ms: Number.isFinite(Number(result.ms)) ? Number(result.ms) : 0,
+      });
+    } catch (cause) {
+      setRemoteModelTestError(cause instanceof TypeError
+        ? `Network issue: Could not reach Arena or ${selected.provider ?? "the selected provider"}. Check the connection and retry.`
+        : cause instanceof Error
+          ? cause.message
+          : `The ${selected.provider ?? "remote provider"} test failed.`);
+    } finally {
+      setRemoteModelTestRunning(false);
     }
   }
 
@@ -1443,6 +1527,12 @@ export default function ArcadeForge() {
   const selectedLocalModel = serverModels.some(
     (model) => model.id === serverModelId && isServerRoutedLocalModel(model),
   );
+  const selectedRemoteTextModel = Boolean(
+    selectedSourceModel?.level === "remote" &&
+    selectedSourceModel.backend === "pollinations" &&
+    selectedSourceModel.kind === "text",
+  );
+  const selectedRemoteModelTest = remoteModelTest?.modelId === selectedSourceModel?.id ? remoteModelTest : null;
   const selectedLocalRuntimeChecking = strategy === "auto" &&
     ((selectedSourceModel?.backend === "local-server" &&
       (!selectedLocalRuntimeProbe || selectedLocalRuntimeProbe.status === "checking")) ||
@@ -1649,6 +1739,41 @@ export default function ArcadeForge() {
                 ? "Checking the saved local TurboAgent endpoint and selected model. No game prompt has been sent."
                 : `${selectedTurboAgentProbe.detail ?? "TurboAgent status is unknown"}${selectedTurboAgentProbe.recovery ? ` ${selectedTurboAgentProbe.recovery}` : ""}`}
             </p>
+          )}
+          {selectedRemoteTextModel && !localOnlyMode && (
+            <div data-testid="remote-model-test-panel" className="mt-3 rounded-xl border border-violet-400/20 bg-violet-500/5 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-extrabold text-violet-100">Test the selected remote model</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                    Clicking sends a fixed, short game request to {selectedSourceModel?.provider ?? selectedSourceModel?.backend}. It does not send your game prompt, create a preview, or save a game.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="button-remote-model-test"
+                  onClick={runRemoteModelTest}
+                  disabled={remoteModelTestRunning || localCheckRunning || busy || iterating}
+                  className="rounded-lg border border-violet-300/30 bg-violet-400/10 px-3 py-2 text-xs font-extrabold text-violet-100 hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {remoteModelTestRunning ? "Testing remote model…" : `Test ${selectedSourceModel?.name}`}
+                </button>
+              </div>
+              {remoteModelTestError && (
+                <p data-testid="remote-model-test-error" role="alert" className="mt-2 rounded-lg border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                  {remoteModelTestError}
+                </p>
+              )}
+              {selectedRemoteModelTest && (
+                <div data-testid="remote-model-test-result" role="status" className="mt-2 rounded-lg border border-emerald-400/20 bg-emerald-500/5 px-3 py-2">
+                  <p className="text-xs font-bold text-emerald-200">
+                    Provider answered: {selectedRemoteModelTest.provider} · {selectedRemoteModelTest.backend} · {selectedRemoteModelTest.actualModelId}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-300">{selectedRemoteModelTest.response}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">{(selectedRemoteModelTest.ms / 1000).toFixed(1)} s · temporary test only; nothing was saved</p>
+                </div>
+              )}
+            </div>
           )}
           <div data-testid="local-generation-check-panel" className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

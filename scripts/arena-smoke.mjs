@@ -3950,15 +3950,22 @@ let liveDrumDonorResponseBodyLength = 0;
   );
   report.push("Arcade checks only the saved local TurboAgent endpoint, distinguishes offline, malformed, and missing-model states, hides the URL, and blocks prompts until ready.");
 
+  await page.getByLabel("Connected model source").selectOption("openai");
+  assert.equal(
+    await page.getByTestId("remote-model-test-panel").count(),
+    0,
+    "remote model testing must not be available while Local Mode is enabled",
+  );
   await page.evaluate(() => {
     localStorage.setItem("af_local_mode", "0");
     window.dispatchEvent(new Event("af-privacy"));
   });
-  await page.getByLabel("Connected model source").selectOption("openai");
   let promptGenerationSeen = false;
   let localServerGenerationSeen = false;
   let localServerRevisionSeen = false;
   let localModelProofSeen = false;
+  let remoteModelTestSeen = false;
+  let remoteModelTestAuthFailureNext = false;
   let expectedModelId = "openai";
   let expectedLocalOnly = false;
   let failNextGeneration = false;
@@ -4072,6 +4079,43 @@ let liveDrumDonorResponseBodyLength = 0;
     assert.equal(body.modelId, expectedModelId, "the selected model source must reach the game-generation route");
     assert.equal(Boolean(body.localOnly), expectedLocalOnly, "the generation route must preserve Local Mode");
     if (expectedLocalOnly) assert.equal(body.keys, undefined, "Local Mode must not send provider keys");
+    if (body.remoteModelTest === true) {
+      assert.equal(body.ephemeral, true, "the remote provider test must be explicitly ephemeral");
+      assert.equal(body.prompt, undefined, "the remote test must not send the user's game prompt");
+      assert.equal(body.priorCode, undefined, "the remote test must not send existing game source");
+      remoteModelTestSeen = true;
+      if (remoteModelTestAuthFailureNext) {
+        remoteModelTestAuthFailureNext = false;
+        await route.fulfill({
+          status: 502,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: "GPT (Pollinations) rejected authorization (HTTP 401). Check the provider's access requirements.",
+            failureKind: "authorization",
+            provider: "GPT (Pollinations)",
+            modelId: expectedModelId,
+            ephemeral: true,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ephemeral: true,
+          provider: "pollinations",
+          response: "Draw a player, move with arrows, and score by collecting stars.",
+          runtime: {
+            backend: "pollinations",
+            modelId: expectedModelId,
+            via: `pollinations:${expectedModelId}`,
+            ms: 12,
+          },
+        }),
+      });
+      return;
+    }
     if (body.prompt.includes("local model test")) {
       assert.equal(body.ephemeral, true, "The local model proof must not save a shared game");
       assert.equal(body.priorCode, undefined, "The local model proof must not reuse another game's source");
@@ -4208,6 +4252,22 @@ let liveDrumDonorResponseBodyLength = 0;
     await page.locator("summary").filter({ hasText: "Model setup" }).click();
   }
   await connectedModelSource.selectOption("openai");
+  const remoteModelTestPanel = page.getByTestId("remote-model-test-panel");
+  await remoteModelTestPanel.getByText(/fixed, short game request to pollinations · openai/i).waitFor();
+  await remoteModelTestPanel.getByTestId("button-remote-model-test").click();
+  await remoteModelTestPanel.getByTestId("remote-model-test-result").getByText(
+    "Provider answered: pollinations · pollinations · openai",
+  ).waitFor();
+  await remoteModelTestPanel.getByText(/Draw a player, move with arrows/).waitFor();
+  assert(remoteModelTestSeen, "the explicit remote model test must send its fixed ephemeral request");
+
+  remoteModelTestAuthFailureNext = true;
+  await remoteModelTestPanel.getByTestId("button-remote-model-test").click();
+  await remoteModelTestPanel.getByTestId("remote-model-test-error").getByText(
+    /Authorization issue: GPT \(Pollinations\) rejected authorization \(HTTP 401\)/,
+  ).waitFor();
+  report.push("The selected remote model can be tested explicitly with a fixed ephemeral request; provider/backend/model are shown, authorization failures are identified, and Local Mode hides the control.");
+
   await page.getByLabel("Game prompt").fill("Pong");
   await page.getByRole("button", { name: "🎮 Create & play" }).click();
   await page.getByText("✨ AI codegen").waitFor({ timeout: 10000 });
