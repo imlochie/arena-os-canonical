@@ -61,6 +61,49 @@ test("live WSOLA pitch-follow mode changes tone frequency with session speed", (
   assert.ok(Math.abs(estimateFrequency(fast) - 528) < 4, "1.2× pitch-follow should reach 528 Hz");
 });
 
+test("pitch lock keeps percussion on the tempo clock over a minute, not the correlation search clock", () => {
+  const sampleRate = 48_000;
+  const source = new Float32Array(sampleRate * 8);
+  for (let frame = 0; frame < source.length; frame++) {
+    const sinceBeat = (frame - sampleRate / 4 + source.length) % (sampleRate / 2);
+    source[frame] = 0.08 * Math.sin(2 * Math.PI * 233 * frame / sampleRate)
+      + (sinceBeat < 40 ? 0.9 * Math.exp(-sinceBeat / 10) : 0);
+  }
+  for (const rate of [0.8, 1.2]) {
+    const processor = new LiveStemWsola([source], sampleRate);
+    processor.setRate(rate);
+    processor.setPitchPreserving(true);
+    processor.setPlaying(true);
+    const output = new Float32Array(sampleRate * 60);
+    for (let frame = 0; frame < output.length; frame += 128) {
+      processor.process([output.subarray(frame, Math.min(output.length, frame + 128))]);
+    }
+    let maximumError = 0;
+    let minimumPeak = Infinity;
+    for (let beat = 2; ; beat++) {
+      const expected = (0.25 + beat * 0.5) / rate * sampleRate;
+      if (expected + sampleRate / 5 >= output.length) break;
+      let peak = 0;
+      let peakFrame = 0;
+      for (let frame = Math.floor(expected - sampleRate / 5); frame < expected + sampleRate / 5; frame++) {
+        if (Math.abs(output[frame]) > peak) {
+          peak = Math.abs(output[frame]);
+          peakFrame = frame;
+        }
+      }
+      minimumPeak = Math.min(minimumPeak, peak);
+      maximumError = Math.max(maximumError, Math.abs(peakFrame - expected) / sampleRate);
+    }
+    assert.ok(minimumPeak > 0.2, `${rate}× must retain a real drum transient on every expected beat`);
+    console.log(`WAVEYARD_PERCUSSION_TIMING ${JSON.stringify({
+      sampleRate, durationSeconds: 60, rate,
+      maximumTransientErrorMs: Number((maximumError * 1000).toFixed(3)),
+      minimumTransientPeak: Number(minimumPeak.toFixed(3)),
+    })}`);
+    assert.ok(maximumError < 0.045, `${rate}× maximum transient timing error ${maximumError.toFixed(4)}s must stay bounded, not accumulate`);
+  }
+});
+
 test("seeking while pitch lock is enabled starts from the requested source frame", () => {
   const source = tone(440);
   const stretcher = new LiveStemWsola([source], SAMPLE_RATE);

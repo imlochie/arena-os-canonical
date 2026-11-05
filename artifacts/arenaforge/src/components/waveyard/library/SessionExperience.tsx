@@ -3971,6 +3971,7 @@ export default function SessionExperience({
     );
     const selectedDonorBpm = swap === undefined ? null
       : session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis?.bpm
+        ?? swap.donorTrack?.analysis?.bpm
         ?? library.find((item) => item.id === swap.toTrackId)?.analysis?.bpm
         ?? null;
     const inSession = new Set(session.tracks.map((item) => item.track.id));
@@ -4023,7 +4024,9 @@ export default function SessionExperience({
       : pendingSwap
         ? "Preparing live layer…"
         : activeSwapTempoStretchRatios[stemType] !== undefined
-          ? "Tempo matched · pitch preserved"
+          ? currentSwapSetup.beatOffsets[stemType] !== undefined
+            ? "Tempo matched · beat phase aligned"
+            : "Tempo matched · beat alignment unavailable"
           : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
             : "Tempo unavailable · native tempo";

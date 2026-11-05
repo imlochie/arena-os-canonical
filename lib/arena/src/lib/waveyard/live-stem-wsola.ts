@@ -143,7 +143,9 @@ export class LiveStemWsola {
       }
     }
 
-    this.position = this.wrap(start + this.hop * this.rate);
+    // Correlation chooses only the local waveform splice. Advancing from that
+    // candidate integrates its search error every hop and loses musical time.
+    this.position = this.wrap(this.position + this.hop * this.rate);
     this.hasTail = true;
     this.cursor = 0;
   }
