@@ -31,6 +31,8 @@ import {
   sourceAssets,
   sourceAnalyses,
   sourceAcquisitions,
+  sourceSectionAnalyses,
+  sourceSections,
   stemAssets,
   tracks,
 } from "@workspace/db/waveyardSchema";
@@ -38,6 +40,7 @@ import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { checksumFile, probeAudio, sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage, privateObjectKey } from "../storage";
 import { sourceObjectLockQuery } from "../source-object-lock";
+import { sourceSectionsAreValid, type SourceSection } from "../types/source-sections";
 import {
   normalizeStemMix,
   parseStemMix,
@@ -1338,23 +1341,34 @@ export interface SessionTrackAnalysis {
   bpm: number | null;
   musicalKey: string | null;
   beatGridMs: number[] | null;
+  sections: SourceSection[] | null;
 }
 
 export async function sessionTrackAnalysis(ownerId: string, trackId: string): Promise<SessionTrackAnalysis | null> {
   const detail: TrackDetail | null = await getTrack(ownerId, trackId);
   if (detail === null) return null;
   const [sourceTrack] = await db
-    .select({ sourceAssetId: tracks.sourceAssetId })
+    .select({
+      sourceAssetId: tracks.sourceAssetId,
+      checksumSha256: sourceAssets.checksumSha256,
+    })
     .from(tracks)
+    .leftJoin(sourceAssets, eq(sourceAssets.id, tracks.sourceAssetId))
     .where(eq(tracks.id, trackId))
     .limit(1);
-  if (sourceTrack === undefined) return null;
+  if (sourceTrack === undefined || sourceTrack.sourceAssetId === null) return null;
   const [analysis] = await db
-    .select({ bpm: sourceAnalyses.bpm, musicalKey: sourceAnalyses.musicalKey, beatGrid: sourceAnalyses.beatGrid })
+    .select({
+      id: sourceAnalyses.id,
+      bpm: sourceAnalyses.bpm,
+      musicalKey: sourceAnalyses.musicalKey,
+      beatGrid: sourceAnalyses.beatGrid,
+      sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
+    })
     .from(sourceAnalyses)
     .where(and(eq(sourceAnalyses.sourceAssetId, sourceTrack.sourceAssetId), eq(sourceAnalyses.status, "complete")))
     .limit(1);
-  if (analysis === undefined) return { bpm: null, musicalKey: null, beatGridMs: null };
+  if (analysis === undefined) return { bpm: null, musicalKey: null, beatGridMs: null, sections: null };
   let beatGridMs: number[] | null = null;
   try {
     const parsed = JSON.parse(analysis.beatGrid ?? "null");
@@ -1362,5 +1376,85 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
   } catch {
     beatGridMs = null;
   }
-  return { bpm: analysis.bpm, musicalKey: analysis.musicalKey, beatGridMs };
+
+  let sections: SourceSection[] | null = null;
+  if (
+    beatGridMs !== null
+    && sourceTrack.checksumSha256 !== null
+    && analysis.sourceChecksumSha256 === sourceTrack.checksumSha256
+  ) {
+    const [sectionAnalysis] = await db
+      .select({
+        id: sourceSectionAnalyses.id,
+        analysisEngine: sourceSectionAnalyses.analysisEngine,
+        analysisEngineVersion: sourceSectionAnalyses.analysisEngineVersion,
+      })
+      .from(sourceSectionAnalyses)
+      .where(and(
+        eq(sourceSectionAnalyses.sourceAssetId, sourceTrack.sourceAssetId),
+        eq(sourceSectionAnalyses.sourceAnalysisId, analysis.id),
+        eq(sourceSectionAnalyses.sourceChecksumSha256, sourceTrack.checksumSha256),
+        eq(sourceSectionAnalyses.status, "complete"),
+      ))
+      .limit(1);
+    if (sectionAnalysis !== undefined) {
+      const records = await db
+        .select({
+          id: sourceSections.id,
+          sectionIndex: sourceSections.sectionIndex,
+          startMs: sourceSections.startMs,
+          endMs: sourceSections.endMs,
+          startBeatIndex: sourceSections.startBeatIndex,
+          endBeatIndex: sourceSections.endBeatIndex,
+          startBar: sourceSections.startBar,
+          endBar: sourceSections.endBar,
+          label: sourceSections.label,
+          labelConfidence: sourceSections.labelConfidence,
+          structuralConfidence: sourceSections.structuralConfidence,
+          analysisEngine: sourceSections.analysisEngine,
+          analysisEngineVersion: sourceSections.analysisEngineVersion,
+          sourceChecksumSha256: sourceSections.sourceChecksumSha256,
+          sourceAssetId: sourceSections.sourceAssetId,
+          sourceAnalysisId: sourceSections.sourceAnalysisId,
+          sourceSectionAnalysisId: sourceSections.sourceSectionAnalysisId,
+        })
+        .from(sourceSections)
+        .where(and(
+          eq(sourceSections.sourceAssetId, sourceTrack.sourceAssetId),
+          eq(sourceSections.sourceAnalysisId, analysis.id),
+          eq(sourceSections.sourceSectionAnalysisId, sectionAnalysis.id),
+          eq(sourceSections.sourceChecksumSha256, sourceTrack.checksumSha256),
+        ))
+        .orderBy(asc(sourceSections.sectionIndex));
+      const provenanceMatches = records.length > 0 && records.every((record) =>
+        record.label === "section"
+        && record.sourceAssetId === sourceTrack.sourceAssetId
+        && record.sourceAnalysisId === analysis.id
+        && record.sourceSectionAnalysisId === sectionAnalysis.id
+        && record.sourceChecksumSha256 === sourceTrack.checksumSha256
+        && record.analysisEngine === sectionAnalysis.analysisEngine
+        && record.analysisEngineVersion === sectionAnalysis.analysisEngineVersion,
+      );
+      if (provenanceMatches) {
+        const candidates: SourceSection[] = records.map((record) => ({
+          id: record.id,
+          sectionIndex: record.sectionIndex,
+          startMs: record.startMs,
+          endMs: record.endMs,
+          startBeatIndex: record.startBeatIndex,
+          endBeatIndex: record.endBeatIndex,
+          startBar: record.startBar,
+          endBar: record.endBar,
+          label: "section",
+          labelConfidence: record.labelConfidence,
+          structuralConfidence: record.structuralConfidence,
+          analysisEngine: record.analysisEngine,
+          analysisEngineVersion: record.analysisEngineVersion,
+          sourceChecksumSha256: record.sourceChecksumSha256,
+        }));
+        if (sourceSectionsAreValid(candidates, beatGridMs)) sections = candidates;
+      }
+    }
+  }
+  return { bpm: analysis.bpm, musicalKey: analysis.musicalKey, beatGridMs, sections };
 }

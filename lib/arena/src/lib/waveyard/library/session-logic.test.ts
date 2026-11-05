@@ -8,7 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { liveStemBeatOffsetSeconds } from "./session-logic";
+import { liveStemBeatOffsetSeconds, liveStemSectionOffsetSeconds } from "./session-logic";
 
 test("live stem phase projects measured donor beats into tempo-stretched recipient time", () => {
   // 120 BPM recipient begins at 100ms; 100 BPM donor begins at 420ms.
@@ -20,6 +20,35 @@ test("live stem phase projects measured donor beats into tempo-stretched recipie
   }
   assert.equal(liveStemBeatOffsetSeconds(null, [0, 500], 1), null);
   assert.equal(liveStemBeatOffsetSeconds([0, 500], [0, 500], NaN), null);
+});
+
+test("live stem section phase aligns corresponding, structurally compatible sections", () => {
+  const recipient = [
+    { sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, structuralConfidence: 0.9 },
+    { sectionIndex: 1, startMs: 8_000, endMs: 16_000, startBeatIndex: 16, endBeatIndex: 32, structuralConfidence: 0.85 },
+  ];
+  const donor = [
+    { sectionIndex: 0, startMs: 1_000, endMs: 9_000, startBeatIndex: 0, endBeatIndex: 16, structuralConfidence: 0.8 },
+    { sectionIndex: 1, startMs: 9_000, endMs: 17_000, startBeatIndex: 16, endBeatIndex: 32, structuralConfidence: 0.8 },
+  ];
+
+  assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1.1), 1.1);
+  assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 12, 1.1), 1.9);
+});
+
+test("live stem section phase refuses weak, mismatched, or out-of-range maps", () => {
+  const recipient = [
+    { sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, structuralConfidence: 0.9 },
+  ];
+  const donor = [
+    { sectionIndex: 0, startMs: 1_000, endMs: 9_000, startBeatIndex: 0, endBeatIndex: 24, structuralConfidence: 0.8 },
+  ];
+  const weak = [{ ...donor[0], structuralConfidence: 0.4 }];
+
+  assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1), null);
+  assert.equal(liveStemSectionOffsetSeconds(recipient, weak, 4, 1), null);
+  assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 8, 1), null);
+  assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, Number.NaN), null);
 });
 
 import {

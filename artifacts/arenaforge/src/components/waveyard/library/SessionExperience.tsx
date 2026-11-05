@@ -37,6 +37,7 @@ import {
   keyCompatibility,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
+  liveStemSectionOffsetSeconds,
   nextSessionTrack,
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
@@ -99,7 +100,19 @@ interface SessionTrackItem {
   playbackPreference: "source" | "stems" | null;
   stemMix: Record<string, number>;
   transition: TransitionConfig;
-  analysis: { bpm: number | null; musicalKey: string | null; beatGridMs: number[] | null } | null;
+  analysis: {
+    bpm: number | null;
+    musicalKey: string | null;
+    beatGridMs: number[] | null;
+    sections: Array<{
+      sectionIndex: number;
+      startMs: number;
+      endMs: number;
+      startBeatIndex: number;
+      endBeatIndex: number;
+      structuralConfidence: number;
+    }> | null;
+  } | null;
 }
 
 interface SessionDetail {
@@ -219,10 +232,11 @@ function getPersistedSwapSetup(
   const swaps: Record<string, string> = {};
   const tempoStretchRatios: Record<string, number> = {};
   const beatOffsets: Record<string, number> = {};
+  const sectionPositionMatches: Record<string, boolean> = {};
   const keyCorrections: Record<string, number> = {};
   const keyMatchStatuses: Record<string, string> = {};
   if (session === null || item === null) {
-    return { swaps, tempoStretchRatios, beatOffsets, keyCorrections, keyMatchStatuses };
+    return { swaps, tempoStretchRatios, beatOffsets, sectionPositionMatches, keyCorrections, keyMatchStatuses };
   }
 
   for (const swap of session.swaps) {
@@ -238,12 +252,21 @@ function getPersistedSwapSetup(
       ?? null;
     const ratio = liveStemTempoStretchRatio(item.analysis?.bpm ?? null, donorBpm);
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
-    const offset = ratio === null ? null : liveStemBeatOffsetSeconds(
-      item.analysis?.beatGridMs,
-      donor?.analysis?.beatGridMs ?? swap.donorTrack?.analysis?.beatGridMs,
+    const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? null;
+    const sectionOffset = ratio === null ? null : liveStemSectionOffsetSeconds(
+      item.analysis?.sections,
+      donorAnalysis?.sections,
+      swap.atSeconds,
       ratio,
     );
+    const beatOffset = ratio === null ? null : liveStemBeatOffsetSeconds(
+      item.analysis?.beatGridMs,
+      donorAnalysis?.beatGridMs,
+      ratio,
+    );
+    const offset = sectionOffset ?? beatOffset;
     if (offset !== null) beatOffsets[swap.stemType] = offset;
+    if (sectionOffset !== null) sectionPositionMatches[swap.stemType] = true;
     const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
     const leadKey = shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
@@ -268,7 +291,7 @@ function getPersistedSwapSetup(
             ? "Key already aligned"
             : keyMode === "camelot" ? "Camelot-compatible key matched" : "Key matched to lead";
   }
-  return { swaps, tempoStretchRatios, beatOffsets, keyCorrections, keyMatchStatuses };
+  return { swaps, tempoStretchRatios, beatOffsets, sectionPositionMatches, keyCorrections, keyMatchStatuses };
 }
 
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
@@ -4057,7 +4080,9 @@ export default function SessionExperience({
         ? "Preparing live layer…"
         : activeSwapTempoStretchRatios[stemType] !== undefined
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
-            ? "Tempo matched · pitch preserved · beat phase aligned"
+            ? currentSwapSetup.sectionPositionMatches[stemType]
+              ? "Tempo matched · pitch preserved · section position matched"
+              : "Tempo matched · pitch preserved · beat phase aligned"
             : "Tempo matched · pitch preserved · beat alignment unavailable"
           : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`

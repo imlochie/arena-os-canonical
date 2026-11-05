@@ -19,6 +19,7 @@ import {
   usableBeatGrid,
 } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { normaliseMusicalKey, semitoneShift } from "@workspace/arena/lib/waveyard/types/musical-key";
+import type { SourceSection } from "../types/source-sections";
 import { normalizePerformance, type PerformanceSettings } from "./performance";
 
 // ------------------------------------------------------------- transitions
@@ -180,6 +181,62 @@ export function liveStemBeatOffsetSeconds(
   if (!recipient || !donor || !Number.isFinite(stretchRatio) || stretchRatio <= 0) return null;
   // In output coordinates donorBeat * stretch = recipientBeat + offset.
   return (donor[0] * stretchRatio - recipient[0]) / 1000;
+}
+
+type LiveStemSection = Pick<
+  SourceSection,
+  "sectionIndex" | "startMs" | "endMs" | "startBeatIndex" | "endBeatIndex" | "structuralConfidence"
+>;
+
+/**
+ * Map the selected recipient section to the donor section at the same structural
+ * position. This only aligns source position; it does not claim semantic or
+ * harmonic compatibility. Incompatible or low-confidence maps fall back to beat phase.
+ */
+export function liveStemSectionOffsetSeconds(
+  recipientSections: readonly LiveStemSection[] | null | undefined,
+  donorSections: readonly LiveStemSection[] | null | undefined,
+  recipientPositionSeconds: number,
+  stretchRatio: number,
+): number | null {
+  if (
+    !Array.isArray(recipientSections)
+    || !Array.isArray(donorSections)
+    || recipientSections.length === 0
+    || recipientSections.length !== donorSections.length
+    || !Number.isFinite(recipientPositionSeconds)
+    || recipientPositionSeconds < 0
+    || !Number.isFinite(stretchRatio)
+    || stretchRatio <= 0
+  ) return null;
+
+  const validSections = (sections: readonly LiveStemSection[]) => sections.every((section, index) =>
+    section.sectionIndex === index
+    && Number.isSafeInteger(section.startMs)
+    && Number.isSafeInteger(section.endMs)
+    && section.endMs > section.startMs
+    && Number.isInteger(section.startBeatIndex)
+    && Number.isInteger(section.endBeatIndex)
+    && section.endBeatIndex > section.startBeatIndex
+    && Number.isFinite(section.structuralConfidence)
+    && section.structuralConfidence >= 0.6
+    && (index === 0 || section.startMs >= sections[index - 1].endMs),
+  );
+  if (!validSections(recipientSections) || !validSections(donorSections)) return null;
+
+  const recipientMs = recipientPositionSeconds * 1000;
+  const recipient = recipientSections.find((section) =>
+    recipientMs >= section.startMs && recipientMs < section.endMs,
+  );
+  if (!recipient) return null;
+  const donor = donorSections[recipient.sectionIndex];
+  if (!donor) return null;
+  const recipientBeatLength = recipient.endBeatIndex - recipient.startBeatIndex;
+  const donorBeatLength = donor.endBeatIndex - donor.startBeatIndex;
+  if (Math.abs(recipientBeatLength - donorBeatLength) > 4) return null;
+
+  // Output-coordinate offset: donor section start * stretch = recipient section start + offset.
+  return (donor.startMs * stretchRatio - recipient.startMs) / 1000;
 }
 
 export interface KeyCompatibility {
