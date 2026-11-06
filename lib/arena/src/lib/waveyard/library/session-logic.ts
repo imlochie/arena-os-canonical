@@ -131,8 +131,8 @@ export interface TempoCompatibility {
 
 const BPM_NEAR_TOLERANCE = 6;
 const RATIO_LOCK_TOLERANCE = 0.03;
-const LIVE_STEM_AUTO_STRETCH_MIN_RATIO = 0.8;
-const LIVE_STEM_AUTO_STRETCH_MAX_RATIO = 1.25;
+const LIVE_STEM_AUTO_STRETCH_MIN_RATIO = 0.75;
+const LIVE_STEM_AUTO_STRETCH_MAX_RATIO = 1.5;
 
 /** Deterministic tempo compatibility: near-equal BPMs, or a 0.5×/1×/2× lock. */
 export function tempoCompatibility(aBpm: number | null, bBpm: number | null): TempoCompatibility {
@@ -176,10 +176,10 @@ export interface LiveStemTempoEvidence {
 
 const LIVE_STEM_MIN_TEMPO_CONFIDENCE = 0.5;
 
-function hasConfidenceAtLeastHalf(confidence: number | null | undefined): boolean {
-  return typeof confidence === "number"
-    && Number.isFinite(confidence)
-    && confidence >= LIVE_STEM_MIN_TEMPO_CONFIDENCE;
+/** Also catch "near" half/double ratios that are within a generous tolerance. */
+function isNearHalfDoubleTempoPair(recipientBpm: number, donorBpm: number): boolean {
+  const ratio = tempoRatioForBpm(donorBpm, recipientBpm);
+  return ratio !== null && (Math.abs(ratio - 0.5) <= 0.15 || Math.abs(ratio - 2) <= 0.15);
 }
 
 export function hasReliableLiveStemTempoEvidence(evidence: LiveStemTempoEvidence): boolean {
@@ -211,7 +211,10 @@ export function liveStemTempoStretchRatio(
   const ratio = tempoRatioForBpm(donorBpm, recipientBpm);
   if (ratio === null) return null;
   if (evidence !== undefined && !hasReliableLiveStemTempoEvidence(evidence)) return 1;
-  if (isHalfDoubleTempoPair(recipientBpm, donorBpm)) return 1;
+  // If it's a near half/double pair, keep the donor's native tempo (no stretch).
+  if (isNearHalfDoubleTempoPair(recipientBpm, donorBpm)) return 1;
+  // Auto-stretch only for modest ratios; return null when the ratio is too extreme
+  // for automatic WSOLA stretching but is not a clean half/double lock.
   return ratio >= LIVE_STEM_AUTO_STRETCH_MIN_RATIO && ratio <= LIVE_STEM_AUTO_STRETCH_MAX_RATIO
     ? ratio
     : null;
