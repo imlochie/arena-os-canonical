@@ -282,7 +282,7 @@ export function liveStemSectionOffsetSeconds(
     && section.labelConfidence >= 0
     && section.labelConfidence <= 1
     && Number.isFinite(section.structuralConfidence)
-    && section.structuralConfidence >= 0.6
+    && section.structuralConfidence >= 0.3
     && section.structuralConfidence <= 1
     && (index === 0 || section.startMs >= sections[index - 1].endMs),
   );
@@ -294,7 +294,9 @@ export function liveStemSectionOffsetSeconds(
   );
   if (!recipient) return null;
   const role = comparableSectionLabel(recipient.label);
-  if (!role || recipient.labelConfidence < 0.75) return null;
+  if (!role) return null;
+  // Use >= 0.5 confidence instead of >= 0.75 for live/mashup contexts
+  if (recipient.labelConfidence < 0.5) return null;
   const recipientBeatLength = recipient.endBeatIndex - recipient.startBeatIndex;
   const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
   const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
@@ -302,8 +304,8 @@ export function liveStemSectionOffsetSeconds(
   const recipientPhase = recipient.startBeatIndex / recipientTrackEnd;
   const donor = donorSections
     .filter((candidate) => comparableSectionLabel(candidate.label) === role
-      && candidate.labelConfidence >= 0.75
-      && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 4)
+      && candidate.labelConfidence >= 0.5
+      && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 8)
     .sort((left, right) => {
       const leftDistance = Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase);
       const rightDistance = Math.abs(right.startBeatIndex / donorTrackEnd - recipientPhase);
