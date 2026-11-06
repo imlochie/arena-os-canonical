@@ -131,8 +131,8 @@ export interface TempoCompatibility {
 
 const BPM_NEAR_TOLERANCE = 6;
 const RATIO_LOCK_TOLERANCE = 0.03;
-const LIVE_STEM_AUTO_STRETCH_MIN_RATIO = 0.8;
-const LIVE_STEM_AUTO_STRETCH_MAX_RATIO = 1.25;
+const LIVE_STEM_AUTO_STRETCH_MIN_RATIO = 0.75;
+const LIVE_STEM_AUTO_STRETCH_MAX_RATIO = 1.5;
 
 /** Deterministic tempo compatibility: near-equal BPMs, or a 0.5×/1×/2× lock. */
 export function tempoCompatibility(aBpm: number | null, bBpm: number | null): TempoCompatibility {
@@ -176,31 +176,25 @@ export interface LiveStemTempoEvidence {
 
 const LIVE_STEM_MIN_TEMPO_CONFIDENCE = 0.5;
 
-function hasConfidenceAtLeastHalf(confidence: number | null | undefined): boolean {
-  return typeof confidence === "number"
-    && Number.isFinite(confidence)
-    && confidence >= LIVE_STEM_MIN_TEMPO_CONFIDENCE;
+/** Adaptive tolerance for half/double detection.
+ * Tolerance scales with ratio distance from 1.0:
+ *   - 0.05 at ratio=1.0 (same-tempo precision)
+ *   - 0.10 at ratio=1.5 or 0.67
+ *   - 0.15 at ratio=2.0 or 0.5 (original threshold)
+ *   - Grows proportionally with ratio distance from unity */
+function isNearHalfDoubleTempoPair(recipientBpm: number, donorBpm: number): boolean {
+  const ratio = tempoRatioForBpm(donorBpm, recipientBpm);
+  if (ratio === null) return false;
+  const tolerance = 0.05 + 0.1 * Math.abs(ratio - 1);
+  return Math.abs(ratio - 0.5) <= tolerance || Math.abs(ratio - 2) <= tolerance;
 }
 
-export function hasReliableLiveStemTempoEvidence(evidence: LiveStemTempoEvidence): boolean {
-  return [
-    evidence.recipientBpmConfidence,
-    evidence.donorBpmConfidence,
-  ].every(hasConfidenceAtLeastHalf);
-}
-
-export function hasReliableLiveStemBeatEvidence(evidence: LiveStemTempoEvidence): boolean {
-  return hasReliableLiveStemTempoEvidence(evidence) && [
-    evidence.recipientBeatConfidence,
-    evidence.donorBeatConfidence,
-  ].every(hasConfidenceAtLeastHalf);
-}
-
-/**
- * Safe automatic live-stem stretch factor (output duration / donor duration).
- * Keep half/double-time pairs at the donor's native pace; only modestly stretch
- * other pairs automatically. The low-level engine still supports wider manual
- * ratios, but an automatic 2× vocal warp is not a quality match.
+/** Regime-aware stretch factor.
+ * Distinguish between three tempo ratio regimes:
+ *   1. Same-tempo (ratio ≈ 1.0)                    → no stretch, return 1
+ *   2. Near half/double (ratio ≈ 0.5 or 2.0)       → keep donor's native tempo, return 1
+ *   3. Intermediate stretching (0.5 < ratio < 2.0)  → apply WSOLA stretch with the ratio
+ *   4. Outside the playable range                    → return null
  */
 export function liveStemTempoStretchRatio(
   recipientBpm: number | null,
@@ -211,10 +205,16 @@ export function liveStemTempoStretchRatio(
   const ratio = tempoRatioForBpm(donorBpm, recipientBpm);
   if (ratio === null) return null;
   if (evidence !== undefined && !hasReliableLiveStemTempoEvidence(evidence)) return 1;
-  if (isHalfDoubleTempoPair(recipientBpm, donorBpm)) return 1;
-  return ratio >= LIVE_STEM_AUTO_STRETCH_MIN_RATIO && ratio <= LIVE_STEM_AUTO_STRETCH_MAX_RATIO
-    ? ratio
-    : null;
+  // If it's a near half/double pair, keep the donor's native tempo (no stretch).
+  if (isNearHalfDoubleTempoPair(recipientBpm, donorBpm)) return 1;
+  // Same-tempo: no stretch needed
+  if (Math.abs(ratio - 1.0) <= 0.01) return 1;
+  // Near half/double: keep donor's native tempo
+  if (isNearHalfDoubleTempoPair(0, donorBpm) || isNearHalfDoubleTempoPair(0, recipientBpm)) return 1;
+  // Intermediate stretching: apply WSOLA stretch with the ratio
+  if (ratio > 0.5 && ratio < 2.0) return ratio;
+  // Outside the playable range for automatic WSOLA stretching
+  return null;
 }
 
 /** Offset in stretched-donor seconds. Beat zero is not necessarily a downbeat. */
@@ -282,7 +282,7 @@ export function liveStemSectionOffsetSeconds(
     && section.labelConfidence >= 0
     && section.labelConfidence <= 1
     && Number.isFinite(section.structuralConfidence)
-    && section.structuralConfidence >= 0.6
+    && section.structuralConfidence >= 0.3
     && section.structuralConfidence <= 1
     && (index === 0 || section.startMs >= sections[index - 1].endMs),
   );
@@ -294,7 +294,9 @@ export function liveStemSectionOffsetSeconds(
   );
   if (!recipient) return null;
   const role = comparableSectionLabel(recipient.label);
-  if (!role || recipient.labelConfidence < 0.75) return null;
+  if (!role) return null;
+  // Use >= 0.5 confidence instead of >= 0.75 for live/mashup contexts
+  if (recipient.labelConfidence < 0.5) return null;
   const recipientBeatLength = recipient.endBeatIndex - recipient.startBeatIndex;
   const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
   const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
@@ -302,8 +304,8 @@ export function liveStemSectionOffsetSeconds(
   const recipientPhase = recipient.startBeatIndex / recipientTrackEnd;
   const donor = donorSections
     .filter((candidate) => comparableSectionLabel(candidate.label) === role
-      && candidate.labelConfidence >= 0.75
-      && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 4)
+      && candidate.labelConfidence >= 0.5
+      && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 8)
     .sort((left, right) => {
       const leftDistance = Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase);
       const rightDistance = Math.abs(right.startBeatIndex / donorTrackEnd - recipientPhase);
