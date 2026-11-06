@@ -74,19 +74,27 @@ function isOutro(label: string): boolean {
   return /outro/i.test(label);
 }
 
-/**
- * Stretch ratio that syncs a vocal at vocalBpm to a bed at bedBpm.
- * When the raw ratio is an essentially-exact double/half relationship
- * (±1%), the vocal stays at natural speed: a 140 BPM vocal over a 70 BPM
- * bed is already grid-consistent in double-time, and a 2× WSOLA stretch
- * would only degrade it. Anything else stretches to match the bed's tempo,
- * clamped to 0.5–2.
+/** Regime-aware stretch ratio that syncs a vocal to a bed tempo.
+ * Distinguishes between three ratio regimes for optimal WSOLA stretching:
+ *   1. Same-tempo (ratio ≈ 1.0)          → no stretch, return 1
+ *   2. Near half/double (ratio ≈ 0.5 or 2.0) → keep native tempo, return 1
+ *   3. Intermediate stretching (0.5 < ratio < 2.0, ≠ 1.0) → apply the ratio
+ *   4. Outside playable range              → clamp to [0.5, 2.0]
+ *
+ * Rationale: Half/double pairs should not be stretched (degrades quality),
+ * same-tempo needs no stretch, intermediate ratios get WSOLA treatment,
+ * and extreme ratios are clamped to the playable [0.5, 2.0] range.
  */
 export function warpRatioForTempos(vocalBpm: number, bedBpm: number): number {
   if (vocalBpm <= 0 || bedBpm <= 0) return 1;
   const raw = vocalBpm / bedBpm;
+  // Same-tempo: no stretch needed
   if (Math.abs(raw - 1) <= 0.01) return 1;
-  if (Math.abs(raw - 0.5) <= 0.01 || Math.abs(raw - 2) <= 0.01) return 1;
+  // Near half/double: keep native tempo (WSOLA 2× or 0.5× degrades quality)
+  if (Math.abs(raw - 0.5) <= 0.05 || Math.abs(raw - 2) <= 0.05) return 1;
+  // Intermediate stretching: apply the ratio, clamped to [0.5, 2.0]
+  if (raw > 0.5 && raw < 2.0) return raw;
+  // Outside playable range: clamp to [0.5, 2.0]
   return Math.min(2, Math.max(0.5, raw));
 }
 
