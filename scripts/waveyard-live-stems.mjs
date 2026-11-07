@@ -39,7 +39,17 @@ if (process.argv.includes("--live-stem-timing-matrix")) {
       skippedEngines.push(engine);
       continue;
     }
-    if (result.status !== 0) process.exit(result.status ?? 1);
+    if (result.status !== 0) {
+      // Name the engine in a workflow annotation, not only in the log: the
+      // check-run annotation is the one part of a failed CI job that can be
+      // read without downloading the log archive, and "the matrix failed" is
+      // not actionable without knowing which browser failed.
+      if (process.env.GITHUB_ACTIONS === "true") {
+        console.log(`::error::LIVE_STEM_TIMING_ENGINE ${engine} exited with status ${result.status}`);
+      }
+      console.log(`LIVE_STEM_TIMING_FAILED ${engine} status=${result.status}`);
+      process.exit(result.status ?? 1);
+    }
   }
   if (skippedEngines.length > 0) {
     console.log(`PARTIAL: timing checks skipped for ${skippedEngines.join(", ")}; this is not full cross-browser coverage.`);
