@@ -335,9 +335,12 @@ async function run() {
         state.exitRequested = true;
       };
 
-      const dataMenu = Menu.getApplicationMenu()?.getMenuItemByLabel("Data");
-      const restoreItem = dataMenu?.submenu?.getMenuItemByLabel(
-        "Restore backup to a new data folder…",
+      // Electron menus expose .items, not a by-label lookup.
+      const dataMenu = Menu.getApplicationMenu()?.items.find(
+        (item) => item.label === "Data",
+      );
+      const restoreItem = dataMenu?.submenu?.items.find(
+        (item) => item.label === "Restore backup to a new data folder…",
       );
       if (!restoreItem || typeof restoreItem.click !== "function") {
         throw new Error("The Arena Data menu restore item is unavailable.");

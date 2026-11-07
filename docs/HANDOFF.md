@@ -34,15 +34,28 @@ to a working, verified capability.
 
 1. **Land PR #28** (mashup fail-closed + Windows CI repairs) once Windows
    packaging and Waveyard browser acceptance are green.
-2. **Protect `main`**: no branch protection or rulesets exist. Require CI and
+2. **Port PR #26's Windows hardening** onto the pnpm workspace (it is on the old
+   Next.js/npm layout, so it cannot merge directly). Owner confirmed it is
+   important work. Port in slices on separate branches, each with tests:
+   `fs-replace`, `artifact-reclamation`, `spaces/command-process`,
+   `games/runtime-validation`, Waveyard `provision-store`/`provision-runtime`,
+   the `seed`, `seed-http`, `ffmpeg`, `audio` fixes, then the export-publication,
+   publication-integrity, session-live and mission-recovery tests, and finally
+   the Windows acceptance workflow and readiness record. 15 of its source files
+   do not exist on the current line and 11 differ; none are identical.
+3. **Fair review of every branch and PR for lost work** (owner requirement, all
+   41 branches and 43 PR refs, not only #26): for each, list unique commits
+   against `main`, classify by capability, and record the result in the ledger
+   below. Nothing is declared redundant without checking its diff.
+4. **Protect `main`**: no branch protection or rulesets exist. Require CI and
    review before merge.
-3. **Triage PR #27** (labelled test-only but changes Waveyard production logic and
+5. **Triage PR #27** (labelled test-only but changes Waveyard production logic and
    removes `hasReliableLiveStemTempoEvidence` / `hasReliableLiveStemBeatEvidence`
    still imported elsewhere). Do not merge as-is.
-4. **Capability reconciliation** of PRs #1–#26 and historical branches against
+6. **Capability reconciliation** of PRs #1–#26 and historical branches against
    `main`: classify each capability as present+verified, present-unverified,
    superseded, missing, conflicting, or preserved-pending. Recover what is missing.
-5. **Prove the whole app**: shared identity/projects/storage across rooms,
+7. **Prove the whole app**: shared identity/projects/storage across rooms,
    persistence, restart recovery, real provider execution, Windows install.
 
 ## Current state
@@ -59,7 +72,7 @@ to a working, verified capability.
     MSYS2 at `C:\msys64`, win32-x64 native binaries un-pruned in
     `pnpm-workspace.yaml`, FFmpeg re-pinned to immutable
     `autobuild-2026-11-06-12-50`, embedded-postgres root resolved via its entry.
-  - CI status: Windows desktop tests pass; both installers build; "Install and check packaged app" FAILS at `installed_app_starts` (smoke script swallows the error, then the step hangs). Undiagnosed next task: temporarily print the caught error in `desktop/windows-package-smoke.mjs` on a probe branch. Waveyard browser timing check not confirmed green.
+  - CI status: Windows desktop tests pass; both installers build; the installed app now starts and early smoke checks pass. Fixes found via the smoke check: PostgreSQL started via `pg_ctl` (admin token), `node_modules` copied in `afterPack`, restored clusters get their empty runtime dirs back. See the PR for the latest run. Waveyard browser timing check not confirmed green.
 
 ## Not verified (do not claim otherwise)
 
@@ -78,7 +91,7 @@ bring into `main`) · **triage** · **likely redundant** (verify first).
 | `main` | canonical, unprotected | keep |
 | PR #28 | active fix PR (above) | active |
 | PR #27 | mislabelled; breaks exports | triage, do not merge |
-| PR #26 `arena/windows-ready-integration-2026-10-22` | npm/Electron-era convergence, 198 ahead / 480 behind, six Windows jobs passed at `2fdacae`; evidence stale (4 product commits after the recorded one) | recover Windows work by capability |
+| PR #26 `arena/windows-ready-integration-2026-10-22` | npm/Electron-era convergence, 198 ahead / 480 behind main; 56 files of Windows hardening; six Windows jobs passed (1649 tests, 0 fail); evidence is for the old layout | **recover**: port by capability (Priority 2) |
 | PR #25 Arcade+Spaces integration; PR #15 foundation (`04705ab`); PRs #19–24 Spaces/Arcade | stacked on old foundation, 480 behind | recover by capability |
 | PR #1 original Studio; PR #10; PR #14 deep-engine provisioning | old, not mergeable | triage |
 | PR #5 | 0 ahead / 508 behind | likely redundant |
