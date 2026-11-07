@@ -480,7 +480,34 @@ try {
       workletLoads: [], workletSeeks: [], workletRates: [], workletPitchModes: [], keyShifts: [], transportMessages: [],
       storageTransportMessages: [], storageTransportReceives: [],
       storageQueueMessages: [], storageQueueReceives: [], contexts: [],
+      // play() rejections, recorded below. This is the direct evidence for an
+      // autoplay refusal: it distinguishes "the browser refused to start" from
+      // "the app never asked".
+      playRejections: [],
     };
+    // Always installed (not gated on probeAutoFades) because the timing
+    // scenarios need it and do not enable auto-fades. The rejection is
+    // re-thrown to the original caller untouched; recording it only means the
+    // browser no longer *also* logs an unhandled rejection for the same
+    // promise, which the app already handles by awaiting play().
+    {
+      const nativePlayForRejection = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function (...args) {
+        const started = nativePlayForRejection.apply(this, args);
+        if (started && typeof started.then === "function") {
+          started.then(undefined, (error) => {
+            window.audioProbe.playRejections.push({
+              src: this.src,
+              name: error?.name ?? null,
+              message: error?.message ?? null,
+              readyState: this.readyState,
+              paused: this.paused,
+            });
+          });
+        }
+        return started;
+      };
+    }
     if (captureRenderedAudio) {
       const nativeConnect = AudioNode.prototype.connect;
       AudioNode.prototype.connect = function (target, ...args) {
@@ -2040,12 +2067,22 @@ try {
         const state = await page.evaluate(() => {
           const audio = [...document.querySelectorAll('[data-role="current"] audio')];
           const probe = window.audioProbe;
-          const context = probe?.context ?? probe?.audioContext ?? null;
+          // audioProbe.contexts is the real registry (it is what
+          // startRenderedCapture reads). An earlier version of this probe
+          // looked for probe.context / probe.audioContext, found nothing and
+          // reported "no-probe-context" -- a gap in the probe, not a finding.
+          const contexts = Array.isArray(probe?.contexts) ? probe.contexts : [];
           return {
             pressed: document.querySelector('[data-testid="session-play"]')?.getAttribute('aria-pressed') ?? null,
-            audioContext: context === null ? 'no-probe-context'
-              : typeof context?.state === 'string' ? context.state
-              : context === null ? null : typeof context,
+            audioContexts: contexts.map((context) => ({
+              state: context.state,
+              sampleRate: context.sampleRate,
+              currentTime: Number(context.currentTime.toFixed(3)),
+            })),
+            // Recorded by the init script whenever HTMLMediaElement.play()
+            // rejects -- the direct evidence for an autoplay refusal.
+            playStarts: Array.isArray(probe?.playStarts) ? probe.playStarts.slice(-6) : 'no-playStarts',
+            playRejections: Array.isArray(probe?.playRejections) ? probe.playRejections.slice(-6) : 'no-playRejections',
             audio: audio.map((element) => ({
               readyState: element.readyState,
               paused: element.paused,
