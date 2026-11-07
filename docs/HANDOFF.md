@@ -121,7 +121,7 @@ PR #27 (`arena/ed2f88f7`) was labelled test-only but changes
   **untouched `main`**. The production edits were unnecessary.
 - They were also unsafe: they delete `hasReliableLiveStemTempoEvidence` /
   `hasReliableLiveStemBeatEvidence`, which `LiveStemSwapPicker.tsx` and
-  `SessionExperience.tsx` import (3 call sites) and which
+  `SessionExperience.tsx` import at 10 sites, and which
   `liveStemTempoStretchRatio` calls itself — the module would throw at import
   time. They also relax evidence thresholds (0.75→0.5, 0.6→0.3) and widen
   auto-stretch (0.8–1.25 → 0.75–1.5) on unverified evidence.
