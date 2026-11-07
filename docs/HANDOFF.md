@@ -80,11 +80,16 @@ Full per-ref dispositions: `docs/BRANCH-PR-RECONCILIATION-LEDGER.md`.
 - **PR #28** `fix/mashup-bed-fail-closed-windows-tests` @ `aec18974`, 34 files
   ahead of `main`, clean descendant (0 main-only commits). Adds fail-closed
   instrumental-bed synthesis (`studio/mashup-bed.ts`), Windows packaging and CI
-  repairs, and a capture-device guard. CI: **Windows x64 package** push run
-  green (installed-app smoke incl. backup/restore round trip, tamper rejection,
-  update check). **Waveyard browser timing: Chromium and WebKit pass; Firefox
-  fails** (`--live-stem-timing-matrix`: audio elements never reach readyState 4
-  within 15 s). Never green; cause unconfirmed.
+  repairs, and a capture-device guard.
+
+  **Its Windows CI is `failure`, not green.** Every run on `aec18974` fails, on
+  both the `push` and `pull_request` events:
+  `installed-package` fails at step 10, *Build previous Windows package for
+  update test*; steps 11–12 (*Build Windows x64 installer*, *Install and check
+  packaged app*) are then **skipped**, so no PR #28 commit and therefore **no
+  convergence-branch commit has ever had its installer installed and smoke
+  checked by CI**. Earlier handoff text claiming that run was green was wrong
+  and has been removed. See "CI status" below for the diagnosis.
 - **`arena/convergence-2026-11-07`** — the convergence candidate. Built on
   `aec18974`, so it inherits PR #28 in full. Contains:
   - the complete `port/26-*` stack, in dependency order
@@ -146,25 +151,95 @@ Current measurement (real `ffmpeg`/`ffprobe` available; no PostgreSQL/Redis):
 The 76 remaining failures are identical per file to the baseline and need
 PostgreSQL, Redis, a live browser or `initdb`. `pnpm run typecheck` passes.
 
-## CI status on the convergence branch — inherited, not caused
+## CI status — diagnosed from run data, 2026-11-07
 
-PR #29 (this branch) fails the same two jobs as PR #28, in the same ~90 s:
+Neither required workflow is green. Both failures are **inherited from
+`main`**, not introduced by the convergence branch, and both are diagnosed
+below from workflow-run and job-step data (not from logs — see the note at the
+end of this section).
 
-| job | failing step | PR #28 @ `aec18974` | PR #29 @ `867c538` |
+### `windows-package.yml` / `installed-package`
+
+| run | sha | event | result |
 |---|---|---|---|
-| `installed-package` (Windows x64) | `Build previous Windows package for update test` | fail 1m26s | fail 1m32s |
-| `live-stem-timing` | `Run cross-browser live-stem timing matrix` | fail 2m21s | fail 1m56s |
+| 42376054058 | `5fb2f72` | push | **success** (1.4k lines of work recovered, 13:14–13:29) |
+| 42362246027 | `720a584` | push | **success** |
+| (same commit `720a584`) | | pull_request | **failure** |
+| — | `aec18974` | push and pull_request | **failure** |
+| — | `b28d938` (this branch) | pull_request | **failure** |
 
-The `installed-package` failure is the *previous-build* step, i.e. the update-test
-prerequisite — not the installed-app smoke check that the earlier handoff
-recorded as green. Do not describe Windows packaging as green.
+Only **`push`** events have ever passed. On a pull_request run the job dies at
+step 10, *Build previous Windows package for update test*, after ~30 s, while
+the same step takes **4 minutes** and succeeds on push. Steps 11–12 (build
+installer, install and smoke check) are skipped, so pull_request runs have never
+validated an installed app.
 
-These are **not caused by this branch**: its own commits touch no `.github/`,
-`desktop/` or `scripts/waveyard-live-stems.mjs` file (see
-`git diff --name-only aec18974..HEAD`). Both jobs already fail on PR #28's head,
-which is this branch's base. Diagnosing them is the next owner of PR #28/#29 —
-job logs were not retrievable from this environment, so the cause is **not yet
-known**; do not guess it.
+**Diagnosis.** That step packages the *baseline* revision, chosen as
+`pull_request.base.sha` on PR events (`main` → `33c876a`) or `github.event.before`
+on push. `main` cannot be packaged by this workflow — two independent proofs:
+
+1. `main` still carries `"esbuild>@esbuild/win32-x64": "-"` and
+   `"@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc": "-"` in
+   `pnpm-workspace.yaml`. PR #28's commit `2ec27f4` exists specifically to
+   un-prune exactly those, so a Windows install from `main` is broken by design.
+2. `desktop/native/waveyard-capture-host.cpp` on `main` lacks the Windows SDK
+   header fixes made in `36a082c` (`propkeydef.h`) and `b7cd935`
+   (`winrt/Windows.Foundation.h`).
+
+So the "previous" build is a build of `main`, which does not build on Windows.
+The push-only successes are not evidence of Windows readiness: a push whose
+`before` sha is unavailable falls back to `git rev-parse HEAD^`, which on a
+single-commit squashed `main` resolves to something other than `main`.
+
+**Status: root cause identified, not yet fixed.** The fix requires a baseline
+revision that can actually be packaged, which cannot be expressed from inside
+this branch without changing what the update test means. Do not "fix" it by
+making the step tolerate failure.
+
+### `waveyard-browser-timing.yml` / `live-stem-timing`
+
+| run | sha | step 7 duration | result |
+|---|---|---|---|
+| 42376858283 | `867c538` | 100 s | failure |
+| 42377175538 | `b28d938` | **exactly 60 s** | failure |
+
+Steps 1–6 pass, including the Playwright browser install. Step 7,
+*Run cross-browser live-stem timing matrix*, fails. Its first 60 s is the
+workflow's own Vite readiness loop (`for _ in $(seq 1 60)` … `sleep 1`), which
+gives up when `curl http://127.0.0.1:80/` never succeeds.
+
+**What is established:** Vite never becomes reachable on port 80 on the runner,
+so the browser matrix never runs — the engine order is chromium → webkit →
+firefox, so **no engine is exercised at all** and this says nothing about
+Firefox audio readiness.
+
+**What has been ruled out locally:** the `sudo env PATH=… PORT=80 BASE_PATH=/ …`
+invocation is *not* the bug. It passes `PORT` correctly, and with the exact same
+argument form Vite serves `200` in ~0.2 s here. A missing `PORT` does produce
+the expected hard throw, so that failure mode is distinguishable — and it is not
+what the runner reports.
+
+**Remaining candidate:** binding port 80 as a non-root process on the runner
+(with an `EACCES` visible only in the stranded `waveyard-vite.log`). This is not
+yet proven.
+
+**Status: root cause NOT established.** To make the next failure self-explaining
+this branch adds, on the readiness-loop failure path, a `::error::` annotation
+plus the Vite log, `ss` listeners on `:80`, the `pgrep` process list, a `curl`
+result and a passwordless-`sudo` probe. The next run will state its own cause in
+the check-run annotation. **No acceptance criterion was relaxed**; the job still
+fails exactly as before, it just explains why.
+
+### Why the cause is not being quoted from CI logs
+
+Job logs are unreachable from the environment this work ran in:
+`productionresultssa*.blob.core.windows.net` and
+`results-receiver.actions.githubusercontent.com` are both outside the sandbox's
+network allowlist, and check-run annotations contain only
+"Process completed with exit code 1." The diagnoses above come from workflow
+definitions, step timings, event/result correlation across runs, and local
+reproduction of Vite. Re-read the logs when they are reachable; if they
+contradict this, they win.
 
 ## Not verified (do not claim otherwise)
 

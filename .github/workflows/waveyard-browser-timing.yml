@@ -59,7 +59,21 @@ jobs:
             sleep 1
           done
           if [ "$ready" -ne 1 ]; then
-            cat "$RUNNER_TEMP/waveyard-vite.log"
+            # A bare `cat` leaves this failure as an unexplained 60 s stall
+            # (step timings show exactly 60 s). `::error::` puts the cause into
+            # the check-run annotation, which is the only part of a failed job
+            # readable without downloading the log archive.
+            echo "::error::Vite never answered http://127.0.0.1:80/ within 60 s."
+            echo "--- vite log ---"
+            cat "$RUNNER_TEMP/waveyard-vite.log" || true
+            echo "--- listeners on :80 ---"
+            (sudo ss -ltnp 2>/dev/null || ss -ltnp 2>/dev/null) | grep -E ':80\b' || echo "nothing listening on :80"
+            echo "--- vite process ---"
+            pgrep -af "vite.js" || echo "no vite process running"
+            echo "--- curl ---"
+            curl -sS -m 5 -o /dev/null -w "http=%{http_code}\n" http://127.0.0.1:80/ || true
+            echo "--- audit capability (sudo may hide the process) ---"
+            sudo -n true 2>/dev/null && echo "passwordless sudo present" || echo "no passwordless sudo"
             exit 1
           fi
           node scripts/waveyard-live-stems.mjs --studio-persistence-only
