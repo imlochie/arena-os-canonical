@@ -146,6 +146,26 @@ Current measurement (real `ffmpeg`/`ffprobe` available; no PostgreSQL/Redis):
 The 76 remaining failures are identical per file to the baseline and need
 PostgreSQL, Redis, a live browser or `initdb`. `pnpm run typecheck` passes.
 
+## CI status on the convergence branch — inherited, not caused
+
+PR #29 (this branch) fails the same two jobs as PR #28, in the same ~90 s:
+
+| job | failing step | PR #28 @ `aec18974` | PR #29 @ `867c538` |
+|---|---|---|---|
+| `installed-package` (Windows x64) | `Build previous Windows package for update test` | fail 1m26s | fail 1m32s |
+| `live-stem-timing` | `Run cross-browser live-stem timing matrix` | fail 2m21s | fail 1m56s |
+
+The `installed-package` failure is the *previous-build* step, i.e. the update-test
+prerequisite — not the installed-app smoke check that the earlier handoff
+recorded as green. Do not describe Windows packaging as green.
+
+These are **not caused by this branch**: its own commits touch no `.github/`,
+`desktop/` or `scripts/waveyard-live-stems.mjs` file (see
+`git diff --name-only aec18974..HEAD`). Both jobs already fail on PR #28's head,
+which is this branch's base. Diagnosing them is the next owner of PR #28/#29 —
+job logs were not retrievable from this environment, so the cause is **not yet
+known**; do not guess it.
+
 ## Not verified (do not claim otherwise)
 
 - **The ported PR #26 slices have never run on Windows.** They are green on

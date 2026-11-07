@@ -188,6 +188,16 @@ Against a pristine `origin/main` worktree, same runner, same environment
   branch and are not claimed as fixed.**
 * `pnpm run typecheck` passes across all workspace projects.
 
+## 4a. CI on the convergence branch
+
+Both required jobs fail **on PR #28's head as well as on this branch**, in the
+same window: `installed-package` at step *"Build previous Windows package for
+update test"*, and `live-stem-timing` at *"Run cross-browser live-stem timing
+matrix"*. This branch's own commits change no `.github/`, `desktop/` or
+`scripts/waveyard-live-stems.mjs` file, so it neither causes nor fixes them.
+Their cause is not established — job logs were unreachable from the audit
+environment. Treat the Windows packaging path as **not green**.
+
 ## 5. What is still not proven
 
 Do not read §4 as acceptance.
