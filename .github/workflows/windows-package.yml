@@ -83,6 +83,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # Job logs are not readable from the environment that triages this
+          # workflow, so every failure in this step names itself in a check-run
+          # annotation. Without this a failure here is only "exit code 1".
+          function Fail([string]$message) {
+            Write-Host "::error::windows-package step 10: $message"
+            throw $message
+          }
           $workflowEvent = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
           $baseline = $null
           if ($workflowEvent.pull_request.base.sha) {
@@ -92,12 +99,12 @@ jobs:
           } else {
             $baseline = (git rev-parse HEAD^).Trim()
           }
-          if (-not $baseline) { throw "The previous package revision could not be identified." }
+          if (-not $baseline) { Fail "The previous package revision could not be identified." }
 
           $previousSource = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) "arenaforge-previous-source"
           $previousInstaller = Join-Path $env:RUNNER_TEMP "ArenaForge-previous.exe"
           git worktree add --detach $previousSource $baseline
-          if ($LASTEXITCODE -ne 0) { throw "The previous package source could not be prepared." }
+          if ($LASTEXITCODE -ne 0) { Fail "The previous package source could not be prepared." }
           try {
             Push-Location $previousSource
 
@@ -133,24 +140,35 @@ jobs:
 
             $baseRevision = (git rev-parse HEAD).Trim()
             Write-Host "previous package: source=$baseline dependency-config=from tested branch ($baseRevision)"
+            # State the one fact this whole workaround rests on. If the tested
+            # tree ever re-prunes win32-x64, this prints it instead of leaving the
+            # next reader to guess why the build broke again.
+            $pruned = Select-String -Path "pnpm-workspace.yaml" -Pattern "win32-x64" -SimpleMatch |
+              ForEach-Object { $_.Line.Trim() }
+            if ($pruned) {
+              Write-Host "::warning::windows-package: pnpm-workspace.yaml in the tested tree still prunes win32-x64 entries: $($pruned -join '; ')"
+            } else {
+              Write-Host "previous package: win32-x64 binaries are not pruned in the tested tree"
+            }
+            Write-Host "previous package: pnpm $(pnpm --version), node $(node --version)"
 
             pnpm install --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
             if ($LASTEXITCODE -ne 0) {
-              throw "Previous package dependencies could not be installed. If the base revision still cannot resolve win32-x64 binaries, the overrides in pnpm-workspace.yaml are not the remaining cause."
+              Fail "Previous package dependencies could not be installed (pnpm install exited $LASTEXITCODE). If the base revision still cannot resolve win32-x64 binaries, the overrides in pnpm-workspace.yaml were not the remaining cause."
             }
             $env:ARENA_CLASSIC_PACKAGES = "1"
             pnpm --filter @workspace/desktop run dist:win
-            if ($LASTEXITCODE -ne 0) { throw "The previous Windows package could not be built." }
+            if ($LASTEXITCODE -ne 0) { Fail "The previous Windows package could not be built (dist:win exited $LASTEXITCODE)." }
             $builtInstaller = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
               Where-Object { $_.Name -notmatch "uninstall" } |
               Select-Object -First 1
-            if (-not $builtInstaller) { throw "The previous Windows installer was not created." }
+            if (-not $builtInstaller) { Fail "The previous Windows installer was not created; generated-artifacts/windows contains no .exe." }
             Copy-Item $builtInstaller.FullName $previousInstaller
           } finally {
             Pop-Location
             git worktree remove --force $previousSource
           }
-          if (-not (Test-Path $previousInstaller)) { throw "The previous Windows installer was not retained for the update test." }
+          if (-not (Test-Path $previousInstaller)) { Fail "The previous Windows installer was not retained for the update test." }
           "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
 
       - name: Build Windows x64 installer
