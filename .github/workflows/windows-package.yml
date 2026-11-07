@@ -23,8 +23,8 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          # The Classic core build expects the toolchain under C:\msys64.
-          location: C:\
+          # Use the runner's C:\msys64, where the Classic core build expects it.
+          release: false
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
 
       - uses: pnpm/action-setup@v4
