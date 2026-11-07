@@ -452,6 +452,10 @@ try {
     const appLog = await readFile(path.join(dataRoot, "logs/desktop.log"), "utf8").catch(() => "(no desktop.log was written)");
     console.error(`--- desktop.log (tail) ---\n${appLog.slice(-6000)}`);
   }
+  const serverModules = path.join(path.dirname(executable), "resources/server/node_modules");
+  const listing = await readdir(serverModules).catch((error) => `(unreadable: ${error.message})`);
+  const playwrightListing = await readdir(path.join(serverModules, "playwright-core")).catch((error) => `(unreadable: ${error.message})`);
+  console.error(`resources/server/node_modules: ${JSON.stringify(listing)}\nplaywright-core: ${JSON.stringify(playwrightListing)}`);
   const failedCheck = activeCheck ?? "installed_app_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";
