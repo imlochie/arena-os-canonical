@@ -142,6 +142,20 @@ jobs:
           node desktop/windows-package-smoke.mjs $executable
           if ($LASTEXITCODE -ne 0) { throw "The installed-package smoke check failed." }
 
+          # The update check installs two more builds. A still-installed copy
+          # (same app id) or a leftover app/database process can stall a second
+          # silent install, so remove the first one cleanly before continuing.
+          Get-Process -Name "ArenaForge", "postgres" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+          $uninstaller = Get-ChildItem $installDir -Filter "Uninstall*.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($uninstaller) {
+            $un = Start-Process -FilePath $uninstaller.FullName `
+              -ArgumentList @("/S", "_?=$installDir") -PassThru
+            if (-not $un.WaitForExit(120000)) { $un.Kill(); Write-Host "Uninstaller timed out." }
+          }
+          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+
           node desktop/windows-package-update-smoke.mjs "$env:ARENA_PREVIOUS_INSTALLER" "$($installer.FullName)"
           if ($LASTEXITCODE -ne 0) { throw "The installed-package update check failed." }
 
