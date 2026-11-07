@@ -484,7 +484,30 @@ try {
       // autoplay refusal: it distinguishes "the browser refused to start" from
       // "the app never asked".
       playRejections: [],
+      // AudioContext.resume() outcomes. useStemTransport awaits resume() and
+      // throws "Audio playback was interrupted..." without ever calling
+      // play() if the context is still not 'running' afterwards, so this is
+      // the branch that must be observable.
+      contextResumes: [],
     };
+    {
+      const nativeResume = AudioContext.prototype.resume;
+      AudioContext.prototype.resume = function (...args) {
+        const started = nativeResume.apply(this, args);
+        if (started && typeof started.then === "function") {
+          started.then(
+            () => window.audioProbe.contextResumes.push({ outcome: "resolved", state: this.state }),
+            (error) => window.audioProbe.contextResumes.push({
+              outcome: "rejected",
+              name: error?.name ?? null,
+              message: error?.message ?? null,
+              state: this.state,
+            }),
+          );
+        }
+        return started;
+      };
+    }
     // Always installed (not gated on probeAutoFades) because the timing
     // scenarios need it and do not enable auto-fades. The rejection is
     // re-thrown to the original caller untouched; recording it only means the
@@ -2083,6 +2106,16 @@ try {
             // rejects -- the direct evidence for an autoplay refusal.
             playStarts: Array.isArray(probe?.playStarts) ? probe.playStarts.slice(-6) : 'no-playStarts',
             playRejections: Array.isArray(probe?.playRejections) ? probe.playRejections.slice(-6) : 'no-playRejections',
+            contextResumes: Array.isArray(probe?.contextResumes) ? probe.contextResumes.slice(-6) : 'no-contextResumes',
+            // The transport sets its own error text when play() bails; surface
+            // whatever the user would actually see.
+            visibleError: (() => {
+              const nodes = [...document.querySelectorAll('[role="alert"], [data-testid*="error"], .wy-error, [aria-live]')];
+              const text = nodes
+                .map((node) => (node.textContent ?? '').trim())
+                .filter((value) => value.length > 0);
+              return text.slice(0, 4);
+            })(),
             audio: audio.map((element) => ({
               readyState: element.readyState,
               paused: element.paused,
