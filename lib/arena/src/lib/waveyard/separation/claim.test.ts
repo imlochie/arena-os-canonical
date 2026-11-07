@@ -199,10 +199,12 @@ test("the database itself refuses two active rows for one target — no applicat
 });
 
 function payloadFor(values: ProcessingJobInsert, parentStemAssetId?: string) {
+  const sourceAssetId = values.sourceAssetId;
+  assert.ok(sourceAssetId, "separation fixture requires a real source identity");
   return (job: { id: string }): SeparationJobPayload => ({
     processingJobId: job.id,
     projectId: values.projectId,
-    sourceAssetId: values.sourceAssetId,
+    sourceAssetId,
     model: values.model,
     requestedDevice: "auto",
     ...(parentStemAssetId !== undefined ? { parentStemAssetId } : {}),
