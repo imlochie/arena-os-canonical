@@ -10,6 +10,18 @@ import pg from "pg";
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// Directories PostgreSQL requires but keeps empty at rest. File-based backups
+// drop them, so a restored cluster would refuse to start without them.
+const RUNTIME_DIRS = [
+  "pg_commit_ts", "pg_dynshmem", "pg_logical/mappings", "pg_logical/snapshots",
+  "pg_notify", "pg_replslot", "pg_serial", "pg_snapshots", "pg_stat",
+  "pg_stat_tmp", "pg_tblspc", "pg_twophase", "pg_wal/archive_status", "pg_wal/summaries",
+];
+
+export async function ensurePostgresRuntimeDirs(dataDir) {
+  for (const relative of RUNTIME_DIRS) await mkdir(path.join(dataDir, relative), { recursive: true });
+}
+
 export function run(binary, args, env, timeout = 60_000, spawnImpl = spawn) {
   return new Promise((resolve, reject) => {
     const child = spawnImpl(binary, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -109,6 +121,7 @@ export class DesktopDatabase {
       try { version = (await readFile(path.join(this.dir, "PG_VERSION"), "utf8")).trim(); }
       catch { throw new Error("Existing database is missing PG_VERSION. It was NOT deleted or reinitialised."); }
       if (version !== major) throw new Error(`Existing database uses PostgreSQL ${version}; this package has ${major}. Use the matching Arena build or migrate a backup with pg_upgrade. Data was NOT changed.`);
+      await ensurePostgresRuntimeDirs(this.dir);
       // Never remove a pid file here: PostgreSQL decides whether crash recovery
       // is safe and refuses a live cluster. A conflicting instance must stop.
     } else {
