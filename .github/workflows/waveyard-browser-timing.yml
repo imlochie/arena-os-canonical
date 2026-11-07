@@ -63,7 +63,7 @@ jobs:
             # (step timings show exactly 60 s). `::error::` puts the cause into
             # the check-run annotation, which is the only part of a failed job
             # readable without downloading the log archive.
-            echo "::error::Vite never answered http://127.0.0.1:80/ within 60 s."
+            echo "::error::Vite never answered http://127.0.0.1:80/ within 60 s (readiness loop timed out)."
             echo "--- vite log ---"
             cat "$RUNNER_TEMP/waveyard-vite.log" || true
             echo "--- listeners on :80 ---"
@@ -76,5 +76,28 @@ jobs:
             sudo -n true 2>/dev/null && echo "passwordless sudo present" || echo "no passwordless sudo"
             exit 1
           fi
-          node scripts/waveyard-live-stems.mjs --studio-persistence-only
-          node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix
+          # Readiness only proves vite answered once. Confirm it is still the
+          # process we started before blaming the browsers for what follows.
+          if ! curl --fail --silent -m 5 http://127.0.0.1:80/ >/dev/null; then
+            echo "::error::Vite answered readiness but is not reachable now; the matrix cannot start."
+            cat "$RUNNER_TEMP/waveyard-vite.log" || true
+            exit 1
+          fi
+
+          echo "::group::studio-persistence-only"
+          if ! node scripts/waveyard-live-stems.mjs --studio-persistence-only; then
+            echo "::error::--studio-persistence-only failed (first diagnostic below)."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::live-stem-timing-matrix"
+          if ! node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix; then
+            # The matrix tails three engines. Name the failing one in the
+            # annotation so the check-run is diagnostic without log access.
+            echo "::error::Cross-browser live-stem timing matrix failed; see the failing engine(s) named above."
+            echo "--- vite log ---"
+            cat "$RUNNER_TEMP/waveyard-vite.log" || true
+            exit 1
+          fi
+          echo "::endgroup::"

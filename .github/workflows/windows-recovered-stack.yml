@@ -91,6 +91,30 @@ jobs:
           }
 
           $results | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $evidence "summary.json")
+
+          # A green run is only meaningful if it proves the Windows-specific
+          # branches actually ran. command-process.test.ts names the Windows
+          # taskkill branch explicitly; require it to have executed rather than
+          # been skipped, so a silently skipping suite cannot read as a pass.
+          $treeKill = $results | Where-Object { $_.test -like "*command-process*" }
+          if ($treeKill.output -match "grandchild holding the inherited pipes") {
+            if ($treeKill.output -match "# skipped [1-9]") {
+              Write-Host "::error::The tree-kill test was skipped on Windows; the taskkill branch is unproven."
+              exit 1
+            }
+            Write-Host "Tree-kill test executed on Windows."
+          } else {
+            Write-Host "::error::The tree-kill test did not appear in the command-process output; the Windows branch is unproven."
+            exit 1
+          }
+
+          # The inference probe may skip (no ffmpeg on the runner) but must be
+          # reported, never silently counted as a pass.
+          $probe = $results | Where-Object { $_.test -like "*provision-runtime*" }
+          if ($probe.output -match "# skipped ([1-9]\d*)") {
+            Write-Host "::warning::Inference probe skipped on Windows (no ffmpeg/ffprobe): $($Matches[1]) test(s). Real inference is NOT proven here."
+          }
+
           $failed = $results | Where-Object { $_.code -ne 0 }
           # Surface the failure in the check-run annotation, which is readable
           # without downloading the artifact.
