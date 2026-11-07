@@ -446,7 +446,8 @@ async function run() {
 try {
   await run();
   console.log("Installed Windows package smoke check passed.");
-} catch {
+} catch (error) {
+  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
   const failedCheck = activeCheck ?? "installed_app_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";

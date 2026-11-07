@@ -125,6 +125,7 @@ jobs:
 
       - name: Install and check packaged app
         shell: pwsh
+        timeout-minutes: 25
         run: |
           $installer = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
             Where-Object { $_.Name -notmatch "uninstall" } |
