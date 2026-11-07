@@ -340,7 +340,10 @@ try {
   browser = await browserType.launch(engineName === "chromium"
     ? { ...(chromiumExecutable ? { executablePath: chromiumExecutable } : {}),
       args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] }
-    : { headless: engineName === "webkit" ? !headedWebKit : true });
+    : { headless: engineName === "webkit" ? !headedWebKit : true,
+      // Headless CI Firefox has no audio device or gesture-backed autoplay
+      // allowance, so play() would never resolve without these.
+      ...(engineName === "firefox" ? { firefoxUserPrefs: { "media.autoplay.default": 0, "media.autoplay.blocking_policy": 0, "media.volume_scale": "0.0" } } : {}) });
   console.log("BROWSER_ENGINE", JSON.stringify({
     engine: engineName,
     version: browser.version(),
