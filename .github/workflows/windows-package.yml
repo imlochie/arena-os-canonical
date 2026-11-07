@@ -100,8 +100,44 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "The previous package source could not be prepared." }
           try {
             Push-Location $previousSource
-            pnpm install --frozen-lockfile --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
-            if ($LASTEXITCODE -ne 0) { throw "Previous package dependencies could not be installed." }
+
+            # The base revision cannot be packaged on Windows as it stands, and
+            # this step is the only thing that ever discovered that.
+            #
+            # `main` prunes the win32-x64 native binaries it would need to build
+            # on Windows:
+            #   "esbuild>@esbuild/win32-x64": "-"
+            #   "lightningcss>lightningcss-win32-x64-msvc": "-"
+            #   "@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc": "-"
+            #   "rollup>@rollup/rollup-win32-x64-msvc": "-"
+            # so installing and building that tree resolves those packages to
+            # nothing. (Commit 2ec27f4 removes those overrides, but it lives on
+            # the convergence branch, not on main.) This is also why the job has
+            # only ever passed on `push` events: a push baseline is a commit on
+            # this branch, which already has the fix.
+            #
+            # So: build the previous package from the base revision's SOURCE,
+            # but take dependency resolution from the branch under test. The
+            # thing this step must prove -- that an older installer can be
+            # installed and then updated -- is unaffected, because the previous
+            # *app* is still the base revision's code. Only the packaging
+            # configuration that makes a Windows build possible at all comes
+            # from the tested tree, and its absence in the base is a defect in
+            # the base, not a property worth reproducing.
+            #
+            # --frozen-lockfile is deliberately not used: the base lockfile
+            # encodes the pruning above and could not be satisfied with win32
+            # binaries restored.
+            Copy-Item (Join-Path $env:GITHUB_WORKSPACE "pnpm-workspace.yaml") -Destination "pnpm-workspace.yaml" -Force
+            Remove-Item "pnpm-lock.yaml" -Force -ErrorAction SilentlyContinue
+
+            $baseRevision = (git rev-parse HEAD).Trim()
+            Write-Host "previous package: source=$baseline dependency-config=from tested branch ($baseRevision)"
+
+            pnpm install --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
+            if ($LASTEXITCODE -ne 0) {
+              throw "Previous package dependencies could not be installed. If the base revision still cannot resolve win32-x64 binaries, the overrides in pnpm-workspace.yaml are not the remaining cause."
+            }
             $env:ARENA_CLASSIC_PACKAGES = "1"
             pnpm --filter @workspace/desktop run dist:win
             if ($LASTEXITCODE -ne 0) { throw "The previous Windows package could not be built." }
