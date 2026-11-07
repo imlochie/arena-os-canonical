@@ -6,7 +6,8 @@ module.exports = {
   directories: { output: "../generated-artifacts/windows", buildResources: "build" },
   files: ["dist/**", "package.json", "!node_modules/**"],
   extraResources: [
-    { from: "stage/server", to: "server" },
+    // An explicit filter keeps the bundled server's node_modules (playwright-core, onnxruntime-node).
+    { from: "stage/server", to: "server", filter: ["**/*"] },
     { from: "stage/web", to: "web" },
     { from: "stage/native", to: "native" },
     { from: "stage/chromium", to: "chromium" },
