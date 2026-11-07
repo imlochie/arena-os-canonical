@@ -241,16 +241,34 @@ engines in order (chromium → webkit → firefox).
    four stem elements and it passed, otherwise the thrown error would come from
    that wait and carry a `TIMING_SETUP_AUDIO_STATE` dump.
 
-**Not yet established:** *why* play never engages in Firefox. `togglePlay`
-awaits `api.transport.play()`, so `aria-pressed` stays false while that promise
-is unresolved. A suspended `AudioContext` is the leading candidate (Firefox
-suspends contexts until it trusts a gesture) but that is a hypothesis, not a
-finding. `TIMING_SETUP_PLAY_STATE` now dumps the context state plus per-element
-`readyState`/`paused`/`currentTime`/`error` on that path, so the next run should
-say why.
+**Established further** (run at `675ef64`, annotation
+`TIMING_SETUP_PLAY_STATE nativeTempo`):
 
-**Status: localised to a specific line and a specific engine; root cause still
-open.** No timeout, assertion or gate has been relaxed to get this far.
+```
+{"pressed":"false", "audioContext":"no-probe-context",
+ "audio":[{"readyState":4,"paused":true,"currentTime":0,"error":null} x4]}
+```
+
+So on Firefox, after the play click, all four stem elements are fully buffered
+(`readyState 4`), carry **no media error**, and are **still `paused` with
+`currentTime` 0**. Playback never started; nothing was interrupted. That rules
+out decode, load and buffering, and points at `transport.play()` not
+completing. Caveat on my own instrumentation: `audioContext` reports
+`no-probe-context`, which means `window.audioProbe` does not expose the
+AudioContext where I looked — that is a gap in the probe, **not** evidence that
+the context is healthy. Do not read it as a finding either way.
+
+**Remaining hypothesis (unproven):** `play()` on those elements rejects in
+Firefox, most plausibly via the autoplay policy — note that commit `f79fb04`
+added `firefoxUserPrefs` (`media.autoplay.default: 0`,
+`media.autoplay.blocking_policy: 0`, `media.volume_scale: "0.0"`) for exactly
+this reason, so either those prefs do not apply to headless Firefox 1.64 or
+something else rejects first. Proving it needs the rejection reason, which means
+either the raw log or a `play()`-rejection capture in the page.
+
+**Status: localised to one line, one engine, and a specific observable state;
+root cause still open.** No timeout, assertion or gate has been relaxed to get
+this far — the job fails exactly as it did before.
 
 ### Why the cause is not being quoted from CI logs
 
