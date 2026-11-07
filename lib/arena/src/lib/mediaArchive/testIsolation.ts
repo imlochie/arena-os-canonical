@@ -34,11 +34,18 @@ export async function isolatedTestDatabase(baseUrl: string, suffix: string): Pro
   }
 
   // Canonical schema snapshot — the same one the packaged runtime applies.
-  const { applyMigrations } = await import("../../../desktop/runtime/migrate");
+  // Do not import the desktop runtime here: it is not part of this workspace
+  // (see worker-local/pglite-migrations.test-helper.ts).
+  const { applyDesktopMigrationsToPgClient } = await import(
+    "../waveyard/worker-local/pglite-migrations.test-helper"
+  );
   const client = new Client({ connectionString: target.toString() });
   await client.connect();
   try {
-    await applyMigrations({ client, migrationsDir: path.resolve(process.cwd(), "desktop-migrations") });
+    await applyDesktopMigrationsToPgClient(
+      client,
+      path.resolve(process.cwd(), "desktop-migrations"),
+    );
   } finally {
     await client.end();
   }
