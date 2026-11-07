@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DEEP_CHECKPOINT_FILE } from "./deep";
+import { resolveToolPath } from "../ffmpeg";
 import {
   ProvisionCancelledError,
   ProvisionError,
@@ -271,7 +272,18 @@ test("verifyEngine: an import failure is an engine failure, not a crash", async 
   );
 });
 
-test("runInferenceProbe: six controlled valid WAVs pass; missing stems are named and refused", async () => {
+test("runInferenceProbe: six controlled valid WAVs pass; missing stems are named and refused", async (t) => {
+  // The probe synthesises and decodes real WAVs, so it needs a real ffmpeg.
+  // Skip honestly when the machine has none (the desktop app bundles one via
+  // ARENA_FFMPEG_PATH); do not fake a pass and do not weaken the assertions.
+  const [ffmpegPath, ffprobePath] = await Promise.all([
+    resolveToolPath("ffmpeg"),
+    resolveToolPath("ffprobe"),
+  ]);
+  if (ffmpegPath === null || ffprobePath === null) {
+    t.skip("ffmpeg/ffprobe are not installed here; the inference probe needs real encoders");
+    return;
+  }
   const directory = await mkdtemp(join(tmpdir(), "wy-prov-"));
   try {
     const modelsDir = join(directory, "models");
