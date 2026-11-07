@@ -133,7 +133,13 @@ jobs:
             # "FFmpeg archive SHA-256 mismatch" no matter who runs it or when.
             # A hash pin against a mutable URL is not a property worth
             # reproducing; this file points at an immutable dated release.
-            "desktop/ffmpeg-bundle.mjs"
+            "desktop/ffmpeg-bundle.mjs",
+            # The base resolves "@embedded-postgres/windows-x64/package.json",
+            # but that package only exports ./dist/index.js, so resolution fails
+            # with "Package subpath './package.json' is not defined by
+            # \"exports\"". This file derives the package root from the entry
+            # point instead.
+            "desktop/build.mjs"
           )
           foreach ($fix in $baseFixFiles) {
             $source = Join-Path $env:GITHUB_WORKSPACE $fix
@@ -227,9 +233,16 @@ jobs:
             & cmd /c "pnpm --filter @workspace/desktop run dist:win > `"$buildLog`" 2>&1"
             $buildCode = $LASTEXITCODE
             if ($buildCode -ne 0) {
-              $tail = Get-Content $buildLog -ErrorAction SilentlyContinue |
-                Where-Object { $_.Trim().Length -gt 0 } |
-                Select-Object -Last 12
+              $all = Get-Content $buildLog -ErrorAction SilentlyContinue |
+                Where-Object { $_.Trim().Length -gt 0 }
+              # Drop download progress bars: they are most of a build log's tail
+              # and they pushed the one useful line out of the last annotation.
+              $meaningful = $all | Where-Object { $_ -notmatch "■" -and $_ -notmatch " of \d" }
+              # Prefer lines that name a problem; fall back to the plain tail.
+              $cause = $meaningful |
+                Where-Object { $_ -match "error|Error|cannot|Cannot|not defined|not found|failed|mismatch|ENOENT|exited|missing" } |
+                Select-Object -Last 6
+              $tail = if ($cause) { $cause } else { $meaningful | Select-Object -Last 8 }
               foreach ($line in $tail) {
                 Write-Host "::error::previous-dist-win: $($line.Trim())"
               }
