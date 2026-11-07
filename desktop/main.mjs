@@ -25,6 +25,7 @@ let database;
 let origin;
 let window;
 let stopping = false;
+let serverStopRequested = false;
 let log = () => {};
 let arcade;
 
@@ -74,6 +75,7 @@ async function stop() {
 async function stopBackendServices() {
   if (server && server.exitCode === null && server.signalCode === null) {
     const child = server;
+    serverStopRequested = true;
     const exited = new Promise(resolve => child.once("exit", resolve));
     if (child.connected) child.send("shutdown");
     await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 15_000))]);
@@ -563,7 +565,8 @@ async function start() {
   server.on("error", error => { failure = error.message; });
   server.on("exit", code => {
     failure = `API exited (${code})`;
-    if (window && !stopping) {
+    // A stop Arena asked for (backup restore, shutdown) is not a crash.
+    if (window && !stopping && !serverStopRequested) {
       dialog.showErrorBox("ArenaForge API stopped", `${failure}. Restart ArenaForge; see the desktop log if this repeats.`);
       app.quit();
     }

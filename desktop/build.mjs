@@ -212,7 +212,8 @@ async function main() {
   await access(chrome);
   await cp(path.dirname(chrome), path.join(stage, "chromium"), { recursive: true });
   await recordBuildSpacePhase("chromium-ready");
-  const postgresRoot = path.dirname(require.resolve("@embedded-postgres/windows-x64/package.json"));
+  // The package only exports ./dist/index.js, so locate its root from that entry.
+  const postgresRoot = path.resolve(path.dirname(require.resolve("@embedded-postgres/windows-x64")), "..");
   await cp(path.join(postgresRoot, "native"), path.join(stage, "embedded-postgres"), { recursive: true });
   for (const binary of ["postgres.exe", "initdb.exe", "pg_ctl.exe"]) {
     await access(path.join(stage, "embedded-postgres", "bin", binary));

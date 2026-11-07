@@ -30,16 +30,47 @@ if (process.argv.includes("--live-stem-timing-matrix")) {
     console.log(`LIVE_STEM_TIMING_ENGINE ${engine}`);
     const args = [process.argv[1], "--live-stem-timing-only", `--engine=${engine}`];
     if (requireBrowserEngines) args.push("--require-browser-engines");
+    // Capture as well as stream: on failure the engine's own diagnostic lines
+    // are lifted into workflow annotations, so the reason is readable in the
+    // check run instead of only inside the log archive.
     const result = spawnSync(process.execPath, args, {
-      stdio: "inherit",
+      stdio: ["inherit", "pipe", "pipe"],
       env: process.env,
+      maxBuffer: 64 * 1024 * 1024,
     });
+    const engineOut = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) throw result.error;
     if (result.status === 3 && !requireBrowserEngines) {
       skippedEngines.push(engine);
       continue;
     }
-    if (result.status !== 0) process.exit(result.status ?? 1);
+    if (result.status !== 0) {
+      // Name the engine in a workflow annotation, not only in the log: the
+      // check-run annotation is the one part of a failed CI job that can be
+      // read without downloading the log archive, and "the matrix failed" is
+      // not actionable without knowing which browser failed.
+      if (process.env.GITHUB_ACTIONS === "true") {
+        console.log(`::error::LIVE_STEM_TIMING_ENGINE ${engine} exited with status ${result.status}`);
+        const diagnostic = engineOut
+          .split("\n")
+          .map((line) => line.trim())
+          // The cause-carrying lines: keep them all, and keep them short. A
+          // truncated annotation cost two CI round-trips already.
+          // Include the "at ...waveyard-live-stems.mjs:NNN" frame: without it a
+          // TimeoutError says a wait expired but not which one, and there are
+          // dozens of waits in this file.
+          .filter((line) => line.length > 0 && /TIMING_SETUP_ERRORS|TIMING_SETUP_PLAY_STATE|TIMING_SETUP_AUDIO_STATE|TimeoutError|exited with status|waveyard-live-stems\.mjs:\d+/i.test(line))
+          .slice(-4);
+        for (const line of diagnostic) {
+          console.log(`::error::${engine}: ${line.slice(0, 900)}`);
+        }
+        if (diagnostic.length === 0) console.log(`::error::${engine}: produced no diagnostic output`);
+      }
+      console.log(`LIVE_STEM_TIMING_FAILED ${engine} status=${result.status}`);
+      process.exit(result.status ?? 1);
+    }
   }
   if (skippedEngines.length > 0) {
     console.log(`PARTIAL: timing checks skipped for ${skippedEngines.join(", ")}; this is not full cross-browser coverage.`);
@@ -340,7 +371,10 @@ try {
   browser = await browserType.launch(engineName === "chromium"
     ? { ...(chromiumExecutable ? { executablePath: chromiumExecutable } : {}),
       args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] }
-    : { headless: engineName === "webkit" ? !headedWebKit : true });
+    : { headless: engineName === "webkit" ? !headedWebKit : true,
+      // Headless CI Firefox has no audio device or gesture-backed autoplay
+      // allowance, so play() would never resolve without these.
+      ...(engineName === "firefox" ? { firefoxUserPrefs: { "media.autoplay.default": 0, "media.autoplay.blocking_policy": 0, "media.volume_scale": "0.0" } } : {}) });
   console.log("BROWSER_ENGINE", JSON.stringify({
     engine: engineName,
     version: browser.version(),
@@ -451,7 +485,186 @@ try {
       workletLoads: [], workletSeeks: [], workletRates: [], workletPitchModes: [], keyShifts: [], transportMessages: [],
       storageTransportMessages: [], storageTransportReceives: [],
       storageQueueMessages: [], storageQueueReceives: [], contexts: [],
+      // play() rejections, recorded below. This is the direct evidence for an
+      // autoplay refusal: it distinguishes "the browser refused to start" from
+      // "the app never asked".
+      playRejections: [],
+      // AudioContext.resume() outcomes. useStemTransport awaits resume() and
+      // throws "Audio playback was interrupted..." without ever calling
+      // play() if the context is still not 'running' afterwards, so this is
+      // the branch that must be observable.
+      contextResumes: [],
+      // Fetch-level evidence. The failing scenario reports errors that come
+      // from API routes (a `devices` list that is missing, JSON that will not
+      // parse). Without recording the actual response we can only guess which
+      // endpoint answered and with what, and guessing has already cost several
+      // CI round-trips. Bodies are truncated: this is for identification.
+      apiResponses: [],
+      pageErrors: [],
     };
+    {
+      const nativeFetch = window.fetch;
+      window.fetch = function (...args) {
+        const started = nativeFetch.apply(this, args);
+        const url = typeof args[0] === "string" ? args[0] : args[0]?.url ?? "";
+        started.then((response) => {
+          const record = {
+            url: String(url),
+            status: response.status,
+            contentType: response.headers?.get?.("content-type") ?? null,
+          };
+          window.audioProbe.apiResponses.push(record);
+          if (window.audioProbe.apiResponses.length > 40) window.audioProbe.apiResponses.shift();
+          // Only clone-read bodies that can explain a malformed payload, and
+          // only if they are text. Reading an audio body as text put raw bytes
+          // (and a lone \u escape sequence) into the annotation, which came
+          // back unparseable -- the diagnostic destroyed itself.
+          const contentType = record.contentType ?? "";
+          if (!/\/api\//.test(record.url)) return;
+          if (!/json|text|javascript|xml/i.test(contentType)) return;
+          response.clone().text().then(
+            (body) => {
+              record.bodyStart = body.slice(0, 120);
+              record.bodyBytes = body.length;
+              try { JSON.parse(body); record.jsonParses = true; } catch { record.jsonParses = false; }
+            },
+            () => { record.bodyStart = "<unreadable>"; },
+          );
+        }, (error) => {
+          window.audioProbe.apiResponses.push({
+            url: String(url), status: null, failure: String(error?.message ?? error),
+          });
+        });
+        return started;
+      };
+    }
+    {
+      window.addEventListener("error", (event) => {
+        window.audioProbe.pageErrors.push(String(event.message ?? event.error ?? "unknown error"));
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        const reason = event.reason;
+        window.audioProbe.pageErrors.push(String(reason?.message ?? reason ?? "unhandled rejection"));
+      });
+    }
+    {
+      // The other await between the click and element.play(). If resume() turns
+      // out to settle normally then this is where Play is blocked, because
+      // useStemTransport awaits sessionOutput.ready (which awaits this
+      // addModule) before it ever calls play(). Recording the call as well as
+      // the settlement is deliberate: a promise that never settles is
+      // otherwise invisible.
+      const proto = window.AudioWorklet?.prototype;
+      if (proto && typeof proto.addModule === "function") {
+        const nativeAddModule = proto.addModule;
+        proto.addModule = function (...args) {
+          const entry = { url: String(args[0] ?? "").split("/").pop(), outcome: "pending", calledAt: Date.now() };
+          window.audioProbe.workletLoads.push(entry);
+          let started;
+          try {
+            started = nativeAddModule.apply(this, args);
+          } catch (error) {
+            entry.outcome = "threw";
+            entry.message = error?.message ?? null;
+            throw error;
+          }
+          if (started && typeof started.then === "function") {
+            started.then(
+              () => { entry.outcome = "resolved"; entry.settledAfterMs = Date.now() - entry.calledAt; },
+              (error) => {
+                entry.outcome = "rejected";
+                entry.name = error?.name ?? null;
+                entry.message = error?.message ?? null;
+                entry.settledAfterMs = Date.now() - entry.calledAt;
+              },
+            );
+            setTimeout(() => {
+              if (entry.outcome === "pending") {
+                entry.outcome = "still-pending";
+                entry.pendingForMs = Date.now() - entry.calledAt;
+              }
+            }, 3000);
+          } else {
+            entry.outcome = "not-a-promise";
+          }
+          return started;
+        };
+      }
+    }
+    {
+      // Record the CALL synchronously, not only the settlement. useStemTransport
+      // does `await context.resume()` and then checks the state; if that promise
+      // stays pending forever, nothing downstream ever runs and no error is
+      // ever raised. An earlier version of this probe only recorded settle
+      // events, so "resume() was called and never settled" and "resume() was
+      // never called" both showed up as an empty list -- indistinguishable, and
+      // I misread it once already.
+      const nativeResume = AudioContext.prototype.resume;
+      AudioContext.prototype.resume = function (...args) {
+        const entry = { outcome: "pending", state: this.state, calledAt: Date.now() };
+        window.audioProbe.contextResumes.push(entry);
+        let started;
+        try {
+          started = nativeResume.apply(this, args);
+        } catch (error) {
+          entry.outcome = "threw";
+          entry.name = error?.name ?? null;
+          entry.message = error?.message ?? null;
+          throw error;
+        }
+        if (started && typeof started.then === "function") {
+          started.then(
+            () => {
+              entry.outcome = "resolved";
+              entry.stateAfter = this.state;
+              entry.settledAfterMs = Date.now() - entry.calledAt;
+            },
+            (error) => {
+              entry.outcome = "rejected";
+              entry.name = error?.name ?? null;
+              entry.message = error?.message ?? null;
+              entry.stateAfter = this.state;
+              entry.settledAfterMs = Date.now() - entry.calledAt;
+            },
+          );
+          // Flag a promise the browser has no intention of settling. This is
+          // the state that makes Play hang silently.
+          setTimeout(() => {
+            if (entry.outcome === "pending") {
+              entry.outcome = "still-pending";
+              entry.pendingForMs = Date.now() - entry.calledAt;
+              entry.stateAfter = this.state;
+            }
+          }, 3000);
+        } else {
+          entry.outcome = "not-a-promise";
+        }
+        return started;
+      };
+    }
+    // Always installed (not gated on probeAutoFades) because the timing
+    // scenarios need it and do not enable auto-fades. The rejection is
+    // re-thrown to the original caller untouched; recording it only means the
+    // browser no longer *also* logs an unhandled rejection for the same
+    // promise, which the app already handles by awaiting play().
+    {
+      const nativePlayForRejection = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function (...args) {
+        const started = nativePlayForRejection.apply(this, args);
+        if (started && typeof started.then === "function") {
+          started.then(undefined, (error) => {
+            window.audioProbe.playRejections.push({
+              src: this.src,
+              name: error?.name ?? null,
+              message: error?.message ?? null,
+              readyState: this.readyState,
+              paused: this.paused,
+            });
+          });
+        }
+        return started;
+      };
+    }
     if (captureRenderedAudio) {
       const nativeConnect = AudioNode.prototype.connect;
       AudioNode.prototype.connect = function (target, ...args) {
@@ -1982,18 +2195,133 @@ try {
       session.currentSessionTrackId = "a";
       session.positionSeconds = 0;
       await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
-      await page.waitForFunction(() => {
-        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-        return audio.length === 4 && audio.every(element =>
-          element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
-        );
-      }, null, { timeout: 15_000 });
+      try {
+        await page.waitForFunction(() => {
+          const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+          return audio.length === 4 && audio.every(element =>
+            element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+          );
+        }, null, { timeout: 15_000 });
+      } catch (error) {
+        const state = await page.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')]
+          .map(element => ({ readyState: element.readyState, networkState: element.networkState, src: element.src, error: element.error?.code ?? null }))).catch(() => "page unavailable");
+        console.error(`TIMING_SETUP_AUDIO_STATE ${scenario.name} ${JSON.stringify(state)}`);
+        throw error;
+      }
       const deck = page.locator('[data-role="current"]');
       const play = page.getByTestId("session-play");
       if (await play.getAttribute("aria-pressed") !== "true") await play.click();
-      await page.waitForFunction(() =>
-        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
-      );
+      try {
+        await page.waitForFunction(() =>
+          document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+        );
+      } catch (error) {
+        // Play never engaged. This is NOT an audio-readiness problem: the
+        // 15 s setup wait above already proved readyState 4 on all four
+        // elements. togglePlay awaits transport.play(), so capture the state
+        // that explains a stalled start -- a suspended AudioContext is the
+        // classic symptom (Firefox suspends until a gesture is trusted).
+        // Emit the two fields that identify the cause as their own short lines
+        // first. Annotations are truncated, and the previous dump was cut off
+        // before the error text.
+        const head = await page.evaluate(async () => {
+          const probe = window.audioProbe;
+          const text = [...document.querySelectorAll('[role="alert"], [data-testid*="error"], .wy-error, [aria-live]')]
+            .map((node) => (node.textContent ?? '').trim())
+            .filter((value) => value.length > 0);
+          // DECISIVE EXPERIMENT. resume() on the app's own context is observed
+          // to stay pending (never resolve, never reject) in Firefox, while
+          // AudioWorklet.addModule on the same context resolved in 35 ms. That
+          // means the context is not broken -- it is blocked -- and an
+          // unbounded `await context.resume()` parks Play forever with no error
+          // at all. Two facts separate "Firefox is blocking Web Audio for this
+          // page" from "this one context is wedged":
+          //   directResume  -- resume() on the app's existing context, raced
+          //   freshResume   -- resume() on a brand new AudioContext
+          // plus what Firefox believes about user activation.
+          const race = (promise, ms) => Promise.race([
+            Promise.resolve(promise).then(() => 'resolved', (e) => `rejected:${e?.name ?? e}`),
+            new Promise((resolve) => setTimeout(() => resolve(`pending-after-${ms}ms`), ms)),
+          ]);
+          const target = Array.isArray(probe?.contexts) ? probe.contexts[0] : null;
+          const directResume = target
+            ? `${target.state} -> ${await race(target.resume(), 1500)} (state now ${target.state})`
+            : 'no-context';
+          let freshResume = 'unavailable';
+          try {
+            const fresh = new AudioContext();
+            freshResume = `${fresh.state} -> ${await race(fresh.resume(), 1500)} (state now ${fresh.state})`;
+            void fresh.close().catch(() => undefined);
+          } catch (error) {
+            freshResume = `threw:${error?.message ?? error}`;
+          }
+          return {
+            visibleError: text.slice(0, 4),
+            pageErrors: Array.isArray(probe?.pageErrors) ? probe.pageErrors.slice(0, 6) : 'no-pageErrors',
+            contextResumes: Array.isArray(probe?.contextResumes) ? probe.contextResumes.slice(-2) : 'no-contextResumes',
+            workletLoads: Array.isArray(probe?.workletLoads) ? probe.workletLoads.slice(-2) : 'no-workletLoads',
+            playStarts: Array.isArray(probe?.playStarts) ? probe.playStarts.slice(-2) : 'no-playStarts',
+            directResume,
+            freshResume,
+            userActivation: {
+              isActive: navigator.userActivation?.isActive ?? null,
+              hasBeenActive: navigator.userActivation?.hasBeenActive ?? null,
+            },
+            sampleRate: target?.sampleRate ?? null,
+            baseLatency: target?.baseLatency ?? null,
+            outputLatency: target?.outputLatency ?? null,
+          };
+        }).catch(() => 'page unavailable');
+        console.error(`TIMING_SETUP_ERRORS ${scenario.name} ${JSON.stringify(head)}`);
+        const state = await page.evaluate(() => {
+          const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+          const probe = window.audioProbe;
+          // audioProbe.contexts is the real registry (it is what
+          // startRenderedCapture reads). An earlier version of this probe
+          // looked for probe.context / probe.audioContext, found nothing and
+          // reported "no-probe-context" -- a gap in the probe, not a finding.
+          const contexts = Array.isArray(probe?.contexts) ? probe.contexts : [];
+          return {
+            pressed: document.querySelector('[data-testid="session-play"]')?.getAttribute('aria-pressed') ?? null,
+            audioContexts: contexts.map((context) => ({
+              state: context.state,
+              sampleRate: context.sampleRate,
+              currentTime: Number(context.currentTime.toFixed(3)),
+            })),
+            // Recorded by the init script whenever HTMLMediaElement.play()
+            // rejects -- the direct evidence for an autoplay refusal.
+            playStarts: Array.isArray(probe?.playStarts) ? probe.playStarts.slice(-6) : 'no-playStarts',
+            playRejections: Array.isArray(probe?.playRejections) ? probe.playRejections.slice(-6) : 'no-playRejections',
+            contextResumes: Array.isArray(probe?.contextResumes) ? probe.contextResumes.slice(-6) : 'no-contextResumes',
+            // The transport sets its own error text when play() bails; surface
+            // whatever the user would actually see.
+            // The API calls this page made, with enough of each body to tell a
+            // real payload from an HTML shell. A 200 whose body does not parse
+            // as JSON is the SPA fallback answering an unmatched API route.
+            apiResponses: (() => {
+              const entries = Array.isArray(probe?.apiResponses) ? probe.apiResponses : [];
+              const api = entries.filter((entry) => /\/api\//.test(entry.url));
+              return (api.length > 0 ? api : entries).slice(-6);
+            })(),
+            pageErrors: Array.isArray(probe?.pageErrors) ? probe.pageErrors.slice(-6) : 'no-pageErrors',
+            visibleError: (() => {
+              const nodes = [...document.querySelectorAll('[role="alert"], [data-testid*="error"], .wy-error, [aria-live]')];
+              const text = nodes
+                .map((node) => (node.textContent ?? '').trim())
+                .filter((value) => value.length > 0);
+              return text.slice(0, 4);
+            })(),
+            audio: audio.map((element) => ({
+              readyState: element.readyState,
+              paused: element.paused,
+              currentTime: Number(element.currentTime.toFixed(3)),
+              error: element.error?.code ?? null,
+            })),
+          };
+        }).catch(() => 'page unavailable');
+        console.error(`TIMING_SETUP_PLAY_STATE ${scenario.name} ${JSON.stringify(state)}`);
+        throw error;
+      }
       await deck.getByTestId("open-live-swap-vocals").click();
       const candidate = deck.getByTestId(`live-swap-candidate-vocals-${scenario.donorId}`);
       await candidate.waitFor();

@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
+import { applyDesktopMigrationsToPGlite } from "../worker-local/pglite-migrations.test-helper";
 import { drizzle } from "drizzle-orm/pglite";
 
 import { processingJobs, projects, sourceAssets } from "@workspace/db/waveyardSchema";
@@ -40,9 +41,8 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 async function fixture() {
   const client = new PGlite();
-  const { applyMigrations } = await import("../../../../desktop/runtime/migrate");
   const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
-  await applyMigrations({ client: client as unknown as import("pg").Client, migrationsDir: join(repoRoot, "desktop-migrations") });
+  await applyDesktopMigrationsToPGlite(client, join(repoRoot, "desktop-migrations"));
   const database = drizzle(client) as unknown as SeparationDb;
 
   const [project] = await database

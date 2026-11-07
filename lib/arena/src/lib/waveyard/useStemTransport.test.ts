@@ -57,3 +57,4 @@ test("solo on a current stem silences only the other active channels", () => {
   assert.equal(isEffectivelyMuted(state.controls.bass, state.anySolo), true);
   assert.equal(isEffectivelyMuted(state.controls.other, state.anySolo), true);
 });
+

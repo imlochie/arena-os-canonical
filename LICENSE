@@ -1,0 +1,18 @@
+Arena — Proprietary Notice
+
+Copyright (c) 2026 imlochie. All rights reserved.
+
+The original source code, documentation, designs and other original material
+in this repository ("Arena") are the private intellectual property of the
+owner. No licence is granted to copy, reproduce, modify, redistribute,
+sublicense, sell, or use any part of Arena in any other project, product or
+service, or to use it to train or fine-tune machine-learning models, without
+the owner's prior written permission.
+
+Viewing this repository and the forking permitted by GitHub's Terms of Service
+for the sole purpose of proposing changes to this repository are not affected.
+
+Third-party components bundled with or referenced by Arena (for example
+FFmpeg, PostgreSQL, SDL, ONNX Runtime, Electron and npm dependencies) remain
+under their own licences. See desktop/THIRD-PARTY-NOTICES.md. Nothing in this
+notice restricts rights those licences grant you in that third-party code.

@@ -3,9 +3,9 @@
 The Windows package includes the FFmpeg and FFprobe executables and shared
 libraries from the BtbN FFmpeg-Builds `n9.0` Windows x64 LGPL shared release.
 The pinned release archive is
-[`ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip`](https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip),
+[`ffmpeg-n9.0.2-47-gb204e94e90-win64-lgpl-shared-9.0.zip`](https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-06-12-50/ffmpeg-n9.0.2-47-gb204e94e90-win64-lgpl-shared-9.0.zip),
 with SHA-256
-`1c4784a901a068e2d834ef5c262995b12f3734de72b15ec821eb13196c5f18d2`.
+`8e83cbb02c058677319058cdbd05dfb1871bf263af4f9e8fb104199378fe78ee`.
 
 The build's `LICENSE.txt` is shipped beside the executables in the installed
 `resources/bin` directory. The upstream project and build configuration are at

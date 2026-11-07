@@ -28,6 +28,11 @@ import { getStorage } from "../storage";
 import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
 import { restoreVerifiedAudioBackupZip } from "./audio-restore";
 
+// The route handlers under test resolve the desktop/local owner from
+// NODE_ENV. Establish the test mode before any route module is imported
+// dynamically so the suite does not depend on the runner's ambient env.
+process.env.NODE_ENV ??= "test";
+
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -608,9 +613,16 @@ test("migration 0021 repairs a populated pre-migration library without losing sa
     }).returning({ id: schema.playlistItems.id });
     playlistItemIds.push(item.id);
   }
-  const [session] = await legacyDb.insert(schema.listenSessions).values({
-    ownerId, name: "Pre-migration session",
-  }).returning({ id: schema.listenSessions.id });
+  // This fixture must represent the schema BEFORE migration 0021. The current
+  // Drizzle model includes columns added by later migrations (0024), so using
+  // it here would fail on a column the legacy database does not have yet and
+  // the repair would never be exercised. Insert only the original columns.
+  const sessionId = randomUUID();
+  await isolatedClient.query(
+    "insert into wy_listen_sessions (id, owner_id, name) values ($1, $2, $3)",
+    [sessionId, ownerId, "Pre-migration session"],
+  );
+  const session = { id: sessionId };
   const sessionTrackIds: string[] = [];
   for (const [position, trackId] of trackIds.entries()) {
     const [item] = await legacyDb.insert(schema.listenSessionTracks).values({
@@ -673,11 +685,18 @@ test("migration 0021 repairs a populated pre-migration library without losing sa
       { id: sessionTrackIds[1], trackId: trackIds[0], queueItemId: queueIds[1], position: 1 },
     ],
   );
-  const [repairedSession] = await legacyDb.select().from(schema.listenSessions)
-    .where(eq(schema.listenSessions.id, session.id));
+  // Read the repaired session through the pre-0024 columns. The current
+  // Drizzle model also selects key_match_mode/key_shifts, which this fixture
+  // intentionally does not have yet; selecting them would fail before the
+  // assertion and hide whether migration 0021 preserved the session state.
+  const { rows: repairedSessionRows } = await isolatedClient.query(
+    "select id, current_track_id, position_seconds from wy_listen_sessions where id = $1",
+    [session.id],
+  );
+  const repairedSession = repairedSessionRows[0];
   assert.equal(repairedSession.id, session.id);
-  assert.equal(repairedSession.currentTrackId, sessionTrackIds[1]);
-  assert.equal(repairedSession.positionSeconds, 8.25);
+  assert.equal(repairedSession.current_track_id, sessionTrackIds[1]);
+  assert.equal(repairedSession.position_seconds, 8.25);
 });
 
 test("legacy duplicate repair backfills identity and preserves every listening reference", async (t) => {

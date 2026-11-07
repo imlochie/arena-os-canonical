@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { buildWaveyardCaptureHost, copyExternalPackage, pruneOnnxRuntimeForWindowsX64 } from "./build.mjs";
-import { verifyOnnxRuntime } from "./onnx-runtime-probe.mjs";
+import { spawnSync } from "node:child_process";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -44,15 +44,20 @@ test("stages ONNX Runtime with CPU inference and Windows DirectML dependencies",
   try {
     await copyExternalPackage("onnxruntime-node", apiRequire, nodeModules);
     const stagedRequire = createRequire(path.join(temporaryRoot, "server", "index.mjs"));
-    const runtime = stagedRequire("onnxruntime-node");
-    assert.equal(typeof runtime.InferenceSession?.create, "function");
     const runtimeRequire = createRequire(stagedRequire.resolve("onnxruntime-node"));
     assert.ok(runtimeRequire.resolve("onnxruntime-common"));
     const windowsRuntime = path.join(nodeModules, "onnxruntime-node", "bin", "napi-v6", "win32", "x64");
     for (const file of ["onnxruntime.dll", "DirectML.dll", "dxcompiler.dll", "dxil.dll"]) {
       await access(path.join(windowsRuntime, file));
     }
-    await verifyOnnxRuntime(runtime, temporaryRoot);
+    // Real inference runs in a child process: Windows keeps a loaded DLL locked
+    // until its process exits, which would block cleanup of the staged copy.
+    const probe = spawnSync(process.execPath, [
+      path.join(here, "onnx-runtime-probe-child.mjs"),
+      path.join(temporaryRoot, "server", "index.mjs"),
+      temporaryRoot,
+    ], { encoding: "utf8", timeout: 120000 });
+    assert.equal(probe.status, 0, `${probe.stdout}\n${probe.stderr}`);
     await pruneOnnxRuntimeForWindowsX64(path.join(nodeModules, "onnxruntime-node"));
     const napiRoot = path.join(nodeModules, "onnxruntime-node", "bin", "napi-v6");
     assert.deepEqual(

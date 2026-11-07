@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
+import { RESUME_TIMEOUT_MS, resumeWithin } from "./audio-context-resume";
 import outputPeakWorkletUrl from "./output-peak-worklet.ts?worker&url";
 import { acquireSessionOutput } from "./session-output";
 import { ensureLiveStemWorklet, LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
@@ -843,10 +844,26 @@ export function useStemTransport(
       // Saved insert intent may have been restored before any audio graph
       // existed. Build it now, inside the first user-initiated play action.
       applyInserts(insertChains.current, masterChain.current);
-      if (context.current && context.current.state !== "running")
-        await context.current.resume();
-      if (context.current && context.current.state !== "running")
-        throw new Error("Audio playback was interrupted. Activate Play stems to resume.");
+      if (context.current && context.current.state !== "running") {
+        // Never await this unbounded. A browser with no usable audio output
+        // leaves a suspended AudioContext's resume() promise pending forever:
+        // it does not resolve and does not reject. Awaiting that parked Play
+        // permanently -- no playback, no error, and the Playing control simply
+        // never engaged, which is indistinguishable from a dead button.
+        // Confirmed in the Firefox CI leg: resume() on the app's own context and
+        // on a brand-new AudioContext both stayed pending past 3 s while
+        // AudioWorklet module loading on that same context completed in 35 ms.
+        const resuming = context.current;
+        await resumeWithin(resuming, RESUME_TIMEOUT_MS);
+        // Typed as a string on purpose: TypeScript narrowed the ref to
+        // non-"running" above and cannot know resume() changes it.
+        const stateAfterResume: string = resuming.state;
+        if (stateAfterResume !== "running")
+          throw new Error(
+            "Audio playback was interrupted. Activate Play stems to resume. "
+            + "If this persists, check that this device has a working audio output.",
+          );
+      }
       if (keyShiftSemitones.current !== 0) {
         await setKeyShiftSemitones(keyShiftSemitones.current);
       }

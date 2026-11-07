@@ -9,12 +9,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
-import { checksumFile } from "../audio";
 import type { MdxModelSpec } from "./mdx";
 import { findMdxModel } from "./mdx";
 import { getModelFileStatus, ModelSeedError, seedModelFile, type SeedProgress } from "./seed";
@@ -74,40 +73,28 @@ test("status: absent model is honestly not-present; seeded model is verified", a
   }
 });
 
-test("verified status reuses one hash until the model file changes", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "wy-status-cache-"));
+test("status keeps verifying the bytes, not a stale cached verdict", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wy-seed-"));
   try {
-    const bytes = Buffer.alloc(2_000_000, 13);
+    // The models endpoint polls this status every two seconds while the setup
+    // panel is open; it must stay a stat-driven answer and must notice a file
+    // whose bytes changed without its size changing.
+    const bytes = Buffer.alloc(1_000_000, 3);
     const spec = await specFor(bytes);
-    const path = join(dir, spec.file);
-    await writeFile(path, bytes);
-    let checksums = 0;
-    const slowChecksum = async (filePath: string) => {
-      checksums += 1;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return checksumFile(filePath);
-    };
+    await seedModelFile(spec, { dir, fetchImpl: fetchServing(bytes).fetchImpl });
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true);
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true);
 
-    const [first, concurrent] = await Promise.all([
-      getModelFileStatus(spec, dir, slowChecksum),
-      getModelFileStatus(spec, dir, slowChecksum),
-    ]);
-    assert.equal(first.verified, true);
-    assert.equal(concurrent.verified, true);
-    assert.equal(checksums, 1, "concurrent status checks share one file hash");
+    const file = join(dir, spec.file);
+    const tampered = Buffer.from(bytes);
+    tampered[0] ^= 0xff;
+    await writeFile(file, tampered);
+    const afterTamper = await getModelFileStatus(spec, dir);
+    assert.equal(afterTamper.sizeBytes, bytes.length, "the tamper kept the size");
+    assert.equal(afterTamper.verified, false);
 
-    assert.equal((await getModelFileStatus(spec, dir, slowChecksum)).verified, true);
-    assert.equal(checksums, 1, "unchanged model file reuses its verified status");
-
-    const changed = Buffer.from(bytes);
-    changed[0] ^= 0xff;
-    await writeFile(path, changed);
-    const changedTime = new Date(Date.now() + 10_000);
-    await utimes(path, changedTime, changedTime);
-    const afterChange = await getModelFileStatus(spec, dir, slowChecksum);
-    assert.equal(afterChange.present, true);
-    assert.equal(afterChange.verified, false, "changed file bytes are never served from the old cache entry");
-    assert.equal(checksums, 2, "changed file identity triggers a fresh hash");
+    await writeFile(file, bytes);
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true, "restoring the bytes is verified again");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -226,4 +213,22 @@ test("the seed URL is always the registry's own sourceUrl", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('owner-supplied pinned bytes use existing publication and readiness; corrupt replacement preserves installed file', async () => {
+  const { importModelFile } = await import('./seed');
+  const { writeFile } = await import('node:fs/promises');
+  const dir = await mkdtemp(join(tmpdir(), 'wy-owner-model-'));
+  try {
+    const bytes = Buffer.alloc(2_000_000, 11), spec = await specFor(bytes);
+    const file = join(dir, 'owner-upload.bin'); await writeFile(file, bytes);
+    const result = await importModelFile(spec, file, { dir, rightsReviewed: true });
+    assert.equal((await getModelFileStatus(spec, dir)).acquisition?.kind, "owner-supplied-file");
+    assert.equal(result.inputVerifiedFrom, 'owner-supplied-file');
+    assert.equal(result.sha256, spec.sha256);
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true);
+    await writeFile(file, Buffer.alloc(bytes.length, 3));
+    await assert.rejects(importModelFile(spec, file, { dir, rightsReviewed: true }), /does not match pinned/);
+    assert.deepEqual(await readFile(join(dir, spec.file)), bytes);
+  } finally { await rm(dir, { recursive:true, force:true }); }
 });

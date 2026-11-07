@@ -65,7 +65,7 @@ export function deepStemsEnabled(): boolean {
 
 /** True for the deep registry id, and only while the mode is enabled. */
 export function isDeepSeparationMode(id: string): boolean {
-  return DEEP_MODES_ENABLED && id === DEEP_MODEL_ID;
+  return DEEP_MODES_ENABLED && (id === DEEP_MODEL_ID || id === DEEP_FOUR_MODEL_ID);
 }
 
 /**
@@ -79,6 +79,7 @@ export function separationTargetOptions(): Array<{ id: string; label: string }> 
     { id: "stems_4", label: "4 stems — vocals, drums, bass, melody" },
   ];
   if (DEEP_MODES_ENABLED) {
+    options.push({ id: DEEP_FOUR_MODEL_ID, label: "Demucs — 4 stems (managed engine)" });
     options.push({ id: DEEP_MODEL_ID, label: "Deep — 6 stems (guitar + piano)" });
   }
   return options;
@@ -96,3 +97,15 @@ export const DEEP_STEM_COLORS: Record<DeepStemType, string> = {
   piano: "#93e0c8",
   other: "#f8ca7b",
 };
+
+
+/** Authoritative Demucs local-repository identities. No remote fallback. */
+export const DEEP_FOUR_MODEL_ID = "deep_4s";
+export const DEEP_MODEL_SPECS = {
+  deep_6s: { id: "deep_6s", name: "htdemucs_6s", label: "Demucs — 6 stems", signature: "5c90dfd2", checksum: "34c22ccb", sha256: "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd", file: "5c90dfd2-34c22ccb.th", approximateBytes: 110_000_000, stems: DEEP_STEM_TYPES },
+  deep_4s: { id: "deep_4s", name: "htdemucs", label: "Demucs — 4 stems", signature: "955717e8", checksum: "8726e21a", sha256: "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4", file: "955717e8-8726e21a.th", approximateBytes: 110_000_000, stems: ["vocals", "drums", "bass", "other"] as const },
+} as const;
+export function deepModelSpec(id: string = DEEP_MODEL_ID) {
+  if (id !== "deep_6s" && id !== "deep_4s") throw new Error(`Unknown native Demucs model: ${id}`);
+  return DEEP_MODEL_SPECS[id];
+}

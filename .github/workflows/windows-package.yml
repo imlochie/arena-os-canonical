@@ -23,6 +23,8 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          # Use the runner's C:\msys64, where the Classic core build expects it.
+          release: false
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
 
       - uses: pnpm/action-setup@v4
@@ -43,13 +45,51 @@ jobs:
           --filter "@workspace/api-server..."
           --filter "@workspace/desktop..."
 
-      - name: Run desktop packaging unit tests
-        run: pnpm --filter @workspace/desktop test
+      - name: Run desktop packaging unit tests with per-file evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $root = (Get-Location).Path
+          $evidence = Join-Path $root "generated-artifacts/desktop-test-results"
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $results = @()
+          Push-Location desktop
+          try {
+            Get-ChildItem -Filter *.test.mjs | ForEach-Object {
+              $name = $_.Name
+              $output = & node --test $name 2>&1 | Out-String
+              $code = $LASTEXITCODE
+              $status = if ($code -eq 0) { "PASS" } else { "FAIL" }
+              $results += [pscustomobject]@{ file = $name; code = $code; status = $status; output = $output }
+              Set-Content -Path (Join-Path $evidence "$name.txt") -Value $output
+            }
+          } finally {
+            Pop-Location
+          }
+          $results | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $evidence "summary.json")
+          $failed = $results | Where-Object { $_.code -ne 0 }
+          if ($failed) { $failed | ForEach-Object { Write-Host "FAILED: $($_.file)" }; exit 1 }
+
+      - name: Upload desktop test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-test-evidence
+          path: generated-artifacts/desktop-test-results/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build previous Windows package for update test
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # Job logs are not readable from the environment that triages this
+          # workflow, so every failure in this step names itself in a check-run
+          # annotation. Without this a failure here is only "exit code 1".
+          function Fail([string]$message) {
+            Write-Host "::error::windows-package step 10: $message"
+            throw $message
+          }
           $workflowEvent = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
           $baseline = $null
           if ($workflowEvent.pull_request.base.sha) {
@@ -59,29 +99,76 @@ jobs:
           } else {
             $baseline = (git rev-parse HEAD^).Trim()
           }
-          if (-not $baseline) { throw "The previous package revision could not be identified." }
+          if (-not $baseline) { Fail "The previous package revision could not be identified." }
 
           $previousSource = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) "arenaforge-previous-source"
           $previousInstaller = Join-Path $env:RUNNER_TEMP "ArenaForge-previous.exe"
           git worktree add --detach $previousSource $baseline
-          if ($LASTEXITCODE -ne 0) { throw "The previous package source could not be prepared." }
+          if ($LASTEXITCODE -ne 0) { Fail "The previous package source could not be prepared." }
           try {
             Push-Location $previousSource
-            pnpm install --frozen-lockfile --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
-            if ($LASTEXITCODE -ne 0) { throw "Previous package dependencies could not be installed." }
+
+            # The base revision cannot be packaged on Windows as it stands, and
+            # this step is the only thing that ever discovered that.
+            #
+            # `main` prunes the win32-x64 native binaries it would need to build
+            # on Windows:
+            #   "esbuild>@esbuild/win32-x64": "-"
+            #   "lightningcss>lightningcss-win32-x64-msvc": "-"
+            #   "@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc": "-"
+            #   "rollup>@rollup/rollup-win32-x64-msvc": "-"
+            # so installing and building that tree resolves those packages to
+            # nothing. (Commit 2ec27f4 removes those overrides, but it lives on
+            # the convergence branch, not on main.) This is also why the job has
+            # only ever passed on `push` events: a push baseline is a commit on
+            # this branch, which already has the fix.
+            #
+            # So: build the previous package from the base revision's SOURCE,
+            # but take dependency resolution from the branch under test. The
+            # thing this step must prove -- that an older installer can be
+            # installed and then updated -- is unaffected, because the previous
+            # *app* is still the base revision's code. Only the packaging
+            # configuration that makes a Windows build possible at all comes
+            # from the tested tree, and its absence in the base is a defect in
+            # the base, not a property worth reproducing.
+            #
+            # --frozen-lockfile is deliberately not used: the base lockfile
+            # encodes the pruning above and could not be satisfied with win32
+            # binaries restored.
+            Copy-Item (Join-Path $env:GITHUB_WORKSPACE "pnpm-workspace.yaml") -Destination "pnpm-workspace.yaml" -Force
+            Remove-Item "pnpm-lock.yaml" -Force -ErrorAction SilentlyContinue
+
+            $baseRevision = (git rev-parse HEAD).Trim()
+            Write-Host "previous package: source=$baseline dependency-config=from tested branch ($baseRevision)"
+            # State the one fact this whole workaround rests on. If the tested
+            # tree ever re-prunes win32-x64, this prints it instead of leaving the
+            # next reader to guess why the build broke again.
+            $pruned = Select-String -Path "pnpm-workspace.yaml" -Pattern "win32-x64" -SimpleMatch |
+              ForEach-Object { $_.Line.Trim() }
+            if ($pruned) {
+              Write-Host "::warning::windows-package: pnpm-workspace.yaml in the tested tree still prunes win32-x64 entries: $($pruned -join '; ')"
+            } else {
+              Write-Host "previous package: win32-x64 binaries are not pruned in the tested tree"
+            }
+            Write-Host "previous package: pnpm $(pnpm --version), node $(node --version)"
+
+            pnpm install --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
+            if ($LASTEXITCODE -ne 0) {
+              Fail "Previous package dependencies could not be installed (pnpm install exited $LASTEXITCODE). If the base revision still cannot resolve win32-x64 binaries, the overrides in pnpm-workspace.yaml were not the remaining cause."
+            }
             $env:ARENA_CLASSIC_PACKAGES = "1"
             pnpm --filter @workspace/desktop run dist:win
-            if ($LASTEXITCODE -ne 0) { throw "The previous Windows package could not be built." }
+            if ($LASTEXITCODE -ne 0) { Fail "The previous Windows package could not be built (dist:win exited $LASTEXITCODE)." }
             $builtInstaller = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
               Where-Object { $_.Name -notmatch "uninstall" } |
               Select-Object -First 1
-            if (-not $builtInstaller) { throw "The previous Windows installer was not created." }
+            if (-not $builtInstaller) { Fail "The previous Windows installer was not created; generated-artifacts/windows contains no .exe." }
             Copy-Item $builtInstaller.FullName $previousInstaller
           } finally {
             Pop-Location
             git worktree remove --force $previousSource
           }
-          if (-not (Test-Path $previousInstaller)) { throw "The previous Windows installer was not retained for the update test." }
+          if (-not (Test-Path $previousInstaller)) { Fail "The previous Windows installer was not retained for the update test." }
           "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
 
       - name: Build Windows x64 installer
@@ -92,6 +179,7 @@ jobs:
 
       - name: Install and check packaged app
         shell: pwsh
+        timeout-minutes: 25
         run: |
           $installer = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
             Where-Object { $_.Name -notmatch "uninstall" } |
@@ -107,6 +195,20 @@ jobs:
           if (-not (Test-Path $executable)) { throw "The installed ArenaForge executable was not found." }
           node desktop/windows-package-smoke.mjs $executable
           if ($LASTEXITCODE -ne 0) { throw "The installed-package smoke check failed." }
+
+          # The update check installs two more builds. A still-installed copy
+          # (same app id) or a leftover app/database process can stall a second
+          # silent install, so remove the first one cleanly before continuing.
+          Get-Process -Name "ArenaForge", "postgres" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+          $uninstaller = Get-ChildItem $installDir -Filter "Uninstall*.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($uninstaller) {
+            $un = Start-Process -FilePath $uninstaller.FullName `
+              -ArgumentList @("/S", "_?=$installDir") -PassThru
+            if (-not $un.WaitForExit(120000)) { $un.Kill(); Write-Host "Uninstaller timed out." }
+          }
+          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
 
           node desktop/windows-package-update-smoke.mjs "$env:ARENA_PREVIOUS_INSTALLER" "$($installer.FullName)"
           if ($LASTEXITCODE -ne 0) { throw "The installed-package update check failed." }

@@ -2,85 +2,23 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { LibraryAudioCaptureSignal, LibraryAudioCaptureApplication } from "@workspace/api-client-react";
-
-type CaptureDevice = {
-  id: string;
-  name: string;
-  isDefault: boolean;
-};
-
-type CaptureFormat = {
-  sampleRate: number;
-  channels: number;
-  bitsPerSample: number;
-  blockAlign: number;
-};
-
-type CaptureStorageBudget = {
-  availableBytes: number;
-  reserveBytes: number;
-  canRecord: boolean;
-  reason?: string;
-};
-
-type CaptureSession = {
-  markers?: Array<{ id: string; sampleFrame: number; metadata: { title: string; artist?: string; album?: string; trackNumber?: number } }>;
-  sessionId: string;
-  status: "starting" | "recording" | "stopping" | "completed" | "failed";
-  title: string;
-  captureMode?: "system-loopback" | "process-loopback";
-  processId?: number;
-  startedAt?: string;
-  elapsedSeconds: number;
-  discontinuityCount: number;
-  availableBytes?: number;
-  reserveBytes?: number;
-  estimatedSecondsRemaining?: number;
-  format?: CaptureFormat;
-  message?: string;
-  signal?: LibraryAudioCaptureSignal;
-};
-
-type CaptureTags = {
-  title: string;
-  artist?: string;
-  album?: string;
-  trackNumber?: number;
-  artworkDataUrl?: string;
-};
-
-type MediaTrackSuggestion = {
-  sourceAppId: string;
-  metadata: CaptureTags;
-};
-
-type Recovery = {
-  sessionId: string;
-  title: string;
-  artist?: string;
-  album?: string;
-  createdAt: string;
-  signal?: LibraryAudioCaptureSignal;
-};
+import { parseCaptureOptions } from "./audio-capture-options";
+import type {
+  CaptureDevice,
+  CaptureFormat,
+  CaptureOptions,
+  CaptureSession,
+  CaptureStorageBudget,
+  CaptureTags,
+  MediaTrackSuggestion,
+  Recovery,
+} from "./audio-capture-options";
 
 function signalWarning(signal?: LibraryAudioCaptureSignal): string {
   return signal && signal.state !== "unsupported" && !signal.signalSeen
     ? " Warning: no signal above -80 dBFS was detected. Automatic stem separation was not requested for this capture. Listen to the file before relying on it; check playback and the selected device before recording again."
     : "";
 }
-
-type CaptureOptions = {
-  available: boolean;
-  devices: CaptureDevice[];
-  applications?: LibraryAudioCaptureApplication[];
-  processLoopbackSupported?: boolean;
-  processLoopbackReason?: string;
-  reason?: string;
-  storage?: CaptureStorageBudget;
-  activeSession?: CaptureSession;
-  recoveries?: Recovery[];
-  recoveryError?: string;
-};
 
 async function readJson(response: Response): Promise<Record<string, any>> {
   return response.json().catch(() => ({}));
@@ -313,7 +251,11 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     });
     const data = await readJson(response);
     if (!response.ok) throw new Error(data.error ?? "Could not check Windows audio capture.");
-    const next = data as CaptureOptions;
+    const parsed = parseCaptureOptions(data);
+    if (parsed === null) {
+      throw new Error("The audio-capture service returned an unexpected response.");
+    }
+    const next = parsed;
     setOptions(next);
     if (next.activeSession) setSession(next.activeSession);
     const fallbackDeviceId = next.devices.find((device) => device.isDefault)?.id ?? next.devices[0]?.id ?? "";
@@ -965,10 +907,10 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
               onChange={(event) => setDeviceId(event.target.value)}
               disabled={!options?.available || busy}
             >
-              {options?.devices.length === 0 && (
+              {options?.devices?.length === 0 && (
                 <option value="">{options?.reason ?? "Checking playback devices…"}</option>
               )}
-              {options?.devices.map((device) => (
+              {options?.devices?.map((device) => (
                 <option key={device.id} value={device.id}>
                   {device.name}{device.isDefault ? " · Default" : ""}
                 </option>
