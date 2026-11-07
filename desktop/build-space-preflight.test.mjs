@@ -541,10 +541,13 @@ test("command-line preflight uses npm's user, project, and environment cache pre
     assert.equal(run().path, projectCache);
     const cache = run({ npm_config_cache: environmentCache });
     assert.equal(cache.path, environmentCache);
-    // npm may initialize its log directory during config lookup; either way
-    // the inspection must stay on the configured cache's volume.
-    // The report canonicalizes the checked path (e.g. 8.3 short names on Windows).
-    assert.ok([realpathSync.native(root), environmentCache].includes(cache.checkedPath));
+    // npm may initialize its log directory during config lookup, so the cache
+    // directory may or may not exist. The report canonicalises whichever
+    // exists (e.g. 8.3 short names on Windows); compare canonical forms.
+    const canonical = (value) => {
+      try { return realpathSync.native(value); } catch { return value; }
+    };
+    assert.ok([canonical(root), canonical(environmentCache)].includes(cache.checkedPath));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
