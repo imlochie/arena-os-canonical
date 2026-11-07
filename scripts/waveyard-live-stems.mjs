@@ -30,10 +30,17 @@ if (process.argv.includes("--live-stem-timing-matrix")) {
     console.log(`LIVE_STEM_TIMING_ENGINE ${engine}`);
     const args = [process.argv[1], "--live-stem-timing-only", `--engine=${engine}`];
     if (requireBrowserEngines) args.push("--require-browser-engines");
+    // Capture as well as stream: on failure the engine's own diagnostic lines
+    // are lifted into workflow annotations, so the reason is readable in the
+    // check run instead of only inside the log archive.
     const result = spawnSync(process.execPath, args, {
-      stdio: "inherit",
+      stdio: ["inherit", "pipe", "pipe"],
       env: process.env,
+      maxBuffer: 64 * 1024 * 1024,
     });
+    const engineOut = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) throw result.error;
     if (result.status === 3 && !requireBrowserEngines) {
       skippedEngines.push(engine);
@@ -46,6 +53,15 @@ if (process.argv.includes("--live-stem-timing-matrix")) {
       // not actionable without knowing which browser failed.
       if (process.env.GITHUB_ACTIONS === "true") {
         console.log(`::error::LIVE_STEM_TIMING_ENGINE ${engine} exited with status ${result.status}`);
+        const diagnostic = engineOut
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0 && /WAVEYARD|readyState|networkState|audio|timeout|timed out|Error|error/i.test(line))
+          .slice(-6);
+        for (const line of diagnostic) {
+          console.log(`::error::${engine}: ${line.slice(0, 300)}`);
+        }
+        if (diagnostic.length === 0) console.log(`::error::${engine}: produced no diagnostic output`);
       }
       console.log(`LIVE_STEM_TIMING_FAILED ${engine} status=${result.status}`);
       process.exit(result.status ?? 1);
