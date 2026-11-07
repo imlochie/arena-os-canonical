@@ -44,8 +44,10 @@ jobs:
             > "$RUNNER_TEMP/waveyard-vite.log" 2>&1 &
           vite_pid=$!
           cleanup() {
+            # vite runs under sudo, so a plain kill of the sudo wrapper can leave
+            # it alive and block `wait` until the job times out.
+            sudo pkill -f "vite.js --config artifacts/arenaforge" 2>/dev/null || true
             kill "$vite_pid" 2>/dev/null || true
-            wait "$vite_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
           ready=0

@@ -37,6 +37,11 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [error, setError] = useState<string | null>(null);
   const [renderUrl, setRenderUrl] = useState<string | null>(null);
   const [renderKind, setRenderKind] = useState<"mashup" | "extended" | null>(null);
+  const [bedInfo, setBedInfo] = useState<{
+    source: string;
+    warning: string;
+    includedStemTypes?: string[];
+  } | null>(null);
   const renderUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -60,6 +65,9 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
         setError(body.error ?? "The mashup could not be planned.");
         return null;
       }
+      if (body.bed) {
+        setBedInfo(body.bed as { source: string; warning: string; includedStemTypes?: string[] });
+      }
       return body.plan as Plan;
     }
     if (!response.ok) {
@@ -67,6 +75,15 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       setRendering(null);
       setError(body.error ?? "The render failed.");
       return null;
+    }
+    const bedSource = response.headers.get("x-waveyard-bed-source");
+    const bedWarning = response.headers.get("x-waveyard-bed-warning");
+    if (bedSource) {
+      setBedInfo({
+        source: bedSource,
+        warning: bedWarning ? decodeURIComponent(bedWarning) : "",
+        includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
+      });
     }
     const blob = await response.blob();
     if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
@@ -182,6 +199,16 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             </div>
           )}
         </div>
+      )}
+
+      {bedInfo && (
+        <p className="mashup-bed-warning" role="status">
+          <b>Bed:</b>{" "}
+          {bedInfo.source === "separated"
+            ? `separated stems${bedInfo.includedStemTypes?.length ? ` (${bedInfo.includedStemTypes.join(", ")})` : ""}`
+            : "original file fallback"}
+          . {bedInfo.warning}
+        </p>
       )}
 
       {canEdit && (

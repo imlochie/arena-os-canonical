@@ -16,11 +16,12 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
+// Immutable dated release; BtbN's moving "latest" tag changes under a fixed hash.
 export const FFMPEG_RELEASE = {
-  archiveName: "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip",
-  directoryName: "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0",
-  url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip",
-  sha256: "1c4784a901a068e2d834ef5c262995b12f3734de72b15ec821eb13196c5f18d2",
+  archiveName: "ffmpeg-n9.0.2-47-gb204e94e90-win64-lgpl-shared-9.0.zip",
+  directoryName: "ffmpeg-n9.0.2-47-gb204e94e90-win64-lgpl-shared-9.0",
+  url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-06-12-50/ffmpeg-n9.0.2-47-gb204e94e90-win64-lgpl-shared-9.0.zip",
+  sha256: "8e83cbb02c058677319058cdbd05dfb1871bf263af4f9e8fb104199378fe78ee",
 };
 
 async function sha256File(filePath) {

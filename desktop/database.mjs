@@ -10,6 +10,18 @@ import pg from "pg";
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// Directories PostgreSQL requires but keeps empty at rest. File-based backups
+// drop them, so a restored cluster would refuse to start without them.
+const RUNTIME_DIRS = [
+  "pg_commit_ts", "pg_dynshmem", "pg_logical/mappings", "pg_logical/snapshots",
+  "pg_notify", "pg_replslot", "pg_serial", "pg_snapshots", "pg_stat",
+  "pg_stat_tmp", "pg_tblspc", "pg_twophase", "pg_wal/archive_status", "pg_wal/summaries",
+];
+
+export async function ensurePostgresRuntimeDirs(dataDir) {
+  for (const relative of RUNTIME_DIRS) await mkdir(path.join(dataDir, relative), { recursive: true });
+}
+
 export function run(binary, args, env, timeout = 60_000, spawnImpl = spawn) {
   return new Promise((resolve, reject) => {
     const child = spawnImpl(binary, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -109,6 +121,7 @@ export class DesktopDatabase {
       try { version = (await readFile(path.join(this.dir, "PG_VERSION"), "utf8")).trim(); }
       catch { throw new Error("Existing database is missing PG_VERSION. It was NOT deleted or reinitialised."); }
       if (version !== major) throw new Error(`Existing database uses PostgreSQL ${version}; this package has ${major}. Use the matching Arena build or migrate a backup with pg_upgrade. Data was NOT changed.`);
+      await ensurePostgresRuntimeDirs(this.dir);
       // Never remove a pid file here: PostgreSQL decides whether crash recovery
       // is safe and refuses a live cluster. A conflicting instance must stop.
     } else {
@@ -121,13 +134,23 @@ export class DesktopDatabase {
         ], this.env);
       } finally { await rm(pwFile, { force: true }); }
     }
-    this.child = spawn(path.join(this.bin, "postgres.exe"), [
-      "-D", this.dir, "-p", String(this.port), "-h", "127.0.0.1",
-    ], { env: this.env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    this.child.stdout.on("data", chunk => this.log("database", String(chunk)));
-    this.child.stderr.on("data", chunk => this.log("database", String(chunk)));
-    this.child.on("error", error => { this.failure = error.message; });
-    this.child.on("exit", code => { if (!this.stopping) this.failure = `PostgreSQL exited (${code})`; });
+    // pg_ctl starts the server with a restricted token. Launching postgres.exe
+    // directly is refused when the user is an elevated administrator.
+    const serverLog = path.join(this.root, "logs/postgres.log");
+    const started = await new Promise((resolve, reject) => {
+      const starter = spawn(path.join(this.bin, "pg_ctl.exe"), [
+        "-D", this.dir, "-w", "-t", "60", "-l", serverLog,
+        "-o", `-p ${this.port} -h 127.0.0.1`, "start",
+      ], { env: this.env, windowsHide: true, stdio: "ignore" });
+      starter.once("error", reject);
+      starter.once("exit", code => resolve(code));
+    });
+    this.child = { exitCode: null };
+    if (started !== 0) {
+      const detail = await readFile(serverLog, "utf8").then(text => text.slice(-2000), () => "");
+      this.log("database", detail);
+      throw new Error(`PostgreSQL could not start (pg_ctl exit ${started})${detail ? `: ${detail.trim().split("\n").pop()}` : ""}`);
+    }
     const deadline = Date.now() + 60_000;
     let ready = false;
     while (Date.now() < deadline) {

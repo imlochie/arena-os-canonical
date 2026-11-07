@@ -335,9 +335,12 @@ async function run() {
         state.exitRequested = true;
       };
 
-      const dataMenu = Menu.getApplicationMenu()?.getMenuItemByLabel("Data");
-      const restoreItem = dataMenu?.submenu?.getMenuItemByLabel(
-        "Restore backup to a new data folder…",
+      // Electron menus expose .items, not a by-label lookup.
+      const dataMenu = Menu.getApplicationMenu()?.items.find(
+        (item) => item.label === "Data",
+      );
+      const restoreItem = dataMenu?.submenu?.items.find(
+        (item) => item.label === "Restore backup to a new data folder…",
       );
       if (!restoreItem || typeof restoreItem.click !== "function") {
         throw new Error("The Arena Data menu restore item is unavailable.");
@@ -371,7 +374,7 @@ async function run() {
   assert(restoreFailure, "the Data menu must show a restore failure");
   assert.equal(restoreFailure.title, "Arena restore failed");
   assert.match(restoreFailure.message, /Backup verification failed/i);
-  assert.match(restoreFailure.message, /changed/i);
+  assert.match(restoreFailure.message, /content differs/i);
   assert.match(restoreFailure.message, /current data folder was not overwritten/i);
   const restoreDialogState = await desktop.evaluate(
     () => globalThis.__arenaBackupSmokeDialogs,
@@ -446,7 +449,18 @@ async function run() {
 try {
   await run();
   console.log("Installed Windows package smoke check passed.");
-} catch {
+} catch (error) {
+  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+  for (const root of [dataRoot, restoreRoot]) {
+    if (!root) continue;
+    const appLog = await readFile(path.join(root, "logs/desktop.log"), "utf8").catch(() => "(no desktop.log was written)");
+    const serverLog = await readFile(path.join(root, "logs/postgres.log"), "utf8").catch(() => "(no postgres.log)");
+    console.error(`--- ${path.basename(root)} desktop.log (tail) ---\n${appLog.slice(-2500)}\n--- postgres.log (tail) ---\n${serverLog.slice(-1500)}`);
+  }
+  const serverModules = path.join(path.dirname(executable), "resources/server/node_modules");
+  const listing = await readdir(serverModules).catch((error) => `(unreadable: ${error.message})`);
+  const playwrightListing = await readdir(path.join(serverModules, "playwright-core")).catch((error) => `(unreadable: ${error.message})`);
+  console.error(`resources/server/node_modules: ${JSON.stringify(listing)}\nplaywright-core: ${JSON.stringify(playwrightListing)}`);
   const failedCheck = activeCheck ?? "installed_app_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";
@@ -456,7 +470,14 @@ try {
   );
   process.exitCode = 1;
 } finally {
-  if (desktop) await desktop.close().catch(() => {});
+  if (desktop) {
+    // A modal error dialog can keep close() from returning; never hang CI on it.
+    await Promise.race([
+      desktop.close().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 20_000)),
+    ]);
+    try { desktop.process().kill(); } catch {}
+  }
   if (dataRoot)
     await rm(dataRoot, { recursive: true, force: true }).catch(() => {});
   if (restoreRoot)
@@ -469,3 +490,4 @@ try {
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.log("Result: generated-artifacts/windows-package-smoke/result.json");
 }
+process.exit(process.exitCode ?? 0);

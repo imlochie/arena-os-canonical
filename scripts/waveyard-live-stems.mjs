@@ -340,7 +340,10 @@ try {
   browser = await browserType.launch(engineName === "chromium"
     ? { ...(chromiumExecutable ? { executablePath: chromiumExecutable } : {}),
       args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] }
-    : { headless: engineName === "webkit" ? !headedWebKit : true });
+    : { headless: engineName === "webkit" ? !headedWebKit : true,
+      // Headless CI Firefox has no audio device or gesture-backed autoplay
+      // allowance, so play() would never resolve without these.
+      ...(engineName === "firefox" ? { firefoxUserPrefs: { "media.autoplay.default": 0, "media.autoplay.blocking_policy": 0, "media.volume_scale": "0.0" } } : {}) });
   console.log("BROWSER_ENGINE", JSON.stringify({
     engine: engineName,
     version: browser.version(),
@@ -1982,12 +1985,19 @@ try {
       session.currentSessionTrackId = "a";
       session.positionSeconds = 0;
       await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
-      await page.waitForFunction(() => {
-        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-        return audio.length === 4 && audio.every(element =>
-          element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
-        );
-      }, null, { timeout: 15_000 });
+      try {
+        await page.waitForFunction(() => {
+          const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+          return audio.length === 4 && audio.every(element =>
+            element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+          );
+        }, null, { timeout: 15_000 });
+      } catch (error) {
+        const state = await page.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')]
+          .map(element => ({ readyState: element.readyState, networkState: element.networkState, src: element.src, error: element.error?.code ?? null }))).catch(() => "page unavailable");
+        console.error(`TIMING_SETUP_AUDIO_STATE ${scenario.name} ${JSON.stringify(state)}`);
+        throw error;
+      }
       const deck = page.locator('[data-role="current"]');
       const play = page.getByTestId("session-play");
       if (await play.getAttribute("aria-pressed") !== "true") await play.click();
