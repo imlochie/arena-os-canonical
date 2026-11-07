@@ -105,6 +105,36 @@ jobs:
           $previousInstaller = Join-Path $env:RUNNER_TEMP "ArenaForge-previous.exe"
           git worktree add --detach $previousSource $baseline
           if ($LASTEXITCODE -ne 0) { Fail "The previous package source could not be prepared." }
+          # Two kinds of file come from the tested branch when building the
+          # PREVIOUS package, and nothing else does:
+          #
+          #  a) packaging configuration -- pnpm-workspace.yaml, because the base
+          #     prunes the win32-x64 binaries its own Windows build needs;
+          #  b) the specific defects that make the base build FAIL, listed
+          #     explicitly below and validated before use.
+          #
+          # Everything else -- the app, the server, the renderer, the tests --
+          # comes from the base revision, which is what this step exists to
+          # prove: an older installer installs, then updates. If any listed file
+          # is missing from the tested tree the step fails loudly instead of
+          # silently building a differently-sourced package.
+          $baseFixFiles = @(
+            # electron-builder never copies stage/server/node_modules through
+            # extraResources; the base has no afterPack hook, so the packaged app
+            # ships a server with no dependencies and dist:win fails.
+            "desktop/electron-builder.cjs",
+            # Newer Windows SDKs need propkeydef.h before the device property
+            # keys, and winrt/Windows.Foundation.h before the Media.Control
+            # header. Without them the native capture host does not compile.
+            "desktop/native/waveyard-capture-host.cpp"
+          )
+          foreach ($fix in $baseFixFiles) {
+            $source = Join-Path $env:GITHUB_WORKSPACE $fix
+            if (-not (Test-Path $source)) {
+              Fail "base-fix file missing from the tested tree: $fix. The previous package would be built from the base revision unchanged, which cannot be packaged on Windows."
+            }
+          }
+
           try {
             Push-Location $previousSource
 
@@ -137,6 +167,10 @@ jobs:
             # binaries restored.
             Copy-Item (Join-Path $env:GITHUB_WORKSPACE "pnpm-workspace.yaml") -Destination "pnpm-workspace.yaml" -Force
             Remove-Item "pnpm-lock.yaml" -Force -ErrorAction SilentlyContinue
+            foreach ($fix in $baseFixFiles) {
+              Copy-Item (Join-Path $env:GITHUB_WORKSPACE $fix) -Destination $fix -Force
+              Write-Host "previous package: applied base fix $fix from the tested tree"
+            }
 
             $baseRevision = (git rev-parse HEAD).Trim()
             Write-Host "previous package: source=$baseline dependency-config=from tested branch ($baseRevision)"
