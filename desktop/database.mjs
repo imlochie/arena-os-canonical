@@ -121,13 +121,23 @@ export class DesktopDatabase {
         ], this.env);
       } finally { await rm(pwFile, { force: true }); }
     }
-    this.child = spawn(path.join(this.bin, "postgres.exe"), [
-      "-D", this.dir, "-p", String(this.port), "-h", "127.0.0.1",
-    ], { env: this.env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    this.child.stdout.on("data", chunk => this.log("database", String(chunk)));
-    this.child.stderr.on("data", chunk => this.log("database", String(chunk)));
-    this.child.on("error", error => { this.failure = error.message; });
-    this.child.on("exit", code => { if (!this.stopping) this.failure = `PostgreSQL exited (${code})`; });
+    // pg_ctl starts the server with a restricted token. Launching postgres.exe
+    // directly is refused when the user is an elevated administrator.
+    const serverLog = path.join(this.root, "logs/postgres.log");
+    const started = await new Promise((resolve, reject) => {
+      const starter = spawn(path.join(this.bin, "pg_ctl.exe"), [
+        "-D", this.dir, "-w", "-t", "60", "-l", serverLog,
+        "-o", `-p ${this.port} -h 127.0.0.1`, "start",
+      ], { env: this.env, windowsHide: true, stdio: "ignore" });
+      starter.once("error", reject);
+      starter.once("exit", code => resolve(code));
+    });
+    this.child = { exitCode: null };
+    if (started !== 0) {
+      const detail = await readFile(serverLog, "utf8").then(text => text.slice(-2000), () => "");
+      this.log("database", detail);
+      throw new Error(`PostgreSQL could not start (pg_ctl exit ${started})${detail ? `: ${detail.trim().split("\n").pop()}` : ""}`);
+    }
     const deadline = Date.now() + 60_000;
     let ready = false;
     while (Date.now() < deadline) {
