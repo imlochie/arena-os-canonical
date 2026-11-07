@@ -216,33 +216,41 @@ that the Windows installer works, because that is the other job.
 
 ### `waveyard-browser-timing.yml` / `live-stem-timing`
 
-| run | sha | step 7 duration | annotation emitted |
-|---|---|---|---|
-| 42376858283 | `867c538` | 100 s | none |
-| 42377175538 | `b28d938` | exactly 60 s | none (diagnostics not yet present) |
-| 42378234049 | `f505bd4` | 72 s | **none** |
+Steps 1–6 pass, including the Playwright browser install. Step 7 runs three
+engines in order (chromium → webkit → firefox).
 
-Steps 1–6 pass, including the Playwright browser install. Step 7,
-*Run cross-browser live-stem timing matrix*, fails.
+| run | sha | result |
+|---|---|---|
+| 42376858283 | `867c538` | fail, 100 s |
+| 42377175538 | `b28d938` | fail, exactly 60 s (Vite readiness) |
+| 42378234049 | `f505bd4` | fail, 72 s — readiness annotation did **not** fire |
+| 42378819685 | `66dba41` | fail — new annotation: *matrix failed* (so readiness + persistence passed) |
+| (at `7af676b`) | | fail — annotation: **`LIVE_STEM_TIMING_ENGINE firefox exited with status 1`** |
+| (at `c75d9df`) | | fail — annotation: `page.waitForFunction: Timeout 30000ms exceeded` at `waveyard-live-stems.mjs:2030` |
 
-**What is established:** the failure is inside step 7, and at `f505bd4` the
-workflow's own 60 s Vite readiness loop **succeeded** — the added
-readiness-timeout annotation did not fire and the step ran 72 s instead of 60 s.
-So Vite *is* reachable on the runner and the earlier "Vite never starts"
-framing was wrong. The failure is later: in `--studio-persistence-only` or in
-the matrix itself. The engine order is chromium → webkit → firefox, so it is
-still not established that Firefox is the failing engine — earlier handoff text
-asserting "Chromium and WebKit pass, Firefox fails" was **not supported by
-evidence and has been removed**.
+**Established, from annotations now emitted by CI:**
 
-**Ruled out locally:** the `sudo env … PORT=80 …` invocation passes `PORT`
-correctly and Vite serves `200` in ~0.2 s from the working tree.
+1. Vite **is** reachable on the runner, and `--studio-persistence-only` passes.
+   (The earlier "Vite never starts" theory was wrong; the readiness loop
+   succeeds.)
+2. Chromium and WebKit pass. **Firefox is the failing engine** — previously
+   asserted in this file without any evidence; now evidenced by the annotation.
+3. Line 2030 is the wait for `data-testid="session-play"` to report
+   `aria-pressed="true"` after play is clicked. It is **not** an audio-readiness
+   failure: the 15 s setup wait at line 2020 requires `readyState === 4` on all
+   four stem elements and it passed, otherwise the thrown error would come from
+   that wait and carry a `TIMING_SETUP_AUDIO_STATE` dump.
 
-**Status: root cause NOT established.** Requirement: the *actual* CI log. Failing
-that, this branch makes the job self-reporting: every failure path in step 7 now
-emits `::error::` naming which mode failed, with the Vite log attached, wrapped
-in `::group::` sections. The next run should identify itself in the check-run
-annotation. No acceptance criterion was relaxed.
+**Not yet established:** *why* play never engages in Firefox. `togglePlay`
+awaits `api.transport.play()`, so `aria-pressed` stays false while that promise
+is unresolved. A suspended `AudioContext` is the leading candidate (Firefox
+suspends contexts until it trusts a gesture) but that is a hypothesis, not a
+finding. `TIMING_SETUP_PLAY_STATE` now dumps the context state plus per-element
+`readyState`/`paused`/`currentTime`/`error` on that path, so the next run should
+say why.
+
+**Status: localised to a specific line and a specific engine; root cause still
+open.** No timeout, assertion or gate has been relaxed to get this far.
 
 ### Why the cause is not being quoted from CI logs
 
