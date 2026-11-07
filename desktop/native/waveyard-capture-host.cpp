@@ -14,6 +14,7 @@
 #include <wrl/implements.h>
 
 #if __has_include(<winrt/Windows.Media.Control.h>) && __has_include(<winrt/Windows.Storage.Streams.h>)
+#include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Media.Control.h>
 #include <winrt/Windows.Storage.Streams.h>
 #pragma comment(lib, "windowsapp.lib")
