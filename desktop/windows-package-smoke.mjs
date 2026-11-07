@@ -448,9 +448,11 @@ try {
   console.log("Installed Windows package smoke check passed.");
 } catch (error) {
   console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
-  if (dataRoot) {
-    const appLog = await readFile(path.join(dataRoot, "logs/desktop.log"), "utf8").catch(() => "(no desktop.log was written)");
-    console.error(`--- desktop.log (tail) ---\n${appLog.slice(-6000)}`);
+  for (const root of [dataRoot, restoreRoot]) {
+    if (!root) continue;
+    const appLog = await readFile(path.join(root, "logs/desktop.log"), "utf8").catch(() => "(no desktop.log was written)");
+    const serverLog = await readFile(path.join(root, "logs/postgres.log"), "utf8").catch(() => "(no postgres.log)");
+    console.error(`--- ${path.basename(root)} desktop.log (tail) ---\n${appLog.slice(-2500)}\n--- postgres.log (tail) ---\n${serverLog.slice(-1500)}`);
   }
   const serverModules = path.join(path.dirname(executable), "resources/server/node_modules");
   const listing = await readdir(serverModules).catch((error) => `(unreadable: ${error.message})`);
