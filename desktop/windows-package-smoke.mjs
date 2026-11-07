@@ -374,7 +374,7 @@ async function run() {
   assert(restoreFailure, "the Data menu must show a restore failure");
   assert.equal(restoreFailure.title, "Arena restore failed");
   assert.match(restoreFailure.message, /Backup verification failed/i);
-  assert.match(restoreFailure.message, /changed/i);
+  assert.match(restoreFailure.message, /content differs/i);
   assert.match(restoreFailure.message, /current data folder was not overwritten/i);
   const restoreDialogState = await desktop.evaluate(
     () => globalThis.__arenaBackupSmokeDialogs,
