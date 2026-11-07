@@ -36,13 +36,26 @@ to a working, verified capability.
    packaging and Waveyard browser acceptance are green.
 2. **Port PR #26's Windows hardening** onto the pnpm workspace (it is on the old
    Next.js/npm layout, so it cannot merge directly). Owner confirmed it is
-   important work. Port in slices on separate branches, each with tests:
-   `fs-replace`, `artifact-reclamation`, `spaces/command-process`,
-   `games/runtime-validation`, Waveyard `provision-store`/`provision-runtime`,
-   the `seed`, `seed-http`, `ffmpeg`, `audio` fixes, then the export-publication,
-   publication-integrity, session-live and mission-recovery tests, and finally
-   the Windows acceptance workflow and readiness record. 15 of its source files
-   do not exist on the current line and 11 differ; none are identical.
+   important work. Port in slices on separate branches, each with tests.
+   Pushed (not merged, each branched from PR #28; typecheck clean, tests pass
+   locally, NOT yet run on Windows):
+   - `port/26-fs-replace`: Windows-tolerant atomic replace.
+   - `port/26-command-process`: bounded `run_command` with Windows tree-kill.
+   - `port/26-waveyard-clean` -> `-seed` -> `-provision` (stacked): separation
+     client/modes/selection/python-guardian; resumable locked model seeding;
+     deep-model provision/provision-store/provision-runtime, `ffmpeg.execTool`
+     hardening and `audioToolEnvironment`. `-provision` contains the whole
+     stack; merge it, not the smaller ones.
+   Not yet ported, and why:
+   - `artifact-reclamation`: needs `artifact-objects`, `artifact-storage-lock`,
+     the `object_reclamations` table and migration 0021 (a whole subsystem).
+   - PR #26's durable `cancelling` status, `recovery.ts` and `onSpawn` pid
+     record: a different cancel design from `main`'s broker-based one (decision
+     needed; `deep.ts` keeps `main`'s lifecycle).
+   - `seed-route.integration.test` (needs the `mission-postgres` helper).
+   - `games/runtime-validation`, export-publication / publication-integrity /
+     session-live / mission-recovery tests, the Windows acceptance workflow and
+     readiness record.
 3. **Fair review of every branch and PR for lost work** (owner requirement, all
    41 branches and 43 PR refs, not only #26): for each, list unique commits
    against `main`, classify by capability, and record the result in the ledger
@@ -72,7 +85,7 @@ to a working, verified capability.
     MSYS2 at `C:\msys64`, win32-x64 native binaries un-pruned in
     `pnpm-workspace.yaml`, FFmpeg re-pinned to immutable
     `autobuild-2026-11-06-12-50`, embedded-postgres root resolved via its entry.
-  - CI status: Windows desktop tests pass; both installers build; the installed app now starts and early smoke checks pass. Fixes found via the smoke check: PostgreSQL started via `pg_ctl` (admin token), `node_modules` copied in `afterPack`, restored clusters get their empty runtime dirs back. See the PR for the latest run. Waveyard browser timing check not confirmed green.
+  - CI status: the **Windows x64 package** push run is green (installed-app smoke check incl. backup/restore round trip and tamper rejection, plus the update check). Smoke-check-found fixes: PostgreSQL started via `pg_ctl` (admin token), `node_modules` copied in `afterPack`, restored clusters get their empty runtime dirs back, no false "API stopped" on restore. **Waveyard browser timing: Chromium and WebKit pass; Firefox fails in `waveyard-live-stems.mjs --live-stem-timing-matrix` (audio elements never reach readyState 4 within 15 s). Never green before; cause unconfirmed.** Not verified: GUI/audible behaviour, code signing, auto-update.
 
 ## Not verified (do not claim otherwise)
 
