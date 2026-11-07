@@ -968,7 +968,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
               {options?.devices?.length === 0 && (
                 <option value="">{options?.reason ?? "Checking playback devices…"}</option>
               )}
-              {options?.devices.map((device) => (
+              {options?.devices?.map((device) => (
                 <option key={device.id} value={device.id}>
                   {device.name}{device.isDefault ? " · Default" : ""}
                 </option>
