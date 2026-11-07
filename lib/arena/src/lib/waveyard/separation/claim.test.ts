@@ -38,6 +38,10 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
+import {
+  applyDesktopMigrationsToPgClient,
+  applyDesktopMigrationsToPGlite,
+} from "../worker-local/pglite-migrations.test-helper";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 
@@ -96,8 +100,7 @@ function deepJobValues(projectId: string, sourceAssetId: string, idempotencyKey:
 
 async function pgliteFixture() {
   const client = new PGlite();
-  const { applyMigrations } = await import("../../../../desktop/runtime/migrate");
-  await applyMigrations({ client: client as unknown as import("pg").Client, migrationsDir: path.join(repoRoot, "desktop-migrations") });
+  await applyDesktopMigrationsToPGlite(client, path.join(repoRoot, "desktop-migrations"));
   const database = drizzlePglite(client) as unknown as SeparationDb;
   const { project, source } = await seedProjectAndSource(database);
   return {
@@ -365,8 +368,7 @@ async function embeddedPostgres(t: TestContext) {
   const connectionString = `postgresql://arena:arena-test@127.0.0.1:${port}/arena_claim_test`;
   const migrator = new Client({ connectionString });
   await migrator.connect();
-  const { applyMigrations } = await import("../../../../desktop/runtime/migrate");
-  await applyMigrations({ client: migrator, migrationsDir: path.join(repoRoot, "desktop-migrations") });
+  await applyDesktopMigrationsToPgClient(migrator, path.join(repoRoot, "desktop-migrations"));
   await migrator.end();
 
   const pool = new Pool({ connectionString, max: 24 });
