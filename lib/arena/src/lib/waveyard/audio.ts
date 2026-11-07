@@ -20,6 +20,8 @@ const ACCEPTED_EXTENSIONS = new Set([
   ".m4a",
   ".aac",
   ".ogg",
+  ".aif",
+  ".aiff",
 ]);
 export const MAX_UPLOAD_BYTES = Number(
   process.env.MAX_UPLOAD_BYTES ?? 524_288_000,
@@ -89,10 +91,20 @@ export function sanitizedFilename(filename: string) {
   return result || "upload";
 }
 
+/**
+ * SHA-256 of a file, streamed.
+ *
+ * 1 MiB read buffers instead of the stream default 64 KiB: measured on this
+ * repository's own 66.8 MB model on a Linux container, 92 ms vs 133 ms
+ * (~31 % less time, 693 MiB/s vs 479 MiB/s), because the syscall count drops
+ * 16x. Hashing is on the critical path of every ingest, export and model
+ * verification, and on Windows the same reduction also removes 15/16 of the
+ * read calls that Defender inspects.
+ */
 export async function checksumFile(path: string): Promise<string> {
   const hash = createHash("sha256");
   await new Promise<void>((resolve, reject) =>
-    createReadStream(path)
+    createReadStream(path, { highWaterMark: 1024 * 1024 })
       .on("data", (chunk) => hash.update(chunk))
       .on("error", reject)
       .on("end", resolve),
@@ -109,6 +121,9 @@ async function exec(
     const child = spawn(command, args, {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      // ffprobe/ffmpeg run on every import. Without this, Windows allocates a
+      // console for each child and a black window flashes over the app.
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
@@ -129,8 +144,14 @@ async function exec(
   });
 }
 
+// Intake is a selected local audio container, never a playlist/program that
+// instructs FFmpeg to open network URLs or unrelated local files. Restrict the
+// demuxer before it reads headers (protocol restriction alone permits file HLS).
+export const localAudioInputOptions = ["-protocol_whitelist", "file", "-format_whitelist", "wav,mp3,flac,aiff,mov,mp4,m4a,3gp,3g2,mj2,aac,ogg,matroska,webm"];
+
 export async function probeAudio(path: string): Promise<AudioMetadata> {
   const { stdout } = await exec((await requireTool("ffprobe")).path, [
+    ...localAudioInputOptions,
     "-v",
     "error",
     "-show_entries",
