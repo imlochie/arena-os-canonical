@@ -38,6 +38,10 @@ function fakeEngine(events: string[]): BrowserEngine {
       events.push(`screenshot:${path.basename(dir)}`);
       return path.join(dir, "browser-1.png");
     },
+    async snapshot() {
+      events.push("snapshot");
+      return '- heading "Real page" [level=1]\n- button "Save"';
+    },
     async click(selector: string) {
       events.push(`click:${selector}`);
       return `clicked ${selector} — page is now: https://example.com/after`;
@@ -74,6 +78,12 @@ test("browser view tools execute with the real engine contract (fake engine reco
   assert.match(extract.output, /1\. first real item/);
   assert.match(extract.output, /2\. second real item/);
   assert.ok(!extract.output.includes("third"), "the limit is honored");
+
+  const tree = await executeTool(spaceId, { tool: "browser_snapshot", args: {} }, { browserEngine: engine });
+  assert.equal(tree.ok, true);
+  assert.match(tree.output, /button "Save"/);
+  assert.match(tree.output, /role=<role>/);
+  assert.ok(events.includes("snapshot"));
 
   const shot = await executeTool(spaceId, { tool: "browser_screenshot", args: {} }, { browserEngine: engine });
   assert.equal(shot.ok, true);

@@ -559,6 +559,8 @@ export async function executeTool(
         );
       case "browser_screenshot":
         return (await import("./browser")).toolBrowserScreenshot(spaceId, opts.browserEngine);
+      case "browser_snapshot":
+        return (await import("./browser")).toolBrowserSnapshot(spaceId, opts.browserEngine);
       case "browser_click":
         return (await import("./browser")).toolBrowserClick(spaceId, String(action.args.selector ?? ""), opts.browserEngine);
       case "external_call":

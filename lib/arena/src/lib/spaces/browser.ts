@@ -12,6 +12,7 @@
  *   browser_navigate  {url}                    view  — auto-executed, journaled
  *   browser_extract   {selector?, limit?}      view  — bounded text/link extraction
  *   browser_screenshot {}                      view  — saved into the workspace
+ *   browser_snapshot  {}                       view  — accessibility tree (roles + names) of the page
  *   browser_click     {selector}               interact — APPROVAL-GATED
  *   browser_fill      {selector, value}        interact — APPROVAL-GATED
  *
@@ -41,6 +42,8 @@ export interface BrowserEngine {
   navigate(url: string): Promise<PageSnapshot>;
   extract(selector: string, limit: number): Promise<string[]>;
   screenshot(workspaceDir: string): Promise<string>;
+  /** Accessibility tree of the current page (roles and accessible names), bounded. */
+  snapshot(): Promise<string>;
   click(selector: string): Promise<string>;
   fill(selector: string, value: string): Promise<string>;
   close(): Promise<void>;
@@ -139,6 +142,10 @@ export function createPlaywrightEngine(
     async extract(selector: string, limit: number) {
       const found = await activePage().locator(selector).allInnerTexts();
       return found.slice(0, limit);
+    },
+    async snapshot() {
+      const tree: string = await activePage().locator("body").ariaSnapshot({ timeout: 15_000 });
+      return tree.slice(0, 20_000);
     },
     async screenshot(workspaceDir: string) {
       const file = path.join(workspaceDir, `browser-${Date.now()}.png`);
@@ -254,6 +261,18 @@ export async function toolBrowserScreenshot(spaceId: string, engine?: BrowserEng
     return `screenshot saved: ${path.basename(file)} (in the space workspace)`;
   } catch (e) {
     return `error: ${e instanceof Error ? e.message : "screenshot failed"}`;
+  }
+}
+
+export async function toolBrowserSnapshot(spaceId: string, engine?: BrowserEngine): Promise<string> {
+  try {
+    const e = engineFor(spaceId, engine);
+    await e.ensure(browserProfileDir(spaceId));
+    const tree = await e.snapshot();
+    if (!tree.trim()) return "the page has no accessible content yet";
+    return `accessibility snapshot (roles and names; target elements with role=<role>[name="<name>"]):\n${tree.slice(0, 8_000)}`;
+  } catch (e) {
+    return `error: ${e instanceof Error ? e.message : "snapshot failed"}`;
   }
 }
 

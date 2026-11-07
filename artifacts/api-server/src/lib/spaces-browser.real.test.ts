@@ -13,6 +13,7 @@ import {
   toolBrowserExtract,
   toolBrowserNavigate,
   toolBrowserScreenshot,
+  toolBrowserSnapshot,
   workspaceDirFor,
 } from "@workspace/arena/lib/spaces/browser";
 
@@ -49,6 +50,9 @@ test("real Chromium keeps navigation, extraction, and screenshots in an isolated
 
   const screenshot = await toolBrowserScreenshot(spaceId, selected);
   assert.match(screenshot, /screenshot saved: browser-/);
+
+  const snapshot = await toolBrowserSnapshot(spaceId, selected);
+  assert.match(snapshot, /heading "Example Domain"/);
 
   const mission = await runMission(spaceId, {
     mode: "browser",

@@ -76,6 +76,7 @@ export function classifyToolAction(tool: string): ActionClass {
     case "browser_navigate":
     case "browser_extract":
     case "browser_screenshot":
+    case "browser_snapshot":
       return "browser.view";
     case "browser_click":
     case "browser_fill":
