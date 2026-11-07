@@ -5,9 +5,11 @@
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
 #include <tlhelp32.h>
-#include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <propsys.h>
+// Newer Windows SDKs need propkeydef.h before the device property keys.
+#include <propkeydef.h>
+#include <functiondiscoverykeys_devpkey.h>
 #include <wrl/client.h>
 #include <wrl/implements.h>
 
