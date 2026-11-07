@@ -1,0 +1,108 @@
+name: Windows acceptance for recovered stack
+
+# The recovered PR #26 capability stack (Windows-tolerant atomic replace,
+# bounded subprocess tree-kill, model seeding, deep-engine provisioning) is
+# Windows-specific by design, but nothing in CI ran its tests: the Windows
+# packaging workflow only runs desktop/*.test.mjs, and no workflow ran the
+# lib/arena suite at all. So this stack's only evidence was Linux runs.
+#
+# This job runs exactly those modules' tests on Windows. It is deliberately
+# separate from the required packaging job so that a real Windows defect here
+# reports itself without masking the installer smoke check.
+#
+# Honest limits: no ffmpeg/ffprobe on the runner, so the inference-probe test
+# skips itself (it does not silently pass). No GPU, so no real Demucs run. This
+# proves the process/filesystem/seeding/validation behaviour on Windows -- it
+# does not prove real audio inference.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recovered-stack:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # The runner is scripts/ (that is where tsx lives); the suite is imported
+      # by relative path, matching the repo's established invocation.
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..."
+
+      - name: Run recovered-stack tests on Windows with per-file evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $root = (Get-Location).Path
+          $evidence = Join-Path $root "generated-artifacts/recovered-stack-windows"
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+
+          $tests = @(
+            "../lib/arena/src/lib/fs-replace.test.ts",
+            "../lib/arena/src/lib/spaces/command-process.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/python-guardian.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/selection.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/seed.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/seed-http.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/provision.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/provision-store.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/provision-runtime.test.ts",
+            "../lib/arena/src/lib/waveyard/studio/mashup-bed.test.ts"
+          )
+
+          $results = @()
+          Push-Location scripts
+          try {
+            foreach ($test in $tests) {
+              $name = ($test -replace '^\.\./', '' -replace '[\\/]', '_')
+              Write-Host "=== $test ==="
+              $output = & .\node_modules\.bin\tsx --test $test 2>&1 | Out-String
+              $code = $LASTEXITCODE
+              Write-Host $output
+              $results += [pscustomobject]@{
+                test = $test
+                code = $code
+                status = if ($code -eq 0) { "PASS" } else { "FAIL" }
+                output = $output
+              }
+              Set-Content -Path (Join-Path $evidence "$name.txt") -Value $output
+            }
+          } finally {
+            Pop-Location
+          }
+
+          $results | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $evidence "summary.json")
+          $failed = $results | Where-Object { $_.code -ne 0 }
+          # Surface the failure in the check-run annotation, which is readable
+          # without downloading the artifact.
+          $failed | ForEach-Object { Write-Host "::error::Windows failure in $($_.test)" }
+          if ($failed) { exit 1 }
+          Write-Host "All recovered-stack tests passed on Windows."
+
+      - name: Retain per-file evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-stack-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: generated-artifacts/recovered-stack-windows/
+          if-no-files-found: warn
+          retention-days: 14
