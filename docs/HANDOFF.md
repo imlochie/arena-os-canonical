@@ -18,7 +18,7 @@ to a working, verified capability.
 1. `main` is the canonical line. Do not merge old integration branches wholesale;
    recover capabilities into the current workspace instead.
 2. Never delete branches, rewrite history or force-push shared branches. Old
-   branches hold work and evidence (see ledger).
+   branches hold work and evidence.
 3. A PR description must match its diff. Production-code changes are never
    "test only".
 4. Do not claim something is verified unless a test or CI run proves it.
@@ -30,95 +30,142 @@ to a working, verified capability.
    projects or add code with an incompatible licence.
 8. Keep `README.md` and this file accurate. One focused PR per concern.
 
+## Two facts about this repository that invalidate naive git measurements
+
+Read these before drawing any conclusion from `git log` or branch counts.
+
+1. **`main` is a single squashed root commit** (`33c876a`). Commit ancestry
+   carries no meaning: every branch shares it as merge-base, so
+   `main..branch` reports 100–340 "missing" commits for every branch and
+   `git cherry` finds zero patch equivalence. Across the repo that reads as
+   6,242 orphaned commits. **It is an artefact. Use content diffs.**
+2. **The large branches are the pre-migration layout, not new work.** Every
+   branch that looks big is a whole-tree copy of the old Next.js/npm app
+   (`src/**`, `next.config.ts`, `electron-builder.yml`). Against today's tree
+   they *delete* ~201,600 lines because they do not contain the pnpm
+   workspace. The real question is always: *which `src/lib/**` capability has
+   no counterpart under `lib/arena/src/lib/**` on `main`?* The union across all
+   48 branches is **89 library paths** — that is the true recovery surface.
+
+Full per-ref dispositions: `docs/BRANCH-PR-RECONCILIATION-LEDGER.md`.
+
 ## Priorities (in order)
 
 1. **Land PR #28** (mashup fail-closed + Windows CI repairs) once Windows
    packaging and Waveyard browser acceptance are green.
-2. **Port PR #26's Windows hardening** onto the pnpm workspace (it is on the old
-   Next.js/npm layout, so it cannot merge directly). Owner confirmed it is
-   important work. Port in slices on separate branches, each with tests.
-   Pushed (not merged, each branched from PR #28; typecheck clean, tests pass
-   locally, NOT yet run on Windows):
-   - `port/26-fs-replace`: Windows-tolerant atomic replace.
-   - `port/26-command-process`: bounded `run_command` with Windows tree-kill.
-   - `port/26-waveyard-clean` -> `-seed` -> `-provision` (stacked): separation
-     client/modes/selection/python-guardian; resumable locked model seeding;
-     deep-model provision/provision-store/provision-runtime, `ffmpeg.execTool`
-     hardening and `audioToolEnvironment`. `-provision` contains the whole
-     stack; merge it, not the smaller ones.
-   Not yet ported, and why:
-   - `artifact-reclamation`: needs `artifact-objects`, `artifact-storage-lock`,
-     the `object_reclamations` table and migration 0021 (a whole subsystem).
-   - PR #26's durable `cancelling` status, `recovery.ts` and `onSpawn` pid
-     record: a different cancel design from `main`'s broker-based one (decision
-     needed; `deep.ts` keeps `main`'s lifecycle).
-   - `seed-route.integration.test` (needs the `mission-postgres` helper).
-   - `games/runtime-validation`, export-publication / publication-integrity /
-     session-live / mission-recovery tests, the Windows acceptance workflow and
-     readiness record.
-3. **Fair review of every branch and PR for lost work** (owner requirement, all
-   41 branches and 43 PR refs, not only #26): for each, list unique commits
-   against `main`, classify by capability, and record the result in the ledger
-   below. Nothing is declared redundant without checking its diff.
+2. **Land the convergence branch** `arena/convergence-2026-11-07` (based on
+   PR #28's head). It contains the ported PR #26 capability stack, PR #27's
+   recovered test coverage, and two pre-existing `main` defects fixed. Its
+   delta versus `main` is measured: +99 tests, +116 passing, 0 regressions.
+   It has not run on Windows — see "Not verified".
+3. **Close the remaining recovery rows** in the reconciliation ledger §2.4.
+   The two biggest are:
+   - *artifact content objects + reclamation*: needs an `artifacts.content_object`
+     column, an `object_reclamations` table, and two storage primitives
+     (`putImmutableStream` with byte+sha binding, `StorageIntegrityError`) that
+     `main`'s `StorageProvider` does not have. Do it as one migration + storage
+     + route change, with tests, or not at all.
+   - *Arcade browser-runtime publication gate*: `games/sandbox.ts` +
+     `runtime-validation.ts` + the `validateRuntime`/`onDraft` contract in
+     `forgeGameWithAI`. Genuinely missing and a real truthfulness gap; needs a
+     real browser to prove.
 4. **Protect `main`**: no branch protection or rulesets exist. Require CI and
    review before merge.
-5. **Triage PR #27** (labelled test-only but changes Waveyard production logic and
-   removes `hasReliableLiveStemTempoEvidence` / `hasReliableLiveStemBeatEvidence`
-   still imported elsewhere). Do not merge as-is.
-6. **Capability reconciliation** of PRs #1–#26 and historical branches against
-   `main`: classify each capability as present+verified, present-unverified,
-   superseded, missing, conflicting, or preserved-pending. Recover what is missing.
-7. **Prove the whole app**: shared identity/projects/storage across rooms,
+5. **Prove the whole app**: shared identity/projects/storage across rooms,
    persistence, restart recovery, real provider execution, Windows install.
 
 ## Current state
 
-- `main` = `33c876a` (5 Nov 2026): Waveyard recovery, waveform integrity,
-  automatic remix, analysis provenance, cross-tab stem recovery.
-- **PR #28** `fix/mashup-bed-fail-closed-windows-tests` (based on
-  `arena/84676e63-arena-os-canonical` @ `d105b18`, 5 commits ahead of `main`):
-  - mashup render returns 422 on existing invalid stems (original-file fallback
-    only when no separation exists);
-  - Windows npm-cache and ONNX-DLL-lock test fixes (desktop tests pass on Windows CI);
-  - Windows CI/build repairs that were already broken on `main`: MSVC header
-    order and `winrt/Windows.Foundation.h` in `waveyard-capture-host.cpp`, runner
-    MSYS2 at `C:\msys64`, win32-x64 native binaries un-pruned in
-    `pnpm-workspace.yaml`, FFmpeg re-pinned to immutable
-    `autobuild-2026-11-06-12-50`, embedded-postgres root resolved via its entry.
-  - CI status: the **Windows x64 package** push run is green (installed-app smoke check incl. backup/restore round trip and tamper rejection, plus the update check). Smoke-check-found fixes: PostgreSQL started via `pg_ctl` (admin token), `node_modules` copied in `afterPack`, restored clusters get their empty runtime dirs back, no false "API stopped" on restore. **Waveyard browser timing: Chromium and WebKit pass; Firefox fails in `waveyard-live-stems.mjs --live-stem-timing-matrix` (audio elements never reach readyState 4 within 15 s). Never green before; cause unconfirmed.** Not verified: GUI/audible behaviour, code signing, auto-update.
+- `main` = `33c876a` (5 Nov 2026, single squashed commit).
+- **PR #28** `fix/mashup-bed-fail-closed-windows-tests` @ `aec18974`, 34 files
+  ahead of `main`, clean descendant (0 main-only commits). Adds fail-closed
+  instrumental-bed synthesis (`studio/mashup-bed.ts`), Windows packaging and CI
+  repairs, and a capture-device guard. CI: **Windows x64 package** push run
+  green (installed-app smoke incl. backup/restore round trip, tamper rejection,
+  update check). **Waveyard browser timing: Chromium and WebKit pass; Firefox
+  fails** (`--live-stem-timing-matrix`: audio elements never reach readyState 4
+  within 15 s). Never green; cause unconfirmed.
+- **`arena/convergence-2026-11-07`** — the convergence candidate. Built on
+  `aec18974`, so it inherits PR #28 in full. Contains:
+  - the complete `port/26-*` stack, in dependency order
+    (`44a9570 → a4f69af → 6afc57e`) plus `port/26-command-process` (`ab99bf0`):
+    separation client/modes/selection + Python guardian, resumable locked model
+    seeding, `fs-replace`, deep-model provisioning
+    (`provision`/`provision-store`/`provision-runtime`), bounded `run_command`
+    with Windows tree-kill;
+  - PR #27's regression coverage, without its production edits (see below);
+  - fixes for two pre-existing `main` defects (see "Known defects on main").
+- **`port/26-*` branches**: now superseded by the convergence branch, which
+  contains their content. Keep them; do not delete.
+
+## Known defects on `main` (fixed on the convergence branch)
+
+1. **`desktop/runtime/migrate` did not exist**, yet five call sites imported it
+   at three different relative depths. `claim.test.ts` and `retry.test.ts`
+   failed with `ERR_MODULE_NOT_FOUND`, so **17 tests had never run**.
+   `main`'s own harness (`worker-local/separation-fixtures.ts`) states the rule
+   they broke: *"Tests must not import the desktop runtime, which is not part of
+   the web workspace."* Fixed with
+   `worker-local/pglite-migrations.test-helper.ts`. `retry` 0/11 → 11/11,
+   `claim` 0/7 → 6 pass + 1 honest skip.
+2. **PR #27's test file did not compile** — line 95 closed an object literal
+   with `)`. Nothing in that PR had ever run.
+
+## PR #27 — resolved, do not merge as-is
+
+PR #27 (`arena/ed2f88f7`) was labelled test-only but changes
+`session-logic.ts` and `mashup.ts`. Findings:
+
+- Its test file does not compile, so none of it ran.
+- With **only** that syntax error fixed, all 9 original assertions pass against
+  **untouched `main`**. The production edits were unnecessary.
+- They were also unsafe: they delete `hasReliableLiveStemTempoEvidence` /
+  `hasReliableLiveStemBeatEvidence`, which `LiveStemSwapPicker.tsx` and
+  `SessionExperience.tsx` import (3 call sites) and which
+  `liveStemTempoStretchRatio` calls itself — the module would throw at import
+  time. They also relax evidence thresholds (0.75→0.5, 0.6→0.3) and widen
+  auto-stretch (0.8–1.25 → 0.75–1.5) on unverified evidence.
+
+The convergence branch keeps the coverage
+(`waveyard/studio/mashup-regression.test.ts`,
+`waveyard/library/session-logic-key.test.ts`) and drops the production diff.
+
+## Test evidence standard
+
+Run the suite twice — once on a pristine `origin/main` worktree — and compare
+per-file failure counts. Never attribute a failure to your work, or claim one
+is fixed, without that comparison.
+
+Current measurement (real `ffmpeg`/`ffprobe` available; no PostgreSQL/Redis):
+
+| | tests | pass | fail | skip |
+|---|---|---|---|---|
+| `main@33c876a` | 1347 | 1237 | 93 | 17 |
+| convergence branch | 1446 | 1353 | 76 | 17 |
+
+The 76 remaining failures are identical per file to the baseline and need
+PostgreSQL, Redis, a live browser or `initdb`. `pnpm run typecheck` passes.
 
 ## Not verified (do not claim otherwise)
 
-Real Demucs inference on Windows, GPU model provisioning, audible playback via
-hardware, GUI mixer interaction, human-driven Arcade/Spaces flows on Windows,
-code signing, auto-update. Hosted-runner results are not a substitute for the
-owner's Windows 11 machine.
-
-## Branch and PR ledger
-
-Status key: **keep** (preserve, do not delete) · **recover** (has unique work to
-bring into `main`) · **triage** · **likely redundant** (verify first).
-
-| Ref | Notes | Status |
-| --- | --- | --- |
-| `main` | canonical, unprotected | keep |
-| PR #28 | active fix PR (above) | active |
-| PR #27 | mislabelled; breaks exports | triage, do not merge |
-| PR #26 `arena/windows-ready-integration-2026-10-22` | npm/Electron-era convergence, 198 ahead / 480 behind main; 56 files of Windows hardening; six Windows jobs passed (1649 tests, 0 fail); evidence is for the old layout | **recover**: port by capability (Priority 2) |
-| PR #25 Arcade+Spaces integration; PR #15 foundation (`04705ab`); PRs #19–24 Spaces/Arcade | stacked on old foundation, 480 behind | recover by capability |
-| PR #1 original Studio; PR #10; PR #14 deep-engine provisioning | old, not mergeable | triage |
-| PR #5 | 0 ahead / 508 behind | likely redundant |
-| `benchmark/waveyard-*` (5 branches) | no PRs; benchmarking history | keep |
-| `arena/208e8a9c…` | same commit as the Windows-ready branch | keep |
-| other `arena/*`, `product/*`, `fix/*`, `replit/*` | see `docs/arena-baseline-backlog-reconciliation.md` | keep |
-
-The 21 Oct 2026 convergence ledger (PRs #1–#25) lives on the PR #26 branch.
-Backup of all refs: mirror clone and `git bundle` of
-`imlochie/arena-os-canonical` (owner's machine).
+- **The ported PR #26 slices have never run on Windows.** They are green on
+  Linux only, and Windows behaviour is the whole point of `fs-replace`
+  (`EPERM`/`EACCES`/`EBUSY` retry) and `command-process` (tree-kill).
+- Real Demucs inference on Windows, GPU model provisioning, audible playback via
+  hardware, GUI mixer interaction, human-driven Arcade/Spaces flows on Windows,
+  code signing, auto-update.
+- Firefox Waveyard timing (see above).
+- Database/migration acceptance: no PostgreSQL or Redis here.
+- PR #26's six green Windows jobs (1,649 tests) are evidence **for the old
+  npm/Electron layout only**. Never cite them as proof that ported code works.
+- Hosted-runner results are not a substitute for the owner's Windows 11 machine.
 
 ## Handoff checklist for each session
 
-- Read this file, `README.md`, and open PR descriptions/CI first.
-- Do one focused task; keep the diff matching the description.
-- Run the narrowest relevant tests plus `pnpm run typecheck`.
-- Update "Current state", "Priorities" and the ledger before finishing.
+1. Read §"Two facts about this repository" before trusting any git metric.
+2. Check which of PR #28 / the convergence branch has landed.
+3. Pick the highest open priority that you can actually prove.
+4. Add a test that fails without your change and passes with it.
+5. Measure against a pristine `origin/main` worktree; record both numbers.
+6. Update this file and the reconciliation ledger in the same PR.
+7. Never delete a branch or force-push.
