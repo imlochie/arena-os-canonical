@@ -198,6 +198,54 @@ matrix"*. This branch's own commits change no `.github/`, `desktop/` or
 Their cause is not established — job logs were unreachable from the audit
 environment. Treat the Windows packaging path as **not green**.
 
+## 4b. Follow-up verification (2026-11-07, second pass)
+
+Branch head `3a9636d` on `arena/convergence-2026-11-07`. Everything below is
+new since the first pass.
+
+### Corrected documentation
+
+`docs/HANDOFF.md` claimed PR #28's Windows package run was green including
+installed-app acceptance. It was never green: every run on `aec18974` fails on
+both events at step 10, and steps 11–12 (*Build Windows x64 installer*,
+*Install and check packaged app*) are then skipped. Claim removed. The same
+document's unsupported "Chromium and WebKit pass, Firefox fails" statement was
+also removed — it was never evidenced, and the run at `f505bd4` shows the
+`live-stem-timing` job fails before any browser engine is exercised.
+
+### Windows CI that did not exist
+
+No workflow ran `lib/arena` tests on any platform. The recovered PR #26 stack
+therefore had zero CI coverage despite every module being Windows-specific.
+Added `windows-recovered-stack.yml`: ten test files on `windows-latest`,
+per-file evidence, and a hard requirement that the tree-kill test actually
+execute rather than skip. **Passes** — run `42378233941`, job `128420170775`.
+
+### Stronger proof of the tree-kill property
+
+`command-process.test.ts` used leaf children that die on their own, so it never
+exercised the case the primitive exists for. Added a test that spawns a real
+grandchild holding the inherited pipes; a mutation that disables both the
+process-group kill and `taskkill` makes it fail naming the regression, and a
+watchdog makes that failure fast rather than a hang.
+
+### CI diagnosis status, stated precisely
+
+| job | status |
+|---|---|
+| `installed-package` | cause **identified**: the step packages the PR base (`main`), which cannot be packaged (win32-x64 still pruned; missing SDK header fixes). Only `push` events have ever passed. Not fixed — fixing it means changing what the update test compares. |
+| `live-stem-timing` | cause **not established**. Vite readiness *succeeds* at `f505bd4` (annotation did not fire, 72 s not 60 s); the failure is in a later mode. Needs the real log; the job is now self-annotating. |
+| `recovered-stack` (new) | **passes** on Windows. |
+
+### Test totals at `3a9636d`
+
+| | tests | pass | fail | skip |
+|---|---|---|---|---|
+| baseline `main@33c876a` | 1347 | 1237 | 93 | 17 |
+| this branch | 1447 | 1354 | 76 | 17 |
+
+Zero regressions; every remaining failure is identical per file to the baseline.
+
 ## 5. What is still not proven
 
 Do not read §4 as acceptance.

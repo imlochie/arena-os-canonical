@@ -196,39 +196,53 @@ revision that can actually be packaged, which cannot be expressed from inside
 this branch without changing what the update test means. Do not "fix" it by
 making the step tolerate failure.
 
+### `windows-recovered-stack.yml` — new, and green
+
+No workflow previously ran `lib/arena` tests at all: the packaging workflow runs
+only `desktop/*.test.mjs`, and none of those reference `fs-replace`,
+`command-process`, `separation/seed` or `separation/provision`. The recovered
+PR #26 stack therefore had **no CI coverage on any platform**.
+
+This branch adds `windows-recovered-stack.yml`, which runs those ten test files
+on `windows-latest` and **passes** (run `42378233941`, job `128420170775`,
+`f505bd4`, 12 s of test time). To stop a silently skipping suite reading as a
+pass, the job fails if the tree-kill test is absent from the output or reports a
+skip, and raises a warning if the inference probe skips.
+
+**This is real Windows evidence for the recovered stack's process/filesystem/
+seeding/validation behaviour** — the first it has ever had. It is *not* evidence
+of real audio inference (no ffmpeg or GPU on the runner) and it is not evidence
+that the Windows installer works, because that is the other job.
+
 ### `waveyard-browser-timing.yml` / `live-stem-timing`
 
-| run | sha | step 7 duration | result |
+| run | sha | step 7 duration | annotation emitted |
 |---|---|---|---|
-| 42376858283 | `867c538` | 100 s | failure |
-| 42377175538 | `b28d938` | **exactly 60 s** | failure |
+| 42376858283 | `867c538` | 100 s | none |
+| 42377175538 | `b28d938` | exactly 60 s | none (diagnostics not yet present) |
+| 42378234049 | `f505bd4` | 72 s | **none** |
 
 Steps 1–6 pass, including the Playwright browser install. Step 7,
-*Run cross-browser live-stem timing matrix*, fails. Its first 60 s is the
-workflow's own Vite readiness loop (`for _ in $(seq 1 60)` … `sleep 1`), which
-gives up when `curl http://127.0.0.1:80/` never succeeds.
+*Run cross-browser live-stem timing matrix*, fails.
 
-**What is established:** Vite never becomes reachable on port 80 on the runner,
-so the browser matrix never runs — the engine order is chromium → webkit →
-firefox, so **no engine is exercised at all** and this says nothing about
-Firefox audio readiness.
+**What is established:** the failure is inside step 7, and at `f505bd4` the
+workflow's own 60 s Vite readiness loop **succeeded** — the added
+readiness-timeout annotation did not fire and the step ran 72 s instead of 60 s.
+So Vite *is* reachable on the runner and the earlier "Vite never starts"
+framing was wrong. The failure is later: in `--studio-persistence-only` or in
+the matrix itself. The engine order is chromium → webkit → firefox, so it is
+still not established that Firefox is the failing engine — earlier handoff text
+asserting "Chromium and WebKit pass, Firefox fails" was **not supported by
+evidence and has been removed**.
 
-**What has been ruled out locally:** the `sudo env PATH=… PORT=80 BASE_PATH=/ …`
-invocation is *not* the bug. It passes `PORT` correctly, and with the exact same
-argument form Vite serves `200` in ~0.2 s here. A missing `PORT` does produce
-the expected hard throw, so that failure mode is distinguishable — and it is not
-what the runner reports.
+**Ruled out locally:** the `sudo env … PORT=80 …` invocation passes `PORT`
+correctly and Vite serves `200` in ~0.2 s from the working tree.
 
-**Remaining candidate:** binding port 80 as a non-root process on the runner
-(with an `EACCES` visible only in the stranded `waveyard-vite.log`). This is not
-yet proven.
-
-**Status: root cause NOT established.** To make the next failure self-explaining
-this branch adds, on the readiness-loop failure path, a `::error::` annotation
-plus the Vite log, `ss` listeners on `:80`, the `pgrep` process list, a `curl`
-result and a passwordless-`sudo` probe. The next run will state its own cause in
-the check-run annotation. **No acceptance criterion was relaxed**; the job still
-fails exactly as before, it just explains why.
+**Status: root cause NOT established.** Requirement: the *actual* CI log. Failing
+that, this branch makes the job self-reporting: every failure path in step 7 now
+emits `::error::` naming which mode failed, with the Vite log attached, wrapped
+in `::group::` sections. The next run should identify itself in the check-run
+annotation. No acceptance criterion was relaxed.
 
 ### Why the cause is not being quoted from CI logs
 
