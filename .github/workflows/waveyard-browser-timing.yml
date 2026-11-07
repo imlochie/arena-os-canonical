@@ -34,6 +34,32 @@ jobs:
       - name: Install all required Playwright browsers and Linux libraries
         run: node artifacts/api-server/node_modules/playwright-core/cli.js install --with-deps chromium firefox webkit
 
+      # The Firefox legs build a Web Audio graph (AudioContext -> AudioWorklet
+      # -> MediaElementSource) and every context must reach "running" before
+      # media will start. On this runner a context stayed "suspended" forever:
+      # not an autoplay refusal (navigator.userActivation.hasBeenActive was
+      # true, and media.autoplay.default is already 0) and not the app's own
+      # context being wedged -- a brand new AudioContext().resume() never
+      # settled either, while the AudioWorklet module loaded on that same
+      # context in 35 ms. That is the signature of a machine with no audio
+      # device: Firefox suspends the graph because there is nowhere to play it.
+      # Chromium and WebKit run their graphs anyway, which is why only Firefox
+      # failed.
+      #
+      # Give the runner a null sink so Web Audio has a device. This is giving
+      # the environment what it was missing; the app's behaviour under test is
+      # unchanged and no assertion or timeout below is relaxed.
+      - name: Provide a null audio sink (Firefox cannot start Web Audio without a device)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends pulseaudio-utils
+          lsmod | grep -E '^snd_dummy|^snd_aloop' || sudo modprobe -v snd-aloop || sudo modprobe -v snd-dummy || echo "no virtual sound module available"
+          aplay -l || true
+          pulseaudio --check || pulseaudio --start --exit-idle-time=-1 || true
+          pactl load-module module-null-sink sink_name=arena_null || true
+          pactl set-default-sink arena_null || true
+          pactl info || true
+
       - name: Run cross-browser live-stem timing matrix
         env:
           WAVEYARD_REQUIRE_BROWSER_ENGINES: "1"
