@@ -58,7 +58,10 @@ if (process.argv.includes("--live-stem-timing-matrix")) {
           .map((line) => line.trim())
           // The cause-carrying lines: keep them all, and keep them short. A
           // truncated annotation cost two CI round-trips already.
-          .filter((line) => line.length > 0 && /TIMING_SETUP_ERRORS|TIMING_SETUP_PLAY_STATE|TIMING_SETUP_AUDIO_STATE|TimeoutError|exited with status/i.test(line))
+          // Include the "at ...waveyard-live-stems.mjs:NNN" frame: without it a
+          // TimeoutError says a wait expired but not which one, and there are
+          // dozens of waits in this file.
+          .filter((line) => line.length > 0 && /TIMING_SETUP_ERRORS|TIMING_SETUP_PLAY_STATE|TIMING_SETUP_AUDIO_STATE|TimeoutError|exited with status|waveyard-live-stems\.mjs:\d+/i.test(line))
           .slice(-4);
         for (const line of diagnostic) {
           console.log(`::error::${engine}: ${line.slice(0, 900)}`);
