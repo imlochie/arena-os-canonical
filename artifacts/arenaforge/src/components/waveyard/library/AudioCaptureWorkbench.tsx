@@ -86,6 +86,36 @@ async function readJson(response: Response): Promise<Record<string, any>> {
   return response.json().catch(() => ({}));
 }
 
+/**
+ * Validate the capture-options payload before it is used.
+ *
+ * `devices` is required by `CaptureOptions`, but the response is untrusted:
+ * a non-API origin, a proxy error page or a partially deployed server can
+ * answer 200 with something that is not capture options at all. Previously the
+ * body was cast straight to `CaptureOptions` and then `next.devices.find(...)`
+ * ran, so a malformed payload became `can't access property "find",
+ * next.devices is undefined` -- an unhandled rejection thrown from a refresh
+ * effect rather than a reportable error. `available` was likewise read without
+ * validation, so an unrelated object could present the room as usable.
+ *
+ * Returns null when the payload is not a capture-options object; callers treat
+ * null as "unavailable with a reason", never as usable.
+ */
+function parseCaptureOptions(data: Record<string, any>): CaptureOptions | null {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return null;
+  if (!Array.isArray(data.devices)) return null;
+  if (typeof data.available !== "boolean") return null;
+  const devices = data.devices.filter((device: unknown): device is CaptureDevice =>
+    device !== null
+    && typeof device === "object"
+    && typeof (device as { id?: unknown }).id === "string"
+    && typeof (device as { name?: unknown }).name === "string");
+  // A payload whose device list is entirely malformed is not usable either:
+  // silently reporting zero devices would look like a machine with no hardware.
+  if (devices.length !== data.devices.length) return null;
+  return { ...(data as CaptureOptions), devices };
+}
+
 function formatElapsed(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(safe / 3600);
@@ -313,7 +343,11 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     });
     const data = await readJson(response);
     if (!response.ok) throw new Error(data.error ?? "Could not check Windows audio capture.");
-    const next = data as CaptureOptions;
+    const parsed = parseCaptureOptions(data);
+    if (parsed === null) {
+      throw new Error("The audio-capture service returned an unexpected response.");
+    }
+    const next = parsed;
     setOptions(next);
     if (next.activeSession) setSession(next.activeSession);
     const fallbackDeviceId = next.devices.find((device) => device.isDefault)?.id ?? next.devices[0]?.id ?? "";

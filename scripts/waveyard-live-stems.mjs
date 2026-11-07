@@ -489,7 +489,55 @@ try {
       // play() if the context is still not 'running' afterwards, so this is
       // the branch that must be observable.
       contextResumes: [],
+      // Fetch-level evidence. The failing scenario reports errors that come
+      // from API routes (a `devices` list that is missing, JSON that will not
+      // parse). Without recording the actual response we can only guess which
+      // endpoint answered and with what, and guessing has already cost several
+      // CI round-trips. Bodies are truncated: this is for identification.
+      apiResponses: [],
+      pageErrors: [],
     };
+    {
+      const nativeFetch = window.fetch;
+      window.fetch = function (...args) {
+        const started = nativeFetch.apply(this, args);
+        const url = typeof args[0] === "string" ? args[0] : args[0]?.url ?? "";
+        started.then((response) => {
+          const record = {
+            url: String(url),
+            status: response.status,
+            contentType: response.headers?.get?.("content-type") ?? null,
+          };
+          window.audioProbe.apiResponses.push(record);
+          if (window.audioProbe.apiResponses.length > 40) window.audioProbe.apiResponses.shift();
+          // Only clone-read the ones that can explain a malformed payload.
+          if (!/\/api\//.test(record.url)) return;
+          response.clone().text().then(
+            (body) => {
+              record.bodyStart = body.slice(0, 120);
+              record.jsonParses = (() => {
+                try { JSON.parse(body); return true; } catch { return false; }
+              })();
+            },
+            () => { record.bodyStart = "<unreadable>"; },
+          );
+        }, (error) => {
+          window.audioProbe.apiResponses.push({
+            url: String(url), status: null, failure: String(error?.message ?? error),
+          });
+        });
+        return started;
+      };
+    }
+    {
+      window.addEventListener("error", (event) => {
+        window.audioProbe.pageErrors.push(String(event.message ?? event.error ?? "unknown error"));
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        const reason = event.reason;
+        window.audioProbe.pageErrors.push(String(reason?.message ?? reason ?? "unhandled rejection"));
+      });
+    }
     {
       const nativeResume = AudioContext.prototype.resume;
       AudioContext.prototype.resume = function (...args) {
@@ -2109,6 +2157,15 @@ try {
             contextResumes: Array.isArray(probe?.contextResumes) ? probe.contextResumes.slice(-6) : 'no-contextResumes',
             // The transport sets its own error text when play() bails; surface
             // whatever the user would actually see.
+            // The API calls this page made, with enough of each body to tell a
+            // real payload from an HTML shell. A 200 whose body does not parse
+            // as JSON is the SPA fallback answering an unmatched API route.
+            apiResponses: (() => {
+              const entries = Array.isArray(probe?.apiResponses) ? probe.apiResponses : [];
+              const api = entries.filter((entry) => /\/api\//.test(entry.url));
+              return (api.length > 0 ? api : entries).slice(-6);
+            })(),
+            pageErrors: Array.isArray(probe?.pageErrors) ? probe.pageErrors.slice(-6) : 'no-pageErrors',
             visibleError: (() => {
               const nodes = [...document.querySelectorAll('[role="alert"], [data-testid*="error"], .wy-error, [aria-live]')];
               const text = nodes
