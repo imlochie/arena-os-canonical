@@ -208,15 +208,16 @@ jobs:
             # the real output becomes the annotation -- "dist:win exited 1" on
             # its own says nothing about which command failed.
             $buildLog = Join-Path $env:RUNNER_TEMP "previous-dist-win.log"
-            # *>&1, not 2>&1. With $ErrorActionPreference = "Stop", pwsh turns a
-            # native command's stderr into error RECORDS, and piping 2>&1 then
-            # fed them to Tee-Object as objects -- the first attempt produced
-            # "Data at the root level is invalid ... Cannot process the XML from
-            # the 'Error' stream of pnpm.CMD" and discarded the build output
-            # entirely. *>&1 merges every stream as text, which is what a log
-            # should be.
-            $PSNativeCommandUseErrorActionPreference = $false
-            pnpm --filter @workspace/desktop run dist:win *>&1 | Tee-Object -FilePath $buildLog
+            # Let cmd.exe do the redirection. Two earlier attempts failed here,
+            # both because of pwsh rather than the build: with
+            # $ErrorActionPreference = "Stop", a native command's stderr becomes
+            # error RECORDS, and `2>&1 | Tee-Object` (and then `*>&1 | ...`)
+            # handed those records to the pipeline. What reached the file was
+            # PowerShell complaining -- "Data at the root level is invalid /
+            # Cannot process the XML from the 'Error' stream of pnpm.CMD" -- and
+            # the build's own output was lost. Routing through cmd means
+            # PowerShell sees only the exit code.
+            & cmd /c "pnpm --filter @workspace/desktop run dist:win > `"$buildLog`" 2>&1"
             $buildCode = $LASTEXITCODE
             if ($buildCode -ne 0) {
               $tail = Get-Content $buildLog -ErrorAction SilentlyContinue |
