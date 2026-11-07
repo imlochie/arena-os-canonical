@@ -231,11 +231,14 @@ watchdog makes that failure fast rather than a hang.
 
 ### CI diagnosis status, stated precisely
 
+Updated after the third pass (see §4c). The two rows that were open here are now
+closed.
+
 | job | status |
 |---|---|
-| `installed-package` | cause **identified**: the step packages the PR base (`main`), which cannot be packaged (win32-x64 still pruned; missing SDK header fixes). Only `push` events have ever passed. Not fixed — fixing it means changing what the update test compares. |
-| `live-stem-timing` | cause **not established**. Vite readiness *succeeds* at `f505bd4` (annotation did not fire, 72 s not 60 s); the failure is in a later mode. Needs the real log; the job is now self-annotating. |
-| `recovered-stack` (new) | **passes** on Windows. |
+| `installed-package` | cause **identified, not fixed**: the step packages the PR base (`main`), which cannot be packaged (win32-x64 still pruned; missing SDK header fixes). Only `push` events have ever passed. Fixing it changes what the update test compares, so it is left as a decision for the owner rather than quietly re-pointed at another commit. |
+| `live-stem-timing` | **fixed and passing** on all three engines. Root cause was environmental (no audio device on the runner) plus an unbounded `AudioContext.resume()` in the app. See §4c. |
+| `recovered-stack` (new) | **passes** on Windows, now with twelve test files. |
 
 ### Test totals at `3a9636d`
 
@@ -246,20 +249,95 @@ watchdog makes that failure fast rather than a hang.
 
 Zero regressions; every remaining failure is identical per file to the baseline.
 
+## 4c. Third pass (2026-11-07): the browser matrix, actually solved
+
+Branch head `addc1ee`. This closes `live-stem-timing`, which every previous pass
+left open, and records why the earlier diagnoses were wrong.
+
+### What was wrong
+
+| pass said | reality |
+|---|---|
+| "Vite never starts" | Vite was fine; readiness succeeded (`f505bd4` ran 72 s, not 60, and the readiness annotation never fired). |
+| "the throw at `useStemTransport.ts` L846–849 is the cause" | It required `resume()` to **settle** and leave the context non-running. It never settled at all. |
+| "`contextResumes: []` proves `resume()` was never called" | The probe recorded only settlements, so "never called" and "called and never returned" were indistinguishable. It was the second. |
+
+Each of those was recorded as established fact at the time. The lesson is in the
+probe, not the prose: **an absence is not an observation.** The probe now pushes
+an entry synchronously at call time and marks it `still-pending` after 3 s, which
+is the change that made the cause visible.
+
+### The cause, proven in the page at failure time
+
+At `3be2a1e`, on the Firefox leg, with the page in the exact state where Play had
+stalled for 30 s:
+
+```
+directResume   "suspended -> pending-after-1500ms (state now suspended)"
+freshResume    "suspended -> pending-after-1500ms (state now suspended)"
+userActivation {"isActive": true, "hasBeenActive": true}
+workletLoads   [{"outcome":"resolved","settledAfterMs":35}]
+```
+
+A **brand-new** `AudioContext().resume()` never settled, so this was not the
+app's context being wedged. The page had real user activation and Firefox already
+ran with `media.autoplay.default: 0`, so this was not an autoplay refusal.
+`AudioWorklet.addModule` resolved on the same context in 35 ms, so the audio
+thread was alive. The remaining explanation is the one the data supports: **the
+runner had no audio output device**, and Firefox suspends a Web Audio graph when
+there is nowhere to play it. Chromium and WebKit run theirs regardless, which is
+exactly why one engine failed and two did not.
+
+### The three fixes
+
+1. **Environment** (`waveyard-browser-timing.yml`): install the `pulseaudio`
+   *daemon* (a first attempt installed only `pulseaudio-utils`, the clients, and
+   reported success while creating no sink at all), start it with `-n` and
+   `auth-anonymous=1` on an explicit unix socket, load a `module-null-sink`, pass
+   `PULSE_SERVER` to the matrix step. Failures surface as `::warning::` so the
+   step cannot silently no-op a second time.
+2. **Application** (`audio-context-resume.ts`, used by `useStemTransport.ts`):
+   `resumeWithin()` bounds the wait, and the caller checks `state` and reports
+   *"Audio playback was interrupted. Activate Play stems to resume. If this
+   persists, check that this device has a working audio output."* Before this,
+   an app user with no working output device got a button that did nothing, no
+   error, forever.
+3. **Application** (`audio-capture-options.ts`, used by
+   `AudioCaptureWorkbench`): the capture-options body is validated instead of
+   cast. `next.devices.find(...)` on an unvalidated body threw
+   `can't access property "find", next.devices is undefined` out of a refresh
+   effect, because `AudioCaptureWorkbench` is mounted unconditionally in
+   `MusicHome` and this harness does not serve that route.
+
+### Evidence
+
+| | |
+|---|---|
+| browser matrix | run `42386675911` @ `6a0ba64` — **success**, chromium + webkit + firefox, all 8 steps green |
+| regression tests | `audio-context-resume.test.ts` 4/4, `audio-capture-options.test.ts` 6/6 — both now run in the Windows `recovered-stack` job, not just locally |
+| suite, whole repo | baseline `main@33c876a` 1347 tests / 1237 pass / 93 fail / 17 skip → this branch 1451 / **1358** / 76 / 17. **Zero regressions**; no file fails more than on main; all 13 added test files green |
+| typecheck | `pnpm run typecheck` — all four projects, exit 0 |
+
+No assertion, timeout or gate was relaxed anywhere in this pass. The 30 s
+`waitForFunction` that was timing out is unchanged.
+
 ## 5. What is still not proven
 
 Do not read §4 as acceptance.
 
-* **Windows packaging / installed-app**: PR #28's Windows jobs are the required
-  evidence and they are unchanged by this branch. Nothing here has been run on
-  Windows.
-* **The ported PR #26 slices have never run on Windows.** They are green on
-  Linux only. Their whole point is Windows behaviour (`fs-replace` retries
-  `EPERM`/`EACCES`/`EBUSY`; `command-process` tree-kills), so Linux-only green
-  is weak evidence for them specifically.
+* **Windows packaging / installed-app**: still failing, cause identified and
+  deliberately not papered over — see §4b. This is the one inherited CI failure
+  that remains open.
+* **The ported PR #26 slices run on Windows and pass** (`recovered-stack`).
+  Not covered by that: real Demucs inference (the job warns that the inference
+  probe was skipped and says real inference is NOT proven), and the packaged
+  installer, which is still failing.
 * **Real Demucs inference, GPU provisioning, audible playback, code signing,
   auto-update, GUI mixer**: unverified, unchanged.
-* **Firefox Waveyard timing**: PR #28 records it as never green, cause
-  unconfirmed. Unchanged here.
+* **Firefox Waveyard timing: resolved** — see §4c. The matrix passes on
+  Chromium, WebKit and Firefox. What that does not establish: audible playback
+  through real hardware (the runner uses a PulseAudio null sink), Windows or iOS
+  browser behaviour, or the other `waveyard-*.mjs` scripts, which this workflow
+  does not run.
 * **Database/migration acceptance**: no PostgreSQL or Redis in this
   environment, so the 76 pre-existing failures cannot be closed here.

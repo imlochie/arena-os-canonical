@@ -216,59 +216,88 @@ that the Windows installer works, because that is the other job.
 
 ### `waveyard-browser-timing.yml` / `live-stem-timing`
 
-Steps 1–6 pass, including the Playwright browser install. Step 7 runs three
-engines in order (chromium → webkit → firefox).
+**RESOLVED — the matrix now passes on all three engines** (run `42386675911`,
+`6a0ba64`, job `live-stem-timing` = **success**, every step green including the
+new audio-sink step). This section records what was wrong, because two of the
+explanations offered earlier in this file were wrong and one of them was wrong in
+a way that made the next diagnosis harder.
 
 | run | sha | result |
 |---|---|---|
 | 42376858283 | `867c538` | fail, 100 s |
 | 42377175538 | `b28d938` | fail, exactly 60 s (Vite readiness) |
 | 42378234049 | `f505bd4` | fail, 72 s — readiness annotation did **not** fire |
-| 42378819685 | `66dba41` | fail — new annotation: *matrix failed* (so readiness + persistence passed) |
-| (at `7af676b`) | | fail — annotation: **`LIVE_STEM_TIMING_ENGINE firefox exited with status 1`** |
-| (at `c75d9df`) | | fail — annotation: `page.waitForFunction: Timeout 30000ms exceeded` at `waveyard-live-stems.mjs:2030` |
+| 42378819685 | `66dba41` | fail — *matrix failed* (so readiness + persistence passed) |
+| — | `7af676b` | fail — `LIVE_STEM_TIMING_ENGINE firefox exited with status 1` |
+| — | `c75d9df` | fail — `TimeoutError` at `waveyard-live-stems.mjs:2030` |
+| — | `675ef64` | fail — `pressed:"false"`, elements `readyState 4`, no media error |
+| — | `d204052` | fail — context `suspended`, `playStarts: []`, `playRejections: []` |
+| 42381290508 | `b80b368` | fail — `visibleError`: *can't access property "find", next.devices is undefined* |
+| 42381843655 | `da56f1e` | fail — probe annotation corrupted by raw audio bytes |
+| 42382362100 | `49b0da0` | fail — `contextResumes: []`, still no error |
+| 42382740991 | `4e22a86` | fail — `contextResumes: [{outcome:"still-pending", pendingForMs:2999}]` |
+| 42385321180 | `3be2a1e` | fail — a **brand-new** context also stays pending; `userActivation.hasBeenActive: true` |
+| 42385847628 | `d6132b3` | fail — honest error now shown; sink step silently did nothing |
+| 42386286296 | `08f5631` | fail — **Firefox passes**, WebKit `TimeoutError` |
+| 42386675911 | `6a0ba64` | **success — chromium, webkit and firefox all pass** |
 
-**Established, from annotations now emitted by CI:**
+**The actual cause, in two halves.**
 
-1. Vite **is** reachable on the runner, and `--studio-persistence-only` passes.
-   (The earlier "Vite never starts" theory was wrong; the readiness loop
-   succeeds.)
-2. Chromium and WebKit pass. **Firefox is the failing engine** — previously
-   asserted in this file without any evidence; now evidenced by the annotation.
-3. Line 2030 is the wait for `data-testid="session-play"` to report
-   `aria-pressed="true"` after play is clicked. It is **not** an audio-readiness
-   failure: the 15 s setup wait at line 2020 requires `readyState === 4` on all
-   four stem elements and it passed, otherwise the thrown error would come from
-   that wait and carry a `TIMING_SETUP_AUDIO_STATE` dump.
-
-**Established further** (run at `675ef64`, annotation
-`TIMING_SETUP_PLAY_STATE nativeTempo`):
+*Environment.* The runner had no audio device. Firefox suspends a Web Audio
+graph when there is nowhere to play it; Chromium and WebKit run theirs anyway,
+which is precisely why only one engine failed. Proven, not inferred, from a
+failure-time probe in the page (`3be2a1e`):
 
 ```
-{"pressed":"false", "audioContext":"no-probe-context",
- "audio":[{"readyState":4,"paused":true,"currentTime":0,"error":null} x4]}
+directResume   "suspended -> pending-after-1500ms (state now suspended)"
+freshResume    "suspended -> pending-after-1500ms (state now suspended)"
+userActivation {"isActive": true, "hasBeenActive": true}
+workletLoads   [{"outcome":"resolved","settledAfterMs":35}]
 ```
 
-So on Firefox, after the play click, all four stem elements are fully buffered
-(`readyState 4`), carry **no media error**, and are **still `paused` with
-`currentTime` 0**. Playback never started; nothing was interrupted. That rules
-out decode, load and buffering, and points at `transport.play()` not
-completing. Caveat on my own instrumentation: `audioContext` reports
-`no-probe-context`, which means `window.audioProbe` does not expose the
-AudioContext where I looked — that is a gap in the probe, **not** evidence that
-the context is healthy. Do not read it as a finding either way.
+A **brand-new** `AudioContext` could not resume either, while
+`AudioWorklet.addModule` on the same context finished in 35 ms. So it was not an
+autoplay refusal (the page had been activated and the Firefox prefs already set
+`media.autoplay.default: 0`) and not the app's own context being wedged. The
+workflow now installs `pulseaudio` (the *daemon* — installing only
+`pulseaudio-utils`, the clients, was a first attempt that reported success and
+created no sink), starts it with `-n` and an anonymous-auth unix socket, loads a
+`module-null-sink`, and passes `PULSE_SERVER` to the matrix step. The step warns
+via `::warning::` if any part of that fails, so it cannot silently no-op again.
 
-**Remaining hypothesis (unproven):** `play()` on those elements rejects in
-Firefox, most plausibly via the autoplay policy — note that commit `f79fb04`
-added `firefoxUserPrefs` (`media.autoplay.default: 0`,
-`media.autoplay.blocking_policy: 0`, `media.volume_scale: "0.0"`) for exactly
-this reason, so either those prefs do not apply to headless Firefox 1.64 or
-something else rejects first. Proving it needs the rejection reason, which means
-either the raw log or a `play()`-rejection capture in the page.
+*Application.* `await context.current.resume()` was unbounded. A resume promise
+is allowed never to settle, and this one did not: Play stopped at the await with
+no playback, no error, and a Playing control that never engaged — a dead button.
+`resumeWithin()` (`lib/arena/src/lib/waveyard/audio-context-resume.ts`) bounds
+the wait; the caller then inspects `state` and reports *"Audio playback was
+interrupted. Activate Play stems to resume. If this persists, check that this
+device has a working audio output."* That is what the Firefox leg showed at
+`d6132b3`, before the sink existed: the failure became legible to a user instead
+of a 30 s silence. Four regression tests, and they run in CI.
 
-**Status: localised to one line, one engine, and a specific observable state;
-root cause still open.** No timeout, assertion or gate has been relaxed to get
-this far — the job fails exactly as it did before.
+*Third defect, found on the way.* `AudioCaptureWorkbench` is mounted
+unconditionally in `MusicHome`, so it calls `/api/library/audio-capture` on the
+session page too. Nothing serves that route in this harness and the SPA fallback
+answers with `index.html`, so the body was never capture options. The component
+cast it to `CaptureOptions` and called `next.devices.find(...)`, which threw
+`can't access property "find", next.devices is undefined` out of a refresh
+effect. `parseCaptureOptions` now validates the shape and reports an error
+instead. Six tests.
+
+**Corrections to this file's own earlier claims.** It asserted "Chromium and
+WebKit pass, Firefox fails" with no evidence, then asserted the throw at
+`useStemTransport.ts` L846–849 was the cause (it required `resume()` to *settle*
+and leave the state non-running — it never settled at all), then read
+`contextResumes: []` as "resume() was never called" when the probe only recorded
+settlements and could not distinguish "never called" from "called and never
+returned". Each was written down as established fact. They were not. The probe
+now records calls synchronously and marks a promise still-pending after 3 s,
+which is why the last three rows above are decisive where the earlier ones were
+not.
+
+**No timeout, assertion or gate was relaxed.** The 30 s `waitForFunction` is
+unchanged; the failure moved from "some engine times out" to "all three engines
+pass".
 
 ### Why the cause is not being quoted from CI logs
 
@@ -283,13 +312,21 @@ contradict this, they win.
 
 ## Not verified (do not claim otherwise)
 
-- **The ported PR #26 slices have never run on Windows.** They are green on
-  Linux only, and Windows behaviour is the whole point of `fs-replace`
-  (`EPERM`/`EACCES`/`EBUSY` retry) and `command-process` (tree-kill).
+- **The ported PR #26 slices now run on Windows**, via
+  `windows-recovered-stack.yml`, which passes. What that does *not* prove:
+  real Demucs inference (no ffmpeg/GPU on the runner — the job emits an
+  `::warning::` saying the inference probe was skipped and that real inference is
+  therefore NOT proven), and the packaged installer, which is the other, still
+  failing job.
 - Real Demucs inference on Windows, GPU model provisioning, audible playback via
   hardware, GUI mixer interaction, human-driven Arcade/Spaces flows on Windows,
   code signing, auto-update.
-- Firefox Waveyard timing (see above).
+- **The full browser matrix passes only on this harness**, on `ubuntu-22.04`
+  with a PulseAudio null sink. That is genuine cross-engine evidence for
+  Chromium, WebKit and Firefox playback/timing on Linux. It is not evidence of
+  audible playback through real hardware, and not Windows or iOS evidence.
+- The Waveyard browser matrix covers the live-stem timing scenarios only; the
+  other `waveyard-*.mjs` scripts are not run by this workflow.
 - Database/migration acceptance: no PostgreSQL or Redis here.
 - PR #26's six green Windows jobs (1,649 tests) are evidence **for the old
   npm/Electron layout only**. Never cite them as proof that ported code works.
