@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { statfsSync } from "node:fs";
+import { realpathSync, statfsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -543,7 +543,8 @@ test("command-line preflight uses npm's user, project, and environment cache pre
     assert.equal(cache.path, environmentCache);
     // npm may initialize its log directory during config lookup; either way
     // the inspection must stay on the configured cache's volume.
-    assert.ok([root, environmentCache].includes(cache.checkedPath));
+    // The report canonicalizes the checked path (e.g. 8.3 short names on Windows).
+    assert.ok([realpathSync.native(root), environmentCache].includes(cache.checkedPath));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

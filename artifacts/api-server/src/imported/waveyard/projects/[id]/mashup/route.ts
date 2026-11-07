@@ -203,10 +203,10 @@ async function findBedSource(projectId: string, bedId: string): Promise<BedSourc
 /**
  * Decode and sum the bed's separated non-vocal stems.
  *
- * Returns ok:false when the original-file fallback must be used. Throws
- * InstrumentalBedError when stems exist but provenance or exact alignment
- * cannot be established — those must not be silently replaced with the
- * original file.
+ * Returns ok:false only when no usable separation exists, so the original-file
+ * fallback applies. Throws InstrumentalBedError when stems exist but are
+ * undecodable, or their provenance or exact alignment cannot be established —
+ * those must not be silently replaced with the original file.
  */
 async function loadInstrumentalBed(projectId: string, bedId: string): Promise<BedLoadResult> {
   const { info, stems } = await findBedSource(projectId, bedId);
@@ -217,15 +217,10 @@ async function loadInstrumentalBed(projectId: string, bedId: string): Promise<Be
   if (stems.length === 1 && stems[0]!.stemType === "instrumental") {
     const pcm = await stemPcm(stems[0]!.storageKey);
     if (pcm === null) {
-      return {
-        ok: false,
-        info: {
-          ...info,
-          source: "original-fallback",
-          warning:
-            "The separated instrumental stem could not be decoded. The original file is used and may contain the original vocal.",
-        },
-      };
+      throw new InstrumentalBedError(
+        "invalid-stem",
+        "The separated instrumental stem is not a valid 44.1 kHz stereo WAV. Re-run separation for the instrumental track.",
+      );
     }
     return { ok: true, pcm, info };
   }
@@ -235,15 +230,10 @@ async function loadInstrumentalBed(projectId: string, bedId: string): Promise<Be
     const bytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
     const decoded = decodeWav16(new Uint8Array(bytes));
     if (decoded === null || decoded.sampleRate !== RENDER_SAMPLE_RATE) {
-      return {
-        ok: false,
-        info: {
-          ...info,
-          source: "original-fallback",
-          warning:
-            "A separated instrumental stem could not be decoded at the render rate. The original file is used and may contain the original vocal.",
-        },
-      };
+      throw new InstrumentalBedError(
+        "invalid-stem",
+        `The separated ${stem.stemType} stem is not a valid 44.1 kHz WAV. Re-run separation for the instrumental track.`,
+      );
     }
     decodedStems.push({
       stemType: stem.stemType,
@@ -320,7 +310,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
       // Render: donor vocal over a clean instrumental bed. The bed is built
       // from the separated non-vocal stems of ONE completed separation run.
-      // If that is impossible, fall back to the original file and say so.
+      // With no completed separation, fall back to the original file and say
+      // so. Existing stems that fail validation fail the render (422).
       if (planned.plan.durationMs / 1000 > MAX_RENDER_SECONDS) {
         return Response.json({ error: `Renders are limited to ${MAX_RENDER_SECONDS / 60} minutes.` }, { status: 413 });
       }

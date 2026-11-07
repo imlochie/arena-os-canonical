@@ -381,6 +381,17 @@ test("API render uses the synthesized separated bed and reports the original-fil
     const bassEnergy = energyAt(rendered!.samples, 220, 0, 2);
     const otherEnergy = energyAt(rendered!.samples, 330, 0, 2);
     const donorVocalEnergy = energyAt(rendered!.samples, 1000, 2, 4);
+    // An existing but undecodable stem must fail closed (422), never fall back
+    // to the original file, which would silently reintroduce the bed's vocal.
+    const garbagePath = path.join(fixtureRoot, "bed-bass-corrupt.wav");
+    await writeFile(garbagePath, Buffer.from("not a wav file"));
+    await storage.putFile("mashup-fixture/bed-bass.wav", garbagePath);
+    const invalidResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+    assert.equal(invalidResponse.status, 422, "an invalid existing stem must fail the render");
+    assert.equal(invalidResponse.headers.get("x-waveyard-bed-source"), null);
+    assert.match(((await invalidResponse.json()) as { error: string }).error, /bass stem/);
+    await storage.putFile("mashup-fixture/bed-bass.wav", path.join(fixtureRoot, "bed-bass.wav"));
+
     // Remove the separation run: the route must fall back to the original
     // file and say so, and the original bed's vocal must become audible.
     await dbModule.db.delete(schema.processingJobs).where(eq(schema.processingJobs.id, bedJob.id));
