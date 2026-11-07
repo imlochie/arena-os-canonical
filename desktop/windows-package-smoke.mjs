@@ -448,6 +448,10 @@ try {
   console.log("Installed Windows package smoke check passed.");
 } catch (error) {
   console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+  if (dataRoot) {
+    const appLog = await readFile(path.join(dataRoot, "logs/desktop.log"), "utf8").catch(() => "(no desktop.log was written)");
+    console.error(`--- desktop.log (tail) ---\n${appLog.slice(-6000)}`);
+  }
   const failedCheck = activeCheck ?? "installed_app_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";
@@ -457,7 +461,14 @@ try {
   );
   process.exitCode = 1;
 } finally {
-  if (desktop) await desktop.close().catch(() => {});
+  if (desktop) {
+    // A modal error dialog can keep close() from returning; never hang CI on it.
+    await Promise.race([
+      desktop.close().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 20_000)),
+    ]);
+    try { desktop.process().kill(); } catch {}
+  }
   if (dataRoot)
     await rm(dataRoot, { recursive: true, force: true }).catch(() => {});
   if (restoreRoot)
@@ -470,3 +481,4 @@ try {
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.log("Result: generated-artifacts/windows-package-smoke/result.json");
 }
+process.exit(process.exitCode ?? 0);
