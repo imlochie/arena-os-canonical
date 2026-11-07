@@ -2027,9 +2027,36 @@ try {
       const deck = page.locator('[data-role="current"]');
       const play = page.getByTestId("session-play");
       if (await play.getAttribute("aria-pressed") !== "true") await play.click();
-      await page.waitForFunction(() =>
-        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
-      );
+      try {
+        await page.waitForFunction(() =>
+          document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+        );
+      } catch (error) {
+        // Play never engaged. This is NOT an audio-readiness problem: the
+        // 15 s setup wait above already proved readyState 4 on all four
+        // elements. togglePlay awaits transport.play(), so capture the state
+        // that explains a stalled start -- a suspended AudioContext is the
+        // classic symptom (Firefox suspends until a gesture is trusted).
+        const state = await page.evaluate(() => {
+          const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+          const probe = window.audioProbe;
+          const context = probe?.context ?? probe?.audioContext ?? null;
+          return {
+            pressed: document.querySelector('[data-testid="session-play"]')?.getAttribute('aria-pressed') ?? null,
+            audioContext: context === null ? 'no-probe-context'
+              : typeof context?.state === 'string' ? context.state
+              : context === null ? null : typeof context,
+            audio: audio.map((element) => ({
+              readyState: element.readyState,
+              paused: element.paused,
+              currentTime: Number(element.currentTime.toFixed(3)),
+              error: element.error?.code ?? null,
+            })),
+          };
+        }).catch(() => 'page unavailable');
+        console.error(`TIMING_SETUP_PLAY_STATE ${scenario.name} ${JSON.stringify(state)}`);
+        throw error;
+      }
       await deck.getByTestId("open-live-swap-vocals").click();
       const candidate = deck.getByTestId(`live-swap-candidate-vocals-${scenario.donorId}`);
       await candidate.waitFor();
