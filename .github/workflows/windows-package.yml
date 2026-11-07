@@ -174,15 +174,27 @@ jobs:
 
             $baseRevision = (git rev-parse HEAD).Trim()
             Write-Host "previous package: source=$baseline dependency-config=from tested branch ($baseRevision)"
-            # State the one fact this whole workaround rests on. If the tested
-            # tree ever re-prunes win32-x64, this prints it instead of leaving the
-            # next reader to guess why the build broke again.
-            $pruned = Select-String -Path "pnpm-workspace.yaml" -Pattern "win32-x64" -SimpleMatch |
-              ForEach-Object { $_.Line.Trim() }
-            if ($pruned) {
-              Write-Host "::warning::windows-package: pnpm-workspace.yaml in the tested tree still prunes win32-x64 entries: $($pruned -join '; ')"
+            # State the one fact this whole workaround rests on. Only the
+            # packages the Windows build actually needs are checked: a bare
+            # "win32-x64" match also hits @rollup/rollup-win32-x64-gnu (the gnu
+            # variant, not the msvc one used on Windows) and @expo/ngrok-bin,
+            # neither of which affects the build, and reporting those as a
+            # problem is noise that hides a real one.
+            $requiredBinaries = @(
+              "esbuild>@esbuild/win32-x64",
+              "lightningcss>lightningcss-win32-x64-msvc",
+              "@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc",
+              "rollup>@rollup/rollup-win32-x64-msvc"
+            )
+            $stillPruned = @()
+            foreach ($binary in $requiredBinaries) {
+              $line = Select-String -Path "pnpm-workspace.yaml" -Pattern ([regex]::Escape($binary)) -SimpleMatch
+              if ($line) { $stillPruned += $binary }
+            }
+            if ($stillPruned.Count -gt 0) {
+              Write-Host "::warning::windows-package: the tested tree still prunes $($stillPruned -join ', '); the previous package build will likely fail."
             } else {
-              Write-Host "previous package: win32-x64 binaries are not pruned in the tested tree"
+              Write-Host "previous package: all four required win32-x64 binaries are available in the tested tree"
             }
             Write-Host "previous package: pnpm $(pnpm --version), node $(node --version)"
 
@@ -191,8 +203,23 @@ jobs:
               Fail "Previous package dependencies could not be installed (pnpm install exited $LASTEXITCODE). If the base revision still cannot resolve win32-x64 binaries, the overrides in pnpm-workspace.yaml were not the remaining cause."
             }
             $env:ARENA_CLASSIC_PACKAGES = "1"
-            pnpm --filter @workspace/desktop run dist:win
-            if ($LASTEXITCODE -ne 0) { Fail "The previous Windows package could not be built (dist:win exited $LASTEXITCODE)." }
+            # Capture the build output. Job logs are unreachable from the
+            # environment that triages this workflow, so on failure the tail of
+            # the real output becomes the annotation -- "dist:win exited 1" on
+            # its own says nothing about which command failed.
+            $buildLog = Join-Path $env:RUNNER_TEMP "previous-dist-win.log"
+            pnpm --filter @workspace/desktop run dist:win 2>&1 | Tee-Object -FilePath $buildLog
+            $buildCode = $LASTEXITCODE
+            if ($buildCode -ne 0) {
+              $tail = Get-Content $buildLog -ErrorAction SilentlyContinue |
+                Where-Object { $_.Trim().Length -gt 0 } |
+                Select-Object -Last 12
+              foreach ($line in $tail) {
+                Write-Host "::error::previous-dist-win: $($line.Trim())"
+              }
+              if (-not $tail) { Write-Host "::error::previous-dist-win: produced no output at all before failing" }
+              Fail "The previous Windows package could not be built (dist:win exited $buildCode). The last output lines are annotated above."
+            }
             $builtInstaller = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
               Where-Object { $_.Name -notmatch "uninstall" } |
               Select-Object -First 1
