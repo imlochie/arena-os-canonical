@@ -2,66 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { LibraryAudioCaptureSignal, LibraryAudioCaptureApplication } from "@workspace/api-client-react";
-
-type CaptureDevice = {
-  id: string;
-  name: string;
-  isDefault: boolean;
-};
-
-type CaptureFormat = {
-  sampleRate: number;
-  channels: number;
-  bitsPerSample: number;
-  blockAlign: number;
-};
-
-type CaptureStorageBudget = {
-  availableBytes: number;
-  reserveBytes: number;
-  canRecord: boolean;
-  reason?: string;
-};
-
-type CaptureSession = {
-  markers?: Array<{ id: string; sampleFrame: number; metadata: { title: string; artist?: string; album?: string; trackNumber?: number } }>;
-  sessionId: string;
-  status: "starting" | "recording" | "stopping" | "completed" | "failed";
-  title: string;
-  captureMode?: "system-loopback" | "process-loopback";
-  processId?: number;
-  startedAt?: string;
-  elapsedSeconds: number;
-  discontinuityCount: number;
-  availableBytes?: number;
-  reserveBytes?: number;
-  estimatedSecondsRemaining?: number;
-  format?: CaptureFormat;
-  message?: string;
-  signal?: LibraryAudioCaptureSignal;
-};
-
-type CaptureTags = {
-  title: string;
-  artist?: string;
-  album?: string;
-  trackNumber?: number;
-  artworkDataUrl?: string;
-};
-
-type MediaTrackSuggestion = {
-  sourceAppId: string;
-  metadata: CaptureTags;
-};
-
-type Recovery = {
-  sessionId: string;
-  title: string;
-  artist?: string;
-  album?: string;
-  createdAt: string;
-  signal?: LibraryAudioCaptureSignal;
-};
+import { parseCaptureOptions } from "./audio-capture-options";
+import type {
+  CaptureDevice,
+  CaptureFormat,
+  CaptureOptions,
+  CaptureSession,
+  CaptureStorageBudget,
+  CaptureTags,
+  MediaTrackSuggestion,
+  Recovery,
+} from "./audio-capture-options";
 
 function signalWarning(signal?: LibraryAudioCaptureSignal): string {
   return signal && signal.state !== "unsupported" && !signal.signalSeen
@@ -69,51 +20,8 @@ function signalWarning(signal?: LibraryAudioCaptureSignal): string {
     : "";
 }
 
-type CaptureOptions = {
-  available: boolean;
-  devices: CaptureDevice[];
-  applications?: LibraryAudioCaptureApplication[];
-  processLoopbackSupported?: boolean;
-  processLoopbackReason?: string;
-  reason?: string;
-  storage?: CaptureStorageBudget;
-  activeSession?: CaptureSession;
-  recoveries?: Recovery[];
-  recoveryError?: string;
-};
-
 async function readJson(response: Response): Promise<Record<string, any>> {
   return response.json().catch(() => ({}));
-}
-
-/**
- * Validate the capture-options payload before it is used.
- *
- * `devices` is required by `CaptureOptions`, but the response is untrusted:
- * a non-API origin, a proxy error page or a partially deployed server can
- * answer 200 with something that is not capture options at all. Previously the
- * body was cast straight to `CaptureOptions` and then `next.devices.find(...)`
- * ran, so a malformed payload became `can't access property "find",
- * next.devices is undefined` -- an unhandled rejection thrown from a refresh
- * effect rather than a reportable error. `available` was likewise read without
- * validation, so an unrelated object could present the room as usable.
- *
- * Returns null when the payload is not a capture-options object; callers treat
- * null as "unavailable with a reason", never as usable.
- */
-function parseCaptureOptions(data: Record<string, any>): CaptureOptions | null {
-  if (data === null || typeof data !== "object" || Array.isArray(data)) return null;
-  if (!Array.isArray(data.devices)) return null;
-  if (typeof data.available !== "boolean") return null;
-  const devices = data.devices.filter((device: unknown): device is CaptureDevice =>
-    device !== null
-    && typeof device === "object"
-    && typeof (device as { id?: unknown }).id === "string"
-    && typeof (device as { name?: unknown }).name === "string");
-  // A payload whose device list is entirely malformed is not usable either:
-  // silently reporting zero devices would look like a machine with no hardware.
-  if (devices.length !== data.devices.length) return null;
-  return { ...(data as CaptureOptions), devices };
 }
 
 function formatElapsed(seconds: number): string {
