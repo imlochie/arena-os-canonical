@@ -63,8 +63,8 @@ function install(installer, installDir) {
     windowsHide: true,
     stdio: "ignore",
   });
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0);
+  assert.equal(result.error, undefined, `installer error: ${result.error}`);
+  assert.equal(result.status, 0, `installer ${installer} exited ${result.status} signal ${result.signal}`);
 }
 
 async function launch(executable, profileDir) {
@@ -206,7 +206,8 @@ async function run() {
 try {
   await run();
   console.log("Windows package update check passed.");
-} catch {
+} catch (error) {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   const failedCheck = activeCheck ?? "older_package_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";
