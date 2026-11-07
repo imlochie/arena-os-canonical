@@ -545,19 +545,96 @@ try {
       });
     }
     {
+      // The other await between the click and element.play(). If resume() turns
+      // out to settle normally then this is where Play is blocked, because
+      // useStemTransport awaits sessionOutput.ready (which awaits this
+      // addModule) before it ever calls play(). Recording the call as well as
+      // the settlement is deliberate: a promise that never settles is
+      // otherwise invisible.
+      const proto = window.AudioWorklet?.prototype;
+      if (proto && typeof proto.addModule === "function") {
+        const nativeAddModule = proto.addModule;
+        proto.addModule = function (...args) {
+          const entry = { url: String(args[0] ?? "").split("/").pop(), outcome: "pending", calledAt: Date.now() };
+          window.audioProbe.workletLoads.push(entry);
+          let started;
+          try {
+            started = nativeAddModule.apply(this, args);
+          } catch (error) {
+            entry.outcome = "threw";
+            entry.message = error?.message ?? null;
+            throw error;
+          }
+          if (started && typeof started.then === "function") {
+            started.then(
+              () => { entry.outcome = "resolved"; entry.settledAfterMs = Date.now() - entry.calledAt; },
+              (error) => {
+                entry.outcome = "rejected";
+                entry.name = error?.name ?? null;
+                entry.message = error?.message ?? null;
+                entry.settledAfterMs = Date.now() - entry.calledAt;
+              },
+            );
+            setTimeout(() => {
+              if (entry.outcome === "pending") {
+                entry.outcome = "still-pending";
+                entry.pendingForMs = Date.now() - entry.calledAt;
+              }
+            }, 3000);
+          } else {
+            entry.outcome = "not-a-promise";
+          }
+          return started;
+        };
+      }
+    }
+    {
+      // Record the CALL synchronously, not only the settlement. useStemTransport
+      // does `await context.resume()` and then checks the state; if that promise
+      // stays pending forever, nothing downstream ever runs and no error is
+      // ever raised. An earlier version of this probe only recorded settle
+      // events, so "resume() was called and never settled" and "resume() was
+      // never called" both showed up as an empty list -- indistinguishable, and
+      // I misread it once already.
       const nativeResume = AudioContext.prototype.resume;
       AudioContext.prototype.resume = function (...args) {
-        const started = nativeResume.apply(this, args);
+        const entry = { outcome: "pending", state: this.state, calledAt: Date.now() };
+        window.audioProbe.contextResumes.push(entry);
+        let started;
+        try {
+          started = nativeResume.apply(this, args);
+        } catch (error) {
+          entry.outcome = "threw";
+          entry.name = error?.name ?? null;
+          entry.message = error?.message ?? null;
+          throw error;
+        }
         if (started && typeof started.then === "function") {
           started.then(
-            () => window.audioProbe.contextResumes.push({ outcome: "resolved", state: this.state }),
-            (error) => window.audioProbe.contextResumes.push({
-              outcome: "rejected",
-              name: error?.name ?? null,
-              message: error?.message ?? null,
-              state: this.state,
-            }),
+            () => {
+              entry.outcome = "resolved";
+              entry.stateAfter = this.state;
+              entry.settledAfterMs = Date.now() - entry.calledAt;
+            },
+            (error) => {
+              entry.outcome = "rejected";
+              entry.name = error?.name ?? null;
+              entry.message = error?.message ?? null;
+              entry.stateAfter = this.state;
+              entry.settledAfterMs = Date.now() - entry.calledAt;
+            },
           );
+          // Flag a promise the browser has no intention of settling. This is
+          // the state that makes Play hang silently.
+          setTimeout(() => {
+            if (entry.outcome === "pending") {
+              entry.outcome = "still-pending";
+              entry.pendingForMs = Date.now() - entry.calledAt;
+              entry.stateAfter = this.state;
+            }
+          }, 3000);
+        } else {
+          entry.outcome = "not-a-promise";
         }
         return started;
       };
@@ -2152,6 +2229,9 @@ try {
           return {
             visibleError: text.slice(0, 4),
             pageErrors: Array.isArray(probe?.pageErrors) ? probe.pageErrors.slice(0, 6) : 'no-pageErrors',
+            contextResumes: Array.isArray(probe?.contextResumes) ? probe.contextResumes.slice(-3) : 'no-contextResumes',
+            workletLoads: Array.isArray(probe?.workletLoads) ? probe.workletLoads.slice(-3) : 'no-workletLoads',
+            playStarts: Array.isArray(probe?.playStarts) ? probe.playStarts.slice(-3) : 'no-playStarts',
           };
         }).catch(() => 'page unavailable');
         console.error(`TIMING_SETUP_ERRORS ${scenario.name} ${JSON.stringify(head)}`);
