@@ -56,10 +56,12 @@ if (process.argv.includes("--live-stem-timing-matrix")) {
         const diagnostic = engineOut
           .split("\n")
           .map((line) => line.trim())
-          .filter((line) => line.length > 0 && /WAVEYARD|readyState|networkState|audio|timeout|timed out|Error|error/i.test(line))
-          .slice(-6);
+          // The cause-carrying lines: keep them all, and keep them short. A
+          // truncated annotation cost two CI round-trips already.
+          .filter((line) => line.length > 0 && /TIMING_SETUP_ERRORS|TIMING_SETUP_PLAY_STATE|TIMING_SETUP_AUDIO_STATE|TimeoutError|exited with status/i.test(line))
+          .slice(-4);
         for (const line of diagnostic) {
-          console.log(`::error::${engine}: ${line.slice(0, 300)}`);
+          console.log(`::error::${engine}: ${line.slice(0, 900)}`);
         }
         if (diagnostic.length === 0) console.log(`::error::${engine}: produced no diagnostic output`);
       }
@@ -510,14 +512,18 @@ try {
           };
           window.audioProbe.apiResponses.push(record);
           if (window.audioProbe.apiResponses.length > 40) window.audioProbe.apiResponses.shift();
-          // Only clone-read the ones that can explain a malformed payload.
+          // Only clone-read bodies that can explain a malformed payload, and
+          // only if they are text. Reading an audio body as text put raw bytes
+          // (and a lone \u escape sequence) into the annotation, which came
+          // back unparseable -- the diagnostic destroyed itself.
+          const contentType = record.contentType ?? "";
           if (!/\/api\//.test(record.url)) return;
+          if (!/json|text|javascript|xml/i.test(contentType)) return;
           response.clone().text().then(
             (body) => {
               record.bodyStart = body.slice(0, 120);
-              record.jsonParses = (() => {
-                try { JSON.parse(body); return true; } catch { return false; }
-              })();
+              record.bodyBytes = body.length;
+              try { JSON.parse(body); record.jsonParses = true; } catch { record.jsonParses = false; }
             },
             () => { record.bodyStart = "<unreadable>"; },
           );
@@ -2135,6 +2141,20 @@ try {
         // elements. togglePlay awaits transport.play(), so capture the state
         // that explains a stalled start -- a suspended AudioContext is the
         // classic symptom (Firefox suspends until a gesture is trusted).
+        // Emit the two fields that identify the cause as their own short lines
+        // first. Annotations are truncated, and the previous dump was cut off
+        // before the error text.
+        const head = await page.evaluate(() => {
+          const probe = window.audioProbe;
+          const text = [...document.querySelectorAll('[role="alert"], [data-testid*="error"], .wy-error, [aria-live]')]
+            .map((node) => (node.textContent ?? '').trim())
+            .filter((value) => value.length > 0);
+          return {
+            visibleError: text.slice(0, 4),
+            pageErrors: Array.isArray(probe?.pageErrors) ? probe.pageErrors.slice(0, 6) : 'no-pageErrors',
+          };
+        }).catch(() => 'page unavailable');
+        console.error(`TIMING_SETUP_ERRORS ${scenario.name} ${JSON.stringify(head)}`);
         const state = await page.evaluate(() => {
           const audio = [...document.querySelectorAll('[data-role="current"] audio')];
           const probe = window.audioProbe;
