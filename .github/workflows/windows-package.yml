@@ -126,7 +126,14 @@ jobs:
             # Newer Windows SDKs need propkeydef.h before the device property
             # keys, and winrt/Windows.Foundation.h before the Media.Control
             # header. Without them the native capture host does not compile.
-            "desktop/native/waveyard-capture-host.cpp"
+            "desktop/native/waveyard-capture-host.cpp",
+            # The base pins a fixed SHA-256 for BtbN's moving "releases/download/
+            # latest" tag. That URL is republished continuously, so the download
+            # can never hash to the pinned value again -- the build fails with
+            # "FFmpeg archive SHA-256 mismatch" no matter who runs it or when.
+            # A hash pin against a mutable URL is not a property worth
+            # reproducing; this file points at an immutable dated release.
+            "desktop/ffmpeg-bundle.mjs"
           )
           foreach ($fix in $baseFixFiles) {
             $source = Join-Path $env:GITHUB_WORKSPACE $fix
