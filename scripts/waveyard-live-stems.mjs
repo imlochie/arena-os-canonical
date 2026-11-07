@@ -1982,12 +1982,19 @@ try {
       session.currentSessionTrackId = "a";
       session.positionSeconds = 0;
       await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
-      await page.waitForFunction(() => {
-        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-        return audio.length === 4 && audio.every(element =>
-          element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
-        );
-      }, null, { timeout: 15_000 });
+      try {
+        await page.waitForFunction(() => {
+          const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+          return audio.length === 4 && audio.every(element =>
+            element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+          );
+        }, null, { timeout: 15_000 });
+      } catch (error) {
+        const state = await page.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')]
+          .map(element => ({ readyState: element.readyState, networkState: element.networkState, src: element.src, error: element.error?.code ?? null }))).catch(() => "page unavailable");
+        console.error(`TIMING_SETUP_AUDIO_STATE ${scenario.name} ${JSON.stringify(state)}`);
+        throw error;
+      }
       const deck = page.locator('[data-role="current"]');
       const play = page.getByTestId("session-play");
       if (await play.getAttribute("aria-pressed") !== "true") await play.click();
