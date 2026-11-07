@@ -2221,17 +2221,52 @@ try {
         // Emit the two fields that identify the cause as their own short lines
         // first. Annotations are truncated, and the previous dump was cut off
         // before the error text.
-        const head = await page.evaluate(() => {
+        const head = await page.evaluate(async () => {
           const probe = window.audioProbe;
           const text = [...document.querySelectorAll('[role="alert"], [data-testid*="error"], .wy-error, [aria-live]')]
             .map((node) => (node.textContent ?? '').trim())
             .filter((value) => value.length > 0);
+          // DECISIVE EXPERIMENT. resume() on the app's own context is observed
+          // to stay pending (never resolve, never reject) in Firefox, while
+          // AudioWorklet.addModule on the same context resolved in 35 ms. That
+          // means the context is not broken -- it is blocked -- and an
+          // unbounded `await context.resume()` parks Play forever with no error
+          // at all. Two facts separate "Firefox is blocking Web Audio for this
+          // page" from "this one context is wedged":
+          //   directResume  -- resume() on the app's existing context, raced
+          //   freshResume   -- resume() on a brand new AudioContext
+          // plus what Firefox believes about user activation.
+          const race = (promise, ms) => Promise.race([
+            Promise.resolve(promise).then(() => 'resolved', (e) => `rejected:${e?.name ?? e}`),
+            new Promise((resolve) => setTimeout(() => resolve(`pending-after-${ms}ms`), ms)),
+          ]);
+          const target = Array.isArray(probe?.contexts) ? probe.contexts[0] : null;
+          const directResume = target
+            ? `${target.state} -> ${await race(target.resume(), 1500)} (state now ${target.state})`
+            : 'no-context';
+          let freshResume = 'unavailable';
+          try {
+            const fresh = new AudioContext();
+            freshResume = `${fresh.state} -> ${await race(fresh.resume(), 1500)} (state now ${fresh.state})`;
+            void fresh.close().catch(() => undefined);
+          } catch (error) {
+            freshResume = `threw:${error?.message ?? error}`;
+          }
           return {
             visibleError: text.slice(0, 4),
             pageErrors: Array.isArray(probe?.pageErrors) ? probe.pageErrors.slice(0, 6) : 'no-pageErrors',
-            contextResumes: Array.isArray(probe?.contextResumes) ? probe.contextResumes.slice(-3) : 'no-contextResumes',
-            workletLoads: Array.isArray(probe?.workletLoads) ? probe.workletLoads.slice(-3) : 'no-workletLoads',
-            playStarts: Array.isArray(probe?.playStarts) ? probe.playStarts.slice(-3) : 'no-playStarts',
+            contextResumes: Array.isArray(probe?.contextResumes) ? probe.contextResumes.slice(-2) : 'no-contextResumes',
+            workletLoads: Array.isArray(probe?.workletLoads) ? probe.workletLoads.slice(-2) : 'no-workletLoads',
+            playStarts: Array.isArray(probe?.playStarts) ? probe.playStarts.slice(-2) : 'no-playStarts',
+            directResume,
+            freshResume,
+            userActivation: {
+              isActive: navigator.userActivation?.isActive ?? null,
+              hasBeenActive: navigator.userActivation?.hasBeenActive ?? null,
+            },
+            sampleRate: target?.sampleRate ?? null,
+            baseLatency: target?.baseLatency ?? null,
+            outputLatency: target?.outputLatency ?? null,
           };
         }).catch(() => 'page unavailable');
         console.error(`TIMING_SETUP_ERRORS ${scenario.name} ${JSON.stringify(head)}`);
