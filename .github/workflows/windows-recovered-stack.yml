@@ -66,7 +66,12 @@ jobs:
             "../lib/arena/src/lib/waveyard/separation/provision.test.ts",
             "../lib/arena/src/lib/waveyard/separation/provision-store.test.ts",
             "../lib/arena/src/lib/waveyard/separation/provision-runtime.test.ts",
-            "../lib/arena/src/lib/waveyard/studio/mashup-bed.test.ts"
+            "../lib/arena/src/lib/waveyard/studio/mashup-bed.test.ts",
+            # Regressions for the two defects the Firefox browser leg exposed:
+            # an unbounded AudioContext resume that parked playback silently,
+            # and an unvalidated API payload that crashed a refresh effect.
+            "../lib/arena/src/lib/waveyard/audio-context-resume.test.ts",
+            "../artifacts/arenaforge/src/components/waveyard/library/audio-capture-options.test.ts"
           )
 
           $results = @()
