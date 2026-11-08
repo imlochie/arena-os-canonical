@@ -2381,7 +2381,27 @@ try {
       timings[scenario.name] = measurement;
 
       const restore = deck.getByTestId("restore-live-swap-vocals");
-      await restore.waitFor();
+      try {
+        await restore.waitFor();
+      } catch (error) {
+        // State at the moment the restore control failed to appear, so a CI-only
+        // failure names which side lost the swap (UI state, session or audio).
+        const state = await page.evaluate(() => {
+          const current = document.querySelector('[data-role="current"]');
+          const restoreButton = current?.querySelector('[data-testid="restore-live-swap-vocals"]');
+          return {
+            url: location.pathname,
+            deckFound: Boolean(current),
+            restorePresent: Boolean(restoreButton),
+            restoreDisabled: restoreButton ? restoreButton.disabled : null,
+            triggerText: (current?.querySelector('[data-testid="open-live-swap-vocals"]')?.textContent ?? "").trim().slice(0, 80),
+            alerts: [...document.querySelectorAll('[role="alert"]')].map(node => (node.textContent ?? "").trim().slice(0, 160)).slice(0, 4),
+            timings: window.liveStemTimings?.length ?? null,
+          };
+        }).catch(() => "page unavailable");
+        console.error(`RESTORE_CONTROL_MISSING ${scenario.name} ${JSON.stringify(state)}`);
+        throw error;
+      }
       await restore.click();
       await page.waitForFunction(() => {
         const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-vocals"));
