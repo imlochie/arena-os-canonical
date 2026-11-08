@@ -139,7 +139,14 @@ jobs:
             # with "Package subpath './package.json' is not defined by
             # \"exports\"". This file derives the package root from the entry
             # point instead.
-            "desktop/build.mjs"
+            "desktop/build.mjs",
+            # The base launches postgres.exe directly, which PostgreSQL refuses
+            # for an elevated administrator ("Execution of PostgreSQL by a user
+            # with administrative permissions is not permitted"). The hosted
+            # runner is elevated, so the base app can never start there and the
+            # update check failed at older_package_starts. This file starts the
+            # server through pg_ctl; the on-disk cluster format is unchanged.
+            "desktop/database.mjs"
           )
           foreach ($fix in $baseFixFiles) {
             $source = Join-Path $env:GITHUB_WORKSPACE $fix
