@@ -115,6 +115,12 @@ Those come along via this branch's base (see 2.3).
 
 ### 2.4 Preserved pending — real work, deliberately not attempted here
 
+> Updated 2026-11-08 (see `docs/HANDOFF.md` "Status at `3a782f73`"):
+> * Arcade gate — **already present on `main`** (`runtime-verification.ts`, all three publish paths); hardened here with a uniform-canvas check and tests. PR #19's stricter checks remain an owner decision.
+> * Content objects — storage primitives **implemented** (`putImmutableStream`, `verifyObject`, `StorageIntegrityError`, 10 tests); column/table/reclamation still pending (no consumer).
+> * `arrangement-pcm`/`arrangement-preparation` — **superseded** by `arrangement-preview-*`; not ported.
+> * `project-audio` — pending DB acceptance. Cancellation — owner decision.
+
 | Capability | Source ref | Why not now |
 |---|---|---|
 | Immutable artifact content objects (`artifact-objects`, `artifact-storage-lock`, `artifact-input`) + `artifacts.content_object` column + `ArtifactContentObject` type | `arena/331aa502`, PR #25/#26 | Needs a schema migration on `artifacts` (absent on `main`) **and** two storage primitives `main`'s `StorageProvider` does not expose — `putImmutableStream` (dedup, byte+sha bound) and `StorageIntegrityError`. That is a storage-layer feature plus migration plus route rewiring, not a copy. |
@@ -188,7 +194,7 @@ Against a pristine `origin/main` worktree, same runner, same environment
   branch and are not claimed as fixed.**
 * `pnpm run typecheck` passes across all workspace projects.
 
-## 4a. CI on the convergence branch
+## 4a. CI on the convergence branch (historical; current evidence is in `docs/HANDOFF.md` "Status at `3a782f73`")
 
 Both required jobs fail **on PR #28's head as well as on this branch**, in the
 same window: `installed-package` at step *"Build previous Windows package for
@@ -325,9 +331,9 @@ No assertion, timeout or gate was relaxed anywhere in this pass. The 30 s
 
 Do not read §4 as acceptance.
 
-* **Windows packaging / installed-app**: still failing, cause identified and
-  deliberately not papered over — see §4b. This is the one inherited CI failure
-  that remains open.
+* **Windows packaging / installed-app**: package, install and smoke pass; the
+  update check passes intermittently (~50% failure before `96810e3a`). Not yet
+  proven reliable — see HANDOFF status section.
 * **The ported PR #26 slices run on Windows and pass** (`recovered-stack`).
   Not covered by that: real Demucs inference (the job warns that the inference
   probe was skipped and says real inference is NOT proven), and the packaged
@@ -335,9 +341,18 @@ Do not read §4 as acceptance.
 * **Real Demucs inference, GPU provisioning, audible playback, code signing,
   auto-update, GUI mixer**: unverified, unchanged.
 * **Firefox Waveyard timing: resolved** — see §4c. The matrix passes on
-  Chromium, WebKit and Firefox. What that does not establish: audible playback
+  Chromium, WebKit and Firefox in most runs; intermittent push-event failures
+  remain (HANDOFF status section). What that does not establish: audible playback
   through real hardware (the runner uses a PulseAudio null sink), Windows or iOS
   browser behaviour, or the other `waveyard-*.mjs` scripts, which this workflow
   does not run.
 * **Database/migration acceptance**: no PostgreSQL or Redis in this
   environment, so the 76 pre-existing failures cannot be closed here.
+
+## 6. Addendum 2026-11-08
+
+* Test comparison, per-file, branch `bbeefba1` vs `main@33c876a`: 1813/1688/91/33
+  vs 1678/1536/108/33 (tests/pass/fail/skip). 0 regressions; 37 failing files are
+  identical on both trees (PostgreSQL/Redis/`initdb`).
+* Branch and PR accounting rechecked against GitHub: 50 branches (48 + `main` +
+  convergence), 28 PRs (27 + #29); all 48 are named in §2.5/§2.1.

@@ -2,7 +2,77 @@
 
 Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
-Last updated: 2026-11-07.
+Last updated: 2026-11-08.
+
+## Status at `3a782f73` (2026-11-08) — supersedes any conflicting text below
+
+Read this section first; older sections are kept for history and are marked
+where they are stale.
+
+### What was fixed in this pass
+| Area | Finding | Fix (commit) |
+|---|---|---|
+| Windows package | `embedded-postgres` `package.json` export error is **resolved**; installer builds, installs, packaged smoke passes (11 checks incl. backup/restore, ffmpeg, capture host). | earlier `desktop/build.mjs` fix |
+| Windows update | Previous (base) package could not start on the elevated runner: PostgreSQL refuses `postgres.exe` for admins (`older_package_starts`). | `database.mjs` added to the base-fix list (`1ce31981`) |
+| Windows update | Intermittent `current_package_starts`: after an in-place update the window stayed on an empty page (url `""`, loading, renderer idle, `/spaces` already answered). Observed on both events, ~50% of runs. | Clear leftover service-worker/cache storage before loading (`96810e3a`). **Hypothesis-driven** — see evidence below |
+| Windows update diagnostics | Failures printed nothing. | log dump, window/process state, Chromium log, bounded cleanup (`59a7c4ec`, `d8bc1430`, `320223b3`) |
+| Arcade gate | **Already on `main`** (`imported/arcade/runtime-verification.ts`, used by all three publish paths); the "genuinely missing" claim was stale. Added a uniform-canvas check and 11 tests (all 9 built-in games, blank canvas, no animation loop, obfuscated egress, bad browser path, static-invalid code). | `6fb7a456` |
+| Content objects | Storage primitives added: `StorageIntegrityError`, `contentObjectKey`, `putImmutableStream` (hash+count while writing, dedup, replace corrupt copy, temp cleanup), `verifyObject`; 10 tests, in the Windows stack workflow. | `bbeefba1` |
+| Waveyard Firefox | Play reported "interrupted" on a working device: first `resume()` settled *running* after 1805 ms, past the 1500 ms bound. Bound raised to 6000 ms with a regression test; no test threshold changed. | `3a782f73` |
+| Waveyard WebKit | Intermittent restore-control failure is *not* reproducible locally (10 runs); CI log showed the button resolved but "not stable / detached". Probes added (`RESTORE_CONTROL_MISSING`, `RESTORE_CLICK_FAILED`). Root cause **open**. | `17420c42`, `0e9ef2b6` |
+
+### Test evidence (this environment; no PostgreSQL/Redis)
+Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:
+
+| | files | tests | pass | fail | skip |
+|---|---|---|---|---|
+| `main` | 243 | 1678 | 1536 | 108 | 33 |
+| branch | 258 | 1813 | 1688 | 91 | 33 |
+
+* +135 tests, +152 passing, **0 regressions**; 15 new files (all green), 2 files
+  fixed (`claim`, `retry`).
+* All 37 failing files on the branch also fail on `main` (need PostgreSQL, Redis,
+  `initdb` or a live service). **Environment-blocked, not fixed, not caused here.**
+* The 33 skips are identical on both trees.
+* `pnpm run typecheck` passes. Later commits changed only `desktop/`, `scripts/`,
+  the resume bound and its test (5/5 pass).
+
+### CI evidence (all runs on `arena/convergence-2026-11-07`)
+* Windows recovered-stack acceptance: green on every commit.
+* Windows x64 package (build → install → smoke → update): **flaky, not yet reliably green.**
+  `1ce31981` push ✅ / PR ❌; `d8bc1430` PR ✅ / push ❌; `320223b3` both ✅;
+  `0e9ef2b6` both ❌ (`current_package_starts`, window url `""`, loading);
+  `96810e3a` both ✅ (first runs with the service-worker clear). Two consecutive
+  greens are **not** proof the fix works at a ~50% failure rate. Require several
+  consecutive greens before calling it fixed.
+* Waveyard browser timing: Chromium and WebKit pass in most runs; the `push`
+  event failed on `bbeefba1`, `17420c42`, `d8bc1430` (WebKit restore control) and
+  `96810e3a` (Firefox resume bound, fixed in `3a782f73`). Verify after `3a782f73`.
+
+### Convergence verification
+* Ledger accounting: GitHub currently lists 50 branches = 48 audited + `main` +
+  this branch; 28 PRs = 27 audited + #29. Every one of the 48 is named in the
+  ledger (abbreviated to the hash prefix or brace group).
+* No branch was deleted; history was not rewritten; nothing merged to `main`.
+
+### Remaining and owner decisions
+1. **Content-object schema/route/reclamation** (`artifacts.content_object`,
+   `object_reclamations`, two-grace reclamation): nothing consumes content
+   objects (artifacts are text-only), so wiring would be dead code. Decide whether
+   binary artifacts are a product requirement.
+2. **PR #19 stricter Arcade gate** (input exercise, visual-change): not ported;
+   could reject legitimate games. Also: the gate launches Chromium with
+   `--no-sandbox` on Linux unconditionally.
+3. **Arrangement/export**: `arrangement-pcm`/`arrangement-preparation` are
+   superseded by main's streaming preview (`arrangement-preview-*`); porting
+   would create a parallel path. `project-audio` needs DB acceptance first.
+4. **Cancellation** (`cancelling` status, PR #26 `recovery.ts`): conflicts with
+   main's broker cancel; design decision.
+5. Branch protection / required checks on `main`.
+6. Untested: real Demucs inference, GPU provisioning, audible playback, code
+   signing, auto-update, whole-app shared identity and restart recovery with a
+   real database.
+
 
 ## Product goal
 
@@ -67,8 +137,8 @@ Full per-ref dispositions: `docs/BRANCH-PR-RECONCILIATION-LEDGER.md`.
      + route change, with tests, or not at all.
    - *Arcade browser-runtime publication gate*: `games/sandbox.ts` +
      `runtime-validation.ts` + the `validateRuntime`/`onDraft` contract in
-     `forgeGameWithAI`. Genuinely missing and a real truthfulness gap; needs a
-     real browser to prove.
+     `forgeGameWithAI`. **Stale:** a gate already exists on `main`; see the top
+     status section.
 4. **Protect `main`**: no branch protection or rulesets exist. Require CI and
    review before merge.
 5. **Prove the whole app**: shared identity/projects/storage across rooms,
@@ -151,7 +221,7 @@ Current measurement (real `ffmpeg`/`ffprobe` available; no PostgreSQL/Redis):
 The 76 remaining failures are identical per file to the baseline and need
 PostgreSQL, Redis, a live browser or `initdb`. `pnpm run typecheck` passes.
 
-## CI status — diagnosed from run data, 2026-11-07
+## CI status — historical diagnosis, 2026-11-07 (STALE: see "Status at `3a782f73`" above)
 
 Neither required workflow is green. Both failures are **inherited from
 `main`**, not introduced by the convergence branch, and both are diagnosed
@@ -191,7 +261,7 @@ The push-only successes are not evidence of Windows readiness: a push whose
 `before` sha is unavailable falls back to `git rev-parse HEAD^`, which on a
 single-commit squashed `main` resolves to something other than `main`.
 
-**Status: root cause identified, not yet fixed.** The fix requires a baseline
+**Status (historical, superseded): the base-packaging causes were later fixed via the workflow base-fix list; see the top status section.** The fix requires a baseline
 revision that can actually be packaged, which cannot be expressed from inside
 this branch without changing what the update test means. Do not "fix" it by
 making the step tolerate failure.
