@@ -22,7 +22,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { encodeMidiFile } from "@workspace/arena/lib/waveyard/midi-file";
-import { midiAnalysisReadinessError, resolveMidiTempoBpm } from "@workspace/arena/lib/waveyard/midi-analysis-readiness";
+import { currentMidiSourceTempo, midiAnalysisReadinessError, resolveMidiTempoBpm } from "@workspace/arena/lib/waveyard/midi-analysis-readiness";
 import {
   drumEventsToMidiNotes,
   harmonyEventsToMidiNotes,
@@ -80,11 +80,7 @@ export async function GET(
       .from(sourceAnalyses)
       .where(eq(sourceAnalyses.sourceAssetId, source.id))
       .limit(1);
-    const analyzedBpm = sourceAnalysis?.status === "complete"
-      && sourceAnalysis.sourceChecksumSha256 === source.checksumSha256
-      && sourceAnalysis.bpmConfidence !== null
-      ? sourceAnalysis.bpm
-      : null;
+    const analyzedBpm = currentMidiSourceTempo(sourceAnalysis, source.checksumSha256);
     const bpm = resolveMidiTempoBpm(requestedBpm, analyzedBpm);
 
     let notes: MidiNoteEvent[];

@@ -1,3 +1,5 @@
+import { isCurrentDesktopAnalysis } from "./types/analysis-provenance";
+
 export type MidiAnalysisKind = "vocal" | "drums" | "harmony";
 
 const DEFAULT_MIDI_TEMPO_BPM = 120;
@@ -9,6 +11,25 @@ export function resolveMidiTempoBpm(explicitBpm: number | null, analyzedBpm: num
   if (explicitBpm !== null && usable(explicitBpm)) return explicitBpm;
   if (analyzedBpm !== null && usable(analyzedBpm)) return analyzedBpm;
   return DEFAULT_MIDI_TEMPO_BPM;
+}
+
+/** Only use source tempo produced for this exact audio by the current desktop DSP. */
+export function currentMidiSourceTempo(analysis: {
+  status: string;
+  sourceChecksumSha256: string;
+  analysisEngine: string | null;
+  analysisEngineVersion: string | null;
+  bpm: number | null;
+  bpmConfidence: number | null;
+} | null | undefined, expectedSourceChecksumSha256: string): number | null {
+  if (
+    !analysis ||
+    analysis.status !== "complete" ||
+    analysis.sourceChecksumSha256 !== expectedSourceChecksumSha256 ||
+    !isCurrentDesktopAnalysis(analysis) ||
+    analysis.bpmConfidence === null
+  ) return null;
+  return analysis.bpm;
 }
 
 /** Refuse to export queued/failed or stale evidence as if it were current. */
