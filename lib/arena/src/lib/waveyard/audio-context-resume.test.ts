@@ -78,3 +78,16 @@ test("resume is called exactly once even when it settles after the bound fired",
   // double-resolve here would fail the test process.
   await new Promise((resolve) => setTimeout(resolve, 20));
 });
+
+test("a cold start slower than the old 1500 ms bound still counts as running", async () => {
+  let state = "suspended";
+  const slow = {
+    get state() { return state; },
+    resume() {
+      return new Promise<void>((resolve) => setTimeout(() => { state = "running"; resolve(); }, 1800));
+    },
+  } as unknown as AudioContext;
+
+  await resumeWithin(slow, RESUME_TIMEOUT_MS);
+  assert.equal(slow.state, "running");
+});

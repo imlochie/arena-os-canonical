@@ -15,8 +15,14 @@
  *
  * The timeout releases the caller rather than deciding for it: the caller
  * inspects `state` afterwards and reports an accurate error.
+ *
+ * The bound must exceed a healthy cold start. Firefox's first resume() on a
+ * context with a real (or null-sink) output took 1805 ms in CI before settling
+ * "running"; a 1500 ms bound reported "interrupted" for a device that worked,
+ * and the next resume() settled in 14 ms. A dead output never settles, so a
+ * longer bound only delays that error.
  */
-export const RESUME_TIMEOUT_MS = 1500;
+export const RESUME_TIMEOUT_MS = 6000;
 
 export function resumeWithin(context: AudioContext, timeoutMs: number): Promise<void> {
   return new Promise<void>((resolve) => {
