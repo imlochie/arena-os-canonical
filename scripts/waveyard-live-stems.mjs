@@ -2402,7 +2402,39 @@ try {
         console.error(`RESTORE_CONTROL_MISSING ${scenario.name} ${JSON.stringify(state)}`);
         throw error;
       }
-      await restore.click();
+      // Playwright reports "not stable" / "detached" when a control keeps
+      // moving or being replaced. Count both from the page so a CI failure says
+      // which, instead of only that the click timed out.
+      await page.evaluate(() => {
+        const probe = { replaced: 0, rects: [] };
+        window.restoreButtonProbe = probe;
+        const current = document.querySelector('[data-role="current"]');
+        if (current) {
+          new MutationObserver((records) => {
+            for (const record of records) {
+              for (const node of record.removedNodes) {
+                if (node instanceof Element && node.matches?.('[data-testid="restore-live-swap-vocals"]')) probe.replaced += 1;
+              }
+            }
+          }).observe(current, { childList: true, subtree: true });
+        }
+        const sample = () => {
+          const button = current?.querySelector('[data-testid="restore-live-swap-vocals"]');
+          const box = button?.getBoundingClientRect();
+          if (probe.rects.length < 12) {
+            probe.rects.push(box ? [box.x, box.y, box.width, box.height].map((value) => Math.round(value * 100) / 100) : null);
+            requestAnimationFrame(sample);
+          }
+        };
+        requestAnimationFrame(sample);
+      }).catch(() => {});
+      try {
+        await restore.click();
+      } catch (error) {
+        const probe = await page.evaluate(() => window.restoreButtonProbe).catch(() => "page unavailable");
+        console.error(`RESTORE_CLICK_FAILED ${scenario.name} ${JSON.stringify(probe)}`);
+        throw error;
+      }
       await page.waitForFunction(() => {
         const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-vocals"));
         return source?.inputNode?.gain?.value > 0.9;
