@@ -378,3 +378,17 @@ NEEDS_REPAIR / SUPERSEDED / PRESERVED_PENDING):
 | #15 | Waveyard coherence work (507 files) | **PRESERVED_PENDING** | needs a per-capability behavioral comparison against the current Waveyard; not yet done |
 | #14, #16, #3, #5 | Deep-engine provisioning, memory ownership, A7 engine/retry | **#14: recovered via port/26 provision stack; #16, #3, #5: unverified** | needs comparison |
 | #1 | Studio multimodal (WanGP/ComfyUI) | **PRESERVED_PENDING** | not compared |
+
+### 7.x PR #15 Waveyard worker unit contracts (behaviour check)
+
+Old `waveyard-worker/tests/unit/*` (vitest, Next-era paths) were ported against the current modules and run under `node --test` via `waveyard/test-shim.ts`. Dispositions:
+
+| Old test | Current SUT | Disposition |
+|---|---|---|
+| `waveform-remix` (26 tests: peaks, remix normalisation, tempo/key sync, beat grid, chop/loop, timing) | `audio.ts`, `remix.ts`, `worker-local/render-helpers.ts`, `types/*`, `arrangement.ts`, `timing.ts` | INTEGRATED - 26/26 pass unchanged except imports |
+| `automatic-build-finalization` (7) | `automatic-build-finalization.ts` | INTEGRATED - 7/7 |
+| `audio` filename rules (2) | `audio.ts` | INTEGRATED - 2/2 |
+| `source-acquisition` (4) | `types/source-acquisition.ts`, `authorized-source-resolver.ts` | INTEGRATED - 4/4 (one `.resolves` rewritten as `await`, same assertion) |
+| `export-automation` (4) | `worker-local/export.ts`, `render-helpers.ts` | INTEGRATED, one INTENTIONALLY_SUPERSEDED detail: multi-clip bus uses `amerge`+`pan` unnormalised sum instead of `amix` (desktop ffmpeg 4.1 lacks `amix normalize=0`; documented in `render-helpers.ts`) |
+| `drum/harmony/vocal-analysis` idempotency keys, `midi` `encodeMidiFile`, `analysis` | no same-named current symbols (desktop analysis is in-process: `worker-local/analysis*.ts`, `midi-file.ts`) | NEEDS_REVIEW - behavioural comparison pending |
+| `player-state`, `studio-remix-response`, `source-sections` | arenaforge `player-state.ts`, `SourceAnalysisSummary.tsx`; `types/source-sections.test.ts` exists | pending comparison |

@@ -50,6 +50,9 @@ jobs:
 
       - name: Run recovered-stack tests on Windows with per-file evidence
         shell: pwsh
+        env:
+          # Modules import the db client at load time; these unit tests never connect.
+          DATABASE_URL: postgres://unit@127.0.0.1:1/unit
         run: |
           $ErrorActionPreference = "Continue"
           $root = (Get-Location).Path
@@ -74,6 +77,11 @@ jobs:
             "../lib/arena/src/lib/spaces/mission-evidence.test.ts",
             "../lib/arena/src/lib/games/gameplay-contract.test.ts",
             "../lib/arena/src/lib/games/source-2048.test.ts",
+            "../lib/arena/src/lib/waveyard/waveform-remix.test.ts",
+            "../lib/arena/src/lib/waveyard/automatic-build-finalization.test.ts",
+            "../lib/arena/src/lib/waveyard/audio-filenames.test.ts",
+            "../lib/arena/src/lib/waveyard/source-acquisition-intake.test.ts",
+            "../lib/arena/src/lib/waveyard/export-automation.test.ts",
             # Regressions for the two defects the Firefox browser leg exposed:
             # an unbounded AudioContext resume that parked playback silently,
             # and an unvalidated API payload that crashed a refresh effect.
