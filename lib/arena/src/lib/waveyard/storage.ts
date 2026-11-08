@@ -10,8 +10,9 @@
  *   projects/{projectId}/{source|stem|waveform|export}/{uuid}.{ext}
  */
 
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import {
   dirname,
   isAbsolute,
@@ -20,10 +21,51 @@ import {
   resolve,
   sep,
 } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export type StorageRead = { stream: Readable; size: number; start: number; end: number };
 export type StorageObject = { key: string; lastModified: Date };
+
+export type ContentObjectFailure = "missing" | "size" | "sha256";
+
+/** An object's bytes do not match the identity it was stored or requested under. */
+export class StorageIntegrityError extends Error {
+  constructor(
+    readonly reason: ContentObjectFailure,
+    message: string,
+  ) {
+    super(message);
+    this.name = "StorageIntegrityError";
+  }
+}
+
+export type ContentObjectIdentity = { sha256: string; byteLength: number };
+export type ImmutablePutResult = { key: string; deduplicated: boolean };
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+function assertIdentity(identity: ContentObjectIdentity) {
+  if (!SHA256_HEX.test(identity.sha256))
+    throw new Error("A lowercase hex SHA-256 is required.");
+  if (!Number.isSafeInteger(identity.byteLength) || identity.byteLength < 0)
+    throw new Error("A non-negative byte length is required.");
+}
+
+/** Content-addressed key: the identity IS the location, so a key can never name other bytes. */
+export function contentObjectKey(sha256: string) {
+  if (!SHA256_HEX.test(sha256)) throw new Error("A lowercase hex SHA-256 is required.");
+  return `objects/sha256/${sha256.slice(0, 2)}/${sha256}`;
+}
+
+async function digestFile(location: string) {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for await (const chunk of createReadStream(location)) {
+    hash.update(chunk as Buffer);
+    bytes += (chunk as Buffer).length;
+  }
+  return { sha256: hash.digest("hex"), bytes };
+}
 
 export interface StorageProvider {
   readonly kind: "local";
@@ -43,6 +85,15 @@ export interface StorageProvider {
   getLocalPath(key: string): string | null;
   openReadStream(key: string, range?: { start: number; end: number }): Promise<StorageRead>;
   healthcheck(): Promise<void>;
+  /**
+   * Store bytes under their SHA-256. The stream is hashed and counted while it
+   * is written to a private temporary file, and is published only if it matches
+   * the declared identity exactly; a mismatch throws StorageIntegrityError and
+   * leaves nothing behind. Identical content is stored once.
+   */
+  putImmutableStream(source: Readable, identity: ContentObjectIdentity): Promise<ImmutablePutResult>;
+  /** Re-read the stored bytes and confirm they still match the identity. */
+  verifyObject(key: string, identity: ContentObjectIdentity): Promise<void>;
 }
 
 export function privateObjectKey(
@@ -160,6 +211,66 @@ export class LocalStorageProvider implements StorageProvider {
   async healthcheck() {
     await fs.mkdir(this.root, { recursive: true });
     await fs.access(this.root);
+  }
+  async verifyObject(key: string, identity: ContentObjectIdentity) {
+    assertIdentity(identity);
+    const location = safeLocalPath(this.root, key);
+    let details;
+    try {
+      details = await fs.stat(location);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        throw new StorageIntegrityError("missing", "The stored object is missing.");
+      throw error;
+    }
+    if (details.size !== identity.byteLength)
+      throw new StorageIntegrityError("size", "The stored object has the wrong size.");
+    const actual = await digestFile(location);
+    if (actual.bytes !== identity.byteLength)
+      throw new StorageIntegrityError("size", "The stored object changed while it was verified.");
+    if (actual.sha256 !== identity.sha256)
+      throw new StorageIntegrityError("sha256", "The stored object does not match its SHA-256.");
+  }
+  async putImmutableStream(source: Readable, identity: ContentObjectIdentity) {
+    assertIdentity(identity);
+    const key = contentObjectKey(identity.sha256);
+    const destination = safeLocalPath(this.root, key);
+    await fs.mkdir(dirname(destination), { recursive: true });
+    const temporary = `${destination}.${randomUUID()}.partial`;
+    const hash = createHash("sha256");
+    let bytes = 0;
+    try {
+      await pipeline(
+        source,
+        async function* (chunks: AsyncIterable<Buffer>) {
+          for await (const chunk of chunks) {
+            bytes += chunk.length;
+            // Stop reading as soon as the stream outgrows its declared size.
+            if (bytes > identity.byteLength)
+              throw new StorageIntegrityError("size", "The stream is larger than its declared size.");
+            hash.update(chunk);
+            yield chunk;
+          }
+        },
+        createWriteStream(temporary, { flags: "wx" }),
+      );
+      if (bytes !== identity.byteLength)
+        throw new StorageIntegrityError("size", "The stream is smaller than its declared size.");
+      if (hash.digest("hex") !== identity.sha256)
+        throw new StorageIntegrityError("sha256", "The stream does not match its declared SHA-256.");
+      let deduplicated = false;
+      try {
+        await this.verifyObject(key, identity);
+        deduplicated = true;
+      } catch (error) {
+        // A missing or corrupt existing object is replaced by the verified bytes.
+        if (!(error instanceof StorageIntegrityError)) throw error;
+      }
+      if (!deduplicated) await fs.rename(temporary, destination);
+      return { key, deduplicated };
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
   }
 }
 
