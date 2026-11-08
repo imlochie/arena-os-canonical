@@ -19,7 +19,7 @@ import {
   vocalPitchFrames,
 } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
-import { buildStandardMidiFile } from "@workspace/arena/lib/waveyard/midi-file";
+import { encodeMidiFile } from "@workspace/arena/lib/waveyard/midi-file";
 import {
   drumEventsToMidiNotes,
   harmonyEventsToMidiNotes,
@@ -121,7 +121,7 @@ export async function GET(
       notes = harmonyEventsToMidiNotes(events);
     }
 
-    const file = buildStandardMidiFile(notes, bpm);
+    const file = encodeMidiFile(notes, bpm);
     return new Response(new Uint8Array(file), {
       status: 200,
       headers: {
