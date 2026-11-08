@@ -2340,13 +2340,47 @@ try {
       });
       await candidate.click();
       try {
-        await page.waitForFunction(({ bufferCount }) => {
-          const source = window.audioProbe.buffers.slice(bufferCount)
-            .find(item => item.inputNode?.gain?.value > 0.03);
-          if (!source) return false;
-          window.liveStemObservedAudibleAt = performance.now();
-          return true;
-        }, { bufferCount: before.buffers }, { timeout: 20_000 });
+        try {
+          await page.waitForFunction(({ bufferCount }) => {
+            const source = window.audioProbe.buffers.slice(bufferCount)
+              .find(item => item.inputNode?.gain?.value > 0.03);
+            if (!source) return false;
+            window.liveStemObservedAudibleAt = performance.now();
+            return true;
+          }, { bufferCount: before.buffers }, { timeout: 20_000 });
+        } catch (error) {
+          const state = await page.evaluate(({ bufferCount, timingCount }) => {
+            const probe = window.audioProbe;
+            const summarizeBuffer = (node) => ({
+              duration: node.buffer?.duration ?? null,
+              gain: node.inputNode?.gain?.value ?? null,
+              contextState: node.context?.state ?? null,
+              contextTime: node.context ? Number(node.context.currentTime.toFixed(3)) : null,
+              startedContextTime: node.startedContextTime ?? null,
+              recipientTimeAtStart: node.recipientTimeAtStart ?? null,
+              stopCount: node.stopCount ?? 0,
+            });
+            return {
+              pressed: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") ?? null,
+              visibleErrors: [...document.querySelectorAll('[role="alert"], [data-testid*="error"], .wy-error, [aria-live]')]
+                .map((node) => (node.textContent ?? "").trim()).filter(Boolean).slice(0, 5),
+              contexts: (probe.contexts ?? []).map((context) => ({
+                state: context.state,
+                sampleRate: context.sampleRate,
+                currentTime: Number(context.currentTime.toFixed(3)),
+              })),
+              newBuffers: (probe.buffers ?? []).slice(bufferCount).map(summarizeBuffer).slice(-6),
+              decodedAudio: (probe.decodedAudio ?? []).slice(-6).map(({ duration }) => duration),
+              apiResponses: (probe.apiResponses ?? []).slice(-10).map(({ url, status, failure, bodyStart }) => ({ url, status, failure, bodyStart })),
+              pageErrors: (probe.pageErrors ?? []).slice(-8),
+              contextResumes: (probe.contextResumes ?? []).slice(-4),
+              playRejections: (probe.playRejections ?? []).slice(-4),
+              liveStemTimingsAdded: (window.liveStemTimings?.length ?? 0) - timingCount,
+            };
+          }, { bufferCount: before.buffers, timingCount: before.timings }).catch(() => "page unavailable");
+          console.error(`LIVE_STEM_AUDIBILITY_TIMEOUT ${engineName} ${scenario.name} ${JSON.stringify(state)}`);
+          throw error;
+        }
         await page.waitForFunction(timingCount => window.liveStemTimings.length > timingCount,
           before.timings, { timeout: 20_000 });
       } finally {
