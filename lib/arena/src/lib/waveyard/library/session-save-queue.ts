@@ -72,6 +72,7 @@ export function sessionSavePatchAgainstPending(
   const afterActive = apply(saved, writes.activeBody);
   const projected = apply(afterActive, writes.queuedBody);
   const activePatch = writes.activeBody ? parseSessionSavePatch(writes.activeBody) : null;
+  const queuedPatch = writes.queuedBody ? parseSessionSavePatch(writes.queuedBody) : null;
 
   const differsFromPendingMix = Object.entries(desired.stemMix).some(([stemType, value]) =>
     !Object.is(projected.stemMix[stemType] ?? 1, value),
@@ -84,18 +85,19 @@ export function sessionSavePatchAgainstPending(
   const stemMixPatch = Object.fromEntries(
     Object.entries(desired.stemMix).filter(([stemType, value]) =>
       !Object.is(saved.stemMix[stemType] ?? 1, value)
-      || Object.hasOwn(activePatch?.stemMixPatch ?? {}, stemType),
+      || Object.hasOwn(activePatch?.stemMixPatch ?? {}, stemType)
+      || Object.hasOwn(queuedPatch?.stemMixPatch ?? {}, stemType),
     ),
   );
   const body: Record<string, unknown> = {};
   if (Object.keys(stemMixPatch).length > 0) body.stemMixPatch = stemMixPatch;
-  if (saved.transitionJson !== desired.transitionJson || (activePatch && Object.hasOwn(activePatch, "transition"))) {
+  if (saved.transitionJson !== desired.transitionJson
+    || (activePatch && Object.hasOwn(activePatch, "transition"))
+    || (queuedPatch && Object.hasOwn(queuedPatch, "transition"))) {
     body.transition = JSON.parse(desired.transitionJson) as unknown;
   }
   if (Object.keys(body).length > 0) return JSON.stringify(body);
-  // Replacing a queued stale body with an empty PATCH cancels its effect when
-  // the user's desired state is already present after the active request.
-  return writes.queuedBody === undefined ? null : "{}";
+  return null;
 }
 
 /** A small synchronous journal so a tab restart can replay idempotent PATCHes. */

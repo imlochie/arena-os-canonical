@@ -151,6 +151,16 @@ test("replayed latest snapshot is correct even if the active request never commi
     '{"stemMixPatch":{"drums":1,"vocals":0.5},"transition":{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}}');
 });
 
+test("reverting a journaled queued edit stores explicit baseline values", () => {
+  const saved = {
+    stemMix: { drums: 1 },
+    transitionJson: '{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}',
+  };
+  assert.equal(sessionSavePatchAgainstPending(saved, saved, {
+    queuedBody: '{"stemMixPatch":{"drums":0.4},"transition":{"mode":"manual","crossfadeSeconds":2,"keepStems":[]}}',
+  }), '{"stemMixPatch":{"drums":1},"transition":{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}}');
+});
+
 test("reports the active request and replacement body in server order", async () => {
   let acknowledge!: () => void;
   let writes = 0;
