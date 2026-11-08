@@ -368,8 +368,9 @@ NEEDS_REPAIR / SUPERSEDED / PRESERVED_PENDING):
 |---|---|---|---|
 | #23 | Selected Space model drives default mission roles; per-step provenance | **INTEGRATED** (`bbc37e4f`) | main hardcoded `"openai"`; `mission-plan.ts`, `mission-fleet.test.ts` (4) + `mission-plan.test.ts` (3) pass; provenance shown in `SpacesWorkbench.tsx` |
 | #24 | Fail closed when the configured fleet cannot be read | **INTEGRATED** (`bbc37e4f`) | main swallowed the error into an empty fleet; strict `listAgentsForMission`; test asserts zero provider calls and no mission row. Real-PostgreSQL variant of the PR's test not run (no database here) |
-| #20 | Mission evidence (`mission-evidence.ts`), workshop pop-out | **NEEDS_PORT** | `mission-evidence` absent from the tree |
-| #21 | `mission-memory` (workspace-contained memory) | **NEEDS_PORT** | absent |
+| #20 | Mission evidence summary (`mission-evidence.ts`) | **INTEGRATED as a module** (partial) | ported with PR's 4 original tests. Current runner journals no `requestId`/`provenance`, so only outcome counts populate; machine-provenance and immutable-output counts stay 0 until the PR #26/#21 request ledger is ported. Not yet shown in the UI |
+| #20 | Shared Workshop + pop-out | **NEEDS_REPAIR/unverified** | pop-out route and Workshop parity with `/spaces` not compared yet |
+| #21 | `mission-memory` (workspace-contained memory) | **INTEGRATED** | main read `AGENT_NOTES.md` with plain `readFile`, which follows symlinks/hardlinks out of the workspace. Replaced with the PR's no-follow bounded reader and its 2 original tests; unsafe notes now surface an explicit not-loaded notice in the mission context |
 | #21, #22 | Arcade source workshop, `gameplay-contract`, `source-2048`, `source-rule-validation`, `/api/arcade/source`, `ArcadeSourceWorkshop` | **NEEDS_PORT** | none present |
 | #19 | Failed-draft retention (`attempts`), stricter input/visual gate | **NEEDS_PORT** (gate itself exists; see HANDOFF) | `attempts` absent |
 | #25, #26 | Integrated Arcade+Spaces candidate / Windows-ready candidate | **PARTIAL** | #26 stack recovered (§2.1); #25's Arcade/Spaces content is the NEEDS_PORT rows above |

@@ -20,8 +20,6 @@
  * status detail rather than pretending.
  */
 
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { spaceMissions, spaces } from "@workspace/db/schema";
@@ -29,6 +27,7 @@ import { generate } from "@workspace/arena/lib/ai";
 import type { GenerateResult } from "@workspace/arena/lib/runtime";
 import { listAgentsForMission } from "@workspace/arena/lib/spaces";
 import { selectMissionPlan } from "./mission-plan";
+import { readMissionMemory } from "./mission-memory";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
 import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
 import { ensureIsolatedWorkspace, teardownIsolatedWorkspace, type ExecTarget } from "./workspace-isolation";
@@ -498,15 +497,16 @@ async function runMissionInner(
       // Reflection memory (Reflexion): lessons from previous missions in
       // this space persist in AGENT_NOTES.md and are injected here.
       let memory = "";
-      try {
-        const notes = opts.mode === "arcade" ? "" : await readFile(path.join(wsDir(spaceId), "AGENT_NOTES.md"), "utf8").catch(() => "");
-        if (notes.trim()) memory = notes.slice(0, 1500);
-      } catch {
-        /* no memory yet */
+      let memoryIssue = "";
+      if (opts.mode !== "arcade") {
+        const notes = await readMissionMemory(wsDir(spaceId));
+        if (notes.text.trim()) memory = notes.text;
+        if (notes.issue) memoryIssue = notes.issue;
       }
       const context =
         (handoff ? `Handoff from the previous agent:\n${handoff}\n\n` : "") +
         (memory ? `MEMORY — lessons from previous missions in this space:\n${memory}\n\n` : "") +
+        (memoryIssue ? `${memoryIssue}\n\n` : "") +
         (map && map !== "(workspace is empty)" ? `WORKSPACE MAP (current files):\n${map}\n\n` : "") +
         `Mission goal: ${mission.goal}\nYou are agent ${ai + 1}/${plan.length}: ${agent.name} (${agent.role}).` +
         (isolationNote ? `\n\nEXECUTION ENVIRONMENT: ${isolationNote}` : "") +
