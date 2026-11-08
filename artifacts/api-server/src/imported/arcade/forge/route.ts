@@ -72,15 +72,16 @@ export async function POST(req: Request) {
       localOnly,
       modelId: body?.modelId ? String(body.modelId) : undefined,
       priorCode,
+      failedDraftCode: typeof body?.failedDraftCode === "string" && body.failedDraftCode.length <= 50_000 ? body.failedDraftCode : undefined,
       signal: req.signal,
     });
     if (req.signal.aborted) return new Response(null, { status: 499 });
-    const runtimeVerification = await verifyArcadeRuntime(result.code, req.signal);
+    const runtimeVerification = await verifyArcadeRuntime(result.code, req.signal, { requireGameplay: true });
     if (req.signal.aborted) return new Response(null, { status: 499 });
     if (runtimeVerification.status !== "passed") {
       const message = runtimeVerification.status === "unavailable"
         ? "Arcade could not start its isolated browser check. The game was not published."
-        : "The game did not pass its isolated startup check. The game was not published.";
+        : "The game did not pass its isolated browser check. The game was not published; the draft is retained for repair.";
       return Response.json({
         error: message,
         draft: {
