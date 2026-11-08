@@ -356,3 +356,23 @@ Do not read §4 as acceptance.
   identical on both trees (PostgreSQL/Redis/`initdb`).
 * Branch and PR accounting rechecked against GitHub: 50 branches (48 + `main` +
   convergence), 28 PRs (27 + #29); all 48 are named in §2.5/§2.1.
+
+## 7. Behavior-level re-triage, 2026-11-08 (corrects §2.4)
+
+§2.4 grouped several PRs as "covered by existing modules" on module-name
+similarity. Checked by behavior and file presence on the convergence tree, that
+was wrong. Dispositions (vocabulary: INTEGRATED / EQUIVALENT / NEEDS_PORT /
+NEEDS_REPAIR / SUPERSEDED / PRESERVED_PENDING):
+
+| PR | Capability | Disposition | Evidence |
+|---|---|---|---|
+| #23 | Selected Space model drives default mission roles; per-step provenance | **INTEGRATED** (`bbc37e4f`) | main hardcoded `"openai"`; `mission-plan.ts`, `mission-fleet.test.ts` (4) + `mission-plan.test.ts` (3) pass; provenance shown in `SpacesWorkbench.tsx` |
+| #24 | Fail closed when the configured fleet cannot be read | **INTEGRATED** (`bbc37e4f`) | main swallowed the error into an empty fleet; strict `listAgentsForMission`; test asserts zero provider calls and no mission row. Real-PostgreSQL variant of the PR's test not run (no database here) |
+| #20 | Mission evidence (`mission-evidence.ts`), workshop pop-out | **NEEDS_PORT** | `mission-evidence` absent from the tree |
+| #21 | `mission-memory` (workspace-contained memory) | **NEEDS_PORT** | absent |
+| #21, #22 | Arcade source workshop, `gameplay-contract`, `source-2048`, `source-rule-validation`, `/api/arcade/source`, `ArcadeSourceWorkshop` | **NEEDS_PORT** | none present |
+| #19 | Failed-draft retention (`attempts`), stricter input/visual gate | **NEEDS_PORT** (gate itself exists; see HANDOFF) | `attempts` absent |
+| #25, #26 | Integrated Arcade+Spaces candidate / Windows-ready candidate | **PARTIAL** | #26 stack recovered (§2.1); #25's Arcade/Spaces content is the NEEDS_PORT rows above |
+| #15 | Waveyard coherence work (507 files) | **PRESERVED_PENDING** | needs a per-capability behavioral comparison against the current Waveyard; not yet done |
+| #14, #16, #3, #5 | Deep-engine provisioning, memory ownership, A7 engine/retry | **#14: recovered via port/26 provision stack; #16, #3, #5: unverified** | needs comparison |
+| #1 | Studio multimodal (WanGP/ComfyUI) | **PRESERVED_PENDING** | not compared |
