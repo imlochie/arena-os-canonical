@@ -9,6 +9,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -41,6 +42,15 @@ const report = {
   passed: false,
   checks: checkIds.map((id) => ({ id, status: "not_run" })),
 };
+
+async function dumpLogs() {
+  // Application and database logs only; no record values are written to them.
+  for (const name of ["desktop.log", "postgres.log"]) {
+    const text = await readFile(path.join(dataRoot ?? "", "logs", name), "utf8").catch(() => null);
+    console.error(`--- ${name} (last 60 lines) ---`);
+    console.error(text === null ? "(not present)" : text.trim().split("\n").slice(-60).join("\n"));
+  }
+}
 
 let activeCheck = null;
 let testRoot;
@@ -208,6 +218,7 @@ try {
   console.log("Windows package update check passed.");
 } catch (error) {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  await dumpLogs();
   const failedCheck = activeCheck ?? "older_package_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";
@@ -215,7 +226,17 @@ try {
   console.error(`Windows package update check failed: ${failedCheck}.`);
   process.exitCode = 1;
 } finally {
-  if (desktop) await desktop.close().catch(() => {});
+  if (desktop) {
+    // A launch that never produced a window can leave close() waiting forever.
+    const closed = await Promise.race([
+      desktop.close().then(() => true, () => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 30_000)),
+    ]);
+    if (!closed) {
+      spawnSync("taskkill", ["/F", "/T", "/IM", "ArenaForge.exe"], { windowsHide: true });
+      spawnSync("taskkill", ["/F", "/T", "/IM", "postgres.exe"], { windowsHide: true });
+    }
+  }
   if (testRoot) {
     const pidFile = path.join(
       testRoot,
