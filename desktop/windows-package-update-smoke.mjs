@@ -52,6 +52,29 @@ async function dumpLogs() {
   }
 }
 
+// What the main process knows about its windows and processes when a launch
+// produced no usable page: distinguishes "no window", "renderer crashed" and
+// "renderer busy-looping" without touching application state.
+async function dumpWindowState() {
+  if (!desktop) return;
+  console.error("--- window state ---");
+  const state = await Promise.race([
+    desktop.evaluate(({ BrowserWindow, app }) => ({
+      windows: BrowserWindow.getAllWindows().map((win) => ({
+        url: win.webContents.getURL(),
+        loading: win.webContents.isLoading(),
+        crashed: win.webContents.isCrashed(),
+        visible: win.isVisible(),
+      })),
+      processes: app.getAppMetrics().map((metric) => ({
+        type: metric.type, pid: metric.pid, cpu: metric.cpu.percentCPUUsage,
+      })),
+    })).catch((error) => `evaluate failed: ${error.message}`),
+    new Promise((resolve) => setTimeout(() => resolve("evaluate timed out after 20s"), 20_000)),
+  ]);
+  console.error(typeof state === "string" ? state : JSON.stringify(state, null, 1));
+}
+
 let activeCheck = null;
 let testRoot;
 let dataRoot;
@@ -218,6 +241,7 @@ try {
   console.log("Windows package update check passed.");
 } catch (error) {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  await dumpWindowState();
   await dumpLogs();
   const failedCheck = activeCheck ?? "older_package_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
