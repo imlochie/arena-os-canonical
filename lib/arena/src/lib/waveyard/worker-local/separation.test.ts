@@ -35,6 +35,7 @@ import {
   waveformJobs,
 } from "@workspace/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
+import { verifyModelFile } from "@workspace/arena/lib/waveyard/separation/session";
 import {
   DEEP_MODEL_SIGNATURE,
   resetDeepProbeCacheForTests,
@@ -93,6 +94,10 @@ function postgresBinary(name: string): string {
   }
   return bundledCandidates[0];
 }
+
+/** The handler tests use an explicit stand-in checkpoint, never model weights. */
+const runDeepWithFixtureCheckpoint: typeof runDeepSeparation = (request) =>
+  runDeepSeparation(request, { verifyCheckpoint: async (_path, expected) => expected });
 
 function availablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -2487,7 +2492,15 @@ test("model not seeded: honest separation_unavailable failure, no stem rows, no 
   const f = await fixture();
   try {
     await assert.rejects(
-      () => handleSeparationJob(payloadOf(f), { db: f.database }), // default engine opener → real models dir (empty temp)
+      () => handleSeparationJob(payloadOf(f), {
+        db: f.database,
+        // Exercise the model-missing boundary directly; the production
+        // subprocess artifact is covered by the packaged-app acceptance run.
+        openEngine: async (spec) => {
+          await verifyModelFile(spec, f.modelsDir);
+          throw new Error("Missing-model fixture unexpectedly passed verification.");
+        },
+      }),
       (err: unknown) => {
         assert.match(err instanceof Error ? err.message : "", /not present on this machine/);
         return true;
@@ -2945,7 +2958,7 @@ test("deep pass: the prepared engine runs end to end and stores six attributed s
     }
     installDeepEnv(engine.env);
 
-    await handleSeparationJob(payloadOf(f), { db: f.database });
+    await handleSeparationJob(payloadOf(f), { db: f.database, runDeep: runDeepWithFixtureCheckpoint });
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
     assert.equal(row.status, "complete");
@@ -3036,7 +3049,7 @@ test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", asy
 
     await handleSeparationJob(
       { ...payloadOf(f), parentStemAssetId: parentStem.id },
-      { db: f.database },
+      { db: f.database, runDeep: runDeepWithFixtureCheckpoint },
     );
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
