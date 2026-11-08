@@ -10,6 +10,7 @@ export default function ArcadeSourceWorkshop() {
   const [result, setResult] = useState<Result | null>(null);
   const [rule, setRule] = useState("original"), [saved, setSaved] = useState<Saved[]>([]);
   const [attempts, setAttempts] = useState<{ error: string; draft: Result | null }[]>([]);
+  const [retained, setRetained] = useState<Saved[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
   async function refreshSaved() {
     try {
@@ -17,6 +18,7 @@ export default function ArcadeSourceWorkshop() {
       const body = await response.json();
       if (!response.ok) throw new Error("Saved games unavailable; retained revisions were not removed.");
       setSaved(body.artifacts.filter((item: Saved) => item.sourceType === "arcade-source"));
+      setRetained(body.artifacts.filter((item: Saved) => item.sourceType === "arcade-failed"));
     } catch (e) { setError(e instanceof Error ? e.message : "Saved games unavailable."); }
   }
   useEffect(() => { void refreshSaved(); }, []);
@@ -34,7 +36,11 @@ export default function ArcadeSourceWorkshop() {
     setBusy(true); setError("");
     try {
       const response = await fetch("/api/arcade/source", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item ? { action: "reopen", artifactId: item.id } : { action: "save", bundle: result?.bundle, ...privacyFlags() }) });
-      const body = await response.json(); if (!response.ok) throw new Error(`${body.error} ${body.runtime?.issues?.join("; ") ?? ""}`);
+      const body = await response.json();
+      if (!response.ok) {
+        await refreshSaved();
+        throw new Error(`${body.error} ${body.runtime?.issues?.join("; ") ?? ""} ${body.retainError ?? ""}`);
+      }
       setResult(body); setPreviewOpen(true); await refreshSaved();
     } catch (e) {
       const message = e instanceof Error ? e.message : "Save/reopen failed.";
@@ -76,6 +82,7 @@ export default function ArcadeSourceWorkshop() {
       </div>
       {previewOpen && <iframe title="2048 source preview" className="mt-3 h-[650px] w-full bg-black" sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={result.preview} />}
     </div>}
-    {attempts.length > 0 && <details className="mt-3 text-xs"><summary>Failed attempts retained for inspection ({attempts.length})</summary>{attempts.map((attempt, i) => <p key={i}>{attempt.error} <button onClick={() => download(JSON.stringify(attempt, null, 2), `2048-failed-attempt-${i + 1}.json`, "application/json")}>Download failed attempt {i + 1}</button></p>)}<p>Attempts are retained in this page until reload; download before leaving. Saved games are unchanged.</p></details>}
+    {attempts.length > 0 && <details className="mt-3 text-xs"><summary>Failed attempts retained for inspection ({attempts.length})</summary>{attempts.map((attempt, i) => <p key={i}>{attempt.error} <button onClick={() => download(JSON.stringify(attempt, null, 2), `2048-failed-attempt-${i + 1}.json`, "application/json")}>Download failed attempt {i + 1}</button></p>)}<p>Attempts listed here are page-only; rejected saves are also retained on the server (below). Saved games are unchanged.</p></details>}
+    {retained.length > 0 && <details className="mt-3 text-xs"><summary>Rejected saves retained on the server ({retained.length})</summary>{retained.map(item => <p key={item.id}>{item.title} <a href={`/api/artifacts/${item.id}`}>Download</a></p>)}</details>}
   </details>;
 }

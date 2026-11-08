@@ -23,6 +23,22 @@ const downloadable = (artifactId: string) => `/api/artifacts/${artifactId}`;
 // Saves never update an existing artifact. A saved package carries its own
 // hashes and is reconstructed from the pinned upstream bytes on every reopen,
 // so an edited artifact body is rejected rather than trusted.
+// A rejected save is retained server-side so it survives refresh/restart;
+// a failure to retain is reported, never swallowed.
+async function retainFailedDraft(ownerId: string, candidate: unknown, reason: string) {
+  try {
+    const body = JSON.stringify({ reason, draft: candidate });
+    if (body.length > MAX_SAVED_PACKAGE_BYTES) return { retainError: "Draft too large to retain; download it." };
+    const artifact = await insertArtifact(db, {
+      ownerId, kind: "source-patch", title: `Failed 2048 source draft: ${reason.slice(0, 80)}`,
+      sourceType: "arcade-failed", sourceId: null, body,
+    });
+    return { failedDraftId: artifact.id };
+  } catch {
+    return { retainError: "Draft could not be retained on the server; download it before leaving." };
+  }
+}
+
 export async function POST(request: Request) {
   const denied = await requireApiAccess(request);
   if (denied) return denied;
@@ -51,8 +67,9 @@ export async function POST(request: Request) {
       const bundle = validate2048Bundle(candidate);
       const runtime = await verify2048Rule(bundle);
       if (runtime.status !== "passed") {
+        const retained = input.action === "save" ? await retainFailedDraft(user.id, candidate, `browser ${runtime.status}`) : {};
         return Response.json(
-          { error: `Browser ${runtime.status}; existing saved games were not changed.`, runtime },
+          { error: `Browser ${runtime.status}; existing saved games were not changed.`, runtime, ...retained },
           { status: runtime.status === "unavailable" ? 503 : 422 },
         );
       }
@@ -72,8 +89,10 @@ export async function POST(request: Request) {
       });
       return Response.json({ bundle, runtime, preview, artifactId: artifact.id, artifactDownloadUrl: downloadable(artifact.id) });
     } catch {
+      const retained = input.action === "save" ? await retainFailedDraft(user.id, input.bundle, "validation or storage failed") : {};
       return Response.json({
         error: "Source validation, storage or reopening failed. No existing saved package was modified; keep this attempt and retry after inspecting the cause.",
+        ...retained,
       }, { status: 422 });
     }
   }

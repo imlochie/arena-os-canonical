@@ -392,3 +392,7 @@ Old `waveyard-worker/tests/unit/*` (vitest, Next-era paths) were ported against 
 | `export-automation` (4) | `worker-local/export.ts`, `render-helpers.ts` | INTEGRATED, one INTENTIONALLY_SUPERSEDED detail: multi-clip bus uses `amerge`+`pan` unnormalised sum instead of `amix` (desktop ffmpeg 4.1 lacks `amix normalize=0`; documented in `render-helpers.ts`) |
 | `drum/harmony/vocal-analysis` idempotency keys, `midi` `encodeMidiFile`, `analysis` | no same-named current symbols (desktop analysis is in-process: `worker-local/analysis*.ts`, `midi-file.ts`) | NEEDS_REVIEW - behavioural comparison pending |
 | `player-state`, `studio-remix-response`, `source-sections` | arenaforge `player-state.ts`, `SourceAnalysisSummary.tsx`; `types/source-sections.test.ts` exists | pending comparison |
+
+### 7.y Arcade source workshop: failed-draft durability
+
+Rejected 2048 source saves (browser rule failure, validation/storage failure) are now written server-side as `arcade-failed` artifacts (never listed as saved games) and surfaced in the workshop UI; a failure to retain is reported (`retainError`). Real-PostgreSQL test reads the retained draft back from the database. Limits: only the 2048 adapter exists (not general GitHub game acquisition); the forge (`/arcade` generation) failed-draft is still returned to the client only (nothing stored, asserted by `arcade/route.test.ts`) - PR #19 attempt retention remains NEEDS_PORT. Not browser-tested across reload.

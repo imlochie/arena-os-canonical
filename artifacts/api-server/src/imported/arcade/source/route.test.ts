@@ -57,8 +57,16 @@ test("source workshop: acquire, verify+save, reopen; tampered or foreign package
   const forged = structuredClone(generatedBody.bundle);
   forged.modification.content = forged.modification.content.replace("var value = 4;", "var value = 8;");
   const before = (await db.select().from(artifacts).where(eq(artifacts.sourceType, "arcade-source"))).length;
-  assert.equal((await route.POST(post({ action: "save", bundle: forged }))).status, 422);
+  const failedSave = await route.POST(post({ action: "save", bundle: forged }));
+  assert.equal(failedSave.status, 422);
+  const failedBody: any = await failedSave.json();
+  assert.equal(typeof failedBody.failedDraftId, "string");
   assert.equal((await db.select().from(artifacts).where(eq(artifacts.sourceType, "arcade-source"))).length, before);
+  // The rejected draft is durable (read back from the database, not component state)
+  // and is not offered as a saved game.
+  const kept = (await db.select().from(artifacts).where(eq(artifacts.id, failedBody.failedDraftId)))[0];
+  assert.equal(kept.sourceType, "arcade-failed");
+  assert.equal(JSON.parse(kept.body).draft.modification.content, forged.modification.content);
 
   // An edited saved artifact is rejected on reopen rather than trusted.
   const row = (await db.select().from(artifacts).where(eq(artifacts.id, savedBody.artifactId)))[0];
