@@ -1,5 +1,6 @@
 import {
   normaliseSourceEvents,
+  nearestBeatProjection,
   type BeatProjection,
   type RhythmicClass,
   type SourceEvent,
@@ -7,6 +8,10 @@ import {
 
 export const DRUM_ANALYSIS_ENGINE = "waveyard-numpy-drum-transients";
 export const DRUM_ANALYSIS_ENGINE_VERSION = "1.0.0";
+
+export function drumAnalysisIdempotencyKey(stemAssetId: string) {
+  return `drums:${stemAssetId}:${DRUM_ANALYSIS_ENGINE}:${DRUM_ANALYSIS_ENGINE_VERSION}`;
+}
 
 export type DrumEvent = SourceEvent & {
   nearestBeatIndex: number | null;
@@ -49,4 +54,5 @@ export function classifiedDrumEvent(
   };
 }
 
+export { nearestBeatProjection };
 export type { RhythmicClass };

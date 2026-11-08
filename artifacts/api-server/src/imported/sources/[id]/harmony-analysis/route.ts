@@ -7,11 +7,9 @@ import {
   sourceAssets,
 } from "@workspace/db/waveyardSchema";
 import { enqueueHarmonyAnalysis } from "@workspace/arena/lib/waveyard/queue";
-import { harmonyAnalysisProvenanceReason, HARMONY_ANALYSIS_ENGINE, HARMONY_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types";
+import { harmonyAnalysisIdempotencyKey, harmonyAnalysisProvenanceReason, HARMONY_ANALYSIS_ENGINE, HARMONY_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
-
-function idempotencyKey(sourceAssetId: string) { return `harmony:${sourceAssetId}:${HARMONY_ANALYSIS_ENGINE}:${HARMONY_ANALYSIS_ENGINE_VERSION}`; }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -32,7 +30,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     if (!source) return Response.json({ error: "Source not found." }, { status: 404 });
     await requireProjectRole(user.id, source.projectId, "editor");
     const [created] = await db.insert(harmonyAnalyses).values({
-      projectId: source.projectId, sourceAssetId: source.id, status: "queued", stage: "queued", idempotencyKey: idempotencyKey(source.id),
+      projectId: source.projectId, sourceAssetId: source.id, status: "queued", stage: "queued", idempotencyKey: harmonyAnalysisIdempotencyKey(source.id),
       analysisEngine: HARMONY_ANALYSIS_ENGINE, analysisEngineVersion: HARMONY_ANALYSIS_ENGINE_VERSION, sourceChecksumSha256: source.checksumSha256,
     }).onConflictDoNothing({ target: harmonyAnalyses.sourceAssetId }).returning();
     const analysis = created ?? (await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.sourceAssetId, source.id)).limit(1))[0];

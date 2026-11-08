@@ -11,16 +11,13 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { enqueueVocalAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import {
+  vocalAnalysisIdempotencyKey,
   vocalAnalysisProvenanceReason,
   VOCAL_ANALYSIS_ENGINE,
   VOCAL_ANALYSIS_ENGINE_VERSION,
 } from "@workspace/arena/lib/waveyard/types";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
-
-function idempotencyKey(stemAssetId: string) {
-  return `vocal:${stemAssetId}:${VOCAL_ANALYSIS_ENGINE}:${VOCAL_ANALYSIS_ENGINE_VERSION}`;
-}
 
 async function authorizedVocalStem(id: string, userId: string, role: "viewer" | "editor") {
   
@@ -59,7 +56,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const { stem, source } = target; 
     const [created] = await db.insert(vocalAnalyses).values({
       projectId: stem.projectId, sourceAssetId: source.id, stemAssetId: stem.id,
-      status: "queued", stage: "queued", idempotencyKey: idempotencyKey(stem.id),
+      status: "queued", stage: "queued", idempotencyKey: vocalAnalysisIdempotencyKey(stem.id),
       analysisEngine: VOCAL_ANALYSIS_ENGINE, analysisEngineVersion: VOCAL_ANALYSIS_ENGINE_VERSION,
       sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: stem.checksumSha256,
     }).onConflictDoNothing({ target: vocalAnalyses.stemAssetId }).returning();

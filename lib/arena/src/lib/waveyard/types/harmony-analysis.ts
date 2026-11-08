@@ -5,6 +5,10 @@ export const HARMONY_ANALYSIS_ENGINE_VERSION = "1.0.0";
 export const CHORD_QUALITIES = ["major", "minor", "dominant7", "minor7", "major7", "diminished", "augmented", "unknown"] as const;
 export type ChordQuality = (typeof CHORD_QUALITIES)[number];
 
+export function harmonyAnalysisIdempotencyKey(sourceAssetId: string) {
+  return `harmony:${sourceAssetId}:${HARMONY_ANALYSIS_ENGINE}:${HARMONY_ANALYSIS_ENGINE_VERSION}`;
+}
+
 export type HarmonyEvent = {
   startMs: number;
   endMs: number;

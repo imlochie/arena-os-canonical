@@ -1,6 +1,10 @@
 export const VOCAL_ANALYSIS_ENGINE = "waveyard-numpy-monophonic-pitch";
 export const VOCAL_ANALYSIS_ENGINE_VERSION = "1.0.0";
 
+export function vocalAnalysisIdempotencyKey(stemAssetId: string) {
+  return `vocal:${stemAssetId}:${VOCAL_ANALYSIS_ENGINE}:${VOCAL_ANALYSIS_ENGINE_VERSION}`;
+}
+
 export type VocalPitchFrame = {
   timestampMs: number;
   frequencyHz: number | null;

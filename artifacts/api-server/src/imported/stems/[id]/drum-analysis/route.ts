@@ -11,14 +11,13 @@ import {
 import { enqueueDrumAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import {
   drumAnalysisProvenanceReason,
+  drumAnalysisIdempotencyKey,
   isSupportedDrumStemType,
   DRUM_ANALYSIS_ENGINE,
   DRUM_ANALYSIS_ENGINE_VERSION,
 } from "@workspace/arena/lib/waveyard/types";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
-
-function idempotencyKey(stemAssetId: string) { return `drums:${stemAssetId}:${DRUM_ANALYSIS_ENGINE}:${DRUM_ANALYSIS_ENGINE_VERSION}`; }
 
 async function authorizedDrumStem(id: string, userId: string, role: "viewer" | "editor") {
   
@@ -52,7 +51,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const { stem, source } = target; 
     const [created] = await db.insert(drumAnalyses).values({
       projectId: stem.projectId, sourceAssetId: source.id, stemAssetId: stem.id,
-      status: "queued", stage: "queued", idempotencyKey: idempotencyKey(stem.id),
+      status: "queued", stage: "queued", idempotencyKey: drumAnalysisIdempotencyKey(stem.id),
       analysisEngine: DRUM_ANALYSIS_ENGINE, analysisEngineVersion: DRUM_ANALYSIS_ENGINE_VERSION,
       sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: stem.checksumSha256,
     }).onConflictDoNothing({ target: drumAnalyses.stemAssetId }).returning();

@@ -29,6 +29,8 @@ where they are stale.
   acknowledged. The journal is per session and does not claim cross-tab locking.
 * MIDI download uses the Buffer-returning encoder; its bytes remain covered by
   the format and round-trip unit tests.
+* Drum, harmony, and vocal API routes now use their shared versioned
+  idempotency-key helpers. The vocal key retains the existing `vocal:` prefix.
 * Targeted Waveyard verification: 238/238 tests pass, including real-audio
   source analysis and the original comprehensive live-stem-layer suite; the
   workspace type check passes. These are not database, browser, or packaged
