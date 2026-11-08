@@ -14,6 +14,7 @@ import {
   drumEvents,
   harmonyAnalyses,
   harmonyEvents,
+  sourceAnalyses,
   sourceAssets,
   stemAssets,
   vocalAnalyses,
@@ -21,7 +22,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { encodeMidiFile } from "@workspace/arena/lib/waveyard/midi-file";
-import { midiAnalysisReadinessError } from "@workspace/arena/lib/waveyard/midi-analysis-readiness";
+import { midiAnalysisReadinessError, resolveMidiTempoBpm } from "@workspace/arena/lib/waveyard/midi-analysis-readiness";
 import {
   drumEventsToMidiNotes,
   harmonyEventsToMidiNotes,
@@ -40,9 +41,9 @@ export const dynamic = "force-dynamic";
 const KINDS = ["vocal", "drums", "harmony"] as const;
 type MidiExportKind = (typeof KINDS)[number];
 
-function parseBpm(raw: string | null): number {
+function parseBpm(raw: string | null): number | null {
   const parsed = Number(raw);
-  return raw !== null && Number.isFinite(parsed) && parsed >= 20 && parsed <= 300 ? parsed : 120;
+  return raw !== null && Number.isFinite(parsed) && parsed >= 20 && parsed <= 300 ? parsed : null;
 }
 
 export async function GET(
@@ -60,7 +61,7 @@ export async function GET(
     if (!(KINDS as readonly string[]).includes(kind)) {
       return Response.json({ error: `kind must be one of ${KINDS.join(", ")}.` }, { status: 400 });
     }
-    const bpm = parseBpm(url.searchParams.get("bpm"));
+    const requestedBpm = parseBpm(url.searchParams.get("bpm"));
 
     const [stem] = await db
       .select()
@@ -74,6 +75,17 @@ export async function GET(
       .where(and(eq(sourceAssets.id, stem.sourceAssetId), eq(sourceAssets.projectId, projectId)))
       .limit(1);
     if (!source) return Response.json({ error: "Stem source is unavailable." }, { status: 404 });
+    const [sourceAnalysis] = await db
+      .select()
+      .from(sourceAnalyses)
+      .where(eq(sourceAnalyses.sourceAssetId, source.id))
+      .limit(1);
+    const analyzedBpm = sourceAnalysis?.status === "complete"
+      && sourceAnalysis.sourceChecksumSha256 === source.checksumSha256
+      && sourceAnalysis.bpmConfidence !== null
+      ? sourceAnalysis.bpm
+      : null;
+    const bpm = resolveMidiTempoBpm(requestedBpm, analyzedBpm);
 
     let notes: MidiNoteEvent[];
     if (kind === "vocal") {
