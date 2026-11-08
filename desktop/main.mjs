@@ -602,6 +602,19 @@ async function start() {
   }
   // A normal launch never enables remote debugging. Acceptance is explicit.
   log("runtime", `ready; platform=${process.platform}; version=${app.getVersion()}; data=${root}`);
+  // The packaged app is its own local server, so the web build's offline-shell
+  // service worker has nothing to offer. A worker left in the profile by the
+  // previous run controls the first navigation of the next one, and after an
+  // in-place update the window can sit on an empty, never-committed page
+  // (renderer idle, server already answered /spaces). Start every run without it.
+  try {
+    await Promise.race([
+      window.webContents.session.clearStorageData({ origin, storages: ["serviceworkers", "cachestorage"] }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timed out after 15s")), 15_000)),
+    ]);
+  } catch (error) {
+    log("runtime", `Could not clear service-worker state: ${error.message}`);
+  }
   await window.loadURL(`${origin}/spaces`);
   setDataMenu(root);
 }
