@@ -10,6 +10,7 @@ export type ArcadeRuntimeVerification = {
   browser?: string;
   canvas?: { width: number; height: number };
   animationFrames?: number;
+  rendered?: boolean;
   blockedRequests?: number;
 };
 
@@ -185,6 +186,19 @@ export async function verifyArcadeRuntime(
       if (await start.isVisible().catch(() => false)) await start.click();
       await page.waitForTimeout(220);
 
+      // A running loop over a uniform canvas is not a rendered game.
+      const rendered = await canvas.evaluate((element) => {
+        const node = element as HTMLCanvasElement;
+        const pixels = node.getContext("2d")?.getImageData(0, 0, node.width, node.height).data;
+        if (!pixels) return false;
+        for (let i = 4; i < pixels.length; i += 4) {
+          if (pixels[i] !== pixels[0] || pixels[i + 1] !== pixels[1] ||
+              pixels[i + 2] !== pixels[2] || pixels[i + 3] !== pixels[3]) return true;
+        }
+        return false;
+      }).catch(() => false);
+      if (!rendered) issues.push("The game canvas stayed uniform; nothing was drawn.");
+
       const probe = await frame.evaluate(() => {
         const runtime = (window as any).__arenaRuntimeProbe;
         return {
@@ -207,6 +221,7 @@ export async function verifyArcadeRuntime(
         browser: browser?.version(),
         canvas: dimensions,
         animationFrames: probe.frames,
+        rendered,
         blockedRequests,
       };
     };
