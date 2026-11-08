@@ -2,7 +2,7 @@
 
 Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
-Last updated: 2026-11-08.
+Last updated: 2026-11-09.
 
 ## Status at `3a782f73` (2026-11-08) — supersedes any conflicting text below
 
@@ -20,6 +20,23 @@ where they are stale.
 | Content objects | Storage primitives added: `StorageIntegrityError`, `contentObjectKey`, `putImmutableStream` (hash+count while writing, dedup, replace corrupt copy, temp cleanup), `verifyObject`; 10 tests, in the Windows stack workflow. | `bbeefba1` |
 | Waveyard Firefox | Play reported "interrupted" on a working device: first `resume()` settled *running* after 1805 ms, past the 1500 ms bound. Bound raised to 6000 ms with a regression test; no test threshold changed. | `3a782f73` |
 | Waveyard WebKit | Intermittent restore-control failure is *not* reproducible locally (10 runs); CI log showed the button resolved but "not stable / detached". Probes added (`RESTORE_CONTROL_MISSING`, `RESTORE_CLICK_FAILED`). Root cause **open**. | `17420c42`, `0e9ef2b6` |
+
+### Waveyard convergence follow-up (2026-11-09)
+
+* Session mix and transition saves now use a local journal. An unacknowledged
+  PATCH survives a tab reload and replays; the visible retry control clears a
+  failed queue, and a track's pending save is forgotten only after deletion is
+  acknowledged. The journal is per session and does not claim cross-tab locking.
+* MIDI download uses the Buffer-returning encoder; its bytes remain covered by
+  the format and round-trip unit tests.
+* Targeted Waveyard verification: 238/238 tests pass, including real-audio
+  source analysis and the original comprehensive live-stem-layer suite; the
+  workspace type check passes. These are not database, browser, or packaged
+  Windows acceptance runs.
+* Local execution gap remains: `worker-local/index.ts` registers source BPM/key/
+  beat and section work, but not drum, harmony, or vocal analysis queues. Those
+  request routes can queue work for the remote Python worker; a desktop-only
+  session needs that worker available. Do not claim those analyses run locally.
 
 ### Test evidence (this environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:

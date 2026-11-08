@@ -324,6 +324,8 @@
     "./lib/waveyard/library/session-logic": "./src/lib/waveyard/library/session-logic.ts",
     "./lib/waveyard/library/session-key-matching.test": "./src/lib/waveyard/library/session-key-matching.test.ts",
     "./lib/waveyard/library/session-key-matching": "./src/lib/waveyard/library/session-key-matching.ts",
+    "./lib/waveyard/library/session-save-queue.test": "./src/lib/waveyard/library/session-save-queue.test.ts",
+    "./lib/waveyard/library/session-save-queue": "./src/lib/waveyard/library/session-save-queue.ts",
     "./lib/waveyard/session-dj-controls": "./src/lib/waveyard/session-dj-controls.ts",
     "./lib/waveyard/live-stem-layers": "./src/lib/waveyard/live-stem-layers.ts",
     "./lib/waveyard/library/performance": "./src/lib/waveyard/library/performance.ts",

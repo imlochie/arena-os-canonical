@@ -22,6 +22,7 @@ import {
 } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
+import { localStorageSessionSaveJournal, SessionSaveQueue } from "@workspace/arena/lib/waveyard/library/session-save-queue";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import CamelotWheel from "./CamelotWheel";
 import SessionKeyMatchingControls from "./SessionKeyMatchingControls";
@@ -1995,13 +1996,48 @@ export default function SessionExperience({
     stemMix: Record<string, number>;
     transitionJson: string;
   }>>({});
-  const saveQueueRef = useRef<Record<string, Promise<void>>>({});
+  const saveQueueRef = useRef<SessionSaveQueue | null>(null);
+  useEffect(() => {
+    if (session === null) return;
+    let journal;
+    if (typeof window !== "undefined") {
+      try {
+        journal = localStorageSessionSaveJournal(window.localStorage, `arena:waveyard:session-saves:${session.id}`);
+      } catch {
+        journal = undefined;
+      }
+    }
+    const queue = new SessionSaveQueue(async (url, body) => {
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      if (!response.ok) throw new Error(`Session save failed (${response.status}).`);
+      const match = /^\/api\/library\/sessions\/([^/]+)\/tracks\/([^/]+)$/.exec(url);
+      if (!match) return;
+      const saved = lastSentRef.current[`${match[1]}:${match[2]}`];
+      if (!saved) return;
+      const patch = JSON.parse(body) as { stemMixPatch?: Record<string, number>; transition?: TransitionConfig };
+      lastSentRef.current[`${match[1]}:${match[2]}`] = {
+        stemMix: { ...saved.stemMix, ...patch.stemMixPatch },
+        transitionJson: patch.transition === undefined ? saved.transitionJson : JSON.stringify(patch.transition),
+      };
+    }, (status) => setMixSaveError(status === "error"), 600, journal);
+    saveQueueRef.current = queue;
+    const flushPendingOnExit = () => { void queue.flush(); };
+    window.addEventListener("pagehide", flushPendingOnExit);
+    return () => {
+      window.removeEventListener("pagehide", flushPendingOnExit);
+      void queue.flush();
+      if (saveQueueRef.current === queue) saveQueueRef.current = null;
+    };
+  }, [session?.id]);
   useEffect(() => {
     if (session === null) return;
     const items = [currentItem, nextItem].filter((item): item is SessionTrackItem => item !== null);
     const timer = setTimeout(() => {
       void (async () => {
-        let failed = false;
         for (const item of items) {
           const key = `${session.id}:${item.id}`;
           if (lastSentRef.current[key] === undefined) {
@@ -2014,44 +2050,20 @@ export default function SessionExperience({
           const mix = effectiveMix(item, mixes[item.id] ?? item.stemMix);
           const transition = transitions[item.id] ?? item.transition;
           const transitionJson = JSON.stringify(transition);
-          const previousSave = saveQueueRef.current[key] ?? Promise.resolve();
-          const save = previousSave.catch(() => undefined).then(async () => {
-            const saved = lastSentRef.current[key];
-            if (saved === undefined) return;
-            const stemMixPatch = Object.fromEntries(
-              Object.entries(mix).filter(([stemType, value]) =>
-                !Object.is(saved.stemMix[stemType] ?? 1, value),
-              ),
-            );
-            const transitionChanged = saved.transitionJson !== transitionJson;
-            const body: Record<string, unknown> = {};
-            if (Object.keys(stemMixPatch).length > 0) body.stemMixPatch = stemMixPatch;
-            if (transitionChanged) body.transition = transition;
-            if (Object.keys(body).length === 0) return;
-
-            try {
-              const response = await fetch(`/api/library/sessions/${session.id}/tracks/${item.id}`, {
-                method: "PATCH",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(body),
-              });
-              if (response.ok) {
-                const currentSaved = lastSentRef.current[key] ?? saved;
-                lastSentRef.current[key] = {
-                  stemMix: { ...currentSaved.stemMix, ...stemMixPatch },
-                  transitionJson: transitionChanged ? transitionJson : currentSaved.transitionJson,
-                };
-              } else {
-                failed = true;
-              }
-            } catch {
-              failed = true;
-            }
-          });
-          saveQueueRef.current[key] = save;
-          await save;
+          const saved = lastSentRef.current[key];
+          if (saved === undefined) continue;
+          const stemMixPatch = Object.fromEntries(
+            Object.entries(mix).filter(([stemType, value]) =>
+              !Object.is(saved.stemMix[stemType] ?? 1, value),
+            ),
+          );
+          const transitionChanged = saved.transitionJson !== transitionJson;
+          const body: Record<string, unknown> = {};
+          if (Object.keys(stemMixPatch).length > 0) body.stemMixPatch = stemMixPatch;
+          if (transitionChanged) body.transition = transition;
+          if (Object.keys(body).length === 0) continue;
+          saveQueueRef.current?.enqueue(`/api/library/sessions/${session.id}/tracks/${item.id}`, JSON.stringify(body));
         }
-        setMixSaveError(failed);
       })();
     }, 600);
     return () => clearTimeout(timer);
@@ -3023,6 +3035,7 @@ export default function SessionExperience({
       const wasPlaying = playingRef.current;
       void mutate(`/api/library/sessions/${session.id}/tracks?sessionTrackId=${itemId}`, { method: "DELETE" }).then((detail) => {
         if (detail === null) return;
+        saveQueueRef.current?.forget(`/api/library/sessions/${session.id}/tracks/${itemId}`);
         publishWaveyardQueueChange([session.id]);
         if (currentIdRef.current !== itemId) return;
         const fallbackIndex = Math.min(Math.max(previousIndex, 0), detail.tracks.length - 1);
@@ -4561,7 +4574,7 @@ export default function SessionExperience({
         <button
           type="button"
           className={`wy-save ${saveLabel === "Not saved" ? "bad" : ""}`}
-          onClick={() => { setMixSaveError(false); lastSentRef.current = {}; void persistState(); }}
+          onClick={() => { setMixSaveError(false); lastSentRef.current = {}; void saveQueueRef.current?.flush(true); void persistState(); }}
           title={saveLabel === "Not saved" ? "Saving failed — click to retry" : "Position and mixes are saved to this session"}
           data-testid="status-save"
         >
