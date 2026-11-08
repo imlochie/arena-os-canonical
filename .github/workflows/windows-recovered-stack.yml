@@ -73,6 +73,7 @@ jobs:
             "../lib/arena/src/lib/spaces/mission-memory.test.ts",
             "../lib/arena/src/lib/spaces/mission-evidence.test.ts",
             "../lib/arena/src/lib/games/gameplay-contract.test.ts",
+            "../lib/arena/src/lib/games/source-2048.test.ts",
             # Regressions for the two defects the Firefox browser leg exposed:
             # an unbounded AudioContext resume that parked playback silently,
             # and an unvalidated API payload that crashed a refresh effect.

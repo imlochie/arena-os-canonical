@@ -41,7 +41,7 @@ function instrumentedDocument(code: string): string {
   return `<!doctype html><html><head>${csp}${probe}</head><body>${code}</body></html>`;
 }
 
-async function chromiumExecutablePath(): Promise<string | undefined> {
+export async function chromiumExecutablePath(): Promise<string | undefined> {
   const resourcesChromium = process.env.ARENA_RESOURCES_DIR
     ? path.join(process.env.ARENA_RESOURCES_DIR, "chromium", process.platform === "win32" ? "chrome.exe" : "chrome")
     : undefined;
@@ -64,7 +64,7 @@ async function chromiumExecutablePath(): Promise<string | undefined> {
   return undefined;
 }
 
-function isolatedBrowserEnvironment(): NodeJS.ProcessEnv {
+export function isolatedBrowserEnvironment(): NodeJS.ProcessEnv {
   const allowed = [
     "PATH",
     "HOME",

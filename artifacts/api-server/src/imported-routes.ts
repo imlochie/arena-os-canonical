@@ -62,6 +62,7 @@ export const importedRoutes = [
   { path: "/waveyard/projects/:id/vocal-chops/:chopId", methods: ["GET","DELETE"], load: () => import("./imported/waveyard/projects/[id]/vocal-chops/[chopId]/route.ts") },
   { path: "/waveyard/projects/:id/vocal-chops", methods: ["GET","POST"], load: () => import("./imported/waveyard/projects/[id]/vocal-chops/route.ts") },
   { path: "/waveyard/separation/models", methods: ["GET"], load: () => import("./imported/waveyard/separation/models/route.ts") },
+  { path: "/arcade/source", methods: ["POST"], load: () => import("./imported/arcade/source/route.ts") },
   { path: "/arcade/forge", methods: ["POST"], load: () => import("./imported/arcade/forge/route.ts") },
   { path: "/arcade/import/revise", methods: ["POST"], load: () => import("./imported/arcade/import-revise/route.ts") },
   { path: "/arcade/import/analyze", methods: ["POST"], load: () => import("./imported/arcade/analyze/route.ts") },

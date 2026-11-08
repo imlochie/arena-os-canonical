@@ -130,6 +130,8 @@
     "./lib/games/arena": "./src/lib/games/arena.ts",
     "./lib/games/classics": "./src/lib/games/classics.ts",
     "./lib/games/forge-ai": "./src/lib/games/forge-ai.ts",
+    "./lib/games/sandbox": "./src/lib/games/sandbox.ts",
+    "./lib/games/source-2048": "./src/lib/games/source-2048.ts",
     "./lib/games/gameplay-contract": "./src/lib/games/gameplay-contract.ts",
     "./lib/games/forge.test": "./src/lib/games/forge.test.ts",
     "./lib/games": "./src/lib/games/index.ts",

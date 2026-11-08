@@ -12,6 +12,7 @@ import { ArcadeSaveWarning } from "./ArcadeSaveWarning";
 import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
 import ArcadeGameManagement from "./ArcadeGameManagement";
+import ArcadeSourceWorkshop from "./ArcadeSourceWorkshop";
 import type { ArcadeGameDescriptor } from "../lib/arcadeManifest";
 import { readArcadeGameControls } from "../lib/arcadeGameControls";
 import {
@@ -1617,6 +1618,7 @@ export default function ArcadeForge() {
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
       <div className="min-w-0">
+        <ArcadeSourceWorkshop />
         {/* Engine status */}
         <details
           data-testid="arcade-model-setup"
