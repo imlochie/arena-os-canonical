@@ -344,6 +344,8 @@
     "./lib/waveyard/measure/strip-silence": "./src/lib/waveyard/measure/strip-silence.ts",
     "./lib/waveyard/midi-file.test": "./src/lib/waveyard/midi-file.test.ts",
     "./lib/waveyard/midi-file": "./src/lib/waveyard/midi-file.ts",
+    "./lib/waveyard/midi-analysis-readiness.test": "./src/lib/waveyard/midi-analysis-readiness.test.ts",
+    "./lib/waveyard/midi-analysis-readiness": "./src/lib/waveyard/midi-analysis-readiness.ts",
     "./lib/waveyard/mixer/dither.test": "./src/lib/waveyard/mixer/dither.test.ts",
     "./lib/waveyard/mixer/dither": "./src/lib/waveyard/mixer/dither.ts",
     "./lib/waveyard/mixer/dsp": "./src/lib/waveyard/mixer/dsp.ts",

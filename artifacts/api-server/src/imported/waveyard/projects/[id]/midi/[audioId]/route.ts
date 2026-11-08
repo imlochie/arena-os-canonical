@@ -14,15 +14,20 @@ import {
   drumEvents,
   harmonyAnalyses,
   harmonyEvents,
+  sourceAssets,
   stemAssets,
   vocalAnalyses,
   vocalPitchFrames,
 } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { encodeMidiFile } from "@workspace/arena/lib/waveyard/midi-file";
+import { midiAnalysisReadinessError } from "@workspace/arena/lib/waveyard/midi-analysis-readiness";
 import {
   drumEventsToMidiNotes,
   harmonyEventsToMidiNotes,
+  drumAnalysisProvenanceReason,
+  harmonyAnalysisProvenanceReason,
+  vocalAnalysisProvenanceReason,
   vocalFramesToMidiNotes,
   type DrumEvent,
   type HarmonyEvent,
@@ -63,11 +68,31 @@ export async function GET(
       .where(and(eq(stemAssets.id, audioId), eq(stemAssets.projectId, projectId)))
       .limit(1);
     if (!stem) return Response.json({ error: "Stem not found." }, { status: 404 });
+    const [source] = await db
+      .select()
+      .from(sourceAssets)
+      .where(and(eq(sourceAssets.id, stem.sourceAssetId), eq(sourceAssets.projectId, projectId)))
+      .limit(1);
+    if (!source) return Response.json({ error: "Stem source is unavailable." }, { status: 404 });
 
     let notes: MidiNoteEvent[];
     if (kind === "vocal") {
       const [analysis] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
       if (!analysis) return Response.json({ error: "No vocal analysis for this stem yet. Run vocal analysis first." }, { status: 404 });
+      const provenance = vocalAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId,
+        expectedSourceAssetId: source.id,
+        stemAssetId: analysis.stemAssetId,
+        expectedStemAssetId: stem.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: source.checksumSha256,
+        stemChecksumSha256: analysis.stemChecksumSha256,
+        expectedStemChecksumSha256: stem.checksumSha256,
+        analysisEngine: analysis.analysisEngine,
+        analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      const readinessError = midiAnalysisReadinessError("vocal", analysis.status, provenance);
+      if (readinessError) return Response.json({ error: readinessError.error }, { status: readinessError.status });
       const rows = await db
         .select()
         .from(vocalPitchFrames)
@@ -85,6 +110,20 @@ export async function GET(
     } else if (kind === "drums") {
       const [analysis] = await db.select().from(drumAnalyses).where(eq(drumAnalyses.stemAssetId, stem.id)).limit(1);
       if (!analysis) return Response.json({ error: "No drum analysis for this stem yet. Run drum analysis first." }, { status: 404 });
+      const provenance = drumAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId,
+        expectedSourceAssetId: source.id,
+        stemAssetId: analysis.stemAssetId,
+        expectedStemAssetId: stem.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: source.checksumSha256,
+        stemChecksumSha256: analysis.stemChecksumSha256,
+        expectedStemChecksumSha256: stem.checksumSha256,
+        analysisEngine: analysis.analysisEngine,
+        analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      const readinessError = midiAnalysisReadinessError("drums", analysis.status, provenance);
+      if (readinessError) return Response.json({ error: readinessError.error }, { status: readinessError.status });
       const rows = await db
         .select()
         .from(drumEvents)
@@ -106,6 +145,16 @@ export async function GET(
         .where(eq(harmonyAnalyses.sourceAssetId, stem.sourceAssetId))
         .limit(1);
       if (!analysis) return Response.json({ error: "No harmony analysis for this source yet. Run harmony analysis first." }, { status: 404 });
+      const provenance = harmonyAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId,
+        expectedSourceAssetId: source.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: source.checksumSha256,
+        analysisEngine: analysis.analysisEngine,
+        analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      const readinessError = midiAnalysisReadinessError("harmony", analysis.status, provenance);
+      if (readinessError) return Response.json({ error: readinessError.error }, { status: readinessError.status });
       const rows = await db
         .select()
         .from(harmonyEvents)
