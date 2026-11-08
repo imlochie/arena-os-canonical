@@ -24,10 +24,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { spaceMissions } from "@workspace/db/schema";
+import { spaceMissions, spaces } from "@workspace/db/schema";
 import { generate } from "@workspace/arena/lib/ai";
 import type { GenerateResult } from "@workspace/arena/lib/runtime";
-import { listAgents } from "@workspace/arena/lib/spaces";
+import { listAgentsForMission } from "@workspace/arena/lib/spaces";
+import { selectMissionPlan } from "./mission-plan";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
 import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
 import { ensureIsolatedWorkspace, teardownIsolatedWorkspace, type ExecTarget } from "./workspace-isolation";
@@ -40,6 +41,37 @@ export interface MissionAgentSpec {
   systemPrompt?: string;
 }
 
+/** What was requested versus what actually executed, per model call. */
+export interface MissionRuntime {
+  agentModelId?: string;
+  requestedModelId?: string;
+  runtimeLevel?: string;
+  provider?: string;
+  backend?: string;
+  modelId?: string;
+  via?: string;
+  fallback?: boolean;
+  fallbackFrom?: { runtimeLevel: string; backend: string; modelId: string };
+  fallbackReason?: string;
+}
+
+function runtimeOf(agent: MissionAgentSpec, result: GenerateResult): MissionRuntime {
+  return {
+    agentModelId: agent.modelId,
+    requestedModelId: result.requestedModelId,
+    runtimeLevel: result.runtimeLevel,
+    provider: result.provider,
+    backend: result.backend,
+    modelId: result.modelId,
+    via: result.via,
+    fallback: result.fallback,
+    fallbackFrom: result.fallbackFrom
+      ? { runtimeLevel: result.fallbackFrom.runtimeLevel, backend: result.fallbackFrom.backend, modelId: result.fallbackFrom.modelId }
+      : undefined,
+    fallbackReason: result.fallbackReason,
+  };
+}
+
 export interface MissionStep {
   agent: string;
   turn: number;
@@ -47,7 +79,7 @@ export interface MissionStep {
   handoff: string;
   done: boolean;
   thought: string;
-  runtime?: { backend?: string; modelId?: string; fallback?: boolean; via?: string };
+  runtime?: MissionRuntime;
   ms: number;
 }
 
@@ -100,6 +132,9 @@ export interface MissionOpts {
 
 export interface MissionDeps {
   generate?: typeof generate;
+  /** Fleet and Space-model sources; overridable for tests. */
+  loadFleet?: (spaceId: string) => Promise<Array<{ name: string; role: string; modelId: string; systemPrompt?: string }>>;
+  loadSpaceModel?: (spaceId: string) => Promise<string | undefined>;
   /** Browser engine override for tests (real missions use the playwright engine). */
   browserEngine?: import("./browser").BrowserEngine;
   /** External action deps (fetcher/env) override for tests. */
@@ -156,14 +191,6 @@ Do not access browser-profile files or invent page content.
 Respond with one JSON object:
 {"thought":"short progress note","actions":[{"tool":"...","args":{}}],"handoff":"context for continuation","done":false}
 Set done=true only when the requested task is complete and its report has been saved.`;
-
-function defaultPlan(spaceModel: string): MissionAgentSpec[] {
-  return [
-    { name: "Planner", role: "plan the work into concrete file-level steps", modelId: spaceModel },
-    { name: "Builder", role: "implement the files and commands", modelId: spaceModel },
-    { name: "Reviewer", role: "verify the result with read/commands and finish or hand back", modelId: spaceModel },
-  ];
-}
 
 /** Extract the first JSON object from a model response (fences tolerated). */
 export function parseAgentJson(text: string): { thought?: string; actions?: { tool: string; args: Record<string, any> }[]; handoff?: string; done?: boolean } | null {
@@ -307,15 +334,24 @@ async function runMissionInner(
   const resumingPlan = resuming && existing!.agentPlan.length ? existing!.agentPlan : undefined;
 
   // Plan: explicit > the space's fleet > default three-role pipeline.
-  const fleet = await listAgents(spaceId).catch(() => []);
-  const plan: MissionAgentSpec[] =
-    resumingPlan?.length
-      ? resumingPlan
-      : opts.agentPlan?.length
-        ? opts.agentPlan
-        : fleet.length
-        ? fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt }))
-        : defaultPlan("openai"); // any text alias: routes via Groq/OpenRouter key when sent, else keyless pollinations, else honest local fallback
+  const needsFleet = !resumingPlan?.length && !opts.agentPlan?.length;
+  // A configured fleet that cannot be read must stop the mission, not quietly
+  // become the default plan. Only a mission store already running without a
+  // database (memory mode) has no roster to read.
+  const fleet = !needsFleet ? [] : deps.loadFleet
+    ? await deps.loadFleet(spaceId)
+    : missionDbHealthy ? await listAgentsForMission(spaceId) : [];
+  const spaceModel = needsFleet && !fleet.length
+    ? deps.loadSpaceModel
+      ? await deps.loadSpaceModel(spaceId)
+      : missionDbHealthy
+        ? (await db.select({ modelId: spaces.modelId }).from(spaces).where(eq(spaces.id, spaceId)).limit(1))[0]?.modelId
+        : undefined
+    : undefined;
+  const plan: MissionAgentSpec[] = selectMissionPlan({
+    resumingPlan, explicitPlan: opts.agentPlan, spaceModel,
+    fleet: fleet.map((a) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt })),
+  });
 
   if (opts.mode !== "arcade") await ensureWorkspace(spaceId);
   let row: any;
@@ -513,7 +549,7 @@ async function runMissionInner(
         steps.push({
           agent: agent.name, turn, actions: [], handoff: "", done: false,
           thought: "The selected model did not execute. No browser actions were taken.",
-          runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback, via: result.via },
+          runtime: runtimeOf(agent, result),
           ms: Date.now() - t0,
         });
         status = "failed";
@@ -643,7 +679,7 @@ async function runMissionInner(
         handoff: String(parsed?.handoff ?? "").slice(0, 2000),
         done: parsed?.done === true,
         thought: String(parsed?.thought ?? result.text.slice(0, 200)).slice(0, 500),
-        runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback, via: result.via },
+        runtime: runtimeOf(agent, result),
         ms: Date.now() - t0,
       };
       steps.push(step);

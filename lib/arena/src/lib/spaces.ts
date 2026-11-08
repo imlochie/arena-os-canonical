@@ -541,10 +541,19 @@ function publicAgent(row: typeof spaceAgents.$inferSelect): SpaceAgent {
   };
 }
 
+/**
+ * Strict roster read for mission planning. A failed read must not turn a
+ * configured fleet into an apparently empty one and silently select a
+ * different plan, so errors propagate.
+ */
+export async function listAgentsForMission(spaceId: string): Promise<SpaceAgent[]> {
+  const rows = await db.select().from(spaceAgents).where(eq(spaceAgents.spaceId, spaceId)).orderBy(asc(spaceAgents.createdAt));
+  return rows.map(publicAgent);
+}
+
 export async function listAgents(spaceId: string): Promise<SpaceAgent[]> {
   try {
-    const rows = await db.select().from(spaceAgents).where(eq(spaceAgents.spaceId, spaceId)).orderBy(asc(spaceAgents.createdAt));
-    return rows.map(publicAgent);
+    return await listAgentsForMission(spaceId);
   } catch {
     dbHealthy = false;
     return [];
