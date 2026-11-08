@@ -21,8 +21,13 @@ import {
   SESSION_DJ_LOOP_LENGTHS,
 } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
-import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
-import { localStorageSessionSaveJournal, SessionSaveQueue } from "@workspace/arena/lib/waveyard/library/session-save-queue";
+import { isMultiPassSeparationPhase, normalizeStemMix } from "@workspace/arena/lib/waveyard/library/model";
+import {
+  localStorageSessionSaveJournal,
+  sessionSavePatchAgainstPending,
+  sessionSavePatchForTrack,
+  SessionSaveQueue,
+} from "@workspace/arena/lib/waveyard/library/session-save-queue";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import CamelotWheel from "./CamelotWheel";
 import SessionKeyMatchingControls from "./SessionKeyMatchingControls";
@@ -50,6 +55,7 @@ import {
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
   validateStemSwap,
+  normalizeTransitionConfig,
   type TransitionConfig,
   type TransitionMode,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
@@ -1647,9 +1653,24 @@ export default function SessionExperience({
               : (detail.tracks[0]?.id ?? null);
           const nextMixes: Record<string, Record<string, number>> = {};
           const nextTransitions: Record<string, TransitionConfig> = {};
+          let restoredPatches: Array<[string, string]> = [];
+          if (typeof window !== "undefined") {
+            try {
+              restoredPatches = localStorageSessionSaveJournal(
+                window.localStorage,
+                `arena:waveyard:session-saves:${detail.id}`,
+              ).read();
+            } catch { /* Storage may be unavailable; server state remains usable. */ }
+          }
           for (const item of detail.tracks) {
-            nextMixes[item.id] = { ...item.stemMix };
-            nextTransitions[item.id] = item.transition;
+            const patch = sessionSavePatchForTrack(restoredPatches, detail.id, item.id);
+            const allowedStemTypes = new Set(item.stems.map((stem) => stem.stemType));
+            const restoredMix = normalizeStemMix(patch?.stemMixPatch);
+            nextMixes[item.id] = {
+              ...item.stemMix,
+              ...Object.fromEntries(Object.entries(restoredMix).filter(([stemType]) => allowedStemTypes.has(stemType))),
+            };
+            nextTransitions[item.id] = normalizeTransitionConfig(patch?.transition) ?? item.transition;
           }
           currentIdRef.current = restoredCurrent;
           sessionRef.current = detail;
@@ -2052,17 +2073,11 @@ export default function SessionExperience({
           const transitionJson = JSON.stringify(transition);
           const saved = lastSentRef.current[key];
           if (saved === undefined) continue;
-          const stemMixPatch = Object.fromEntries(
-            Object.entries(mix).filter(([stemType, value]) =>
-              !Object.is(saved.stemMix[stemType] ?? 1, value),
-            ),
-          );
-          const transitionChanged = saved.transitionJson !== transitionJson;
-          const body: Record<string, unknown> = {};
-          if (Object.keys(stemMixPatch).length > 0) body.stemMixPatch = stemMixPatch;
-          if (transitionChanged) body.transition = transition;
-          if (Object.keys(body).length === 0) continue;
-          saveQueueRef.current?.enqueue(`/api/library/sessions/${session.id}/tracks/${item.id}`, JSON.stringify(body));
+          const url = `/api/library/sessions/${session.id}/tracks/${item.id}`;
+          const pendingWrites = saveQueueRef.current?.pendingWrites(url) ?? {};
+          const body = sessionSavePatchAgainstPending(saved, { stemMix: mix, transitionJson }, pendingWrites);
+          if (body === null) continue;
+          saveQueueRef.current?.enqueue(url, body);
         }
       })();
     }, 600);

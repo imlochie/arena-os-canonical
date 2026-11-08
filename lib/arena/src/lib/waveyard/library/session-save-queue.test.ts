@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { localStorageSessionSaveJournal, SessionSaveQueue, type SessionSaveJournal } from "./session-save-queue";
+import {
+  localStorageSessionSaveJournal,
+  sessionSavePatchAgainstPending,
+  sessionSavePatchForTrack,
+  SessionSaveQueue,
+  type SessionSaveJournal,
+} from "./session-save-queue";
 
 test("a delayed acknowledged write cannot overtake the latest snapshot, including another deck", async () => {
   const writes: string[] = [];
@@ -81,4 +87,86 @@ test("local journal rejects unrelated URLs and removes malformed stored data", (
   assert.deepEqual(journal.read(), []);
   journal.write([["https://example.invalid/", "secret"], ["/api/library/sessions/s1/tracks/t1", "{}"]]);
   assert.deepEqual(journal.read(), [["/api/library/sessions/s1/tracks/t1", "{}"]]);
+});
+
+test("restores only the latest journaled patch for the exact session track", () => {
+  const entries: Array<[string, string]> = [
+    ["/api/library/sessions/s1/tracks/t1", '{"stemMixPatch":{"drums":0.4}}'],
+    ["/api/library/sessions/s2/tracks/t1", '{"stemMixPatch":{"drums":0.8}}'],
+    ["/api/library/sessions/s1/tracks/t1", '{"transition":{"mode":"manual","crossfadeSeconds":2,"keepStems":[]}}'],
+  ];
+  assert.deepEqual(sessionSavePatchForTrack(entries, "s1", "t1"), {
+    transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
+  });
+  assert.equal(sessionSavePatchForTrack(entries, "s1", "missing"), null);
+  assert.equal(sessionSavePatchForTrack([["/api/library/sessions/s1/tracks/t1", "not-json"]], "s1", "t1"), null);
+});
+
+test("computes corrective writes against pending state when a control is reverted in flight", () => {
+  const saved = {
+    stemMix: { drums: 1, vocals: 1 },
+    transitionJson: '{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}',
+  };
+  const desired = { ...saved };
+  const pending = { activeBody: '{"stemMixPatch":{"drums":0.4},"transition":{"mode":"manual","crossfadeSeconds":2,"keepStems":[]}}' };
+  assert.equal(sessionSavePatchAgainstPending(saved, desired, pending),
+    '{"stemMixPatch":{"drums":1},"transition":{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}}');
+  assert.equal(sessionSavePatchAgainstPending(saved, {
+    stemMix: { drums: 0.4, vocals: 1 },
+    transitionJson: '{"mode":"manual","crossfadeSeconds":2,"keepStems":[]}',
+  }, pending), null);
+});
+
+test("replacement queued snapshots retain other fields that are still unsaved", () => {
+  const saved = {
+    stemMix: { drums: 1, vocals: 1 },
+    transitionJson: '{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}',
+  };
+  const desired = {
+    stemMix: { drums: 0.7, vocals: 0.3 },
+    transitionJson: saved.transitionJson,
+  };
+  const pending = {
+    activeBody: '{"stemMixPatch":{"drums":0.4}}',
+    queuedBody: '{"stemMixPatch":{"drums":0.6,"vocals":0.3}}',
+  };
+  assert.equal(sessionSavePatchAgainstPending(saved, desired, pending),
+    '{"stemMixPatch":{"drums":0.7,"vocals":0.3}}');
+});
+
+test("replayed latest snapshot is correct even if the active request never committed", () => {
+  const saved = {
+    stemMix: { drums: 1, vocals: 1 },
+    transitionJson: '{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}',
+  };
+  const desired = {
+    stemMix: { drums: 1, vocals: 0.5 },
+    transitionJson: saved.transitionJson,
+  };
+  const pending = {
+    activeBody: '{"stemMixPatch":{"drums":0.4,"vocals":0.2},"transition":{"mode":"manual","crossfadeSeconds":2,"keepStems":[]}}',
+    queuedBody: '{"stemMixPatch":{"drums":0.8,"vocals":0.5}}',
+  };
+  assert.equal(sessionSavePatchAgainstPending(saved, desired, pending),
+    '{"stemMixPatch":{"drums":1,"vocals":0.5},"transition":{"mode":"manual","crossfadeSeconds":4,"keepStems":[]}}');
+});
+
+test("reports the active request and replacement body in server order", async () => {
+  let acknowledge!: () => void;
+  let writes = 0;
+  const queue = new SessionSaveQueue(async () => {
+    writes += 1;
+    if (writes === 1) await new Promise<void>((resolve) => { acknowledge = resolve; });
+  }, () => {}, 60_000);
+  queue.enqueue("track", '{"stemMixPatch":{"drums":0.4}}');
+  const flushing = queue.flush();
+  queue.enqueue("track", '{"stemMixPatch":{"drums":0.8}}');
+  assert.deepEqual(queue.pendingWrites("track"), {
+    activeBody: '{"stemMixPatch":{"drums":0.4}}',
+    queuedBody: '{"stemMixPatch":{"drums":0.8}}',
+  });
+  acknowledge();
+  assert.equal(await flushing, true);
+  assert.deepEqual(queue.pendingWrites("track"), {});
+  await queue.flush(); // Clear the debounce timer scheduled by the in-flight edit.
 });
