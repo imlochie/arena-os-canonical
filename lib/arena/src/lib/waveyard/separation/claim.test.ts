@@ -319,7 +319,12 @@ test("startSeparationJob: a test-seam enqueue that throws is released the same w
 function embeddedBinary(name: string): string {
   const pkg = process.platform === "win32" ? "windows-x64" : "linux-x64";
   const exe = process.platform === "win32" ? `${name}.exe` : name;
-  return path.join(repoRoot, "node_modules", "@embedded-postgres", pkg, "native", "bin", exe);
+  const bundledCandidates = [
+    path.join(repoRoot, "node_modules", "@embedded-postgres", pkg, "native", "bin", exe),
+    path.join(repoRoot, "..", "..", "node_modules", "@embedded-postgres", pkg, "native", "bin", exe),
+    path.join(repoRoot, "..", "..", "desktop", "node_modules", "@embedded-postgres", pkg, "native", "bin", exe),
+  ];
+  return bundledCandidates.find(existsSync) ?? bundledCandidates[0];
 }
 
 function freePort(): Promise<number> {

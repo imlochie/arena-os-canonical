@@ -34,8 +34,12 @@ const VOCAL_SECONDS = 2;
 function findPostgresBinary(name: string): string | undefined {
   const extension = process.platform === "win32" ? ".exe" : "";
   const platform = process.platform === "win32" ? "windows-x64" : process.platform === "darwin" ? "darwin-x64" : "linux-x64";
-  const bundled = path.join(root, "node_modules", "@embedded-postgres", platform, "native", "bin", `${name}${extension}`);
-  if (existsSync(bundled)) return bundled;
+  const bundledCandidates = [
+    path.join(root, "node_modules", "@embedded-postgres", platform, "native", "bin", `${name}${extension}`),
+    path.join(root, "desktop", "node_modules", "@embedded-postgres", platform, "native", "bin", `${name}${extension}`),
+  ];
+  const bundled = bundledCandidates.find(existsSync);
+  if (bundled) return bundled;
   const located = spawnSync(process.platform === "win32" ? "where.exe" : "which", [`${name}${extension}`], { encoding: "utf8" })
     .stdout?.trim().split(/\r?\n/)[0];
   return located && existsSync(located) ? located : undefined;

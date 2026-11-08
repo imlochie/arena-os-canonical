@@ -68,8 +68,12 @@ const arenaPackageRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 function postgresBinary(name: string): string {
   const executable = process.platform === "win32" ? `${name}.exe` : name;
   const packageName = process.platform === "win32" ? "windows-x64" : "linux-x64";
-  const bundled = path.join(arenaPackageRoot, "..", "..", "node_modules", "@embedded-postgres", packageName, "native", "bin", executable);
-  if (existsSync(bundled)) return bundled;
+  const bundledCandidates = [
+    path.join(arenaPackageRoot, "..", "..", "node_modules", "@embedded-postgres", packageName, "native", "bin", executable),
+    path.join(arenaPackageRoot, "..", "..", "desktop", "node_modules", "@embedded-postgres", packageName, "native", "bin", executable),
+  ];
+  const bundled = bundledCandidates.find(existsSync);
+  if (bundled) return bundled;
 
   const locator = process.platform === "win32" ? "where.exe" : "which";
   const located = spawnSync(locator, [executable], { encoding: "utf8" }).stdout?.trim().split(/\r?\n/)[0];
@@ -87,7 +91,7 @@ function postgresBinary(name: string): string {
       if (existsSync(candidate)) return candidate;
     }
   }
-  return bundled;
+  return bundledCandidates[0];
 }
 
 function availablePort(): Promise<number> {
