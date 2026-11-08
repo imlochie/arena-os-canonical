@@ -43,6 +43,12 @@ const report = {
   checks: checkIds.map((id) => ({ id, status: "not_run" })),
 };
 
+async function dumpChromiumLog() {
+  const text = await readFile(path.join(testRoot ?? "", "chromium.log"), "utf8").catch(() => null);
+  console.error("--- chromium.log (last 80 lines) ---");
+  console.error(text === null ? "(not present)" : text.trim().split("\n").slice(-80).join("\n"));
+}
+
 async function dumpLogs() {
   // Application and database logs only; no record values are written to them.
   for (const name of ["desktop.log", "postgres.log"]) {
@@ -103,7 +109,14 @@ function install(installer, installDir) {
 async function launch(executable, profileDir) {
   desktop = await _electron.launch({
     executablePath: executable,
-    args: [`--user-data-dir=${profileDir}`],
+    args: [
+      `--user-data-dir=${profileDir}`,
+      // Chromium's own log is the only record of why a navigation never
+      // commits; the application log stops once the server has answered.
+      "--enable-logging=file",
+      `--log-file=${path.join(testRoot, "chromium.log")}`,
+      "--log-level=0",
+    ],
     timeout: 150_000,
     env: {
       ...process.env,
@@ -242,6 +255,7 @@ try {
 } catch (error) {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   await dumpWindowState();
+  await dumpChromiumLog();
   await dumpLogs();
   const failedCheck = activeCheck ?? "older_package_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
