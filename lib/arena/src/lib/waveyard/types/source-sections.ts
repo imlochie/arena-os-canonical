@@ -32,9 +32,15 @@ export type SourceSectionCandidate = Omit<SourceSection, "id" | "sectionIndex" |
 
 export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionIndex" | "label" | "labelConfidence">): string {
   if (section.label === "section") return `Section ${section.sectionIndex + 1}`;
+  const repeatedPattern = /^pattern-repeat-([a-z]+)$/i.exec(section.label);
   const repeatedRhythm = /^rhythm-repeat-([a-z]+)$/i.exec(section.label);
-  const readableLabel = repeatedRhythm
+  const energyChange = /^energy-(rise|drop)$/i.exec(section.label);
+  const readableLabel = repeatedPattern
+    ? `Repeated audio pattern ${repeatedPattern[1].toUpperCase()}`
+    : repeatedRhythm
     ? `Repeated rhythm ${repeatedRhythm[1].toUpperCase()}`
+    : energyChange
+    ? `Dynamic ${energyChange[1]}`
     : section.label.replace(/(^|[\s-])([a-z])/g, (_match, separator: string, letter: string) => `${separator}${letter.toUpperCase()}`);
   return `${section.labelConfidence < 0.75 ? "Possible " : ""}${readableLabel}`;
 }

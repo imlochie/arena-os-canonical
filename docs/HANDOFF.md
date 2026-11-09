@@ -46,35 +46,76 @@ This section supersedes older status claims below where they conflict.
   No pinned release CDN 504 occurred in this forced source run.
 * **Recovered-stack Windows tests:** push run `42598958617` and PR run
   `42598965365` passed.
-* **Real-song local analysis characterization:** six user-supplied MP3/M4A
-  tracks were decoded by the local DSP path (first 65 seconds per file). BPM /
-  BPM-confidence and key / key-confidence were: Another One Bites the Dust
-  109.957 / 0.512, F minor / 0.034; September 123.047 / 0.624, A major /
-  0.573; I Feel It Coming remix 156.605 / 0.323, D# major / 0.086; Stayin'
-  Alive remix 103.359 / 0.380, F minor / 0.472; I Want to Break Free remix
-  72.788 / 0.913, C# minor / 0.584; Blinding Lights remix 172.266 / 0.878,
-  C minor / 0.245. Only two tracks passed both current tempo and key confidence
-  gates.
-* Structural candidates on those same excerpts produced 3–13 generic
-  `section` spans per track, all with zero semantic-label confidence. This is
-  not verse/chorus evidence; the automatic hybrid must refuse these inputs
-  rather than claim a smart cross-track arrangement.
-* Compact player, visual, and mashup-source labels now show weak values as
-  uncertain. Studio beat/key/tempo alignment inputs use the same 0.5 confidence
-  gate; a beat grid is withheld unless both BPM and beat-fit confidence pass.
-  Targeted confidence/automatic-remix/provenance tests: 18/18 pass; full
+* **Real-song section evaluation:** the local DSP analyzed the first 65 seconds
+  of six user-supplied MP3/M4A tracks. BPM / BPM-confidence and key /
+  key-confidence were: Another One Bites the Dust 109.957 / 0.512, F minor /
+  0.034; September 123.047 / 0.624, A major / 0.573; I Feel It Coming remix
+  156.605 / 0.323, D# major / 0.086; Stayin' Alive remix 103.359 / 0.380,
+  F minor / 0.472; I Want to Break Free remix 72.788 / 0.913, C# minor /
+  0.584; Blinding Lights remix 172.266 / 0.878, C minor / 0.245. Only
+  September and I Want to Break Free pass both current tempo and key gates.
+* Section notation below is `bar-range start–end label (L/S)`: `L` is the
+  stored label evidence value and `S` is the existing onset-boundary structural
+  confidence. For energy labels only, `L = min(1, |RMS dB change| / 6)`; it is
+  a normalized signal-change strength, **not** a calibrated probability.
+  `section L0` means a detected boundary with no stronger label evidence.
+  Energy deltas compare a section's RMS with the immediately preceding section.
+  No manual verse/chorus ground truth was available; no semantic roles were
+  assigned.
+  * Another One Bites the Dust: `b1–4 0:00–0:08 section (0/.050)`; `b5–6
+    0:08–0:13 energy-rise (.811/.521, +4.9 dB)`; `b7–13 0:13–0:28 section
+    (0/.489)`; `b14–18 0:28–0:39 section (0/.514)`; `b19–22 0:39–0:48
+    section (0/.455)`; `b23–24 0:48–0:52 section (0/.961)`; `b25–29
+    0:52–1:03 section (0/.850)`.
+  * September: `b1–4 0:00–0:07 section (0/.150)`; `b5–7 0:07–0:13
+    energy-rise (1/.781, +9.4 dB)`; `b8–19 0:13–0:37 energy-rise (.763/.854,
+    +4.6 dB)`; `b20–22 0:37–0:42 section (0/.635)`; `b23–32 0:42–1:02
+    section (0/1.000)`; `b33–33 1:02–1:04 section (0/1.000)`.
+  * I Feel It Coming remix: `b1–2 0:00–0:03 section (0/.846)`; `b3–6
+    0:03–0:09 energy-rise (1/.960, +15.4 dB)`; `b7–8 0:09–0:12 section
+    (0/.627)`; `b9–16 0:12–0:24 section (0/.444)`; `b17–19 0:24–0:29
+    energy-rise (1/.407, +7.3 dB)`; `b20–21 0:29–0:32 section (0/.495)`;
+    `b22–23 0:32–0:35 section (0/.452)`; `b24–27 0:35–0:41 section
+    (0/.436)`; `b28–29 0:41–0:44 section (0/.484)`; `b30–32 0:44–0:49
+    section (0/.416)`; `b33–38 0:49–0:58 section (0/.988)`; `b39–40
+    0:58–1:01 section (0/.418)`; `b41–42 1:01–1:04 section (0/.474)`.
+  * Stayin' Alive remix: `b1–3 0:00–0:07 section (0/.482)`; `b4–5
+    0:07–0:12 section (0/.682)`; `b6–12 0:12–0:28 section (0/.574)`;
+    `b13–22 0:28–0:51 energy-rise (1/.586, +9.1 dB)`; `b23–28 0:51–1:05
+    section (0/.918)`.
+  * I Want to Break Free remix: `b1–12 0:00–0:39 section (0/.269)`; `b13–17
+    0:39–0:56 section (0/.973)`; `b18–19 0:56–1:02 section (0/.482)`.
+  * Blinding Lights remix: `b1–8 0:00–0:11 section (0/.638)`; `b9–12
+    0:11–0:16 energy-rise (1/.475, +8.0 dB)`; `b13–17 0:16–0:23 energy-rise
+    (.574/1.000, +3.4 dB)`; `b18–19 0:23–0:26 section (0/.671)`; `b20–29
+    0:26–0:40 section (0/.514)`; `b30–34 0:40–0:47 section (0/1.000)`;
+    `b35–45 0:47–1:02 section (0/.506)`; `b46–46 1:02–1:04 section
+    (0/.603)`.
+* **What the detector now establishes:** sustained RMS changes marked eight
+  dynamic rises on five tracks; the comparatively level Queen excerpt received
+  none. The combined rhythm-plus-four-bin-harmony repeat test found no
+  qualifying repeated patterns in these excerpts. That is an honest abstention,
+  not proof that the full songs lack repeated structures. `energy-rise` is a
+  dynamic cue only, never a chorus/verse label or cross-track matching signal.
+  Automatic hybrid alignment still accepts only supported semantic roles.
+* The section inspector now distinguishes detected boundaries, rhythm repeats,
+  combined audio-pattern repeats, and measured energy changes. Compact player,
+  visual, and mashup-source labels continue to show weak key/tempo values as
+  uncertain; Studio alignment withholds low-confidence tempo/key/beat grids.
+  Focused structure, confidence, source-label and remix tests: 29/29 pass; full
   workspace typecheck passes.
-* This real-song run is standalone source analysis only. It does not prove
-  persisted end-to-end analysis, four-stem separation, audible mashup quality,
-  MIDI export/save/reopen, real-provider inference, or hardware listening.
-* **Branch preservation:** the workspace was already on
-  `arena/convergence-2026-11-07` at `fe1af426`, clean and exactly matching both
-  the configured remote and public GitHub ref. No switch, commit, push, or PR
-  merge was performed. The `replit-agent` ref remains at `a5bc2a96`; its recent
-  rhythm-analysis and automatic-remix work has equivalents on this branch
-  (`4430b555`, `84bbc553`). Its tip tree equals merge-base `b54840f2`, so no
-  net tree change from that ref needed wholesale porting. Current continuation
-  edits are uncommitted and unpushed.
+* This local analysis does not prove manually verified role recognition,
+  persisted analysis of these six tracks, four-stem separation, an audible
+  mashup, MIDI export/save/reopen as one user flow, provider inference, or
+  hardware listening.
+* **Branch preservation:** this branch is still `arena/convergence-2026-11-07`.
+  Its previous confidence-UI changes now exist in local commit `22d7fd5`
+  (parent `fe1af426`), one commit ahead of the remote; this task's section
+  changes remain uncommitted. No push or PR merge occurred. The `replit-agent`
+  ref remains at `a5bc2a96`; its recent rhythm-analysis and automatic-remix
+  work has equivalents here (`4430b555`, `84bbc553`). Its tip tree equals
+  merge-base `b54840f2`, so no net tree change from that ref needed wholesale
+  porting.
 ## Status at `3a782f73` (2026-11-08) — supersedes any conflicting text below
 
 Read this section first; older sections are kept for history and are marked

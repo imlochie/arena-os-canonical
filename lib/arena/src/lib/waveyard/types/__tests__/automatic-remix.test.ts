@@ -106,6 +106,17 @@ describe("deterministic automatic remix arranger", () => {
     expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
   });
 
+  it("does not treat within-track pattern or energy labels as semantic cross-song roles", () => {
+    for (const structuralLabel of ["pattern-repeat-a", "rhythm-repeat-a", "energy-rise", "energy-drop"]) {
+      const anchor = withRoles(source({ id: "a" }), [structuralLabel, structuralLabel]);
+      const donor = withRoles(source({ id: "b" }), [structuralLabel, structuralLabel]);
+      expect(buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" })).toEqual({
+        ok: false,
+        reason: "no_compatible_hybrid_source",
+      });
+    }
+  });
+
   it("rejects reversed role order instead of mapping by ordinal position", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({ id: "b" }), ["chorus", "verse"]);

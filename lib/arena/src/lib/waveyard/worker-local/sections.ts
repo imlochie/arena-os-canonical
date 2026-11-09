@@ -24,7 +24,7 @@ import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
 import { decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
-import { labelRepeatedRhythmSections } from "./section-rhythm";
+import { labelRepeatedRhythmSections, labelSectionEnergyChanges } from "./section-rhythm";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
@@ -49,13 +49,20 @@ export function desktopSectionId(sourceAssetId: string, sourceChecksum: string, 
 /**
  * Conservative structure engine: candidate boundaries only at bar edges
  * (4-beat groups) that coincide with onset-novelty peaks. Whole-bar sections
- * with repeated 16th-note onset patterns receive a within-source repeat label.
- * This detector does not infer verse, chorus, or cross-song equivalence.
+ * with matching onset and harmonic fingerprints receive a within-source
+ * repeated-pattern label; weaker harmonic evidence may still support a
+ * rhythm-only label. This detector does not infer verse, chorus, or
+ * cross-song equivalence.
  * Returns null
  * when the evidence supports no conservative boundary (the caller records
  * the honest unavailable state, exactly like the worker).
  */
-export function desktopSectionCandidates(beatGridMs: number[], envelope: Float32Array, frameMs: number): SourceSectionCandidate[] | null {
+export function desktopSectionCandidates(
+  beatGridMs: number[],
+  envelope: Float32Array,
+  frameMs: number,
+  pcm?: Float32Array,
+): SourceSectionCandidate[] | null {
   if (beatGridMs.length < 8) return null; // fewer than two bars: no structure claim
   const noveltyAt = (ms: number) => {
     const frame = Math.min(envelope.length - 1, Math.max(0, Math.round(ms / frameMs)));
@@ -101,7 +108,8 @@ export function desktopSectionCandidates(beatGridMs: number[], envelope: Float32
       structuralConfidence: Math.round(Math.max(0.05, Math.min(1, strength)) * 1000) / 1000,
     });
   }
-  return labelRepeatedRhythmSections(candidates, beatGridMs, envelope, frameMs);
+  const withRepeats = labelRepeatedRhythmSections(candidates, beatGridMs, envelope, frameMs, pcm);
+  return pcm ? labelSectionEnergyChanges(withRepeats, beatGridMs, pcm) : withRepeats;
 }
 
 /** Local structural analysis using original source audio only. */
@@ -159,7 +167,7 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
     await updateSectionAnalysis(job.id, { status: "processing", stage: "analyzing" });
     const pcm = await decodeMonoPcm(inputPath);
     const { envelope, frameMs } = onsetEnvelope(pcm);
-    const candidates = desktopSectionCandidates(beatGrid, envelope, frameMs);
+    const candidates = desktopSectionCandidates(beatGrid, envelope, frameMs, pcm);
     if (!candidates) {
       await updateSectionAnalysis(job.id, {
         status: "unavailable",

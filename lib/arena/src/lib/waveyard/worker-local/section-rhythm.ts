@@ -1,8 +1,12 @@
 import type { SourceSectionCandidate } from "@workspace/arena/lib/waveyard/types/source-sections";
+import { ANALYSIS_PCM_RATE, chromaFromPcm } from "./analysis-engine";
 
 const SUBDIVISIONS_PER_BEAT = 4;
 const MINIMUM_PHRASE_BEATS = 8;
 const MINIMUM_REPEAT_SIMILARITY = 0.92;
+const HARMONIC_BINS_PER_SECTION = 4;
+const MINIMUM_CHROMA_VARIATION = 1e-5;
+const MINIMUM_SECTION_ENERGY_CHANGE_DB = 3;
 
 function median(values: number[]): number {
   if (!values.length) return 500;
@@ -64,38 +68,117 @@ function signatureSimilarity(left: number[], right: number[]): number {
   return left.reduce((total, value, index) => total + value * right[index], 0);
 }
 
-function repeatLabel(index: number): string {
+function sectionHarmonicSignature(
+  pcm: Float32Array,
+  startBeatIndex: number,
+  endBeatIndex: number,
+  beatGridMs: number[],
+): number[] | null {
+  const beatCount = endBeatIndex - startBeatIndex;
+  if (beatCount < MINIMUM_PHRASE_BEATS || beatCount % HARMONIC_BINS_PER_SECTION !== 0) return null;
+
+  const fallbackBeatMs = median(
+    beatGridMs.slice(1).map((time, index) => time - beatGridMs[index]).filter((interval) => Number.isFinite(interval) && interval > 0),
+  );
+  const beatTimeMs = (index: number) => {
+    if (index < 0 || index > beatGridMs.length) return null;
+    if (index < beatGridMs.length) return beatGridMs[index];
+    const last = beatGridMs.at(-1);
+    return last === undefined ? null : last + fallbackBeatMs;
+  };
+
+  const signature: number[] = [];
+  for (let bin = 0; bin < HARMONIC_BINS_PER_SECTION; bin += 1) {
+    const startBeat = startBeatIndex + (beatCount * bin) / HARMONIC_BINS_PER_SECTION;
+    const endBeat = startBeatIndex + (beatCount * (bin + 1)) / HARMONIC_BINS_PER_SECTION;
+    const startMs = beatTimeMs(startBeat);
+    const endMs = beatTimeMs(endBeat);
+    if (startMs === null || endMs === null || endMs <= startMs) return null;
+
+    const startSample = Math.max(0, Math.floor((startMs * ANALYSIS_PCM_RATE) / 1000));
+    const endSample = Math.min(pcm.length, Math.ceil((endMs * ANALYSIS_PCM_RATE) / 1000));
+    if (endSample - startSample < 8192) return null;
+
+    const chroma = chromaFromPcm(pcm.subarray(startSample, endSample));
+    if (chroma.length !== 12 || chroma.some((value) => !Number.isFinite(value) || value < 0)) return null;
+    const mean = chroma.reduce((total, value) => total + value, 0) / chroma.length;
+    const centered = chroma.map((value) => value - mean);
+    const magnitude = Math.sqrt(centered.reduce((total, value) => total + value * value, 0));
+    if (!Number.isFinite(magnitude) || magnitude < MINIMUM_CHROMA_VARIATION) return null;
+    signature.push(...centered.map((value) => value / magnitude));
+  }
+
+  const magnitude = Math.sqrt(signature.reduce((total, value) => total + value * value, 0));
+  return magnitude > 0 ? signature.map((value) => value / magnitude) : null;
+}
+
+function beatBoundaryMs(index: number, beatGridMs: number[]): number | null {
+  if (index < 0 || index > beatGridMs.length || beatGridMs.length === 0) return null;
+  if (index < beatGridMs.length) return beatGridMs[index];
+  const fallbackBeatMs = median(
+    beatGridMs.slice(1).map((time, beatIndex) => time - beatGridMs[beatIndex]).filter((interval) => Number.isFinite(interval) && interval > 0),
+  );
+  return beatGridMs.at(-1)! + fallbackBeatMs;
+}
+
+function sectionRmsDb(
+  pcm: Float32Array,
+  startBeatIndex: number,
+  endBeatIndex: number,
+  beatGridMs: number[],
+): number | null {
+  const startMs = beatBoundaryMs(startBeatIndex, beatGridMs);
+  const endMs = beatBoundaryMs(endBeatIndex, beatGridMs);
+  if (startMs === null || endMs === null || endMs <= startMs) return null;
+  const startSample = Math.max(0, Math.floor((startMs * ANALYSIS_PCM_RATE) / 1000));
+  const endSample = Math.min(pcm.length, Math.ceil((endMs * ANALYSIS_PCM_RATE) / 1000));
+  if (endSample - startSample < 8192) return null;
+
+  let squaredEnergy = 0;
+  for (let sample = startSample; sample < endSample; sample += 1) {
+    const value = pcm[sample] ?? 0;
+    squaredEnergy += value * value;
+  }
+  const rms = Math.sqrt(squaredEnergy / (endSample - startSample));
+  return Number.isFinite(rms) && rms > 1e-8 ? 20 * Math.log10(rms) : null;
+}
+
+/** Average section loudness difference; positive means a rise into the section. */
+export function sectionEnergyChangeDb(
+  previous: Pick<SourceSectionCandidate, "startBeatIndex" | "endBeatIndex"> | null,
+  current: Pick<SourceSectionCandidate, "startBeatIndex" | "endBeatIndex">,
+  beatGridMs: number[],
+  pcm: Float32Array,
+): number | null {
+  if (!previous) return null;
+  const previousDb = sectionRmsDb(pcm, previous.startBeatIndex, previous.endBeatIndex, beatGridMs);
+  const currentDb = sectionRmsDb(pcm, current.startBeatIndex, current.endBeatIndex, beatGridMs);
+  if (previousDb === null || currentDb === null) return null;
+  return currentDb - previousDb;
+}
+
+function repeatLabel(index: number, kind: "rhythm" | "pattern"): string {
   let value = index;
   let label = "";
   do {
     label = String.fromCharCode(97 + (value % 26)) + label;
     value = Math.floor(value / 26) - 1;
   } while (value >= 0);
-  return `rhythm-repeat-${label}`;
+  return `${kind}-repeat-${label}`;
 }
 
-/**
- * Marks only repeated, beat-grid-aligned rhythmic fingerprints within one
- * source. These are not verse/chorus labels and must not be used as evidence
- * that a phrase in another song is equivalent.
- */
-export function labelRepeatedRhythmSections(
-  candidates: readonly SourceSectionCandidate[],
-  beatGridMs: number[],
-  envelope: Float32Array,
-  frameMs: number,
-): SourceSectionCandidate[] {
-  if (candidates.length < 2) return candidates.map((candidate) => ({ ...candidate }));
-
-  const signatures = candidates.map((candidate) =>
-    candidate.label === "section" && candidate.labelConfidence <= 0
-      ? sectionRhythmSignature(candidate.startBeatIndex, candidate.endBeatIndex, beatGridMs, envelope, frameMs)
-      : null,
-  );
-  const similarity = signatures.map((left) => signatures.map((right) =>
+function similarityMatrix(signatures: readonly (number[] | null)[]): number[][] {
+  return signatures.map((left) => signatures.map((right) =>
     left && right ? signatureSimilarity(left, right) : -1,
   ));
-  const remaining = new Set(signatures.flatMap((signature, index) => signature ? [index] : []));
+}
+
+function findCliqueGroups(
+  similarities: number[][],
+  eligibleIndices: readonly number[],
+  minimumSimilarity: number,
+): { indices: number[]; score: number }[] {
+  const remaining = new Set(eligibleIndices);
   const groups: { indices: number[]; score: number }[] = [];
 
   while (remaining.size >= 2) {
@@ -104,7 +187,7 @@ export function labelRepeatedRhythmSections(
       const clique = [first];
       for (const candidate of remaining) {
         if (candidate === first) continue;
-        if (clique.every((member) => similarity[member][candidate] >= MINIMUM_REPEAT_SIMILARITY)) {
+        if (clique.every((member) => similarities[member][candidate] >= minimumSimilarity)) {
           clique.push(candidate);
         }
       }
@@ -114,22 +197,104 @@ export function labelRepeatedRhythmSections(
     if (bestClique.length < 2) break;
     const score = Math.min(
       ...bestClique.flatMap((left, index) =>
-        bestClique.slice(index + 1).map((right) => similarity[left][right]),
+        bestClique.slice(index + 1).map((right) => similarities[left][right]),
       ),
     );
     groups.push({ indices: bestClique, score });
     bestClique.forEach((index) => remaining.delete(index));
   }
 
+  return groups;
+}
+
+/**
+ * Marks repeated beat-grid-aligned structure within one source. When original
+ * PCM is available, a pattern label requires both a repeated onset fingerprint
+ * and a repeated four-bin harmonic profile. If that stronger evidence is not
+ * available, the function may still report a rhythm-only repeat. Neither label
+ * claims verse/chorus meaning or cross-song equivalence.
+ */
+export function labelRepeatedRhythmSections(
+  candidates: readonly SourceSectionCandidate[],
+  beatGridMs: number[],
+  envelope: Float32Array,
+  frameMs: number,
+  pcm?: Float32Array,
+): SourceSectionCandidate[] {
+  if (candidates.length < 2) return candidates.map((candidate) => ({ ...candidate }));
+
+  const eligibleIndices = candidates.flatMap((candidate, index) =>
+    candidate.label === "section" && candidate.labelConfidence <= 0 ? [index] : [],
+  );
+  const rhythmSignatures = candidates.map((candidate) =>
+    candidate.label === "section" && candidate.labelConfidence <= 0
+      ? sectionRhythmSignature(candidate.startBeatIndex, candidate.endBeatIndex, beatGridMs, envelope, frameMs)
+      : null,
+  );
   const labeled = candidates.map((candidate) => ({ ...candidate }));
-  groups.forEach(({ indices, score }, groupIndex) => {
+  const rhythmSimilarities = similarityMatrix(rhythmSignatures);
+  const repeatedPatternGroups = pcm
+    ? (() => {
+      const harmonicSignatures = candidates.map((candidate, index) =>
+        rhythmSignatures[index]
+          ? sectionHarmonicSignature(pcm, candidate.startBeatIndex, candidate.endBeatIndex, beatGridMs)
+          : null,
+      );
+      const harmonicSimilarities = similarityMatrix(harmonicSignatures);
+      const patternSimilarities = rhythmSimilarities.map((rhythmRow, left) =>
+        rhythmRow.map((rhythmScore, right) => {
+          const harmonicScore = harmonicSimilarities[left][right];
+          return rhythmScore >= MINIMUM_REPEAT_SIMILARITY && harmonicScore >= MINIMUM_REPEAT_SIMILARITY
+            ? Math.min(rhythmScore, harmonicScore)
+            : -1;
+        }),
+      );
+      return findCliqueGroups(patternSimilarities, eligibleIndices, MINIMUM_REPEAT_SIMILARITY);
+    })()
+    : [];
+
+  const patternIndices = new Set(repeatedPatternGroups.flatMap(({ indices }) => indices));
+  repeatedPatternGroups.forEach(({ indices, score }, groupIndex) => {
     for (const index of indices) {
       labeled[index] = {
         ...labeled[index],
-        label: repeatLabel(groupIndex),
+        label: repeatLabel(groupIndex, "pattern"),
         labelConfidence: Math.round(Math.min(1, score) * 1000) / 1000,
       };
     }
   });
+
+  const rhythmOnlyIndices = eligibleIndices.filter((index) => !patternIndices.has(index) && rhythmSignatures[index]);
+  const repeatedRhythmGroups = findCliqueGroups(rhythmSimilarities, rhythmOnlyIndices, MINIMUM_REPEAT_SIMILARITY);
+  repeatedRhythmGroups.forEach(({ indices, score }, groupIndex) => {
+    for (const index of indices) {
+      labeled[index] = {
+        ...labeled[index],
+        label: repeatLabel(groupIndex, "rhythm"),
+        labelConfidence: Math.round(Math.min(1, score) * 1000) / 1000,
+      };
+    }
+  });
+
   return labeled;
+}
+
+/** Describes only sustained loudness changes between adjacent detected sections. */
+export function labelSectionEnergyChanges(
+  candidates: readonly SourceSectionCandidate[],
+  beatGridMs: number[],
+  pcm: Float32Array,
+): SourceSectionCandidate[] {
+  return candidates.map((candidate, index) => {
+    if (index === 0 || candidate.label !== "section" || candidate.labelConfidence > 0) return { ...candidate };
+    const changeDb = sectionEnergyChangeDb(candidates[index - 1], candidate, beatGridMs, pcm);
+    if (changeDb === null || Math.abs(changeDb) < MINIMUM_SECTION_ENERGY_CHANGE_DB) return { ...candidate };
+    return {
+      ...candidate,
+      label: changeDb > 0 ? "energy-rise" : "energy-drop",
+      // This is normalized signal-change strength, not a probability of a
+      // semantic role. The UI names it accordingly.
+      labelConfidence: Math.round(Math.min(1, Math.abs(changeDb) / 6) * 1000) / 1000,
+    };
+  });
 }

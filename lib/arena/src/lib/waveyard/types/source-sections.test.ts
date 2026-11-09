@@ -62,6 +62,8 @@ test("source section labels distinguish uncertain repeats from numbered cuts", (
   assert.equal(displaySourceSectionLabel({ sectionIndex: 0, label: "rhythm-repeat-a", labelConfidence: 0.94 }), "Repeated rhythm A");
   assert.equal(displaySourceSectionLabel({ sectionIndex: 1, label: "rhythm-repeat-b", labelConfidence: 0.7 }), "Possible Repeated rhythm B");
   assert.equal(displaySourceSectionLabel({ sectionIndex: 2, label: "section", labelConfidence: 0 }), "Section 3");
+  assert.equal(displaySourceSectionLabel({ sectionIndex: 3, label: "pattern-repeat-a", labelConfidence: 0.94 }), "Repeated audio pattern A");
+  assert.equal(displaySourceSectionLabel({ sectionIndex: 4, label: "energy-rise", labelConfidence: 0.6 }), "Possible Dynamic rise");
 });
 
 test("normalizes deterministic ordered beat/bar ranges and their provenance", () => {

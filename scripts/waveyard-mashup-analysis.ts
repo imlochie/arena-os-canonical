@@ -7,7 +7,10 @@ import {
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
   normaliseBeatGrid,
+  onsetEnvelope,
 } from "../lib/arena/src/lib/waveyard/worker-local/analysis-engine";
+import { desktopSectionCandidates } from "../lib/arena/src/lib/waveyard/worker-local/sections";
+import { sectionEnergyChangeDb } from "../lib/arena/src/lib/waveyard/worker-local/section-rhythm";
 
 const args = process.argv.slice(2).filter((value) => value !== "--");
 const [outputPath, excerptStartText, excerptDurationText, ...sourcePaths] = args;
@@ -41,6 +44,39 @@ for (const sourcePath of sourcePaths) {
   }
   const startMs = Math.round(excerptStartSeconds * 1000);
   const endMs = startMs + Math.round(excerptDurationSeconds * 1000);
+  const { envelope, frameMs } = onsetEnvelope(pcm);
+  const sectionCandidates = beatGridMs
+    ? desktopSectionCandidates(beatGridMs, envelope, frameMs, pcm)
+    : null;
+  const intervals = beatGridMs?.slice(1).map((time, index) => time - beatGridMs[index]).filter((value) => value > 0) ?? [];
+  const sortedIntervals = [...intervals].sort((left, right) => left - right);
+  const fallbackBeatMs = sortedIntervals.length
+    ? sortedIntervals[Math.floor(sortedIntervals.length / 2)]
+    : 0;
+  const beatBoundaryMs = (index: number) => beatGridMs
+    ? beatGridMs[index] ?? (index === beatGridMs.length && beatGridMs.length
+      ? beatGridMs[beatGridMs.length - 1] + fallbackBeatMs
+      : null)
+    : null;
+  const sections = sectionCandidates?.flatMap((section, index) => {
+    const sectionStartMs = beatBoundaryMs(section.startBeatIndex);
+    const sectionEndMs = beatBoundaryMs(section.endBeatIndex);
+    if (sectionStartMs === null || sectionEndMs === null || sectionEndMs <= sectionStartMs) return [];
+    return [{
+      startBeatIndex: section.startBeatIndex,
+      endBeatIndex: section.endBeatIndex,
+      startBar: Math.floor(section.startBeatIndex / 4) + 1,
+      endBar: Math.max(1, Math.ceil(section.endBeatIndex / 4)),
+      startMs: sectionStartMs,
+      endMs: sectionEndMs,
+      label: section.label,
+      labelConfidence: section.labelConfidence,
+      structuralConfidence: section.structuralConfidence,
+      energyChangeDb: beatGridMs
+        ? sectionEnergyChangeDb(sectionCandidates[index - 1] ?? null, section, beatGridMs, pcm)
+        : null,
+    }];
+  }) ?? null;
   tracks.push({
     filename: basename(absolutePath),
     analysisEngine: DESKTOP_ANALYSIS_ENGINE,
@@ -59,6 +95,7 @@ for (const sourcePath of sourcePaths) {
     },
     rawBeatGridConfidence: analysis.beatConfidence,
     beatConfidence: combinedBeatConfidence,
+    sections,
   });
 }
 await writeFile(resolve(outputPath), `${JSON.stringify({
