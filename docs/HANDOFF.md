@@ -66,6 +66,64 @@ This section supersedes older status claims below where they conflict.
   win32), so Windows coverage of this suite is still not claimed. The only
   remaining annotation on the green run is GitHub's generic "Node.js 20 is
   deprecated" notice about the `@v4` actions, shared by every workflow here.
+* **Arcade CSP policy map (2026-11-09, investigation only; nothing changed):**
+  plan B.2 ("wire `sandboxGameDocument` into the player") predates the player
+  having its own policy, and the two are not interchangeable. There are four
+  hand-maintained policies, not two:
+  1. **Player** — `artifacts/arenaforge/src/lib/arcadeGameSave.ts:74`
+     (`createGameSandboxDocument`): `script-src`/`style-src 'unsafe-inline'
+     data: blob:`, `font-src data: blob:`, `img/media-src data: blob:`,
+     `connect-src/frame-src/object-src/form-action 'none'`, `base-uri 'none'`;
+     no `worker-src`, so blob/data workers fall back to `script-src` and are
+     allowed. It injects the policy *and the save runtime* into the game's
+     existing `<head>`. Used by `ArcadeForge.tsx:2171`, the local-model check
+     at `ArcadeForge.tsx:1857` and `ImportedGameWorkspace.tsx:1351`, all with
+     `sandbox="allow-scripts"`; only the imported-game frame sets
+     `referrerPolicy="no-referrer"`.
+  2. **Arcade runtime gate** — `artifacts/api-server/src/imported/arcade/runtime-verification.ts:33`:
+     the *same string as the player*, copied, plus a probe; the verification
+     page itself is served with `frame-src 'self'` and every http(s)/ws request
+     is aborted and counted (`blockedRequests`).
+  3. **2048 source-rule gate** — `lib/arena/src/lib/games/sandbox.ts`
+     (`GAME_CSP`: no data:/blob: scripts or styles, `font-src 'none'`,
+     `worker-src 'none'`, referrer meta) used by `source-rule-validation.ts`
+     and for the `preview` document that `ArcadeSourceWorkshop.tsx:83` renders
+     verbatim, under `ARCADE_HOST_CSP` (`frame-src 'none'`). Its header says
+     "same CSP as Arcade validation"; that is no longer true (see 2).
+  4. **Foundry** — `lib/arena/src/lib/foundry.ts:44` (`injectCsp`): `font-src
+     data:` only, no connect/frame/form-action directives, and it *skips
+     injection when the code already carries a CSP meta*; rendered by
+     `app/foundry/page.tsx:257` with `allow-scripts allow-forms allow-modals`.
+     Outside the Arcade scope; noted because the opt-out is a real gap.
+  **Why the player is looser than `GAME_CSP`, and why that is required:**
+  `games/imported-html.ts:17-19` deliberately admits `data:`/`blob:` in
+  `src`/`href`/`url()`, so base64 scripts, fonts, images and blob workers are
+  part of the accepted single-file game contract; the runtime gate uses the
+  same string so that what is verified is what runs. `GAME_CSP` is right for
+  the 2048 gate, which verifies a pinned fragment it wraps itself. The
+  player's extras are all non-network sources: with an opaque origin
+  (`allow-scripts` only), `connect-src 'none'`, `frame-src 'none'`,
+  `object-src 'none'` and `form-action 'none'`, and workers inheriting the
+  owner document's policy, they add no exfiltration path. So unifying on
+  `GAME_CSP` would break accepted games for no isolation gain, and unifying on
+  the player policy is only a *copy* problem, not a policy problem.
+  **Safe without a decision (not done yet):** export the player policy once
+  (next to `GAME_CSP` in `games/sandbox.ts`; `@workspace/arenaforge` and
+  `@workspace/api-server` both already depend on `@workspace/arena`), import
+  it in `arcadeGameSave.ts` and `runtime-verification.ts`, add the test plan
+  B.1 asked for (policy precedes untrusted markup; gate and player documents
+  embed the identical policy), and fix the stale header comment in
+  `source-rule-validation.ts`. Zero behaviour change.
+  **Needs a design decision (stopped here):** both gates run the game under a
+  *host* CSP that stops the sandboxed frame from navigating itself to a
+  network URL, which is the one channel the inner policy cannot close; the
+  production pages have no host CSP at all (none in `artifacts/`, `desktop/`
+  or `lib/` outside the gates), so a game that passes verification can still
+  navigate its frame later. A document-level CSP on the app affects every
+  embed (e.g. `EmulatorJsPlayer.tsx:124` uses `allow-same-origin`) and the
+  Vite, api-server static and Electron delivery paths, so it is a product
+  decision, not a cleanup. Adding `referrerPolicy="no-referrer"` to the two
+  Arcade frames that lack it belongs to the same decision.
 * **Waveyard local analyses:** the desktop API selects the versioned local
   engine and starts the existing drum, harmony, and vocal queues. Their DSP
   handlers persist events/frames with checksums and engine provenance; API
