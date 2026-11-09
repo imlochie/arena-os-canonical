@@ -61,8 +61,13 @@ if (process.argv.includes("--live-stem-timing-matrix")) {
           // Include the "at ...waveyard-live-stems.mjs:NNN" frame: without it a
           // TimeoutError says a wait expired but not which one, and there are
           // dozens of waits in this file.
-          .filter((line) => line.length > 0 && /TIMING_SETUP_ERRORS|TIMING_SETUP_PLAY_STATE|TIMING_SETUP_AUDIO_STATE|TimeoutError|exited with status|waveyard-live-stems\.mjs:\d+/i.test(line))
-          .slice(-4);
+          // Also keep the error message itself and this script's own
+          // RESTORE_* / LIVE_STEM_* diagnostics: the 2026-11-09 WebKit failure
+          // (run 42651025511) surfaced only the ":2526:18" frame because the
+          // non-timeout error line matched nothing here, so the annotation named
+          // the wait but not what rejected it.
+          .filter((line) => line.length > 0 && /TIMING_SETUP_ERRORS|TIMING_SETUP_PLAY_STATE|TIMING_SETUP_AUDIO_STATE|TimeoutError|\bError\b|RESTORE_[A-Z_]+|LIVE_STEM_[A-Z_]+|exited with status|waveyard-live-stems\.mjs:\d+/i.test(line))
+          .slice(-6);
         for (const line of diagnostic) {
           console.log(`::error::${engine}: ${line.slice(0, 900)}`);
         }
