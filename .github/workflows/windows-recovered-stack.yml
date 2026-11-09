@@ -186,11 +186,17 @@ jobs:
             exit 1
           }
           if ($probe.output -match "(?m)^ok \d+ - runInferenceProbe: six controlled valid WAVs pass") {
-            Write-Host "Inference probe ran on Windows against the pinned FFmpeg build (controlled demucs stand-in; real Demucs inference is NOT proven here)."
+            Write-Host "::notice title=Inference probe::Ran on Windows against the pinned FFmpeg build at $env:ARENA_FFMPEG_PATH (controlled demucs stand-in; real Demucs inference is NOT proven here)."
           } else {
             Write-Host "::error::The inference probe did not report a pass on Windows; see the provision-runtime evidence file."
             $results = @($results | ForEach-Object { if ($_.test -like "*provision-runtime*" -and $_.code -eq 0) { $_.code = 1; $_.status = "FAIL" }; $_ })
           }
+
+          # Phase timings of the guardian contract on this runner, readable
+          # without the artifact (the 2026-11-09 batch failure left none).
+          $guardian = $results | Where-Object { $_.test -like "*python-guardian*" }
+          $timings = @($guardian.output -split "`r?`n" | Where-Object { $_ -match "^\s*# .*\d+ ms" } | ForEach-Object { $_.Trim() })
+          if ($timings.Count -gt 0) { Write-Host "::notice title=python-guardian timings::$($timings -join '%0A')" }
 
           $failed = $results | Where-Object { $_.code -ne 0 }
           # Surface the failure in the check-run annotation, which is readable
