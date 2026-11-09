@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
+import { artworkEnvironment, compactMusicAnalysisLabel, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
 import { CinematicVisual } from "./visual/CinematicVisual";
@@ -207,33 +207,44 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const sourceAssetIdByStemId = useMemo(() => new Map(stems.map((stem) => [stem.id, stem.sourceAssetId])), [stems]);
   const sourceBpmByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
-    const bpm = analysis?.bpm;
-    return [stem.id, analysis?.status === "complete" && Number.isFinite(bpm) && bpm! >= 40 && bpm! <= 300 ? bpm! : null] as const;
+    return [stem.id, analysis?.status === "complete" ? trustedAnalysisBpm(analysis.bpm, analysis.bpmConfidence) : null] as const;
   })), [sourceById, stems]);
   const sourceKeyByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
-    const key = analysis?.status === "complete" ? normaliseMusicalKey(analysis.musicalKey) : null;
+    const key = analysis?.status === "complete"
+      ? normaliseMusicalKey(trustedAnalysisKey(analysis.musicalKey, analysis.keyConfidence))
+      : null;
     return [stem.id, key] as const;
   })), [sourceById, stems]);
   const sourceBeatByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
+    const beatGrid = analysis?.status === "complete"
+      ? trustedAnalysisBeatGrid(analysis.beatGrid, analysis.bpmConfidence, analysis.beatConfidence)
+      : null;
     return [stem.id, {
       status: analysis?.status ?? "unavailable",
-      beatGrid: analysis?.status === "complete" && Array.isArray(analysis.beatGrid) ? analysis.beatGrid : null,
-      beatConfidence: analysis?.beatConfidence ?? null,
+      beatGrid,
+      beatConfidence: beatGrid ? analysis?.beatConfidence ?? null : null,
     }] as const;
   })), [sourceById, stems]);
   const sourceAlignmentByStemId = useMemo(() => new Map(stems.map((stem) => {
     const source = sourceById.get(stem.sourceAssetId);
     const analysis = source?.analysis;
+    const bpm = analysis?.status === "complete" ? trustedAnalysisBpm(analysis.bpm, analysis.bpmConfidence) : null;
+    const musicalKey = analysis?.status === "complete"
+      ? normaliseMusicalKey(trustedAnalysisKey(analysis.musicalKey, analysis.keyConfidence))
+      : null;
+    const beatGrid = analysis?.status === "complete"
+      ? trustedAnalysisBeatGrid(analysis.beatGrid, analysis.bpmConfidence, analysis.beatConfidence)
+      : null;
     return [stem.id, {
       sourceAssetId: stem.sourceAssetId,
       sourceName: source?.originalFilename ?? "Unknown source",
       analysisStatus: analysis?.status ?? "unavailable",
-      bpm: analysis?.status === "complete" ? analysis.bpm : null,
-      musicalKey: analysis?.status === "complete" ? normaliseMusicalKey(analysis.musicalKey) : null,
-      beatGrid: analysis?.status === "complete" && Array.isArray(analysis.beatGrid) ? analysis.beatGrid : null,
-      beatConfidence: analysis?.beatConfidence ?? null,
+      bpm,
+      musicalKey,
+      beatGrid,
+      beatConfidence: beatGrid ? analysis?.beatConfidence ?? null : null,
       sectionAnalysisStatus: source?.sectionAnalysis?.status ?? null,
     }] as const;
   })), [sourceById, stems]);

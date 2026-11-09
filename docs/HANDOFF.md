@@ -46,12 +46,35 @@ This section supersedes older status claims below where they conflict.
   No pinned release CDN 504 occurred in this forced source run.
 * **Recovered-stack Windows tests:** push run `42598958617` and PR run
   `42598965365` passed.
-* Evidence does not include real-song analysis, real-provider inference, or
-  hardware/audio-device listening. The packaged audio check uses generated
-  audio.
-* Pre-existing local work remains intact and uncommitted: modified
-  `pnpm-workspace.yaml`, untracked normalization source/tests, and output text
-  files. PR #29 is open and unmerged; no merge to main was made.
+* **Real-song local analysis characterization:** six user-supplied MP3/M4A
+  tracks were decoded by the local DSP path (first 65 seconds per file). BPM /
+  BPM-confidence and key / key-confidence were: Another One Bites the Dust
+  109.957 / 0.512, F minor / 0.034; September 123.047 / 0.624, A major /
+  0.573; I Feel It Coming remix 156.605 / 0.323, D# major / 0.086; Stayin'
+  Alive remix 103.359 / 0.380, F minor / 0.472; I Want to Break Free remix
+  72.788 / 0.913, C# minor / 0.584; Blinding Lights remix 172.266 / 0.878,
+  C minor / 0.245. Only two tracks passed both current tempo and key confidence
+  gates.
+* Structural candidates on those same excerpts produced 3–13 generic
+  `section` spans per track, all with zero semantic-label confidence. This is
+  not verse/chorus evidence; the automatic hybrid must refuse these inputs
+  rather than claim a smart cross-track arrangement.
+* Compact player, visual, and mashup-source labels now show weak values as
+  uncertain. Studio beat/key/tempo alignment inputs use the same 0.5 confidence
+  gate; a beat grid is withheld unless both BPM and beat-fit confidence pass.
+  Targeted confidence/automatic-remix/provenance tests: 18/18 pass; full
+  workspace typecheck passes.
+* This real-song run is standalone source analysis only. It does not prove
+  persisted end-to-end analysis, four-stem separation, audible mashup quality,
+  MIDI export/save/reopen, real-provider inference, or hardware listening.
+* **Branch preservation:** the workspace was already on
+  `arena/convergence-2026-11-07` at `fe1af426`, clean and exactly matching both
+  the configured remote and public GitHub ref. No switch, commit, push, or PR
+  merge was performed. The `replit-agent` ref remains at `a5bc2a96`; its recent
+  rhythm-analysis and automatic-remix work has equivalents on this branch
+  (`4430b555`, `84bbc553`). Its tip tree equals merge-base `b54840f2`, so no
+  net tree change from that ref needed wholesale porting. Current continuation
+  edits are uncommitted and unpushed.
 ## Status at `3a782f73` (2026-11-08) — supersedes any conflicting text below
 
 Read this section first; older sections are kept for history and are marked

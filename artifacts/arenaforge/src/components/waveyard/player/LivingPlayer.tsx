@@ -7,6 +7,7 @@ import type { MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport
 import type { Source, Stem } from "../studio/types";
 import { laneDisplayName } from "@workspace/arena/lib/waveyard/separation/stem-display";
 import { displaySourceSectionLabel } from "@workspace/arena/lib/waveyard/types/source-sections";
+import { compactMusicAnalysisLabel } from "@workspace/arena/lib/waveyard/types";
 import { derivePlayerPhase, formatPlayerTime, playerPhaseLabel, sectionWidths } from "./player-state";
 import { useFullscreenFocus } from "./useFullscreenFocus";
 
@@ -95,7 +96,7 @@ export function LivingPlayer({
     <div className="player-topline"><span className="eyebrow">Waveyard Play</span><span aria-live="polite">{phaseDescription}</span><button className="button secondary" onClick={onOpenStudio}>Open Studio</button></div>
     <div className="player-identity">
       <ArtworkHero title={source?.originalFilename ?? "Preparing source"} seed={source?.checksumSha256 ?? "waveyard-fallback"} />
-      <div className="player-title"><span className="eyebrow">{source ? "Source identity" : "Loading"}</span><h3>{source?.originalFilename ?? "Preparing your music"}</h3><p>{source?.analysis?.status === "complete" ? `${source.analysis.bpm?.toFixed(1) ?? "—"} BPM · ${source.analysis.musicalKey ?? "Key unavailable"}` : "Musical analysis will appear when available."}</p>{section && <b>Section {section.sectionIndex + 1} · {Math.round(visualState.sectionProgress * 100)}%</b>}</div>
+      <div className="player-title"><span className="eyebrow">{source ? "Source identity" : "Loading"}</span><h3>{source?.originalFilename ?? "Preparing your music"}</h3><p>{source?.analysis?.status === "complete" ? compactMusicAnalysisLabel(source.analysis) : "Musical analysis will appear when available."}</p>{section && <b>Section {section.sectionIndex + 1} · {Math.round(visualState.sectionProgress * 100)}%</b>}</div>
     </div>
     <div className="stem-constellation" aria-label="Interactive stem controls">
       {orderedStems.map((stem, index) => {

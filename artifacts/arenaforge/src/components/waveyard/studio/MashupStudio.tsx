@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { Source } from "./types";
+import { compactMusicAnalysisLabel } from "@workspace/arena/lib/waveyard/types";
 
 type Plan = {
   masterBpm: number;
@@ -148,7 +149,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             <select aria-label="Vocal track" value={vocalsId} onChange={(event) => setVocalsId(event.target.value)}>
               {analysable.map((source) => (
                 <option key={source.id} value={source.id}>
-                  {source.originalFilename} · {source.analysis?.bpm} BPM{source.analysis?.musicalKey ? ` · ${source.analysis.musicalKey}` : ""}
+                  {source.originalFilename} · {compactMusicAnalysisLabel(source.analysis)}
                 </option>
               ))}
             </select>
@@ -158,7 +159,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             <select aria-label="Instrumental track" value={bedId} onChange={(event) => setBedId(event.target.value)}>
               {analysable.map((source) => (
                 <option key={source.id} value={source.id}>
-                  {source.originalFilename} · {source.analysis?.bpm} BPM{source.analysis?.musicalKey ? ` · ${source.analysis.musicalKey}` : ""}
+                  {source.originalFilename} · {compactMusicAnalysisLabel(source.analysis)}
                 </option>
               ))}
             </select>

@@ -1,5 +1,10 @@
 import { normaliseMusicalKey, semitoneShift, type MusicalKey } from "./musical-key";
 import { usableBeatGrid } from "./beat-grid";
+import {
+  trustedAnalysisBpm,
+  trustedAnalysisKey,
+  WAVEYARD_MIXING_CONFIDENCE_THRESHOLD,
+} from "./analysis-confidence";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
 export const AUTOMATIC_REMIX_ENGINE_VERSION = "2";
@@ -112,10 +117,6 @@ export type AutomaticRemixResult =
 const roleOrder = ["drums", "percussion", "bass", "other", "melody", "vocals"];
 const defaultVolume: Record<string, number> = { vocals: 0.94, drums: 0.88, percussion: 0.82, bass: 0.84, other: 0.82, melody: 0.82 };
 
-function safeBpm(value: number | null | undefined) {
-  return value !== null && value !== undefined && Number.isFinite(value) && value >= 40 && value <= 300 ? value : null;
-}
-
 function usableSections(source: AutomaticRemixSource) {
   return [...source.sections]
     .filter((section) => Number.isSafeInteger(section.startMs) && Number.isSafeInteger(section.endMs)
@@ -136,7 +137,7 @@ function sourceHasVerifiedAnalysis(source: AutomaticRemixSource) {
 function sourceCanStructure(source: AutomaticRemixSource) {
   return sourceHasVerifiedAnalysis(source)
     && trustedBpm(source) !== null
-    && confidenceAtLeast(source.analysis?.beatConfidence, 0.5)
+    && confidenceAtLeast(source.analysis?.beatConfidence, WAVEYARD_MIXING_CONFIDENCE_THRESHOLD)
     && usableSections(source).length > 0
     && Boolean(usableBeatGrid(source.analysis?.beatGridMs));
 }
@@ -160,11 +161,11 @@ function confidenceAtLeast(value: number | null | undefined, minimum: number): b
 }
 
 function trustedBpm(source: AutomaticRemixSource): number | null {
-  return confidenceAtLeast(source.analysis?.bpmConfidence, 0.5) ? safeBpm(source.analysis?.bpm) : null;
+  return trustedAnalysisBpm(source.analysis?.bpm, source.analysis?.bpmConfidence);
 }
 
 function trustedKey(source: AutomaticRemixSource): MusicalKey | null {
-  return confidenceAtLeast(source.analysis?.keyConfidence, 0.5) ? normaliseMusicalKey(source.analysis?.musicalKey) : null;
+  return normaliseMusicalKey(trustedAnalysisKey(source.analysis?.musicalKey, source.analysis?.keyConfidence));
 }
 
 function semanticRole(section: AutomaticRemixSection): string | null {
