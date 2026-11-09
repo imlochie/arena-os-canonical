@@ -241,15 +241,13 @@ if (mashupEvaluationOnly) {
     };
   });
 } else {
-  // The timing-only browser run keeps the recipient playing while it measures
-  // several swaps in sequence. A short fixture can naturally end during a
-  // slow WebKit run, auto-advancing the deck and detaching the restore control
-  // before the test reaches it. Keep the timing recipient long-lived while
-  // leaving the comprehensive audio regression fixtures unchanged.
-  assets.set("a-source", wav(timingOnly ? 90 : 20, 130));
+  // The timing-only browser run loops its recipient media element while it
+  // measures several swaps in sequence. Keep the compressed fixture compact;
+  // the loop prevents a slow WebKit run from naturally ending the session.
+  assets.set("a-source", wav(20, 130));
   assets.set("b-source", wav(8, 230));
   tracks = ["a", "b", "c"].map((id, index) => {
-    const duration = timingOnly && id === "a" ? 90 : [20, 8, 12][index];
+    const duration = [20, 8, 12][index];
     const stems = types.map((stemType, i) => {
       const key = `${id}-${stemType}`;
       assets.set(key, wav(duration, 130 + index * 100 + i * 40));
@@ -2223,6 +2221,14 @@ try {
         throw error;
       }
       const deck = page.locator('[data-role="current"]');
+      if (timingOnly) {
+        // This is a sequential timing fixture, not a queue/auto-advance test.
+        // Looping the actual recipient audio keeps the same session track
+        // active while each donor downloads, decodes, plays and restores.
+        await deck.locator("audio").evaluateAll(elements => {
+          for (const audio of elements) audio.loop = true;
+        });
+      }
       const play = page.getByTestId("session-play");
       if (await play.getAttribute("aria-pressed") !== "true") await play.click();
       try {
