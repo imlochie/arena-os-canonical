@@ -23,6 +23,26 @@ where they are stale.
 
 ### Waveyard convergence follow-up (2026-11-09)
 
+* Local drum, harmony, and vocal analysis execution is now committed on the
+  convergence branch (`47ec26ac`, race guard `9a3a3dcb`). The local desktop
+  worker runs versioned DSP jobs against local audio, persists normalized
+  results with source provenance, and recovers queued jobs after restart. See
+  the dedicated test and limitations below.
+* At `9a3a3dcb`, the latest Windows x64 installer workflow completed green on
+  the PR run (run `42553704812`): previous package install/start, database and
+  migration readiness, record preservation across in-place update, clean
+  database shutdown, plus the packaged smoke job's backup/restore checks.
+  A second push-triggered package job (`42553701167`) also completed green with
+  those same assertions. This is repeatability evidence for the existing
+  service-worker/cache-clear mitigation, not proof of its
+  underlying renderer lifecycle cause. The installed-package smoke exercises
+  startup and packaged services; it does not prove audible real-audio playback.
+* The same PR head's cross-browser live-stem timing workflow is green in both
+  push and PR runs (`42553701083`, `42553704712`), covering Chromium, WebKit,
+  and Firefox on the Linux PulseAudio null-sink harness. Historical WebKit
+  restore-control flakiness remains unexplained; current green runs do not
+  establish the original race's root cause.
+
 * Analysis retries now claim the failed durable row before queue hand-off;
   queue refusal restores the original failure only while the row remains
   queued. Both failed-job retry and stale-analysis refresh paths avoid
@@ -81,9 +101,9 @@ Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same r
 * `pnpm run typecheck` passes. Later commits changed only `desktop/`, `scripts/`,
   the resume bound and its test (5/5 pass).
 
-### CI evidence (all runs on `arena/convergence-2026-11-07`)
+### CI evidence (historical; latest evidence is above)
 * Windows recovered-stack acceptance: green on every commit.
-* Windows x64 package (build → install → smoke → update): **flaky, not yet reliably green.**
+* Windows x64 package (build → install → smoke → update): historically flaky.
   `1ce31981` push ✅ / PR ❌; `d8bc1430` PR ✅ / push ❌; `320223b3` both ✅;
   `0e9ef2b6` both ❌ (`current_package_starts`, window url `""`, loading);
   `96810e3a` both ✅ (first runs with the service-worker clear). Two consecutive
