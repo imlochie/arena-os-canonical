@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      force_source_baseline:
+        description: Build the previous app from source instead of reusing an accepted installer artifact
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -80,6 +86,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Build Windows x64 installer
+        run: pnpm --filter @workspace/desktop run dist:win
+        env:
+          # Independent downloadable TARs, not additional installer payload.
+          ARENA_CLASSIC_PACKAGES: "1"
+
       - name: Build previous Windows package for update test
         shell: pwsh
         env:
@@ -90,7 +102,7 @@ jobs:
           # workflow, so every failure in this step names itself in a check-run
           # annotation. Without this a failure here is only "exit code 1".
           function Fail([string]$message) {
-            Write-Host "::error::windows-package step 10: $message"
+            Write-Host "::error::windows-package step 11: $message"
             throw $message
           }
           $workflowEvent = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
@@ -104,6 +116,7 @@ jobs:
           }
           if (-not $baseline) { Fail "The previous package revision could not be identified." }
           $previousInstaller = Join-Path $env:RUNNER_TEMP "ArenaForge-previous.exe"
+          $forceSourceBaseline = $workflowEvent.inputs.force_source_baseline -eq "true"
 
           # Prefer an installer from an earlier successful push on this same
           # branch. It has already passed the complete installed-package smoke
@@ -118,42 +131,66 @@ jobs:
             Accept = "application/vnd.github+json"
             "X-GitHub-Api-Version" = "2022-11-28"
           }
-          try {
-            $runsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-package.yml/runs?status=success&per_page=30"
-            $runs = (Invoke-RestMethod -Uri $runsUri -Headers $headers -TimeoutSec 30).workflow_runs
-            foreach ($run in $runs) {
-              if ($run.event -ne "push" -or $run.head_branch -ne $branch -or $run.head_sha -eq $currentHead) { continue }
-              git merge-base --is-ancestor $run.head_sha $currentHead *> $null
-              if ($LASTEXITCODE -ne 0) { continue }
-              $artifactsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$($run.id)/artifacts?per_page=100"
-              $artifact = (Invoke-RestMethod -Uri $artifactsUri -Headers $headers -TimeoutSec 30).artifacts |
-                Where-Object { $_.name -eq "arenaforge-windows-x64" -and -not $_.expired } |
-                Select-Object -First 1
-              if (-not $artifact) { continue }
-              $archive = Join-Path $env:RUNNER_TEMP "ArenaForge-previous-artifact.zip"
-              $artifactDir = Join-Path $env:RUNNER_TEMP "ArenaForge-previous-artifact"
-              Invoke-WebRequest -Uri $artifact.archive_download_url -Headers $headers -OutFile $archive -TimeoutSec 180
-              if ($artifact.digest -notmatch "^sha256:([0-9a-f]{64})$") { throw "The prior installer artifact has no SHA-256 digest." }
-              $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-              if ($archiveHash -ne $Matches[1]) { throw "The prior installer artifact digest does not match GitHub's metadata." }
-              Expand-Archive -LiteralPath $archive -DestinationPath $artifactDir -Force
-              $installer = Get-ChildItem $artifactDir -Filter "*.exe" -Recurse |
-                Where-Object { $_.Name -notmatch "uninstall" } |
-                Select-Object -First 1
-              if (-not $installer) { Fail "The prior accepted package artifact contained no installer (run $($run.id))." }
-              Copy-Item $installer.FullName $previousInstaller
-              Write-Host "previous package: using installer from successful run $($run.id), commit $($run.head_sha)"
-              "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
-              exit 0
+          if ($forceSourceBaseline) {
+            Write-Host "::notice::Source-baseline acceptance was explicitly requested; skipping accepted-installer lookup."
+          } else {
+            try {
+              $runsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-package.yml/runs?status=success&per_page=30"
+              $runs = (Invoke-RestMethod -Uri $runsUri -Headers $headers -TimeoutSec 30).workflow_runs
+              foreach ($run in $runs) {
+                if ($run.event -ne "push" -or $run.head_branch -ne $branch -or $run.head_sha -eq $currentHead) { continue }
+                git merge-base --is-ancestor $run.head_sha $currentHead *> $null
+                if ($LASTEXITCODE -ne 0) { continue }
+                $artifactsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$($run.id)/artifacts?per_page=100"
+                $artifact = (Invoke-RestMethod -Uri $artifactsUri -Headers $headers -TimeoutSec 30).artifacts |
+                  Where-Object { $_.name -eq "arenaforge-windows-x64" -and -not $_.expired } |
+                  Select-Object -First 1
+                if (-not $artifact) { continue }
+                $archive = Join-Path $env:RUNNER_TEMP "ArenaForge-previous-artifact.zip"
+                $artifactDir = Join-Path $env:RUNNER_TEMP "ArenaForge-previous-artifact"
+                Invoke-WebRequest -Uri $artifact.archive_download_url -Headers $headers -OutFile $archive -TimeoutSec 180
+                if ($artifact.digest -notmatch "^sha256:([0-9a-f]{64})$") { throw "The prior installer artifact has no SHA-256 digest." }
+                $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($archiveHash -ne $Matches[1]) { throw "The prior installer artifact digest does not match GitHub's metadata." }
+                Expand-Archive -LiteralPath $archive -DestinationPath $artifactDir -Force
+                $installer = Get-ChildItem $artifactDir -Filter "*.exe" -Recurse |
+                  Where-Object { $_.Name -notmatch "uninstall" } |
+                  Select-Object -First 1
+                if (-not $installer) { Fail "The prior accepted package artifact contained no installer (run $($run.id))." }
+                Copy-Item $installer.FullName $previousInstaller
+                Write-Host "previous package: using installer from successful run $($run.id), commit $($run.head_sha)"
+                "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
+                exit 0
+              }
+              Write-Host "::warning::No unexpired accepted prior installer artifact exists on this branch; building the previous revision from source."
+            } catch {
+              Write-Host "::warning::Could not retrieve a prior accepted installer artifact ($($_.Exception.Message)); building the previous revision from source."
             }
-            Write-Host "::warning::No unexpired accepted prior installer artifact exists on this branch; building the previous revision from source."
-          } catch {
-            Write-Host "::warning::Could not retrieve a prior accepted installer artifact ($($_.Exception.Message)); building the previous revision from source."
           }
 
           $previousSource = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) "arenaforge-previous-source"
           git worktree add --detach $previousSource $baseline
           if ($LASTEXITCODE -ne 0) { Fail "The previous package source could not be prepared." }
+          # The current app was packaged immediately before this step. Reuse
+          # its validated SDL and FFmpeg archives and its Arcade catalog in the
+          # old source tree. The previous app's independent emulator packages
+          # are not installer payload and are not part of this update
+          # acceptance; rebuilding them only caused redundant CDN downloads.
+          $currentArcadeArtifacts = Join-Path $env:GITHUB_WORKSPACE "generated-artifacts/arcade-native-packages"
+          $previousArcadeArtifacts = Join-Path $previousSource "generated-artifacts/arcade-native-packages"
+          $currentMediaCache = Join-Path $env:GITHUB_WORKSPACE "generated-artifacts/windows-tool-cache"
+          $previousMediaCache = Join-Path $previousSource "generated-artifacts/windows-tool-cache"
+          foreach ($artifactName in @("SDL2.zip", "arcade-catalog.json")) {
+            $artifactSource = Join-Path $currentArcadeArtifacts $artifactName
+            if (-not (Test-Path $artifactSource)) { Fail "Current package did not leave required verified Arcade build input $artifactName." }
+          }
+          $mediaArchives = @(Get-ChildItem -LiteralPath $currentMediaCache -File -ErrorAction SilentlyContinue)
+          if ($mediaArchives.Count -eq 0) { Fail "Current package did not leave its verified pinned media-tool cache." }
+          New-Item -ItemType Directory -Path $previousArcadeArtifacts -Force | Out-Null
+          New-Item -ItemType Directory -Path $previousMediaCache -Force | Out-Null
+          Copy-Item (Join-Path $currentArcadeArtifacts "SDL2.zip") -Destination $previousArcadeArtifacts -Force
+          Copy-Item (Join-Path $currentArcadeArtifacts "arcade-catalog.json") -Destination $previousArcadeArtifacts -Force
+          foreach ($archive in $mediaArchives) { Copy-Item $archive.FullName -Destination $previousMediaCache -Force }
           # Two kinds of file come from the tested branch when building the
           # PREVIOUS package, and nothing else does:
           #
@@ -278,7 +315,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               Fail "Previous package dependencies could not be installed (pnpm install exited $LASTEXITCODE). If the base revision still cannot resolve win32-x64 binaries, the overrides in pnpm-workspace.yaml were not the remaining cause."
             }
-            $env:ARENA_CLASSIC_PACKAGES = "1"
+            $env:ARENA_CLASSIC_PACKAGES = "0"
+            Write-Host "previous package: skip independent optional emulator packages; use verified current-build catalog"
             # Capture the build output. Job logs are unreachable from the
             # environment that triages this workflow, so on failure the tail of
             # the real output becomes the annotation -- "dist:win exited 1" on
@@ -323,12 +361,6 @@ jobs:
           }
           if (-not (Test-Path $previousInstaller)) { Fail "The previous Windows installer was not retained for the update test." }
           "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
-
-      - name: Build Windows x64 installer
-        run: pnpm --filter @workspace/desktop run dist:win
-        env:
-          # Independent downloadable TARs, not additional installer payload.
-          ARENA_CLASSIC_PACKAGES: "1"
 
       - name: Install and check packaged app
         shell: pwsh
