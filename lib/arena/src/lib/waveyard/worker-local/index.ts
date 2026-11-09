@@ -5,9 +5,8 @@
  * starts draining. Registered queues are exactly the engines the desktop
  * can run honestly: waveforms, the in-process MDX-Net stem machine
  * (worker-local/separation.ts — zero setup, no Python), source/section
- * analysis, and export. The Python-only stem analyses (drums, harmony,
- * vocals, events) stay unregistered so their enqueues fail loudly with a
- * desktop reason rather than pretending.
+ * analysis, local drum/harmony/vocal DSP, and export. Event-level analysis
+ * remains unregistered so its enqueue fails loudly rather than pretending.
  */
 
 import {

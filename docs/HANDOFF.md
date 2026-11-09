@@ -4,6 +4,48 @@ Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
 Last updated: 2026-11-09.
 
+## Current verification update — 2026-11-09, worktree based on `195ffe96`
+
+This section supersedes older status claims below where they conflict.
+
+* **Waveyard local analyses:** the desktop API selects the versioned local
+  engine and starts the existing drum, harmony, and vocal queues. Their real
+  DSP handlers persist events/frames with checksums and engine provenance;
+  API startup replays interrupted durable jobs. Generated WAV + PGlite +
+  filesystem-backed tests: 25/25 pass, including failure, retry, stale
+  provenance, and restart recovery.
+* **Queued MIDI export:** the old desktop handler rejected every queued MIDI
+  job even though the local analyses existed. The local exporter now rechecks
+  the immutable job's source/stem/analysis identity, validates a Standard MIDI
+  round trip, and persists a checksummed MIDI export asset. PGlite verifies
+  vocal MIDI bytes, asset persistence, stale-version rejection, and honest
+  failure when analysis has no confident exportable notes. It does not
+  fabricate drum classes or weak harmony notes.
+* **Waveyard reliability suites:** 169/169 tests pass across the original full
+  live-stem-layer regression suite, session-save journal replay/acknowledgment,
+  MIDI writer/reader, player state, normalization, and source-section data.
+  Full workspace typecheck passes.
+* **Windows package acceptance at the base commit:** both push run
+  `42572872715` and PR run `42572877392` passed the previous-package build,
+  clean x64 installer build, installed app launch, embedded database/migration
+  readiness, packaged generated-tone upload and playback, backup/restore, and
+  in-place update with a saved record retained after application restart.
+  The smoke opens the Spaces room and exercises Waveyard's upload/API and
+  renderer audio path; it does not navigate through the Waveyard room UI or
+  run real model inference. The tone is generated test audio, not a real song.
+* **Browser timing at the base commit:** `live-stem-timing` passed on push run `42572872620` and
+  PR run `42572877449`, covering Chromium, Firefox, and WebKit in the Linux
+  PulseAudio harness. This is timing acceptance, not the complete browser
+  application matrix, packaged Windows playback, or hardware listening.
+* The worktree changes described here have passed local targeted tests and
+  typecheck. The Windows/browser runs above are evidence for base commit
+  `195ffe96`; rerun CI on the new commit before treating the MIDI change as
+  packaged or browser accepted. PR #29 remains open and unmerged.
+* User-owned local changes remain outside the focused changes: modified
+  `pnpm-workspace.yaml`, untracked musical-analysis normalization source/tests,
+  and pre-existing output text files. Keep them intact and out of commits
+  unless they are reviewed as their own implementation change.
+
 ## Status at `3a782f73` (2026-11-08) — supersedes any conflicting text below
 
 Read this section first; older sections are kept for history and are marked

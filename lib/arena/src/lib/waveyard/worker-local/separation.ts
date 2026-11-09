@@ -18,9 +18,9 @@
  *    Kim Vocal 2), not Demucs' four.
  *  - modelVersion records the model file's sha256 — the exact bits that
  *    produced the stems.
- *  - The isolated-vocal analysis provisioning is NOT mirrored: the desktop
- *    has no vocal-analysis executor, and provisioning a job that can never
- *    run would not be honest (see worker-local/index.ts).
+ *  - Separation does not auto-create analysis rows. The Studio's explicit
+ *    analysis requests use the local drum/harmony/vocal executors registered
+ *    by worker-local/index.ts.
  *  - Real progress: chunk-level progress is written into the durable job's
  *    metadata while separating, so the UI polls one honest number.
  */

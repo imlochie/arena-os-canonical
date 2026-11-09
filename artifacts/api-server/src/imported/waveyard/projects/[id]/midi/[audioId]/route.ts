@@ -178,6 +178,9 @@ export async function GET(
       notes = harmonyEventsToMidiNotes(events);
     }
 
+    if (notes.length === 0) {
+      return Response.json({ error: "No confident note events were found for this MIDI export." }, { status: 422 });
+    }
     const file = encodeMidiFile(notes, bpm);
     return new Response(new Uint8Array(file), {
       status: 200,

@@ -15,6 +15,7 @@ import { LocalStorageProvider, privateObjectKey } from "@workspace/arena/lib/wav
 import {
   projects, processingJobs, sourceAssets, stemAssets, drumAnalyses, drumEvents,
   harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalPitchFrames,
+  remixSessions, remixVersions, exportJobs, exportAssets,
 } from "@workspace/db/waveyardSchema";
 import {
   LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, drumAnalysisIdempotencyKey,
@@ -26,6 +27,8 @@ import {
   LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION, vocalAnalysisIdempotencyKey,
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
+import { handleMidiExportJob } from "./export";
+import { parseStandardMidiFile } from "../midi-file";
 import {
   recoverPendingLocalDrumAnalyses,
   recoverPendingLocalHarmonyAnalyses,
@@ -162,6 +165,58 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
       stemAssetId: failedStem.id, analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION }]);
     const [afterRestart] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.id, failedAnalysis.id));
     assert.equal(afterRestart.status, "queued"); assert.equal(afterRestart.startedAt, null);
+
+    const [session] = await db.insert(remixSessions).values({
+      projectId: project.id, ownerId: project.ownerId, name: "MIDI export integration",
+    }).returning();
+    const [version] = await db.insert(remixVersions).values({
+      remixSessionId: session.id, createdById: project.ownerId, name: "MIDI export snapshot", snapshot: "{}",
+    }).returning();
+    const exportDb = db as unknown as Parameters<typeof handleMidiExportJob>[2];
+    for (const target of [
+      { kind: "vocal" as const, stemId: vocalStem.id, analysisId: vocal.id, engine: LOCAL_VOCAL_ANALYSIS_ENGINE, engineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION },
+      { kind: "harmony" as const, stemId: null, analysisId: harmony.id, engine: LOCAL_HARMONY_ANALYSIS_ENGINE, engineVersion: LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION },
+    ]) {
+      const [midiJob] = await db.insert(exportJobs).values({
+        projectId: project.id, remixSessionId: session.id, remixVersionId: version.id, requestedById: project.ownerId,
+        idempotencyKey: "midi-export:" + target.kind + ":" + randomUUID(), format: "midi", midiKind: target.kind,
+        midiSourceAssetId: source.id, midiStemAssetId: target.stemId, midiPpq: 480, midiAnalysisId: target.analysisId,
+        midiSourceChecksumSha256: source.checksumSha256, midiAnalysisEngine: target.engine,
+        midiAnalysisEngineVersion: target.engineVersion, sampleRate: 0, channels: 0,
+      }).returning();
+      if (target.kind === "harmony") {
+        await assert.rejects(handleMidiExportJob(midiJob, version, exportDb, storage), /No confident note events/);
+        const [emptyResult] = await db.select().from(exportJobs).where(eq(exportJobs.id, midiJob.id));
+        assert.equal(emptyResult.status, "failed");
+        assert.equal(emptyResult.errorCode, "midi_no_notes");
+        assert.equal((await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, midiJob.id))).length, 0);
+        continue;
+      }
+      await handleMidiExportJob(midiJob, version, exportDb, storage);
+      const [completed] = await db.select().from(exportJobs).where(eq(exportJobs.id, midiJob.id));
+      assert.equal(completed.status, "complete", completed.errorMessage ?? target.kind + " MIDI export completes");
+      const [asset] = await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, midiJob.id));
+      assert.ok(asset, "the durable export asset is created");
+      assert.equal(asset.format, "midi");
+      const bytes = await storage.getBuffer(asset.storageKey, 1024 * 1024);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), asset.checksumSha256);
+      const parsed = parseStandardMidiFile(bytes);
+      assert.ok(parsed, "persisted bytes round-trip through the Standard MIDI reader");
+      assert.ok(parsed.notes.length > 0, "local vocal analysis produces notes without a remote worker");
+    }
+
+    const [staleMidiJob] = await db.insert(exportJobs).values({
+      projectId: project.id, remixSessionId: session.id, remixVersionId: version.id, requestedById: project.ownerId,
+      idempotencyKey: "midi-export:stale:" + randomUUID(), format: "midi", midiKind: "vocal",
+      midiSourceAssetId: source.id, midiStemAssetId: vocalStem.id, midiPpq: 480, midiAnalysisId: vocal.id,
+      midiSourceChecksumSha256: source.checksumSha256, midiAnalysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+      midiAnalysisEngineVersion: "obsolete-version", sampleRate: 0, channels: 0,
+    }).returning();
+    await assert.rejects(handleMidiExportJob(staleMidiJob, version, exportDb, storage), /Complete current vocal analysis/);
+    const [staleResult] = await db.select().from(exportJobs).where(eq(exportJobs.id, staleMidiJob.id));
+    assert.equal(staleResult.status, "failed");
+    assert.equal(staleResult.errorCode, "analysis_stale");
+    assert.equal((await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, staleMidiJob.id))).length, 0);
   } finally {
     await client.close();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
