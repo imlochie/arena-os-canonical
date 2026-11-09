@@ -10,7 +10,7 @@
  * null immediately — the caller falls back visibly instead of hanging.
  */
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@workspace/db";
 import { agentBridgeState, agentBridgeTasks } from "@workspace/db/schema";
@@ -27,8 +27,8 @@ export type AgentTaskView = {
 };
 
 /** Record a bridge poll (called by the API routes on every take/heartbeat). */
-export async function touchBridge(name: string | null): Promise<void> {
-  await db
+export async function touchBridge(name: string | null, database: typeof db = db): Promise<void> {
+  await database
     .insert(agentBridgeState)
     .values({ id: BRIDGE_SINGLTON_ID, name, lastPolledAt: new Date() })
     .onConflictDoUpdate({
@@ -37,8 +37,8 @@ export async function touchBridge(name: string | null): Promise<void> {
     });
 }
 
-export async function bridgeStatus(): Promise<{ connected: boolean; name: string | null; lastPolledAt: string | null }> {
-  const [state] = await db.select().from(agentBridgeState).where(eq(agentBridgeState.id, BRIDGE_SINGLTON_ID)).limit(1);
+export async function bridgeStatus(database: typeof db = db): Promise<{ connected: boolean; name: string | null; lastPolledAt: string | null }> {
+  const [state] = await database.select().from(agentBridgeState).where(eq(agentBridgeState.id, BRIDGE_SINGLTON_ID)).limit(1);
   const lastPolledAt = state?.lastPolledAt ?? null;
   return {
     connected: lastPolledAt !== null && Date.now() - new Date(lastPolledAt).getTime() < BRIDGE_STALE_MS,
@@ -48,15 +48,15 @@ export async function bridgeStatus(): Promise<{ connected: boolean; name: string
 }
 
 /** Take the next queued task (marks it taken). Returns null when the queue is empty. */
-export async function takeNextTask(): Promise<AgentTaskView | null> {
-  const [next] = await db
+export async function takeNextTask(database: typeof db = db): Promise<AgentTaskView | null> {
+  const [next] = await database
     .select()
     .from(agentBridgeTasks)
     .where(eq(agentBridgeTasks.status, "queued"))
     .orderBy(asc(agentBridgeTasks.createdAt))
     .limit(1);
   if (!next) return null;
-  const claimed = await db
+  const claimed = await database
     .update(agentBridgeTasks)
     .set({ status: "taken", takenAt: new Date() })
     .where(and(eq(agentBridgeTasks.id, next.id), eq(agentBridgeTasks.status, "queued")))
@@ -69,8 +69,8 @@ export async function takeNextTask(): Promise<AgentTaskView | null> {
   };
 }
 
-export async function completeTask(id: string, text: string, ok: boolean): Promise<boolean> {
-  const rows = await db
+export async function completeTask(id: string, text: string, ok: boolean, database: typeof db = db): Promise<boolean> {
+  const rows = await database
     .update(agentBridgeTasks)
     .set({ status: ok ? "done" : "failed", resultText: text, completedAt: new Date() })
     .where(and(eq(agentBridgeTasks.id, id), eq(agentBridgeTasks.status, "taken")))
@@ -88,24 +88,40 @@ export async function submitAgentTask(
   messages: ChatMsg[],
   requestedModelId: string,
   waitMs = 90_000,
+  database: typeof db = db,
 ): Promise<string | null> {
-  const status = await bridgeStatus();
+  const status = await bridgeStatus(database);
   if (!status.connected) return null;
-  const [task] = await db
+  const [task] = await database
     .insert(agentBridgeTasks)
     .values({ messagesJson: JSON.stringify(messages), requestedModelId, status: "queued" })
     .returning({ id: agentBridgeTasks.id });
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    const [row] = await db.select().from(agentBridgeTasks).where(eq(agentBridgeTasks.id, task.id)).limit(1);
+    const [row] = await database.select().from(agentBridgeTasks).where(eq(agentBridgeTasks.id, task.id)).limit(1);
     if (!row) return null;
     if (row.status === "done" && row.resultText !== null) return row.resultText;
     if (row.status === "failed") return null;
   }
-  await db
+  await database
     .update(agentBridgeTasks)
     .set({ status: "expired", completedAt: new Date() })
     .where(and(eq(agentBridgeTasks.id, task.id), sql`${agentBridgeTasks.status} in ('queued','taken')`));
   return null;
+}
+
+/**
+ * A desktop restart destroys the in-flight HTTP request that was waiting for
+ * these tasks. Preserve the rows for inspection, but expire queued/taken work
+ * so the bridge cannot later return an answer to a request that no longer
+ * exists (or leave a taken row permanently unclaimable).
+ */
+export async function recoverInterruptedAgentBridgeTasks(database: typeof db = db): Promise<string[]> {
+  const rows = await database
+    .update(agentBridgeTasks)
+    .set({ status: "expired", completedAt: new Date() })
+    .where(inArray(agentBridgeTasks.status, ["queued", "taken"]))
+    .returning({ id: agentBridgeTasks.id });
+  return rows.map((row) => row.id);
 }

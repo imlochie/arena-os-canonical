@@ -107,6 +107,13 @@ where they are stale.
   readers. API-server typecheck passes. This verifies local database and API
   reader integration; it does not establish browser navigation or packaged
   Windows acceptance for the handoff flow.
+* Desktop restart recovery now expires queued or taken agent-bridge tasks whose
+  waiting API request was destroyed with the prior process. Rows and prompt
+  provenance remain available for inspection, and late bridge completions are
+  rejected instead of becoming stranded or detached answers. The bridge suite
+  now runs against an isolated PGlite database with canonical desktop
+  migrations (4/4 pass); shared-library and API-server typechecks pass. This
+  proves local database lifecycle behavior, not real external-agent inference.
 
 ### Historical test evidence (earlier environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:
