@@ -403,6 +403,7 @@
     "./lib/waveyard/separation/stft.test": "./src/lib/waveyard/separation/stft.test.ts",
     "./lib/waveyard/separation/stft": "./src/lib/waveyard/separation/stft.ts",
     "./lib/waveyard/source-events": "./src/lib/waveyard/source-events.ts",
+    "./lib/waveyard/source-analysis-retry": "./src/lib/waveyard/source-analysis-retry.ts",
     "./lib/waveyard/source-ingest": "./src/lib/waveyard/source-ingest.ts",
     "./lib/waveyard/stem2/capability.test": "./src/lib/waveyard/stem2/capability.test.ts",
     "./lib/waveyard/stem2/capability": "./src/lib/waveyard/stem2/capability.ts",

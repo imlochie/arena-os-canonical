@@ -8,6 +8,7 @@ import {
   sourceSections,
 } from "@workspace/db/waveyardSchema";
 import { enqueueSourceAnalysis, getSourceAnalysisQueue } from "@workspace/arena/lib/waveyard/queue";
+import { retryFailedSourceAnalysis } from "@workspace/arena/lib/waveyard/source-analysis-retry";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 import {
@@ -127,37 +128,39 @@ export async function POST(
       return Response.json({ analysis: updated });
     }
 
-    const queue = await getSourceAnalysisQueue();
-    const queueJob = await queue.getJob(analysis.id);
-    if (queueJob) await queueJob.retry();
-    else
-      await enqueueSourceAnalysis({
-        sourceAnalysisId: analysis.id,
-        projectId: analysis.projectId,
-        sourceAssetId: analysis.sourceAssetId,
-        analysisEngine: analysis.analysisEngine,
-        analysisEngineVersion: analysis.analysisEngineVersion,
-      });
-    const [updated] = await db
-      .update(sourceAnalyses)
-      .set({
-        status: "queued",
-        stage: "queued",
-        errorCode: null,
-        analysisError: null,
-        bpm: null,
-        bpmConfidence: null,
-        musicalKey: null,
-        keyConfidence: null,
-        beatGrid: null,
-        beatConfidence: null,
-        analyzedAt: null,
-        completedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(sourceAnalyses.id, analysis.id))
-      .returning();
-    return Response.json({ analysis: updated });
+    const result = await retryFailedSourceAnalysis(db, analysis.id, {
+      handOff: async (claimed) => {
+        const queue = await getSourceAnalysisQueue();
+        let queueJob;
+        try {
+          queueJob = await queue.getJob(claimed.id);
+          if (queueJob) {
+            const state = String(await queueJob.getState());
+            if (state === "failed" || state === "completed") {
+              await queueJob.retry(state);
+              return;
+            }
+            if (state !== "unknown") return;
+          }
+        } finally {
+          await queue.close();
+        }
+        await enqueueSourceAnalysis({
+          sourceAnalysisId: claimed.id,
+          projectId: claimed.projectId,
+          sourceAssetId: claimed.sourceAssetId,
+          analysisEngine: claimed.analysisEngine,
+          analysisEngineVersion: claimed.analysisEngineVersion,
+        });
+      },
+    });
+    if (result.kind === "not-found")
+      return Response.json({ error: "Analysis job not found." }, { status: 404 });
+    if (result.kind === "not-retryable")
+      return Response.json({ error: "Only failed analysis jobs can be retried." }, { status: 409 });
+    if (result.kind === "queue-refused")
+      return Response.json({ error: "Analysis retry could not be queued.", detail: result.reason }, { status: 503 });
+    return Response.json({ analysis: result.analysis });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("analysis retry failed", error);
