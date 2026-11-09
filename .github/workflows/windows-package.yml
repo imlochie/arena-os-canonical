@@ -146,7 +146,14 @@ jobs:
             # runner is elevated, so the base app can never start there and the
             # update check failed at older_package_starts. This file starts the
             # server through pg_ctl; the on-disk cluster format is unchanged.
-            "desktop/database.mjs"
+            "desktop/database.mjs",
+            # The hosted artifact service intermittently returns HTTP 504 for
+            # immutable classic/SDL releases. Preserve the previous app's
+            # build recipes while using the tested bounded retry helper, which
+            # still enforces the same exact size and SHA-256 pins.
+            "desktop/arcade/retry-fetch.mjs",
+            "desktop/build-classic-packages.mjs",
+            "desktop/build-arcade-fixture.mjs"
           )
           foreach ($fix in $baseFixFiles) {
             $source = Join-Path $env:GITHUB_WORKSPACE $fix

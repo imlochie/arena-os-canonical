@@ -141,8 +141,22 @@ where they are stale.
   pinned SDK ZIPs, classic package assets, and the SDL fixture download. Pins,
   exact sizes, digests, and permanent HTTP failure behavior remain enforced.
   Desktop build tests pass 7/7, including retry-on-504 and no-retry-on-404.
-  This local commit still needs the Windows package workflow to prove it reaches
-  the installer/update checks; it has not been pushed.
+  The first post-change Windows run still failed on pinned GBDK/DOSBox 504s
+  while compiling the *previous* package: the workflow builds from the base
+  worktree and had not copied the new retry helper and recipes there. The
+  workflow now explicitly applies those three pinned-download files to that
+  baseline build while preserving its prior app source. The next Windows run
+  must confirm it reaches installer, install, update, and restart checks.
+* The original comprehensive Chromium live-stem run exposed a real status-order
+  defect: a tempo-matched donor was reported only as low beat confidence,
+  hiding that the tempo stretch had succeeded. The status now reports tempo
+  match and unavailable beat alignment together. Its existing browser
+  assertions passed through the tempo, pitch-follow, playhead, and donor
+  alignment checks. The Windows WebKit run cannot exercise audio because that
+  browser build lacks `AudioContext`; the Chromium full run exits early after
+  measuring zero output samples on mirror-tab return, while its context remains
+  running. The harness records this as unsupported-environment evidence, so
+  this is partial browser evidence, not a full-suite pass.
 
 ### Historical test evidence (earlier environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:
