@@ -95,11 +95,11 @@ test("pinned release fetch retries transient HTTP failures but returns permanent
   let calls = 0;
   const response = await fetchWithTransientRetries("https://example.invalid/pinned.zip", {}, {
     delayMs: 0,
-    fetchImpl: async () => ++calls === 1
+    fetchImpl: async () => ++calls < 4
       ? new Response("temporary gateway failure", { status: 504 })
       : new Response("pinned bytes", { status: 200 }),
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 4, "bounded retries recover after multiple consecutive gateway failures");
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "pinned bytes");
 

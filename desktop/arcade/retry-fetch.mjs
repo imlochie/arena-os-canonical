@@ -5,7 +5,11 @@ const retryableStatus = status => status === 408 || status === 425 || status ===
 /** Retry only transient transport failures. Callers still validate URLs and
  * must verify the complete pinned archive before using any downloaded bytes. */
 export async function fetchWithTransientRetries(url, init = {}, {
-  attempts = 3,
+  // Release/CDN gateways can return several consecutive 504s during regional
+  // incidents. Keep retries bounded and retain the caller's original deadline;
+  // every downloaded package is still checked against its exact byte count
+  // and SHA-256 before use.
+  attempts = 5,
   delayMs = 250,
   fetchImpl = globalThis.fetch,
 } = {}) {
