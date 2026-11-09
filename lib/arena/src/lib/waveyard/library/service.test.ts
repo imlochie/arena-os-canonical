@@ -3423,11 +3423,17 @@ test("library default four-stem retry reaches real live-mixing controls", {
 }, async t => {
   assert.ok(client && root);
   const { verifyLibraryRetryWithRealWorker } = await import("./retry-worker-acceptance.test-helper");
+  const realInputs = [
+    process.env.WAVEYARD_REAL_LIBRARY_AUDIO_INPUT?.trim(),
+    process.env.WAVEYARD_REAL_LIBRARY_INCOMING_AUDIO_INPUT?.trim(),
+  ].filter((path): path is string => Boolean(path));
   const result = await verifyLibraryRetryWithRealWorker({
     database: db.db, client, directory: root, addTrack: service.addTrackFromAudioFile,
     recipe: "default-four-stem",
+    audioInputPath: process.env.WAVEYARD_REAL_LIBRARY_AUDIO_INPUT?.trim() || undefined,
+    incomingAudioInputPath: process.env.WAVEYARD_REAL_LIBRARY_INCOMING_AUDIO_INPUT?.trim() || undefined,
   });
-  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. Two one-second synthetic MP3s generated from disposable PCM; real pinned CPU execution and UI routing, not subjective quality or Windows speed evidence.`);
+  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. ${realInputs.length}/2 source files were supplied as real audio; remaining files are one-second synthetic controls. Pinned CPU execution and UI routing do not establish subjective separation quality or Windows performance.`);
 });
 
 // Opt-in real CPU load and HTTP latency measurement, using this suite's private

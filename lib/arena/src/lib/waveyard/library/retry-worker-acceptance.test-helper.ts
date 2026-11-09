@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { processingJobs, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
@@ -38,6 +38,8 @@ export async function verifyLibraryRetryWithRealWorker(options: {
   directory: string;
   addTrack: typeof addTrackFromAudioFile;
   recipe?: "kim_vocal_2" | "default-four-stem";
+  audioInputPath?: string;
+  incomingAudioInputPath?: string;
 }) {
   const { database, client, directory, addTrack } = options;
   const fourStem = options.recipe === "default-four-stem";
@@ -78,13 +80,17 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     await stagePinnedModels(installedDirectory, modelsDirectory, fourStem ? FOUR_STEM_MODELS : [model]);
     process.env.WAVEYARD_MODELS_DIR = modelsDirectory;
     const wavFixturePath = join(directory, `retry-acceptance-${fourStem ? "four-source" : "kim"}.wav`);
-    const inputPath = fourStem ? join(directory, "retry-acceptance-four.mp3") : wavFixturePath;
-    const sourcePcm = stemMachineSource(44_100);
-    // Both opt-in cases share one disposable DB; distinct PCM avoids making
-    // the second intake an intentional checksum-deduplication hit.
-    if (fourStem) for (let index = 0; index < sourcePcm.length; index++) sourcePcm[index] *= 0.9;
-    await writeFile(wavFixturePath, encodeWav16(sourcePcm, 44_100));
-    if (fourStem) {
+    const inputPath = options.audioInputPath
+      ? resolve(options.audioInputPath)
+      : fourStem ? join(directory, "retry-acceptance-four.mp3") : wavFixturePath;
+    if (!options.audioInputPath) {
+      const sourcePcm = stemMachineSource(44_100);
+      // Both opt-in cases share one disposable DB; distinct PCM avoids making
+      // the second intake an intentional checksum-deduplication hit.
+      if (fourStem) for (let index = 0; index < sourcePcm.length; index++) sourcePcm[index] *= 0.9;
+      await writeFile(wavFixturePath, encodeWav16(sourcePcm, 44_100));
+    }
+    if (fourStem && !options.audioInputPath) {
       await execTool("ffmpeg", [
         "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-i", wavFixturePath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
@@ -106,7 +112,9 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     const intake = await addTrack({
       ownerId,
       filePath: inputPath,
-      filename: fourStem ? "Fixture - Library retry acceptance.mp3" : "Fixture - Library retry acceptance.wav",
+      filename: options.audioInputPath
+        ? basename(inputPath)
+        : fourStem ? "Fixture - Library retry acceptance.mp3" : "Fixture - Library retry acceptance.wav",
       mimeType: fourStem ? "audio/mpeg" : "audio/wav",
       ...(fourStem ? {} : { model: model.id }),
       device: "cpu",
@@ -133,20 +141,26 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       assert.match(importedSource.originalFilename, /\.mp3$/i);
 
       const incomingWavPath = join(directory, "retry-acceptance-transition-incoming.wav");
-      incomingInputPath = join(directory, "retry-acceptance-transition-incoming.mp3");
-      const incomingPcm = stemMachineSource(44_100);
-      for (let index = 0; index < incomingPcm.length; index++) incomingPcm[index] *= 0.71;
-      await writeFile(incomingWavPath, encodeWav16(incomingPcm, 44_100));
-      await execTool("ffmpeg", [
-        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", incomingWavPath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
-        incomingInputPath,
-      ], { timeoutMs: 30_000 });
+      incomingInputPath = options.incomingAudioInputPath
+        ? resolve(options.incomingAudioInputPath)
+        : join(directory, "retry-acceptance-transition-incoming.mp3");
+      if (!options.incomingAudioInputPath) {
+        const incomingPcm = stemMachineSource(44_100);
+        for (let index = 0; index < incomingPcm.length; index++) incomingPcm[index] *= 0.71;
+        await writeFile(incomingWavPath, encodeWav16(incomingPcm, 44_100));
+        await execTool("ffmpeg", [
+          "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+          "-i", incomingWavPath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
+          incomingInputPath,
+        ], { timeoutMs: 30_000 });
+      }
       incomingOriginalChecksum = await checksumFile(incomingInputPath);
       const incomingIntake = await addTrack({
         ownerId,
         filePath: incomingInputPath,
-        filename: "Fixture - Library retry transition incoming.mp3",
+        filename: options.incomingAudioInputPath
+          ? basename(incomingInputPath)
+          : "Fixture - Library retry transition incoming.mp3",
         mimeType: "audio/mpeg",
         device: "cpu",
       });
@@ -220,11 +234,13 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     const context = await browser.newContext({ serviceWorkers: "block" });
     await installLiveAudioProbe(context);
     let retryRequests = 0;
+    let observedSessionId: string | null = null;
     const servedAudioAssets = new Set<string>();
     await context.route("**/api/**", async (route: BrowserRoute) => {
       const request = route.request();
       const url = new URL(request.url());
       const sessionPath = url.pathname.match(/^\/api\/library\/sessions\/([^/]+)(?:\/(state|tracks)(?:\/([^/]+))?)?$/);
+      if (sessionPath !== null) observedSessionId = sessionPath[1];
       const assetPath = url.pathname.match(/^\/api\/assets\/([^/]+)$/);
       const retryJobPath = url.pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
       let response: Response | undefined;
@@ -392,12 +408,30 @@ export async function verifyLibraryRetryWithRealWorker(options: {
           && ids.every(id => audio.some(item => new URL(item.currentSrc || item.src).pathname.endsWith(`/${id}`)));
       }, expectedAssets, { timeout: 30_000 });
       const play = page.getByTestId("session-play");
-      if (await play.getAttribute("aria-pressed") === "true") await play.click();
       const loaded = await readLiveAudioState(page);
       assert.deepEqual(loaded.map(item => item.assetId).sort(), expectedAssets.sort(),
         "live playback uses the four persisted model outputs, never a passthrough/full-source substitute");
       assert.ok(expectedAssets.every(id => servedAudioAssets.has(id)),
         "every real stem was read through the production private asset route");
+      await page.waitForFunction(
+        `() => {
+          const audio = Array.from(document.querySelectorAll('[data-role="current"] audio'));
+          return audio.length === 4 && audio.every(item => !item.paused && item.currentTime > 0.03);
+        }`,
+        undefined,
+        { timeout: 10_000 },
+      );
+      assert.equal(await play.getAttribute("aria-pressed"), "true",
+        "the play control reports active playback for the actual persisted stems");
+      await play.click();
+      await page.waitForFunction(
+        `() => {
+          const audio = Array.from(document.querySelectorAll('[data-role="current"] audio'));
+          return audio.length === 4 && audio.every(item => item.paused);
+        }`,
+        undefined,
+        { timeout: 5_000 },
+      );
       for (const stem of stems) {
         const isolate = page.getByTestId(`quick-isolate-${stem.stemType}`);
         await isolate.click();
@@ -410,39 +444,120 @@ export async function verifyLibraryRetryWithRealWorker(options: {
           `isolating ${stem.stemType} mutes the other three real stem routes`);
         await isolate.click();
       }
+      const beforePlay = await readLiveAudioState(page);
+      assert.ok(beforePlay.every(item => item.paused),
+        "stem-isolation checks leave the current track paused before resume");
+      assert.equal(await play.getAttribute("aria-pressed"), "false",
+        "the play control reports paused state before resume");
       await play.click();
-      await page.waitForFunction(() => {
-        const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
-        return audio.length === 4 && audio.every(item => !item.paused && item.currentTime > 0.03);
-      }, undefined, { timeout: 5_000 });
+      try {
+        await page.waitForFunction(
+          `() => {
+            const audio = Array.from(document.querySelectorAll('[data-role="current"] audio'));
+            return audio.length === 4 && audio.every(item => !item.paused && item.currentTime > 0.03);
+          }`,
+          undefined,
+          { timeout: 5_000 },
+        );
+      } catch (error) {
+        const audioState = await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
+          elements.map(audio => ({
+            currentTime: audio.currentTime,
+            duration: audio.duration,
+            paused: audio.paused,
+            readyState: audio.readyState,
+            networkState: audio.networkState,
+            errorCode: audio.error?.code ?? null,
+          })),
+        ).catch(() => []);
+        console.error("Persisted real stems did not start together after the play action", {
+          beforePlay,
+          audioState,
+          playPressed: await play.getAttribute("aria-pressed").catch(() => null),
+          playLabel: await play.getAttribute("aria-label").catch(() => null),
+          playDisabled: await play.isDisabled().catch(() => null),
+          statusMessages: await page.locator('[role="alert"]').allTextContents().catch(() => []),
+          pageErrors,
+          pageText: (await page.locator("body").innerText().catch(() => "")).slice(-1600),
+        });
+        throw error;
+      }
       await play.click();
       assert.ok((await readLiveAudioState(page)).every(item => item.gain! > 0),
         "restoring all stems keeps every actual stem connected while the outgoing track is paused for preparation");
 
       const incomingAssets = incomingStems.map(stem => stem.id);
       await page.getByTestId(`button-next-${incomingTrack!.id}`).click();
-      await page.waitForFunction(({ outgoingIds, incomingIds }: { outgoingIds: string[]; incomingIds: string[] }) => {
-        const idsForRole = (role: string) => {
-          const deck = document.querySelector<HTMLElement>(`[data-role="${role}"]`);
-          return [...(deck?.querySelectorAll<HTMLAudioElement>("audio") ?? [])].map(audio =>
-            new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1));
-        };
-        const outgoing = idsForRole("current");
-        const incoming = idsForRole("next");
-        const exact = (actual: Array<string | undefined>, expected: string[]) =>
-          actual.length === expected.length && expected.every(id => actual.includes(id));
-        return exact(outgoing, outgoingIds) && exact(incoming, incomingIds)
-          && [...document.querySelectorAll<HTMLAudioElement>('[data-role="next"] audio')].every(audio => audio.readyState >= 2);
-      }, { outgoingIds: expectedAssets, incomingIds: incomingAssets }, { timeout: 30_000 });
+      await page.waitForFunction(
+        `({ outgoingIds, incomingIds }) => {
+          const idsForRole = role => Array.from(document.querySelectorAll('[data-role="' + role + '"] audio'))
+            .map(audio => new URL(audio.currentSrc || audio.src).pathname.split('/').pop());
+          const outgoing = idsForRole('current');
+          const incoming = idsForRole('next');
+          const exact = (actual, expected) =>
+            actual.length === expected.length && expected.every(id => actual.includes(id));
+          if (!exact(outgoing, outgoingIds) || !exact(incoming, incomingIds)
+            || !Array.from(document.querySelectorAll('[data-role="next"] audio')).every(audio => audio.readyState >= 2)) {
+            return false;
+          }
+          return true;
+        }`,
+        { outgoingIds: expectedAssets, incomingIds: incomingAssets },
+        { timeout: 30_000 },
+      );
+      await page.waitForTimeout(250);
+      const deckStateAfterReady = {
+        current: await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
+          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1) ?? ""),
+        ),
+        next: await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
+          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1) ?? ""),
+        ),
+      };
+      if (deckStateAfterReady.next.length !== incomingAssets.length
+        || !incomingAssets.every(id => deckStateAfterReady.next.includes(id))) {
+        assert.ok(observedSessionId, "the real session route was observed for persisted-state diagnostics");
+        const allStemRows = await database.select().from(stemAssets);
+        const describeStemIds = (ids: string[]) => ids.map(id => {
+          const row = allStemRows.find(stem => stem.id === id);
+          return row === undefined ? { id, found: false } : {
+            id,
+            separationJobId: row.separationJobId,
+            stemType: row.stemType,
+            model: row.model,
+          };
+        });
+        const persistedSession = await page.evaluate(async (sessionId: string) => {
+          const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
+          return response.ok ? await response.json() : { status: response.status };
+        }, observedSessionId);
+        console.error("Persisted and loaded incoming stem IDs differ", JSON.stringify({
+          expectedOutgoing: expectedAssets,
+          expectedIncoming: incomingAssets,
+          firstTrackId: intake.track.id,
+          secondTrackId: incomingTrack?.id,
+          expectedOutgoingRows: describeStemIds(expectedAssets),
+          expectedIncomingRows: describeStemIds(incomingAssets),
+          actualCurrentRows: describeStemIds(deckStateAfterReady.current),
+          actualNextRows: describeStemIds(deckStateAfterReady.next),
+          deckStateAfterReady,
+          persistedTracks: persistedSession?.session?.tracks?.map((item: any) => ({
+            id: item.id,
+            trackId: item.track?.id,
+            title: item.track?.title,
+            stemIds: item.stems?.map((stem: any) => stem.id) ?? [],
+          })) ?? [],
+          pageErrors,
+          statusMessages: await page.locator('[role="alert"]').allTextContents().catch(() => []),
+        }));
+      }
       assert.deepEqual(
-        await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1)).sort()),
+        deckStateAfterReady.current.sort(),
         [...expectedAssets].sort(),
         "the outgoing deck contains only the first track's real separated assets",
       );
       assert.deepEqual(
-        await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1)).sort()),
+        deckStateAfterReady.next.sort(),
         [...incomingAssets].sort(),
         "the incoming deck contains only the second track's real separated assets",
       );
