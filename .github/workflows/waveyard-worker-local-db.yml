@@ -49,9 +49,13 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       # The runner is scripts/ (that is where tsx lives); suites are imported
-      # by relative path, matching the repo's established invocation.
+      # by relative path, matching the repo's established invocation. desktop
+      # is included because separation.test.ts applies the schema through the
+      # production migrator, desktop/database.mjs, which imports pg from
+      # desktop/node_modules; without it the three real-PostgreSQL tests fail
+      # with "Cannot find package 'pg'" (CI run 42648653978).
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..."
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..." --filter "@workspace/desktop..."
 
       - name: Provide PostgreSQL server binaries, ffmpeg and Python 3
         shell: bash
