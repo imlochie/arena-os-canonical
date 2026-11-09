@@ -2188,6 +2188,11 @@ try {
     session.swaps = [];
     session.currentSessionTrackId = "a";
     session.positionSeconds = 0;
+    // The timing matrix repeatedly navigates an actively playing session.
+    // Its pagehide save can otherwise arrive after the next scenario resets
+    // this in-memory fixture, replacing the intended recipient with the prior
+    // page's track. Persistence is covered by the separate save/reload probes.
+    ignoreSessionStateWrites = true;
     const timings = {};
     const scenarios = [
       { name: "nativeTempo", donorId: "c", ratio: 1 },
@@ -2196,6 +2201,10 @@ try {
     ];
 
     for (const scenario of scenarios) {
+      // Unmount the previous session before resetting its server fixture. This
+      // makes the scenario boundary deterministic even when WebKit's unload
+      // keepalive request is scheduled late.
+      await page.goto("http://localhost:80/waveyard");
       session.swaps = [];
       session.currentSessionTrackId = "a";
       session.positionSeconds = 0;
@@ -2352,6 +2361,8 @@ try {
         const body = await swapSaveResponse.text().catch(() => "<unreadable>");
         throw new Error(`${engineName} ${scenario.name} swap save failed (${swapSaveResponse.status()}): ${body.slice(0, 240)}`);
       }
+      assert.equal(session.currentSessionTrackId, "a",
+        `${engineName} ${scenario.name} keeps the intended recipient while the donor loads`);
       try {
         try {
           await page.waitForFunction(({ bufferCount }) => {
