@@ -26,7 +26,11 @@ import {
   LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION, vocalAnalysisIdempotencyKey,
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
-import { recoverPendingLocalVocalAnalyses } from "./recovery";
+import {
+  recoverPendingLocalDrumAnalyses,
+  recoverPendingLocalHarmonyAnalyses,
+  recoverPendingLocalVocalAnalyses,
+} from "./recovery";
 
 const RATE = 22_050;
 function stereoWav(mono: Float32Array) {
@@ -111,6 +115,22 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     assert.ok((await db.select().from(drumEvents).where(eq(drumEvents.drumAnalysisId, drum.id))).length > 0);
     assert.ok((await db.select().from(harmonyEvents).where(eq(harmonyEvents.harmonyAnalysisId, harmony.id))).length > 0);
     assert.ok((await db.select().from(vocalPitchFrames).where(eq(vocalPitchFrames.vocalAnalysisId, vocal.id))).length > 0);
+
+    await db.update(drumAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(drumAnalyses.id, drum.id));
+    await db.update(harmonyAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(harmonyAnalyses.id, harmony.id));
+    await db.update(vocalAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(vocalAnalyses.id, vocal.id));
+    const recoveredDrums: unknown[] = []; const recoveredHarmony: unknown[] = []; const recoveredVocals: unknown[] = [];
+    assert.deepEqual(await recoverPendingLocalDrumAnalyses(db, async (payload) => { recoveredDrums.push(payload); }), { requeuedJobIds: [drum.id], failedJobIds: [] });
+    assert.deepEqual(await recoverPendingLocalHarmonyAnalyses(db, async (payload) => { recoveredHarmony.push(payload); }), { requeuedJobIds: [harmony.id], failedJobIds: [] });
+    assert.deepEqual(await recoverPendingLocalVocalAnalyses(db, async (payload) => { recoveredVocals.push(payload); }), { requeuedJobIds: [vocal.id], failedJobIds: [] });
+    assert.equal((await db.select().from(drumAnalyses).where(eq(drumAnalyses.id, drum.id)))[0]!.status, "queued");
+    assert.equal((await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.id, harmony.id)))[0]!.status, "queued");
+    assert.equal((await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.id, vocal.id)))[0]!.status, "queued");
+    assert.equal(recoveredDrums.length, 1); assert.equal(recoveredHarmony.length, 1); assert.equal(recoveredVocals.length, 1);
+    // Let the recovered jobs finish before introducing a separate failed row.
+    await db.update(drumAnalyses).set({ status: "complete", stage: "complete" }).where(eq(drumAnalyses.id, drum.id));
+    await db.update(harmonyAnalyses).set({ status: "complete", stage: "complete" }).where(eq(harmonyAnalyses.id, harmony.id));
+    await db.update(vocalAnalyses).set({ status: "complete", stage: "complete" }).where(eq(vocalAnalyses.id, vocal.id));
 
     const [failureJob] = await db.insert(processingJobs).values({ projectId: project.id, sourceAssetId: source.id, type: "separation",
       model: "test-local", requestedDevice: "cpu", idempotencyKey: `separation-failure:${source.id}` }).returning();
