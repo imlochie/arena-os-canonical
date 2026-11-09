@@ -4,7 +4,7 @@ Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
 Last updated: 2026-11-09.
 
-## Current verification update — 2026-11-09, code head `fc524edf`
+## Current verification update — 2026-11-09, cold-start acceptance at `32cf4a54`
 
 This section supersedes older status claims below where they conflict.
 
@@ -24,28 +24,28 @@ This section supersedes older status claims below where they conflict.
   MIDI writer/reader, player state, normalization, and source-section data.
   Full workspace typecheck passes. Pre-existing normalization source/tests
   remain uncommitted user work.
-* **Browser timing:** push run `42585378086` and PR run `42585502042` passed
+* **Browser timing:** push run `42598958628` and PR run `42598965343` passed
   Chromium, Firefox, and WebKit in the Linux PulseAudio harness. The earlier
   WebKit timing failures were test fixture/session lifecycle races; the harness
   now isolates session state and loops the normal-sized timing fixture. This is
   timing acceptance, not hardware listening or the full browser app matrix.
-* **Windows packaged acceptance:** push run `42585378132` and PR run
-  `42585502065` both passed. Each selected a previously accepted installer
-  from an earlier ancestor commit, verified the downloaded artifact against
-  GitHub's SHA-256 metadata, built the current x64 installer, installed and
-  launched it, and passed the packaged app and in-place update checks. The
-  update preserved a database record across restart. The installed smoke also
-  navigated to Waveyard, uploaded and played generated test audio, checked the
-  embedded database/migrations, and exercised encrypted backup/restore,
-  including rejection of a tampered backup while preserving original data.
-  The previous installer artifact came from successful run `42576999897`
-  (commit `98bb6f4f`).
-* The Windows workflow keeps a source-build fallback if no unexpired accepted
-  installer artifact exists. That fallback can still encounter the previously
-  observed GitHub release CDN HTTP 504s; the current push/PR acceptance runs
-  used the digest-verified accepted artifact and were fully green. Artifacts
-  expire, so a future cold start without a recent accepted package will need a
-  successful source build to establish the next baseline.
+* **Windows packaged acceptance:** push run `42598958551` and PR run
+  `42598965368` both passed. Each built the current x64 installer, installed
+  and launched it, exercised the packaged app/database/migrations, navigated to
+  Waveyard and played generated test audio, checked encrypted backup/restore
+  including tamper rejection, then installed the current package over the
+  older package and verified a saved record survived restart.
+* **Cold-start source fallback:** forced workflow-dispatch run `42600674680`
+  passed end to end with `force_source_baseline=true`, which skips accepted
+  installer lookup. It first built the current installer from scratch, then
+  built the previous app from source using validated SDL/FFmpeg inputs from
+  that build. The prior app's independent emulator downloads are not installer
+  payload and are skipped in this update-only build. The temporary worktree now
+  carries repository metadata for electron-builder and uses a short
+  long-path-safe location. The installed-app and in-place update smoke passed.
+  No pinned release CDN 504 occurred in this forced source run.
+* **Recovered-stack Windows tests:** push run `42598958617` and PR run
+  `42598965365` passed.
 * Evidence does not include real-song analysis, real-provider inference, or
   hardware/audio-device listening. The packaged audio check uses generated
   audio.
