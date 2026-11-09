@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-const retryableStatus = status => status === 408 || status === 425 || status === 429 || status >= 500;
+const retryableStatus = status => status === 408 || status === 425 || status === 429 || status >= 500 && status <= 599;
 
 /** Retry only transient transport failures. Callers still validate URLs and
  * must verify the complete pinned archive before using any downloaded bytes. */
@@ -10,7 +10,7 @@ export async function fetchWithTransientRetries(url, init = {}, {
   // every downloaded package is still checked against its exact byte count
   // and SHA-256 before use.
   attempts = 5,
-  delayMs = 250,
+  delayMs = 1_000,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > 5 || !Number.isFinite(delayMs) || delayMs < 0) {
