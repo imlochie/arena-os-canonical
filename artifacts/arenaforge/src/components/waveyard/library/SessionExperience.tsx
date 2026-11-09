@@ -4316,6 +4316,7 @@ export default function SessionExperience({
     const lowTempoConfidence = recipientBpm !== null && selectedDonorBpm !== null && !reliableTempoEvidence;
     const lowBeatConfidence = recipientBpm !== null && selectedDonorBpm !== null
       && reliableTempoEvidence && !reliableBeatEvidence;
+    const activeTempoStretchRatio = activeSwapTempoStretchRatios[stemType];
     const halfDoubleTempo = reliableTempoEvidence && isHalfDoubleTempoPair(recipientBpm, selectedDonorBpm);
     const unsafeTempoGap = reliableTempoEvidence && recipientBpm !== null && selectedDonorBpm !== null
       && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
@@ -4328,15 +4329,23 @@ export default function SessionExperience({
           ? `Half/double-time · donor pace retained${lowBeatConfidence ? " · no beat sync" : ""}`
           : unsafeTempoGap
             ? `Tempo gap too wide · native ${Math.round(selectedDonorBpm!)} BPM`
-        : activeSwapTempoStretchRatios[stemType] !== undefined
+        : activeTempoStretchRatio !== undefined && Math.abs(activeTempoStretchRatio - 1) > 0.001
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
             ? currentSwapSetup.sectionPositionMatches[stemType]
               ? "Tempo matched · pitch preserved · section position matched"
               : "Tempo matched · pitch preserved · beat phase aligned"
             : "Tempo matched · pitch preserved · beat alignment unavailable"
         : lowBeatConfidence
-          ? "Beat sync unavailable · analysis confidence is low"
-          : selectedDonorBpm !== null
+          ? activeTempoStretchRatio !== undefined
+            ? "Native tempo · beat alignment unavailable"
+            : "Beat sync unavailable · analysis confidence is low"
+        : activeTempoStretchRatio !== undefined
+          ? currentSwapSetup.beatOffsets[stemType] !== undefined
+            ? currentSwapSetup.sectionPositionMatches[stemType]
+              ? "Native tempo · section position matched"
+              : "Native tempo · beat phase aligned"
+            : "Native tempo · beat alignment unavailable"
+        : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
             : "Tempo unavailable · native tempo";
     const keyMatchStatus = currentSwapSetup.keyMatchStatuses[stemType];

@@ -149,8 +149,9 @@ where they are stale.
   must confirm it reaches installer, install, update, and restart checks.
 * The original comprehensive Chromium live-stem run exposed a real status-order
   defect: a tempo-matched donor was reported only as low beat confidence,
-  hiding that the tempo stretch had succeeded. The status now reports tempo
-  match and unavailable beat alignment together. Its existing browser
+  hiding that the tempo stretch had succeeded. The status now distinguishes a
+  real stretch from 1.00× native tempo and reports unavailable beat alignment
+  separately. Its existing browser
   assertions passed through the tempo, pitch-follow, playhead, and donor
   alignment checks. The Windows WebKit run cannot exercise audio because that
   browser build lacks `AudioContext`; the Chromium full run exits early after
