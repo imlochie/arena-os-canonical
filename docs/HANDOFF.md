@@ -114,6 +114,14 @@ where they are stale.
   now runs against an isolated PGlite database with canonical desktop
   migrations (4/4 pass); shared-library and API-server typechecks pass. This
   proves local database lifecycle behavior, not real external-agent inference.
+* Research mode previously kept web search local when Local Mode was enabled,
+  but failed to pass `localOnly` into model generation; remote provider egress
+  remained possible and the response was mislabeled as local. Research now
+  propagates the no-egress flag and returns the generator's actual execution
+  metadata. Two tests exercise the real model router with a fetch trap: zero
+  web/model-provider requests in Local Mode and preserved on-device metadata.
+  The shared-library and API-server typechecks pass. The local fallback is the
+  deterministic engine, not a local language model.
 
 ### Historical test evidence (earlier environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:
