@@ -76,6 +76,29 @@ jobs:
           echo "$pgbin" >> "$GITHUB_PATH"
           "$pgbin/postgres" --version | tee -a "$evidence/environment.txt"
 
+          # Prove this runner can boot a disposable cluster exactly the way
+          # worker-local/separation.test.ts does: initdb as this user with the
+          # suite's flags, TCP on 127.0.0.1 only, no Unix socket. If this fails
+          # the three real-PostgreSQL tests cannot pass, and the real reason is
+          # shown here instead of behind a bare "not ok".
+          smoke="${RUNNER_TEMP:-/tmp}/worker-local-pg-smoke"
+          rm -rf "$smoke" && mkdir -p "$smoke"
+          printf 'smoke' > "$smoke/pw" && chmod 600 "$smoke/pw"
+          if ! "$pgbin/initdb" -D "$smoke/data" -U arena --pwfile "$smoke/pw" -E UTF8 --locale C -A scram-sha-256 >"$smoke/initdb.log" 2>&1; then
+            echo "::error::initdb failed as $(id -un) with the suite's flags."
+            tail -15 "$smoke/initdb.log" | while IFS= read -r line; do echo "::error::initdb -> $line"; done
+            exit 1
+          fi
+          if ! "$pgbin/pg_ctl" -D "$smoke/data" -w -t 30 -l "$smoke/postgres.log" \
+               -o "-p 54329 -h 127.0.0.1 -F -c max_connections=30 -c unix_socket_directories=" start >"$smoke/pg_ctl.log" 2>&1; then
+            echo "::error::postgres did not become ready on 127.0.0.1 with the suite's flags."
+            cat "$smoke/pg_ctl.log" "$smoke/postgres.log" 2>/dev/null | tail -15 | while IFS= read -r line; do echo "::error::postgres -> $line"; done
+            exit 1
+          fi
+          "$pgbin/pg_ctl" -D "$smoke/data" -m fast -w -t 20 stop >/dev/null 2>&1 || true
+          rm -rf "$smoke"
+          echo "disposable cluster smoke test OK: initdb + postgres on 127.0.0.1 without a unix socket, as $(id -un)" | tee -a "$evidence/environment.txt"
+
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y --no-install-recommends ffmpeg || true
@@ -93,6 +116,7 @@ jobs:
             exit 1
           fi
           python3 -V 2>&1 | tee -a "$evidence/environment.txt"
+          echo "::notice::worker-local DB environment: $(paste -sd ';' "$evidence/environment.txt")"
 
       - name: Run worker-local DB suites with per-file evidence
         shell: bash
@@ -119,13 +143,20 @@ jobs:
             else
               echo "FAIL $test" | tee -a "$evidence/summary.txt"
               failed=1
-              # Surface WHICH test failed in the check-run annotation. Job logs
-              # and artifacts are not always readable where this is triaged, so
-              # a bare "exit code 1" is not enough to act on.
-              grep -E "^not ok " "$evidence/$name.txt" | head -3 | while IFS= read -r line; do
-                echo "::error::$test -> $line"
-              done
-              if ! grep -qE "^not ok " "$evidence/$name.txt"; then
+              # Surface WHICH test failed, and WHY, in the check-run annotation.
+              # Job logs and artifacts are not always readable where this is
+              # triaged, so a bare "exit code 1" is not enough to act on. Each
+              # "not ok" is annotated with its TAP diagnostic block (up to the
+              # stack), newline-encoded as %0A per workflow-command rules.
+              awk -v test="$test" '
+                function flush() { if (buf != "") { print buf; emitted++ } buf = ""; capturing = 0 }
+                /^ *not ok / { flush(); if (emitted >= 4) exit; buf = "::error::" test " -> " $0; capturing = 1; lines = 0; next }
+                capturing && /^ *(code|stack): / { flush(); next }
+                capturing && /^ *\.\.\.$/ { flush(); next }
+                capturing && lines < 20 { line = $0; gsub(/%/, "%25", line); gsub(/\r/, "%0D", line); buf = buf "%0A" line; lines++ }
+                END { flush() }
+              ' "$evidence/$name.txt"
+              if ! grep -qE "^ *not ok " "$evidence/$name.txt"; then
                 tail -5 "$evidence/$name.txt" | while IFS= read -r line; do
                   echo "::error::$test (no TAP result; tail) -> $line"
                 done
