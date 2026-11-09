@@ -2402,11 +2402,22 @@ try {
               sessionStatus: document.querySelector('[data-testid="session-status"]')?.textContent?.trim().slice(0, 240) ?? null,
               swapFailures: [...document.querySelectorAll('[data-testid^="live-swap-pending-"]')]
                 .map(node => node.textContent?.trim().slice(0, 160)).filter(Boolean).slice(0, 4),
+              currentTrack: document.querySelector('[data-role="current"] h3')?.textContent?.trim() ?? null,
+              currentAudio: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => ({
+                src: audio.dataset.waveyardFixtureSrc || audio.currentSrc || audio.src,
+                duration: Number.isFinite(audio.duration) ? audio.duration : null,
+                currentTime: Number(audio.currentTime.toFixed(2)),
+                paused: audio.paused,
+                ended: audio.ended,
+                readyState: audio.readyState,
+              })),
               liveStemTimingsAdded: (window.liveStemTimings?.length ?? 0) - timingCount,
             };
           }, { bufferCount: before.buffers, timingCount: before.timings }).catch(() => "page unavailable");
           console.error(`LIVE_STEM_ASSET_TRACE ${scenario.name} ${JSON.stringify({
             donor: scenario.donorId,
+            fixtureTracks: session.tracks.map(item => ({ id: item.id, durationSeconds: item.track.durationSeconds })),
+            serverCurrentTrackId: session.currentSessionTrackId,
             assetRequests: assetRequestTrace.filter(item => item.id === `${scenario.donorId}-vocals`).slice(-6),
             swapRequestOrder: liveSwapRequestOrder.slice(-12),
             savedSwaps: session.swaps.map(({ sessionTrackId, stemType, toTrackId, toStemAssetId }) => ({ sessionTrackId, stemType, toTrackId, toStemAssetId })),
