@@ -27,6 +27,7 @@ const reportPath = path.join(outputDir, "result.json");
 const executable = process.argv[2];
 const checkIds = [
   "installed_app_starts",
+  "waveyard_room_navigation",
   "embedded_database_starts",
   "packaged_migrations_run",
   "bundled_ffmpeg_resolves",
@@ -126,6 +127,12 @@ async function run() {
   pass("installed_app_starts");
 
   const base = new URL(page.url()).origin;
+  begin("waveyard_room_navigation");
+  await page.goto(`${base}/waveyard`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.waitForURL("**/waveyard", { timeout: 30_000 });
+  await page.getByRole("heading", { name: "Your library" }).waitFor({ timeout: 30_000 });
+  pass("waveyard_room_navigation");
+
   begin("embedded_database_starts");
   const response = await page.request.get(`${base}/api/capabilities`, {
     timeout: 30_000,
