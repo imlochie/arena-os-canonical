@@ -42,14 +42,19 @@ where they are stale.
   and Firefox on the Linux PulseAudio null-sink harness. Historical WebKit
   restore-control flakiness remains unexplained; current green runs do not
   establish the original race's root cause.
-* Packaged Windows smoke now has a real PCM-tone upload, private-audio download,
-  and renderer playback assertion (`desktop/windows-package-smoke.mjs`). It
-  verifies the media element loads and advances after a user click, in addition
-  to checking byte-for-byte stored audio. This addition is not yet CI-verified.
-  Local syntax, whitespace, and workspace typecheck pass. The full desktop unit
-  suite reports 122 pass / 1 fail / 16 skip: the unrelated
+* At `32639378`, the packaged Windows smoke now passed in both push and PR
+  package runs (`42556175197`, `42556181034`) with a generated real PCM tone:
+  Waveyard project creation, normal `/api/uploads` intake, exact byte retrieval
+  from the private `/api/assets` route, and renderer playback after a click
+  with media time advancing. Existing install, database, backup/restore, and
+  in-place update checks also passed. This proves packaged real-audio decode
+  and playback plumbing with generated audio, not human listening, real-song
+  quality, or local model inference.
+* Local syntax, whitespace, and workspace typecheck passed for the smoke change.
+  The full desktop unit suite reported 122 pass / 1 fail / 16 skip: the unrelated
   `arcade-classic.test.mjs` symlink fixture fails with Windows `EPERM` in this
-  environment; no assertion was weakened.
+  environment; no assertion was weakened. The Windows CI packaging unit step
+  passed on both runs.
 
 * Analysis retries now claim the failed durable row before queue hand-off;
   queue refusal restores the original failure only while the row remains
