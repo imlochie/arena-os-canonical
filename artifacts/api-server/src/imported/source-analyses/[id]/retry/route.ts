@@ -105,8 +105,12 @@ export async function POST(
 
       try {
         const queue = await getSourceAnalysisQueue();
-        const queueJob = await queue.getJob(analysis.id);
-        if (queueJob) await queueJob.remove();
+        try {
+          const queueJob = await queue.getJob(analysis.id);
+          if (queueJob) await queueJob.remove();
+        } finally {
+          await queue.close();
+        }
         await enqueueSourceAnalysis({
           sourceAnalysisId: updated.id,
           projectId: updated.projectId,
@@ -122,7 +126,10 @@ export async function POST(
           analysisError: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
           completedAt: new Date(),
           updatedAt: new Date(),
-        }).where(eq(sourceAnalyses.id, updated.id));
+        }).where(and(
+          eq(sourceAnalyses.id, updated.id),
+          eq(sourceAnalyses.status, "queued"),
+        ));
         return Response.json({ error: "The analysis was reset but the worker queue is unavailable." }, { status: 503 });
       }
       return Response.json({ analysis: updated });
