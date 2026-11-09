@@ -8,9 +8,10 @@ import {
 
 export const DRUM_ANALYSIS_ENGINE = "waveyard-numpy-drum-transients";
 export const DRUM_ANALYSIS_ENGINE_VERSION = "1.0.0";
+export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_DRUM_ANALYSIS_ENGINE, DESKTOP_STEM_ANALYSIS_ENGINE_VERSION as LOCAL_DRUM_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
 
-export function drumAnalysisIdempotencyKey(stemAssetId: string) {
-  return `drums:${stemAssetId}:${DRUM_ANALYSIS_ENGINE}:${DRUM_ANALYSIS_ENGINE_VERSION}`;
+export function drumAnalysisIdempotencyKey(stemAssetId: string, engine = DRUM_ANALYSIS_ENGINE, version = DRUM_ANALYSIS_ENGINE_VERSION) {
+  return `drums:${stemAssetId}:${engine}:${version}`;
 }
 
 export type DrumEvent = SourceEvent & {
@@ -32,10 +33,10 @@ export function drumAnalysisProvenanceReason(input: {
   sourceChecksumSha256: string; expectedSourceChecksumSha256: string;
   stemChecksumSha256: string; expectedStemChecksumSha256: string;
   analysisEngine: string; analysisEngineVersion: string;
-}) {
+}, expected = { engine: DRUM_ANALYSIS_ENGINE, version: DRUM_ANALYSIS_ENGINE_VERSION }) {
   if (input.sourceAssetId !== input.expectedSourceAssetId || input.stemAssetId !== input.expectedStemAssetId) return "source_stem_mismatch" as const;
   if (input.sourceChecksumSha256 !== input.expectedSourceChecksumSha256 || input.stemChecksumSha256 !== input.expectedStemChecksumSha256) return "analysis_stale" as const;
-  if (input.analysisEngine !== DRUM_ANALYSIS_ENGINE || input.analysisEngineVersion !== DRUM_ANALYSIS_ENGINE_VERSION) return "analysis_version_mismatch" as const;
+  if (input.analysisEngine !== expected.engine || input.analysisEngineVersion !== expected.version) return "analysis_version_mismatch" as const;
   return null;
 }
 

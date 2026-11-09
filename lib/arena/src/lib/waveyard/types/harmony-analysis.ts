@@ -2,11 +2,12 @@ import { normaliseMusicalKey } from "./musical-key";
 
 export const HARMONY_ANALYSIS_ENGINE = "waveyard-numpy-chroma-chords";
 export const HARMONY_ANALYSIS_ENGINE_VERSION = "1.0.0";
+export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_HARMONY_ANALYSIS_ENGINE, DESKTOP_STEM_ANALYSIS_ENGINE_VERSION as LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
 export const CHORD_QUALITIES = ["major", "minor", "dominant7", "minor7", "major7", "diminished", "augmented", "unknown"] as const;
 export type ChordQuality = (typeof CHORD_QUALITIES)[number];
 
-export function harmonyAnalysisIdempotencyKey(sourceAssetId: string) {
-  return `harmony:${sourceAssetId}:${HARMONY_ANALYSIS_ENGINE}:${HARMONY_ANALYSIS_ENGINE_VERSION}`;
+export function harmonyAnalysisIdempotencyKey(sourceAssetId: string, engine = HARMONY_ANALYSIS_ENGINE, version = HARMONY_ANALYSIS_ENGINE_VERSION) {
+  return `harmony:${sourceAssetId}:${engine}:${version}`;
 }
 
 export type HarmonyEvent = {
@@ -54,9 +55,9 @@ export function harmonyAnalysisProvenanceReason(input: {
   sourceAssetId: string; expectedSourceAssetId: string;
   sourceChecksumSha256: string; expectedSourceChecksumSha256: string;
   analysisEngine: string; analysisEngineVersion: string;
-}) {
+}, expected = { engine: HARMONY_ANALYSIS_ENGINE, version: HARMONY_ANALYSIS_ENGINE_VERSION }) {
   if (input.sourceAssetId !== input.expectedSourceAssetId) return "source_identity_mismatch" as const;
   if (input.sourceChecksumSha256 !== input.expectedSourceChecksumSha256) return "analysis_stale" as const;
-  if (input.analysisEngine !== HARMONY_ANALYSIS_ENGINE || input.analysisEngineVersion !== HARMONY_ANALYSIS_ENGINE_VERSION) return "analysis_version_mismatch" as const;
+  if (input.analysisEngine !== expected.engine || input.analysisEngineVersion !== expected.version) return "analysis_version_mismatch" as const;
   return null;
 }

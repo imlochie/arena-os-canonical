@@ -9,6 +9,9 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import {
   enqueueSourceAnalysis,
   enqueueSourceSectionAnalysis,
+  enqueueDrumAnalysis,
+  enqueueHarmonyAnalysis,
+  enqueueVocalAnalysis,
   enqueueWaveform,
 } from "@workspace/arena/lib/waveyard/queue";
 import {
@@ -18,9 +21,21 @@ import {
 import type {
   SourceAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
+  DrumAnalysisJobPayload,
+  HarmonyAnalysisJobPayload,
+  VocalAnalysisJobPayload,
   WaveformJobPayload,
 } from "@workspace/arena/lib/waveyard/types";
-import { processingJobs, sourceAnalyses, sourceSectionAnalyses, waveformJobs } from "@workspace/db/waveyardSchema";
+import { drumAnalyses, harmonyAnalyses, processingJobs, sourceAnalyses, sourceSectionAnalyses, vocalAnalyses, waveformJobs } from "@workspace/db/waveyardSchema";
+import {
+  LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/drum-analysis";
+import {
+  LOCAL_HARMONY_ANALYSIS_ENGINE, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/harmony-analysis";
+import {
+  LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 
 const SEPARATION_TEMP_PREFIX = "arena-separation-";
 const PENDING_WAVEFORM_STATUSES = ["queued", "preparing", "processing", "finalizing"];
@@ -450,6 +465,99 @@ export async function recoverPendingLocalSourceSectionAnalyses(
         eq(sourceSectionAnalyses.id, row.id), eq(sourceSectionAnalyses.status, "queued"),
         eq(sourceSectionAnalyses.stage, recoveryStage),
       )).returning({ id: sourceSectionAnalyses.id });
+      return Boolean(failed);
+    },
+  );
+}
+
+export async function recoverPendingLocalDrumAnalyses(
+  db: ReturnType<typeof drizzle>,
+  enqueue: (payload: DrumAnalysisJobPayload) => Promise<unknown> = enqueueDrumAnalysis,
+): Promise<AnalysisRecoveryResult> {
+  const pendingStatuses = ["queued", "preparing", "processing"];
+  const rows = await db.select().from(drumAnalyses).where(and(
+    inArray(drumAnalyses.status, pendingStatuses),
+    eq(drumAnalyses.analysisEngine, LOCAL_DRUM_ANALYSIS_ENGINE),
+    eq(drumAnalyses.analysisEngineVersion, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION),
+  ));
+  return requeuePendingAnalysisRows(rows,
+    async (row, recoveryStage) => {
+      const [claimed] = await db.update(drumAnalyses).set({ status: "queued", stage: recoveryStage,
+        errorCode: null, errorMessage: null, startedAt: null, completedAt: null, updatedAt: new Date(),
+      }).where(and(eq(drumAnalyses.id, row.id), inArray(drumAnalyses.status, pendingStatuses), eq(drumAnalyses.stage, row.stage),
+        eq(drumAnalyses.analysisEngine, LOCAL_DRUM_ANALYSIS_ENGINE), eq(drumAnalyses.analysisEngineVersion, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION),
+      )).returning();
+      return claimed;
+    },
+    (row) => enqueue({ drumAnalysisId: row.id, projectId: row.projectId, sourceAssetId: row.sourceAssetId,
+      stemAssetId: row.stemAssetId, analysisEngine: row.analysisEngine, analysisEngineVersion: row.analysisEngineVersion }),
+    async (row, recoveryStage, error) => {
+      const [failed] = await db.update(drumAnalyses).set({ status: "failed", stage: "queue-unavailable",
+        errorCode: "queue_unavailable", errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(), updatedAt: new Date(),
+      }).where(and(eq(drumAnalyses.id, row.id), eq(drumAnalyses.status, "queued"), eq(drumAnalyses.stage, recoveryStage))).returning({ id: drumAnalyses.id });
+      return Boolean(failed);
+    },
+  );
+}
+
+export async function recoverPendingLocalHarmonyAnalyses(
+  db: ReturnType<typeof drizzle>,
+  enqueue: (payload: HarmonyAnalysisJobPayload) => Promise<unknown> = enqueueHarmonyAnalysis,
+): Promise<AnalysisRecoveryResult> {
+  const pendingStatuses = ["queued", "preparing", "processing"];
+  const rows = await db.select().from(harmonyAnalyses).where(and(
+    inArray(harmonyAnalyses.status, pendingStatuses),
+    eq(harmonyAnalyses.analysisEngine, LOCAL_HARMONY_ANALYSIS_ENGINE),
+    eq(harmonyAnalyses.analysisEngineVersion, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION),
+  ));
+  return requeuePendingAnalysisRows(rows,
+    async (row, recoveryStage) => {
+      const [claimed] = await db.update(harmonyAnalyses).set({ status: "queued", stage: recoveryStage,
+        errorCode: null, errorMessage: null, startedAt: null, completedAt: null, updatedAt: new Date(),
+      }).where(and(eq(harmonyAnalyses.id, row.id), inArray(harmonyAnalyses.status, pendingStatuses), eq(harmonyAnalyses.stage, row.stage),
+        eq(harmonyAnalyses.analysisEngine, LOCAL_HARMONY_ANALYSIS_ENGINE), eq(harmonyAnalyses.analysisEngineVersion, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION),
+      )).returning();
+      return claimed;
+    },
+    (row) => enqueue({ harmonyAnalysisId: row.id, projectId: row.projectId, sourceAssetId: row.sourceAssetId,
+      analysisEngine: row.analysisEngine, analysisEngineVersion: row.analysisEngineVersion }),
+    async (row, recoveryStage, error) => {
+      const [failed] = await db.update(harmonyAnalyses).set({ status: "failed", stage: "queue-unavailable",
+        errorCode: "queue_unavailable", errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(), updatedAt: new Date(),
+      }).where(and(eq(harmonyAnalyses.id, row.id), eq(harmonyAnalyses.status, "queued"), eq(harmonyAnalyses.stage, recoveryStage))).returning({ id: harmonyAnalyses.id });
+      return Boolean(failed);
+    },
+  );
+}
+
+export async function recoverPendingLocalVocalAnalyses(
+  db: ReturnType<typeof drizzle>,
+  enqueue: (payload: VocalAnalysisJobPayload) => Promise<unknown> = enqueueVocalAnalysis,
+): Promise<AnalysisRecoveryResult> {
+  const pendingStatuses = ["queued", "preparing", "processing"];
+  const rows = await db.select().from(vocalAnalyses).where(and(
+    inArray(vocalAnalyses.status, pendingStatuses),
+    eq(vocalAnalyses.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE),
+    eq(vocalAnalyses.analysisEngineVersion, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION),
+  ));
+  return requeuePendingAnalysisRows(rows,
+    async (row, recoveryStage) => {
+      const [claimed] = await db.update(vocalAnalyses).set({ status: "queued", stage: recoveryStage,
+        errorCode: null, errorMessage: null, startedAt: null, completedAt: null, updatedAt: new Date(),
+      }).where(and(eq(vocalAnalyses.id, row.id), inArray(vocalAnalyses.status, pendingStatuses), eq(vocalAnalyses.stage, row.stage),
+        eq(vocalAnalyses.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE), eq(vocalAnalyses.analysisEngineVersion, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION),
+      )).returning();
+      return claimed;
+    },
+    (row) => enqueue({ vocalAnalysisId: row.id, projectId: row.projectId, sourceAssetId: row.sourceAssetId,
+      stemAssetId: row.stemAssetId, analysisEngine: row.analysisEngine, analysisEngineVersion: row.analysisEngineVersion }),
+    async (row, recoveryStage, error) => {
+      const [failed] = await db.update(vocalAnalyses).set({ status: "failed", stage: "queue-unavailable",
+        errorCode: "queue_unavailable", errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(), updatedAt: new Date(),
+      }).where(and(eq(vocalAnalyses.id, row.id), eq(vocalAnalyses.status, "queued"), eq(vocalAnalyses.stage, recoveryStage))).returning({ id: vocalAnalyses.id });
       return Boolean(failed);
     },
   );

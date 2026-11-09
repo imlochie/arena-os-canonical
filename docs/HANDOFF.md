@@ -49,10 +49,21 @@ where they are stale.
   source analysis and the original comprehensive live-stem-layer suite; the
   workspace type check passes. These are not database, browser, or packaged
   Windows acceptance runs.
-* Local execution gap remains: `worker-local/index.ts` registers source BPM/key/
-  beat and section work, but not drum, harmony, or vocal analysis queues. Those
-  request routes can queue work for the remote Python worker; a desktop-only
-  session needs that worker available. Do not claim those analyses run locally.
+* **Superseded by the current local analysis implementation:** the local worker
+  now registers drum, harmony, and vocal queues. Desktop API requests select
+  the versioned `arena-js-stem-analysis` provenance and persist the same
+  contracts as the remote NumPy jobs. Drums and vocals analyze isolated stems;
+  harmony analyzes the source. PGlite plus filesystem-backed storage tests
+  execute all three handlers through ffmpeg decode, verify result rows,
+  provenance, attempts, failure/retry and restart requeue. DSP tests exercise
+  transients, chord windows, pitch frames, silence, and honest unknown classes.
+  The expanded Waveyard regression set (including the full live-stem-layer
+  suite) passes 161/161; the separation suite passes 53 with one
+  platform-specific skip. Workspace typecheck passes. This is synthetic/local
+  integration evidence, not real-song listening, hosted-provider evidence, or
+  packaged-Windows acceptance. Drum class labels remain unknown because the
+  local detector measures transients but does not infer kick/snare/hat identity.
+  Analysis cancellation is not currently exposed by these job routes.
 
 ### Test evidence (this environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:

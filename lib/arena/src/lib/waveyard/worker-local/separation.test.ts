@@ -2705,7 +2705,7 @@ test("API restart interrupts active separation, removes dead-worker temp output,
   }
 });
 
-test("the local broker registers the separation queue alongside the other engines", async () => {
+test("the local broker registers its implemented Waveyard queues", async () => {
   const { startLocalWorker } = await import("./index");
   const { getLocalJobBroker, resetLocalJobBrokerForTests } = await import("./broker");
   const prevDesktop = process.env.ARENA_DESKTOP_MODE;
@@ -2719,7 +2719,11 @@ test("the local broker registers the separation queue alongside the other engine
     assert.ok(broker!.hasHandler("waveyard-separation"), "SEPARATION_QUEUE registered");
     assert.ok(broker!.hasHandler("waveyard-waveform"));
     assert.ok(broker!.hasHandler("waveyard-export"));
-    assert.ok(!broker!.hasHandler("waveyard-drum-analysis"), "Python-only analyses stay unregistered (honest)");
+    assert.ok(broker!.hasHandler("waveyard-source-analysis"));
+    assert.ok(broker!.hasHandler("waveyard-source-section-analysis"));
+    assert.ok(broker!.hasHandler("waveyard-drum-analysis"));
+    assert.ok(broker!.hasHandler("waveyard-harmony-analysis"));
+    assert.ok(broker!.hasHandler("waveyard-vocal-analysis"));
   } finally {
     if (prevDesktop === undefined) delete process.env.ARENA_DESKTOP_MODE;
     else process.env.ARENA_DESKTOP_MODE = prevDesktop;
