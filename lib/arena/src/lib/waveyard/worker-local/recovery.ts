@@ -6,13 +6,21 @@ import { join } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
-import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
+import {
+  enqueueSourceAnalysis,
+  enqueueSourceSectionAnalysis,
+  enqueueWaveform,
+} from "@workspace/arena/lib/waveyard/queue";
 import {
   AUDIO_RESTORE_UPLOAD_DIRECTORY_PREFIX,
   AUDIO_RESTORE_UPLOAD_RETENTION_MS,
 } from "@workspace/arena/lib/waveyard/library/audio-restore";
-import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
-import { processingJobs, waveformJobs } from "@workspace/db/waveyardSchema";
+import type {
+  SourceAnalysisJobPayload,
+  SourceSectionAnalysisJobPayload,
+  WaveformJobPayload,
+} from "@workspace/arena/lib/waveyard/types";
+import { processingJobs, sourceAnalyses, sourceSectionAnalyses, waveformJobs } from "@workspace/db/waveyardSchema";
 
 const SEPARATION_TEMP_PREFIX = "arena-separation-";
 const PENDING_WAVEFORM_STATUSES = ["queued", "preparing", "processing", "finalizing"];
@@ -346,4 +354,103 @@ export async function recoverPendingLocalWaveformJobs(
   }
 
   return { resetJobIds, enqueuedJobIds, requeuedJobIds, failedJobIds };
+}
+
+type PendingAnalysisRow = { id: string; status: string; stage: string };
+type AnalysisRecoveryResult = { requeuedJobIds: string[]; failedJobIds: string[] };
+
+async function requeuePendingAnalysisRows<Row extends PendingAnalysisRow>(
+  rows: Row[],
+  claim: (row: Row, recoveryStage: string) => Promise<Row | undefined>,
+  submit: (row: Row) => Promise<unknown>,
+  markQueueFailure: (row: Row, recoveryStage: string, error: unknown) => Promise<boolean>,
+): Promise<AnalysisRecoveryResult> {
+  const requeuedJobIds: string[] = [];
+  const failedJobIds: string[] = [];
+  for (const row of rows) {
+    const recoveryStage = `recovery-submitting:${randomUUID()}`;
+    const claimed = await claim(row, recoveryStage);
+    if (!claimed) continue;
+    try {
+      await submit(claimed);
+      requeuedJobIds.push(row.id);
+    } catch (error) {
+      if (await markQueueFailure(claimed, recoveryStage, error)) failedJobIds.push(row.id);
+      else requeuedJobIds.push(row.id); // The worker advanced after submission began.
+    }
+  }
+  return { requeuedJobIds, failedJobIds };
+}
+
+/** Requeue source analysis left queued or active when the local API stopped. */
+export async function recoverPendingLocalSourceAnalyses(
+  db: ReturnType<typeof drizzle>,
+  enqueue: (payload: SourceAnalysisJobPayload) => Promise<unknown> = enqueueSourceAnalysis,
+): Promise<AnalysisRecoveryResult> {
+  const pendingStatuses = ["queued", "preparing", "processing"];
+  const rows = await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.status, pendingStatuses));
+  return requeuePendingAnalysisRows(rows,
+    async (row, recoveryStage) => {
+      const [claimed] = await db.update(sourceAnalyses).set({
+        status: "queued", stage: recoveryStage, errorCode: null, analysisError: null,
+        startedAt: null, completedAt: null, updatedAt: new Date(),
+      }).where(and(
+        eq(sourceAnalyses.id, row.id), inArray(sourceAnalyses.status, pendingStatuses),
+        eq(sourceAnalyses.stage, row.stage),
+      )).returning();
+      return claimed;
+    },
+    (row) => enqueue({
+      sourceAnalysisId: row.id, projectId: row.projectId, sourceAssetId: row.sourceAssetId,
+      analysisEngine: row.analysisEngine, analysisEngineVersion: row.analysisEngineVersion,
+    }),
+    async (row, recoveryStage, error) => {
+      const [failed] = await db.update(sourceAnalyses).set({
+        status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable",
+        analysisError: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(), updatedAt: new Date(),
+      }).where(and(
+        eq(sourceAnalyses.id, row.id), eq(sourceAnalyses.status, "queued"),
+        eq(sourceAnalyses.stage, recoveryStage),
+      )).returning({ id: sourceAnalyses.id });
+      return Boolean(failed);
+    },
+  );
+}
+
+/** Requeue structural analysis left queued or active when the local API stopped. */
+export async function recoverPendingLocalSourceSectionAnalyses(
+  db: ReturnType<typeof drizzle>,
+  enqueue: (payload: SourceSectionAnalysisJobPayload) => Promise<unknown> = enqueueSourceSectionAnalysis,
+): Promise<AnalysisRecoveryResult> {
+  const pendingStatuses = ["queued", "preparing", "processing"];
+  const rows = await db.select().from(sourceSectionAnalyses).where(inArray(sourceSectionAnalyses.status, pendingStatuses));
+  return requeuePendingAnalysisRows(rows,
+    async (row, recoveryStage) => {
+      const [claimed] = await db.update(sourceSectionAnalyses).set({
+        status: "queued", stage: recoveryStage, errorCode: null, errorMessage: null,
+        startedAt: null, completedAt: null, updatedAt: new Date(),
+      }).where(and(
+        eq(sourceSectionAnalyses.id, row.id), inArray(sourceSectionAnalyses.status, pendingStatuses),
+        eq(sourceSectionAnalyses.stage, row.stage),
+      )).returning();
+      return claimed;
+    },
+    (row) => enqueue({
+      sourceSectionAnalysisId: row.id, projectId: row.projectId, sourceAssetId: row.sourceAssetId,
+      sourceAnalysisId: row.sourceAnalysisId, analysisEngine: row.analysisEngine,
+      analysisEngineVersion: row.analysisEngineVersion,
+    }),
+    async (row, recoveryStage, error) => {
+      const [failed] = await db.update(sourceSectionAnalyses).set({
+        status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable",
+        errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(), updatedAt: new Date(),
+      }).where(and(
+        eq(sourceSectionAnalyses.id, row.id), eq(sourceSectionAnalyses.status, "queued"),
+        eq(sourceSectionAnalyses.stage, recoveryStage),
+      )).returning({ id: sourceSectionAnalyses.id });
+      return Boolean(failed);
+    },
+  );
 }

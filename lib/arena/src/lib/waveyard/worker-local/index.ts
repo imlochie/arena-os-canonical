@@ -42,6 +42,8 @@ export {
   cleanupAbandonedAudioRestoreUploadDirectories,
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
+  recoverPendingLocalSourceAnalyses,
+  recoverPendingLocalSourceSectionAnalyses,
 } from "./recovery";
 export type { LocalJobBroker };
 export type LocalWorkerCleanupOverrides = {

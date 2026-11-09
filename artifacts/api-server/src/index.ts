@@ -5,6 +5,8 @@ import {
   drainLocalWorker,
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
+  recoverPendingLocalSourceAnalyses,
+  recoverPendingLocalSourceSectionAnalyses,
   cleanupOrphanedSourceObjects,
   cleanupAbandonedAudioRestoreUploadDirectories,
 } from "@workspace/arena/lib/waveyard/worker-local";
@@ -42,11 +44,13 @@ const worker = startLocalWorker();
 if (worker) {
   // The in-memory broker and worker threads belonged to the previous API
   // process. Mark its jobs retryable and remove only their abandoned temp dirs.
-  const { recovery, waveformRecovery } = await runWaveyardStartupRecovery(
+  const { recovery, waveformRecovery, sourceAnalysisRecovery, sectionAnalysisRecovery } = await runWaveyardStartupRecovery(
     async () => {
       const recovery = await recoverInterruptedLocalSeparationJobs(db);
       const waveformRecovery = await recoverPendingLocalWaveformJobs(db);
-      return { recovery, waveformRecovery };
+      const sourceAnalysisRecovery = await recoverPendingLocalSourceAnalyses(db);
+      const sectionAnalysisRecovery = await recoverPendingLocalSourceSectionAnalyses(db);
+      return { recovery, waveformRecovery, sourceAnalysisRecovery, sectionAnalysisRecovery };
     },
     {
       onRetry: (error, attempt, delayMs) => logger.warn({
@@ -65,6 +69,10 @@ if (worker) {
     resetWaveforms: waveformRecovery.resetJobIds.length,
     enqueuedWaveforms: waveformRecovery.enqueuedJobIds.length,
     waveformQueueFailures: waveformRecovery.failedJobIds.length,
+    requeuedSourceAnalyses: sourceAnalysisRecovery.requeuedJobIds.length,
+    failedSourceAnalysisRequeues: sourceAnalysisRecovery.failedJobIds.length,
+    requeuedSectionAnalyses: sectionAnalysisRecovery.requeuedJobIds.length,
+    failedSectionAnalysisRequeues: sectionAnalysisRecovery.failedJobIds.length,
   }, "Waveyard local processors ready");
 }
 await startLocalLibraryConversionWorker();

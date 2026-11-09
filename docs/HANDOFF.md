@@ -28,10 +28,12 @@ where they are stale.
   queued. Both failed-job retry and stale-analysis refresh paths avoid
   overwriting a fast worker's completed result, and queue handles are closed.
   Commits: `77fa1a6e`, `9ee9e0af`.
-* Retry lifecycle and local DSP tests: 16/16 pass, including PGlite state/race
-  coverage and real audio decoding through the local analysis engine. Full
-  workspace typecheck passes. These do not constitute browser, external DB,
-  or packaged-Windows acceptance.
+* Local API restart now requeues pending source BPM/key/beat and structural
+  analyses from their durable rows. Queue refusal is guarded so an analysis
+  already advanced by a worker is not marked failed. PGlite restart/retry and
+  local DSP tests: 18/18 pass; normalization tests: 6/6 pass. Full workspace
+  typecheck passes. These do not constitute browser, external DB, or packaged-
+  Windows acceptance.
 * PR #29 CI for `9ee9e0af` is running; check the live PR before treating it as
   green. Existing local normalization files and `pnpm-workspace.yaml` remain
   uncommitted and untouched by these retry commits.
