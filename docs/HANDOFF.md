@@ -42,6 +42,14 @@ where they are stale.
   and Firefox on the Linux PulseAudio null-sink harness. Historical WebKit
   restore-control flakiness remains unexplained; current green runs do not
   establish the original race's root cause.
+* Packaged Windows smoke now has a real PCM-tone upload, private-audio download,
+  and renderer playback assertion (`desktop/windows-package-smoke.mjs`). It
+  verifies the media element loads and advances after a user click, in addition
+  to checking byte-for-byte stored audio. This addition is not yet CI-verified.
+  Local syntax, whitespace, and workspace typecheck pass. The full desktop unit
+  suite reports 122 pass / 1 fail / 16 skip: the unrelated
+  `arcade-classic.test.mjs` symlink fixture fails with Windows `EPERM` in this
+  environment; no assertion was weakened.
 
 * Analysis retries now claim the failed durable row before queue hand-off;
   queue refusal restores the original failure only while the row remains

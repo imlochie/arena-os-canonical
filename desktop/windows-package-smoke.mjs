@@ -2,8 +2,8 @@
  * Installed-package smoke check for the current Vite + Express desktop app.
  *
  * Uses fresh temporary application data and writes only test statuses. Local
- * model inference and real-audio processing are intentionally not part of this
- * packaging check.
+ * model inference is not part of this check; Waveyard source decode and
+ * playback are exercised with a generated PCM tone.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -31,6 +31,7 @@ const checkIds = [
   "packaged_migrations_run",
   "bundled_ffmpeg_resolves",
   "bundled_ffprobe_resolves",
+  "waveyard_source_upload_and_audio_playback",
   "waveyard_capture_host_loads",
   "waveyard_capture_runtime_wired",
   "database_backup_restore_round_trip",
@@ -53,6 +54,32 @@ let desktop = null;
 let restoreRoot = null;
 let damagedRestoreRoot = null;
 let backupDir = null;
+
+function makeAcceptanceToneWav() {
+  const sampleRate = 48_000;
+  const durationSeconds = 2;
+  const frames = sampleRate * durationSeconds;
+  const dataBytes = frames * 2;
+  const wav = Buffer.alloc(44 + dataBytes);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + dataBytes, 4);
+  wav.write("WAVE", 8);
+  wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(dataBytes, 40);
+  for (let frame = 0; frame < frames; frame += 1) {
+    const sample = Math.round(Math.sin((2 * Math.PI * 440 * frame) / sampleRate) * 12_000);
+    wav.writeInt16LE(sample, 44 + frame * 2);
+  }
+  return wav;
+}
 
 function begin(id) {
   activeCheck = id;
@@ -137,6 +164,64 @@ async function run() {
     );
     pass(id);
   }
+
+  begin("waveyard_source_upload_and_audio_playback");
+  const waveyardProjectResponse = await page.request.post(
+    `${base}/api/waveyard/projects`,
+    { data: { title: "Packaged Waveyard audio acceptance" }, timeout: 20_000 },
+  );
+  assert.equal(waveyardProjectResponse.status(), 201);
+  const waveyardProject = (await waveyardProjectResponse.json()).project;
+  assert(waveyardProject?.id);
+  const acceptanceTone = makeAcceptanceToneWav();
+  const sourceResponse = await page.request.post(`${base}/api/uploads`, {
+    timeout: 30_000,
+    multipart: {
+      projectId: waveyardProject.id,
+      device: "cpu",
+      file: { name: "acceptance-tone.wav", mimeType: "audio/wav", buffer: acceptanceTone },
+    },
+  });
+  const sourceBody = await sourceResponse.text();
+  let sourcePayload;
+  try { sourcePayload = JSON.parse(sourceBody); }
+  catch { sourcePayload = { error: sourceBody }; }
+  assert.equal(sourceResponse.status(), 201, JSON.stringify(sourcePayload));
+  const uploadedSource = sourcePayload.source;
+  assert(uploadedSource?.id);
+  assert.equal(uploadedSource.sampleRate, 48_000);
+  assert.equal(uploadedSource.channels, 1);
+  assert.equal(uploadedSource.durationSeconds, 2);
+
+  const streamedAudio = await page.request.get(`${base}/api/assets/${uploadedSource.id}`, { timeout: 15_000 });
+  assert.equal(streamedAudio.status(), 200);
+  assert.match(streamedAudio.headers()["content-type"] ?? "", /audio\/wav/i);
+  assert.deepEqual(await streamedAudio.body(), acceptanceTone, "the packaged private asset route must return the exact stored audio bytes");
+
+  await page.evaluate((sourceId) => {
+    const button = document.createElement("button");
+    button.id = "waveyard-acceptance-play";
+    button.textContent = "Play Waveyard acceptance audio";
+    const audio = document.createElement("audio");
+    audio.id = "waveyard-acceptance-audio";
+    audio.src = `/api/assets/${sourceId}`;
+    button.addEventListener("click", () => { void audio.play(); });
+    document.body.append(button, audio);
+  }, uploadedSource.id);
+  await page.getByRole("button", { name: "Play Waveyard acceptance audio" }).click();
+  await page.waitForFunction(() => {
+    const audio = document.querySelector("#waveyard-acceptance-audio");
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime >= 0.15;
+  }, undefined, { timeout: 10_000 });
+  const playback = await page.locator("#waveyard-acceptance-audio").evaluate((node) => {
+    const audio = node;
+    return { readyState: audio.readyState, duration: audio.duration, currentTime: audio.currentTime, error: audio.error?.code ?? null };
+  });
+  assert(playback.readyState >= 2);
+  assert.equal(playback.error, null);
+  assert(Math.abs(playback.duration - 2) < 0.05, JSON.stringify(playback));
+  assert(playback.currentTime >= 0.15, JSON.stringify(playback));
+  pass("waveyard_source_upload_and_audio_playback");
 
   begin("waveyard_capture_host_loads");
   const captureHost = path.join(resources, "native", "waveyard-capture-host.exe");
