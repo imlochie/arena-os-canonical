@@ -2343,7 +2343,15 @@ try {
           window.liveStemSelectionStart = performance.now();
         }, { once: true });
       });
+      const swapSave = page.waitForResponse(response =>
+        response.url().endsWith("/swaps") && response.request().method() === "POST",
+      );
       await candidate.click();
+      const swapSaveResponse = await swapSave;
+      if (!swapSaveResponse.ok()) {
+        const body = await swapSaveResponse.text().catch(() => "<unreadable>");
+        throw new Error(`${engineName} ${scenario.name} swap save failed (${swapSaveResponse.status()}): ${body.slice(0, 240)}`);
+      }
       try {
         try {
           await page.waitForFunction(({ bufferCount }) => {
@@ -2435,6 +2443,10 @@ try {
             restoreDisabled: restoreButton ? restoreButton.disabled : null,
             triggerText: (current?.querySelector('[data-testid="open-live-swap-vocals"]')?.textContent ?? "").trim().slice(0, 80),
             alerts: [...document.querySelectorAll('[role="alert"]')].map(node => (node.textContent ?? "").trim().slice(0, 160)).slice(0, 4),
+            status: (current?.querySelector('[data-testid="session-status"]')?.textContent ?? "").trim().slice(0, 240),
+            pendingSwap: (current?.querySelector('[data-testid="live-swap-pending-vocals"]')?.textContent ?? "").trim().slice(0, 160),
+            apiResponses: (window.audioProbe?.apiResponses ?? []).slice(-8).map(({ url, status, failure, bodyStart }) => ({ url, status, failure, bodyStart })),
+            pageErrors: (window.audioProbe?.pageErrors ?? []).slice(-6),
             timings: window.liveStemTimings?.length ?? null,
           };
         }).catch(() => "page unavailable");
