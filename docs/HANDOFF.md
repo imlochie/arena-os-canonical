@@ -66,6 +66,28 @@ This section supersedes older status claims below where they conflict.
   win32), so Windows coverage of this suite is still not claimed. The only
   remaining annotation on the green run is GitHub's generic "Node.js 20 is
   deprecated" notice about the `@v4` actions, shared by every workflow here.
+* **Linux test coverage map (2026-11-09, measured; supersedes the "76
+  environment-dependent failures" figure):** every one of the 285 test files
+  was run on provisioned Linux (PostgreSQL server binaries, ffmpeg, Python 3,
+  `DATABASE_URL` unit convention, package cwd): **2,152 tests, 2,078 pass, 51
+  fail, 23 skip, 22 failing files**; with a live PostgreSQL on 5432 and the
+  migrations applied, 2,102 pass / 34 fail / 16 skip / 16 failing files. CI
+  today runs 53 of the 285 files automatically (24 Windows recovered-stack,
+  26 desktop on Windows, 3 on Linux); **232 files run nowhere, 212 of them
+  pass on Linux today** (1,658 passing tests). Every failing file is
+  attributed by class (browser 5, live-postgres 6, network 2, built
+  artifacts 2, stale/vite-only/browser-globals/fixture 6, cwd 1) in
+  `docs/LINUX-TEST-COVERAGE-2026-11-09.md`, with the per-file appendix and the
+  reproducible method. Four files only pass from their package directory
+  (`authorization.integration`, `deviceChannel.integration`, `wave3`,
+  `arenaRooms`), so a Linux job must not run everything from `scripts/`.
+  **Chosen next step (one credit):** a Linux sweep job over `lib/`,
+  `artifacts/`, `scripts/` test files minus the 3 the DB job runs and an
+  explicit, reasoned exclusion list — measured today at 235 files / 1,838
+  passing tests / 16 opt-in skips, ~9 minutes of summed per-file time. Not
+  chosen yet, with numbers in the doc: a live PostgreSQL service (+24 tests),
+  Playwright browsers (+21 tests, 5 files), and the small test fixes (stale
+  `broker` queue list, two dead-path tests, four cwd-relative paths).
 * **Arcade CSP policy map (2026-11-09, investigation only; nothing changed):**
   plan B.2 ("wire `sandboxGameDocument` into the player") predates the player
   having its own policy, and the two are not interchangeable. There are four
