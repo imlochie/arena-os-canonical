@@ -168,7 +168,10 @@ jobs:
             }
           }
 
-          $previousSource = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) "arenaforge-previous-source"
+          # Keep the previous tree under the runner temp root and enable Git's
+          # Windows long-path handling; the nested pnpm install otherwise makes
+          # worktree cleanup fail with "Filename too long".
+          $previousSource = Join-Path $env:RUNNER_TEMP "prev"
           git worktree add --detach $previousSource $baseline
           if ($LASTEXITCODE -ne 0) { Fail "The previous package source could not be prepared." }
           # The current app was packaged immediately before this step. Reuse
@@ -285,6 +288,21 @@ jobs:
               Write-Host "previous package: applied base fix $fix from the tested tree"
             }
 
+            # electron-builder cannot resolve repository metadata through a
+            # .git worktree pointer. Add only packaging metadata to this
+            # temporary previous-source copy; no application code or
+            # dependencies change.
+            $desktopPackagePath = Join-Path (Get-Location).Path "desktop/package.json"
+            $desktopPackage = Get-Content -LiteralPath $desktopPackagePath -Raw | ConvertFrom-Json
+            if (-not $desktopPackage.repository) {
+              $desktopPackage | Add-Member -NotePropertyName repository -NotePropertyValue ([ordered]@{
+                type = "git"
+                url = "https://github.com/$env:GITHUB_REPOSITORY.git"
+              })
+            }
+            $desktopPackage | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $desktopPackagePath -Encoding utf8NoBOM
+            Write-Host "previous package: added repository metadata for electron-builder's worktree lookup"
+
             $baseRevision = (git rev-parse HEAD).Trim()
             Write-Host "previous package: source=$baseline dependency-config=from tested branch ($baseRevision)"
             # State the one fact this whole workaround rests on. Only the
@@ -357,7 +375,7 @@ jobs:
             Copy-Item $builtInstaller.FullName $previousInstaller
           } finally {
             Pop-Location
-            git worktree remove --force $previousSource
+            git -c core.longpaths=true worktree remove --force $previousSource
           }
           if (-not (Test-Path $previousInstaller)) { Fail "The previous Windows installer was not retained for the update test." }
           "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
