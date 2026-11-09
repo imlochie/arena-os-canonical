@@ -4328,14 +4328,14 @@ export default function SessionExperience({
           ? `Half/double-time · donor pace retained${lowBeatConfidence ? " · no beat sync" : ""}`
           : unsafeTempoGap
             ? `Tempo gap too wide · native ${Math.round(selectedDonorBpm!)} BPM`
-        : lowBeatConfidence
-          ? "Beat sync unavailable · analysis confidence is low"
         : activeSwapTempoStretchRatios[stemType] !== undefined
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
             ? currentSwapSetup.sectionPositionMatches[stemType]
               ? "Tempo matched · pitch preserved · section position matched"
               : "Tempo matched · pitch preserved · beat phase aligned"
             : "Tempo matched · pitch preserved · beat alignment unavailable"
+        : lowBeatConfidence
+          ? "Beat sync unavailable · analysis confidence is low"
           : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
             : "Tempo unavailable · native tempo";

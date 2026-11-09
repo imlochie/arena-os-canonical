@@ -4146,7 +4146,13 @@ try {
     assert.equal(await page.locator("#waveyard-live-mixer").count(), 1,
       "the upload action must lead back to the persistent live mixer");
   }
-  session.tracks = tracks;
+  // This browser segment asserts confident tempo and key guidance. Supply
+  // confidence alongside the synthetic BPM/key values so the UI can correctly
+  // distinguish a safe match from the honest low-confidence fallback.
+  session.tracks = tracks.map(track => ({
+    ...track,
+    analysis: { ...track.analysis, bpmConfidence: 0.9, keyConfidence: 0.9 },
+  }));
   session.swaps = [];
   session.currentSessionTrackId = "a";
   session.positionSeconds = 0;
@@ -5214,7 +5220,26 @@ try {
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="live-stem-tempo-vocals"]')?.textContent
       ?.startsWith("Tempo matched · pitch preserved · beat alignment unavailable"),
-  );
+  ).catch(async error => {
+    console.log("LIVE_STEM_TEMPO_DIAGNOSTIC", JSON.stringify({
+      currentSessionTrackId: session.currentSessionTrackId,
+      tempoCurrentTrack: { id: tempoCurrentTrack.id, analysis: tempoCurrentTrack.analysis },
+      tempoDonor: { id: tempoDonor.id, analysis: tempoDonor.analysis },
+      sessionCurrentAnalysis: session.tracks.find(item => item.id === session.currentSessionTrackId)?.analysis,
+      sessionDonorAnalysis: session.tracks.find(item => item.id === tempoDonor.id)?.analysis,
+      page: await page.evaluate(() => ({
+        currentTitle: document.querySelector('[data-role="current"] h3')?.textContent,
+        currentTrackId: document.querySelector('[data-testid="session-track-id"]')?.textContent,
+        tempoStatus: document.querySelector('[data-testid="live-stem-tempo-vocals"]')?.textContent,
+        picker: document.querySelector('[data-testid="live-swap-picker-vocals"]')?.textContent,
+        candidates: [...document.querySelectorAll('[data-testid^="live-swap-candidate-vocals-"]')].map(node => ({
+          label: node.getAttribute("aria-label"), text: node.textContent?.trim(), selected: node.getAttribute("aria-pressed"),
+        })),
+        errors: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent?.trim()).filter(Boolean),
+      })),
+    }));
+    throw error;
+  });
   await toggle();
   await page.waitForFunction(before => window.audioProbe.buffers.length > before, buffersBeforeTempoSwap);
   await page.waitForTimeout(250);
