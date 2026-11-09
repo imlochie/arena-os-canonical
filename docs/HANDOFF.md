@@ -24,10 +24,48 @@ This section supersedes older status claims below where they conflict.
   the other branch-changed Waveyard suites 194/194 pass; `pnpm run typecheck`
   passes. This is **not** evidence of real Demucs inference or weights, the
   browser retry/donor acceptance runs (no Chromium or pinned model files in
-  this environment), or packaged Windows. **Still unclaimed:** this suite is
-  not in `windows-recovered-stack.yml`'s file list, so a break like the one
-  above is invisible to CI; a Linux job for the DB-backed Waveyard suites would
-  close that gap (its cancellation case explicitly skips on Windows).
+  this environment), or packaged Windows. The CI gap this exposed (no workflow
+  ran this suite; `windows-recovered-stack.yml` omits it and its cancellation
+  case skips on win32) is closed by the Linux job in the next bullet.
+* **Linux CI for the DB-backed Waveyard worker-local suites (2026-11-09):**
+  `.github/workflows/waveyard-worker-local-db.yml`, job `worker-local-db` on
+  `ubuntu-22.04` (push, pull_request, workflow_dispatch; 30-minute cap). It
+  installs `@workspace/scripts... @workspace/arena... @workspace/desktop...`
+  (desktop is required: `separation.test.ts` migrates its disposable cluster
+  through the production migrator `desktop/database.mjs`, which imports `pg`
+  from `desktop/node_modules`), puts the runner image's PostgreSQL server
+  binaries on PATH, boots a throwaway cluster the way the suite does (initdb
+  as the runner user, TCP on 127.0.0.1, no Unix socket) and fails loudly if
+  that, ffmpeg/ffprobe or Python 3 is missing, then runs
+  `worker-local/separation.test.ts`, `stem-analysis.test.ts` and
+  `analysis-recovery.test.ts` one file at a time with per-file TAP evidence
+  (artifact `worker-local-linux-<run>-<attempt>`, 14 days). The
+  deep-cancellation process-group test is a hard gate: the job greps for its
+  passing TAP line and a skip or missing line fails the job; other skips are
+  surfaced as warnings, never counted as passes. Failing TAP results are
+  annotated with their diagnostic block because job logs and artifacts were
+  not readable from the authoring sandbox. **Evidence:** first green run
+  <https://github.com/imlochie/arena-os-canonical/actions/runs/42650096758>
+  (push of `8d8e319` on `arena/convergence-2026-11-07`, 3m14s): all three
+  files PASS, zero skips, no error annotations; environment notice reports
+  PostgreSQL 14.24 (`14.24-1.pgdg22.04+2`), ffmpeg 4.4.2, Python 3.10.12.
+  The three earlier runs on this branch (`f5cf74d`, `7d73635`, `9d16d12`)
+  failed only separation tests 5/15/16, the ones that start a real cluster,
+  with "Cannot find package 'pg' imported from desktop/database.mjs"; adding
+  the desktop filter fixed it, and the fix was first reproduced locally after
+  deleting every `node_modules` directory (an earlier clean-room check had
+  missed `desktop/node_modules`). Local clean-room run of the workflow's test
+  step with embedded PostgreSQL 14.24: 54/54, 1/1, 2/2, zero skips.
+  **Limitations:** the job uses the runner's PGDG PostgreSQL 14, not the
+  embedded 16.14 build the desktop ships (the 25 desktop migrations use no
+  15+-only syntax, and the suite passes on both); the deep pass is the stub
+  engine driven by real Python, with no pinned Demucs/ONNX weights, no GPU and
+  no real inference; `separation-real-ort.test.ts` is deliberately excluded
+  (it skips without pinned weights); the job cannot run on the Windows runner
+  (no PostgreSQL server binaries there, and the cancellation case skips on
+  win32), so Windows coverage of this suite is still not claimed. The only
+  remaining annotation on the green run is GitHub's generic "Node.js 20 is
+  deprecated" notice about the `@v4` actions, shared by every workflow here.
 * **Waveyard local analyses:** the desktop API selects the versioned local
   engine and starts the existing drum, harmony, and vocal queues. Their DSP
   handlers persist events/frames with checksums and engine provenance; API
