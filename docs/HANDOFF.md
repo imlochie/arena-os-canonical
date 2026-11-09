@@ -23,6 +23,18 @@ where they are stale.
 
 ### Waveyard convergence follow-up (2026-11-09)
 
+* Analysis retries now claim the failed durable row before queue hand-off;
+  queue refusal restores the original failure only while the row remains
+  queued. Both failed-job retry and stale-analysis refresh paths avoid
+  overwriting a fast worker's completed result, and queue handles are closed.
+  Commits: `77fa1a6e`, `9ee9e0af`.
+* Retry lifecycle and local DSP tests: 16/16 pass, including PGlite state/race
+  coverage and real audio decoding through the local analysis engine. Full
+  workspace typecheck passes. These do not constitute browser, external DB,
+  or packaged-Windows acceptance.
+* PR #29 CI for `9ee9e0af` is running; check the live PR before treating it as
+  green. Existing local normalization files and `pnpm-workspace.yaml` remain
+  uncommitted and untouched by these retry commits.
 * Session mix and transition saves now use a local journal. An unacknowledged
   PATCH survives a tab reload and replays; the visible retry control clears a
   failed queue, and a track's pending save is forgotten only after deletion is
