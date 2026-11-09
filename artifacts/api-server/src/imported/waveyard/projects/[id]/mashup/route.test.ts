@@ -117,7 +117,7 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-test("API render uses the synthesized separated bed and reports the original-file fallback", async (t) => {
+test("Waveyard API renders mashups and persists Arena handoffs atomically", async (t) => {
   if (!postgresBinaries.initdb || !postgresBinaries.postgres || !postgresBinaries.pgCtl) {
     t.skip("PostgreSQL binaries are unavailable");
     return;
@@ -181,9 +181,10 @@ test("API render uses the synthesized separated bed and reports the original-fil
     process.env.NODE_ENV = "test";
 
     routeModule = await import("./route");
+    const handoffRoute = await import("../arena-handoff/route");
     dbModule = await import("@workspace/db");
     const schema = await import("@workspace/db/waveyardSchema");
-    const { LOCAL_OWNER_ID } = await import("@workspace/db/schema");
+    const { LOCAL_OWNER_ID, artifacts: arenaArtifacts, projects: arenaProjects, roomHandoffs } = await import("@workspace/db/schema");
     const { getStorage } = await import("@workspace/arena/lib/waveyard/storage");
     const storage = getStorage();
 
@@ -193,6 +194,56 @@ test("API render uses the synthesized separated bed and reports the original-fil
       kind: "studio",
     }).returning({ id: schema.projects.id });
     assert.ok(project);
+
+    const invalidHandoff = await handoffRoute.POST(
+      new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "handoff", summary: "   " }) }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(invalidHandoff.status, 400);
+    assert.equal((await dbModule.db.select().from(arenaProjects)).length, 0, "invalid handoff must not create a Core project");
+    assert.equal((await dbModule.db.select().from(roomHandoffs)).length, 0, "invalid handoff must not create a project link");
+
+    const linkRequest = () => new Request("http://localhost", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "link" }),
+    });
+    const concurrentLinks = await Promise.all([
+      handoffRoute.POST(linkRequest(), { params: Promise.resolve({ id: project.id }) }),
+      handoffRoute.POST(linkRequest(), { params: Promise.resolve({ id: project.id }) }),
+    ]);
+    assert.deepEqual(concurrentLinks.map((response) => response.status).sort(), [200, 201]);
+    assert.equal((await dbModule.db.select().from(arenaProjects)).length, 1, "concurrent attachment must create one Core project");
+    assert.equal((await dbModule.db.select().from(roomHandoffs)).filter((row) => row.kind === "room-project").length, 1);
+
+    await dbModule.pool.query(`
+      create function fail_waveyard_artifact_handoff() returns trigger language plpgsql as $$
+      begin
+        if new.kind = 'artifact' then raise exception 'forced handoff insert failure'; end if;
+        return new;
+      end $$;
+      create trigger fail_waveyard_artifact_handoff before insert on arena_room_handoffs
+      for each row execute function fail_waveyard_artifact_handoff();
+    `);
+    await assert.rejects(
+      handoffRoute.POST(
+        new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "handoff", summary: "A valid handoff summary" }) }),
+        { params: Promise.resolve({ id: project.id }) },
+      ),
+      (error: Error & { cause?: Error }) => error.cause?.message.includes("forced handoff insert failure") === true,
+    );
+    assert.equal((await dbModule.db.select().from(arenaArtifacts)).length, 0, "artifact must roll back when handoff row insertion fails");
+    await dbModule.pool.query("drop trigger fail_waveyard_artifact_handoff on arena_room_handoffs; drop function fail_waveyard_artifact_handoff();");
+
+    const successfulHandoff = await handoffRoute.POST(
+      new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "handoff", title: "Takeaway", summary: "Use the chorus arrangement in Studio." }) }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(successfulHandoff.status, 201);
+    const persistedArtifact = await dbModule.db.select().from(arenaArtifacts);
+    const persistedHandoff = (await dbModule.db.select().from(roomHandoffs)).find((row) => row.kind === "artifact");
+    assert.equal(persistedArtifact.length, 1);
+    assert.equal(persistedHandoff?.sourceId, persistedArtifact[0]?.id);
 
     const vocalsOriginal = encodeWav16(tone([1000], VOCAL_SECONDS, 0.2), RATE);
     // The bed's original vocal is deliberately loud. If the separated bed were
