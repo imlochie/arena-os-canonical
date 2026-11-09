@@ -137,6 +137,12 @@ where they are stale.
   upstream artifact-fetch failure, not a failed installed-app update assertion.
   The installed-package update workflow therefore remains unverified at this
   head; rerun it when the pinned artifact service is available.
+* A bounded retry now handles transient HTTP 408/425/429/5xx responses across
+  pinned SDK ZIPs, classic package assets, and the SDL fixture download. Pins,
+  exact sizes, digests, and permanent HTTP failure behavior remain enforced.
+  Desktop build tests pass 7/7, including retry-on-504 and no-retry-on-404.
+  This local commit still needs the Windows package workflow to prove it reaches
+  the installer/update checks; it has not been pushed.
 
 ### Historical test evidence (earlier environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:

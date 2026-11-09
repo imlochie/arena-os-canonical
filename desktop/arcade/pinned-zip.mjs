@@ -4,6 +4,7 @@ import { mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
 import yauzl from "yauzl";
 import { safePackagePath, validateReleaseUrl } from "./packages.mjs";
+import { fetchWithTransientRetries } from "./retry-fetch.mjs";
 
 export async function sha256File(filename, signal) {
   const hash = createHash("sha256");
@@ -20,7 +21,7 @@ export async function downloadPinnedZip(pin, filename, signal, progress = () => 
   try {
     let url = validateReleaseUrl(pin.url);
     for (let redirects = 0; redirects < 5; redirects++) {
-      response = await fetch(url, { signal, redirect: "manual", headers: { "Accept-Encoding": "identity" } });
+      response = await fetchWithTransientRetries(url, { signal, redirect: "manual", headers: { "Accept-Encoding": "identity" } });
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       await response.body?.cancel();
       url = validateReleaseUrl(new URL(response.headers.get("location") ?? "", url).href);
