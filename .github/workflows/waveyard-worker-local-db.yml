@@ -1,0 +1,158 @@
+name: Waveyard worker-local DB acceptance (Linux)
+
+# The worker-local suites that persist to a database were covered by no
+# workflow at all. `windows-recovered-stack.yml` deliberately cannot cover
+# them: it runs on a runner with no PostgreSQL server binaries, and the one
+# process-group assertion in `worker-local/separation.test.ts` skips itself on
+# win32. That gap hid a real break -- adding full-SHA-256 verification of the
+# pinned Demucs checkpoint made the deep-cancellation test throw before it
+# spawned the stub engine, and it stayed red because nothing ran the file.
+#
+# This job runs those suites on Linux with the runner's own PostgreSQL server
+# binaries (initdb/postgres/pg_ctl, started as the runner user in a throwaway
+# directory), ffmpeg/ffprobe and Python 3. It is not a copy of the Windows job:
+# none of its files are in that job's list, and its cancellation assertion only
+# executes on this platform.
+#
+# Honest limits: fixtures are generated. No pinned Demucs or ONNX weights, no
+# GPU, no real inference, no audible playback, no packaged Windows. The deep
+# pass drives a real Python interpreter around a FAKE Demucs that writes
+# generated stems; the PostgreSQL runs use the runner's server binaries rather
+# than the embedded build the desktop app ships.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  worker-local-db:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # The runner is scripts/ (that is where tsx lives); suites are imported
+      # by relative path, matching the repo's established invocation.
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..."
+
+      - name: Provide PostgreSQL server binaries, ffmpeg and Python 3
+        shell: bash
+        run: |
+          set -uo pipefail
+          evidence="$PWD/generated-artifacts/worker-local-linux"
+          mkdir -p "$evidence"
+
+          # The suites start a disposable cluster, so they need initdb, postgres
+          # and pg_ctl -- server binaries, not just the client. The runner image
+          # ships them out of PATH; installing the package is the fallback.
+          pgbin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$pgbin" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends postgresql || true
+            pgbin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ -z "$pgbin" ] || [ ! -x "$pgbin/initdb" ] || [ ! -x "$pgbin/postgres" ]; then
+            echo "::error::No PostgreSQL server binaries (initdb/postgres/pg_ctl). The worker-local DB suites would fail instead of proving anything."
+            exit 1
+          fi
+          echo "$pgbin" >> "$GITHUB_PATH"
+          "$pgbin/postgres" --version | tee -a "$evidence/environment.txt"
+
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            echo "::error::ffmpeg/ffprobe are required: the suites decode real audio and the deep pass probes the toolchain."
+            exit 1
+          fi
+          ffmpeg -version | head -1 | tee -a "$evidence/environment.txt"
+
+          # A missing interpreter makes the deep tests skip themselves, which
+          # would leave the cancellation assertion unproven while looking green.
+          if ! command -v python3 >/dev/null; then
+            echo "::error::Python 3 is required to drive the stub deep engine."
+            exit 1
+          fi
+          python3 -V 2>&1 | tee -a "$evidence/environment.txt"
+
+      - name: Run worker-local DB suites with per-file evidence
+        shell: bash
+        env:
+          # Modules import the db client at load time; these suites boot their
+          # own cluster and never connect to this address.
+          DATABASE_URL: postgres://unit@127.0.0.1:1/unit
+        run: |
+          set -uo pipefail
+          evidence="$PWD/generated-artifacts/worker-local-linux"
+          mkdir -p "$evidence"
+          tests=(
+            "../lib/arena/src/lib/waveyard/worker-local/separation.test.ts"
+            "../lib/arena/src/lib/waveyard/worker-local/stem-analysis.test.ts"
+            "../lib/arena/src/lib/waveyard/worker-local/analysis-recovery.test.ts"
+          )
+          failed=0
+          cd scripts
+          for test in "${tests[@]}"; do
+            name="$(printf '%s' "$test" | sed 's|^\.\./||; s|/|_|g')"
+            echo "=== $test ==="
+            if ./node_modules/.bin/tsx --test "$test" >"$evidence/$name.txt" 2>&1; then
+              echo "PASS $test" | tee -a "$evidence/summary.txt"
+            else
+              echo "FAIL $test" | tee -a "$evidence/summary.txt"
+              failed=1
+            fi
+            cat "$evidence/$name.txt"
+          done
+
+          separation="$evidence/lib_arena_src_lib_waveyard_worker-local_separation.test.ts.txt"
+          # Hard requirement: the process-group assertion must actually pass
+          # here. It skips on Windows by design, so this job is its only CI
+          # coverage; a skip or a missing line is a failure, not a pass.
+          deep_cancel='^ok [0-9]+ - deep cancellation waits for Demucs exit, preserves saved playback, and allows a clean retry$'
+          if ! grep -Eq "$deep_cancel" "$separation"; then
+            echo "::error::The deep-cancellation process-group test did not pass on Linux. This job exists to prove it, because it skips on Windows."
+            failed=1
+          fi
+
+          # Skips are reported, never silently counted as passes.
+          for file in "$evidence"/*.txt; do
+            [ -f "$file" ] || continue
+            skipped_count="$(sed -n 's/^# skipped //p' "$file" | tail -1)"
+            if [ -n "$skipped_count" ] && [ "$skipped_count" != "0" ]; then
+              echo "::warning::$(basename "$file") skipped $skipped_count test(s); skipped is not proven."
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::At least one worker-local DB suite failed on Linux."
+            exit 1
+          fi
+          echo "All worker-local DB suites passed on Linux."
+
+      - name: Retain per-file evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-local-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: generated-artifacts/worker-local-linux/
+          if-no-files-found: warn
+          retention-days: 14
