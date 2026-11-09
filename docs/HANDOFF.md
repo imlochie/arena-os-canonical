@@ -19,7 +19,7 @@ where they are stale.
 | Arcade gate | **Already on `main`** (`imported/arcade/runtime-verification.ts`, used by all three publish paths); the "genuinely missing" claim was stale. Added a uniform-canvas check and 11 tests (all 9 built-in games, blank canvas, no animation loop, obfuscated egress, bad browser path, static-invalid code). | `6fb7a456` |
 | Content objects | Storage primitives added: `StorageIntegrityError`, `contentObjectKey`, `putImmutableStream` (hash+count while writing, dedup, replace corrupt copy, temp cleanup), `verifyObject`; 10 tests, in the Windows stack workflow. | `bbeefba1` |
 | Waveyard Firefox | Play reported "interrupted" on a working device: first `resume()` settled *running* after 1805 ms, past the 1500 ms bound. Bound raised to 6000 ms with a regression test; no test threshold changed. | `3a782f73` |
-| Waveyard WebKit | Intermittent restore-control failure is *not* reproducible locally (10 runs); CI log showed the button resolved but "not stable / detached". Probes added (`RESTORE_CONTROL_MISSING`, `RESTORE_CLICK_FAILED`). Root cause **open**. | `17420c42`, `0e9ef2b6` |
+| Waveyard WebKit | One confirmed restore-control failure: the `d8bc1430` push run resolved the button, then WebKit reported it unstable and detached. Added probes have not captured a recurrence; root cause **open**. | `17420c42`, `0e9ef2b6`, `77aef143` |
 
 ### Waveyard convergence follow-up (2026-11-09)
 
@@ -122,9 +122,16 @@ Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same r
   `96810e3a` both ✅ (first runs with the service-worker clear). Two consecutive
   greens are **not** proof the fix works at a ~50% failure rate. Require several
   consecutive greens before calling it fixed.
-* Waveyard browser timing: Chromium and WebKit pass in most runs; the `push`
-  event failed on `bbeefba1`, `17420c42`, `d8bc1430` (WebKit restore control) and
-  `96810e3a` (Firefox resume bound, fixed in `3a782f73`). Verify after `3a782f73`.
+* Waveyard browser timing: historical logs correct an earlier misattribution.
+  On `bbeefba1` (`42429844918`), `17420c42` (`42429724101`), and `96810e3a`
+  (`42436016713`), Chromium and WebKit passed; Firefox failed during playback
+  setup/resume. The only confirmed WebKit restore-control failure is the
+  `d8bc1430` push run `42432274551`: WebKit found the restore button, then
+  reported it unstable and detached during a 30-second click. That run predates
+  the DOM mutation/geometry probes, so there is no evidence explaining why it
+  detached. On `0e9ef2b6`, `77aef143`, `9a3a3dcb`, `32639378`, and `df6f1127`,
+  push and PR browser runs passed. Repeated green runs show the failure is not
+  currently recurring; they do not prove its root cause or a fix.
 
 ### Convergence verification
 * Ledger accounting: GitHub currently lists 50 branches = 48 audited + `main` +
