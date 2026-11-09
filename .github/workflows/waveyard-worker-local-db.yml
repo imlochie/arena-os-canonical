@@ -119,6 +119,17 @@ jobs:
             else
               echo "FAIL $test" | tee -a "$evidence/summary.txt"
               failed=1
+              # Surface WHICH test failed in the check-run annotation. Job logs
+              # and artifacts are not always readable where this is triaged, so
+              # a bare "exit code 1" is not enough to act on.
+              grep -E "^not ok " "$evidence/$name.txt" | head -3 | while IFS= read -r line; do
+                echo "::error::$test -> $line"
+              done
+              if ! grep -qE "^not ok " "$evidence/$name.txt"; then
+                tail -5 "$evidence/$name.txt" | while IFS= read -r line; do
+                  echo "::error::$test (no TAP result; tail) -> $line"
+                done
+              fi
             fi
             cat "$evidence/$name.txt"
           done
@@ -130,6 +141,9 @@ jobs:
           deep_cancel='^ok [0-9]+ - deep cancellation waits for Demucs exit, preserves saved playback, and allows a clean retry$'
           if ! grep -Eq "$deep_cancel" "$separation"; then
             echo "::error::The deep-cancellation process-group test did not pass on Linux. This job exists to prove it, because it skips on Windows."
+            grep -E "deep cancellation" "$separation" | head -3 | while IFS= read -r line; do
+              echo "::error::observed -> $line"
+            done
             failed=1
           fi
 
