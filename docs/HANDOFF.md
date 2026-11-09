@@ -122,6 +122,21 @@ where they are stale.
   web/model-provider requests in Local Mode and preserved on-device metadata.
   The shared-library and API-server typechecks pass. The local fallback is the
   deterministic engine, not a local language model.
+* At `a66abe83`, the PR-triggered live-stem timing job reproduced WebKit's
+  restore-button detachment after a tempo-matched vocals swap. The probe showed
+  the button disappeared from the captured current deck; the recipient fixture
+  was only 20 seconds long while the timing scenario played through several
+  operations. The app correctly advances decks when audio ends. The harness
+  change gives only the timing recipient a 90-second audio fixture, leaving the
+  comprehensive live-stem regression fixtures unchanged.
+  `node --check` passes. This Windows environment has no installed Playwright
+  browser binaries, so the WebKit fix still needs CI confirmation before push.
+* The same `a66abe83` PR and push package jobs failed while building the previous
+  package, before reaching the update check: pinned SDL/SameBoy downloads failed
+  (`HTTP 504` / `Could not acquire pinned SDL release`). This is evidence of an
+  upstream artifact-fetch failure, not a failed installed-app update assertion.
+  The installed-package update workflow therefore remains unverified at this
+  head; rerun it when the pinned artifact service is available.
 
 ### Historical test evidence (earlier environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:

@@ -241,10 +241,15 @@ if (mashupEvaluationOnly) {
     };
   });
 } else {
-  assets.set("a-source", wav(20, 130));
+  // The timing-only browser run keeps the recipient playing while it measures
+  // several swaps in sequence. A short fixture can naturally end during a
+  // slow WebKit run, auto-advancing the deck and detaching the restore control
+  // before the test reaches it. Keep the timing recipient long-lived while
+  // leaving the comprehensive audio regression fixtures unchanged.
+  assets.set("a-source", wav(timingOnly ? 90 : 20, 130));
   assets.set("b-source", wav(8, 230));
   tracks = ["a", "b", "c"].map((id, index) => {
-    const duration = [20, 8, 12][index];
+    const duration = timingOnly && id === "a" ? 90 : [20, 8, 12][index];
     const stems = types.map((stemType, i) => {
       const key = `${id}-${stemType}`;
       assets.set(key, wav(duration, 130 + index * 100 + i * 40));
