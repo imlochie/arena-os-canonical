@@ -182,6 +182,8 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
 
     routeModule = await import("./route");
     const handoffRoute = await import("../arena-handoff/route");
+    const projectArtifactsRoute = await import("../../../../projects/[id]/artifacts/route");
+    const arenaProjectRoute = await import("../../../../projects/[id]/route");
     dbModule = await import("@workspace/db");
     const schema = await import("@workspace/db/waveyardSchema");
     const { LOCAL_OWNER_ID, artifacts: arenaArtifacts, projects: arenaProjects, roomHandoffs } = await import("@workspace/db/schema");
@@ -244,6 +246,18 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const persistedHandoff = (await dbModule.db.select().from(roomHandoffs)).find((row) => row.kind === "artifact");
     assert.equal(persistedArtifact.length, 1);
     assert.equal(persistedHandoff?.sourceId, persistedArtifact[0]?.id);
+    const artifactReader = await projectArtifactsRoute.GET(
+      new Request(`http://localhost/api/projects/${(await dbModule.db.select().from(arenaProjects))[0]!.id}/artifacts`, { headers: { host: "localhost" } }),
+      { params: Promise.resolve({ id: (await dbModule.db.select().from(arenaProjects))[0]!.id }) },
+    );
+    assert.equal(artifactReader.status, 200);
+    assert.equal((await artifactReader.json() as { artifacts: Array<{ id: string; kind: string; sourceType: string }> }).artifacts[0]?.id, persistedArtifact[0]?.id);
+    const coreProject = (await dbModule.db.select().from(arenaProjects))[0]!;
+    const projectWorkspace = await arenaProjectRoute.GET(new Request(`http://localhost/projects/${coreProject.id}`), { params: Promise.resolve({ id: coreProject.id }) });
+    const workspaceBody = await projectWorkspace.json() as { artifacts: Array<{ id: string; kind: string; sourceType: string }> };
+    assert.equal(workspaceBody.artifacts[0]?.id, persistedArtifact[0]?.id, "Core project page reader must expose the Waveyard artifact");
+    assert.equal(workspaceBody.artifacts[0]?.kind, "room-handoff");
+    assert.equal(workspaceBody.artifacts[0]?.sourceType, "waveyard");
 
     const vocalsOriginal = encodeWav16(tone([1000], VOCAL_SECONDS, 0.2), RATE);
     // The bed's original vocal is deliberately loud. If the separated bed were

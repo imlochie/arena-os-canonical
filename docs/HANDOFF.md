@@ -103,9 +103,10 @@ where they are stale.
   transaction. The real embedded-PostgreSQL API test proved blank-summary
   requests write no Core rows, two simultaneous attaches produce one project
   link, a forced handoff-row failure rolls back the artifact, and a valid
-  handoff persists both rows. API-server typecheck passes. This verifies local
-  database integration for this route; it does not establish end-to-end room
-  UI navigation or packaged Windows acceptance for the handoff flow.
+  handoff persists both rows and appears through both existing Core artifact
+  readers. API-server typecheck passes. This verifies local database and API
+  reader integration; it does not establish browser navigation or packaged
+  Windows acceptance for the handoff flow.
 
 ### Historical test evidence (earlier environment; no PostgreSQL/Redis)
 Per-file `tsx --test` runs, branch `bbeefba1` vs pristine `main@33c876a`, same runner:
