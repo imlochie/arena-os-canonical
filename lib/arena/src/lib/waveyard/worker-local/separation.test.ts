@@ -3419,7 +3419,10 @@ test("deep cancellation waits for Demucs exit, preserves saved playback, and all
       outputDirectory = request.outputDirectory;
       notifyDeepStarted();
       resetDeepProbeCacheForTests();
-      return runDeepSeparation({ ...request, env: engineForAttempt.env });
+      // This fixture proves process-group cancellation, so it uses the same
+      // explicit stand-in checkpoint as the other handler tests. The real
+      // full-SHA-256 checkpoint gate is covered by the deep runner tests.
+      return runDeepWithFixtureCheckpoint({ ...request, env: engineForAttempt.env });
     };
     broker = new LocalJobBroker();
     broker.registerCancellable(SEPARATION_QUEUE, async (payload, { signal }) => {

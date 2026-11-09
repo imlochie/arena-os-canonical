@@ -8,6 +8,26 @@ Last updated: 2026-11-09.
 
 This section supersedes older status claims below where they conflict.
 
+* **Deep checkpoint identity, applied consistently (2026-11-09):** the deep
+  separation path verifies the pinned Demucs checkpoint's full SHA-256 before
+  any inference (`verifyDeepCheckpoint`, injectable through `deps`). Two handler
+  tests already used the explicit stand-in checkpoint; the deep-cancellation
+  process-group test still called the real verifier with the fixture's
+  presence-only dummy checkpoint, so it failed *before* spawning the stub engine
+  and reported "the Demucs process started" instead of testing cancellation.
+  It now uses the same stand-in override as its siblings; checkpoint identity
+  remains covered by `separation/deep.test.ts`. Local evidence on this branch
+  (Linux, real embedded PostgreSQL, real Python 3.11 stub engine, ffmpeg from
+  the installer packages): `worker-local/separation.test.ts` 54/54 pass,
+  including process-group cancellation and clean retry; the library service
+  suite 53 pass with its 4 opt-in real-worker/browser tests skipped by default;
+  the other branch-changed Waveyard suites 194/194 pass; `pnpm run typecheck`
+  passes. This is **not** evidence of real Demucs inference or weights, the
+  browser retry/donor acceptance runs (no Chromium or pinned model files in
+  this environment), or packaged Windows. **Still unclaimed:** this suite is
+  not in `windows-recovered-stack.yml`'s file list, so a break like the one
+  above is invisible to CI; a Linux job for the DB-backed Waveyard suites would
+  close that gap (its cancellation case explicitly skips on Windows).
 * **Waveyard local analyses:** the desktop API selects the versioned local
   engine and starts the existing drum, harmony, and vocal queues. Their DSP
   handlers persist events/frames with checksums and engine provenance; API
