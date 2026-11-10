@@ -84,24 +84,24 @@ test("plan: bed owns the tempo, vocal stretch + entry are explained", () => {
   assert.ok(plan.rationale.some((line) => line.includes("master tempo")));
 });
 
-test("plan: missing tempo analysis adapts with fallback and honest warning", () => {
+test("plan: missing tempo analysis adapts with fallback estimation and honest warning", () => {
   const resultVocalMissing = planMashup(profile({ role: "vocals", bpm: null }), profile({ bpm: 100 }));
   assert.ok(resultVocalMissing.ok);
   assert.equal(resultVocalMissing.plan.masterBpm, 100);
-  assert.equal(resultVocalMissing.plan.vocalsStretchRatio, 1);
-  assert.ok(resultVocalMissing.plan.warnings.some((w) => /tempo analysis is incomplete/i.test(w)));
+  assert.ok(resultVocalMissing.plan.vocalsStretchRatio > 0);
+  assert.ok(resultVocalMissing.plan.warnings.some((w) => /Vocal tempo analysis is incomplete/i.test(w)));
 
   const resultBothMissing = planMashup(profile({ role: "vocals", bpm: null }), profile({ bpm: null }));
   assert.ok(resultBothMissing.ok);
   assert.equal(resultBothMissing.plan.masterBpm, 120);
-  assert.equal(resultBothMissing.plan.vocalsStretchRatio, 1);
-  assert.ok(resultBothMissing.plan.warnings.some((w) => /120 BPM reference/i.test(w)));
+  assert.ok(resultBothMissing.plan.vocalsStretchRatio > 0);
+  assert.ok(resultBothMissing.plan.warnings.some((w) => /Neither track has complete tempo analysis/i.test(w)));
 
   const resultBedMissing = planMashup(profile({ role: "vocals", bpm: 128 }), profile({ bpm: null }));
   assert.ok(resultBedMissing.ok);
-  assert.equal(resultBedMissing.plan.masterBpm, 128);
-  assert.equal(resultBedMissing.plan.vocalsStretchRatio, 1);
-  assert.ok(resultBedMissing.plan.warnings.some((w) => /vocal track's tempo/i.test(w)));
+  assert.ok(resultBedMissing.plan.masterBpm > 0);
+  assert.ok(resultBedMissing.plan.vocalsStretchRatio > 0);
+  assert.ok(resultBedMissing.plan.warnings.some((w) => /instrumental has no complete tempo analysis/i.test(w)));
 });
 
 test("plan: missing key analysis adapts with 0 semitones and honest warning", () => {

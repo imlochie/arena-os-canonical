@@ -90,6 +90,43 @@ export function warpRatioForTempos(vocalBpm: number, bedBpm: number): number {
   return Math.min(2, Math.max(0.5, raw));
 }
 
+/**
+ * Estimates a musically sensible tempo (BPM) from section timestamps or duration
+ * when formal tempo analysis is missing. Sections give bar/phrase cadence; otherwise
+ * common pop/electronic tempo ranges (100–128 BPM) guide duration-to-beat fitting.
+ */
+export function estimateFallbackTempo(profile: MashupSourceProfile): { bpm: number; confidence: number; source: "sections" | "duration" | "default" } {
+  if (profile.sections && profile.sections.length >= 2) {
+    const intervals: number[] = [];
+    for (let i = 0; i < profile.sections.length - 1; i++) {
+      const diff = profile.sections[i + 1].startMs - profile.sections[i].startMs;
+      if (diff > 2000 && diff < 60000) intervals.push(diff);
+    }
+    if (intervals.length > 0) {
+      intervals.sort((a, b) => a - b);
+      const medianMs = intervals[Math.floor(intervals.length / 2)];
+      // Assume median section is roughly 8 or 16 bars (32 or 64 beats in 4/4)
+      for (const beats of [32, 16, 64, 8]) {
+        const candidateBpm = (beats * 60_000) / medianMs;
+        if (candidateBpm >= 75 && candidateBpm <= 160) {
+          return { bpm: Math.round(candidateBpm * 10) / 10, confidence: 0.6, source: "sections" };
+        }
+      }
+    }
+  }
+
+  // Duration heuristic: if duration fits an exact multiple of 4-beat bars around 120 BPM
+  if (profile.durationMs > 10_000) {
+    const targetBeats = Math.round((profile.durationMs / 60_000) * 120);
+    const candidateBpm = (targetBeats * 60_000) / profile.durationMs;
+    if (candidateBpm >= 80 && candidateBpm <= 150) {
+      return { bpm: Math.round(candidateBpm * 10) / 10, confidence: 0.4, source: "duration" };
+    }
+  }
+
+  return { bpm: 120, confidence: 0.2, source: "default" };
+}
+
 /** The vocal's pitch move into the bed's key. Relative major/minor shares
  *  the same scale — the correct move is NO shift, not a tonic shift. */
 export function pitchMoveForKeys(
@@ -137,31 +174,40 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   const warnings: string[] = [];
 
   let masterBpm: number;
+  let estimatedBed = false;
+  let estimatedVocal = false;
+
   if (bed.bpm !== null && bed.bpm > 0) {
     masterBpm = bed.bpm;
     rationale.push(`master tempo = the instrumental's ${masterBpm} BPM (the bed wins the tempo war).`);
-  } else if (vocals.bpm !== null && vocals.bpm > 0) {
-    masterBpm = vocals.bpm;
-    warnings.push("The instrumental has no complete tempo analysis — using the vocal track's tempo (master = " + masterBpm + " BPM).");
-    rationale.push(`master tempo = estimated from vocal track at ${masterBpm} BPM.`);
   } else {
-    masterBpm = 120;
-    warnings.push("Neither track has complete tempo analysis — using standard 120 BPM reference without tempo matching.");
-    rationale.push("master tempo = 120 BPM reference fallback.");
+    const fallbackBed = estimateFallbackTempo(bed);
+    masterBpm = fallbackBed.bpm;
+    estimatedBed = true;
+    if (vocals.bpm !== null && vocals.bpm > 0) {
+      warnings.push(`The instrumental has no complete tempo analysis — estimated at ${masterBpm} BPM (${fallbackBed.source}).`);
+      rationale.push(`master tempo = estimated instrumental tempo (${masterBpm} BPM).`);
+    } else {
+      warnings.push(`Neither track has complete tempo analysis — using estimated ${masterBpm} BPM reference.`);
+      rationale.push(`master tempo = estimated reference tempo (${masterBpm} BPM).`);
+    }
   }
 
-  let stretchRatio = 1;
-  if (vocals.bpm !== null && vocals.bpm > 0 && bed.bpm !== null && bed.bpm > 0) {
-    stretchRatio = warpRatioForTempos(vocals.bpm, masterBpm);
-    if (Math.abs(stretchRatio - 1) < 1e-9) {
-      rationale.push(`vocals stay at natural speed (${vocals.bpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
-    } else {
-      rationale.push(`vocals are time-stretched ×${stretchRatio.toFixed(3)} (${vocals.bpm} → ${masterBpm} BPM, pitch preserved by WSOLA).`);
-    }
+  let effectiveVocalBpm: number;
+  if (vocals.bpm !== null && vocals.bpm > 0) {
+    effectiveVocalBpm = vocals.bpm;
   } else {
-    stretchRatio = 1;
-    warnings.push("Vocal tempo analysis is incomplete — preserving vocal natural playback speed (1.0× stretch ratio).");
-    rationale.push("vocals stay at natural speed (1.0× stretch ratio) because tempo confidence is incomplete.");
+    const fallbackVocal = estimateFallbackTempo(vocals);
+    effectiveVocalBpm = fallbackVocal.bpm;
+    estimatedVocal = true;
+    warnings.push(`Vocal tempo analysis is incomplete — estimated at ${effectiveVocalBpm} BPM (${fallbackVocal.source}).`);
+  }
+
+  const stretchRatio = warpRatioForTempos(effectiveVocalBpm, masterBpm);
+  if (Math.abs(stretchRatio - 1) < 1e-9) {
+    rationale.push(`vocals stay at natural speed (${effectiveVocalBpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
+  } else {
+    rationale.push(`vocals are time-stretched ×${stretchRatio.toFixed(3)} (${effectiveVocalBpm} → ${masterBpm} BPM, pitch preserved by WSOLA).`);
   }
   if (vocals.bpm !== null && vocals.bpm !== masterBpm && Math.abs(vocals.bpm - masterBpm) <= 6) {
     rationale.push("tempos are near-equal — a light stretch, not a resample.");
@@ -192,17 +238,71 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   const vocalSpanMs = Math.max(0, body.toMs - body.fromMs);
   const stretchedMs = vocalSpanMs * stretchRatio;
   const bedRoomMs = Math.max(0, bed.durationMs - entry.at);
-  const segment: MashupSegment = {
-    mashupStartMs: entry.at,
-    mashupEndMs: Math.min(bed.durationMs, entry.at + stretchedMs),
-    vocalsFromMs: body.fromMs,
-    vocalsToMs: body.toMs,
-    crossfadeMs: CROSSFADE_MS,
-    rationale: `vocals run ${(stretchedMs / 1000).toFixed(1)}s over the bed from ${(entry.at / 1000).toFixed(1)}s`,
-  };
-  if (stretchedMs > bedRoomMs) {
-    warnings.push(`The stretched vocal (${(stretchedMs / 1000).toFixed(1)}s) is longer than the bed has room (${(bedRoomMs / 1000).toFixed(1)}s) — it fades out at the bed's end.`);
-    segment.rationale += " (truncated at the bed's end)";
+
+  const segments: MashupSegment[] = [];
+
+  // Intelligently arrange full-length vocal segments across the bed timeline.
+  // When vocals are significantly shorter than the bed (e.g. bed has extra sections / 2nd verse / chorus),
+  // place recurring vocal sections (or loop phrases aligned to bar boundaries) so both tracks contribute
+  // throughout the entire song.
+  if (stretchedMs > 0 && bedRoomMs > 0) {
+    if (stretchedMs >= bedRoomMs * 0.75) {
+      // Standard full or near-full overlay
+      const segEndMs = Math.min(bed.durationMs, entry.at + stretchedMs);
+      segments.push({
+        mashupStartMs: entry.at,
+        mashupEndMs: segEndMs,
+        vocalsFromMs: body.fromMs,
+        vocalsToMs: body.toMs,
+        crossfadeMs: CROSSFADE_MS,
+        rationale: `primary vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s`,
+      });
+      if (stretchedMs > bedRoomMs) {
+        warnings.push(`The stretched vocal (${(stretchedMs / 1000).toFixed(1)}s) is longer than the bed has room (${(bedRoomMs / 1000).toFixed(1)}s) — it fades out at the bed's end.`);
+      }
+    } else {
+      // Bed is significantly longer than vocals. We build a structured multi-segment arrangement:
+      // Segment 1: initial vocal verse/body
+      // Segment 2: chorus/body recap later in the bed after an instrumental breakdown/solo pocket
+      const firstSegmentEnd = entry.at + stretchedMs;
+      segments.push({
+        mashupStartMs: entry.at,
+        mashupEndMs: firstSegmentEnd,
+        vocalsFromMs: body.fromMs,
+        vocalsToMs: body.toMs,
+        crossfadeMs: CROSSFADE_MS,
+        rationale: `first vocal passage runs ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
+      });
+
+      // Calculate bar-aligned breakdown gap
+      const breakdownBars = Math.max(2, Math.floor((barMs > 0 ? (bedRoomMs - stretchedMs) / 3 / barMs : 4)));
+      const breakdownMs = barMs > 0 ? breakdownBars * barMs : 8_000;
+      const secondStart = Math.min(bed.durationMs - Math.min(stretchedMs, 30_000), firstSegmentEnd + breakdownMs);
+      const remainingMs = bed.durationMs - secondStart;
+
+      if (remainingMs > 4_000) {
+        const vocalPortionMs = Math.min(vocalSpanMs, (remainingMs / stretchRatio));
+        segments.push({
+          mashupStartMs: secondStart,
+          mashupEndMs: Math.min(bed.durationMs, secondStart + vocalPortionMs * stretchRatio),
+          vocalsFromMs: body.fromMs,
+          vocalsToMs: body.fromMs + vocalPortionMs,
+          crossfadeMs: CROSSFADE_MS,
+          rationale: `re-entry after instrumental breakdown (${(breakdownMs / 1000).toFixed(1)}s pocket) extending vocals to song climax`,
+        });
+        rationale.push(`arranged secondary vocal re-entry at ${(secondStart / 1000).toFixed(1)}s following an instrumental section`);
+      }
+    }
+  } else {
+    // Fallback: minimal single segment
+    segments.push({
+      mashupStartMs: entry.at,
+      mashupEndMs: Math.min(bed.durationMs, entry.at + stretchedMs),
+      vocalsFromMs: body.fromMs,
+      vocalsToMs: body.toMs,
+      crossfadeMs: CROSSFADE_MS,
+      rationale: `vocals run ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
+    });
   }
 
   return {
@@ -213,7 +313,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
       vocalsStretchRatio: stretchRatio,
       vocalsPitchSemitones: pitchMove.semitones,
       keyRelationship: pitchMove.relationship,
-      segments: [segment],
+      segments,
       durationMs: bed.durationMs,
       rationale,
       warnings,
