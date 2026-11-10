@@ -101,13 +101,15 @@ describe("deterministic automatic remix arranger", () => {
     expect(result.plan.provenance.decisions).toContain("replaced only verified, structurally compatible featured stems");
   });
 
-  it("refuses same-index generic sections as cross-song phrase evidence", () => {
+  it("falls back to a complete alternating arrangement when passage evidence is unavailable", () => {
     const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b" })], { variant: "hybrid" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe("no_compatible_hybrid_source");
-      expect(result.compatibility?.missingEvidence).toContain("current passage fingerprints for every section; rerun section analysis with engine 1.5.0");
-    }
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tracks).toHaveLength(8);
+    expect(result.plan.tracks.every((track) => track.clips.length === 2)).toBe(true);
+    expect(result.plan.tracks[0].clips[0]).toMatchObject({ timelineStartMs: 0, durationMs: 8_000, sourceOffsetMs: 0, beatSnapEnabled: false });
+    expect(result.plan.tracks[4].clips[0]).toMatchObject({ timelineStartMs: 16_000, durationMs: 8_000, sourceOffsetMs: 0, beatSnapEnabled: false });
+    expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
   });
 
   it("does not treat within-track pattern or energy labels as semantic cross-song roles", () => {

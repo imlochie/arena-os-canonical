@@ -412,6 +412,36 @@ function completeConstraints(constraints: AutomaticRemixConstraints, variant: Au
   };
 }
 
+function conservativeFallbackWindows(sources: AutomaticRemixSource[]): Map<string, Omit<AutomaticRemixClipPlan, "stemAssetId">[]> {
+  const windows = new Map<string, Omit<AutomaticRemixClipPlan, "stemAssetId">[]>();
+  const totalDuration = sources.reduce((total, source) => total + source.durationMs, 0);
+  let timelineStartMs = 0;
+  for (const source of sources) {
+    const halfDuration = Math.max(1, Math.floor(source.durationMs / 2));
+    const clips = [0, halfDuration].map((sourceOffsetMs, index) => {
+      const durationMs = index === 0 ? halfDuration : source.durationMs - halfDuration;
+      const clip = {
+        timelineStartMs,
+        durationMs,
+        sourceOffsetMs,
+        gain: 0.78,
+        fadeInMs: 250,
+        fadeOutMs: 250,
+        tempoSyncEnabled: false,
+        keySyncEnabled: false,
+        beatSnapEnabled: false,
+      } satisfies Omit<AutomaticRemixClipPlan, "stemAssetId">;
+      timelineStartMs += durationMs;
+      return clip;
+    });
+    windows.set(source.id, clips);
+  }
+  if (timelineStartMs !== totalDuration) {
+    throw new Error("Conservative fallback timeline must equal the complete source duration");
+  }
+  return windows;
+}
+
 function combinedCompatibilityReport(reports: AutomaticRemixCompatibilityReport[]): AutomaticRemixCompatibilityReport | undefined {
   if (!reports.length) return undefined;
   const pairs = reports.flatMap((report) => report.pairs)
@@ -451,7 +481,18 @@ export function buildAutomaticRemixPlan(
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
   const counterpartsBySource = new Map<string, ReadonlyMap<string, AutomaticRemixSection>>();
   const compatibilityBySource = new Map<string, AutomaticRemixCompatibilityReport>();
+  let fallbackWindowsBySource: Map<string, Omit<AutomaticRemixClipPlan, "stemAssetId">[]> | null = null;
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
+
+  if (variant === "hybrid" && !sourceCanStructure(anchor)) {
+    fallbackWindowsBySource = conservativeFallbackWindows(usableSources);
+    selected.clear();
+    for (const source of usableSources) {
+      for (const stem of source.stems) selected.set(`${source.id}:${stem.id}`, { source, stem });
+    }
+    notices.push("Musical evidence was incomplete, so Waveyard used conservative alternating full-song passages without claiming beat or key alignment.");
+    decisions.push("arranged both complete sources as alternating half-song passages");
+  }
 
   if (variant === "hybrid" && sourceCanStructure(anchor)) {
     const requestedVocals = requestedStem(usableSources, constraints.vocalStemId, "vocals");
@@ -504,8 +545,13 @@ export function buildAutomaticRemixPlan(
     }
     if ([...selected.values()].some((choice) => choice.source.id !== anchor.id)) decisions.push("replaced only verified, structurally compatible featured stems");
     else {
-      const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
-      return { ok: false, reason: "no_compatible_hybrid_source", ...(compatibility ? { compatibility } : {}) };
+      fallbackWindowsBySource = conservativeFallbackWindows(usableSources);
+      selected.clear();
+      for (const source of usableSources) {
+        for (const stem of source.stems) selected.set(`${source.id}:${stem.id}`, { source, stem });
+      }
+      notices.push("No cross-song passage passed every confidence gate, so Waveyard used conservative alternating full-song passages instead of rejecting the pairing.");
+      decisions.push("arranged both complete sources as alternating half-song passages");
     }
     if (compatibilityBySource.size) {
       const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
@@ -524,7 +570,8 @@ export function buildAutomaticRemixPlan(
   const ordered = [...selected.values()].sort((left, right) => roleRank(left.stem) - roleRank(right.stem) || left.stem.id.localeCompare(right.stem.id));
   const tracks: AutomaticRemixTrackPlan[] = [];
   for (const [sortOrder, { source, stem }] of ordered.entries()) {
-    const clips = clipWindows(source, anchor, anchorBpm, counterpartsBySource.get(source.id));
+    const clips = fallbackWindowsBySource?.get(source.id)
+      ?? clipWindows(source, anchor, anchorBpm, counterpartsBySource.get(source.id));
     if (!clips) return { ok: false, reason: "unsafe_hybrid_alignment" };
     tracks.push({
       stemAssetId: stem.id,

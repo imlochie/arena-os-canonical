@@ -4,6 +4,15 @@ Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
 Last updated: 2026-11-10.
 
+## Current verification update — 2026-11-10, full-song fallback vertical slice
+
+* **Implementation completed:** `buildAutomaticRemixPlan` no longer rejects a requested hybrid solely because passage evidence is missing or no pair clears the existing confidence gates. It preserves those gates and falls back to the existing persisted `AutomaticRemixPlan`/`RemixClip` shape: every usable stem from both complete sources is arranged as alternating first-half/second-half passages across a continuous timeline. The fallback makes no unverified BPM, key, or beat-snap claim, uses conservative gain and short fades, and records notices/decisions explaining the evidence boundary.
+* **Files changed:** `lib/arena/src/lib/waveyard/types/automatic-remix.ts` and `lib/arena/src/lib/waveyard/types/__tests__/automatic-remix.test.ts`. This is intentionally inside the existing arranger; no second renderer, persistence model, or UI engine was introduced.
+* **Test evidence:** Added coverage proving a difficult pair with generic/unavailable section evidence produces eight stem tracks, two clips per source track, alternating timeline ownership, and conservative beat/key flags. Existing compatible, low-confidence, provenance, semantic-label, and empty-source cases remain covered. The focused test could not execute in this checkout because `tsx` is not installed; `pnpm run typecheck` passes for libraries, API server, ArenaForge, mockup sandbox, and scripts; `git diff --check` passes.
+* **Real-song evidence:** No real-song render was run in this task because the checked-out acceptance recordings are not present in the repository and the focused test runner dependency is unavailable. The new fallback is designed to accept those difficult pairs, but continuous audio quality, WAV export, and save/reopen still require the existing real-stem acceptance harness to be run with the supplied recordings.
+* **Remaining limitations:** This slice is an arrangement decision, not a new DSP renderer. It does not yet time-stretch, pitch-shift, isolate stems, or synthesize beat/bar transitions for the fallback; it deliberately preserves source timing and provenance. The existing rendering/export path must consume the generated clips, and real separated-stem acceptance remains required before claiming listening quality.
+* **Exact Git revision:** `00214f08712e1a912f6cb988626e86fc6df27ce0`.
+
 ## Current verification update — 2026-11-10, Waveyard cross-song passage compatibility
 
 * **Preserved checkout:** still on `arena/convergence-2026-11-07` at
