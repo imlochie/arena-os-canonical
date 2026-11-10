@@ -2,7 +2,92 @@
 
 Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
-Last updated: 2026-11-09.
+Last updated: 2026-11-10.
+
+## Current verification update — 2026-11-10, Windows readiness at `dd2d2862`
+
+This section supersedes older Windows/AI acceptance claims below. Green CI is
+not equivalent to owner-side release acceptance.
+
+* **Branch preservation:** the starting workspace was clean on
+  `arena/convergence-2026-11-07` at `7c2df817`. Its remote branch and PR #29
+  had advanced linearly to `ef042aea`; the supplied branch
+  `arena/caafeea9-arena-os-canonical` was a further linear descendant at
+  `dd2d2862`, with no PR of its own. The three commits `3f064578`,
+  `d1948f0f`, and `dd2d2862` were fast-forwarded onto the existing convergence
+  branch. No branch was deleted, no history rewritten, and PR #29 was not
+  merged. The handoff-only change in this PR does not alter the tested code.
+* **What happened at `ef042aea`:** that commit changed only `docs/HANDOFF.md`
+  and `docs/LINUX-TEST-COVERAGE-2026-11-09.md`. Nevertheless, the recovered-stack
+  workflow did execute (run
+  [42673833952](https://github.com/imlochie/arena-os-canonical/actions/runs/42673833952))
+  and failed: `python-guardian.test.ts`'s first test exceeded its unchanged
+  10-second budget, and the inference-probe test skipped because Windows had no
+  FFmpeg/FFprobe. This was an executed failing run, not a rerun refusal.
+* **FFmpeg and test reporting fix:** `3f064578` stages the exact SHA-256-pinned
+  FFmpeg bundle used by the installer, executes both `ffmpeg.exe` and
+  `ffprobe.exe`, and sets `ARENA_FFMPEG_PATH` / `ARENA_FFPROBE_PATH`. A skipped
+  or missing probe is now an error. Failed-file TAP output is included in
+  bounded check annotations. The same commit improves browser timing failure
+  annotations; it does not alter the app's audio engine.
+* **Python guardian regression:** `d1948f0f` discovers the test interpreter once
+  before the individual test clocks begin. The two tests retain their 10-second
+  timeouts and the 1.5-second owned-process termination bound; the assertions
+  were not relaxed. Windows run
+  [42681735032](https://github.com/imlochie/arena-os-canonical/actions/runs/42681735032)
+  passed. Its runner was Python 3.15.2: spawn-to-close was 273 ms; the
+  termination test reported 73 ms to start, 3 ms for executor close, and 3 ms
+  until the owned Python process was gone. These are one CI-runner's timings,
+  not laptop performance guarantees.
+* **Windows package evidence:** run
+  [42681734757](https://github.com/imlochie/arena-os-canonical/actions/runs/42681734757)
+  passed on `dd2d2862`. It built the x64 NSIS installer, installed
+  `ArenaForge.exe`, passed the installed-package smoke, then passed the
+  previous-to-current package update smoke. The `arenaforge-windows-x64`
+  artifact was uploaded (390,749,118 bytes; 14-day retention at run time).
+  This proves hosted Windows CI packaging/install/update behavior, not
+  installation on the owner's laptop.
+* **Local regression checks after integration:** the focused
+  `python-guardian.test.ts` run passed 2/2 with no skips, and `pnpm run
+  typecheck` passed.
+* **Inference-probe limit:** the passing CI probe used the real staged FFmpeg
+  binaries to process six controlled WAV inputs, but its Demucs runner is a
+  controlled stand-in and no trained checkpoint was present. The log explicitly
+  says real Demucs inference is **not** proven. No real provider/model inference
+  was performed; do not mark the AI-runtime gate PASS.
+* **Owner-side Windows acceptance checklist (not yet performed):**
+  1. Open the Windows package run above and download its
+     `arenaforge-windows-x64` artifact. Extract the ZIP and run the non-
+     uninstaller `.exe`; use the install directory selected in the installer.
+     Launch `ArenaForge.exe` from that directory.
+  2. Open **Model Hub** in the installed app and confirm its host notice says
+     Arena is running on **this device**. Do not use the Replit preview for a
+     laptop-local model: that preview checks Replit's server.
+  3. To avoid cloud fees and quotas, install and open Ollama on this same PC.
+     In Model Hub, select **Refresh runtime status**, **Connect runtime** for
+     the discovered Ollama service, then **+ Add [model] to Arena** for an
+     installed model. Choose a catalog model only after checking its displayed
+     download size and approximate RAM class against the laptop.
+  4. In **Spaces**, select that registered model and run a new disposable task:
+     use `write_file` to create `acceptance-check.txt` with a unique
+     owner-chosen token, then use `read_file` to return its exact contents.
+     Reopen the Space and verify the file is still present.
+  5. Count this as genuine inference/tool acceptance only if the journal shows
+     the real runtime level, provider and actual model ID, **no `FALLBACK`**,
+     a successful tool action and the expected file contents. A model being
+     listed or a health check passing is insufficient. Return a screenshot of
+     that result and the package-smoke report; do not include API keys or other
+     secrets.
+* **Waveyard real-audio status:** the full-track scan of six user-provided
+  tracks found zero qualifying repeated rhythm/harmony patterns and no manual
+  verse/chorus reference labels; it does not establish musical-form understanding.
+  A real 20-second September excerpt did pass the pinned four-model separation
+  and persisted four stems on Linux, but audio quality was not evaluated. The
+  real-library browser check then found a persisted second track whose four
+  stem IDs did not match the four IDs loaded in the next deck. Therefore
+  real-audio separation is PARTIAL; the complete live-mix workflow is NOT
+  accepted until that mismatch is resolved and retested. MIDI/export/save/
+  reopen as one real-audio workflow and owner-device listening remain unverified.
 
 ## Current verification update — 2026-11-09, cold-start acceptance at `32cf4a54`
 
