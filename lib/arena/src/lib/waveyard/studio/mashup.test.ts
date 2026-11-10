@@ -84,10 +84,35 @@ test("plan: bed owns the tempo, vocal stretch + entry are explained", () => {
   assert.ok(plan.rationale.some((line) => line.includes("master tempo")));
 });
 
-test("plan: missing tempo analysis rejects honestly", () => {
-  const result = planMashup(profile({ role: "vocals", bpm: null }), profile({ bpm: 100 }));
-  assert.ok(!result.ok);
-  assert.match(result.reason, /tempo analysis/i);
+test("plan: missing tempo analysis adapts with fallback and honest warning", () => {
+  const resultVocalMissing = planMashup(profile({ role: "vocals", bpm: null }), profile({ bpm: 100 }));
+  assert.ok(resultVocalMissing.ok);
+  assert.equal(resultVocalMissing.plan.masterBpm, 100);
+  assert.equal(resultVocalMissing.plan.vocalsStretchRatio, 1);
+  assert.ok(resultVocalMissing.plan.warnings.some((w) => /tempo analysis is incomplete/i.test(w)));
+
+  const resultBothMissing = planMashup(profile({ role: "vocals", bpm: null }), profile({ bpm: null }));
+  assert.ok(resultBothMissing.ok);
+  assert.equal(resultBothMissing.plan.masterBpm, 120);
+  assert.equal(resultBothMissing.plan.vocalsStretchRatio, 1);
+  assert.ok(resultBothMissing.plan.warnings.some((w) => /120 BPM reference/i.test(w)));
+
+  const resultBedMissing = planMashup(profile({ role: "vocals", bpm: 128 }), profile({ bpm: null }));
+  assert.ok(resultBedMissing.ok);
+  assert.equal(resultBedMissing.plan.masterBpm, 128);
+  assert.equal(resultBedMissing.plan.vocalsStretchRatio, 1);
+  assert.ok(resultBedMissing.plan.warnings.some((w) => /vocal track's tempo/i.test(w)));
+});
+
+test("plan: missing key analysis adapts with 0 semitones and honest warning", () => {
+  const result = planMashup(
+    profile({ role: "vocals", bpm: 120, musicalKey: null }),
+    profile({ bpm: 120, musicalKey: "C major" }),
+  );
+  assert.ok(result.ok);
+  assert.equal(result.plan.vocalsPitchSemitones, 0);
+  assert.equal(result.plan.keyRelationship, "unknown");
+  assert.ok(result.plan.warnings.some((w) => /Key analysis is missing/i.test(w)));
 });
 
 test("plan: large key shifts warn (veto belongs to the user's ears)", () => {

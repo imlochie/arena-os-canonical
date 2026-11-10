@@ -133,25 +133,37 @@ function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: num
 }
 
 export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile): MashupPlanResult {
-  if (bed.bpm === null || bed.bpm <= 0) {
-    return { ok: false, reason: "The instrumental's tempo analysis is not complete — the mashup has no tempo master to sync to." };
-  }
-  if (vocals.bpm === null || vocals.bpm <= 0) {
-    return { ok: false, reason: "The vocal track's tempo analysis is not complete — run analysis first so the stretch can be computed honestly." };
-  }
   const rationale: string[] = [];
   const warnings: string[] = [];
 
-  const masterBpm = bed.bpm;
-  rationale.push(`master tempo = the instrumental's ${masterBpm} BPM (the bed wins the tempo war).`);
-
-  const stretchRatio = warpRatioForTempos(vocals.bpm, masterBpm);
-  if (Math.abs(stretchRatio - 1) < 1e-9) {
-    rationale.push(`vocals stay at natural speed (${vocals.bpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
+  let masterBpm: number;
+  if (bed.bpm !== null && bed.bpm > 0) {
+    masterBpm = bed.bpm;
+    rationale.push(`master tempo = the instrumental's ${masterBpm} BPM (the bed wins the tempo war).`);
+  } else if (vocals.bpm !== null && vocals.bpm > 0) {
+    masterBpm = vocals.bpm;
+    warnings.push("The instrumental has no complete tempo analysis — using the vocal track's tempo (master = " + masterBpm + " BPM).");
+    rationale.push(`master tempo = estimated from vocal track at ${masterBpm} BPM.`);
   } else {
-    rationale.push(`vocals are time-stretched ×${stretchRatio.toFixed(3)} (${vocals.bpm} → ${masterBpm} BPM, pitch preserved by WSOLA).`);
+    masterBpm = 120;
+    warnings.push("Neither track has complete tempo analysis — using standard 120 BPM reference without tempo matching.");
+    rationale.push("master tempo = 120 BPM reference fallback.");
   }
-  if (vocals.bpm !== masterBpm && Math.abs(vocals.bpm - masterBpm) <= 6) {
+
+  let stretchRatio = 1;
+  if (vocals.bpm !== null && vocals.bpm > 0 && bed.bpm !== null && bed.bpm > 0) {
+    stretchRatio = warpRatioForTempos(vocals.bpm, masterBpm);
+    if (Math.abs(stretchRatio - 1) < 1e-9) {
+      rationale.push(`vocals stay at natural speed (${vocals.bpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
+    } else {
+      rationale.push(`vocals are time-stretched ×${stretchRatio.toFixed(3)} (${vocals.bpm} → ${masterBpm} BPM, pitch preserved by WSOLA).`);
+    }
+  } else {
+    stretchRatio = 1;
+    warnings.push("Vocal tempo analysis is incomplete — preserving vocal natural playback speed (1.0× stretch ratio).");
+    rationale.push("vocals stay at natural speed (1.0× stretch ratio) because tempo confidence is incomplete.");
+  }
+  if (vocals.bpm !== null && vocals.bpm !== masterBpm && Math.abs(vocals.bpm - masterBpm) <= 6) {
     rationale.push("tempos are near-equal — a light stretch, not a resample.");
   }
 
@@ -240,8 +252,11 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
   // Prepared vocal segments (stretched once, then pitched once each).
   const prepared = plan.segments.map((segment) => {
     const fromFrame = Math.max(0, Math.round((segment.vocalsFromMs / 1000) * sampleRate) * 2);
-    const toFrame = Math.min(input.vocals.length, Math.round((segment.vocalsToMs / 1000) * sampleRate) * 2);
+    const toFrame = Math.min(input.vocals.length, Math.max(fromFrame, Math.round((segment.vocalsToMs / 1000) * sampleRate) * 2));
     const span = input.vocals.slice(fromFrame, toFrame);
+    if (span.length === 0) {
+      return { segment, pcm: new Float32Array(0) };
+    }
     const stretched = timeStretch(span, plan.vocalsStretchRatio, sampleRate);
     return { segment, pcm: pitchShift(stretched, plan.vocalsPitchSemitones, sampleRate) };
   });

@@ -29,9 +29,8 @@ type Plan = {
 };
 
 export function MashupStudio({ projectId, sources, canEdit }: { projectId: string; sources: Source[]; canEdit: boolean }) {
-  const analysable = sources.filter((source) => source.analysis?.bpm != null);
-  const [vocalsId, setVocalsId] = useState(analysable[0]?.id ?? "");
-  const [bedId, setBedId] = useState(analysable[1]?.id ?? analysable[0]?.id ?? "");
+  const [vocalsId, setVocalsId] = useState(sources[0]?.id ?? "");
+  const [bedId, setBedId] = useState(sources[1]?.id ?? sources[0]?.id ?? "");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [rendering, setRendering] = useState<"mashup" | "extend" | null>(null);
@@ -139,7 +138,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           <span className="eyebrow">Song × song</span>
           <h3>Mashup studio</h3>
         </div>
-        <small>{analysable.length} analysed track{analysable.length === 1 ? "" : "s"}</small>
+        <small>{sources.length} available track{sources.length === 1 ? "" : "s"}</small>
       </div>
 
       {canEdit && (
@@ -147,7 +146,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           <label>
             Vocals from
             <select aria-label="Vocal track" value={vocalsId} onChange={(event) => setVocalsId(event.target.value)}>
-              {analysable.map((source) => (
+              {sources.map((source) => (
                 <option key={source.id} value={source.id}>
                   {source.originalFilename} · {compactMusicAnalysisLabel(source.analysis)}
                 </option>
@@ -157,7 +156,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           <label>
             Over the instrumental of
             <select aria-label="Instrumental track" value={bedId} onChange={(event) => setBedId(event.target.value)}>
-              {analysable.map((source) => (
+              {sources.map((source) => (
                 <option key={source.id} value={source.id}>
                   {source.originalFilename} · {compactMusicAnalysisLabel(source.analysis)}
                 </option>

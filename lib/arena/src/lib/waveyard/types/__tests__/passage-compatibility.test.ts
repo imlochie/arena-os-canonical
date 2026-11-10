@@ -143,7 +143,7 @@ test("automatic hybrid can use a measured passage match without semantic verse/c
   assert.ok(result.plan.provenance.decisions.some((decision) => decision.includes("without requiring semantic")));
 });
 
-test("automatic hybrid rejects same rhythm and mismatched harmony and reports the conflict", () => {
+test("automatic hybrid reports mismatched harmony and uses fallback instead of rejecting", () => {
   const anchor = source("a", "sha-a", [
     { id: "a-0", sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "section", labelConfidence: 0, structuralConfidence: 0.9, passageFingerprint: fingerprint("sha-a", 0, 16) },
   ]);
@@ -151,10 +151,11 @@ test("automatic hybrid rejects same rhythm and mismatched harmony and reports th
     { id: "b-0", sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "section", labelConfidence: 0, structuralConfidence: 0.9, passageFingerprint: fingerprint("sha-b", 0, 16, { chroma: measured(Array.from({ length: 48 }, (_, index) => index % 12 === 7 ? 1 : -1 / 11)) }) },
   ]);
   const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-  assert.equal(result.ok, false);
-  if (result.ok || result.reason !== "no_compatible_hybrid_source") return;
-  assert.equal(result.compatibility?.eligiblePairs, 0);
-  assert.ok(result.compatibility?.pairs.some((pair) => pair.dimensions.harmony.status === "conflict"));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.plan.compatibility?.eligiblePairs, 0);
+  assert.ok(result.plan.compatibility?.pairs.some((pair) => pair.dimensions.harmony.status === "conflict"));
+  assert.ok(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages")));
 });
 
 test("automatic hybrid reports tempo conflicts instead of hiding the donor", () => {
@@ -166,8 +167,9 @@ test("automatic hybrid reports tempo conflicts instead of hiding the donor", () 
   ]);
   if (donor.analysis) donor.analysis.bpm = 100;
   const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-  assert.equal(result.ok, false);
-  if (result.ok || result.reason !== "no_compatible_hybrid_source") return;
-  assert.equal(result.compatibility?.pairs[0]?.dimensions.tempo.status, "conflict");
-  assert.match(result.compatibility?.pairs[0]?.dimensions.tempo.detail ?? "", /100\.0 BPM/);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.plan.compatibility?.pairs[0]?.dimensions.tempo.status, "conflict");
+  assert.match(result.plan.compatibility?.pairs[0]?.dimensions.tempo.detail ?? "", /100\.0 BPM/);
+  assert.ok(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages")));
 });
