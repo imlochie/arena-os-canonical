@@ -398,6 +398,19 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     return { segment, pcm: pitchShift(stretched, plan.vocalsPitchSemitones, sampleRate) };
   });
 
+  // Pre-stretch and pre-pitch donor stems ONCE before the rendering loop
+  const preparedStems: Array<{ name: string; pcm: StereoBuffer }> = [];
+  if (input.stems) {
+    for (const [stemName, rawStemBuffer] of input.stems) {
+      if (stemName !== "vocals") {
+        const pcm = stemName.startsWith("donor_")
+          ? pitchShift(timeStretch(rawStemBuffer, plan.vocalsStretchRatio, sampleRate), plan.vocalsPitchSemitones, sampleRate)
+          : rawStemBuffer;
+        preparedStems.push({ name: stemName, pcm });
+      }
+    }
+  }
+
   const bedFrames = Math.min(totalFrames, Math.floor(input.bed.length / 2));
   for (let frame = 0; frame < totalFrames; frame += 1) {
     const atMs = (frame / sampleRate) * 1000;
@@ -425,18 +438,14 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
       right += pcm[vocalFrame * 2 + 1] * gain;
     }
 
-    // Mix additional discrete stems if provided without double-summing:
-    // If discrete stems from the bed/donor are provided, they can enhance or complement the mix
-    if (input.stems) {
-      for (const [stemName, stemBuffer] of input.stems) {
-        if (stemName !== "vocals" && frame * 2 + 1 < stemBuffer.length) {
-          // Complementary donor stems (e.g. donor guitar/chords or percussion during breakdown pockets)
-          let stemGain = 0.6;
-          let stemDuck = DUCK_DEPTH;
-          const dynamicGain = stemGain * (1 - stemDuck * duck);
-          left += stemBuffer[frame * 2] * dynamicGain;
-          right += stemBuffer[frame * 2 + 1] * dynamicGain;
-        }
+    // Mix prepared discrete stems with dynamic ducking into the vocal pocket
+    for (const { pcm: stemBuffer } of preparedStems) {
+      if (frame * 2 + 1 < stemBuffer.length) {
+        const stemGain = 0.6;
+        const stemDuck = DUCK_DEPTH;
+        const dynamicGain = stemGain * (1 - stemDuck * duck);
+        left += stemBuffer[frame * 2] * dynamicGain;
+        right += stemBuffer[frame * 2 + 1] * dynamicGain;
       }
     }
 

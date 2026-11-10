@@ -36,6 +36,7 @@ import {
   type InstrumentalBedStem,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
+import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
 export const dynamic = "force-dynamic";
@@ -318,8 +319,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 status: "complete",
                 stage: "complete",
                 idempotencyKey: `mashup-onthefly-${vocalsId}`,
-                analysisEngine: "arena-native-pcm",
-                analysisEngineVersion: "1.0.0",
+                analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+                analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
                 sourceChecksumSha256: asset.checksumSha256,
                 bpm: analysis.bpm,
                 bpmConfidence: analysis.bpmConfidence ?? 0.8,
@@ -351,8 +352,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 status: "complete",
                 stage: "complete",
                 idempotencyKey: `mashup-onthefly-${bedId}`,
-                analysisEngine: "arena-native-pcm",
-                analysisEngineVersion: "1.0.0",
+                analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+                analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
                 sourceChecksumSha256: asset.checksumSha256,
                 bpm: analysis.bpm,
                 bpmConfidence: analysis.bpmConfidence ?? 0.8,
@@ -378,10 +379,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
       if (action === "save") {
         const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
-        const bedStems = await db
-          .select()
-          .from(stemAssets)
-          .where(and(eq(stemAssets.projectId, projectId), eq(stemAssets.sourceAssetId, bedId)));
+        const bedSource = await findBedSource(projectId, bedId);
+        const bedStems = bedSource.stems;
+
+        if (!vocalsStem && bedStems.length === 0) {
+          return Response.json(
+            { error: "At least one separated stem is required to save an editable Studio remix." },
+            { status: 422 },
+          );
+        }
 
         const result = await db.transaction(async (tx) => {
           const [remix] = await tx.insert(remixSessions).values({

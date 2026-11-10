@@ -16,16 +16,33 @@ export async function loadSourceProfile(
   role: "vocals" | "instrumental",
 ): Promise<MashupSourceProfile | null> {
   const [asset] = await db
-    .select({ id: sourceAssets.id, durationSeconds: sourceAssets.durationSeconds })
+    .select({
+      id: sourceAssets.id,
+      durationSeconds: sourceAssets.durationSeconds,
+      checksumSha256: sourceAssets.checksumSha256,
+    })
     .from(sourceAssets)
     .where(and(eq(sourceAssets.id, sourceAssetId), eq(sourceAssets.projectId, projectId)))
     .limit(1);
   if (!asset) return null;
 
   const [analysis] = await db
-    .select({ bpm: sourceAnalyses.bpm, musicalKey: sourceAnalyses.musicalKey })
+    .select({
+      bpm: sourceAnalyses.bpm,
+      bpmConfidence: sourceAnalyses.bpmConfidence,
+      musicalKey: sourceAnalyses.musicalKey,
+      keyConfidence: sourceAnalyses.keyConfidence,
+      sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
+      status: sourceAnalyses.status,
+    })
     .from(sourceAnalyses)
-    .where(eq(sourceAnalyses.sourceAssetId, sourceAssetId))
+    .where(
+      and(
+        eq(sourceAnalyses.sourceAssetId, sourceAssetId),
+        eq(sourceAnalyses.sourceChecksumSha256, asset.checksumSha256),
+        eq(sourceAnalyses.status, "complete"),
+      ),
+    )
     .limit(1);
 
   const sections = await db
