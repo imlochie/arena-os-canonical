@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ANALYSIS_PCM_RATE } from "./analysis-engine";
-import { labelRepeatedRhythmSections, labelSectionEnergyChanges, sectionEnergyChangeDb } from "./section-rhythm";
+import {
+  applyRepeatedPhraseMatches,
+  detectRepeatedPhraseMatches,
+  labelRepeatedRhythmSections,
+  labelSectionEnergyChanges,
+  sectionEnergyChangeDb,
+} from "./section-rhythm";
 
 const beatGridMs = Array.from({ length: 33 }, (_, index) => index * 500);
 const frameMs = 10;
@@ -94,6 +100,85 @@ test("same rhythm with a different harmonic sequence is not promoted to a repeat
 
   assert.ok(result.every((section) => section.label === "rhythm-repeat-a"));
   assert.ok(result.every((section) => !section.label.startsWith("pattern-repeat-")));
+});
+
+test("fixed phrase search finds recurrence hidden inside variable novelty sections", () => {
+  const envelope = new Float32Array(1_700);
+  for (const startBeat of [0, 16]) {
+    for (let beat = 0; beat < 8; beat += 1) addPulse(envelope, startBeat + beat, beat % 2 === 0 ? 0 : 2);
+  }
+
+  const matches = detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs);
+  const recurring = matches.filter((match) => match.label === "rhythm-repeat-a");
+
+  assert.deepEqual(
+    recurring.map(({ startBeatIndex, endBeatIndex }) => [startBeatIndex, endBeatIndex]),
+    [[0, 16], [16, 32]],
+  );
+  assert.ok(recurring.every((match) => match.labelConfidence >= 0.92));
+});
+
+test("longer eight-bar recurrences take precedence over smaller overlapping loops", () => {
+  const longBeatGridMs = Array.from({ length: 65 }, (_, index) => index * 500);
+  const envelope = new Float32Array(3_300);
+  for (const phraseStart of [0, 32]) {
+    for (let beat = 0; beat < 32; beat += 1) {
+      const subdivisions = beat % 4 === 0 ? [0] : beat % 4 === 2 ? [2] : beat % 8 === 6 ? [1, 3] : [];
+      for (const subdivision of subdivisions) {
+        const timeMs = longBeatGridMs[phraseStart + beat]! + subdivision * 125 + 25;
+        envelope[Math.floor(timeMs / frameMs)] = 1;
+      }
+    }
+  }
+
+  const matches = detectRepeatedPhraseMatches(longBeatGridMs, envelope, frameMs);
+
+  assert.deepEqual(
+    matches.filter((match) => match.label === "rhythm-repeat-a")
+      .map(({ startBeatIndex, endBeatIndex }) => [startBeatIndex, endBeatIndex]),
+    [[0, 32], [32, 64]],
+  );
+});
+
+test("fixed phrase search requires chroma agreement before using a pattern label", () => {
+  const envelope = new Float32Array(1_700);
+  for (const startBeat of [0, 8]) {
+    for (let beat = 0; beat < 8; beat += 1) addPulse(envelope, startBeat + beat, beat % 2 === 0 ? 0 : 2);
+  }
+
+  const matches = detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, chordTrack());
+
+  assert.ok(matches.length >= 2);
+  assert.ok(matches.every((match) => match.label.startsWith("rhythm-repeat-")));
+});
+
+test("phrase matches split existing sections without overlapping or inventing semantic roles", () => {
+  const splitCandidates = [
+    { startBeatIndex: 0, endBeatIndex: 4, label: "section", labelConfidence: 0, structuralConfidence: 0.8 },
+    { startBeatIndex: 4, endBeatIndex: 8, label: "section", labelConfidence: 0, structuralConfidence: 0.7 },
+    { startBeatIndex: 8, endBeatIndex: 16, label: "section", labelConfidence: 0, structuralConfidence: 0.9 },
+    { startBeatIndex: 16, endBeatIndex: 20, label: "section", labelConfidence: 0, structuralConfidence: 0.85 },
+    { startBeatIndex: 20, endBeatIndex: 24, label: "section", labelConfidence: 0, structuralConfidence: 0.75 },
+  ];
+  const result = applyRepeatedPhraseMatches(splitCandidates, [
+    { startBeatIndex: 0, endBeatIndex: 8, label: "pattern-repeat-a", labelConfidence: 0.96 },
+    { startBeatIndex: 16, endBeatIndex: 24, label: "pattern-repeat-a", labelConfidence: 0.95 },
+  ]);
+
+  assert.deepEqual(
+    result.map(({ startBeatIndex, endBeatIndex, label }) => [startBeatIndex, endBeatIndex, label]),
+    [
+      [0, 8, "pattern-repeat-a"],
+      [8, 16, "section"],
+      [16, 24, "pattern-repeat-a"],
+    ],
+  );
+  assert.equal(result[0]?.structuralConfidence, 0.7);
+  assert.equal(result[0]?.labelConfidence, 0.96);
+  assert.ok(result.every((section, index) =>
+    index === 0 || section.startBeatIndex >= result[index - 1]!.endBeatIndex,
+  ));
+  assert.ok(result.every((section) => !/verse|chorus/i.test(section.label)));
 });
 
 test("large sustained section-energy shifts are labeled as dynamics, never semantic roles", () => {

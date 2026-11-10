@@ -58,11 +58,20 @@ test("source section normalization discards empty role labels", () => {
   assert.deepEqual(sections, []);
 });
 
-test("source section labels distinguish uncertain repeats from numbered cuts", () => {
-  assert.equal(displaySourceSectionLabel({ sectionIndex: 0, label: "rhythm-repeat-a", labelConfidence: 0.94 }), "Repeated rhythm A");
-  assert.equal(displaySourceSectionLabel({ sectionIndex: 1, label: "rhythm-repeat-b", labelConfidence: 0.7 }), "Possible Repeated rhythm B");
+test("source section repeats show their measured similarity instead of probability-style confidence", () => {
+  assert.equal(
+    displaySourceSectionLabel({ sectionIndex: 0, label: "rhythm-repeat-a", labelConfidence: 0.94 }),
+    "Repeated rhythm A · 94% rhythm similarity",
+  );
+  assert.equal(
+    displaySourceSectionLabel({ sectionIndex: 1, label: "rhythm-repeat-b", labelConfidence: 0.7 }),
+    "Candidate rhythm B · 70% rhythm similarity",
+  );
   assert.equal(displaySourceSectionLabel({ sectionIndex: 2, label: "section", labelConfidence: 0 }), "Section 3");
-  assert.equal(displaySourceSectionLabel({ sectionIndex: 3, label: "pattern-repeat-a", labelConfidence: 0.94 }), "Repeated audio pattern A");
+  assert.equal(
+    displaySourceSectionLabel({ sectionIndex: 3, label: "pattern-repeat-a", labelConfidence: 0.94 }),
+    "Repeated audio pattern A · 94% rhythm+chroma similarity",
+  );
   assert.equal(displaySourceSectionLabel({ sectionIndex: 4, label: "energy-rise", labelConfidence: 0.6 }), "Possible Dynamic rise");
 });
 
@@ -97,6 +106,29 @@ test("normalizes deterministic ordered beat/bar ranges and their provenance", ()
   assert.equal(result[2]?.endMs, 12000);
 
   assert.equal(sourceSectionsAreValid(result, grid), true);
+});
+
+test("normalizes the one-past-last exclusive beat boundary and clamps it to source duration", () => {
+  const grid = Array.from({ length: 8 }, (_, index) => index * 500);
+  const provenance = {
+    analysisEngine: "test-engine",
+    analysisEngineVersion: "1.0.0",
+    sourceChecksumSha256: "checksum-tail",
+  };
+  const candidate = [{
+    startBeatIndex: 0,
+    endBeatIndex: grid.length,
+    label: "section",
+    labelConfidence: 0,
+    structuralConfidence: 0.8,
+  }];
+  const result = normalizeSourceSections(candidate, grid, provenance, () => "tail-section", 3_900);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.endBeatIndex, grid.length);
+  assert.equal(result[0]?.endMs, 3_900);
+  assert.equal(sourceSectionsAreValid(result, grid, 3_900), true);
+  assert.equal(sourceSectionsAreValid(result, grid, 3_899), false);
 });
 
 test("suppresses duplicate and overlapping candidates without fabricating a whole-song range", () => {

@@ -2,7 +2,8 @@
  * Local section-analysis job handler — a faithful port of the worker's
  * processSourceSectionAnalysis, with the structure engine reimplemented in
  * JS: conservative bar-aligned boundaries chosen at onset-novelty peaks,
- * annotated with repeated rhythmic fingerprints when the source supports them.
+ * supplemented by beat-grid-aligned repeated two-bar phrases when the source
+ * supports them.
  * Repetition is not mislabeled as verse/chorus or used to align other songs.
  * Candidates flow through the app's own normalizeSourceSections/
  * sourceSectionsAreValid validators, so rows are indistinguishable in shape
@@ -24,7 +25,13 @@ import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
 import { decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
-import { labelRepeatedRhythmSections, labelSectionEnergyChanges } from "./section-rhythm";
+import {
+  applyRepeatedPhraseMatches,
+  detectRepeatedPhraseMatches,
+  labelRepeatedRhythmSections,
+  labelSectionEnergyChanges,
+  type RepeatedPhraseMatch,
+} from "./section-rhythm";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
@@ -47,11 +54,11 @@ export function desktopSectionId(sourceAssetId: string, sourceChecksum: string, 
 }
 
 /**
- * Conservative structure engine: candidate boundaries only at bar edges
- * (4-beat groups) that coincide with onset-novelty peaks. Whole-bar sections
- * with matching onset and harmonic fingerprints receive a within-source
- * repeated-pattern label; weaker harmonic evidence may still support a
- * rhythm-only label. This detector does not infer verse, chorus, or
+ * Conservative structure engine: boundaries use four-beat bar edges and
+ * onset novelty, while repeated two-bar windows are searched independently of
+ * those variable-length boundaries. Repeated windows are emitted only at the
+ * existing high rhythm threshold; pattern labels also require matching
+ * four-bin chroma. This detector does not infer verse, chorus, downbeats, or
  * cross-song equivalence.
  * Returns null
  * when the evidence supports no conservative boundary (the caller records
@@ -62,6 +69,7 @@ export function desktopSectionCandidates(
   envelope: Float32Array,
   frameMs: number,
   pcm?: Float32Array,
+  precomputedPhraseMatches?: readonly RepeatedPhraseMatch[],
 ): SourceSectionCandidate[] | null {
   if (beatGridMs.length < 8) return null; // fewer than two bars: no structure claim
   const noveltyAt = (ms: number) => {
@@ -108,7 +116,9 @@ export function desktopSectionCandidates(
       structuralConfidence: Math.round(Math.max(0.05, Math.min(1, strength)) * 1000) / 1000,
     });
   }
-  const withRepeats = labelRepeatedRhythmSections(candidates, beatGridMs, envelope, frameMs, pcm);
+  const phraseMatches = precomputedPhraseMatches ?? detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, pcm);
+  const phraseAwareSections = applyRepeatedPhraseMatches(candidates, phraseMatches);
+  const withRepeats = labelRepeatedRhythmSections(phraseAwareSections, beatGridMs, envelope, frameMs, pcm);
   return pcm ? labelSectionEnergyChanges(withRepeats, beatGridMs, pcm) : withRepeats;
 }
 
@@ -188,8 +198,9 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
         sourceChecksumSha256: source.checksumSha256,
       },
       ({ startBeatIndex, endBeatIndex }) => desktopSectionId(source.id, source.checksumSha256, startBeatIndex, endBeatIndex),
+      source.durationSeconds * 1000,
     );
-    if (!sections.length || !sourceSectionsAreValid(sections, beatGrid)) {
+    if (!sections.length || !sourceSectionsAreValid(sections, beatGrid, source.durationSeconds * 1000)) {
       await updateSectionAnalysis(job.id, {
         status: "unavailable",
         stage: "insufficient-evidence",

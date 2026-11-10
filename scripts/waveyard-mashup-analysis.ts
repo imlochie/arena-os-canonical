@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import {
@@ -10,26 +12,45 @@ import {
   onsetEnvelope,
 } from "../lib/arena/src/lib/waveyard/worker-local/analysis-engine";
 import { desktopSectionCandidates } from "../lib/arena/src/lib/waveyard/worker-local/sections";
-import { sectionEnergyChangeDb } from "../lib/arena/src/lib/waveyard/worker-local/section-rhythm";
+import { detectRepeatedPhraseMatches, sectionEnergyChangeDb } from "../lib/arena/src/lib/waveyard/worker-local/section-rhythm";
+import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../lib/arena/src/lib/waveyard/types/analysis-provenance";
+import { normalizeSourceSections, sourceSectionsAreValid } from "../lib/arena/src/lib/waveyard/types/source-sections";
 
 const args = process.argv.slice(2).filter((value) => value !== "--");
 const [outputPath, excerptStartText, excerptDurationText, ...sourcePaths] = args;
 const excerptStartSeconds = Number(excerptStartText ?? "15");
-const excerptDurationSeconds = Number(excerptDurationText ?? "12");
+const fullTrack = excerptDurationText === "full";
+const excerptDurationSeconds = fullTrack ? null : Number(excerptDurationText ?? "12");
 if (!outputPath || sourcePaths.length < 2
   || !Number.isFinite(excerptStartSeconds) || excerptStartSeconds < 0
-  || !Number.isFinite(excerptDurationSeconds) || excerptDurationSeconds < 2) {
+  || (fullTrack && excerptStartSeconds !== 0)
+  || (!fullTrack && (
+    excerptDurationSeconds === null
+    || !Number.isFinite(excerptDurationSeconds)
+    || excerptDurationSeconds < 2
+  ))) {
   throw new Error(
-    "Usage: tsx scripts/waveyard-mashup-analysis.ts -- <output.json> <excerpt-start-seconds> <excerpt-duration-seconds> <two or more audio paths>",
+    "Usage: tsx scripts/waveyard-mashup-analysis.ts -- <output.json> <excerpt-start-seconds> <excerpt-duration-seconds|full> <two or more audio paths>",
   );
+}
+
+async function checksumFile(path: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 const tracks = [];
 for (const sourcePath of sourcePaths) {
   const absolutePath = resolve(sourcePath);
-  const pcm = await decodeMonoPcm(absolutePath, Math.max(60, excerptStartSeconds + excerptDurationSeconds + 15));
+  const pcm = fullTrack
+    ? await decodeMonoPcm(absolutePath)
+    : await decodeMonoPcm(absolutePath, Math.max(60, excerptStartSeconds + excerptDurationSeconds! + 15));
   const analysis = analysePcm(pcm);
   const analyzedDurationSeconds = Math.round((pcm.length / 22_050) * 100) / 100;
+  const evaluatedDurationSeconds = fullTrack
+    ? Math.max(0, analyzedDurationSeconds - excerptStartSeconds)
+    : excerptDurationSeconds!;
   const beatGridMs = analysis.beatGridMs === null
     ? null
     : normaliseBeatGrid(analysis.beatGridMs, analyzedDurationSeconds);
@@ -43,44 +64,82 @@ for (const sourcePath of sourcePaths) {
     throw new Error(`Analysis returned beat confidence without a beat grid for ${basename(absolutePath)}.`);
   }
   const startMs = Math.round(excerptStartSeconds * 1000);
-  const endMs = startMs + Math.round(excerptDurationSeconds * 1000);
+  const endMs = startMs + Math.round(evaluatedDurationSeconds * 1000);
   const { envelope, frameMs } = onsetEnvelope(pcm);
+  const phraseMatches = beatGridMs
+    ? detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, pcm)
+    : null;
   const sectionCandidates = beatGridMs
-    ? desktopSectionCandidates(beatGridMs, envelope, frameMs, pcm)
+    ? desktopSectionCandidates(beatGridMs, envelope, frameMs, pcm, phraseMatches ?? undefined)
     : null;
-  const intervals = beatGridMs?.slice(1).map((time, index) => time - beatGridMs[index]).filter((value) => value > 0) ?? [];
-  const sortedIntervals = [...intervals].sort((left, right) => left - right);
-  const fallbackBeatMs = sortedIntervals.length
-    ? sortedIntervals[Math.floor(sortedIntervals.length / 2)]
-    : 0;
-  const beatBoundaryMs = (index: number) => beatGridMs
-    ? beatGridMs[index] ?? (index === beatGridMs.length && beatGridMs.length
-      ? beatGridMs[beatGridMs.length - 1] + fallbackBeatMs
-      : null)
+  const sourceChecksumSha256 = await checksumFile(absolutePath);
+  const normalizedSections = sectionCandidates && beatGridMs
+    ? normalizeSourceSections(
+      sectionCandidates,
+      beatGridMs,
+      {
+        analysisEngine: DESKTOP_SECTION_ENGINE,
+        analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+        sourceChecksumSha256,
+      },
+      ({ startBeatIndex, endBeatIndex, sectionIndex }) => `evaluation:${sectionIndex}:${startBeatIndex}:${endBeatIndex}`,
+      analyzedDurationSeconds * 1000,
+    )
     : null;
-  const sections = sectionCandidates?.flatMap((section, index) => {
-    const sectionStartMs = beatBoundaryMs(section.startBeatIndex);
-    const sectionEndMs = beatBoundaryMs(section.endBeatIndex);
-    if (sectionStartMs === null || sectionEndMs === null || sectionEndMs <= sectionStartMs) return [];
-    return [{
+  if (sectionCandidates && beatGridMs) {
+    if (!normalizedSections || normalizedSections.length !== sectionCandidates.length) {
+      throw new Error(`Some section candidates were rejected by persistence normalization for ${basename(absolutePath)}.`);
+    }
+    if (!sourceSectionsAreValid(normalizedSections, beatGridMs, analyzedDurationSeconds * 1000)) {
+      throw new Error(`Section candidates failed persistence validation for ${basename(absolutePath)}.`);
+    }
+  }
+  const phraseMatchesWithTimes = phraseMatches?.map((match) => {
+    const section = normalizedSections?.find((candidate) =>
+      candidate.startBeatIndex === match.startBeatIndex && candidate.endBeatIndex === match.endBeatIndex,
+    );
+    if (!section) {
+      throw new Error(`A repeated phrase was not preserved by persistence normalization for ${basename(absolutePath)}.`);
+    }
+    return {
+      startBeatIndex: match.startBeatIndex,
+      endBeatIndex: match.endBeatIndex,
+      startMs: section.startMs,
+      endMs: section.endMs,
+      label: match.label,
+      similarity: match.labelConfidence,
+    };
+  }) ?? null;
+  const sections = normalizedSections?.map((section, index) => {
+    const candidate = sectionCandidates![index]!;
+    return {
+      id: section.id,
+      sectionIndex: section.sectionIndex,
       startBeatIndex: section.startBeatIndex,
       endBeatIndex: section.endBeatIndex,
-      startBar: Math.floor(section.startBeatIndex / 4) + 1,
-      endBar: Math.max(1, Math.ceil(section.endBeatIndex / 4)),
-      startMs: sectionStartMs,
-      endMs: sectionEndMs,
+      startBar: section.startBar,
+      endBar: section.endBar,
+      startMs: section.startMs,
+      endMs: section.endMs,
       label: section.label,
       labelConfidence: section.labelConfidence,
       structuralConfidence: section.structuralConfidence,
+      analysisEngine: section.analysisEngine,
+      analysisEngineVersion: section.analysisEngineVersion,
+      sourceChecksumSha256: section.sourceChecksumSha256,
       energyChangeDb: beatGridMs
-        ? sectionEnergyChangeDb(sectionCandidates[index - 1] ?? null, section, beatGridMs, pcm)
+        ? sectionEnergyChangeDb(sectionCandidates![index - 1] ?? null, candidate, beatGridMs, pcm)
         : null,
-    }];
+    };
   }) ?? null;
   tracks.push({
     filename: basename(absolutePath),
+    sourceChecksumSha256,
     analysisEngine: DESKTOP_ANALYSIS_ENGINE,
     analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+    sectionAnalysisEngine: DESKTOP_SECTION_ENGINE,
+    sectionAnalysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+    repeatedPhraseMatches: phraseMatchesWithTimes,
     analyzedDurationSeconds,
     bpm: analysis.bpm,
     bpmConfidence: analysis.bpmConfidence,
@@ -88,7 +147,7 @@ for (const sourcePath of sourcePaths) {
     keyConfidence: analysis.keyConfidence,
     excerpt: {
       startSeconds: excerptStartSeconds,
-      durationSeconds: excerptDurationSeconds,
+      durationSeconds: evaluatedDurationSeconds,
       beatGridMs: beatGridMs
         ?.filter((beatMs) => beatMs >= startMs && beatMs <= endMs)
         .map((beatMs) => beatMs - startMs) ?? null,

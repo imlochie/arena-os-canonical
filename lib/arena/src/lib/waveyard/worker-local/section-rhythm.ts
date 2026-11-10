@@ -4,6 +4,7 @@ import { ANALYSIS_PCM_RATE, chromaFromPcm } from "./analysis-engine";
 const SUBDIVISIONS_PER_BEAT = 4;
 const MINIMUM_PHRASE_BEATS = 8;
 const MINIMUM_REPEAT_SIMILARITY = 0.92;
+const PHRASE_WINDOW_LENGTHS = [32, 16, 8] as const;
 const HARMONIC_BINS_PER_SECTION = 4;
 const MINIMUM_CHROMA_VARIATION = 1e-5;
 const MINIMUM_SECTION_ENERGY_CHANGE_DB = 3;
@@ -214,12 +215,75 @@ export type RepeatedPhraseMatch = {
   labelConfidence: number;
 };
 
+/** Splits existing source sections around measured phrase matches without overlap. */
+export function applyRepeatedPhraseMatches(
+  candidates: readonly SourceSectionCandidate[],
+  matches: readonly RepeatedPhraseMatch[],
+): SourceSectionCandidate[] {
+  const accepted: RepeatedPhraseMatch[] = [];
+  for (const match of [...matches].sort((left, right) => left.startBeatIndex - right.startBeatIndex)) {
+    if (
+      !Number.isInteger(match.startBeatIndex)
+      || !Number.isInteger(match.endBeatIndex)
+      || match.endBeatIndex - match.startBeatIndex < MINIMUM_PHRASE_BEATS
+      || (match.endBeatIndex - match.startBeatIndex) % 4 !== 0
+      || !/^((pattern|rhythm)-repeat)-[a-z]+$/.test(match.label)
+      || !Number.isFinite(match.labelConfidence)
+      || match.labelConfidence < MINIMUM_REPEAT_SIMILARITY
+      || match.labelConfidence > 1
+      || accepted.some((previous) =>
+        match.startBeatIndex < previous.endBeatIndex && match.endBeatIndex > previous.startBeatIndex,
+      )
+    ) continue;
+    accepted.push(match);
+  }
+  if (!accepted.length) return [...candidates];
+
+  const boundaries = [...new Set([
+    ...candidates
+      .flatMap((candidate) => [candidate.startBeatIndex, candidate.endBeatIndex])
+      .filter((boundary) => !accepted.some((match) =>
+        boundary > match.startBeatIndex && boundary < match.endBeatIndex,
+      )),
+    ...accepted.flatMap((match) => [match.startBeatIndex, match.endBeatIndex]),
+  ])].sort((left, right) => left - right);
+  const matchByRange = new Map(
+    accepted.map((match) => [`${match.startBeatIndex}:${match.endBeatIndex}`, match]),
+  );
+  const partitioned: SourceSectionCandidate[] = [];
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const startBeatIndex = boundaries[index]!;
+    const endBeatIndex = boundaries[index + 1]!;
+    const overlapping = candidates.filter((candidate) =>
+      candidate.startBeatIndex < endBeatIndex && candidate.endBeatIndex > startBeatIndex,
+    );
+    if (!overlapping.length) continue;
+    const exact = overlapping.find((candidate) =>
+      candidate.startBeatIndex === startBeatIndex && candidate.endBeatIndex === endBeatIndex,
+    );
+    const match = matchByRange.get(`${startBeatIndex}:${endBeatIndex}`);
+    const base = exact ?? overlapping[0]!;
+    partitioned.push({
+      ...base,
+      startBeatIndex,
+      endBeatIndex,
+      label: match?.label ?? (exact ? base.label : "section"),
+      labelConfidence: match?.labelConfidence ?? (exact ? base.labelConfidence : 0),
+      structuralConfidence: match
+        ? Math.min(match.labelConfidence, ...overlapping.map((candidate) => candidate.structuralConfidence))
+        : Math.min(...overlapping.map((candidate) => candidate.structuralConfidence)),
+    });
+  }
+  return partitioned;
+}
+
 /**
- * Finds repeated two-bar phrases independently of novelty-boundary segmentation.
- * Windows are beat-grid aligned, one bar apart, and matches cannot overlap.
- * A pattern repeat requires both rhythm and four-bin chroma similarity; when
- * chroma is absent or disagrees, only the rhythmic evidence may be labelled.
- * These are recurrence labels, not semantic song roles or cross-song matches.
+ * Finds repeated two-, four-, and eight-bar phrases independently of novelty
+ * segmentation. Windows are beat-grid aligned at half-window hops; accepted
+ * matches cannot overlap, and longer matches take precedence. A pattern repeat
+ * requires both rhythm and four-bin chroma similarity; when chroma is absent
+ * or disagrees, only rhythmic evidence may be labelled. These are recurrence
+ * labels, not semantic song roles or cross-song matches.
  */
 export function detectRepeatedPhraseMatches(
   beatGridMs: number[],
@@ -227,103 +291,105 @@ export function detectRepeatedPhraseMatches(
   frameMs: number,
   pcm?: Float32Array,
 ): RepeatedPhraseMatch[] {
-  const windows: {
-    startBeatIndex: number;
-    endBeatIndex: number;
-    rhythm: number[];
-    harmonic: number[] | null;
-  }[] = [];
-  for (
-    let startBeatIndex = 0;
-    startBeatIndex + MINIMUM_PHRASE_BEATS <= beatGridMs.length;
-    startBeatIndex += 4
-  ) {
-    const endBeatIndex = startBeatIndex + MINIMUM_PHRASE_BEATS;
-    const rhythm = sectionRhythmSignature(startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs);
-    if (!rhythm) continue;
-    windows.push({
-      startBeatIndex,
-      endBeatIndex,
-      rhythm,
-      harmonic: pcm
-        ? sectionHarmonicSignature(pcm, startBeatIndex, endBeatIndex, beatGridMs)
-        : null,
-    });
-  }
-  if (windows.length < 2) return [];
-
-  const rhythmSimilarities = windows.map(() => windows.map(() => -1));
-  const patternSimilarities = windows.map(() => windows.map(() => -1));
-  for (let left = 0; left < windows.length; left += 1) {
-    for (let right = left + 1; right < windows.length; right += 1) {
-      const leftWindow = windows[left]!;
-      const rightWindow = windows[right]!;
-      if (leftWindow.endBeatIndex > rightWindow.startBeatIndex) continue;
-      const rhythmScore = signatureSimilarity(leftWindow.rhythm, rightWindow.rhythm);
-      rhythmSimilarities[left]![right] = rhythmScore;
-      rhythmSimilarities[right]![left] = rhythmScore;
-      if (
-        rhythmScore < MINIMUM_REPEAT_SIMILARITY
-        || !leftWindow.harmonic
-        || !rightWindow.harmonic
-      ) continue;
-      const harmonicScore = signatureSimilarity(leftWindow.harmonic, rightWindow.harmonic);
-      if (harmonicScore < MINIMUM_REPEAT_SIMILARITY) continue;
-      const score = Math.min(rhythmScore, harmonicScore);
-      patternSimilarities[left]![right] = score;
-      patternSimilarities[right]![left] = score;
-    }
-  }
-
   const matches: RepeatedPhraseMatch[] = [];
   const occupied: { startBeatIndex: number; endBeatIndex: number }[] = [];
-  const acceptGroups = (
-    groups: { indices: number[] }[],
-    similarities: number[][],
-    kind: "rhythm" | "pattern",
-  ) => {
-    let labelIndex = 0;
-    for (const group of [...groups].sort((left, right) => right.indices.length - left.indices.length)) {
-      const selected = group.indices.filter((index) => {
-        const window = windows[index]!;
-        return !occupied.some((range) =>
-          window.startBeatIndex < range.endBeatIndex && window.endBeatIndex > range.startBeatIndex,
-        );
+  let patternLabelIndex = 0;
+  let rhythmLabelIndex = 0;
+  for (const windowBeats of PHRASE_WINDOW_LENGTHS) {
+    const windows: {
+      startBeatIndex: number;
+      endBeatIndex: number;
+      rhythm: number[];
+      harmonic: number[] | null;
+    }[] = [];
+    const hopBeats = windowBeats / 2;
+    for (let startBeatIndex = 0; startBeatIndex + windowBeats <= beatGridMs.length; startBeatIndex += hopBeats) {
+      const endBeatIndex = startBeatIndex + windowBeats;
+      const rhythm = sectionRhythmSignature(startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs);
+      if (!rhythm) continue;
+      windows.push({
+        startBeatIndex,
+        endBeatIndex,
+        rhythm,
+        harmonic: pcm
+          ? sectionHarmonicSignature(pcm, startBeatIndex, endBeatIndex, beatGridMs)
+          : null,
       });
-      if (selected.length < 2) continue;
-      const score = Math.min(
-        ...selected.flatMap((left, index) =>
-          selected.slice(index + 1).map((right) => similarities[left]![right]!),
-        ),
-      );
-      if (score < MINIMUM_REPEAT_SIMILARITY) continue;
-      const label = repeatLabel(labelIndex, kind);
-      labelIndex += 1;
-      for (const index of selected) {
-        const window = windows[index]!;
-        matches.push({
-          startBeatIndex: window.startBeatIndex,
-          endBeatIndex: window.endBeatIndex,
-          label,
-          labelConfidence: Math.round(score * 1000) / 1000,
-        });
-        occupied.push({
-          startBeatIndex: window.startBeatIndex,
-          endBeatIndex: window.endBeatIndex,
-        });
+    }
+    if (windows.length < 2) continue;
+
+    const rhythmSimilarities = windows.map(() => windows.map(() => -1));
+    const patternSimilarities = windows.map(() => windows.map(() => -1));
+    for (let left = 0; left < windows.length; left += 1) {
+      for (let right = left + 1; right < windows.length; right += 1) {
+        const leftWindow = windows[left]!;
+        const rightWindow = windows[right]!;
+        if (leftWindow.endBeatIndex > rightWindow.startBeatIndex) continue;
+        const rhythmScore = signatureSimilarity(leftWindow.rhythm, rightWindow.rhythm);
+        rhythmSimilarities[left]![right] = rhythmScore;
+        rhythmSimilarities[right]![left] = rhythmScore;
+        if (
+          rhythmScore < MINIMUM_REPEAT_SIMILARITY
+          || !leftWindow.harmonic
+          || !rightWindow.harmonic
+        ) continue;
+        const harmonicScore = signatureSimilarity(leftWindow.harmonic, rightWindow.harmonic);
+        if (harmonicScore < MINIMUM_REPEAT_SIMILARITY) continue;
+        const score = Math.min(rhythmScore, harmonicScore);
+        patternSimilarities[left]![right] = score;
+        patternSimilarities[right]![left] = score;
       }
     }
-  };
 
-  const allIndices = windows.map((_window, index) => index);
-  const patternGroups = findCliqueGroups(patternSimilarities, allIndices, MINIMUM_REPEAT_SIMILARITY);
-  acceptGroups(patternGroups, patternSimilarities, "pattern");
-  const acceptedPatternStarts = new Set(matches.map((match) => match.startBeatIndex));
-  const rhythmOnlyIndices = allIndices.filter((index) =>
-    !acceptedPatternStarts.has(windows[index]!.startBeatIndex),
-  );
-  const rhythmGroups = findCliqueGroups(rhythmSimilarities, rhythmOnlyIndices, MINIMUM_REPEAT_SIMILARITY);
-  acceptGroups(rhythmGroups, rhythmSimilarities, "rhythm");
+    const acceptGroups = (
+      groups: { indices: number[]; score: number }[],
+      similarities: number[][],
+      kind: "rhythm" | "pattern",
+    ) => {
+      const acceptedIndices = new Set<number>();
+      for (const group of [...groups].sort((left, right) =>
+        right.indices.length - left.indices.length || right.score - left.score,
+      )) {
+        const selected = group.indices.filter((index) => {
+          const window = windows[index]!;
+          return !occupied.some((range) =>
+            window.startBeatIndex < range.endBeatIndex && window.endBeatIndex > range.startBeatIndex,
+          );
+        });
+        if (selected.length < 2) continue;
+        const score = Math.min(
+          ...selected.flatMap((left, index) =>
+            selected.slice(index + 1).map((right) => similarities[left]![right]!),
+          ),
+        );
+        if (score < MINIMUM_REPEAT_SIMILARITY) continue;
+        const labelIndex = kind === "pattern" ? patternLabelIndex++ : rhythmLabelIndex++;
+        const label = repeatLabel(labelIndex, kind);
+        for (const index of selected) {
+          const window = windows[index]!;
+          matches.push({
+            startBeatIndex: window.startBeatIndex,
+            endBeatIndex: window.endBeatIndex,
+            label,
+            labelConfidence: Math.round(score * 1000) / 1000,
+          });
+          occupied.push({
+            startBeatIndex: window.startBeatIndex,
+            endBeatIndex: window.endBeatIndex,
+          });
+          acceptedIndices.add(index);
+        }
+      }
+      return acceptedIndices;
+    };
+
+    const allIndices = windows.map((_window, index) => index);
+    const patternGroups = findCliqueGroups(patternSimilarities, allIndices, MINIMUM_REPEAT_SIMILARITY);
+    const acceptedPatternIndices = acceptGroups(patternGroups, patternSimilarities, "pattern");
+    const rhythmOnlyIndices = allIndices.filter((index) => !acceptedPatternIndices.has(index));
+    const rhythmGroups = findCliqueGroups(rhythmSimilarities, rhythmOnlyIndices, MINIMUM_REPEAT_SIMILARITY);
+    acceptGroups(rhythmGroups, rhythmSimilarities, "rhythm");
+  }
   return matches.sort((left, right) => left.startBeatIndex - right.startBeatIndex);
 }
 

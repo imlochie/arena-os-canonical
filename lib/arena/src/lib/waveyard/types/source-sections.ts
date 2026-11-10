@@ -1,6 +1,6 @@
 import { usableBeatGrid } from "./beat-grid";
 
-/** Immutable, source-coordinate structural range. endBeatIndex is a boundary index. */
+/** Immutable, source-coordinate structural range. endBeatIndex is an exclusive beat boundary. */
 export type SourceSection = {
   id: string;
   sectionIndex: number;
@@ -35,11 +35,16 @@ export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionI
   const repeatedPattern = /^pattern-repeat-([a-z]+)$/i.exec(section.label);
   const repeatedRhythm = /^rhythm-repeat-([a-z]+)$/i.exec(section.label);
   const energyChange = /^energy-(rise|drop)$/i.exec(section.label);
-  const readableLabel = repeatedPattern
-    ? `Repeated audio pattern ${repeatedPattern[1].toUpperCase()}`
-    : repeatedRhythm
-    ? `Repeated rhythm ${repeatedRhythm[1].toUpperCase()}`
-    : energyChange
+  const similarityPercent = `${Math.round(clampUnit(section.labelConfidence) * 100)}%`;
+  if (repeatedPattern) {
+    const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";
+    return `${prefix} audio pattern ${repeatedPattern[1].toUpperCase()} · ${similarityPercent} rhythm+chroma similarity`;
+  }
+  if (repeatedRhythm) {
+    const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";
+    return `${prefix} rhythm ${repeatedRhythm[1].toUpperCase()} · ${similarityPercent} rhythm similarity`;
+  }
+  const readableLabel = energyChange
     ? `Dynamic ${energyChange[1]}`
     : section.label.replace(/(^|[\s-])([a-z])/g, (_match, separator: string, letter: string) => `${separator}${letter.toUpperCase()}`);
   return `${section.labelConfidence < 0.75 ? "Possible " : ""}${readableLabel}`;
@@ -48,16 +53,37 @@ export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionI
 const clampUnit = (value: unknown) => typeof value === "number" && Number.isFinite(value)
   ? Math.max(0, Math.min(1, value)) : 0;
 
+function medianBeatInterval(beats: number[]) {
+  const intervals = beats.slice(1)
+    .map((time, index) => time - beats[index]!)
+    .filter((interval) => Number.isFinite(interval) && interval > 0)
+    .sort((left, right) => left - right);
+  return intervals[Math.floor(intervals.length / 2)] ?? 0;
+}
+
+function sourceSectionBoundaryMs(beats: number[], index: number, sourceDurationMs?: number) {
+  if (!Number.isInteger(index) || index < 0 || index > beats.length || beats.length === 0) return null;
+  const estimated = index < beats.length
+    ? beats[index]!
+    : beats[beats.length - 1]! + medianBeatInterval(beats);
+  if (!Number.isFinite(estimated)) return null;
+  return typeof sourceDurationMs === "number" && Number.isFinite(sourceDurationMs) && sourceDurationMs >= 0
+    ? Math.min(estimated, sourceDurationMs)
+    : estimated;
+}
+
 /**
  * Converts worker candidates to monotonic section records only when every range
- * is an existing source beat range. It never invents a fallback whole-song
- * section: callers should expose unavailable/insufficient evidence instead.
+ * uses the persisted beat grid. An exclusive end may be the one-past-last beat
+ * boundary; it is extrapolated by the grid's median interval and clamped to
+ * the known source duration when supplied.
  */
 export function normalizeSourceSections(
   candidates: readonly SourceSectionCandidate[],
   beatGridMs: unknown,
   provenance: Pick<SourceSection, "analysisEngine" | "analysisEngineVersion" | "sourceChecksumSha256">,
   makeId: (candidate: { startBeatIndex: number; endBeatIndex: number; sectionIndex: number }) => string,
+  sourceDurationMs?: number,
 ): SourceSection[] {
   const beats = usableBeatGrid(beatGridMs);
   if (!beats || beats.length < 2) return [];
@@ -67,10 +93,13 @@ export function normalizeSourceSections(
       && candidate.label.length <= 64
       && Number.isInteger(candidate.startBeatIndex) && Number.isInteger(candidate.endBeatIndex)
       && candidate.startBeatIndex >= 0 && candidate.endBeatIndex > candidate.startBeatIndex
-      && candidate.endBeatIndex < beats.length)
+      && candidate.startBeatIndex < beats.length && candidate.endBeatIndex <= beats.length)
     .sort((left, right) => left.startBeatIndex - right.startBeatIndex || left.endBeatIndex - right.endBeatIndex);
   const normalized: SourceSection[] = [];
   for (const candidate of sorted) {
+    const startMs = sourceSectionBoundaryMs(beats, candidate.startBeatIndex, sourceDurationMs);
+    const endMs = sourceSectionBoundaryMs(beats, candidate.endBeatIndex, sourceDurationMs);
+    if (startMs === null || endMs === null || endMs <= startMs) continue;
     const key = `${candidate.startBeatIndex}:${candidate.endBeatIndex}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -81,8 +110,8 @@ export function normalizeSourceSections(
     normalized.push({
       id: makeId({ startBeatIndex: candidate.startBeatIndex, endBeatIndex: candidate.endBeatIndex, sectionIndex }),
       sectionIndex,
-      startMs: beats[candidate.startBeatIndex],
-      endMs: beats[candidate.endBeatIndex],
+      startMs,
+      endMs,
       startBeatIndex: candidate.startBeatIndex,
       endBeatIndex: candidate.endBeatIndex,
       startBar: Math.floor(candidate.startBeatIndex / 4) + 1,
@@ -97,7 +126,11 @@ export function normalizeSourceSections(
 }
 
 /** Validates durable records independently of transport or database shape. */
-export function sourceSectionsAreValid(sections: readonly SourceSection[], beatGridMs: unknown): boolean {
+export function sourceSectionsAreValid(
+  sections: readonly SourceSection[],
+  beatGridMs: unknown,
+  sourceDurationMs?: number,
+): boolean {
   const beats = usableBeatGrid(beatGridMs);
   if (!beats) return sections.length === 0;
   return sections.every((section, index) =>
@@ -108,10 +141,12 @@ export function sourceSectionsAreValid(sections: readonly SourceSection[], beatG
     && Number.isInteger(section.startBeatIndex)
     && Number.isInteger(section.endBeatIndex)
     && section.startBeatIndex >= 0
+    && section.startBeatIndex < beats.length
     && section.endBeatIndex > section.startBeatIndex
-    && section.endBeatIndex < beats.length
-    && section.startMs === beats[section.startBeatIndex]
-    && section.endMs === beats[section.endBeatIndex]
+    && section.endBeatIndex <= beats.length
+    && section.startMs === sourceSectionBoundaryMs(beats, section.startBeatIndex, sourceDurationMs)
+    && section.endMs === sourceSectionBoundaryMs(beats, section.endBeatIndex, sourceDurationMs)
+    && section.endMs > section.startMs
     && section.startBar === Math.floor(section.startBeatIndex / 4) + 1
     && section.endBar === Math.max(1, Math.ceil(section.endBeatIndex / 4))
     && (index === 0 || section.startBeatIndex >= sections[index - 1].endBeatIndex)

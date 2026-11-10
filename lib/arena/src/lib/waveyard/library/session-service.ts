@@ -1647,7 +1647,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
           analysisEngineVersion: record.analysisEngineVersion,
           sourceChecksumSha256: record.sourceChecksumSha256,
         }));
-        if (sourceSectionsAreValid(candidates, beatGridMs)) sections = candidates;
+        if (sourceSectionsAreValid(candidates, beatGridMs, detail.durationSeconds * 1000)) sections = candidates;
       }
     }
   }
