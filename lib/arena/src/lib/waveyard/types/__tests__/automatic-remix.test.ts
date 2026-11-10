@@ -108,7 +108,8 @@ describe("deterministic automatic remix arranger", () => {
     expect(result.plan.tracks).toHaveLength(8);
     expect(result.plan.tracks.every((track) => track.clips.length === 2)).toBe(true);
     expect(result.plan.tracks[0].clips[0]).toMatchObject({ timelineStartMs: 0, durationMs: 8_000, sourceOffsetMs: 0, beatSnapEnabled: false });
-    expect(result.plan.tracks[4].clips[0]).toMatchObject({ timelineStartMs: 16_000, durationMs: 8_000, sourceOffsetMs: 0, beatSnapEnabled: false });
+    const donorTrack = result.plan.tracks.find((track) => track.stemAssetId === "b-drums");
+    expect(donorTrack?.clips[0]).toMatchObject({ timelineStartMs: 16_000, durationMs: 8_000, sourceOffsetMs: 0, beatSnapEnabled: false });
     expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
   });
 
@@ -197,7 +198,8 @@ describe("deterministic automatic remix arranger", () => {
     const result = buildAutomaticRemixPlan([unknown], { variant: "hybrid", instrumental: true });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.plan.tracks).toHaveLength(4);
+      expect(result.plan.tracks).toHaveLength(3);
+      expect(result.plan.tracks.every((track) => track.stemType !== "vocals")).toBe(true);
       expect(result.plan.provenance.decisions).toContain("arranged both complete sources as alternating half-song passages");
       expect(result.plan.tracks.every((track) => track.stemType !== "vocals")).toBe(true);
     }

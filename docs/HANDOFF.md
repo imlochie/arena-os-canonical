@@ -1,12 +1,12 @@
 # Arena handoff — read this first
 
-## Current verification update — 2026-11-10, fallback contract alignment
+## Current verification update — 2026-11-10, fallback renderability checks
 
-* **Highest-priority follow-up:** updated the automatic-remix tests so difficult hybrid inputs no longer encode the obsolete rejection behavior. Unavailable semantic roles, reversed roles, low-confidence tempo/key/beat evidence, incompatible analysis, missing donor analysis, and incomplete anchor structure now assert a successful conservative fallback plan with both sources represented and transforms disabled when evidence is weak.
+* **Highest-priority follow-up:** corrected the automatic-remix fallback assertions to follow the actual persisted track ordering and to verify instrumental fallback removes vocals. The fallback remains conservative: both complete sources are represented, source windows alternate across the full timeline, and no untrusted tempo/key/beat transforms are enabled.
 * **Files changed:** `lib/arena/src/lib/waveyard/types/__tests__/automatic-remix.test.ts` and this handoff.
-* **Verification:** `pnpm run typecheck` passes across libraries, API server, ArenaForge, mockup sandbox, and scripts. `git diff --check` passes. The focused test runner remains unavailable because `tsx` is not installed in this checkout.
-* **Remaining limitation:** this is a test-contract correction around the existing fallback; real-song analysis → render → WAV export → save/reopen evidence is still pending.
-* **Exact Git revision:** `c84b211e16b397a62906d3ea10c9e41fdea97efd`.
+* **Verification:** the focused `tsx --test` run passed 23/23 across automatic-remix and render-helper tests; `pnpm run typecheck:libs` passed; `git diff --check` passed.
+* **Remaining limitation:** real-song analysis → render → WAV export → save/reopen evidence is still pending; this validates plan/render-helper compatibility, not subjective audio quality.
+* **Exact Git revision:** `6cadad5d76e7c12408bccd7975fcfccb6cdb8209`.
 
 Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
