@@ -8,7 +8,7 @@
 * **Real-audio & 4-pair acceptance:** Passed `mashup-full-length.test.ts` (4 distinct song pairings testing tempo divergence [85 vs 135 BPM], on-the-fly PCM analysis of unanalyzed audio, harmonic clash adaptation, and full-length multi-stem export with WAV encoding/decoding and lossless plan reopening). Passed all 15 unit tests in `mashup.test.ts`.
 * **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, `lib/arena/src/lib/waveyard/studio/mashup.ts`, `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.test.ts`, `lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts`, and this handoff.
 * **Verification:** Passed all test suites cleanly (`mashup-db-acceptance.test.ts`, `mashup-full-length.test.ts`, `mashup.test.ts`); full workspace `pnpm run typecheck` passed cleanly across libraries, API server, ArenaForge, mockup sandbox, and scripts.
-* **Exact Git revision:** `1481eac086bad98c422d00ce581b4528dfe6e497`.
+* **Exact Git revision:** `5e5a4498dbec1803ac9a79fc8dfb010a78eb5e5c`.
 * **Remaining limitation:** Subjective musical quality of arbitrary song mashups depends on source stem separation quality and listening evaluation; fallback decisions preserve provenance and explain all assumptions.
 
 ## Current verification update — 2026-11-10, fallback renderability checks
