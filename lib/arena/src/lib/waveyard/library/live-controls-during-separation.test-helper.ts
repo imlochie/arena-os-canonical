@@ -68,8 +68,9 @@ export async function readLiveAudioState(page: any): Promise<Array<{
         | undefined;
       const stemGain = source?.inputNode as (AudioNode & { nextNode?: AudioNode }) | undefined;
       const gain = stemGain?.nextNode instanceof GainNode ? stemGain.nextNode.gain.value : null;
+      const logicalUrl = audio.dataset.waveyardAssetUrl;
       return {
-        assetId: new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1),
+        assetId: logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) : undefined,
         paused: audio.paused,
         currentTime: audio.currentTime,
         readyState: audio.readyState,

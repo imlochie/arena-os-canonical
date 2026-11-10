@@ -4,6 +4,74 @@ Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
 Last updated: 2026-11-10.
 
+## Current verification update — 2026-11-10, local `0b11894` and PR #29
+
+This is the current repository state. Green CI is not the same as successful
+real-audio mixer acceptance.
+
+* **Branch and PR:** checkout remains on `arena/convergence-2026-11-07`.
+  Local `HEAD` is `0b11894e7d0c1d2d380f416677f223d09bf91422`, parented on
+  `8083fd887498b0e1fba13d34f906c11096ee3539`. `origin` and open PR #29
+  (against `main`) still point to `8083fd88`. The local `0b11894` commit,
+  “Refactor retry worker test helper and update documentation,” is one commit
+  ahead of the remote; no GitHub Actions runs exist for that SHA. Four files
+  also have uncommitted changes in the workspace. Preserve both the local
+  commit and working changes; this update did not push, merge, or reset them.
+  Commit `3f064578` is an ancestor of the PR head, followed by `d1948f0f`,
+  `dd2d2862`, and `8083fd88`. The attached comparison against PR head
+  `32cf4a54` is stale.
+* **CI at the exact PR head:** Windows x64 package run
+  [42731655601](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655601),
+  recovered-stack acceptance run
+  [42731655786](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655786),
+  Waveyard browser-timing run
+  [42731655541](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655541),
+  and Linux worker-local DB run
+  [42731655494](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655494)
+  all completed successfully on this SHA.
+* **Inference boundary:** the recovered-stack workflow's FFmpeg probe uses a
+  controlled Demucs stand-in. These runs do not prove trained-model inference.
+  Contrary to the attached note's lookup, all four workflows also completed
+  successfully on the exact `3f064578` SHA: Windows package
+  [42680742154](https://github.com/imlochie/arena-os-canonical/actions/runs/42680742154),
+  recovered-stack acceptance
+  [42680741808](https://github.com/imlochie/arena-os-canonical/actions/runs/42680741808),
+  browser timing
+  [42680741686](https://github.com/imlochie/arena-os-canonical/actions/runs/42680741686),
+  and Linux worker-local DB
+  [42680741750](https://github.com/imlochie/arena-os-canonical/actions/runs/42680741750).
+  The later PR-head runs are listed above; neither revision's controlled probe
+  proves trained-model inference.
+* **Real Waveyard inputs:** two user-provided MP3s (Earth, Wind & Fire
+  “September” and Queen “Another One Bites the Dust”) were imported as 48 kHz
+  stereo and each completed all four pinned CPU separation passes; the
+  persisted source metadata remained 48 kHz. Persisted stem IDs matched the
+  logical deck IDs. Standby audio uses in-memory `blob:` URLs, so URL-path
+  parsing was invalid for checking asset identity; the acceptance now reads
+  the explicit logical asset ID from the audio element.
+* **Mixer result:** the corrected real-track acceptance passed on Linux. It
+  imported two 30.024-second excerpts (September and Another One Bites the
+  Dust), completed four pinned CPU separation passes for each, persisted four
+  stems per track, and verified unchanged source checksums. The browser loaded
+  the real stem assets through private routes, played both decks during the
+  crossfade, advanced the session/title to Queen, isolated the incoming drums
+  (drum gain positive, other three stem gains zero while playback continued),
+  then restored all four stem gains. Test output: 1/1 passed; separation/UI
+  acceptance took about 273 seconds. Standby media uses `blob:` URLs, so
+  identity assertions now use `data-waveyard-asset-url`.
+* **Limit of that result:** this proves persisted real-stem playback,
+  crossfading, and isolation for two short excerpts—not subjective separation
+  quality, aligned/harmonic “smart mashup” quality, full-track structure,
+  MIDI/export/save/reopen, Windows playback, or phone playback. Music-form
+  understanding remains unproven.
+* **Music understanding:** full-track scans still found no qualifying repeated
+  rhythm/harmony patterns, and no manually labeled verse/chorus references
+  were available. Structural understanding, intelligent mashup quality, and
+  full-track musical-form acceptance remain unproven.
+* **Local state:** `pnpm run typecheck` passes. The current uncommitted
+  workspace changes are limited to this handoff, two Waveyard test helpers,
+  and the browser-test memory note; no runtime playback code changed.
+
 ## Current verification update — 2026-11-10, Windows readiness at `dd2d2862`
 
 This section supersedes older Windows/AI acceptance claims below. Green CI is
@@ -83,11 +151,12 @@ not equivalent to owner-side release acceptance.
   verse/chorus reference labels; it does not establish musical-form understanding.
   A real 20-second September excerpt did pass the pinned four-model separation
   and persisted four stems on Linux, but audio quality was not evaluated. The
-  real-library browser check then found a persisted second track whose four
-  stem IDs did not match the four IDs loaded in the next deck. Therefore
-  real-audio separation is PARTIAL; the complete live-mix workflow is NOT
-  accepted until that mismatch is resolved and retested. MIDI/export/save/
-  reopen as one real-audio workflow and owner-device listening remain unverified.
+  later report of a second-track stem-ID mismatch was a test false positive:
+  standby sources are `blob:` URLs, not asset IDs. The latest two-track browser
+  trials persisted the expected stems but did not reach a passing crossfade
+  and incoming-isolation acceptance. See the current verification update
+  above. MIDI/export/save/reopen as one real-audio workflow and owner-device
+  listening remain unverified.
 
 ## Current verification update — 2026-11-09, cold-start acceptance at `32cf4a54`
 

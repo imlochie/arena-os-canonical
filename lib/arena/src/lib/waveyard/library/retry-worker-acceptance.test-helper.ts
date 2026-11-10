@@ -32,6 +32,66 @@ type BrowserRoute = {
   fulfill(input: { status?: number; json?: unknown; headers?: Record<string, string>; body?: string | Buffer }): Promise<void>;
 };
 
+type DeckAcceptanceSnapshot = {
+  current: string[];
+  next: string[];
+  incomingReady: boolean;
+  incomingMedia: Array<{
+    assetId: string | null;
+    readyState: number;
+    networkState: number;
+    paused: boolean;
+    currentTime: number;
+    srcProtocol: string | null;
+    errorCode: number | null;
+  }>;
+};
+
+const SAMPLE_DECK_SNAPSHOT_SOURCE = `({ outgoingIds, incomingIds, requireReady }) => {
+  const elementsForRole = role =>
+    Array.from(document.querySelectorAll('[data-role="' + role + '"] audio'));
+  const assetId = audio => {
+    const logicalUrl = audio.dataset.waveyardAssetUrl;
+    return logicalUrl ? new URL(logicalUrl, location.href).pathname.split('/').pop() || null : null;
+  };
+  const currentElements = elementsForRole('current');
+  const incomingElements = elementsForRole('next');
+  const current = currentElements.map(assetId).filter(id => id !== null);
+  const next = incomingElements.map(assetId).filter(id => id !== null);
+  const incomingReady = incomingElements.length === incomingIds.length
+    && incomingElements.every(audio => audio.readyState >= 2);
+  const exact = (actual, expected) =>
+    actual.length === expected.length && expected.every(id => actual.includes(id));
+  const snapshot = {
+    current,
+    next,
+    incomingReady,
+    incomingMedia: incomingElements.map(audio => ({
+      assetId: assetId(audio),
+      readyState: audio.readyState,
+      networkState: audio.networkState,
+      paused: audio.paused,
+      currentTime: audio.currentTime,
+      srcProtocol: audio.currentSrc ? new URL(audio.currentSrc, location.href).protocol : null,
+      errorCode: audio.error ? audio.error.code : null,
+    })),
+  };
+  if (requireReady && (!exact(current, outgoingIds) || !exact(next, incomingIds) || !incomingReady)) {
+    return false;
+  }
+  return snapshot;
+}`;
+type DeckSnapshotOptions = {
+  outgoingIds: string[];
+  incomingIds: string[];
+  requireReady: boolean;
+};
+type DeckSnapshotProbe = (options: DeckSnapshotOptions) => DeckAcceptanceSnapshot | false;
+// TSX can inject a module-scoped __name call into callbacks that Playwright
+// serializes into Chromium. Build this fixed, test-owned probe as plain
+// JavaScript so the browser never depends on the test module's helpers.
+const sampleDeck = new Function(`return (${SAMPLE_DECK_SNAPSHOT_SOURCE})`)() as DeckSnapshotProbe;
+
 async function probeAudioInput(filePath: string) {
   const { stdout } = await execTool("ffprobe", [
     "-v", "error", "-select_streams", "a:0",
@@ -431,7 +491,11 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       await page.waitForFunction((ids: string[]) => {
         const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
         return audio.length === 4 && audio.every(item => item.readyState >= 2)
-          && ids.every(id => audio.some(item => new URL(item.currentSrc || item.src).pathname.endsWith(`/${id}`)));
+          && ids.every(id => audio.some(item => {
+            const logicalUrl = item.dataset.waveyardAssetUrl;
+            return logicalUrl !== undefined
+              && new URL(logicalUrl, location.href).pathname.split("/").at(-1) === id;
+          }));
       }, expectedAssets, { timeout: 30_000 });
       const play = page.getByTestId("session-play");
       const loaded = await readLiveAudioState(page);
@@ -516,59 +580,24 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       await page.getByTestId(`button-next-${incomingTrack!.id}`).click();
       // Standby media is normally loaded from a private in-memory Blob URL.
       // Its currentSrc is therefore an ephemeral blob: URL, not the library
-      // asset ID. Use the explicit logical identity attached to each element.
-      const deckIdentityReady = await page.waitForFunction(
-        `({ outgoingIds, incomingIds }) => {
-          const idsForRole = role => Array.from(document.querySelectorAll('[data-role="' + role + '"] audio'))
-            .map(audio => {
-              const logicalUrl = audio.dataset.waveyardAssetUrl;
-              return logicalUrl ? new URL(logicalUrl, location.href).pathname.split('/').pop() : null;
-            });
-          const outgoing = idsForRole('current');
-          const incoming = idsForRole('next');
-          const exact = (actual, expected) =>
-            actual.length === expected.length && expected.every(id => actual.includes(id));
-          if (!exact(outgoing, outgoingIds) || !exact(incoming, incomingIds)
-            || !Array.from(document.querySelectorAll('[data-role="next"] audio')).every(audio => audio.readyState >= 2)) {
-            return false;
-          }
-          return true;
-        }`,
-        { outgoingIds: expectedAssets, incomingIds: incomingAssets },
+      // asset ID. Capture both deck identities and media readiness in the same
+      // browser evaluation; separate locator reads can straddle a React deck
+      // update and compare different UI states.
+      const deckStateAtReady = await page.waitForFunction(
+        sampleDeck,
+        { outgoingIds: expectedAssets, incomingIds: incomingAssets, requireReady: true },
         { timeout: 30_000 },
-      ).then(() => true, () => false);
-      const deckStateAtRead = {
-        current: await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => {
-            const logicalUrl = audio.dataset.waveyardAssetUrl;
-            return logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) ?? "" : "";
-          }),
-        ),
-        next: await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => {
-            const logicalUrl = audio.dataset.waveyardAssetUrl;
-            return logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) ?? "" : "";
-          }),
-        ),
-        incomingReady: await page.locator('[data-role="next"] audio').evaluateAll(
-          (elements: HTMLAudioElement[]) => elements.length > 0 && elements.every(audio => audio.readyState >= 2),
-        ),
-        incomingMedia: await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => {
-            const logicalUrl = audio.dataset.waveyardAssetUrl;
-            return {
-              assetId: logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) : null,
-              readyState: audio.readyState,
-              networkState: audio.networkState,
-              paused: audio.paused,
-              currentTime: audio.currentTime,
-              srcProtocol: audio.currentSrc ? new URL(audio.currentSrc, location.href).protocol : null,
-              errorCode: audio.error?.code ?? null,
-            };
-          }),
-        ),
-      };
-      if (!deckIdentityReady || !deckStateAtRead.incomingReady
+      ).then(
+        handle => handle.jsonValue() as Promise<DeckAcceptanceSnapshot>,
+        () => null,
+      );
+      const deckStateAtRead = deckStateAtReady ?? await page.waitForFunction(
+        sampleDeck,
+        { outgoingIds: expectedAssets, incomingIds: incomingAssets, requireReady: false },
+        { timeout: 1_000 },
+      ).then(handle => handle.jsonValue() as Promise<DeckAcceptanceSnapshot>);
+      const deckIdentityReady = deckStateAtReady !== null;
+      if (!deckStateAtRead.incomingReady
         || deckStateAtRead.current.length !== expectedAssets.length
         || !expectedAssets.every(id => deckStateAtRead.current.includes(id))
         || deckStateAtRead.next.length !== incomingAssets.length

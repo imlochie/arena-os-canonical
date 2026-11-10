@@ -185,6 +185,6 @@ Tempo-match browser fixtures must provide confidence values as well as BPM numbe
 
 Waveyard standby-deck audio can use private in-memory Blob URLs, so `audio.currentSrc` is not a persistent library asset ID. Compare logical identity through `data-waveyard-asset-url`, and verify fetch provenance, readiness, and playback separately.
 
-**Why:** A real two-track acceptance showed that the persisted incoming stem IDs exactly matched the standby deck; parsing each Blob URL's path produced unrelated UUIDs and a false asset mismatch.
+**Why:** Real two-track checks found two false identity failures: parsing Blob URL paths produced unrelated UUIDs, and the shared live-state reader repeated that mistake after a successful crossfade. Separate locator reads also straddled React renders and reported an empty next deck before the transition assertion.
 
-**How to apply:** Use the explicit asset identity attribute for ID assertions. Check that the private asset route served those IDs and the corresponding media is decoded and actually plays through the transition.
+**How to apply:** Use `data-waveyard-asset-url` for every persistent asset-ID assertion, including shared live-audio probes. Check that the private asset route served those IDs and the corresponding media is decoded and actually plays through the transition. Capture outgoing IDs, incoming IDs, and media readiness in one browser evaluation that returns a snapshot; multiple sequential locator reads can straddle React deck updates and falsely combine different states.
