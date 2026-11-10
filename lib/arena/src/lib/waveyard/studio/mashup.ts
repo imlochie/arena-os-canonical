@@ -425,18 +425,14 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
       right += pcm[vocalFrame * 2 + 1] * gain;
     }
 
-    // Mix additional discrete stems if provided with stem-appropriate arrangement gains & ducking
+    // Mix additional discrete stems if provided without double-summing:
+    // If discrete stems from the bed/donor are provided, they can enhance or complement the mix
     if (input.stems) {
       for (const [stemName, stemBuffer] of input.stems) {
         if (stemName !== "vocals" && frame * 2 + 1 < stemBuffer.length) {
-          // Bass and drums drive the rhythm section at solid volume (0.8), ducking slightly (0.15) under vocals
-          // Harmony / other stems sit comfortably at 0.7 with normal vocal pocket ducking (DUCK_DEPTH)
-          let stemGain = 0.8;
-          let stemDuck = 0.15;
-          if (stemName === "other" || stemName === "harmony" || stemName === "piano" || stemName === "guitar") {
-            stemGain = 0.7;
-            stemDuck = DUCK_DEPTH;
-          }
+          // Complementary donor stems (e.g. donor guitar/chords or percussion during breakdown pockets)
+          let stemGain = 0.6;
+          let stemDuck = DUCK_DEPTH;
           const dynamicGain = stemGain * (1 - stemDuck * duck);
           left += stemBuffer[frame * 2] * dynamicGain;
           right += stemBuffer[frame * 2 + 1] * dynamicGain;

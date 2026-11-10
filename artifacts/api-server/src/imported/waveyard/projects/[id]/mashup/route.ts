@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { db } from "@workspace/db";
-import { processingJobs, remixClips, remixSessions, remixTracks, remixVersions, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
+import { processingJobs, remixClips, remixSessions, remixTracks, remixVersions, sourceAnalyses, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
@@ -299,7 +299,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: "One of the tracks is not in this project." }, { status: 404 });
       }
 
-      // If either profile lacks BPM or key analysis, decode real PCM and analyse on the fly
+      // If either profile lacks BPM or key analysis, decode real PCM, analyse on the fly, and persist
       if (vocals.bpm === null || vocals.musicalKey === null) {
         await mkdir(tempDir, { recursive: true });
         const vPcm = await sourcePcm(projectId, vocalsId, tempDir);
@@ -307,6 +307,30 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           const analysis = analyseStereoPcm(vPcm.pcm);
           if (vocals.bpm === null && analysis.bpm) vocals.bpm = analysis.bpm;
           if (vocals.musicalKey === null && analysis.musicalKey) vocals.musicalKey = analysis.musicalKey;
+
+          // Persist analysis so subsequent runs reuse the analysis result
+          try {
+            const [asset] = await db.select({ checksumSha256: sourceAssets.checksumSha256 }).from(sourceAssets).where(eq(sourceAssets.id, vocalsId)).limit(1);
+            if (asset) {
+              await db.insert(sourceAnalyses).values({
+                projectId,
+                sourceAssetId: vocalsId,
+                status: "complete",
+                stage: "complete",
+                idempotencyKey: `mashup-onthefly-${vocalsId}`,
+                analysisEngine: "arena-native-pcm",
+                analysisEngineVersion: "1.0.0",
+                sourceChecksumSha256: asset.checksumSha256,
+                bpm: analysis.bpm,
+                bpmConfidence: analysis.bpmConfidence ?? 0.8,
+                musicalKey: analysis.musicalKey,
+                keyConfidence: analysis.keyConfidence ?? 0.8,
+                completedAt: new Date(),
+              }).onConflictDoNothing();
+            }
+          } catch {
+            // Non-blocking if concurrent or read-only
+          }
         }
       }
       if (bed.bpm === null || bed.musicalKey === null) {
@@ -316,6 +340,30 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           const analysis = analyseStereoPcm(bPcm.pcm);
           if (bed.bpm === null && analysis.bpm) bed.bpm = analysis.bpm;
           if (bed.musicalKey === null && analysis.musicalKey) bed.musicalKey = analysis.musicalKey;
+
+          // Persist analysis so subsequent runs reuse the analysis result
+          try {
+            const [asset] = await db.select({ checksumSha256: sourceAssets.checksumSha256 }).from(sourceAssets).where(eq(sourceAssets.id, bedId)).limit(1);
+            if (asset) {
+              await db.insert(sourceAnalyses).values({
+                projectId,
+                sourceAssetId: bedId,
+                status: "complete",
+                stage: "complete",
+                idempotencyKey: `mashup-onthefly-${bedId}`,
+                analysisEngine: "arena-native-pcm",
+                analysisEngineVersion: "1.0.0",
+                sourceChecksumSha256: asset.checksumSha256,
+                bpm: analysis.bpm,
+                bpmConfidence: analysis.bpmConfidence ?? 0.8,
+                musicalKey: analysis.musicalKey,
+                keyConfidence: analysis.keyConfidence ?? 0.8,
+                completedAt: new Date(),
+              }).onConflictDoNothing();
+            }
+          } catch {
+            // Non-blocking if concurrent or read-only
+          }
         }
       }
 
@@ -515,9 +563,29 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         bedInfo = bedResult.info;
       }
 
+      // Load available complementary stems from the donor vocal track (e.g. guitar/keys/other)
+      // to enrich breakdown/solo pockets without duplicating bed stems
+      const complementaryDonorStems = new Map<string, Float32Array>();
+      try {
+        const donorStemRows = await db
+          .select({ stemType: stemAssets.stemType, storageKey: stemAssets.storageKey })
+          .from(stemAssets)
+          .where(and(eq(stemAssets.projectId, projectId), eq(stemAssets.sourceAssetId, vocalsId)));
+
+        for (const stemRow of donorStemRows) {
+          if (stemRow.stemType !== "vocals") {
+            const pcm = await stemPcm(stemRow.storageKey);
+            if (pcm) complementaryDonorStems.set(`donor_${stemRow.stemType}`, pcm);
+          }
+        }
+      } catch {
+        // Fall back gracefully
+      }
+
       const mixed = renderMashup(planned.plan, {
         vocals: vocalsPcm,
         bed: bedPcm,
+        stems: complementaryDonorStems.size > 0 ? complementaryDonorStems : undefined,
         sampleRate: RENDER_SAMPLE_RATE,
       });
       return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings);
