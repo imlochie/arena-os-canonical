@@ -12,9 +12,11 @@ import {
   onsetEnvelope,
 } from "../lib/arena/src/lib/waveyard/worker-local/analysis-engine";
 import { desktopSectionCandidates } from "../lib/arena/src/lib/waveyard/worker-local/sections";
-import { detectRepeatedPhraseMatches, sectionEnergyChangeDb } from "../lib/arena/src/lib/waveyard/worker-local/section-rhythm";
+import { buildPassageFingerprint, detectRepeatedPhraseMatches, sectionEnergyChangeDb } from "../lib/arena/src/lib/waveyard/worker-local/section-rhythm";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../lib/arena/src/lib/waveyard/types/analysis-provenance";
 import { normalizeSourceSections, sourceSectionsAreValid } from "../lib/arena/src/lib/waveyard/types/source-sections";
+import { comparePassageCompatibility } from "../lib/arena/src/lib/waveyard/types/passage-compatibility";
+import { normaliseMusicalKey, semitoneShift } from "../lib/arena/src/lib/waveyard/types/musical-key";
 
 const args = process.argv.slice(2).filter((value) => value !== "--");
 const [outputPath, excerptStartText, excerptDurationText, ...sourcePaths] = args;
@@ -73,9 +75,24 @@ for (const sourcePath of sourcePaths) {
     ? desktopSectionCandidates(beatGridMs, envelope, frameMs, pcm, phraseMatches ?? undefined)
     : null;
   const sourceChecksumSha256 = await checksumFile(absolutePath);
-  const normalizedSections = sectionCandidates && beatGridMs
+  const fingerprintedCandidates = sectionCandidates && beatGridMs
+    ? sectionCandidates.map((candidate) => ({
+      ...candidate,
+      passageFingerprint: buildPassageFingerprint({
+        sourceChecksumSha256,
+        startBeatIndex: candidate.startBeatIndex,
+        endBeatIndex: candidate.endBeatIndex,
+        beatGridMs,
+        beatConfidence: combinedBeatConfidence,
+        envelope,
+        frameMs,
+        pcm,
+      }),
+    }))
+    : null;
+  const normalizedSections = fingerprintedCandidates && beatGridMs
     ? normalizeSourceSections(
-      sectionCandidates,
+      fingerprintedCandidates,
       beatGridMs,
       {
         analysisEngine: DESKTOP_SECTION_ENGINE,
@@ -127,6 +144,7 @@ for (const sourcePath of sourcePaths) {
       analysisEngine: section.analysisEngine,
       analysisEngineVersion: section.analysisEngineVersion,
       sourceChecksumSha256: section.sourceChecksumSha256,
+      passageFingerprint: section.passageFingerprint,
       energyChangeDb: beatGridMs
         ? sectionEnergyChangeDb(sectionCandidates![index - 1] ?? null, candidate, beatGridMs, pcm)
         : null,
@@ -157,8 +175,52 @@ for (const sourcePath of sourcePaths) {
     sections,
   });
 }
+const crossSourceComparisons = [];
+for (let leftTrackIndex = 0; leftTrackIndex < tracks.length; leftTrackIndex += 1) {
+  for (let rightTrackIndex = leftTrackIndex + 1; rightTrackIndex < tracks.length; rightTrackIndex += 1) {
+    const left = tracks[leftTrackIndex]!;
+    const right = tracks[rightTrackIndex]!;
+    const leftKey = left.musicalKey ? normaliseMusicalKey(left.musicalKey) : null;
+    const rightKey = right.musicalKey ? normaliseMusicalKey(right.musicalKey) : null;
+    const expectedKeyShift = leftKey && rightKey ? semitoneShift(rightKey, leftKey) : null;
+    for (const anchorSection of left.sections ?? []) {
+      for (const donorSection of right.sections ?? []) {
+        if (!anchorSection.passageFingerprint || !donorSection.passageFingerprint) continue;
+        crossSourceComparisons.push({
+          anchorSourceName: left.filename,
+          donorSourceName: right.filename,
+          ...comparePassageCompatibility({
+          anchorSectionId: anchorSection.id,
+          donorSectionId: donorSection.id,
+          anchor: anchorSection.passageFingerprint,
+          donor: donorSection.passageFingerprint,
+          anchorBpm: left.bpm ?? 0,
+          donorBpm: right.bpm ?? 0,
+          anchorBeatConfidence: left.beatConfidence ?? 0,
+          donorBeatConfidence: right.beatConfidence ?? 0,
+          anchorKeyTrusted: left.keyConfidence !== null && left.keyConfidence >= 0.5 && leftKey !== null,
+          donorKeyTrusted: right.keyConfidence !== null && right.keyConfidence >= 0.5 && rightKey !== null,
+          expectedKeyShift,
+          }),
+        });
+      }
+    }
+  }
+}
+const rankedCrossSourceComparisons = crossSourceComparisons
+  .sort((left, right) => Number(right.eligible) - Number(left.eligible)
+    || Math.min(right.dimensions.rhythm.similarity ?? -1, right.dimensions.harmony.similarity ?? -1, right.dimensions.beatPhase.similarity ?? -1)
+      - Math.min(left.dimensions.rhythm.similarity ?? -1, left.dimensions.harmony.similarity ?? -1, left.dimensions.beatPhase.similarity ?? -1))
+  .slice(0, 20);
 await writeFile(resolve(outputPath), `${JSON.stringify({
   schemaVersion: 1,
   createdAt: new Date().toISOString(),
   tracks,
+  crossSourceCompatibility: {
+    evaluatedPassagePairs: crossSourceComparisons.length,
+    coreEligibleMatches: crossSourceComparisons.filter((comparison) => comparison.eligible).length,
+    missingEvidence: [...new Set(crossSourceComparisons.flatMap((comparison) => comparison.missingEvidence))],
+    bestPairs: rankedCrossSourceComparisons,
+    interpretation: "A core candidate requires separate onset, chroma, beat-phase, equal measured phrase length and trusted tempo evidence. Vocal/instrument activity and downbeat gaps are retained; the report is not a subjective listening result.",
+  },
 }, null, 2)}\n`);

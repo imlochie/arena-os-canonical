@@ -1,4 +1,5 @@
 import { usableBeatGrid } from "./beat-grid";
+import { parsePassageFingerprint, type PassageFingerprint } from "./passage-compatibility";
 
 /** Immutable, source-coordinate structural range. endBeatIndex is an exclusive beat boundary. */
 export type SourceSection = {
@@ -16,6 +17,7 @@ export type SourceSection = {
   analysisEngine: string;
   analysisEngineVersion: string;
   sourceChecksumSha256: string;
+  passageFingerprint?: PassageFingerprint | null;
 };
 
 export type SourceSectionStatus =
@@ -107,6 +109,14 @@ export function normalizeSourceSections(
     // Overlaps are non-canonical; adjacent ranges remain valid and ordered.
     if (previous && candidate.startBeatIndex < previous.endBeatIndex) continue;
     const sectionIndex = normalized.length;
+    const fingerprint = candidate.passageFingerprint === undefined || candidate.passageFingerprint === null
+      ? null
+      : parsePassageFingerprint(candidate.passageFingerprint, {
+        sourceChecksumSha256: provenance.sourceChecksumSha256,
+        startBeatIndex: candidate.startBeatIndex,
+        endBeatIndex: candidate.endBeatIndex,
+      });
+    if (candidate.passageFingerprint != null && !fingerprint) continue;
     normalized.push({
       id: makeId({ startBeatIndex: candidate.startBeatIndex, endBeatIndex: candidate.endBeatIndex, sectionIndex }),
       sectionIndex,
@@ -119,6 +129,7 @@ export function normalizeSourceSections(
       label: candidate.label.trim(),
       labelConfidence: clampUnit(candidate.labelConfidence),
       structuralConfidence: clampUnit(candidate.structuralConfidence),
+      ...(candidate.passageFingerprint !== undefined ? { passageFingerprint: fingerprint } : {}),
       ...provenance,
     });
   }
@@ -151,7 +162,12 @@ export function sourceSectionsAreValid(
     && section.endBar === Math.max(1, Math.ceil(section.endBeatIndex / 4))
     && (index === 0 || section.startBeatIndex >= sections[index - 1].endBeatIndex)
     && section.structuralConfidence >= 0 && section.structuralConfidence <= 1
-    && section.labelConfidence >= 0 && section.labelConfidence <= 1,
+    && section.labelConfidence >= 0 && section.labelConfidence <= 1
+    && (section.passageFingerprint == null || parsePassageFingerprint(section.passageFingerprint, {
+      sourceChecksumSha256: section.sourceChecksumSha256,
+      startBeatIndex: section.startBeatIndex,
+      endBeatIndex: section.endBeatIndex,
+    }) !== null),
   );
 }
 

@@ -1,6 +1,11 @@
 import { normaliseMusicalKey, semitoneShift, type MusicalKey } from "./musical-key";
 import { usableBeatGrid } from "./beat-grid";
 import {
+  type AutomaticRemixCompatibilityPair,
+  comparePassageCompatibility,
+  type PassageFingerprint,
+} from "./passage-compatibility";
+import {
   trustedAnalysisBpm,
   trustedAnalysisKey,
   WAVEYARD_MIXING_CONFIDENCE_THRESHOLD,
@@ -26,6 +31,9 @@ export type AutomaticRemixSection = {
   label: string;
   labelConfidence: number;
   structuralConfidence: number;
+  passageFingerprint?: PassageFingerprint | null;
+  startBeatIndex?: number;
+  endBeatIndex?: number;
 };
 
 export type AutomaticRemixSource = {
@@ -91,6 +99,15 @@ export type AutomaticRemixProvenance = {
   targetKey: MusicalKey | null;
   constraints: Required<Pick<AutomaticRemixConstraints, "instrumental">> & Omit<AutomaticRemixConstraints, "instrumental">;
   decisions: string[];
+  passageCompatibility?: AutomaticRemixCompatibilityReport;
+};
+
+export type AutomaticRemixCompatibilityReport = {
+  evaluatedPairs: number;
+  eligiblePairs: number;
+  pairs: AutomaticRemixCompatibilityPair[];
+  missingEvidence: string[];
+  note: string;
 };
 
 export type AutomaticRemixPlan = {
@@ -100,6 +117,7 @@ export type AutomaticRemixPlan = {
   tracks: AutomaticRemixTrackPlan[];
   provenance: AutomaticRemixProvenance;
   notices: string[];
+  compatibility?: AutomaticRemixCompatibilityReport;
 };
 
 export type AutomaticRemixResult =
@@ -112,6 +130,7 @@ export type AutomaticRemixResult =
         | "hybrid_evidence_unavailable"
         | "no_compatible_hybrid_source"
         | "unsafe_hybrid_alignment";
+      compatibility?: AutomaticRemixCompatibilityReport;
     };
 
 const roleOrder = ["drums", "percussion", "bass", "other", "melody", "vocals"];
@@ -238,6 +257,100 @@ function compatibleHybridCounterparts(anchor: AutomaticRemixSource, candidate: A
   return matchStructuralCounterparts(anchor, candidate, anchorSections, candidateSections, tempoRatio);
 }
 
+function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
+  if (anchor.id === candidate.id || !sourceHasVerifiedAnalysis(anchor) || !sourceHasVerifiedAnalysis(candidate)) return null;
+  const anchorBpm = trustedBpm(anchor) ?? 0;
+  const candidateBpm = trustedBpm(candidate) ?? 0;
+  const anchorKey = trustedKey(anchor);
+  const donorKey = trustedKey(candidate);
+  const expectedKeyShift = anchorKey && donorKey ? semitoneShift(donorKey, anchorKey) : null;
+  const anchorSections = usableSections(anchor);
+  const donorSections = usableSections(candidate);
+  const fingerprintCount = anchorSections.filter((section) => section.passageFingerprint).length
+    + donorSections.filter((section) => section.passageFingerprint).length;
+  const usedDonorSections = new Set<string>();
+  const matches = new Map<string, AutomaticRemixSection>();
+  const comparisons: AutomaticRemixCompatibilityPair[] = [];
+  for (const anchorSection of anchorSections) {
+    const anchorFingerprint = anchorSection.passageFingerprint;
+    if (!anchorFingerprint) continue;
+    const choices = donorSections.flatMap((donorSection) => {
+      const donorFingerprint = donorSection.passageFingerprint;
+      if (!donorFingerprint || usedDonorSections.has(donorSection.id)) return [];
+      const comparison = comparePassageCompatibility({
+        anchorSectionId: anchorSection.id,
+        donorSectionId: donorSection.id,
+        anchor: anchorFingerprint,
+        donor: donorFingerprint,
+        anchorBpm,
+        donorBpm: candidateBpm,
+        anchorBeatConfidence: anchor.analysis?.beatConfidence ?? 0,
+        donorBeatConfidence: candidate.analysis?.beatConfidence ?? 0,
+        anchorKeyTrusted: anchorKey !== null,
+        donorKeyTrusted: donorKey !== null,
+        expectedKeyShift,
+      });
+      comparisons.push({
+        ...comparison,
+        anchorSourceName: anchor.originalFilename,
+        donorSourceName: candidate.originalFilename,
+      });
+      if (!comparison.eligible) return [];
+      const score = Math.min(
+        comparison.dimensions.rhythm.similarity ?? -1,
+        comparison.dimensions.harmony.similarity ?? -1,
+        comparison.dimensions.beatPhase.similarity ?? -1,
+      );
+      return [{ section: donorSection, comparison, score }];
+    }).sort((left, right) => right.score - left.score || left.section.startMs - right.section.startMs);
+    const selected = choices[0];
+    if (selected) {
+      usedDonorSections.add(selected.section.id);
+      matches.set(anchorSection.id, selected.section);
+    }
+  }
+  const ranked = [...comparisons].sort((left, right) =>
+    Number(right.eligible) - Number(left.eligible)
+    || Math.min(right.dimensions.rhythm.similarity ?? -1, right.dimensions.harmony.similarity ?? -1, right.dimensions.beatPhase.similarity ?? -1)
+      - Math.min(left.dimensions.rhythm.similarity ?? -1, left.dimensions.harmony.similarity ?? -1, left.dimensions.beatPhase.similarity ?? -1),
+  ).slice(0, 12);
+  const missingEvidence = [...new Set([
+    ...ranked.flatMap((pair) => pair.missingEvidence),
+    ...(fingerprintCount < anchorSections.length + donorSections.length
+      ? ["current passage fingerprints for every section; rerun section analysis with engine 1.5.0"] : []),
+    ...(anchorBpm <= 0 || candidateBpm <= 0 ? ["trusted BPM analysis for both sources"] : []),
+  ])];
+  return {
+    matches,
+    report: {
+      evaluatedPairs: comparisons.length,
+      eligiblePairs: comparisons.filter((pair) => pair.eligible).length,
+      pairs: ranked,
+      missingEvidence,
+      note: fingerprintCount === 0
+        ? "No current passage fingerprints were found. Re-run structural analysis; older section rows are not silently upgraded."
+        : "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. A match is an audition candidate, not a listening-quality claim.",
+    } satisfies AutomaticRemixCompatibilityReport,
+  };
+}
+
+function unavailablePassageReport(candidate: AutomaticRemixSource): AutomaticRemixCompatibilityReport {
+  const hasCurrentAnalysis = sourceHasVerifiedAnalysis(candidate);
+  const hasFingerprint = usableSections(candidate).some((section) => section.passageFingerprint);
+  const missingEvidence = [
+    ...(!hasCurrentAnalysis ? [`current checksum-verified source analysis for ${candidate.originalFilename}`] : []),
+    ...(!trustedBpm(candidate) ? [`trusted tempo and beat analysis for ${candidate.originalFilename}`] : []),
+    ...(!hasFingerprint ? [`current passage fingerprints for ${candidate.originalFilename}; rerun section analysis with engine 1.5.0`] : []),
+  ];
+  return {
+    evaluatedPairs: 0,
+    eligiblePairs: 0,
+    pairs: [],
+    missingEvidence: missingEvidence.length ? missingEvidence : ["current cross-song passage evidence"],
+    note: "No passage pairs could be evaluated because current provenance or analysis evidence is missing.",
+  };
+}
+
 function requestedStem(sources: AutomaticRemixSource[], stemId: string | undefined, stemType: string) {
   if (!stemId) return null;
   return sources.flatMap((source) => source.stems.map((stem) => ({ source, stem })))
@@ -270,22 +383,23 @@ function clipWindows(
   const clips: Omit<AutomaticRemixClipPlan, "stemAssetId">[] = [];
   for (const anchorSection of anchorSections) {
     const section = foreign ? counterparts?.get(anchorSection.id) : anchorSection;
-    if (!section || (foreign && !sourceSections.some((candidate) => candidate.id === section.id))) return null;
     const durationMs = anchorSection.endMs - anchorSection.startMs;
-    clips.push({
-      timelineStartMs: cursor,
-      durationMs,
-      sourceOffsetMs: section.startMs,
-      gain: 1,
-      fadeInMs: 0,
-      fadeOutMs: 0,
-      tempoSyncEnabled,
-      keySyncEnabled,
-      beatSnapEnabled,
-    });
+    if (section && (!foreign || sourceSections.some((candidate) => candidate.id === section.id))) {
+      clips.push({
+        timelineStartMs: cursor,
+        durationMs,
+        sourceOffsetMs: section.startMs,
+        gain: 1,
+        fadeInMs: 0,
+        fadeOutMs: 0,
+        tempoSyncEnabled,
+        keySyncEnabled,
+        beatSnapEnabled,
+      });
+    }
     cursor += durationMs;
   }
-  return clips;
+  return clips.length ? clips : null;
 }
 
 function completeConstraints(constraints: AutomaticRemixConstraints, variant: AutomaticRemixVariant) {
@@ -295,6 +409,22 @@ function completeConstraints(constraints: AutomaticRemixConstraints, variant: Au
     ...(constraints.vocalStemId ? { vocalStemId: constraints.vocalStemId } : {}),
     ...(constraints.drumsStemId ? { drumsStemId: constraints.drumsStemId } : {}),
     instrumental: constraints.instrumental === true,
+  };
+}
+
+function combinedCompatibilityReport(reports: AutomaticRemixCompatibilityReport[]): AutomaticRemixCompatibilityReport | undefined {
+  if (!reports.length) return undefined;
+  const pairs = reports.flatMap((report) => report.pairs)
+    .sort((left, right) => Number(right.eligible) - Number(left.eligible)
+      || Math.min(right.dimensions.rhythm.similarity ?? -1, right.dimensions.harmony.similarity ?? -1, right.dimensions.beatPhase.similarity ?? -1)
+        - Math.min(left.dimensions.rhythm.similarity ?? -1, left.dimensions.harmony.similarity ?? -1, left.dimensions.beatPhase.similarity ?? -1))
+    .slice(0, 12);
+  return {
+    evaluatedPairs: reports.reduce((total, report) => total + report.evaluatedPairs, 0),
+    eligiblePairs: reports.reduce((total, report) => total + report.eligiblePairs, 0),
+    pairs,
+    missingEvidence: [...new Set(reports.flatMap((report) => report.missingEvidence))],
+    note: "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. A match is an audition candidate, not a listening-quality claim.",
   };
 }
 
@@ -320,6 +450,7 @@ export function buildAutomaticRemixPlan(
   if (!anchorBpm) notices.push("Tempo confidence is insufficient, so Waveyard will not claim BPM matching or beat snapping for this arrangement.");
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
   const counterpartsBySource = new Map<string, ReadonlyMap<string, AutomaticRemixSection>>();
+  const compatibilityBySource = new Map<string, AutomaticRemixCompatibilityReport>();
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
 
   if (variant === "hybrid" && sourceCanStructure(anchor)) {
@@ -329,19 +460,41 @@ export function buildAutomaticRemixPlan(
     for (const value of [requestedVocals, requestedDrums]) {
       if (value) candidates.set(`${value.source.id}:${value.stem.stemType}`, value);
     }
-    const defaultVocal = usableSources.flatMap((source) => {
+    const defaultVocalCandidates: Array<{
+      source: AutomaticRemixSource;
+      stem: AutomaticRemixStem;
+      counterparts: Map<string, AutomaticRemixSection>;
+    }> = [];
+    for (const source of usableSources) {
       const stem = firstStem(source, "vocals");
-      const counterparts = compatibleHybridCounterparts(anchor, source);
-      return stem && counterparts ? [{ source, stem, counterparts }] : [];
-    })[0] ?? null;
+      if (!stem || source.id === anchor.id) continue;
+      const semantic = compatibleHybridCounterparts(anchor, source);
+      if (semantic) {
+        defaultVocalCandidates.push({ source, stem, counterparts: semantic });
+        continue;
+      }
+      const passage = passageHybridCounterparts(anchor, source);
+      if (passage) {
+        compatibilityBySource.set(source.id, passage.report);
+        if (passage.matches.size) defaultVocalCandidates.push({ source, stem, counterparts: passage.matches });
+      } else compatibilityBySource.set(source.id, unavailablePassageReport(source));
+    }
+    const defaultVocal = defaultVocalCandidates.sort((left, right) => right.counterparts.size - left.counterparts.size)[0] ?? null;
     if (defaultVocal) {
       candidates.set(`${defaultVocal.source.id}:vocals`, { source: defaultVocal.source, stem: defaultVocal.stem });
       counterpartsBySource.set(defaultVocal.source.id, defaultVocal.counterparts);
     }
     for (const candidate of candidates.values()) {
-      const counterparts = compatibleHybridCounterparts(anchor, candidate.source);
+      let counterparts = compatibleHybridCounterparts(anchor, candidate.source);
       if (!counterparts) {
-        notices.push(`${candidate.source.originalFilename} was kept out of the hybrid because current tempo, key, or high-confidence matching section roles were unavailable.`);
+        const passage = passageHybridCounterparts(anchor, candidate.source);
+        if (passage) {
+          compatibilityBySource.set(candidate.source.id, passage.report);
+          if (passage.matches.size) counterparts = passage.matches;
+        } else compatibilityBySource.set(candidate.source.id, unavailablePassageReport(candidate.source));
+      }
+      if (!counterparts) {
+        notices.push(`${candidate.source.originalFilename} was kept out of the hybrid because no section pair passed the measured tempo, rhythm, chroma, and beat-phase checks.`);
         continue;
       }
       if (candidate.stem.stemType === "vocals" || candidate.stem.stemType === "drums") {
@@ -350,7 +503,17 @@ export function buildAutomaticRemixPlan(
       }
     }
     if ([...selected.values()].some((choice) => choice.source.id !== anchor.id)) decisions.push("replaced only verified, structurally compatible featured stems");
-    else return { ok: false, reason: "no_compatible_hybrid_source" };
+    else {
+      const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
+      return { ok: false, reason: "no_compatible_hybrid_source", ...(compatibility ? { compatibility } : {}) };
+    }
+    if (compatibilityBySource.size) {
+      const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
+      if (compatibility) {
+        notices.push(`Passage-level matches: ${compatibility.eligiblePairs}. They are audition candidates; ${compatibility.missingEvidence.length ? `still missing ${compatibility.missingEvidence.join(", ")}.` : "all listed evidence is present."}`);
+        decisions.push("used independent passage-level rhythm, chroma, beat-phase, and tempo evidence without requiring semantic verse/chorus labels");
+      }
+    }
   }
 
   if (constraints.instrumental) {
@@ -374,6 +537,7 @@ export function buildAutomaticRemixPlan(
     });
   }
   const analysisIds = [...new Set(ordered.map((choice) => choice.source.analysis?.id).filter((id): id is string => Boolean(id)))];
+  const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
   return {
     ok: true,
     plan: {
@@ -382,6 +546,7 @@ export function buildAutomaticRemixPlan(
       targetKey,
       tracks,
       notices,
+      ...(compatibility ? { compatibility } : {}),
       provenance: {
         engine: AUTOMATIC_REMIX_ENGINE,
         engineVersion: AUTOMATIC_REMIX_ENGINE_VERSION,
@@ -393,6 +558,7 @@ export function buildAutomaticRemixPlan(
         targetKey,
         constraints: completeConstraints(constraints, variant),
         decisions,
+        ...(compatibility ? { passageCompatibility: compatibility } : {}),
       },
     },
   };

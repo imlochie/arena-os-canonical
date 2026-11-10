@@ -7,8 +7,10 @@ import {
   detectRepeatedPhraseMatches,
   labelRepeatedRhythmSections,
   labelSectionEnergyChanges,
+  buildPassageFingerprint,
   sectionEnergyChangeDb,
 } from "./section-rhythm";
+import { parsePassageFingerprint } from "../types/passage-compatibility";
 
 const beatGridMs = Array.from({ length: 33 }, (_, index) => index * 500);
 const frameMs = 10;
@@ -82,6 +84,33 @@ test("combined rhythm and harmonic evidence labels a repeated audio pattern, not
   assert.equal(result[1].label, "section");
   assert.ok(result[0].labelConfidence >= 0.92);
   assert.doesNotMatch(result[0].label, /verse|chorus/i);
+});
+
+test("passage fingerprint persists measured source features and marks unsupported claims unavailable", () => {
+  const envelope = new Float32Array(1_700);
+  for (let beat = 0; beat < 16; beat += 1) addPulse(envelope, beat, beat % 2 === 0 ? 0 : 2);
+  const fingerprint = buildPassageFingerprint({
+    sourceChecksumSha256: "a".repeat(64),
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    beatGridMs: Array.from({ length: 33 }, (_, index) => index * 500),
+    beatConfidence: 0.83,
+    envelope,
+    frameMs,
+    pcm: chordTrack(),
+  });
+  assert.equal(fingerprint.rhythm.status, "measured");
+  assert.equal(fingerprint.chroma.status, "measured");
+  assert.equal(fingerprint.beatPhase.status, "measured");
+  assert.equal(fingerprint.energy.status, "measured");
+  assert.equal(fingerprint.downbeatConfidence.status, "unavailable");
+  assert.equal(fingerprint.vocalActivity.status, "unavailable");
+  assert.equal(fingerprint.instrumentalDensity.status, "unavailable");
+  assert.deepEqual(parsePassageFingerprint(fingerprint, {
+    sourceChecksumSha256: "a".repeat(64),
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+  }), fingerprint);
 });
 
 test("same rhythm with a different harmonic sequence is not promoted to a repeated audio pattern", () => {

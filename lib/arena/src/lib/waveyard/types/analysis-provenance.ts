@@ -5,8 +5,8 @@ export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.4.0";
 export const DESKTOP_STEM_ANALYSIS_ENGINE = "arena-js-stem-analysis";
 export const DESKTOP_STEM_ANALYSIS_ENGINE_VERSION = "1.0.0";
 export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
-// 1.4 adds beat-grid phrase-window matching independent of novelty segmentation.
-export const DESKTOP_SECTION_ENGINE_VERSION = "1.4.0";
+// 1.5 persists source-bound passage fingerprints for cross-track comparison.
+export const DESKTOP_SECTION_ENGINE_VERSION = "1.5.0";
 
 export function isStaleDesktopAnalysis(analysis: {
   analysisEngine: string | null;

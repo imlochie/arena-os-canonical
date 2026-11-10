@@ -22,6 +22,7 @@ import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections } f
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { normalizeSourceSections, sourceSectionsAreValid, type SourceSectionCandidate } from "@workspace/arena/lib/waveyard/types/source-sections";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
+import { currentBeatConfidence } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
 import { decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
@@ -30,6 +31,7 @@ import {
   detectRepeatedPhraseMatches,
   labelRepeatedRhythmSections,
   labelSectionEnergyChanges,
+  buildPassageFingerprint,
   type RepeatedPhraseMatch,
 } from "./section-rhythm";
 
@@ -189,8 +191,21 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
       });
       return;
     }
+    const fingerprintedCandidates = candidates.map((candidate) => ({
+      ...candidate,
+      passageFingerprint: buildPassageFingerprint({
+        sourceChecksumSha256: source.checksumSha256,
+        startBeatIndex: candidate.startBeatIndex,
+        endBeatIndex: candidate.endBeatIndex,
+        beatGridMs: beatGrid,
+        beatConfidence: currentBeatConfidence(analysis),
+        envelope,
+        frameMs,
+        pcm,
+      }),
+    }));
     const sections = normalizeSourceSections(
-      candidates,
+      fingerprintedCandidates,
       beatGrid,
       {
         analysisEngine: DESKTOP_SECTION_ENGINE,

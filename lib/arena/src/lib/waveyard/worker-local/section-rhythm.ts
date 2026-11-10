@@ -1,4 +1,10 @@
 import type { SourceSectionCandidate } from "@workspace/arena/lib/waveyard/types/source-sections";
+import {
+  PASSAGE_FINGERPRINT_ENGINE,
+  PASSAGE_FINGERPRINT_ENGINE_VERSION,
+  type PassageFingerprint,
+  unavailablePassageEvidence,
+} from "../types/passage-compatibility";
 import { ANALYSIS_PCM_RATE, chromaFromPcm } from "./analysis-engine";
 
 const SUBDIVISIONS_PER_BEAT = 4;
@@ -15,7 +21,7 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)];
 }
 
-function sectionRhythmSignature(
+export function sectionRhythmSignature(
   startBeatIndex: number,
   endBeatIndex: number,
   beatGridMs: number[],
@@ -69,7 +75,7 @@ function signatureSimilarity(left: number[], right: number[]): number {
   return left.reduce((total, value, index) => total + value * right[index], 0);
 }
 
-function sectionHarmonicSignature(
+export function sectionHarmonicSignature(
   pcm: Float32Array,
   startBeatIndex: number,
   endBeatIndex: number,
@@ -122,7 +128,7 @@ function beatBoundaryMs(index: number, beatGridMs: number[]): number | null {
   return beatGridMs.at(-1)! + fallbackBeatMs;
 }
 
-function sectionRmsDb(
+export function sectionRmsDb(
   pcm: Float32Array,
   startBeatIndex: number,
   endBeatIndex: number,
@@ -142,6 +148,72 @@ function sectionRmsDb(
   }
   const rms = Math.sqrt(squaredEnergy / (endSample - startSample));
   return Number.isFinite(rms) && rms > 1e-8 ? 20 * Math.log10(rms) : null;
+}
+
+/** Builds only features measured from the source PCM and versioned beat grid. */
+export function buildPassageFingerprint(input: {
+  sourceChecksumSha256: string;
+  startBeatIndex: number;
+  endBeatIndex: number;
+  beatGridMs: number[];
+  beatConfidence: number | null;
+  envelope: Float32Array;
+  frameMs: number;
+  pcm: Float32Array;
+}): PassageFingerprint {
+  const { startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs, pcm } = input;
+  const rhythmSignature = sectionRhythmSignature(startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs);
+  const chromaSignature = sectionHarmonicSignature(pcm, startBeatIndex, endBeatIndex, beatGridMs);
+  const rmsDb = sectionRmsDb(pcm, startBeatIndex, endBeatIndex, beatGridMs);
+  const intervals = beatGridMs.slice(startBeatIndex + 1, endBeatIndex)
+    .map((time, index) => time - beatGridMs[startBeatIndex + index]!)
+    .filter((interval) => Number.isFinite(interval) && interval > 0)
+    .sort((left, right) => left - right);
+  const beatPeriodMs = intervals[Math.floor(intervals.length / 2)] ?? null;
+  const phaseProfile = [0, 0, 0, 0];
+  if (beatPeriodMs !== null && frameMs > 0 && envelope.length > 0) {
+    for (let beat = startBeatIndex; beat < endBeatIndex; beat += 1) {
+      const startMs = beatGridMs[beat];
+      if (!Number.isFinite(startMs)) continue;
+      const endMs = beatGridMs[beat + 1] ?? startMs + beatPeriodMs;
+      if (!Number.isFinite(endMs) || endMs <= startMs) continue;
+      for (let subdivision = 0; subdivision < 4; subdivision += 1) {
+        const from = Math.max(0, Math.floor((startMs + (endMs - startMs) * subdivision / 4) / frameMs));
+        const to = Math.min(envelope.length, Math.max(from + 1, Math.ceil((startMs + (endMs - startMs) * (subdivision + 1) / 4) / frameMs)));
+        let peak = 0;
+        for (let frame = from; frame < to; frame += 1) peak = Math.max(peak, envelope[frame] ?? 0);
+        phaseProfile[subdivision] += peak;
+      }
+    }
+  }
+  const phaseMagnitude = Math.sqrt(phaseProfile.reduce((total, value) => total + value * value, 0));
+  if (phaseMagnitude > 1e-8) {
+    for (let index = 0; index < phaseProfile.length; index += 1) phaseProfile[index] = phaseProfile[index]! / phaseMagnitude;
+  }
+  const unavailable = "Not measured by this source-only structural pass.";
+  return {
+    schemaVersion: 1,
+    engine: PASSAGE_FINGERPRINT_ENGINE,
+    engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
+    sourceChecksumSha256: input.sourceChecksumSha256,
+    startBeatIndex,
+    endBeatIndex,
+    rhythm: rhythmSignature
+      ? { status: "measured", value: rhythmSignature, method: "four onset-envelope subdivisions per beat", confidence: input.beatConfidence }
+      : unavailablePassageEvidence("Passage is too short or has insufficient onset variation for a rhythm fingerprint."),
+    chroma: chromaSignature
+      ? { status: "measured", value: chromaSignature, method: "four time-ordered 12-bin chroma windows", confidence: input.beatConfidence }
+      : unavailablePassageEvidence("Passage is too short or lacks sufficient chroma variation for a harmonic fingerprint."),
+    beatPhase: phaseMagnitude > 1e-8 && beatPeriodMs !== null
+      ? { status: "measured", value: { subdivisionProfile: phaseProfile, beatPeriodMs }, method: "onset energy aggregated by beat subdivision", confidence: input.beatConfidence }
+      : unavailablePassageEvidence("Beat-phase profile is unavailable because beat-aligned onset energy could not be measured."),
+    energy: rmsDb === null
+      ? unavailablePassageEvidence("Source passage RMS is unavailable (empty or effectively silent audio).")
+      : { status: "measured", value: { rmsDb }, method: "source PCM section RMS", confidence: null },
+    downbeatConfidence: unavailablePassageEvidence("The persisted beat grid does not independently identify downbeats."),
+    vocalActivity: unavailablePassageEvidence(unavailable),
+    instrumentalDensity: unavailablePassageEvidence("Separated non-vocal stem activity is not part of source-only structural analysis."),
+  };
 }
 
 /** Average section loudness difference; positive means a rise into the section. */

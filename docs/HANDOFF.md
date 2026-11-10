@@ -4,6 +4,81 @@ Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
 Last updated: 2026-11-10.
 
+## Current verification update — 2026-11-10, Waveyard cross-song passage compatibility
+
+* **Preserved checkout:** still on `arena/convergence-2026-11-07` at
+  `52a0ba903854234a135e583814cb7ba1be73d3e7`, five commits ahead of
+  `origin/arena/convergence-2026-11-07`. This work is local and uncommitted;
+  no commits, pushes, merges, branch switches or history edits were made. The
+  user-provided audio remains untracked and is not part of the change.
+* **Persisted evidence:** source-section engine provenance is now 1.5.0.
+  Each source section can retain a checksum- and beat-range-bound passage
+  fingerprint: a four-subdivision-per-beat onset pattern (length varies with
+  the phrase), four-window/12-pitch-class chroma
+  sequence, four-subdivision beat-phase profile and source RMS energy. The
+  record also has explicit `measured` / `unavailable` slots for downbeat
+  confidence, vocal activity and non-vocal instrument density. The section
+  worker currently measures the first four from source PCM; current isolated
+  vocal phrase coverage is attached by the automatic-remix route when matching
+  stem/source provenance exists. No downbeat or non-vocal activity detector is
+  claimed. Fingerprints are persisted in nullable `source_sections` JSONB;
+  additive desktop migration `0025_source_section_passage_fingerprints.sql`
+  and a PGlite persist/reload test cover the schema. The development schema
+  push completed; production was not changed.
+* **Compatibility and product path:** automatic hybrid planning now evaluates
+  tempo and confidence, exact measured phrase length, onset rhythm, chroma,
+  beat phase and allowed transposition independently. It no longer hides
+  rejected donors behind an early tempo-ratio filter. Rhythm cannot substitute
+  for harmony; a shifted chroma match is permitted only when both trusted key
+  analyses authorize that shift. Passage matches do not need verse/chorus
+  labels. Reports retain source names, passage IDs, per-dimension explanations
+  and missing evidence. The existing route still creates ordinary persisted
+  RemixTrack/RemixClip sessions only for eligible candidates. The Studio shows
+  compatibility evidence expanded by default, including on a no-match error;
+  it explicitly calls a match an audition candidate rather than a quality
+  claim.
+* **Real-audio acceptance:** the six user-provided recordings were each analyzed
+  in full (215–406 seconds), producing 246 section fingerprints and 24,941
+  cross-track passage comparisons. **Zero** pairs passed every core gate, so no
+  hybrid arrangement or render was generated and none was listened to. Examples
+  of correctly rejected pairs: a Queen / “Blinding Lights” two-bar pair had
+  tempo ratio 0.638, rhythm similarity 0.818, chroma 0.811 and beat-phase
+  similarity 0.992; “I Feel It Coming” / “Blinding Lights” had ratio 0.909,
+  rhythm 0.794, chroma 0.803 and phase 0.987. Another Queen / “Blinding
+  Lights” window had chroma 0.939 only after a one-semitone shift, but the
+  key estimates did not authorize it, and tempo/rhythm also conflicted. A
+  matching beat-phase profile by itself did not produce a match. The scan found
+  missing isolated-vocal activity, non-vocal stem activity and downbeat
+  confidence across these source-only files.
+* **Repeatable real-audio check:** run
+  `WAVEYARD_ACCEPTANCE_TRACKS="<six full paths separated by the OS path delimiter>" node --test scripts/waveyard-cross-track-acceptance.test.mjs`.
+  It calls the existing full-track analyzer, requires six tracks with
+  fingerprints and at least 180 seconds each, and asserts no false compatible
+  pair for this six-track acceptance set. This run passed 1/1 in 82.1 seconds.
+  It is an opt-in local acceptance, not a CI fixture: the supplied tracks are
+  not copied into or committed to the repository. Synthetic positive/negative
+  unit fixtures separately cover compatibility logic. The pinned input
+  checksums were verified, and the acceptance run passed 1/1 in about 79
+  seconds.
+* **Verification:** focused Waveyard tests passed 40/40, including provenance,
+  rejection cases, tempo conflict visibility and PGlite persistence. Library,
+  API-server, ArenaForge and scripts TypeScript checks passed; `git diff
+  --check` passed. The configured broad `test` workflow is **not green**: its
+  Arena smoke step failed on browser error `Cannot close a closed AudioContext`
+  after the preceding Waveyard browser-audio checks passed. This work did not
+  change the playback context lifecycle. A Waveyard landing-page screenshot
+  loaded without browser errors, but it had no song/remix open, so it does not
+  verify the interactive evidence panel.
+* **Remaining gap / next evidence needed:** the current engine can compare
+  measured source passages but this dataset supplies no compatible pair. To
+  produce reliable vocal-over-instrumental candidates, add and validate a
+  downbeat detector plus per-passage isolated-vocal and non-vocal-stem
+  activity; retain source/stem checksum provenance. Then run a real separated
+  stem project through analysis → automatic remix → persisted clips → export →
+  save/reopen, and listen to any candidate before making quality claims.
+  This implementation does not establish musical form, reliable smart-mashup
+  quality, a successful real-stem hybrid, or listening quality.
+
 ## Current verification update — 2026-11-10, Waveyard full-track analysis and PR #29
 
 * **Branch and preserved history:** work remains on

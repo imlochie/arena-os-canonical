@@ -1,6 +1,6 @@
 import type { RemixStateInput, RemixTrackInput } from "@workspace/arena/lib/waveyard/remix";
 import type { ArrangementPreviewAssetMetadata } from "@workspace/arena/lib/waveyard/arrangement-preview-memory";
-import type { RemixAutomationLane } from "@workspace/arena/lib/waveyard/types";
+import type { AutomaticRemixCompatibilityReport, PassageFingerprint, RemixAutomationLane } from "@workspace/arena/lib/waveyard/types";
 import type { GridDivision } from "@workspace/arena/lib/waveyard/timing";
 
 export type DrumAnalysis = {
@@ -159,6 +159,7 @@ export type SourceSection = {
   analysisEngine: string;
   analysisEngineVersion: string;
   sourceChecksumSha256: string;
+  passageFingerprint?: PassageFingerprint | null;
 };
 
 export type Source = {
@@ -208,7 +209,13 @@ export type Remix = {
 };
 
 export type RemixVersionSummary = { id: string; name: string; createdAt: string };
-export type AutomaticRemixGenerationSummary = { engine: string; engineVersion: string; variant: "original" | "hybrid"; createdAt: string };
+export type AutomaticRemixGenerationSummary = {
+  engine: string;
+  engineVersion: string;
+  variant: "original" | "hybrid";
+  createdAt: string;
+  compatibility?: AutomaticRemixCompatibilityReport;
+};
 
 export function sourceStemLabel(source: Source | undefined, stemType: string) {
   const name = source?.originalFilename ?? "Unknown source";

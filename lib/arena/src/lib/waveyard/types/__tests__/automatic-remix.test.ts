@@ -103,17 +103,20 @@ describe("deterministic automatic remix arranger", () => {
 
   it("refuses same-index generic sections as cross-song phrase evidence", () => {
     const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b" })], { variant: "hybrid" });
-    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no_compatible_hybrid_source");
+      expect(result.compatibility?.missingEvidence).toContain("current passage fingerprints for every section; rerun section analysis with engine 1.5.0");
+    }
   });
 
   it("does not treat within-track pattern or energy labels as semantic cross-song roles", () => {
     for (const structuralLabel of ["pattern-repeat-a", "rhythm-repeat-a", "energy-rise", "energy-drop"]) {
       const anchor = withRoles(source({ id: "a" }), [structuralLabel, structuralLabel]);
       const donor = withRoles(source({ id: "b" }), [structuralLabel, structuralLabel]);
-      expect(buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" })).toEqual({
-        ok: false,
-        reason: "no_compatible_hybrid_source",
-      });
+      const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("no_compatible_hybrid_source");
     }
   });
 
@@ -121,7 +124,8 @@ describe("deterministic automatic remix arranger", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({ id: "b" }), ["chorus", "verse"]);
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("no_compatible_hybrid_source");
   });
 
   it("does not enable a hybrid from low-confidence tempo, key, or beat analysis", () => {
@@ -134,7 +138,11 @@ describe("deterministic automatic remix arranger", () => {
       },
     }));
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no_compatible_hybrid_source");
+      expect(result.compatibility?.missingEvidence).toContain("trusted BPM analysis for both sources");
+    }
   });
 
   it("does not beat-snap an anchor whose BPM confidence is below the trusted threshold", () => {
@@ -155,7 +163,32 @@ describe("deterministic automatic remix arranger", () => {
   it("does not force an incompatible second source into a hybrid", () => {
     const incompatible = source({ id: "b", analysis: { id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 168, musicalKey: "F# minor", beatGridMs: Array.from({ length: 33 }, (_, index) => index * 357) } });
     const result = buildAutomaticRemixPlan([source({ id: "a" }), incompatible], { variant: "hybrid" });
-    expect(result).toEqual({ ok: false, reason: "no_compatible_hybrid_source" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no_compatible_hybrid_source");
+      expect(result.compatibility?.missingEvidence).toContain("current passage fingerprints for every section; rerun section analysis with engine 1.5.0");
+    }
+  });
+
+  it("shows missing donor provenance instead of hiding the failed comparison", () => {
+    const donor = source({
+      id: "b",
+      analysis: {
+        id: "b-analysis",
+        status: "processing",
+        sourceChecksumSha256: "b-checksum",
+        bpm: null,
+        musicalKey: null,
+        beatGridMs: null,
+      },
+    });
+    const result = buildAutomaticRemixPlan([source({ id: "a" }), donor], { variant: "hybrid" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no_compatible_hybrid_source");
+      expect(result.compatibility?.missingEvidence).toContain("current checksum-verified source analysis for b.wav");
+      expect(result.compatibility?.missingEvidence).toContain("current passage fingerprints for b.wav; rerun section analysis with engine 1.5.0");
+    }
   });
 
   it("refuses a hybrid when anchor structural evidence is incomplete", () => {

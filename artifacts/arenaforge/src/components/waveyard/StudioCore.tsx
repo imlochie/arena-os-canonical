@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { artworkEnvironment, compactMusicAnalysisLabel, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
+import { artworkEnvironment, compactMusicAnalysisLabel, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey, type AutomaticRemixCompatibilityReport, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
 import { CinematicVisual } from "./visual/CinematicVisual";
 import { AutomaticRemixPrompt } from "./remix/AutomaticRemixPrompt";
+import { AutomaticRemixEvidence } from "./remix/AutomaticRemixEvidence";
 import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTimeline";
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
@@ -153,6 +154,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
   const [automaticRemixMessage, setAutomaticRemixMessage] = useState<string | null>(null);
   const [automaticGeneration, setAutomaticGeneration] = useState<AutomaticRemixGenerationSummary | null>(null);
+  const [automaticCompatibilityReport, setAutomaticCompatibilityReport] = useState<AutomaticRemixCompatibilityReport | null>(null);
   const [meetingPoints, setMeetingPoints] = useState<MusicalMeetingPoint[]>([]);
   const [meetingContext, setMeetingContext] = useState<{ stemAssetId: string; sourceSectionId: string } | null>(null);
   const [meetingMessage, setMeetingMessage] = useState<string | null>(null);
@@ -464,6 +466,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       setRecoveryDraft(draft);
       setRecoveryDraftConflicts(Boolean(draft && studioRecoveryDraftIsStale(projectId, next)));
       setAutomaticGeneration(body.generation ?? null);
+      setAutomaticCompatibilityReport(body.generation?.compatibility ?? null);
       setClipSelection(null);
       setSelectedClipIds([]);
       reset();
@@ -715,15 +718,18 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     if (creatingRemixSession || buildingAutomaticRemix !== null) return;
     setBuildingAutomaticRemix(variant);
     setAutomaticRemixMessage(null);
+    setAutomaticCompatibilityReport(null);
     try {
       const response = await fetch(`/api/waveyard/projects/${projectId}/automatic-remixes`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || typeof body.remix?.id !== "string") {
+        setAutomaticCompatibilityReport(body.compatibility ?? null);
         setAutomaticRemixMessage(body.error ?? "Waveyard could not build an automatic arrangement yet.");
         return;
       }
+      setAutomaticCompatibilityReport(body.plan?.compatibility ?? null);
       if (!await loadRemix(body.remix.id)) {
         setAutomaticRemixMessage("The arrangement was created, but Studio could not open it. Refresh the page to try again.");
         return;
@@ -1208,8 +1214,11 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       </div>
     )}
     {presentation === "play" ? <>
-      {!remix && <AutomaticRemixPrompt building={buildingAutomaticRemix} message={automaticRemixMessage} onBuild={createAutomaticRemix} />}
-      {remix && (automaticRemixMessage || automaticGeneration) && <p className="automatic-remix-banner" role="status">{automaticRemixMessage ?? `Automatic ${automaticGeneration?.variant ?? "original"} arrangement · verified sections, tempo, and key remain explainable in Studio.`}</p>}
+      {!remix && <AutomaticRemixPrompt building={buildingAutomaticRemix} message={automaticRemixMessage} compatibility={automaticCompatibilityReport} onBuild={createAutomaticRemix} />}
+      {remix && (automaticRemixMessage || automaticGeneration) && <>
+        <p className="automatic-remix-banner" role="status">{automaticRemixMessage ?? `Automatic ${automaticGeneration?.variant ?? "original"} arrangement · verified sections, tempo, and key remain explainable in Studio.`}</p>
+        <AutomaticRemixEvidence report={automaticCompatibilityReport ?? automaticGeneration?.compatibility} />
+      </>}
       <LivingPlayer
       source={source}
       stems={stems}
