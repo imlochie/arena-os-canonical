@@ -4,73 +4,69 @@ Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
 Last updated: 2026-11-10.
 
-## Current verification update — 2026-11-10, local `0b11894` and PR #29
+## Current verification update — 2026-11-10, Waveyard full-track analysis and PR #29
 
-This is the current repository state. Green CI is not the same as successful
-real-audio mixer acceptance.
-
-* **Branch and PR:** checkout remains on `arena/convergence-2026-11-07`.
-  Local `HEAD` is `0b11894e7d0c1d2d380f416677f223d09bf91422`, parented on
-  `8083fd887498b0e1fba13d34f906c11096ee3539`. `origin` and open PR #29
-  (against `main`) still point to `8083fd88`. The local `0b11894` commit,
-  “Refactor retry worker test helper and update documentation,” is one commit
-  ahead of the remote; no GitHub Actions runs exist for that SHA. Four files
-  also have uncommitted changes in the workspace. Preserve both the local
-  commit and working changes; this update did not push, merge, or reset them.
-  Commit `3f064578` is an ancestor of the PR head, followed by `d1948f0f`,
-  `dd2d2862`, and `8083fd88`. The attached comparison against PR head
-  `32cf4a54` is stale.
-* **CI at the exact PR head:** Windows x64 package run
-  [42731655601](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655601),
-  recovered-stack acceptance run
-  [42731655786](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655786),
-  Waveyard browser-timing run
-  [42731655541](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655541),
-  and Linux worker-local DB run
-  [42731655494](https://github.com/imlochie/arena-os-canonical/actions/runs/42731655494)
-  all completed successfully on this SHA.
-* **Inference boundary:** the recovered-stack workflow's FFmpeg probe uses a
-  controlled Demucs stand-in. These runs do not prove trained-model inference.
-  Contrary to the attached note's lookup, all four workflows also completed
-  successfully on the exact `3f064578` SHA: Windows package
-  [42680742154](https://github.com/imlochie/arena-os-canonical/actions/runs/42680742154),
-  recovered-stack acceptance
-  [42680741808](https://github.com/imlochie/arena-os-canonical/actions/runs/42680741808),
-  browser timing
-  [42680741686](https://github.com/imlochie/arena-os-canonical/actions/runs/42680741686),
-  and Linux worker-local DB
-  [42680741750](https://github.com/imlochie/arena-os-canonical/actions/runs/42680741750).
-  The later PR-head runs are listed above; neither revision's controlled probe
-  proves trained-model inference.
-* **Real Waveyard inputs:** two user-provided MP3s (Earth, Wind & Fire
-  “September” and Queen “Another One Bites the Dust”) were imported as 48 kHz
-  stereo and each completed all four pinned CPU separation passes; the
-  persisted source metadata remained 48 kHz. Persisted stem IDs matched the
-  logical deck IDs. Standby audio uses in-memory `blob:` URLs, so URL-path
-  parsing was invalid for checking asset identity; the acceptance now reads
-  the explicit logical asset ID from the audio element.
-* **Mixer result:** the corrected real-track acceptance passed on Linux. It
-  imported two 30.024-second excerpts (September and Another One Bites the
-  Dust), completed four pinned CPU separation passes for each, persisted four
-  stems per track, and verified unchanged source checksums. The browser loaded
-  the real stem assets through private routes, played both decks during the
-  crossfade, advanced the session/title to Queen, isolated the incoming drums
-  (drum gain positive, other three stem gains zero while playback continued),
-  then restored all four stem gains. Test output: 1/1 passed; separation/UI
-  acceptance took about 273 seconds. Standby media uses `blob:` URLs, so
-  identity assertions now use `data-waveyard-asset-url`.
-* **Limit of that result:** this proves persisted real-stem playback,
-  crossfading, and isolation for two short excerpts—not subjective separation
-  quality, aligned/harmonic “smart mashup” quality, full-track structure,
-  MIDI/export/save/reopen, Windows playback, or phone playback. Music-form
-  understanding remains unproven.
-* **Music understanding:** full-track scans still found no qualifying repeated
-  rhythm/harmony patterns, and no manually labeled verse/chorus references
-  were available. Structural understanding, intelligent mashup quality, and
-  full-track musical-form acceptance remain unproven.
-* **Local state:** `pnpm run typecheck` passes. The current uncommitted
-  workspace changes are limited to this handoff, two Waveyard test helpers,
-  and the browser-test memory note; no runtime playback code changed.
+* **Branch and preserved history:** work remains on
+  `arena/convergence-2026-11-07`. The preserved local commits
+  `0b11894`, `a25af3a`, and `be50cc1` remain ahead of PR #29's remote head
+  `8083fd88`; the Waveyard implementation is committed locally as `be262941`.
+  The PR is still open against `main`; none of these newer local commits has
+  been pushed or merged. GitHub check results documented below apply to the
+  remote PR head, not the local Waveyard work.
+* **Remote CI boundary:** the four successful Windows package, recovered-stack,
+  browser-timing and Linux worker-local DB runs listed below are evidence for
+  their exact recorded SHAs only. The recovered-stack inference probe uses a
+  controlled Demucs stand-in, not a trained model. No new CI run is claimed for
+  `be262941`.
+* **Real mixer acceptance already completed:** two user-provided MP3s (Earth,
+  Wind & Fire “September” and Queen “Another One Bites the Dust”) were imported
+  as 48 kHz stereo and completed all four pinned CPU separation passes. The
+  corrected Linux acceptance persisted four stems per 30.024-second excerpt,
+  verified unchanged source checksums, loaded real stems through private
+  routes, crossfaded between tracks, isolated incoming drums while playback
+  continued, then restored all four gains. It passed 1/1 in about 273 seconds.
+  This proves the persisted playback and control path for short excerpts, not
+  subjective stem quality or a good mashup.
+* **Implemented musical-analysis slice:** the local section engine now searches
+  beat-grid-aligned 2-, 4- and 8-bar windows independently of variable
+  novelty-boundary lengths. It uses half-window hops, prefers longer
+  non-overlapping matches, keeps the existing 0.92 similarity threshold, and
+  requires both rhythm and four-bin chroma similarity for a “pattern” label.
+  Otherwise it reports a rhythm-only recurrence. The engine provenance is
+  `arena-js-structure` 1.4.0. Repeated labels are exposed as measured
+  similarity in the Studio label text, not presented as calibrated
+  probabilities. One-past-last beat boundaries now normalize using the median
+  beat interval and clamp to known source duration, so final sections can be
+  validated and persisted without extending beyond the file.
+* **Full-track evidence:** the reproducible `scripts/waveyard-mashup-analysis.ts
+  -- <output.json> 0 full <audio paths...>` run analyzed six user-provided
+  tracks, each for its complete 215–406 seconds. The evaluator passed the same
+  section normalization/provenance validator used by the worker for all six.
+  It found 41 rhythm-only windows and 10 combined rhythm+chroma windows; those
+  combined windows occurred in two tracks. Four windows were four bars long;
+  none reached eight bars. The previous zero-result scan compared
+  novelty-segment candidates with varying lengths; fixed phrase windows
+  exposed recurrences hidden inside those segments without lowering thresholds.
+* **What this does not prove:** “pattern” means a repeated beat-grid onset and
+  coarse chroma fingerprint, not a verified chord progression, downbeat,
+  verse, chorus, or cross-song match. The analyzer still has no vocal-activity
+  feature or manually annotated reference sections. On this full-track
+  six-source set, only one track passed the existing 0.5 BPM/key/beat
+  confidence gates, so there is no eligible donor pair to demonstrate a real
+  hybrid. No mashup render was listened to or rated. The automatic hybrid
+  arranger still requires explicit high-confidence semantic roles; its passing
+  synthetic-role tests do not establish that real analysis can produce them.
+* **Verification:** focused Waveyard section, source-section, provenance and
+  automatic-remix tests passed 33/33; `pnpm run typecheck` and `git diff
+  --check` passed. The six-track full-audio scan also completed with all section
+  records passing persistence-shape validation. That scan is analysis evidence,
+  not a database persist/reopen or musical listening acceptance.
+* **Next concrete work:** add explainable, persisted passage features for
+  cross-source compatibility—harmonic movement, vocal/instrument activity and
+  beat/downbeat phase—then use them in the existing RemixTrack/RemixClip
+  arranger. Validate against manually annotated sections and listen to actual
+  candidate renders. Keep confidence gates unchanged until the measurements
+  justify any adjustment.
 
 ## Current verification update — 2026-11-10, Windows readiness at `dd2d2862`
 
