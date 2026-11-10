@@ -70,10 +70,10 @@ type BedLoadResult =
   | { ok: true; pcm: Float32Array; info: BedSourceInfo }
   | { ok: false; info: BedSourceInfo };
 
-/** Latest stem of a type for a source, or null. */
+/** Latest stem of a type for a source whose separation job completed, or null. */
 async function latestStem(projectId: string, sourceAssetId: string, stemType: string) {
   const [stem] = await db
-    .select({ id: stemAssets.id, storageKey: stemAssets.storageKey })
+    .select({ id: stemAssets.id, storageKey: stemAssets.storageKey, separationJobId: stemAssets.separationJobId })
     .from(stemAssets)
     .where(
       and(
@@ -84,7 +84,16 @@ async function latestStem(projectId: string, sourceAssetId: string, stemType: st
     )
     .orderBy(desc(stemAssets.createdAt))
     .limit(1);
-  return stem ?? null;
+  if (!stem) return null;
+
+  const [job] = await db
+    .select({ status: processingJobs.status })
+    .from(processingJobs)
+    .where(eq(processingJobs.id, stem.separationJobId))
+    .limit(1);
+  if (job && job.status !== "complete") return null;
+
+  return stem;
 }
 
 /** Decode a stem WAV from storage at the render rate. */
@@ -382,9 +391,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const bedSource = await findBedSource(projectId, bedId);
         const bedStems = bedSource.stems;
 
-        if (!vocalsStem && bedStems.length === 0) {
+        if (!vocalsStem || bedStems.length === 0) {
           return Response.json(
-            { error: "At least one separated stem is required to save an editable Studio remix." },
+            { error: "Both a completed separated vocal stem and an instrumental bed are required to save an editable Studio remix." },
             { status: 422 },
           );
         }

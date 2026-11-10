@@ -207,17 +207,17 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   if (bed.bpm !== null && bed.bpm > 0) {
     masterBpm = bed.bpm;
     rationale.push(`master tempo = the instrumental's ${masterBpm} BPM (the bed wins the tempo war).`);
+  } else if (vocals.bpm !== null && vocals.bpm > 0) {
+    // When the bed lacks tempo but the vocal tempo is verified, adopt the vocal's tempo
+    masterBpm = vocals.bpm;
+    rationale.push(`master tempo = the verified vocal's ${masterBpm} BPM (adopted because instrumental tempo is unanalyzed).`);
+    warnings.push(`The instrumental has no complete tempo analysis — adopting vocal tempo (${masterBpm} BPM) as master.`);
   } else {
     const fallbackBed = estimateFallbackTempo(bed);
     masterBpm = fallbackBed.bpm;
     estimatedBed = true;
-    if (vocals.bpm !== null && vocals.bpm > 0) {
-      warnings.push(`The instrumental has no complete tempo analysis — estimated at ${masterBpm} BPM (${fallbackBed.source}).`);
-      rationale.push(`master tempo = estimated instrumental tempo (${masterBpm} BPM).`);
-    } else {
-      warnings.push(`Neither track has complete tempo analysis — using estimated ${masterBpm} BPM reference.`);
-      rationale.push(`master tempo = estimated reference tempo (${masterBpm} BPM).`);
-    }
+    warnings.push(`Neither track has complete tempo analysis — using estimated ${masterBpm} BPM reference.`);
+    rationale.push(`master tempo = estimated reference tempo (${masterBpm} BPM).`);
   }
 
   let effectiveVocalBpm: number;
