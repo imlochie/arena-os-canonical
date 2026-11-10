@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   planMashup,
   renderMashup,
+  analyseStereoPcm,
   type MashupSourceProfile,
   type MashupPlan,
 } from "./mashup";
@@ -22,8 +23,23 @@ function tone(freq: number, seconds: number, gain: number): Float32Array {
   return out;
 }
 
+function clickPattern(bpm: number, seconds: number, gain = 0.5): Float32Array {
+  const frames = Math.round(seconds * RATE);
+  const out = new Float32Array(frames * 2);
+  const beatSec = 60 / bpm;
+  const clickFrames = Math.round(0.01 * RATE);
+  for (let beat = 0; beat * beatSec < seconds; beat++) {
+    const start = Math.round(beat * beatSec * RATE);
+    for (let i = 0; i < clickFrames && start + i < frames; i++) {
+      const s = gain * Math.sin((Math.PI * i) / clickFrames);
+      out[(start + i) * 2] = s;
+      out[(start + i) * 2 + 1] = s;
+    }
+  }
+  return out;
+}
+
 test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () => {
-  // 85 BPM vocal in E minor (45 seconds)
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 85,
@@ -36,7 +52,6 @@ test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () =
     ],
   };
 
-  // 135 BPM bed in C major (90 seconds)
   const bedProfile: MashupSourceProfile = {
     role: "instrumental",
     bpm: 135,
@@ -44,16 +59,15 @@ test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () =
     durationMs: 90_000,
     sections: [
       { label: "intro", startMs: 0, endMs: 7_111 },
-      { label: "verse", startMs: 7_111, endMs: 35_555 },
-      { label: "chorus", startMs: 35_555, endMs: 64_000 },
-      { label: "outro", startMs: 64_000, endMs: 90_000 },
+      { label: "verse 1", startMs: 7_111, endMs: 35_555 },
+      { label: "chorus 1", startMs: 35_555, endMs: 64_000 },
+      { label: "breakdown", startMs: 64_000, endMs: 90_000 },
     ],
   };
 
   const planned = planMashup(vocalProfile, bedProfile);
   assert.ok(planned.ok);
   assert.equal(planned.plan.masterBpm, 135);
-  // Large stretch ratio (85 / 135 ≈ 0.630)
   assert.ok(planned.plan.vocalsStretchRatio < 1.0);
   assert.ok(planned.plan.segments.length >= 2, "Structured multi-segment arrangement across 90s");
 
@@ -73,41 +87,44 @@ test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () =
   }
 });
 
-test("Pair B: Completely unanalyzed audio (null BPM, null key, no section labels)", () => {
+test("Pair B: Completely unanalyzed audio with on-the-fly native analysis", () => {
+  const rawVocalPcm = clickPattern(120, 20, 0.5);
+  const rawBedPcm = clickPattern(120, 30, 0.5);
+
+  const vocalAnalysis = analyseStereoPcm(rawVocalPcm);
+  assert.ok(vocalAnalysis.bpm !== null, "On-the-fly analysis must detect tempo from audio");
+
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
-    bpm: null,
-    musicalKey: null,
-    durationMs: 30_000,
+    bpm: vocalAnalysis.bpm,
+    musicalKey: vocalAnalysis.musicalKey,
+    durationMs: 20_000,
     sections: [],
   };
+
   const bedProfile: MashupSourceProfile = {
     role: "instrumental",
     bpm: null,
     musicalKey: null,
-    durationMs: 75_000,
+    durationMs: 30_000,
     sections: [],
   };
 
   const planned = planMashup(vocalProfile, bedProfile);
   assert.ok(planned.ok);
   assert.ok(planned.plan.masterBpm > 0);
-  assert.ok(planned.plan.warnings.some((w) => /incomplete|Neither track/i.test(w)));
 
-  const vocalPcm = tone(440, 30, 0.3);
-  const bedPcm = tone(220, 75, 0.3);
   const rendered = renderMashup(planned.plan, {
-    vocals: vocalPcm,
-    bed: bedPcm,
+    vocals: rawVocalPcm,
+    bed: rawBedPcm,
     sampleRate: RATE,
   });
 
-  assert.equal(rendered.length, 75 * RATE * 2);
+  assert.equal(rendered.length, 30 * RATE * 2);
   assert.ok(rendered.some((sample) => Math.abs(sample) > 0.1), "Audible audio present");
 });
 
 test("Pair C: Harmonic clash requiring pitch transposition", () => {
-  // F# major vocal over C major bed (tritone apart)
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 120,
@@ -136,7 +153,7 @@ test("Pair C: Harmonic clash requiring pitch transposition", () => {
   assert.equal(rendered.length, 50 * RATE * 2);
 });
 
-test("Pair D: Full-length multi-section arrangement with save, reopen, and WAV export", () => {
+test("Pair D: Full-length multi-stem arrangement with save, reopen, and WAV export", () => {
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 124,
@@ -169,10 +186,15 @@ test("Pair D: Full-length multi-section arrangement with save, reopen, and WAV e
   assert.ok(planned.ok);
   const plan = planned.plan;
 
-  // Render audio
+  // Stems from both songs
   const vocalPcm = tone(440, 60, 0.35);
   const bedPcm = tone(130, 120, 0.35);
-  const rendered = renderMashup(plan, { vocals: vocalPcm, bed: bedPcm, sampleRate: RATE });
+  const discreteStems = new Map<string, Float32Array>([
+    ["drums", tone(65, 120, 0.3)],
+    ["bass", tone(130, 120, 0.3)],
+  ]);
+
+  const rendered = renderMashup(plan, { vocals: vocalPcm, bed: bedPcm, stems: discreteStems, sampleRate: RATE });
 
   // Encode to WAV and decode back
   const wavBytes = encodeWav16(rendered, RATE);

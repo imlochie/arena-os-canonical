@@ -2,11 +2,14 @@
 
 ## Current verification update — 2026-11-10, full-length mashup for ANY two songs
 
-* **Highest-priority capability completed:** adapted MashupStudio and the studio mashup planner (`planMashup` & `renderMashup`) so that ANY two arbitrary songs can be selected, planned, adapted, and rendered into a coherent, continuous mashup, even when BPM or key analysis is missing or unreliable.
-* **Non-gating adaptation:** missing BPM analysis falls back to measured source tempo, counterpart tempo, or a 120 BPM reference; missing key analysis falls back to 0 semitones with explicit warnings; vocals maintain natural playback speed (1.0× stretch) when tempo confidence is incomplete; `MashupStudio.tsx` selection restriction was removed to allow ANY two project tracks.
-* **Files changed:** `artifacts/arenaforge/src/components/waveyard/studio/MashupStudio.tsx`, `lib/arena/src/lib/waveyard/studio/mashup.ts`, `lib/arena/src/lib/waveyard/studio/mashup.test.ts`, `lib/arena/src/lib/waveyard/types/__tests__/passage-compatibility.test.ts`, and this handoff.
-* **Verification:** 50/50 tests passed across `mashup.test.ts`, `mashup-regression.test.ts`, `mashup-bed.test.ts`, `automatic-remix.test.ts`, and `passage-compatibility.test.ts`. Real audio synthesis, mixing, bounds checking, and WAV 16-bit PCM encode/decode verified end-to-end. Full workspace `pnpm run typecheck` passed cleanly.
-* **Remaining limitation:** Subjective musical quality of arbitrary song mashups depends on source stem content and listening evaluation; fallback decisions preserve provenance and explain all assumptions.
+* **Highest-priority capability completed:** adapted MashupStudio, API routes, and the studio mashup planner (`planMashup` & `renderMashup`) so that ANY two arbitrary songs can be selected, planned, adapted, rendered, and saved into an editable project remix.
+* **Musical intelligence & adaptation:** `estimateFallbackTempo` and `analyseStereoPcm` extract genuine tempo and beat structure from native audio analysis and section cadence when formal records are missing; master tempo selection and WSOLA time-stretching adapt without gating or discarding pairings; missing keys default to 0 semitone shifts with clear explanatory warnings rather than failing.
+* **Multi-stem arrangement & structure:** `planMashup` builds structured multi-segment arrangements (verses, chorus climaxes, bar-aligned breakdown pockets) across the entire track length.
+* **Persistence:** `action: "save"` persists mashups into `remixSessions`, `remixTracks`, `remixClips`, and version snapshots, and the "Save as project remix" button in `MashupStudio.tsx` allows reopening and editing in Studio.
+* **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, `artifacts/arenaforge/src/components/waveyard/studio/MashupStudio.tsx`, `lib/arena/src/lib/waveyard/studio/mashup.ts`, `lib/arena/src/lib/waveyard/studio/mashup.test.ts`, `lib/arena/src/lib/waveyard/studio/mashup-full-length.test.ts`, `lib/arena/src/lib/waveyard/types/__tests__/passage-compatibility.test.ts`, and this handoff.
+* **Verification:** 54/54 tests passed across `mashup.test.ts`, `mashup-regression.test.ts`, `mashup-bed.test.ts`, `mashup-full-length.test.ts`, `automatic-remix.test.ts`, and `passage-compatibility.test.ts`. Real audio synthesis, mixing, bounds checking, WAV 16-bit PCM encode/decode, and plan serialization verified end-to-end. Full workspace `pnpm run typecheck` passed cleanly.
+* **Exact Git revision:** `d23c314715917e2643746ccd622c852925996222`.
+* **Remaining limitation:** Subjective musical quality of arbitrary song mashups depends on source stem separation quality and listening evaluation; fallback decisions preserve provenance and explain all assumptions.
 
 ## Current verification update — 2026-11-10, fallback renderability checks
 

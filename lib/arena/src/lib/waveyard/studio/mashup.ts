@@ -17,6 +17,7 @@ import { pitchShift, timeStretch } from "../elastic";
 import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
+import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v1";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
@@ -99,6 +100,28 @@ export function warpRatioForTempos(vocalBpm: number, bedBpm: number): number {
  * when formal tempo analysis is missing. Sections give bar/phrase cadence; otherwise
  * common pop/electronic tempo ranges (100–128 BPM) guide duration-to-beat fitting.
  */
+/**
+ * Downsamples interleaved stereo 44.1 kHz PCM to mono 22.05 kHz for analysis.
+ */
+export function downsampleToAnalysisPcm(stereo44k: Float32Array): Float32Array {
+  const frames44k = Math.floor(stereo44k.length / 2);
+  const frames22k = Math.floor(frames44k / 2);
+  const out = new Float32Array(frames22k);
+  for (let i = 0; i < frames22k; i++) {
+    const srcIndex = i * 4;
+    out[i] = (stereo44k[srcIndex] + stereo44k[srcIndex + 1]) * 0.5;
+  }
+  return out;
+}
+
+/**
+ * Runs native DSP musical analysis on stereo audio PCM when metadata is absent.
+ */
+export function analyseStereoPcm(stereo44k: Float32Array): AnalysisResult {
+  const mono = downsampleToAnalysisPcm(stereo44k);
+  return analysePcm(mono);
+}
+
 export function estimateFallbackTempo(profile: MashupSourceProfile): { bpm: number; confidence: number; source: "sections" | "duration" | "default" } {
   if (profile.sections && profile.sections.length >= 2) {
     const intervals: number[] = [];
@@ -342,6 +365,8 @@ export type MashupPcmInput = {
   vocals: StereoBuffer;
   /** Interleaved stereo bed (instrumental) PCM. */
   bed: StereoBuffer;
+  /** Optional discrete stems from both songs for stem-level mixing. */
+  stems?: Map<string, StereoBuffer>;
   sampleRate: number;
 };
 
@@ -398,6 +423,16 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
       if (vocalFrame < 0 || vocalFrame * 2 + 1 >= pcm.length) continue;
       left += pcm[vocalFrame * 2] * gain;
       right += pcm[vocalFrame * 2 + 1] * gain;
+    }
+
+    // Mix additional discrete stems if provided (e.g. guitar/chords/percussion from donor or bed)
+    if (input.stems) {
+      for (const [stemName, stemBuffer] of input.stems) {
+        if (stemName !== "vocals" && frame * 2 + 1 < stemBuffer.length) {
+          left += stemBuffer[frame * 2] * 0.25;
+          right += stemBuffer[frame * 2 + 1] * 0.25;
+        }
+      }
     }
 
     out[frame * 2] = Math.max(-1, Math.min(1, left));
