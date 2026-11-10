@@ -109,7 +109,7 @@ export function SourceSectionMap({
       })}
     </div>
     {selected ? <div className="source-section-inspection" data-testid={`source-section-inspection-${selected.id}`}>
-       <span className="eyebrow">Detected phrase</span>
+       <span className="eyebrow">{selected.label.startsWith("pattern-repeat-") ? "Within-track structure" : selected.label.startsWith("rhythm-repeat-") ? "Rhythm recurrence" : selected.label.startsWith("energy-") ? "Energy change" : "Detected boundary"}</span>
       <h4>{label}</h4>
       <dl>
         <dt>Bars</dt><dd>{selected.startBar}–{selected.endBar}</dd>
@@ -117,9 +117,17 @@ export function SourceSectionMap({
         <dt>End</dt><dd>{sourceTime(selected.endMs)}</dd>
         <dt>Duration</dt><dd>{sourceTime(selected.endMs - selected.startMs)}</dd>
         <dt>Structural confidence</dt><dd>{selected.structuralConfidence.toFixed(2)}</dd>
-        {selected.labelConfidence > 0 && <><dt>{selected.label.startsWith("rhythm-repeat-") ? "Rhythm similarity" : "Label confidence"}</dt><dd>{selected.labelConfidence.toFixed(2)}</dd></>}
+        {selected.labelConfidence > 0 && <><dt>{selected.label.startsWith("pattern-repeat-") ? "Rhythm + harmony similarity" : selected.label.startsWith("rhythm-repeat-") ? "Rhythm similarity" : selected.label.startsWith("energy-") ? "Energy-change strength" : "Label confidence"}</dt><dd>{selected.labelConfidence.toFixed(2)}</dd></>}
       </dl>
-      <p>Source beats {selected.startBeatIndex}–{selected.endBeatIndex}. {selected.label.startsWith("rhythm-repeat-") ? "This phrase repeats a similar rhythmic pattern elsewhere in this track; it does not claim a verse/chorus role or cross-song match." : "This marks a bar-aligned boundary; it does not claim a semantic chorus or verse role."}</p>
+      <p>Source beats {selected.startBeatIndex}–{selected.endBeatIndex}. {selected.label.startsWith("pattern-repeat-")
+        ? "This section repeats a similar onset rhythm and four-part harmonic profile elsewhere in this track. It is not a verse/chorus label or a cross-song match."
+        : selected.label.startsWith("rhythm-repeat-")
+        ? "This section repeats a similar rhythmic pattern elsewhere in this track; it does not claim a verse/chorus role or cross-song match."
+        : selected.label.startsWith("energy-rise")
+        ? "The source's average energy rises at this boundary. This is a measured dynamic cue, not a chorus or other semantic-role label."
+        : selected.label.startsWith("energy-drop")
+        ? "The source's average energy drops at this boundary. This is a measured dynamic cue, not an outro or other semantic-role label."
+        : "This marks a bar-aligned boundary; no semantic chorus or verse role was inferred."}</p>
       <div className="section-arrangement-actions">
         <button className="button secondary" onClick={() => onUseForSlice(selected)}>Use these beats in Slice</button>
         <button className="button" disabled={!onFindMeetingPoints || acting !== null} onClick={() => void findMeetingPoints()}>{acting === "meeting" ? "Finding…" : "Find where this fits"}</button>

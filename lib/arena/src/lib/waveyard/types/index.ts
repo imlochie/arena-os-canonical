@@ -2,6 +2,8 @@ export * from "./musical-key";
 export * from "./beat-grid";
 export * from "./clip-construction";
 export * from "./source-sections";
+export * from "./passage-compatibility";
+export * from "./analysis-confidence";
 export * from "./section-arrangement";
 export * from "./cross-source-alignment";
 export * from "./clip-editing";

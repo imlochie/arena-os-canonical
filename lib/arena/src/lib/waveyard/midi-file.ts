@@ -84,6 +84,14 @@ export function buildStandardMidiFile(
   return new Uint8Array(bytes);
 }
 
+export function encodeMidiFile(
+  notes: readonly MidiNoteEvent[],
+  bpm = DEFAULT_BPM,
+  ppq = 480,
+): Buffer {
+  return Buffer.from(buildStandardMidiFile(notes, bpm, ppq));
+}
+
 // ---------------------------------------------------------------------------
 // Reader — the other half of the interchange promise: FL Studio opens our
 // SMF natively, and we open FL's exported MIDI (format 0 or 1, running

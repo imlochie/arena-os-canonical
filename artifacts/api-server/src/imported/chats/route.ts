@@ -23,14 +23,10 @@ async function replyFor(
     const { researchAnswer, researchSourcesFooter } = await import("@workspace/arena/lib/creative/research");
     const result = await researchAnswer(lastUser, { keys: opts.keys, modelId: opts.modelId, localOnly: opts.localOnly });
     return {
+      ...result.runtime,
       text: result.answer + researchSourcesFooter([...result.sources, ...result.webSources]),
-      runtimeLevel: opts.localOnly ? "arena-local" : "remote",
-      backend: result.backend as GenerateResult["backend"],
-      modelId: opts.modelId,
-      via: `research+${result.via}`,
-      ms: 0,
-      fallback: result.fallback,
-      note: result.note ?? `grounded in ${result.sources.length + result.webSources.length} source(s)`,
+      via: `research+${result.runtime.via}`,
+      note: result.runtime.note ?? result.note ?? `grounded in ${result.sources.length + result.webSources.length} source(s)`,
     };
   }
   if (!opts.localOnly && typeof body.clientReply === "string" && body.clientReply && body.clientRuntime?.backend === "webllm") {

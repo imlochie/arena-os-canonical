@@ -10,7 +10,7 @@
  * from "@/db/waveyardSchema" directly. drizzle.config.ts points at both files.
  */
 import { sql, type SQL } from "drizzle-orm";
-import { boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -242,6 +242,7 @@ export const sourceSections = pgTable("source_sections", {
   analysisEngine: text("analysis_engine").notNull(),
   analysisEngineVersion: text("analysis_engine_version").notNull(),
   sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  passageFingerprint: jsonb("passage_fingerprint").$type<unknown>(),
   ...timestamps,
 }, (table) => [
   uniqueIndex("source_sections_source_index_unique").on(table.sourceAssetId, table.sectionIndex),

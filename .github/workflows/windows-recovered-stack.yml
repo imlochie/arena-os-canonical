@@ -1,0 +1,233 @@
+name: Windows acceptance for recovered stack
+
+# The recovered PR #26 capability stack (Windows-tolerant atomic replace,
+# bounded subprocess tree-kill, model seeding, deep-engine provisioning) is
+# Windows-specific by design, but nothing in CI ran its tests: the Windows
+# packaging workflow only runs desktop/*.test.mjs, and no workflow ran the
+# lib/arena suite at all. So this stack's only evidence was Linux runs.
+#
+# This job runs exactly those modules' tests on Windows. It is deliberately
+# separate from the required packaging job so that a real Windows defect here
+# reports itself without masking the installer smoke check.
+#
+# Honest limits: windows-latest ships no ffmpeg/ffprobe, so the job stages the
+# pinned, SHA-256-verified FFmpeg build the installer bundles (the same
+# desktop/ffmpeg-bundle.mjs the packaging job uses) and the inference-probe
+# test runs against it instead of skipping. The probe's demucs runner is a
+# controlled stand-in and there is no GPU and no trained checkpoint here, so
+# this proves the process/filesystem/seeding/validation/WAV-probe behaviour on
+# Windows -- it does not prove real audio inference.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recovered-stack:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # The runner is scripts/ (that is where tsx lives); the suite is imported
+      # by relative path, matching the repo's established invocation.
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..."
+
+      # provision-runtime.test.ts's inference probe needs a real ffmpeg/ffprobe
+      # (audioToolEnvironment requires both) and skips itself otherwise. Stage
+      # the exact build the Windows installer ships -- same pinned archive, same
+      # digest check, same staging code -- and hand it to the resolver through
+      # its explicit-override tier (ARENA_FFMPEG_PATH / ARENA_FFPROBE_PATH), so
+      # the probe runs here with the binaries a Windows user actually gets.
+      - name: Stage the pinned FFmpeg build the installer ships
+        id: ffmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = (Get-Location).Path
+          $evidence = Join-Path $root "generated-artifacts/recovered-stack-windows"
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $cacheDir = Join-Path $root "generated-artifacts/windows-tool-cache"
+          $binDir = Join-Path $root "generated-artifacts/recovered-stack-windows-tools/bin"
+          $stage = @'
+          const [cacheDir, destinationBin] = process.argv.slice(1);
+          const { FFMPEG_RELEASE, stageFfmpegBundle } = await import("./desktop/ffmpeg-bundle.mjs");
+          const staged = await stageFfmpegBundle({ cacheDir, destinationBin });
+          console.log(JSON.stringify({ archive: FFMPEG_RELEASE.archiveName, sha256: FFMPEG_RELEASE.sha256, ffmpeg: staged.ffmpeg, ffprobe: staged.ffprobe }));
+          '@
+          $stageOutput = @(node --input-type=module -e $stage -- $cacheDir $binDir)
+          $stageOutput | ForEach-Object { Write-Host $_ }
+          $json = $stageOutput | Where-Object { "$_" -like '{*' } | Select-Object -Last 1
+          if ($LASTEXITCODE -ne 0 -or -not $json) {
+            Write-Host "::error::Could not stage the pinned FFmpeg build (desktop/ffmpeg-bundle.mjs); the inference probe cannot run."
+            exit 1
+          }
+          $staged = $json | ConvertFrom-Json
+          Write-Host "Staged $($staged.archive) (sha256 $($staged.sha256))"
+          $ffmpegVersion = @(& $staged.ffmpeg -version)
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::The staged ffmpeg.exe does not execute: $($ffmpegVersion -join ' ')"; exit 1 }
+          $ffprobeVersion = @(& $staged.ffprobe -version)
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::The staged ffprobe.exe does not execute: $($ffprobeVersion -join ' ')"; exit 1 }
+          Write-Host "$($ffmpegVersion[0])"
+          Write-Host "$($ffprobeVersion[0])"
+          Set-Content -Path (Join-Path $evidence "ffmpeg.json") -Value $json
+          "ffmpeg=$($staged.ffmpeg)" >> $env:GITHUB_OUTPUT
+          "ffprobe=$($staged.ffprobe)" >> $env:GITHUB_OUTPUT
+
+      - name: Run recovered-stack tests on Windows with per-file evidence
+        shell: pwsh
+        env:
+          # Modules import the db client at load time; these unit tests never connect.
+          DATABASE_URL: postgres://unit@127.0.0.1:1/unit
+          # Explicit-override tier of lib/arena/src/lib/waveyard/ffmpeg.ts.
+          ARENA_FFMPEG_PATH: ${{ steps.ffmpeg.outputs.ffmpeg }}
+          ARENA_FFPROBE_PATH: ${{ steps.ffmpeg.outputs.ffprobe }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $root = (Get-Location).Path
+          $evidence = Join-Path $root "generated-artifacts/recovered-stack-windows"
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+
+          $tests = @(
+            "../lib/arena/src/lib/fs-replace.test.ts",
+            "../lib/arena/src/lib/spaces/command-process.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/python-guardian.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/selection.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/seed.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/seed-http.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/provision.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/provision-store.test.ts",
+            "../lib/arena/src/lib/waveyard/separation/provision-runtime.test.ts",
+            "../lib/arena/src/lib/waveyard/studio/mashup-bed.test.ts",
+            "../lib/arena/src/lib/waveyard/storage-immutable.test.ts",
+            "../lib/arena/src/lib/spaces/mission-plan.test.ts",
+            "../lib/arena/src/lib/spaces/mission-fleet.test.ts",
+            "../lib/arena/src/lib/spaces/mission-memory.test.ts",
+            "../lib/arena/src/lib/spaces/mission-evidence.test.ts",
+            "../lib/arena/src/lib/games/gameplay-contract.test.ts",
+            "../lib/arena/src/lib/games/source-2048.test.ts",
+            "../lib/arena/src/lib/waveyard/waveform-remix.test.ts",
+            "../lib/arena/src/lib/waveyard/automatic-build-finalization.test.ts",
+            "../lib/arena/src/lib/waveyard/audio-filenames.test.ts",
+            "../lib/arena/src/lib/waveyard/source-acquisition-intake.test.ts",
+            "../lib/arena/src/lib/waveyard/export-automation.test.ts",
+            # Regressions for the two defects the Firefox browser leg exposed:
+            # an unbounded AudioContext resume that parked playback silently,
+            # and an unvalidated API payload that crashed a refresh effect.
+            "../lib/arena/src/lib/waveyard/audio-context-resume.test.ts",
+            "../artifacts/arenaforge/src/components/waveyard/library/audio-capture-options.test.ts"
+          )
+
+          $results = @()
+          Push-Location scripts
+          try {
+            foreach ($test in $tests) {
+              $name = ($test -replace '^\.\./', '' -replace '[\\/]', '_')
+              Write-Host "=== $test ==="
+              $output = & .\node_modules\.bin\tsx --test $test 2>&1 | Out-String
+              $code = $LASTEXITCODE
+              Write-Host $output
+              $results += [pscustomobject]@{
+                test = $test
+                code = $code
+                status = if ($code -eq 0) { "PASS" } else { "FAIL" }
+                output = $output
+              }
+              Set-Content -Path (Join-Path $evidence "$name.txt") -Value $output
+            }
+          } finally {
+            Pop-Location
+          }
+
+          $results | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $evidence "summary.json")
+
+          # A green run is only meaningful if it proves the Windows-specific
+          # branches actually ran. command-process.test.ts names the Windows
+          # taskkill branch explicitly; require it to have executed rather than
+          # been skipped, so a silently skipping suite cannot read as a pass.
+          $treeKill = $results | Where-Object { $_.test -like "*command-process*" }
+          if ($treeKill.output -match "grandchild holding the inherited pipes") {
+            if ($treeKill.output -match "# skipped [1-9]") {
+              Write-Host "::error::The tree-kill test was skipped on Windows; the taskkill branch is unproven."
+              exit 1
+            }
+            Write-Host "Tree-kill test executed on Windows."
+          } else {
+            Write-Host "::error::The tree-kill test did not appear in the command-process output; the Windows branch is unproven."
+            exit 1
+          }
+
+          # The inference probe used to skip here (no ffmpeg on the runner). The
+          # pinned FFmpeg is staged above, so a skip now means the staged
+          # binaries were not picked up and is a failure, never a quiet pass.
+          # A run is still not real inference: the probe's demucs runner is a
+          # controlled stand-in and no trained checkpoint exists on this runner.
+          $probe = $results | Where-Object { $_.test -like "*provision-runtime*" }
+          if ($probe.output -match "# skipped ([1-9]\d*)") {
+            Write-Host "::error::Inference probe skipped on Windows although the pinned FFmpeg was staged: $($Matches[1]) test(s). ARENA_FFMPEG_PATH/ARENA_FFPROBE_PATH were not honoured."
+            exit 1
+          }
+          if ($probe.output -match "(?m)^ok \d+ - runInferenceProbe: six controlled valid WAVs pass") {
+            Write-Host "::notice title=Inference probe::Ran on Windows against the pinned FFmpeg build at $env:ARENA_FFMPEG_PATH (controlled demucs stand-in; real Demucs inference is NOT proven here)."
+          } else {
+            Write-Host "::error::The inference probe did not report a pass on Windows; see the provision-runtime evidence file."
+            $results = @($results | ForEach-Object { if ($_.test -like "*provision-runtime*" -and $_.code -eq 0) { $_.code = 1; $_.status = "FAIL" }; $_ })
+          }
+
+          # Phase timings of the guardian contract on this runner, readable
+          # without the artifact (the 2026-11-09 batch failure left none).
+          $guardian = $results | Where-Object { $_.test -like "*python-guardian*" }
+          $timings = @($guardian.output -split "`r?`n" | Where-Object { $_ -match "^\s*# .*\d+ ms" } | ForEach-Object { $_.Trim() })
+          if ($timings.Count -gt 0) { Write-Host "::notice title=python-guardian timings::$($timings -join '%0A')" }
+
+          $failed = $results | Where-Object { $_.code -ne 0 }
+          # Surface the failure in the check-run annotation, which is readable
+          # without downloading the artifact: name the file, then lift the tail
+          # of its TAP output (the "not ok" block names the failing test, the
+          # failure type -- timeout versus assertion -- and the stack). GitHub
+          # keeps at most 10 error annotations per step, so the tail is bounded.
+          foreach ($failure in $failed) {
+            Write-Host "::error::Windows failure in $($failure.test)"
+            $lines = @($failure.output -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -Last 40)
+            $chunks = @(); $current = @(); $size = 0
+            foreach ($line in $lines) {
+              $escaped = $line -replace '%', '%25'
+              if ($size + $escaped.Length -gt 3000 -and $current.Count -gt 0) { $chunks += ,$current; $current = @(); $size = 0 }
+              $current += $escaped; $size += $escaped.Length + 3
+            }
+            if ($current.Count -gt 0) { $chunks += ,$current }
+            $index = 0
+            foreach ($chunk in ($chunks | Select-Object -First 3)) {
+              $index++
+              Write-Host "::error title=$($failure.test) output tail $index/$($chunks.Count)::$($chunk -join '%0A')"
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "All recovered-stack tests passed on Windows."
+
+      - name: Retain per-file evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-stack-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: generated-artifacts/recovered-stack-windows/
+          if-no-files-found: warn
+          retention-days: 14

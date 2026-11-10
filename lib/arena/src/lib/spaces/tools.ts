@@ -138,22 +138,11 @@ export async function toolRunCommand(
     const { runInTarget } = await import("./workspace-isolation");
     return runInTarget(execTarget, cmd, timeoutMs);
   }
-  return new Promise((resolve) => {
-    const parts = cmd.trim().split(/\s+/);
-    // Clean env: never leak the host process's test-runner context into
-    // child processes (a nested `node --test` would otherwise no-op).
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const child = spawn(parts[0], parts.slice(1), { cwd: dir, timeout: timeoutMs, env, shell: IS_WINDOWS });
-    let out = "";
-    const cap = (s: string) => {
-      if (out.length < 8000) out += s;
-    };
-    child.stdout.on("data", cap);
-    child.stderr.on("data", cap);
-    child.on("error", (e) => resolve(`error: ${e.message}`));
-    child.on("close", (code) => resolve(`exit ${code}\n${out.slice(0, 8000)}`));
-  });
+  const parts = cmd.trim().split(/\s+/);
+  const { runCommandProcess } = await import("./command-process");
+  const res = await runCommandProcess(parts[0], parts.slice(1), { cwd: dir, timeoutMs, shell: IS_WINDOWS });
+  if (res.code === 127) return res.output;
+  return `exit ${res.code}\n${res.output.slice(0, 8000)}`;
 }
 
 // ---------------- fetch tool ----------------

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { CINEMATIC_VISUAL_PRESETS, deriveCinematicVisualScene, motionPolicy, type CinematicVisualPreset, type WaveyardVisualState } from "@workspace/arena/lib/waveyard/types";
 import { displaySourceSectionLabel } from "@workspace/arena/lib/waveyard/types/source-sections";
+import { compactMusicAnalysisLabel } from "@workspace/arena/lib/waveyard/types";
 import type { MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import type { Source, Stem } from "../studio/types";
 import { useFullscreenFocus } from "../player/useFullscreenFocus";
@@ -97,7 +98,7 @@ export function CinematicVisual({
         })}
       </div>
       <div className="visual-corner visual-corner-top" aria-live="polite">
-        {metadataVisible && <><span className="eyebrow">{transport.playing ? "Live transport" : "Still frame"}</span><b>{source?.originalFilename ?? "Preparing source"}</b><small>{source?.analysis?.status === "complete" ? `${source.analysis.bpm?.toFixed(1) ?? "—"} BPM · ${source.analysis.musicalKey ?? "Key unavailable"}` : "Analysis unavailable"}</small></>}
+        {metadataVisible && <><span className="eyebrow">{transport.playing ? "Live transport" : "Still frame"}</span><b>{source?.originalFilename ?? "Preparing source"}</b><small>{source?.analysis?.status === "complete" ? compactMusicAnalysisLabel(source.analysis) : "Analysis unavailable"}</small></>}
       </div>
       <div className="visual-corner visual-corner-bottom">
         {metadataVisible && <><span>{section ? displaySourceSectionLabel(section) : "Source overview"}</span><b>{Math.round(visualState.sectionProgress * 100)}%</b><small>{activeStems.length ? `${activeStems.length} stem${activeStems.length === 1 ? "" : "s"} in focus` : "No audible stems"}</small></>}

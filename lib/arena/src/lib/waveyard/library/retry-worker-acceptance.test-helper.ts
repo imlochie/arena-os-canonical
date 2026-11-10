@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { processingJobs, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
@@ -32,12 +32,93 @@ type BrowserRoute = {
   fulfill(input: { status?: number; json?: unknown; headers?: Record<string, string>; body?: string | Buffer }): Promise<void>;
 };
 
+type DeckAcceptanceSnapshot = {
+  current: string[];
+  next: string[];
+  incomingReady: boolean;
+  incomingMedia: Array<{
+    assetId: string | null;
+    readyState: number;
+    networkState: number;
+    paused: boolean;
+    currentTime: number;
+    srcProtocol: string | null;
+    errorCode: number | null;
+  }>;
+};
+
+const SAMPLE_DECK_SNAPSHOT_SOURCE = `({ outgoingIds, incomingIds, requireReady }) => {
+  const elementsForRole = role =>
+    Array.from(document.querySelectorAll('[data-role="' + role + '"] audio'));
+  const assetId = audio => {
+    const logicalUrl = audio.dataset.waveyardAssetUrl;
+    return logicalUrl ? new URL(logicalUrl, location.href).pathname.split('/').pop() || null : null;
+  };
+  const currentElements = elementsForRole('current');
+  const incomingElements = elementsForRole('next');
+  const current = currentElements.map(assetId).filter(id => id !== null);
+  const next = incomingElements.map(assetId).filter(id => id !== null);
+  const incomingReady = incomingElements.length === incomingIds.length
+    && incomingElements.every(audio => audio.readyState >= 2);
+  const exact = (actual, expected) =>
+    actual.length === expected.length && expected.every(id => actual.includes(id));
+  const snapshot = {
+    current,
+    next,
+    incomingReady,
+    incomingMedia: incomingElements.map(audio => ({
+      assetId: assetId(audio),
+      readyState: audio.readyState,
+      networkState: audio.networkState,
+      paused: audio.paused,
+      currentTime: audio.currentTime,
+      srcProtocol: audio.currentSrc ? new URL(audio.currentSrc, location.href).protocol : null,
+      errorCode: audio.error ? audio.error.code : null,
+    })),
+  };
+  if (requireReady && (!exact(current, outgoingIds) || !exact(next, incomingIds) || !incomingReady)) {
+    return false;
+  }
+  return snapshot;
+}`;
+type DeckSnapshotOptions = {
+  outgoingIds: string[];
+  incomingIds: string[];
+  requireReady: boolean;
+};
+type DeckSnapshotProbe = (options: DeckSnapshotOptions) => DeckAcceptanceSnapshot | false;
+// TSX can inject a module-scoped __name call into callbacks that Playwright
+// serializes into Chromium. Build this fixed, test-owned probe as plain
+// JavaScript so the browser never depends on the test module's helpers.
+const sampleDeck = new Function(`return (${SAMPLE_DECK_SNAPSHOT_SOURCE})`)() as DeckSnapshotProbe;
+
+async function probeAudioInput(filePath: string) {
+  const { stdout } = await execTool("ffprobe", [
+    "-v", "error", "-select_streams", "a:0",
+    "-show_entries", "stream=codec_name,sample_rate,channels",
+    "-of", "json", filePath,
+  ], { timeoutMs: 30_000 });
+  const probe = JSON.parse(stdout) as {
+    streams?: Array<{ codec_name?: string; sample_rate?: string; channels?: number }>;
+  };
+  const stream = probe.streams?.[0];
+  assert.ok(stream?.codec_name && stream.sample_rate && stream.channels,
+    `ffprobe must identify the audio stream in ${basename(filePath)}`);
+  return {
+    codec: stream.codec_name,
+    sampleRate: Number(stream.sample_rate),
+    channels: stream.channels,
+  };
+}
+
 export async function verifyLibraryRetryWithRealWorker(options: {
   database: typeof workspaceDb;
   client: Client;
   directory: string;
   addTrack: typeof addTrackFromAudioFile;
   recipe?: "kim_vocal_2" | "default-four-stem";
+  audioInputPath?: string;
+  incomingAudioInputPath?: string;
 }) {
   const { database, client, directory, addTrack } = options;
   const fourStem = options.recipe === "default-four-stem";
@@ -78,35 +159,38 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     await stagePinnedModels(installedDirectory, modelsDirectory, fourStem ? FOUR_STEM_MODELS : [model]);
     process.env.WAVEYARD_MODELS_DIR = modelsDirectory;
     const wavFixturePath = join(directory, `retry-acceptance-${fourStem ? "four-source" : "kim"}.wav`);
-    const inputPath = fourStem ? join(directory, "retry-acceptance-four.mp3") : wavFixturePath;
-    const sourcePcm = stemMachineSource(44_100);
-    // Both opt-in cases share one disposable DB; distinct PCM avoids making
-    // the second intake an intentional checksum-deduplication hit.
-    if (fourStem) for (let index = 0; index < sourcePcm.length; index++) sourcePcm[index] *= 0.9;
-    await writeFile(wavFixturePath, encodeWav16(sourcePcm, 44_100));
-    if (fourStem) {
+    const inputPath = options.audioInputPath
+      ? resolve(options.audioInputPath)
+      : fourStem ? join(directory, "retry-acceptance-four.mp3") : wavFixturePath;
+    if (!options.audioInputPath) {
+      const sourcePcm = stemMachineSource(44_100);
+      // Both opt-in cases share one disposable DB; distinct PCM avoids making
+      // the second intake an intentional checksum-deduplication hit.
+      if (fourStem) for (let index = 0; index < sourcePcm.length; index++) sourcePcm[index] *= 0.9;
+      await writeFile(wavFixturePath, encodeWav16(sourcePcm, 44_100));
+    }
+    if (fourStem && !options.audioInputPath) {
       await execTool("ffmpeg", [
         "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-i", wavFixturePath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
         inputPath,
       ], { timeoutMs: 30_000 });
-      const { stdout: probeOutput } = await execTool("ffprobe", [
-        "-v", "error", "-select_streams", "a:0",
-        "-show_entries", "stream=codec_name,sample_rate,channels",
-        "-of", "json", inputPath,
-      ], { timeoutMs: 30_000 });
-      const probe = JSON.parse(probeOutput) as {
-        streams?: Array<{ codec_name?: string; sample_rate?: string; channels?: number }>;
-      };
-      assert.equal(probe.streams?.[0]?.codec_name, "mp3", "the disposable compressed fixture is actually MP3");
-      assert.equal(probe.streams?.[0]?.sample_rate, "44100");
-      assert.equal(probe.streams?.[0]?.channels, 2);
+    }
+    const inputAudio = fourStem ? await probeAudioInput(inputPath) : null;
+    if (fourStem) {
+      assert.equal(inputAudio?.codec, "mp3", "the compressed four-stem input is actually MP3");
+      if (!options.audioInputPath) {
+        assert.equal(inputAudio?.sampleRate, 44_100, "the generated fixture is encoded at its pinned 44.1 kHz rate");
+        assert.equal(inputAudio?.channels, 2);
+      }
     }
     const originalChecksum = await checksumFile(inputPath);
     const intake = await addTrack({
       ownerId,
       filePath: inputPath,
-      filename: fourStem ? "Fixture - Library retry acceptance.mp3" : "Fixture - Library retry acceptance.wav",
+      filename: options.audioInputPath
+        ? basename(inputPath)
+        : fourStem ? "Fixture - Library retry acceptance.mp3" : "Fixture - Library retry acceptance.wav",
       mimeType: fourStem ? "audio/mpeg" : "audio/wav",
       ...(fourStem ? {} : { model: model.id }),
       device: "cpu",
@@ -126,27 +210,41 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       .where(eq(sourceAssets.id, intake.track.sourceAssetId)).limit(1);
     assert.ok(importedSource, "desktop library intake persists the imported audio source");
     if (fourStem) {
-      assert.equal(importedSource.codec, "mp3", "the desktop importer recognizes the compressed codec");
+      assert.equal(importedSource.codec, inputAudio?.codec, "the desktop importer preserves the source codec");
       assert.equal(importedSource.mimeType, "audio/mpeg");
-      assert.equal(importedSource.sampleRate, 44_100);
-      assert.equal(importedSource.channels, 2);
+      assert.equal(importedSource.sampleRate, inputAudio?.sampleRate,
+        "the desktop importer preserves the source sample rate instead of normalizing metadata to the fixture rate");
+      assert.equal(importedSource.channels, inputAudio?.channels,
+        "the desktop importer preserves the source channel count");
       assert.match(importedSource.originalFilename, /\.mp3$/i);
 
       const incomingWavPath = join(directory, "retry-acceptance-transition-incoming.wav");
-      incomingInputPath = join(directory, "retry-acceptance-transition-incoming.mp3");
-      const incomingPcm = stemMachineSource(44_100);
-      for (let index = 0; index < incomingPcm.length; index++) incomingPcm[index] *= 0.71;
-      await writeFile(incomingWavPath, encodeWav16(incomingPcm, 44_100));
-      await execTool("ffmpeg", [
-        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", incomingWavPath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
-        incomingInputPath,
-      ], { timeoutMs: 30_000 });
+      incomingInputPath = options.incomingAudioInputPath
+        ? resolve(options.incomingAudioInputPath)
+        : join(directory, "retry-acceptance-transition-incoming.mp3");
+      if (!options.incomingAudioInputPath) {
+        const incomingPcm = stemMachineSource(44_100);
+        for (let index = 0; index < incomingPcm.length; index++) incomingPcm[index] *= 0.71;
+        await writeFile(incomingWavPath, encodeWav16(incomingPcm, 44_100));
+        await execTool("ffmpeg", [
+          "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+          "-i", incomingWavPath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
+          incomingInputPath,
+        ], { timeoutMs: 30_000 });
+      }
+      const incomingAudio = await probeAudioInput(incomingInputPath);
+      assert.equal(incomingAudio.codec, "mp3", "the incoming compressed source is actually MP3");
+      if (!options.incomingAudioInputPath) {
+        assert.equal(incomingAudio.sampleRate, 44_100, "the generated incoming fixture is encoded at 44.1 kHz");
+        assert.equal(incomingAudio.channels, 2);
+      }
       incomingOriginalChecksum = await checksumFile(incomingInputPath);
       const incomingIntake = await addTrack({
         ownerId,
         filePath: incomingInputPath,
-        filename: "Fixture - Library retry transition incoming.mp3",
+        filename: options.incomingAudioInputPath
+          ? basename(incomingInputPath)
+          : "Fixture - Library retry transition incoming.mp3",
         mimeType: "audio/mpeg",
         device: "cpu",
       });
@@ -162,9 +260,11 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       const [incomingSource] = await database.select().from(sourceAssets)
         .where(eq(sourceAssets.id, incomingSourceId)).limit(1);
       assert.ok(incomingSource);
-      assert.equal(incomingSource.codec, "mp3");
-      assert.equal(incomingSource.sampleRate, 44_100);
-      assert.equal(incomingSource.channels, 2);
+      assert.equal(incomingSource.codec, incomingAudio.codec);
+      assert.equal(incomingSource.sampleRate, incomingAudio.sampleRate,
+        "the incoming source record preserves its actual input sample rate");
+      assert.equal(incomingSource.channels, incomingAudio.channels,
+        "the incoming source record preserves its actual input channel count");
       incomingJobIdsBefore = (await database.select().from(processingJobs)
         .where(eq(processingJobs.sourceAssetId, incomingSourceId))).map(job => job.id);
     }
@@ -220,11 +320,13 @@ export async function verifyLibraryRetryWithRealWorker(options: {
     const context = await browser.newContext({ serviceWorkers: "block" });
     await installLiveAudioProbe(context);
     let retryRequests = 0;
+    let observedSessionId: string | null = null;
     const servedAudioAssets = new Set<string>();
     await context.route("**/api/**", async (route: BrowserRoute) => {
       const request = route.request();
       const url = new URL(request.url());
       const sessionPath = url.pathname.match(/^\/api\/library\/sessions\/([^/]+)(?:\/(state|tracks)(?:\/([^/]+))?)?$/);
+      if (sessionPath !== null) observedSessionId = sessionPath[1];
       const assetPath = url.pathname.match(/^\/api\/assets\/([^/]+)$/);
       const retryJobPath = url.pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
       let response: Response | undefined;
@@ -389,15 +491,37 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       await page.waitForFunction((ids: string[]) => {
         const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
         return audio.length === 4 && audio.every(item => item.readyState >= 2)
-          && ids.every(id => audio.some(item => new URL(item.currentSrc || item.src).pathname.endsWith(`/${id}`)));
+          && ids.every(id => audio.some(item => {
+            const logicalUrl = item.dataset.waveyardAssetUrl;
+            return logicalUrl !== undefined
+              && new URL(logicalUrl, location.href).pathname.split("/").at(-1) === id;
+          }));
       }, expectedAssets, { timeout: 30_000 });
       const play = page.getByTestId("session-play");
-      if (await play.getAttribute("aria-pressed") === "true") await play.click();
       const loaded = await readLiveAudioState(page);
       assert.deepEqual(loaded.map(item => item.assetId).sort(), expectedAssets.sort(),
         "live playback uses the four persisted model outputs, never a passthrough/full-source substitute");
       assert.ok(expectedAssets.every(id => servedAudioAssets.has(id)),
         "every real stem was read through the production private asset route");
+      await page.waitForFunction(
+        `() => {
+          const audio = Array.from(document.querySelectorAll('[data-role="current"] audio'));
+          return audio.length === 4 && audio.every(item => !item.paused && item.currentTime > 0.03);
+        }`,
+        undefined,
+        { timeout: 10_000 },
+      );
+      assert.equal(await play.getAttribute("aria-pressed"), "true",
+        "the play control reports active playback for the actual persisted stems");
+      await play.click();
+      await page.waitForFunction(
+        `() => {
+          const audio = Array.from(document.querySelectorAll('[data-role="current"] audio'));
+          return audio.length === 4 && audio.every(item => item.paused);
+        }`,
+        undefined,
+        { timeout: 5_000 },
+      );
       for (const stem of stems) {
         const isolate = page.getByTestId(`quick-isolate-${stem.stemType}`);
         await isolate.click();
@@ -410,39 +534,119 @@ export async function verifyLibraryRetryWithRealWorker(options: {
           `isolating ${stem.stemType} mutes the other three real stem routes`);
         await isolate.click();
       }
+      const beforePlay = await readLiveAudioState(page);
+      assert.ok(beforePlay.every(item => item.paused),
+        "stem-isolation checks leave the current track paused before resume");
+      assert.equal(await play.getAttribute("aria-pressed"), "false",
+        "the play control reports paused state before resume");
       await play.click();
-      await page.waitForFunction(() => {
-        const audio = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
-        return audio.length === 4 && audio.every(item => !item.paused && item.currentTime > 0.03);
-      }, undefined, { timeout: 5_000 });
+      try {
+        await page.waitForFunction(
+          `() => {
+            const audio = Array.from(document.querySelectorAll('[data-role="current"] audio'));
+            return audio.length === 4 && audio.every(item => !item.paused && item.currentTime > 0.03);
+          }`,
+          undefined,
+          { timeout: 5_000 },
+        );
+      } catch (error) {
+        const audioState = await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
+          elements.map(audio => ({
+            currentTime: audio.currentTime,
+            duration: audio.duration,
+            paused: audio.paused,
+            readyState: audio.readyState,
+            networkState: audio.networkState,
+            errorCode: audio.error?.code ?? null,
+          })),
+        ).catch(() => []);
+        console.error("Persisted real stems did not start together after the play action", {
+          beforePlay,
+          audioState,
+          playPressed: await play.getAttribute("aria-pressed").catch(() => null),
+          playLabel: await play.getAttribute("aria-label").catch(() => null),
+          playDisabled: await play.isDisabled().catch(() => null),
+          statusMessages: await page.locator('[role="alert"]').allTextContents().catch(() => []),
+          pageErrors,
+          pageText: (await page.locator("body").innerText().catch(() => "")).slice(-1600),
+        });
+        throw error;
+      }
       await play.click();
       assert.ok((await readLiveAudioState(page)).every(item => item.gain! > 0),
         "restoring all stems keeps every actual stem connected while the outgoing track is paused for preparation");
 
       const incomingAssets = incomingStems.map(stem => stem.id);
       await page.getByTestId(`button-next-${incomingTrack!.id}`).click();
-      await page.waitForFunction(({ outgoingIds, incomingIds }: { outgoingIds: string[]; incomingIds: string[] }) => {
-        const idsForRole = (role: string) => {
-          const deck = document.querySelector<HTMLElement>(`[data-role="${role}"]`);
-          return [...(deck?.querySelectorAll<HTMLAudioElement>("audio") ?? [])].map(audio =>
-            new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1));
-        };
-        const outgoing = idsForRole("current");
-        const incoming = idsForRole("next");
-        const exact = (actual: Array<string | undefined>, expected: string[]) =>
-          actual.length === expected.length && expected.every(id => actual.includes(id));
-        return exact(outgoing, outgoingIds) && exact(incoming, incomingIds)
-          && [...document.querySelectorAll<HTMLAudioElement>('[data-role="next"] audio')].every(audio => audio.readyState >= 2);
-      }, { outgoingIds: expectedAssets, incomingIds: incomingAssets }, { timeout: 30_000 });
+      // Standby media is normally loaded from a private in-memory Blob URL.
+      // Its currentSrc is therefore an ephemeral blob: URL, not the library
+      // asset ID. Capture both deck identities and media readiness in the same
+      // browser evaluation; separate locator reads can straddle a React deck
+      // update and compare different UI states.
+      const deckStateAtReady = await page.waitForFunction(
+        sampleDeck,
+        { outgoingIds: expectedAssets, incomingIds: incomingAssets, requireReady: true },
+        { timeout: 30_000 },
+      ).then(
+        handle => handle.jsonValue() as Promise<DeckAcceptanceSnapshot>,
+        () => null,
+      );
+      const deckStateAtRead = deckStateAtReady ?? await page.waitForFunction(
+        sampleDeck,
+        { outgoingIds: expectedAssets, incomingIds: incomingAssets, requireReady: false },
+        { timeout: 1_000 },
+      ).then(handle => handle.jsonValue() as Promise<DeckAcceptanceSnapshot>);
+      const deckIdentityReady = deckStateAtReady !== null;
+      if (!deckStateAtRead.incomingReady
+        || deckStateAtRead.current.length !== expectedAssets.length
+        || !expectedAssets.every(id => deckStateAtRead.current.includes(id))
+        || deckStateAtRead.next.length !== incomingAssets.length
+        || !incomingAssets.every(id => deckStateAtRead.next.includes(id))) {
+        assert.ok(observedSessionId, "the real session route was observed for persisted-state diagnostics");
+        const allStemRows = await database.select().from(stemAssets);
+        const describeStemIds = (ids: string[]) => ids.map(id => {
+          const row = allStemRows.find(stem => stem.id === id);
+          return row === undefined ? { id, found: false } : {
+            id,
+            separationJobId: row.separationJobId,
+            stemType: row.stemType,
+            model: row.model,
+          };
+        });
+        const persistedSession = await page.evaluate(async (sessionId: string) => {
+          const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
+          return response.ok ? await response.json() : { status: response.status };
+        }, observedSessionId);
+        console.error("Persisted Waveyard deck acceptance state did not settle", JSON.stringify({
+          expectedOutgoing: expectedAssets,
+          expectedIncoming: incomingAssets,
+          firstTrackId: intake.track.id,
+          secondTrackId: incomingTrack?.id,
+          expectedOutgoingRows: describeStemIds(expectedAssets),
+          expectedIncomingRows: describeStemIds(incomingAssets),
+          actualCurrentRows: describeStemIds(deckStateAtRead.current),
+          actualNextRows: describeStemIds(deckStateAtRead.next),
+          deckStateAtRead,
+          deckIdentityReady,
+          persistedTracks: persistedSession?.session?.tracks?.map((item: any) => ({
+            id: item.id,
+            trackId: item.track?.id,
+            title: item.track?.title,
+            stemIds: item.stems?.map((stem: any) => stem.id) ?? [],
+          })) ?? [],
+          pageErrors,
+          statusMessages: await page.locator('[role="alert"]').allTextContents().catch(() => []),
+        }));
+      }
       assert.deepEqual(
-        await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1)).sort()),
+        deckStateAtRead.current.sort(),
         [...expectedAssets].sort(),
         "the outgoing deck contains only the first track's real separated assets",
       );
+      assert.equal(deckStateAtRead.incomingReady, true,
+        "every incoming stem has decodable media before the transition");
       assert.deepEqual(
-        await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1)).sort()),
+        deckStateAtRead.next.sort(),
         [...incomingAssets].sort(),
         "the incoming deck contains only the second track's real separated assets",
       );
@@ -465,7 +669,10 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       }, undefined, { timeout: 5_000 });
       await page.waitForFunction((ids: string[]) => {
         const current = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
-        const actual = current.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1));
+        const actual = current.map(audio => {
+          const logicalUrl = audio.dataset.waveyardAssetUrl;
+          return logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) : null;
+        });
         return current.length === 4 && ids.every(id => actual.includes(id))
           && current.every(audio => !audio.paused && audio.currentTime > 0.03);
       }, incomingAssets, { timeout: 5_000 });

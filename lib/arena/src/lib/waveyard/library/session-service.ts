@@ -52,6 +52,7 @@ import { sourceObjectLockQuery } from "../source-object-lock";
 import { desktopAnalysisIdempotencyKey, DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 import { enqueueSourceAnalysis, enqueueWaveform } from "../queue";
 import { sourceSectionsAreValid, type SourceSection } from "../types/source-sections";
+import { parsePassageFingerprint } from "../types/passage-compatibility";
 import {
   normalizeStemMix,
   parseStemMix,
@@ -1607,6 +1608,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
           analysisEngine: sourceSections.analysisEngine,
           analysisEngineVersion: sourceSections.analysisEngineVersion,
           sourceChecksumSha256: sourceSections.sourceChecksumSha256,
+          passageFingerprint: sourceSections.passageFingerprint,
           sourceAssetId: sourceSections.sourceAssetId,
           sourceAnalysisId: sourceSections.sourceAnalysisId,
           sourceSectionAnalysisId: sourceSections.sourceSectionAnalysisId,
@@ -1646,8 +1648,13 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
           analysisEngine: record.analysisEngine,
           analysisEngineVersion: record.analysisEngineVersion,
           sourceChecksumSha256: record.sourceChecksumSha256,
+          passageFingerprint: parsePassageFingerprint(record.passageFingerprint, {
+            sourceChecksumSha256: record.sourceChecksumSha256,
+            startBeatIndex: record.startBeatIndex,
+            endBeatIndex: record.endBeatIndex,
+          }),
         }));
-        if (sourceSectionsAreValid(candidates, beatGridMs)) sections = candidates;
+        if (sourceSectionsAreValid(candidates, beatGridMs, detail.durationSeconds * 1000)) sections = candidates;
       }
     }
   }

@@ -21,7 +21,13 @@ import {
   SESSION_DJ_LOOP_LENGTHS,
 } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
-import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
+import { isMultiPassSeparationPhase, normalizeStemMix } from "@workspace/arena/lib/waveyard/library/model";
+import {
+  localStorageSessionSaveJournal,
+  sessionSavePatchAgainstPending,
+  sessionSavePatchForTrack,
+  SessionSaveQueue,
+} from "@workspace/arena/lib/waveyard/library/session-save-queue";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import CamelotWheel from "./CamelotWheel";
 import SessionKeyMatchingControls from "./SessionKeyMatchingControls";
@@ -49,6 +55,7 @@ import {
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
   validateStemSwap,
+  normalizeTransitionConfig,
   type TransitionConfig,
   type TransitionMode,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
@@ -1646,9 +1653,24 @@ export default function SessionExperience({
               : (detail.tracks[0]?.id ?? null);
           const nextMixes: Record<string, Record<string, number>> = {};
           const nextTransitions: Record<string, TransitionConfig> = {};
+          let restoredPatches: Array<[string, string]> = [];
+          if (typeof window !== "undefined") {
+            try {
+              restoredPatches = localStorageSessionSaveJournal(
+                window.localStorage,
+                `arena:waveyard:session-saves:${detail.id}`,
+              ).read();
+            } catch { /* Storage may be unavailable; server state remains usable. */ }
+          }
           for (const item of detail.tracks) {
-            nextMixes[item.id] = { ...item.stemMix };
-            nextTransitions[item.id] = item.transition;
+            const patch = sessionSavePatchForTrack(restoredPatches, detail.id, item.id);
+            const allowedStemTypes = new Set(item.stems.map((stem) => stem.stemType));
+            const restoredMix = normalizeStemMix(patch?.stemMixPatch);
+            nextMixes[item.id] = {
+              ...item.stemMix,
+              ...Object.fromEntries(Object.entries(restoredMix).filter(([stemType]) => allowedStemTypes.has(stemType))),
+            };
+            nextTransitions[item.id] = normalizeTransitionConfig(patch?.transition) ?? item.transition;
           }
           currentIdRef.current = restoredCurrent;
           sessionRef.current = detail;
@@ -1995,13 +2017,48 @@ export default function SessionExperience({
     stemMix: Record<string, number>;
     transitionJson: string;
   }>>({});
-  const saveQueueRef = useRef<Record<string, Promise<void>>>({});
+  const saveQueueRef = useRef<SessionSaveQueue | null>(null);
+  useEffect(() => {
+    if (session === null) return;
+    let journal;
+    if (typeof window !== "undefined") {
+      try {
+        journal = localStorageSessionSaveJournal(window.localStorage, `arena:waveyard:session-saves:${session.id}`);
+      } catch {
+        journal = undefined;
+      }
+    }
+    const queue = new SessionSaveQueue(async (url, body) => {
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      if (!response.ok) throw new Error(`Session save failed (${response.status}).`);
+      const match = /^\/api\/library\/sessions\/([^/]+)\/tracks\/([^/]+)$/.exec(url);
+      if (!match) return;
+      const saved = lastSentRef.current[`${match[1]}:${match[2]}`];
+      if (!saved) return;
+      const patch = JSON.parse(body) as { stemMixPatch?: Record<string, number>; transition?: TransitionConfig };
+      lastSentRef.current[`${match[1]}:${match[2]}`] = {
+        stemMix: { ...saved.stemMix, ...patch.stemMixPatch },
+        transitionJson: patch.transition === undefined ? saved.transitionJson : JSON.stringify(patch.transition),
+      };
+    }, (status) => setMixSaveError(status === "error"), 600, journal);
+    saveQueueRef.current = queue;
+    const flushPendingOnExit = () => { void queue.flush(); };
+    window.addEventListener("pagehide", flushPendingOnExit);
+    return () => {
+      window.removeEventListener("pagehide", flushPendingOnExit);
+      void queue.flush();
+      if (saveQueueRef.current === queue) saveQueueRef.current = null;
+    };
+  }, [session?.id]);
   useEffect(() => {
     if (session === null) return;
     const items = [currentItem, nextItem].filter((item): item is SessionTrackItem => item !== null);
     const timer = setTimeout(() => {
       void (async () => {
-        let failed = false;
         for (const item of items) {
           const key = `${session.id}:${item.id}`;
           if (lastSentRef.current[key] === undefined) {
@@ -2014,44 +2071,14 @@ export default function SessionExperience({
           const mix = effectiveMix(item, mixes[item.id] ?? item.stemMix);
           const transition = transitions[item.id] ?? item.transition;
           const transitionJson = JSON.stringify(transition);
-          const previousSave = saveQueueRef.current[key] ?? Promise.resolve();
-          const save = previousSave.catch(() => undefined).then(async () => {
-            const saved = lastSentRef.current[key];
-            if (saved === undefined) return;
-            const stemMixPatch = Object.fromEntries(
-              Object.entries(mix).filter(([stemType, value]) =>
-                !Object.is(saved.stemMix[stemType] ?? 1, value),
-              ),
-            );
-            const transitionChanged = saved.transitionJson !== transitionJson;
-            const body: Record<string, unknown> = {};
-            if (Object.keys(stemMixPatch).length > 0) body.stemMixPatch = stemMixPatch;
-            if (transitionChanged) body.transition = transition;
-            if (Object.keys(body).length === 0) return;
-
-            try {
-              const response = await fetch(`/api/library/sessions/${session.id}/tracks/${item.id}`, {
-                method: "PATCH",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(body),
-              });
-              if (response.ok) {
-                const currentSaved = lastSentRef.current[key] ?? saved;
-                lastSentRef.current[key] = {
-                  stemMix: { ...currentSaved.stemMix, ...stemMixPatch },
-                  transitionJson: transitionChanged ? transitionJson : currentSaved.transitionJson,
-                };
-              } else {
-                failed = true;
-              }
-            } catch {
-              failed = true;
-            }
-          });
-          saveQueueRef.current[key] = save;
-          await save;
+          const saved = lastSentRef.current[key];
+          if (saved === undefined) continue;
+          const url = `/api/library/sessions/${session.id}/tracks/${item.id}`;
+          const pendingWrites = saveQueueRef.current?.pendingWrites(url) ?? {};
+          const body = sessionSavePatchAgainstPending(saved, { stemMix: mix, transitionJson }, pendingWrites);
+          if (body === null) continue;
+          saveQueueRef.current?.enqueue(url, body);
         }
-        setMixSaveError(failed);
       })();
     }, 600);
     return () => clearTimeout(timer);
@@ -3023,6 +3050,7 @@ export default function SessionExperience({
       const wasPlaying = playingRef.current;
       void mutate(`/api/library/sessions/${session.id}/tracks?sessionTrackId=${itemId}`, { method: "DELETE" }).then((detail) => {
         if (detail === null) return;
+        saveQueueRef.current?.forget(`/api/library/sessions/${session.id}/tracks/${itemId}`);
         publishWaveyardQueueChange([session.id]);
         if (currentIdRef.current !== itemId) return;
         const fallbackIndex = Math.min(Math.max(previousIndex, 0), detail.tracks.length - 1);
@@ -4288,6 +4316,7 @@ export default function SessionExperience({
     const lowTempoConfidence = recipientBpm !== null && selectedDonorBpm !== null && !reliableTempoEvidence;
     const lowBeatConfidence = recipientBpm !== null && selectedDonorBpm !== null
       && reliableTempoEvidence && !reliableBeatEvidence;
+    const activeTempoStretchRatio = activeSwapTempoStretchRatios[stemType];
     const halfDoubleTempo = reliableTempoEvidence && isHalfDoubleTempoPair(recipientBpm, selectedDonorBpm);
     const unsafeTempoGap = reliableTempoEvidence && recipientBpm !== null && selectedDonorBpm !== null
       && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
@@ -4300,15 +4329,23 @@ export default function SessionExperience({
           ? `Half/double-time · donor pace retained${lowBeatConfidence ? " · no beat sync" : ""}`
           : unsafeTempoGap
             ? `Tempo gap too wide · native ${Math.round(selectedDonorBpm!)} BPM`
-        : lowBeatConfidence
-          ? "Beat sync unavailable · analysis confidence is low"
-        : activeSwapTempoStretchRatios[stemType] !== undefined
+        : activeTempoStretchRatio !== undefined && Math.abs(activeTempoStretchRatio - 1) > 0.001
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
             ? currentSwapSetup.sectionPositionMatches[stemType]
               ? "Tempo matched · pitch preserved · section position matched"
               : "Tempo matched · pitch preserved · beat phase aligned"
             : "Tempo matched · pitch preserved · beat alignment unavailable"
-          : selectedDonorBpm !== null
+        : lowBeatConfidence
+          ? activeTempoStretchRatio !== undefined
+            ? "Native tempo · beat alignment unavailable"
+            : "Beat sync unavailable · analysis confidence is low"
+        : activeTempoStretchRatio !== undefined
+          ? currentSwapSetup.beatOffsets[stemType] !== undefined
+            ? currentSwapSetup.sectionPositionMatches[stemType]
+              ? "Native tempo · section position matched"
+              : "Native tempo · beat phase aligned"
+            : "Native tempo · beat alignment unavailable"
+        : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
             : "Tempo unavailable · native tempo";
     const keyMatchStatus = currentSwapSetup.keyMatchStatuses[stemType];
@@ -4561,7 +4598,7 @@ export default function SessionExperience({
         <button
           type="button"
           className={`wy-save ${saveLabel === "Not saved" ? "bad" : ""}`}
-          onClick={() => { setMixSaveError(false); lastSentRef.current = {}; void persistState(); }}
+          onClick={() => { setMixSaveError(false); lastSentRef.current = {}; void saveQueueRef.current?.flush(true); void persistState(); }}
           title={saveLabel === "Not saved" ? "Saving failed — click to retry" : "Position and mixes are saved to this session"}
           data-testid="status-save"
         >

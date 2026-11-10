@@ -5,10 +5,16 @@ import {
   drainLocalWorker,
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
+  recoverPendingLocalSourceAnalyses,
+  recoverPendingLocalSourceSectionAnalyses,
+  recoverPendingLocalDrumAnalyses,
+  recoverPendingLocalHarmonyAnalyses,
+  recoverPendingLocalVocalAnalyses,
   cleanupOrphanedSourceObjects,
   cleanupAbandonedAudioRestoreUploadDirectories,
 } from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
+import { recoverInterruptedAgentBridgeTasks } from "@workspace/arena/lib/modelHub/agentBridge";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
 import {
   runWaveyardStartupRecovery,
@@ -42,11 +48,18 @@ const worker = startLocalWorker();
 if (worker) {
   // The in-memory broker and worker threads belonged to the previous API
   // process. Mark its jobs retryable and remove only their abandoned temp dirs.
-  const { recovery, waveformRecovery } = await runWaveyardStartupRecovery(
+  const { recovery, waveformRecovery, sourceAnalysisRecovery, sectionAnalysisRecovery,
+    drumAnalysisRecovery, harmonyAnalysisRecovery, vocalAnalysisRecovery } = await runWaveyardStartupRecovery(
     async () => {
       const recovery = await recoverInterruptedLocalSeparationJobs(db);
       const waveformRecovery = await recoverPendingLocalWaveformJobs(db);
-      return { recovery, waveformRecovery };
+      const sourceAnalysisRecovery = await recoverPendingLocalSourceAnalyses(db);
+      const sectionAnalysisRecovery = await recoverPendingLocalSourceSectionAnalyses(db);
+      const drumAnalysisRecovery = await recoverPendingLocalDrumAnalyses(db);
+      const harmonyAnalysisRecovery = await recoverPendingLocalHarmonyAnalyses(db);
+      const vocalAnalysisRecovery = await recoverPendingLocalVocalAnalyses(db);
+      return { recovery, waveformRecovery, sourceAnalysisRecovery, sectionAnalysisRecovery,
+        drumAnalysisRecovery, harmonyAnalysisRecovery, vocalAnalysisRecovery };
     },
     {
       onRetry: (error, attempt, delayMs) => logger.warn({
@@ -65,6 +78,16 @@ if (worker) {
     resetWaveforms: waveformRecovery.resetJobIds.length,
     enqueuedWaveforms: waveformRecovery.enqueuedJobIds.length,
     waveformQueueFailures: waveformRecovery.failedJobIds.length,
+    requeuedSourceAnalyses: sourceAnalysisRecovery.requeuedJobIds.length,
+    failedSourceAnalysisRequeues: sourceAnalysisRecovery.failedJobIds.length,
+    requeuedSectionAnalyses: sectionAnalysisRecovery.requeuedJobIds.length,
+    failedSectionAnalysisRequeues: sectionAnalysisRecovery.failedJobIds.length,
+    requeuedDrumAnalyses: drumAnalysisRecovery.requeuedJobIds.length,
+    failedDrumAnalysisRequeues: drumAnalysisRecovery.failedJobIds.length,
+    requeuedHarmonyAnalyses: harmonyAnalysisRecovery.requeuedJobIds.length,
+    failedHarmonyAnalysisRequeues: harmonyAnalysisRecovery.failedJobIds.length,
+    requeuedVocalAnalyses: vocalAnalysisRecovery.requeuedJobIds.length,
+    failedVocalAnalysisRequeues: vocalAnalysisRecovery.failedJobIds.length,
   }, "Waveyard local processors ready");
 }
 await startLocalLibraryConversionWorker();
@@ -75,9 +98,11 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 if (process.env.ARENA_DESKTOP_MODE === "1") {
-  // The old process is gone. Preserve its journal and make interrupted tasks
-  // resumable; never silently rerun an in-flight interaction.
+  // The old process is gone. Preserve mission journals for manual resume and
+  // expire bridge requests whose waiting HTTP caller no longer exists.
   await pool.query("update space_missions set status='checkpointed', status_detail='The desktop app restarted. Review the saved journal, then resume.', updated_at=now() where status='running'");
+  const interruptedAgentTasks = await recoverInterruptedAgentBridgeTasks(db);
+  logger.info({ expiredAgentBridgeTasks: interruptedAgentTasks.length }, "Interrupted agent-bridge tasks expired after desktop restart");
 }
 
 let sourceCleanupTask: Promise<void> | undefined;

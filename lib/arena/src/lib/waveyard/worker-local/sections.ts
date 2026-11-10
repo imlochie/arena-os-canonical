@@ -2,7 +2,8 @@
  * Local section-analysis job handler — a faithful port of the worker's
  * processSourceSectionAnalysis, with the structure engine reimplemented in
  * JS: conservative bar-aligned boundaries chosen at onset-novelty peaks,
- * annotated with repeated rhythmic fingerprints when the source supports them.
+ * supplemented by beat-grid-aligned repeated two-bar phrases when the source
+ * supports them.
  * Repetition is not mislabeled as verse/chorus or used to align other songs.
  * Candidates flow through the app's own normalizeSourceSections/
  * sourceSectionsAreValid validators, so rows are indistinguishable in shape
@@ -21,10 +22,18 @@ import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections } f
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { normalizeSourceSections, sourceSectionsAreValid, type SourceSectionCandidate } from "@workspace/arena/lib/waveyard/types/source-sections";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
+import { currentBeatConfidence } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
 import { decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
-import { labelRepeatedRhythmSections } from "./section-rhythm";
+import {
+  applyRepeatedPhraseMatches,
+  detectRepeatedPhraseMatches,
+  labelRepeatedRhythmSections,
+  labelSectionEnergyChanges,
+  buildPassageFingerprint,
+  type RepeatedPhraseMatch,
+} from "./section-rhythm";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
@@ -47,15 +56,23 @@ export function desktopSectionId(sourceAssetId: string, sourceChecksum: string, 
 }
 
 /**
- * Conservative structure engine: candidate boundaries only at bar edges
- * (4-beat groups) that coincide with onset-novelty peaks. Whole-bar sections
- * with repeated 16th-note onset patterns receive a within-source repeat label.
- * This detector does not infer verse, chorus, or cross-song equivalence.
+ * Conservative structure engine: boundaries use four-beat bar edges and
+ * onset novelty, while repeated two-bar windows are searched independently of
+ * those variable-length boundaries. Repeated windows are emitted only at the
+ * existing high rhythm threshold; pattern labels also require matching
+ * four-bin chroma. This detector does not infer verse, chorus, downbeats, or
+ * cross-song equivalence.
  * Returns null
  * when the evidence supports no conservative boundary (the caller records
  * the honest unavailable state, exactly like the worker).
  */
-export function desktopSectionCandidates(beatGridMs: number[], envelope: Float32Array, frameMs: number): SourceSectionCandidate[] | null {
+export function desktopSectionCandidates(
+  beatGridMs: number[],
+  envelope: Float32Array,
+  frameMs: number,
+  pcm?: Float32Array,
+  precomputedPhraseMatches?: readonly RepeatedPhraseMatch[],
+): SourceSectionCandidate[] | null {
   if (beatGridMs.length < 8) return null; // fewer than two bars: no structure claim
   const noveltyAt = (ms: number) => {
     const frame = Math.min(envelope.length - 1, Math.max(0, Math.round(ms / frameMs)));
@@ -101,7 +118,10 @@ export function desktopSectionCandidates(beatGridMs: number[], envelope: Float32
       structuralConfidence: Math.round(Math.max(0.05, Math.min(1, strength)) * 1000) / 1000,
     });
   }
-  return labelRepeatedRhythmSections(candidates, beatGridMs, envelope, frameMs);
+  const phraseMatches = precomputedPhraseMatches ?? detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, pcm);
+  const phraseAwareSections = applyRepeatedPhraseMatches(candidates, phraseMatches);
+  const withRepeats = labelRepeatedRhythmSections(phraseAwareSections, beatGridMs, envelope, frameMs, pcm);
+  return pcm ? labelSectionEnergyChanges(withRepeats, beatGridMs, pcm) : withRepeats;
 }
 
 /** Local structural analysis using original source audio only. */
@@ -159,7 +179,7 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
     await updateSectionAnalysis(job.id, { status: "processing", stage: "analyzing" });
     const pcm = await decodeMonoPcm(inputPath);
     const { envelope, frameMs } = onsetEnvelope(pcm);
-    const candidates = desktopSectionCandidates(beatGrid, envelope, frameMs);
+    const candidates = desktopSectionCandidates(beatGrid, envelope, frameMs, pcm);
     if (!candidates) {
       await updateSectionAnalysis(job.id, {
         status: "unavailable",
@@ -171,8 +191,21 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
       });
       return;
     }
+    const fingerprintedCandidates = candidates.map((candidate) => ({
+      ...candidate,
+      passageFingerprint: buildPassageFingerprint({
+        sourceChecksumSha256: source.checksumSha256,
+        startBeatIndex: candidate.startBeatIndex,
+        endBeatIndex: candidate.endBeatIndex,
+        beatGridMs: beatGrid,
+        beatConfidence: currentBeatConfidence(analysis),
+        envelope,
+        frameMs,
+        pcm,
+      }),
+    }));
     const sections = normalizeSourceSections(
-      candidates,
+      fingerprintedCandidates,
       beatGrid,
       {
         analysisEngine: DESKTOP_SECTION_ENGINE,
@@ -180,8 +213,9 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
         sourceChecksumSha256: source.checksumSha256,
       },
       ({ startBeatIndex, endBeatIndex }) => desktopSectionId(source.id, source.checksumSha256, startBeatIndex, endBeatIndex),
+      source.durationSeconds * 1000,
     );
-    if (!sections.length || !sourceSectionsAreValid(sections, beatGrid)) {
+    if (!sections.length || !sourceSectionsAreValid(sections, beatGrid, source.durationSeconds * 1000)) {
       await updateSectionAnalysis(job.id, {
         status: "unavailable",
         stage: "insufficient-evidence",

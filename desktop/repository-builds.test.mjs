@@ -8,6 +8,7 @@ import test from "node:test";
 import { ArcadePackages, extractPinnedTar } from "./arcade/packages.mjs";
 import { packageDirectory } from "./arcade/directory-package.mjs";
 import { downloadPinnedZip, extractSelectedZip } from "./arcade/pinned-zip.mjs";
+import { fetchWithTransientRetries } from "./arcade/retry-fetch.mjs";
 import { BUILD_TOOLS, selectToolFile } from "./arcade/build-tools.mjs";
 import { RepositoryBuilds, repositoryIdentity, sourceBuildIdentity, validateSourceSnapshot, verifyStoppedWorkspace } from "./arcade/repository-builds.mjs";
 const JSZip = createRequire(new URL("../artifacts/arenaforge/package.json", import.meta.url))("jszip");
@@ -75,12 +76,40 @@ test("ZIP download digest failure and cancellation retain no partial archive", a
   t.after(() => { globalThis.fetch = originalFetch; });
   const bytes = Buffer.from("unit ZIP transport bytes, not an executable");
   const pin = { url: "https://github.com/author/game/releases/download/v1/game-win64.zip", bytes: bytes.length, sha256: sha(bytes) };
+  let fetchCalls = 0;
+  globalThis.fetch = async () => ++fetchCalls === 1
+    ? new Response("temporary gateway failure", { status: 504 })
+    : new Response(bytes, { headers: { "Content-Length": String(bytes.length) } });
+  const recovered = path.join(root, "recovered.zip");
+  await downloadPinnedZip(pin, recovered, signal());
+  assert.equal(fetchCalls, 2, "the pinned ZIP downloader recovers from a transient 504");
+  assert.deepEqual(await readFile(recovered), bytes);
   globalThis.fetch = async () => new Response(bytes, { headers: { "Content-Length": String(bytes.length) } });
   await assert.rejects(downloadPinnedZip({ ...pin, sha256: "0".repeat(64) }, path.join(root, "bad.zip"), signal()), /digest mismatch/);
   await assert.rejects(readFile(path.join(root, "bad.zip.partial")), { code: "ENOENT" });
   const controller = new AbortController();
   await assert.rejects(downloadPinnedZip(pin, path.join(root, "cancel.zip"), controller.signal, () => controller.abort()), /abort/i);
   await assert.rejects(readFile(path.join(root, "cancel.zip.partial")), { code: "ENOENT" });
+});
+test("pinned release fetch retries transient HTTP failures but returns permanent failures unchanged", async () => {
+  let calls = 0;
+  const response = await fetchWithTransientRetries("https://example.invalid/pinned.zip", {}, {
+    delayMs: 0,
+    fetchImpl: async () => ++calls < 4
+      ? new Response("temporary gateway failure", { status: 504 })
+      : new Response("pinned bytes", { status: 200 }),
+  });
+  assert.equal(calls, 4, "bounded retries recover after multiple consecutive gateway failures");
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "pinned bytes");
+
+  calls = 0;
+  const missing = await fetchWithTransientRetries("https://example.invalid/missing.zip", {}, {
+    delayMs: 0,
+    fetchImpl: async () => { calls += 1; return new Response("missing", { status: 404 }); },
+  });
+  assert.equal(calls, 1, "permanent publisher responses are not retried");
+  assert.equal(missing.status, 404);
 });
 test("orchestration unit: updates retain versions, cache reuse skips compilation and rollback/removal preserves profiles", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arena-repo-unit-")); t.after(() => rm(root, { recursive: true, force: true }));

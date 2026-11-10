@@ -4,11 +4,12 @@ import type { Source, SourceAnalysis } from "./types";
 import {
   isStaleDesktopAnalysis,
 } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
+import { WAVEYARD_MIXING_CONFIDENCE_THRESHOLD } from "@workspace/arena/lib/waveyard/types";
 
 function confidenceLabel(value: number | null) {
   if (value === null) return "Confidence unavailable";
   if (value >= 0.75) return "High confidence";
-  if (value >= 0.45) return "Medium confidence";
+  if (value >= WAVEYARD_MIXING_CONFIDENCE_THRESHOLD) return "Medium confidence";
   return "Low confidence";
 }
 

@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
+import { artworkEnvironment, compactMusicAnalysisLabel, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey, type AutomaticRemixCompatibilityReport, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
 import { CinematicVisual } from "./visual/CinematicVisual";
 import { AutomaticRemixPrompt } from "./remix/AutomaticRemixPrompt";
+import { AutomaticRemixEvidence } from "./remix/AutomaticRemixEvidence";
 import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTimeline";
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
@@ -153,6 +154,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
   const [automaticRemixMessage, setAutomaticRemixMessage] = useState<string | null>(null);
   const [automaticGeneration, setAutomaticGeneration] = useState<AutomaticRemixGenerationSummary | null>(null);
+  const [automaticCompatibilityReport, setAutomaticCompatibilityReport] = useState<AutomaticRemixCompatibilityReport | null>(null);
   const [meetingPoints, setMeetingPoints] = useState<MusicalMeetingPoint[]>([]);
   const [meetingContext, setMeetingContext] = useState<{ stemAssetId: string; sourceSectionId: string } | null>(null);
   const [meetingMessage, setMeetingMessage] = useState<string | null>(null);
@@ -207,33 +209,44 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const sourceAssetIdByStemId = useMemo(() => new Map(stems.map((stem) => [stem.id, stem.sourceAssetId])), [stems]);
   const sourceBpmByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
-    const bpm = analysis?.bpm;
-    return [stem.id, analysis?.status === "complete" && Number.isFinite(bpm) && bpm! >= 40 && bpm! <= 300 ? bpm! : null] as const;
+    return [stem.id, analysis?.status === "complete" ? trustedAnalysisBpm(analysis.bpm, analysis.bpmConfidence) : null] as const;
   })), [sourceById, stems]);
   const sourceKeyByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
-    const key = analysis?.status === "complete" ? normaliseMusicalKey(analysis.musicalKey) : null;
+    const key = analysis?.status === "complete"
+      ? normaliseMusicalKey(trustedAnalysisKey(analysis.musicalKey, analysis.keyConfidence))
+      : null;
     return [stem.id, key] as const;
   })), [sourceById, stems]);
   const sourceBeatByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
+    const beatGrid = analysis?.status === "complete"
+      ? trustedAnalysisBeatGrid(analysis.beatGrid, analysis.bpmConfidence, analysis.beatConfidence)
+      : null;
     return [stem.id, {
       status: analysis?.status ?? "unavailable",
-      beatGrid: analysis?.status === "complete" && Array.isArray(analysis.beatGrid) ? analysis.beatGrid : null,
-      beatConfidence: analysis?.beatConfidence ?? null,
+      beatGrid,
+      beatConfidence: beatGrid ? analysis?.beatConfidence ?? null : null,
     }] as const;
   })), [sourceById, stems]);
   const sourceAlignmentByStemId = useMemo(() => new Map(stems.map((stem) => {
     const source = sourceById.get(stem.sourceAssetId);
     const analysis = source?.analysis;
+    const bpm = analysis?.status === "complete" ? trustedAnalysisBpm(analysis.bpm, analysis.bpmConfidence) : null;
+    const musicalKey = analysis?.status === "complete"
+      ? normaliseMusicalKey(trustedAnalysisKey(analysis.musicalKey, analysis.keyConfidence))
+      : null;
+    const beatGrid = analysis?.status === "complete"
+      ? trustedAnalysisBeatGrid(analysis.beatGrid, analysis.bpmConfidence, analysis.beatConfidence)
+      : null;
     return [stem.id, {
       sourceAssetId: stem.sourceAssetId,
       sourceName: source?.originalFilename ?? "Unknown source",
       analysisStatus: analysis?.status ?? "unavailable",
-      bpm: analysis?.status === "complete" ? analysis.bpm : null,
-      musicalKey: analysis?.status === "complete" ? normaliseMusicalKey(analysis.musicalKey) : null,
-      beatGrid: analysis?.status === "complete" && Array.isArray(analysis.beatGrid) ? analysis.beatGrid : null,
-      beatConfidence: analysis?.beatConfidence ?? null,
+      bpm,
+      musicalKey,
+      beatGrid,
+      beatConfidence: beatGrid ? analysis?.beatConfidence ?? null : null,
       sectionAnalysisStatus: source?.sectionAnalysis?.status ?? null,
     }] as const;
   })), [sourceById, stems]);
@@ -453,6 +466,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       setRecoveryDraft(draft);
       setRecoveryDraftConflicts(Boolean(draft && studioRecoveryDraftIsStale(projectId, next)));
       setAutomaticGeneration(body.generation ?? null);
+      setAutomaticCompatibilityReport(body.generation?.compatibility ?? null);
       setClipSelection(null);
       setSelectedClipIds([]);
       reset();
@@ -704,15 +718,18 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     if (creatingRemixSession || buildingAutomaticRemix !== null) return;
     setBuildingAutomaticRemix(variant);
     setAutomaticRemixMessage(null);
+    setAutomaticCompatibilityReport(null);
     try {
       const response = await fetch(`/api/waveyard/projects/${projectId}/automatic-remixes`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || typeof body.remix?.id !== "string") {
+        setAutomaticCompatibilityReport(body.compatibility ?? null);
         setAutomaticRemixMessage(body.error ?? "Waveyard could not build an automatic arrangement yet.");
         return;
       }
+      setAutomaticCompatibilityReport(body.plan?.compatibility ?? null);
       if (!await loadRemix(body.remix.id)) {
         setAutomaticRemixMessage("The arrangement was created, but Studio could not open it. Refresh the page to try again.");
         return;
@@ -1197,8 +1214,11 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       </div>
     )}
     {presentation === "play" ? <>
-      {!remix && <AutomaticRemixPrompt building={buildingAutomaticRemix} message={automaticRemixMessage} onBuild={createAutomaticRemix} />}
-      {remix && (automaticRemixMessage || automaticGeneration) && <p className="automatic-remix-banner" role="status">{automaticRemixMessage ?? `Automatic ${automaticGeneration?.variant ?? "original"} arrangement · verified sections, tempo, and key remain explainable in Studio.`}</p>}
+      {!remix && <AutomaticRemixPrompt building={buildingAutomaticRemix} message={automaticRemixMessage} compatibility={automaticCompatibilityReport} onBuild={createAutomaticRemix} />}
+      {remix && (automaticRemixMessage || automaticGeneration) && <>
+        <p className="automatic-remix-banner" role="status">{automaticRemixMessage ?? `Automatic ${automaticGeneration?.variant ?? "original"} arrangement · verified sections, tempo, and key remain explainable in Studio.`}</p>
+        <AutomaticRemixEvidence report={automaticCompatibilityReport ?? automaticGeneration?.compatibility} />
+      </>}
       <LivingPlayer
       source={source}
       stems={stems}

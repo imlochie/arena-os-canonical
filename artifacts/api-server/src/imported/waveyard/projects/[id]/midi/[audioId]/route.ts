@@ -14,15 +14,21 @@ import {
   drumEvents,
   harmonyAnalyses,
   harmonyEvents,
+  sourceAnalyses,
+  sourceAssets,
   stemAssets,
   vocalAnalyses,
   vocalPitchFrames,
 } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
-import { buildStandardMidiFile } from "@workspace/arena/lib/waveyard/midi-file";
+import { encodeMidiFile } from "@workspace/arena/lib/waveyard/midi-file";
+import { currentMidiSourceTempo, midiAnalysisReadinessError, resolveMidiTempoBpm } from "@workspace/arena/lib/waveyard/midi-analysis-readiness";
 import {
   drumEventsToMidiNotes,
   harmonyEventsToMidiNotes,
+  drumAnalysisProvenanceReason,
+  harmonyAnalysisProvenanceReason,
+  vocalAnalysisProvenanceReason,
   vocalFramesToMidiNotes,
   type DrumEvent,
   type HarmonyEvent,
@@ -35,9 +41,9 @@ export const dynamic = "force-dynamic";
 const KINDS = ["vocal", "drums", "harmony"] as const;
 type MidiExportKind = (typeof KINDS)[number];
 
-function parseBpm(raw: string | null): number {
+function parseBpm(raw: string | null): number | null {
   const parsed = Number(raw);
-  return raw !== null && Number.isFinite(parsed) && parsed >= 20 && parsed <= 300 ? parsed : 120;
+  return raw !== null && Number.isFinite(parsed) && parsed >= 20 && parsed <= 300 ? parsed : null;
 }
 
 export async function GET(
@@ -55,7 +61,7 @@ export async function GET(
     if (!(KINDS as readonly string[]).includes(kind)) {
       return Response.json({ error: `kind must be one of ${KINDS.join(", ")}.` }, { status: 400 });
     }
-    const bpm = parseBpm(url.searchParams.get("bpm"));
+    const requestedBpm = parseBpm(url.searchParams.get("bpm"));
 
     const [stem] = await db
       .select()
@@ -63,11 +69,38 @@ export async function GET(
       .where(and(eq(stemAssets.id, audioId), eq(stemAssets.projectId, projectId)))
       .limit(1);
     if (!stem) return Response.json({ error: "Stem not found." }, { status: 404 });
+    const [source] = await db
+      .select()
+      .from(sourceAssets)
+      .where(and(eq(sourceAssets.id, stem.sourceAssetId), eq(sourceAssets.projectId, projectId)))
+      .limit(1);
+    if (!source) return Response.json({ error: "Stem source is unavailable." }, { status: 404 });
+    const [sourceAnalysis] = await db
+      .select()
+      .from(sourceAnalyses)
+      .where(eq(sourceAnalyses.sourceAssetId, source.id))
+      .limit(1);
+    const analyzedBpm = currentMidiSourceTempo(sourceAnalysis, source.checksumSha256);
+    const bpm = resolveMidiTempoBpm(requestedBpm, analyzedBpm);
 
     let notes: MidiNoteEvent[];
     if (kind === "vocal") {
       const [analysis] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
       if (!analysis) return Response.json({ error: "No vocal analysis for this stem yet. Run vocal analysis first." }, { status: 404 });
+      const provenance = vocalAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId,
+        expectedSourceAssetId: source.id,
+        stemAssetId: analysis.stemAssetId,
+        expectedStemAssetId: stem.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: source.checksumSha256,
+        stemChecksumSha256: analysis.stemChecksumSha256,
+        expectedStemChecksumSha256: stem.checksumSha256,
+        analysisEngine: analysis.analysisEngine,
+        analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      const readinessError = midiAnalysisReadinessError("vocal", analysis.status, provenance);
+      if (readinessError) return Response.json({ error: readinessError.error }, { status: readinessError.status });
       const rows = await db
         .select()
         .from(vocalPitchFrames)
@@ -85,6 +118,20 @@ export async function GET(
     } else if (kind === "drums") {
       const [analysis] = await db.select().from(drumAnalyses).where(eq(drumAnalyses.stemAssetId, stem.id)).limit(1);
       if (!analysis) return Response.json({ error: "No drum analysis for this stem yet. Run drum analysis first." }, { status: 404 });
+      const provenance = drumAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId,
+        expectedSourceAssetId: source.id,
+        stemAssetId: analysis.stemAssetId,
+        expectedStemAssetId: stem.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: source.checksumSha256,
+        stemChecksumSha256: analysis.stemChecksumSha256,
+        expectedStemChecksumSha256: stem.checksumSha256,
+        analysisEngine: analysis.analysisEngine,
+        analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      const readinessError = midiAnalysisReadinessError("drums", analysis.status, provenance);
+      if (readinessError) return Response.json({ error: readinessError.error }, { status: readinessError.status });
       const rows = await db
         .select()
         .from(drumEvents)
@@ -106,6 +153,16 @@ export async function GET(
         .where(eq(harmonyAnalyses.sourceAssetId, stem.sourceAssetId))
         .limit(1);
       if (!analysis) return Response.json({ error: "No harmony analysis for this source yet. Run harmony analysis first." }, { status: 404 });
+      const provenance = harmonyAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId,
+        expectedSourceAssetId: source.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: source.checksumSha256,
+        analysisEngine: analysis.analysisEngine,
+        analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      const readinessError = midiAnalysisReadinessError("harmony", analysis.status, provenance);
+      if (readinessError) return Response.json({ error: readinessError.error }, { status: readinessError.status });
       const rows = await db
         .select()
         .from(harmonyEvents)
@@ -121,7 +178,10 @@ export async function GET(
       notes = harmonyEventsToMidiNotes(events);
     }
 
-    const file = buildStandardMidiFile(notes, bpm);
+    if (notes.length === 0) {
+      return Response.json({ error: "No confident note events were found for this MIDI export." }, { status: 422 });
+    }
+    const file = encodeMidiFile(notes, bpm);
     return new Response(new Uint8Array(file), {
       status: 200,
       headers: {

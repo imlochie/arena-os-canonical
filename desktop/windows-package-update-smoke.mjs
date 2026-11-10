@@ -9,6 +9,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -42,6 +43,44 @@ const report = {
   checks: checkIds.map((id) => ({ id, status: "not_run" })),
 };
 
+async function dumpChromiumLog() {
+  const text = await readFile(path.join(testRoot ?? "", "chromium.log"), "utf8").catch(() => null);
+  console.error("--- chromium.log (last 80 lines) ---");
+  console.error(text === null ? "(not present)" : text.trim().split("\n").slice(-80).join("\n"));
+}
+
+async function dumpLogs() {
+  // Application and database logs only; no record values are written to them.
+  for (const name of ["desktop.log", "postgres.log"]) {
+    const text = await readFile(path.join(dataRoot ?? "", "logs", name), "utf8").catch(() => null);
+    console.error(`--- ${name} (last 60 lines) ---`);
+    console.error(text === null ? "(not present)" : text.trim().split("\n").slice(-60).join("\n"));
+  }
+}
+
+// What the main process knows about its windows and processes when a launch
+// produced no usable page: distinguishes "no window", "renderer crashed" and
+// "renderer busy-looping" without touching application state.
+async function dumpWindowState() {
+  if (!desktop) return;
+  console.error("--- window state ---");
+  const state = await Promise.race([
+    desktop.evaluate(({ BrowserWindow, app }) => ({
+      windows: BrowserWindow.getAllWindows().map((win) => ({
+        url: win.webContents.getURL(),
+        loading: win.webContents.isLoading(),
+        crashed: win.webContents.isCrashed(),
+        visible: win.isVisible(),
+      })),
+      processes: app.getAppMetrics().map((metric) => ({
+        type: metric.type, pid: metric.pid, cpu: metric.cpu.percentCPUUsage,
+      })),
+    })).catch((error) => `evaluate failed: ${error.message}`),
+    new Promise((resolve) => setTimeout(() => resolve("evaluate timed out after 20s"), 20_000)),
+  ]);
+  console.error(typeof state === "string" ? state : JSON.stringify(state, null, 1));
+}
+
 let activeCheck = null;
 let testRoot;
 let dataRoot;
@@ -63,14 +102,21 @@ function install(installer, installDir) {
     windowsHide: true,
     stdio: "ignore",
   });
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0);
+  assert.equal(result.error, undefined, `installer error: ${result.error}`);
+  assert.equal(result.status, 0, `installer ${installer} exited ${result.status} signal ${result.signal}`);
 }
 
 async function launch(executable, profileDir) {
   desktop = await _electron.launch({
     executablePath: executable,
-    args: [`--user-data-dir=${profileDir}`],
+    args: [
+      `--user-data-dir=${profileDir}`,
+      // Chromium's own log is the only record of why a navigation never
+      // commits; the application log stops once the server has answered.
+      "--enable-logging=file",
+      `--log-file=${path.join(testRoot, "chromium.log")}`,
+      "--log-level=0",
+    ],
     timeout: 150_000,
     env: {
       ...process.env,
@@ -206,7 +252,11 @@ async function run() {
 try {
   await run();
   console.log("Windows package update check passed.");
-} catch {
+} catch (error) {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  await dumpWindowState();
+  await dumpChromiumLog();
+  await dumpLogs();
   const failedCheck = activeCheck ?? "older_package_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";
@@ -214,7 +264,17 @@ try {
   console.error(`Windows package update check failed: ${failedCheck}.`);
   process.exitCode = 1;
 } finally {
-  if (desktop) await desktop.close().catch(() => {});
+  if (desktop) {
+    // A launch that never produced a window can leave close() waiting forever.
+    const closed = await Promise.race([
+      desktop.close().then(() => true, () => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 30_000)),
+    ]);
+    if (!closed) {
+      spawnSync("taskkill", ["/F", "/T", "/IM", "ArenaForge.exe"], { windowsHide: true });
+      spawnSync("taskkill", ["/F", "/T", "/IM", "postgres.exe"], { windowsHide: true });
+    }
+  }
   if (testRoot) {
     const pidFile = path.join(
       testRoot,

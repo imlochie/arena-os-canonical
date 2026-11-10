@@ -25,6 +25,7 @@ let database;
 let origin;
 let window;
 let stopping = false;
+let serverStopRequested = false;
 let log = () => {};
 let arcade;
 
@@ -74,6 +75,7 @@ async function stop() {
 async function stopBackendServices() {
   if (server && server.exitCode === null && server.signalCode === null) {
     const child = server;
+    serverStopRequested = true;
     const exited = new Promise(resolve => child.once("exit", resolve));
     if (child.connected) child.send("shutdown");
     await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 15_000))]);
@@ -563,7 +565,8 @@ async function start() {
   server.on("error", error => { failure = error.message; });
   server.on("exit", code => {
     failure = `API exited (${code})`;
-    if (window && !stopping) {
+    // A stop Arena asked for (backup restore, shutdown) is not a crash.
+    if (window && !stopping && !serverStopRequested) {
       dialog.showErrorBox("ArenaForge API stopped", `${failure}. Restart ArenaForge; see the desktop log if this repeats.`);
       app.quit();
     }
@@ -599,6 +602,19 @@ async function start() {
   }
   // A normal launch never enables remote debugging. Acceptance is explicit.
   log("runtime", `ready; platform=${process.platform}; version=${app.getVersion()}; data=${root}`);
+  // The packaged app is its own local server, so the web build's offline-shell
+  // service worker has nothing to offer. A worker left in the profile by the
+  // previous run controls the first navigation of the next one, and after an
+  // in-place update the window can sit on an empty, never-committed page
+  // (renderer idle, server already answered /spaces). Start every run without it.
+  try {
+    await Promise.race([
+      window.webContents.session.clearStorageData({ origin, storages: ["serviceworkers", "cachestorage"] }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timed out after 15s")), 15_000)),
+    ]);
+  } catch (error) {
+    log("runtime", `Could not clear service-worker state: ${error.message}`);
+  }
   await window.loadURL(`${origin}/spaces`);
   setDataMenu(root);
 }

@@ -8,6 +8,7 @@ import { extractSelectedZip, sha256File } from "./arcade/pinned-zip.mjs";
 import { packageDirectory } from "./arcade/directory-package.mjs";
 import { buildDosCoin } from "./arcade/dos-fixture.mjs";
 import { packageKey, safePackagePath } from "./arcade/packages.mjs";
+import { fetchWithTransientRetries } from "./arcade/retry-fetch.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const workspace = path.dirname(here), cache = path.join(workspace, "generated-artifacts", "classic-upstream");
@@ -22,7 +23,7 @@ async function acquire(pin) {
   let response, url = new URL(pin.url);
   for (let redirects = 0; redirects <= 5; redirects++) {
     if (url.protocol !== "https:" || !allowedHosts.has(url.hostname) || url.username || url.password) throw new Error("Unapproved classic build-source host.");
-    response = await fetch(url, { redirect: "manual", signal });
+    response = await fetchWithTransientRetries(url, { redirect: "manual", signal });
     if (response.status < 300 || response.status >= 400) break;
     const location = response.headers.get("location"); await response.body?.cancel();
     if (!location || redirects === 5) throw new Error("Invalid classic source redirect.");

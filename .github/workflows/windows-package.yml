@@ -4,9 +4,16 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      force_source_baseline:
+        description: Build the previous app from source instead of reusing an accepted installer artifact
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   installed-package:
@@ -23,6 +30,8 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          # Use the runner's C:\msys64, where the Classic core build expects it.
+          release: false
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
 
       - uses: pnpm/action-setup@v4
@@ -43,13 +52,59 @@ jobs:
           --filter "@workspace/api-server..."
           --filter "@workspace/desktop..."
 
-      - name: Run desktop packaging unit tests
-        run: pnpm --filter @workspace/desktop test
+      - name: Run desktop packaging unit tests with per-file evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $root = (Get-Location).Path
+          $evidence = Join-Path $root "generated-artifacts/desktop-test-results"
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $results = @()
+          Push-Location desktop
+          try {
+            Get-ChildItem -Filter *.test.mjs | ForEach-Object {
+              $name = $_.Name
+              $output = & node --test $name 2>&1 | Out-String
+              $code = $LASTEXITCODE
+              $status = if ($code -eq 0) { "PASS" } else { "FAIL" }
+              $results += [pscustomobject]@{ file = $name; code = $code; status = $status; output = $output }
+              Set-Content -Path (Join-Path $evidence "$name.txt") -Value $output
+            }
+          } finally {
+            Pop-Location
+          }
+          $results | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $evidence "summary.json")
+          $failed = $results | Where-Object { $_.code -ne 0 }
+          if ($failed) { $failed | ForEach-Object { Write-Host "FAILED: $($_.file)" }; exit 1 }
+
+      - name: Upload desktop test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-test-evidence
+          path: generated-artifacts/desktop-test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Build Windows x64 installer
+        run: pnpm --filter @workspace/desktop run dist:win
+        env:
+          # Independent downloadable TARs, not additional installer payload.
+          ARENA_CLASSIC_PACKAGES: "1"
 
       - name: Build previous Windows package for update test
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
+          # Job logs are not readable from the environment that triages this
+          # workflow, so every failure in this step names itself in a check-run
+          # annotation. Without this a failure here is only "exit code 1".
+          function Fail([string]$message) {
+            Write-Host "::error::windows-package step 11: $message"
+            throw $message
+          }
           $workflowEvent = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
           $baseline = $null
           if ($workflowEvent.pull_request.base.sha) {
@@ -59,39 +114,275 @@ jobs:
           } else {
             $baseline = (git rev-parse HEAD^).Trim()
           }
-          if (-not $baseline) { throw "The previous package revision could not be identified." }
-
-          $previousSource = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) "arenaforge-previous-source"
+          if (-not $baseline) { Fail "The previous package revision could not be identified." }
           $previousInstaller = Join-Path $env:RUNNER_TEMP "ArenaForge-previous.exe"
+          $forceSourceBaseline = $workflowEvent.inputs.force_source_baseline -eq "true"
+
+          # Prefer an installer from an earlier successful push on this same
+          # branch. It has already passed the complete installed-package smoke
+          # and is a genuine older package for the in-place update check. This
+          # avoids rebuilding the prior app from scratch (and redownloading
+          # hundreds of MB of pinned upstream assets) on every run. If no live
+          # accepted artifact is available, fall back to the source build below.
+          $branch = if ($workflowEvent.pull_request.head.ref) { $workflowEvent.pull_request.head.ref } else { $env:GITHUB_REF_NAME }
+          $currentHead = if ($workflowEvent.pull_request.head.sha) { $workflowEvent.pull_request.head.sha } else { $env:GITHUB_SHA }
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          if ($forceSourceBaseline) {
+            Write-Host "::notice::Source-baseline acceptance was explicitly requested; skipping accepted-installer lookup."
+          } else {
+            try {
+              $runsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-package.yml/runs?status=success&per_page=30"
+              $runs = (Invoke-RestMethod -Uri $runsUri -Headers $headers -TimeoutSec 30).workflow_runs
+              foreach ($run in $runs) {
+                if ($run.event -ne "push" -or $run.head_branch -ne $branch -or $run.head_sha -eq $currentHead) { continue }
+                git merge-base --is-ancestor $run.head_sha $currentHead *> $null
+                if ($LASTEXITCODE -ne 0) { continue }
+                $artifactsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$($run.id)/artifacts?per_page=100"
+                $artifact = (Invoke-RestMethod -Uri $artifactsUri -Headers $headers -TimeoutSec 30).artifacts |
+                  Where-Object { $_.name -eq "arenaforge-windows-x64" -and -not $_.expired } |
+                  Select-Object -First 1
+                if (-not $artifact) { continue }
+                $archive = Join-Path $env:RUNNER_TEMP "ArenaForge-previous-artifact.zip"
+                $artifactDir = Join-Path $env:RUNNER_TEMP "ArenaForge-previous-artifact"
+                Invoke-WebRequest -Uri $artifact.archive_download_url -Headers $headers -OutFile $archive -TimeoutSec 180
+                if ($artifact.digest -notmatch "^sha256:([0-9a-f]{64})$") { throw "The prior installer artifact has no SHA-256 digest." }
+                $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($archiveHash -ne $Matches[1]) { throw "The prior installer artifact digest does not match GitHub's metadata." }
+                Expand-Archive -LiteralPath $archive -DestinationPath $artifactDir -Force
+                $installer = Get-ChildItem $artifactDir -Filter "*.exe" -Recurse |
+                  Where-Object { $_.Name -notmatch "uninstall" } |
+                  Select-Object -First 1
+                if (-not $installer) { Fail "The prior accepted package artifact contained no installer (run $($run.id))." }
+                Copy-Item $installer.FullName $previousInstaller
+                Write-Host "previous package: using installer from successful run $($run.id), commit $($run.head_sha)"
+                "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
+                exit 0
+              }
+              Write-Host "::warning::No unexpired accepted prior installer artifact exists on this branch; building the previous revision from source."
+            } catch {
+              Write-Host "::warning::Could not retrieve a prior accepted installer artifact ($($_.Exception.Message)); building the previous revision from source."
+            }
+          }
+
+          # Keep the previous tree under the runner temp root and enable Git's
+          # Windows long-path handling; the nested pnpm install otherwise makes
+          # worktree cleanup fail with "Filename too long".
+          $previousSource = Join-Path $env:RUNNER_TEMP "prev"
           git worktree add --detach $previousSource $baseline
-          if ($LASTEXITCODE -ne 0) { throw "The previous package source could not be prepared." }
+          if ($LASTEXITCODE -ne 0) { Fail "The previous package source could not be prepared." }
+          # The current app was packaged immediately before this step. Reuse
+          # its validated SDL and FFmpeg archives and its Arcade catalog in the
+          # old source tree. The previous app's independent emulator packages
+          # are not installer payload and are not part of this update
+          # acceptance; rebuilding them only caused redundant CDN downloads.
+          $currentArcadeArtifacts = Join-Path $env:GITHUB_WORKSPACE "generated-artifacts/arcade-native-packages"
+          $previousArcadeArtifacts = Join-Path $previousSource "generated-artifacts/arcade-native-packages"
+          $currentMediaCache = Join-Path $env:GITHUB_WORKSPACE "generated-artifacts/windows-tool-cache"
+          $previousMediaCache = Join-Path $previousSource "generated-artifacts/windows-tool-cache"
+          foreach ($artifactName in @("SDL2.zip", "arcade-catalog.json")) {
+            $artifactSource = Join-Path $currentArcadeArtifacts $artifactName
+            if (-not (Test-Path $artifactSource)) { Fail "Current package did not leave required verified Arcade build input $artifactName." }
+          }
+          $mediaArchives = @(Get-ChildItem -LiteralPath $currentMediaCache -File -ErrorAction SilentlyContinue)
+          if ($mediaArchives.Count -eq 0) { Fail "Current package did not leave its verified pinned media-tool cache." }
+          New-Item -ItemType Directory -Path $previousArcadeArtifacts -Force | Out-Null
+          New-Item -ItemType Directory -Path $previousMediaCache -Force | Out-Null
+          Copy-Item (Join-Path $currentArcadeArtifacts "SDL2.zip") -Destination $previousArcadeArtifacts -Force
+          Copy-Item (Join-Path $currentArcadeArtifacts "arcade-catalog.json") -Destination $previousArcadeArtifacts -Force
+          foreach ($archive in $mediaArchives) { Copy-Item $archive.FullName -Destination $previousMediaCache -Force }
+          # Two kinds of file come from the tested branch when building the
+          # PREVIOUS package, and nothing else does:
+          #
+          #  a) packaging configuration -- pnpm-workspace.yaml, because the base
+          #     prunes the win32-x64 binaries its own Windows build needs;
+          #  b) the specific defects that make the base build FAIL, listed
+          #     explicitly below and validated before use.
+          #
+          # Everything else -- the app, the server, the renderer, the tests --
+          # comes from the base revision, which is what this step exists to
+          # prove: an older installer installs, then updates. If any listed file
+          # is missing from the tested tree the step fails loudly instead of
+          # silently building a differently-sourced package.
+          $baseFixFiles = @(
+            # electron-builder never copies stage/server/node_modules through
+            # extraResources; the base has no afterPack hook, so the packaged app
+            # ships a server with no dependencies and dist:win fails.
+            "desktop/electron-builder.cjs",
+            # Newer Windows SDKs need propkeydef.h before the device property
+            # keys, and winrt/Windows.Foundation.h before the Media.Control
+            # header. Without them the native capture host does not compile.
+            "desktop/native/waveyard-capture-host.cpp",
+            # The base pins a fixed SHA-256 for BtbN's moving "releases/download/
+            # latest" tag. That URL is republished continuously, so the download
+            # can never hash to the pinned value again -- the build fails with
+            # "FFmpeg archive SHA-256 mismatch" no matter who runs it or when.
+            # A hash pin against a mutable URL is not a property worth
+            # reproducing; this file points at an immutable dated release.
+            "desktop/ffmpeg-bundle.mjs",
+            # The base resolves "@embedded-postgres/windows-x64/package.json",
+            # but that package only exports ./dist/index.js, so resolution fails
+            # with "Package subpath './package.json' is not defined by
+            # \"exports\"". This file derives the package root from the entry
+            # point instead.
+            "desktop/build.mjs",
+            # The base launches postgres.exe directly, which PostgreSQL refuses
+            # for an elevated administrator ("Execution of PostgreSQL by a user
+            # with administrative permissions is not permitted"). The hosted
+            # runner is elevated, so the base app can never start there and the
+            # update check failed at older_package_starts. This file starts the
+            # server through pg_ctl; the on-disk cluster format is unchanged.
+            "desktop/database.mjs",
+            # The hosted artifact service intermittently returns HTTP 504 for
+            # immutable classic/SDL releases. Preserve the previous app's
+            # build recipes while using the tested bounded retry helper, which
+            # still enforces the same exact size and SHA-256 pins.
+            "desktop/arcade/retry-fetch.mjs",
+            "desktop/build-classic-packages.mjs",
+            "desktop/build-arcade-fixture.mjs"
+          )
+          foreach ($fix in $baseFixFiles) {
+            $source = Join-Path $env:GITHUB_WORKSPACE $fix
+            if (-not (Test-Path $source)) {
+              Fail "base-fix file missing from the tested tree: $fix. The previous package would be built from the base revision unchanged, which cannot be packaged on Windows."
+            }
+          }
+
           try {
             Push-Location $previousSource
-            pnpm install --frozen-lockfile --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
-            if ($LASTEXITCODE -ne 0) { throw "Previous package dependencies could not be installed." }
-            $env:ARENA_CLASSIC_PACKAGES = "1"
-            pnpm --filter @workspace/desktop run dist:win
-            if ($LASTEXITCODE -ne 0) { throw "The previous Windows package could not be built." }
+
+            # The base revision cannot be packaged on Windows as it stands, and
+            # this step is the only thing that ever discovered that.
+            #
+            # `main` prunes the win32-x64 native binaries it would need to build
+            # on Windows:
+            #   "esbuild>@esbuild/win32-x64": "-"
+            #   "lightningcss>lightningcss-win32-x64-msvc": "-"
+            #   "@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc": "-"
+            #   "rollup>@rollup/rollup-win32-x64-msvc": "-"
+            # so installing and building that tree resolves those packages to
+            # nothing. (Commit 2ec27f4 removes those overrides, but it lives on
+            # the convergence branch, not on main.) This is also why the job has
+            # only ever passed on `push` events: a push baseline is a commit on
+            # this branch, which already has the fix.
+            #
+            # So: build the previous package from the base revision's SOURCE,
+            # but take dependency resolution from the branch under test. The
+            # thing this step must prove -- that an older installer can be
+            # installed and then updated -- is unaffected, because the previous
+            # *app* is still the base revision's code. Only the packaging
+            # configuration that makes a Windows build possible at all comes
+            # from the tested tree, and its absence in the base is a defect in
+            # the base, not a property worth reproducing.
+            #
+            # --frozen-lockfile is deliberately not used: the base lockfile
+            # encodes the pruning above and could not be satisfied with win32
+            # binaries restored.
+            Copy-Item (Join-Path $env:GITHUB_WORKSPACE "pnpm-workspace.yaml") -Destination "pnpm-workspace.yaml" -Force
+            Remove-Item "pnpm-lock.yaml" -Force -ErrorAction SilentlyContinue
+            foreach ($fix in $baseFixFiles) {
+              Copy-Item (Join-Path $env:GITHUB_WORKSPACE $fix) -Destination $fix -Force
+              Write-Host "previous package: applied base fix $fix from the tested tree"
+            }
+
+            # electron-builder cannot resolve repository metadata through a
+            # .git worktree pointer. Add only packaging metadata to this
+            # temporary previous-source copy; no application code or
+            # dependencies change.
+            $desktopPackagePath = Join-Path (Get-Location).Path "desktop/package.json"
+            $desktopPackage = Get-Content -LiteralPath $desktopPackagePath -Raw | ConvertFrom-Json
+            if (-not $desktopPackage.repository) {
+              $desktopPackage | Add-Member -NotePropertyName repository -NotePropertyValue ([ordered]@{
+                type = "git"
+                url = "https://github.com/$env:GITHUB_REPOSITORY.git"
+              })
+            }
+            $desktopPackage | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $desktopPackagePath -Encoding utf8NoBOM
+            Write-Host "previous package: added repository metadata for electron-builder's worktree lookup"
+
+            $baseRevision = (git rev-parse HEAD).Trim()
+            Write-Host "previous package: source=$baseline dependency-config=from tested branch ($baseRevision)"
+            # State the one fact this whole workaround rests on. Only the
+            # packages the Windows build actually needs are checked: a bare
+            # "win32-x64" match also hits @rollup/rollup-win32-x64-gnu (the gnu
+            # variant, not the msvc one used on Windows) and @expo/ngrok-bin,
+            # neither of which affects the build, and reporting those as a
+            # problem is noise that hides a real one.
+            $requiredBinaries = @(
+              "esbuild>@esbuild/win32-x64",
+              "lightningcss>lightningcss-win32-x64-msvc",
+              "@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc",
+              "rollup>@rollup/rollup-win32-x64-msvc"
+            )
+            $stillPruned = @()
+            foreach ($binary in $requiredBinaries) {
+              $line = Select-String -Path "pnpm-workspace.yaml" -Pattern ([regex]::Escape($binary)) -SimpleMatch
+              if ($line) { $stillPruned += $binary }
+            }
+            if ($stillPruned.Count -gt 0) {
+              Write-Host "::warning::windows-package: the tested tree still prunes $($stillPruned -join ', '); the previous package build will likely fail."
+            } else {
+              Write-Host "previous package: all four required win32-x64 binaries are available in the tested tree"
+            }
+            Write-Host "previous package: pnpm $(pnpm --version), node $(node --version)"
+
+            pnpm install --filter "@workspace/arenaforge..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
+            if ($LASTEXITCODE -ne 0) {
+              Fail "Previous package dependencies could not be installed (pnpm install exited $LASTEXITCODE). If the base revision still cannot resolve win32-x64 binaries, the overrides in pnpm-workspace.yaml were not the remaining cause."
+            }
+            $env:ARENA_CLASSIC_PACKAGES = "0"
+            Write-Host "previous package: skip independent optional emulator packages; use verified current-build catalog"
+            # Capture the build output. Job logs are unreachable from the
+            # environment that triages this workflow, so on failure the tail of
+            # the real output becomes the annotation -- "dist:win exited 1" on
+            # its own says nothing about which command failed.
+            $buildLog = Join-Path $env:RUNNER_TEMP "previous-dist-win.log"
+            # Let cmd.exe do the redirection. Two earlier attempts failed here,
+            # both because of pwsh rather than the build: with
+            # $ErrorActionPreference = "Stop", a native command's stderr becomes
+            # error RECORDS, and `2>&1 | Tee-Object` (and then `*>&1 | ...`)
+            # handed those records to the pipeline. What reached the file was
+            # PowerShell complaining -- "Data at the root level is invalid /
+            # Cannot process the XML from the 'Error' stream of pnpm.CMD" -- and
+            # the build's own output was lost. Routing through cmd means
+            # PowerShell sees only the exit code.
+            & cmd /c "pnpm --filter @workspace/desktop run dist:win > `"$buildLog`" 2>&1"
+            $buildCode = $LASTEXITCODE
+            if ($buildCode -ne 0) {
+              $all = Get-Content $buildLog -ErrorAction SilentlyContinue |
+                Where-Object { $_.Trim().Length -gt 0 }
+              # Drop download progress bars: they are most of a build log's tail
+              # and they pushed the one useful line out of the last annotation.
+              $meaningful = $all | Where-Object { $_ -notmatch "■" -and $_ -notmatch " of \d" }
+              # Prefer lines that name a problem; fall back to the plain tail.
+              $cause = $meaningful |
+                Where-Object { $_ -match "error|Error|cannot|Cannot|not defined|not found|failed|mismatch|ENOENT|exited|missing" } |
+                Select-Object -Last 6
+              $tail = if ($cause) { $cause } else { $meaningful | Select-Object -Last 8 }
+              foreach ($line in $tail) {
+                Write-Host "::error::previous-dist-win: $($line.Trim())"
+              }
+              if (-not $tail) { Write-Host "::error::previous-dist-win: produced no output at all before failing" }
+              Fail "The previous Windows package could not be built (dist:win exited $buildCode). The last output lines are annotated above."
+            }
             $builtInstaller = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
               Where-Object { $_.Name -notmatch "uninstall" } |
               Select-Object -First 1
-            if (-not $builtInstaller) { throw "The previous Windows installer was not created." }
+            if (-not $builtInstaller) { Fail "The previous Windows installer was not created; generated-artifacts/windows contains no .exe." }
             Copy-Item $builtInstaller.FullName $previousInstaller
           } finally {
             Pop-Location
-            git worktree remove --force $previousSource
+            git -c core.longpaths=true worktree remove --force $previousSource
           }
-          if (-not (Test-Path $previousInstaller)) { throw "The previous Windows installer was not retained for the update test." }
+          if (-not (Test-Path $previousInstaller)) { Fail "The previous Windows installer was not retained for the update test." }
           "ARENA_PREVIOUS_INSTALLER=$previousInstaller" >> $env:GITHUB_ENV
-
-      - name: Build Windows x64 installer
-        run: pnpm --filter @workspace/desktop run dist:win
-        env:
-          # Independent downloadable TARs, not additional installer payload.
-          ARENA_CLASSIC_PACKAGES: "1"
 
       - name: Install and check packaged app
         shell: pwsh
+        timeout-minutes: 25
         run: |
           $installer = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
             Where-Object { $_.Name -notmatch "uninstall" } |
@@ -107,6 +398,20 @@ jobs:
           if (-not (Test-Path $executable)) { throw "The installed ArenaForge executable was not found." }
           node desktop/windows-package-smoke.mjs $executable
           if ($LASTEXITCODE -ne 0) { throw "The installed-package smoke check failed." }
+
+          # The update check installs two more builds. A still-installed copy
+          # (same app id) or a leftover app/database process can stall a second
+          # silent install, so remove the first one cleanly before continuing.
+          Get-Process -Name "ArenaForge", "postgres" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+          $uninstaller = Get-ChildItem $installDir -Filter "Uninstall*.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($uninstaller) {
+            $un = Start-Process -FilePath $uninstaller.FullName `
+              -ArgumentList @("/S", "_?=$installDir") -PassThru
+            if (-not $un.WaitForExit(120000)) { $un.Kill(); Write-Host "Uninstaller timed out." }
+          }
+          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
 
           node desktop/windows-package-update-smoke.mjs "$env:ARENA_PREVIOUS_INSTALLER" "$($installer.FullName)"
           if ($LASTEXITCODE -ne 0) { throw "The installed-package update check failed." }

@@ -40,11 +40,15 @@ const servedAssetResponses = new Map<string, { status: number; contentType: stri
 function embeddedBinary(name: string) {
   const platform = process.platform === "win32" ? "windows-x64" : "linux-x64";
   const executable = process.platform === "win32" ? `${name}.exe` : name;
-  const bundled = path.join(repoRoot, "node_modules", "@embedded-postgres", platform, "native", "bin", executable);
-  if (existsSync(bundled)) return bundled;
+  const bundledCandidates = [
+    path.join(repoRoot, "node_modules", "@embedded-postgres", platform, "native", "bin", executable),
+    path.join(repoRoot, "desktop", "node_modules", "@embedded-postgres", platform, "native", "bin", executable),
+  ];
+  const bundled = bundledCandidates.find(existsSync);
+  if (bundled) return bundled;
   const locator = process.platform === "win32" ? "where.exe" : "which";
   const located = spawnSync(locator, [executable], { encoding: "utf8" }).stdout?.trim().split(/\r?\n/)[0];
-  return located && existsSync(located) ? located : bundled;
+  return located && existsSync(located) ? located : bundledCandidates[0];
 }
 
 function freePort() {

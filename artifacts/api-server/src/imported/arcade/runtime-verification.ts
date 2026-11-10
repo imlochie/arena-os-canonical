@@ -2,18 +2,21 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import { validateGameCode } from "@workspace/arena/lib/games";
+import { exerciseGameplay, parseGameplayContract, type GameplayReport } from "@workspace/arena/lib/games/gameplay-contract";
 
 export type ArcadeRuntimeVerification = {
   status: "passed" | "failed" | "unavailable";
-  scope: "startup-render-only";
+  scope: "startup-render-only" | "startup-render-and-declared-gameplay";
   issues: string[];
   browser?: string;
   canvas?: { width: number; height: number };
   animationFrames?: number;
+  rendered?: boolean;
   blockedRequests?: number;
+  gameplay?: GameplayReport;
 };
 
-const SCOPE: ArcadeRuntimeVerification["scope"] = "startup-render-only";
+const SCOPE = "startup-render-only" as const;
 const MAX_PARALLEL_CHECKS = 2;
 let activeChecks = 0;
 
@@ -38,7 +41,7 @@ function instrumentedDocument(code: string): string {
   return `<!doctype html><html><head>${csp}${probe}</head><body>${code}</body></html>`;
 }
 
-async function chromiumExecutablePath(): Promise<string | undefined> {
+export async function chromiumExecutablePath(): Promise<string | undefined> {
   const resourcesChromium = process.env.ARENA_RESOURCES_DIR
     ? path.join(process.env.ARENA_RESOURCES_DIR, "chromium", process.platform === "win32" ? "chrome.exe" : "chrome")
     : undefined;
@@ -61,7 +64,7 @@ async function chromiumExecutablePath(): Promise<string | undefined> {
   return undefined;
 }
 
-function isolatedBrowserEnvironment(): NodeJS.ProcessEnv {
+export function isolatedBrowserEnvironment(): NodeJS.ProcessEnv {
   const allowed = [
     "PATH",
     "HOME",
@@ -83,10 +86,21 @@ function isolatedBrowserEnvironment(): NodeJS.ProcessEnv {
 export async function verifyArcadeRuntime(
   code: string,
   signal?: AbortSignal,
+  options: { requireGameplay?: boolean } = {},
 ): Promise<ArcadeRuntimeVerification> {
   const staticCheck = validateGameCode(code);
   if (!staticCheck.ok) {
     return { status: "failed", scope: SCOPE, issues: staticCheck.issues.slice(0, 12) };
+  }
+  let contract;
+  try {
+    contract = parseGameplayContract(code, options.requireGameplay);
+  } catch (error) {
+    return {
+      status: "failed",
+      scope: SCOPE,
+      issues: [error instanceof Error ? error.message : "Invalid gameplay contract."],
+    };
   }
   if (activeChecks >= MAX_PARALLEL_CHECKS) {
     return {
@@ -185,6 +199,19 @@ export async function verifyArcadeRuntime(
       if (await start.isVisible().catch(() => false)) await start.click();
       await page.waitForTimeout(220);
 
+      // A running loop over a uniform canvas is not a rendered game.
+      const rendered = await canvas.evaluate((element) => {
+        const node = element as HTMLCanvasElement;
+        const pixels = node.getContext("2d")?.getImageData(0, 0, node.width, node.height).data;
+        if (!pixels) return false;
+        for (let i = 4; i < pixels.length; i += 4) {
+          if (pixels[i] !== pixels[0] || pixels[i + 1] !== pixels[1] ||
+              pixels[i + 2] !== pixels[2] || pixels[i + 3] !== pixels[3]) return true;
+        }
+        return false;
+      }).catch(() => false);
+      if (!rendered) issues.push("The game canvas stayed uniform; nothing was drawn.");
+
       const probe = await frame.evaluate(() => {
         const runtime = (window as any).__arenaRuntimeProbe;
         return {
@@ -199,14 +226,38 @@ export async function verifyArcadeRuntime(
         issues.push("The game attempted to navigate outside its isolated frame.");
       }
 
+      // Declared gameplay scenarios run only after the smoke checks pass, each
+      // in a fresh opaque document, driven by real browser input.
+      const gameplay = contract && issues.length === 0
+        ? await exerciseGameplay(contract, async () => {
+            const element = await iframe.elementHandle();
+            await element!.evaluate((node, html) => new Promise<void>((resolve) => {
+              node.addEventListener("load", () => resolve(), { once: true });
+              (node as HTMLIFrameElement).srcdoc = html;
+            }), instrumentedDocument(code));
+            const fresh = await (await iframe.elementHandle())?.contentFrame();
+            if (!fresh) throw new Error("Gameplay frame unavailable.");
+            await fresh.locator("canvas").first().waitFor({ state: "visible" });
+            const begin = fresh.getByRole("button", { name: /\b(start|play|begin)\b/i }).first();
+            if (await begin.isVisible().catch(() => false)) await begin.click();
+            await page.waitForTimeout(40);
+            return fresh;
+          })
+        : undefined;
+      if (gameplay?.status === "failed") {
+        issues.push(...gameplay.scenarios.flatMap((s) => s.issues.map((issue) => `${s.kind}/${s.name}: ${issue}`)));
+      }
+
       await context.close();
       return {
         status: issues.length ? "failed" : "passed",
-        scope: SCOPE,
+        scope: gameplay ? "startup-render-and-declared-gameplay" : SCOPE,
+        gameplay,
         issues: [...new Set(issues)].slice(0, 12),
         browser: browser?.version(),
         canvas: dimensions,
         animationFrames: probe.frames,
+        rendered,
         blockedRequests,
       };
     };

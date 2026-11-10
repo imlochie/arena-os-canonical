@@ -28,6 +28,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
+import { parsePassageFingerprint } from "@workspace/arena/lib/waveyard/types";
 
 function parsedBeatGrid(value: string | null) {
   if (!value) return null;
@@ -128,7 +129,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const sectionsBySource = new Map<string, typeof sectionRows>();
     for (const section of sectionRows) {
       const existing = sectionsBySource.get(section.sourceAssetId) ?? [];
-      existing.push(section);
+      existing.push({
+        ...section,
+        passageFingerprint: parsePassageFingerprint(section.passageFingerprint, {
+          sourceChecksumSha256: section.sourceChecksumSha256,
+          startBeatIndex: section.startBeatIndex,
+          endBeatIndex: section.endBeatIndex,
+        }),
+      });
       sectionsBySource.set(section.sourceAssetId, existing);
     }
     const drumAnalysisByStem = new Map(drumAnalysisRows.map((analysis) => [analysis.stemAssetId, analysis]));

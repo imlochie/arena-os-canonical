@@ -2,8 +2,8 @@
  * Installed-package smoke check for the current Vite + Express desktop app.
  *
  * Uses fresh temporary application data and writes only test statuses. Local
- * model inference and real-audio processing are intentionally not part of this
- * packaging check.
+ * model inference is not part of this check; Waveyard source decode and
+ * playback are exercised with a generated PCM tone.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -27,10 +27,12 @@ const reportPath = path.join(outputDir, "result.json");
 const executable = process.argv[2];
 const checkIds = [
   "installed_app_starts",
+  "waveyard_room_navigation",
   "embedded_database_starts",
   "packaged_migrations_run",
   "bundled_ffmpeg_resolves",
   "bundled_ffprobe_resolves",
+  "waveyard_source_upload_and_audio_playback",
   "waveyard_capture_host_loads",
   "waveyard_capture_runtime_wired",
   "database_backup_restore_round_trip",
@@ -53,6 +55,32 @@ let desktop = null;
 let restoreRoot = null;
 let damagedRestoreRoot = null;
 let backupDir = null;
+
+function makeAcceptanceToneWav() {
+  const sampleRate = 48_000;
+  const durationSeconds = 2;
+  const frames = sampleRate * durationSeconds;
+  const dataBytes = frames * 2;
+  const wav = Buffer.alloc(44 + dataBytes);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + dataBytes, 4);
+  wav.write("WAVE", 8);
+  wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(dataBytes, 40);
+  for (let frame = 0; frame < frames; frame += 1) {
+    const sample = Math.round(Math.sin((2 * Math.PI * 440 * frame) / sampleRate) * 12_000);
+    wav.writeInt16LE(sample, 44 + frame * 2);
+  }
+  return wav;
+}
 
 function begin(id) {
   activeCheck = id;
@@ -99,6 +127,12 @@ async function run() {
   pass("installed_app_starts");
 
   const base = new URL(page.url()).origin;
+  begin("waveyard_room_navigation");
+  await page.goto(`${base}/waveyard`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.waitForURL("**/waveyard", { timeout: 30_000 });
+  await page.getByRole("heading", { name: "Your library" }).waitFor({ timeout: 30_000 });
+  pass("waveyard_room_navigation");
+
   begin("embedded_database_starts");
   const response = await page.request.get(`${base}/api/capabilities`, {
     timeout: 30_000,
@@ -137,6 +171,64 @@ async function run() {
     );
     pass(id);
   }
+
+  begin("waveyard_source_upload_and_audio_playback");
+  const waveyardProjectResponse = await page.request.post(
+    `${base}/api/waveyard/projects`,
+    { data: { title: "Packaged Waveyard audio acceptance" }, timeout: 20_000 },
+  );
+  assert.equal(waveyardProjectResponse.status(), 201);
+  const waveyardProject = (await waveyardProjectResponse.json()).project;
+  assert(waveyardProject?.id);
+  const acceptanceTone = makeAcceptanceToneWav();
+  const sourceResponse = await page.request.post(`${base}/api/uploads`, {
+    timeout: 30_000,
+    multipart: {
+      projectId: waveyardProject.id,
+      device: "cpu",
+      file: { name: "acceptance-tone.wav", mimeType: "audio/wav", buffer: acceptanceTone },
+    },
+  });
+  const sourceBody = await sourceResponse.text();
+  let sourcePayload;
+  try { sourcePayload = JSON.parse(sourceBody); }
+  catch { sourcePayload = { error: sourceBody }; }
+  assert.equal(sourceResponse.status(), 201, JSON.stringify(sourcePayload));
+  const uploadedSource = sourcePayload.source;
+  assert(uploadedSource?.id);
+  assert.equal(uploadedSource.sampleRate, 48_000);
+  assert.equal(uploadedSource.channels, 1);
+  assert.equal(uploadedSource.durationSeconds, 2);
+
+  const streamedAudio = await page.request.get(`${base}/api/assets/${uploadedSource.id}`, { timeout: 15_000 });
+  assert.equal(streamedAudio.status(), 200);
+  assert.match(streamedAudio.headers()["content-type"] ?? "", /audio\/wav/i);
+  assert.deepEqual(await streamedAudio.body(), acceptanceTone, "the packaged private asset route must return the exact stored audio bytes");
+
+  await page.evaluate((sourceId) => {
+    const button = document.createElement("button");
+    button.id = "waveyard-acceptance-play";
+    button.textContent = "Play Waveyard acceptance audio";
+    const audio = document.createElement("audio");
+    audio.id = "waveyard-acceptance-audio";
+    audio.src = `/api/assets/${sourceId}`;
+    button.addEventListener("click", () => { void audio.play(); });
+    document.body.append(button, audio);
+  }, uploadedSource.id);
+  await page.getByRole("button", { name: "Play Waveyard acceptance audio" }).click();
+  await page.waitForFunction(() => {
+    const audio = document.querySelector("#waveyard-acceptance-audio");
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime >= 0.15;
+  }, undefined, { timeout: 10_000 });
+  const playback = await page.locator("#waveyard-acceptance-audio").evaluate((node) => {
+    const audio = node;
+    return { readyState: audio.readyState, duration: audio.duration, currentTime: audio.currentTime, error: audio.error?.code ?? null };
+  });
+  assert(playback.readyState >= 2);
+  assert.equal(playback.error, null);
+  assert(Math.abs(playback.duration - 2) < 0.05, JSON.stringify(playback));
+  assert(playback.currentTime >= 0.15, JSON.stringify(playback));
+  pass("waveyard_source_upload_and_audio_playback");
 
   begin("waveyard_capture_host_loads");
   const captureHost = path.join(resources, "native", "waveyard-capture-host.exe");
@@ -335,9 +427,12 @@ async function run() {
         state.exitRequested = true;
       };
 
-      const dataMenu = Menu.getApplicationMenu()?.getMenuItemByLabel("Data");
-      const restoreItem = dataMenu?.submenu?.getMenuItemByLabel(
-        "Restore backup to a new data folder…",
+      // Electron menus expose .items, not a by-label lookup.
+      const dataMenu = Menu.getApplicationMenu()?.items.find(
+        (item) => item.label === "Data",
+      );
+      const restoreItem = dataMenu?.submenu?.items.find(
+        (item) => item.label === "Restore backup to a new data folder…",
       );
       if (!restoreItem || typeof restoreItem.click !== "function") {
         throw new Error("The Arena Data menu restore item is unavailable.");
@@ -371,7 +466,7 @@ async function run() {
   assert(restoreFailure, "the Data menu must show a restore failure");
   assert.equal(restoreFailure.title, "Arena restore failed");
   assert.match(restoreFailure.message, /Backup verification failed/i);
-  assert.match(restoreFailure.message, /changed/i);
+  assert.match(restoreFailure.message, /content differs/i);
   assert.match(restoreFailure.message, /current data folder was not overwritten/i);
   const restoreDialogState = await desktop.evaluate(
     () => globalThis.__arenaBackupSmokeDialogs,
@@ -446,7 +541,18 @@ async function run() {
 try {
   await run();
   console.log("Installed Windows package smoke check passed.");
-} catch {
+} catch (error) {
+  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+  for (const root of [dataRoot, restoreRoot]) {
+    if (!root) continue;
+    const appLog = await readFile(path.join(root, "logs/desktop.log"), "utf8").catch(() => "(no desktop.log was written)");
+    const serverLog = await readFile(path.join(root, "logs/postgres.log"), "utf8").catch(() => "(no postgres.log)");
+    console.error(`--- ${path.basename(root)} desktop.log (tail) ---\n${appLog.slice(-2500)}\n--- postgres.log (tail) ---\n${serverLog.slice(-1500)}`);
+  }
+  const serverModules = path.join(path.dirname(executable), "resources/server/node_modules");
+  const listing = await readdir(serverModules).catch((error) => `(unreadable: ${error.message})`);
+  const playwrightListing = await readdir(path.join(serverModules, "playwright-core")).catch((error) => `(unreadable: ${error.message})`);
+  console.error(`resources/server/node_modules: ${JSON.stringify(listing)}\nplaywright-core: ${JSON.stringify(playwrightListing)}`);
   const failedCheck = activeCheck ?? "installed_app_starts";
   const check = report.checks.find((entry) => entry.id === failedCheck);
   if (check) check.status = "failed";
@@ -456,7 +562,14 @@ try {
   );
   process.exitCode = 1;
 } finally {
-  if (desktop) await desktop.close().catch(() => {});
+  if (desktop) {
+    // A modal error dialog can keep close() from returning; never hang CI on it.
+    await Promise.race([
+      desktop.close().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 20_000)),
+    ]);
+    try { desktop.process().kill(); } catch {}
+  }
   if (dataRoot)
     await rm(dataRoot, { recursive: true, force: true }).catch(() => {});
   if (restoreRoot)
@@ -469,3 +582,4 @@ try {
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.log("Result: generated-artifacts/windows-package-smoke/result.json");
 }
+process.exit(process.exitCode ?? 0);

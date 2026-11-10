@@ -2,6 +2,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
 
 import { nearestBeat } from "@workspace/arena/lib/waveyard/types";
 import { and, asc, eq, inArray } from "drizzle-orm";
+import type { AutomaticRemixCompatibilityReport } from "@workspace/arena/lib/waveyard/types/automatic-remix";
 import { db } from "@workspace/db";
 import {
   automaticRemixGenerations,
@@ -122,7 +123,13 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
       inserts: parseStoredInserts(track.inserts),
       clips: clips.filter((clip) => clip.remixTrackId === track.id),
     })),
-    generation: generation ? { engine: generation.engine, engineVersion: generation.engineVersion, variant: generation.variant, createdAt: generation.createdAt } : null,
+    generation: generation ? {
+      engine: generation.engine,
+      engineVersion: generation.engineVersion,
+      variant: generation.variant,
+      createdAt: generation.createdAt,
+      ...(parseStoredCompatibility(generation.provenance) ? { compatibility: parseStoredCompatibility(generation.provenance) } : {}),
+    } : null,
     automation: [...new Map(automation.map((point) => [
       `${point.remixTrackId}:${point.parameter}`,
       {
@@ -161,6 +168,21 @@ function parseStoredInserts(raw: string | null | undefined): unknown[] {
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
+  }
+}
+
+function parseStoredCompatibility(raw: string | null | undefined): AutomaticRemixCompatibilityReport | undefined {
+  if (!raw) return undefined;
+  try {
+    const provenance = JSON.parse(raw) as { passageCompatibility?: unknown };
+    const report = provenance.passageCompatibility;
+    if (!report || typeof report !== "object" || Array.isArray(report)) return undefined;
+    const value = report as Partial<AutomaticRemixCompatibilityReport>;
+    if (!Number.isSafeInteger(value.evaluatedPairs) || !Number.isSafeInteger(value.eligiblePairs)
+      || !Array.isArray(value.pairs) || !Array.isArray(value.missingEvidence) || typeof value.note !== "string") return undefined;
+    return value as AutomaticRemixCompatibilityReport;
+  } catch {
+    return undefined;
   }
 }
 

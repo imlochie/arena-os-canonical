@@ -13,12 +13,16 @@ import { and, eq } from "drizzle-orm";
 
 const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
 const pgPackage = `@embedded-postgres/${process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux"}-x64`;
-const nativeDir = path.join(root, "node_modules", pgPackage, "native");
+const nativeDirs = [
+  path.join(root, "node_modules", pgPackage, "native"),
+  path.join(root, "desktop", "node_modules", pgPackage, "native"),
+];
 
 function findPostgresBinary(name: string): string | undefined {
   const extension = process.platform === "win32" ? ".exe" : "";
-  const bundled = path.join(nativeDir, "bin", `${name}${extension}`);
-  if (existsSync(bundled)) return bundled;
+  const bundledCandidates = nativeDirs.map((nativeDir) => path.join(nativeDir, "bin", `${name}${extension}`));
+  const bundled = bundledCandidates.find(existsSync);
+  if (bundled) return bundled;
   const located = spawnSync(process.platform === "win32" ? "where.exe" : "which", [`${name}${extension}`], { encoding: "utf8" })
     .stdout?.trim().split(/\r?\n/)[0];
   return located && existsSync(located) ? located : undefined;

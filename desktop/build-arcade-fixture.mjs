@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildPinnedPackage } from "./arcade/tar-build.mjs";
+import { fetchWithTransientRetries } from "./arcade/retry-fetch.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const output = path.resolve(here, "../generated-artifacts/arcade-native-packages");
 const archiveDigest = "6cf9706eefd0a4a06dc764007934d428afaf029fabdd408a9e646048c91e18fb";
@@ -14,8 +15,8 @@ export async function buildArcadeFixture() {
   let zip;
   try { zip = await readFile(source); } catch (error) { if (error.code !== "ENOENT") throw error; }
   if (!zip || zip.length !== 608965 || createHash("sha256").update(zip).digest("hex") !== archiveDigest) {
-    const response = await fetch("https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10-win32-x64.zip", { signal: AbortSignal.timeout(60_000) });
-    if (!response.ok) throw new Error("Could not acquire pinned SDL release.");
+    const response = await fetchWithTransientRetries("https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10-win32-x64.zip", { signal: AbortSignal.timeout(60_000) });
+    if (!response.ok) throw new Error(`Pinned SDL release request failed: HTTP ${response.status} ${response.statusText}.`);
     const chunks = []; let bytes = 0;
     for await (const chunk of response.body) { bytes += chunk.length; if (bytes > 608965) throw new Error("SDL release exceeded its pinned size."); chunks.push(chunk); }
     zip = Buffer.concat(chunks);

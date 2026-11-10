@@ -6,7 +6,7 @@ import test from "node:test";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pg from "pg";
-import { migrate, run } from "./database.mjs";
+import { ensurePostgresRuntimeDirs, migrate, run } from "./database.mjs";
 
 function fakeChild() {
   const child = new EventEmitter();
@@ -132,3 +132,17 @@ test(
     }
   },
 );
+
+test("restored clusters get PostgreSQL's empty runtime directories back", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "arena-pgdirs-"));
+  try {
+    await mkdir(path.join(dir, "pg_wal"), { recursive: true });
+    await writeFile(path.join(dir, "PG_VERSION"), "16\n");
+    await ensurePostgresRuntimeDirs(dir);
+    await ensurePostgresRuntimeDirs(dir);
+    for (const name of ["pg_notify", "pg_replslot", "pg_twophase", "pg_wal/archive_status", "pg_logical/snapshots"]) {
+      const { stat } = await import("node:fs/promises");
+      assert.equal((await stat(path.join(dir, name))).isDirectory(), true, name);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

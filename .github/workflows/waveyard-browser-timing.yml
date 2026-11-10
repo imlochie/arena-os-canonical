@@ -34,9 +34,76 @@ jobs:
       - name: Install all required Playwright browsers and Linux libraries
         run: node artifacts/api-server/node_modules/playwright-core/cli.js install --with-deps chromium firefox webkit
 
+      # The Firefox legs build a Web Audio graph (AudioContext -> AudioWorklet
+      # -> MediaElementSource) and a context must reach "running" before media
+      # will start. On this runner it stayed "suspended" indefinitely: not an
+      # autoplay refusal (navigator.userActivation.hasBeenActive was true and
+      # media.autoplay.default is already 0) and not the app's own context being
+      # wedged -- a brand new AudioContext().resume() never settled either, while
+      # the AudioWorklet module loaded on that same context in 36 ms. That is the
+      # signature of a machine with no audio device: Firefox suspends the graph
+      # when there is nowhere to play it. Chromium and WebKit run their graphs
+      # anyway, which is why only the Firefox leg failed.
+      #
+      # Give the runner a null sink so Web Audio has a device. This supplies what
+      # the environment was missing; nothing the app does under test changes and
+      # no assertion or timeout below is relaxed.
+      #
+      # Two things this step deliberately does NOT do:
+      #  * it does not hide its own failure. Every probe reports through an
+      #    ::warning:: annotation, because job logs are not readable from the
+      #    environment that triages this workflow and a silently-skipped sink
+      #    would look exactly like "the sink did not help".
+      #  * it does not rely on the runner having a desktop session. The daemon
+      #    is started with an explicit socket path and an anonymous-auth null
+      #    sink, so the browser does not need XDG_RUNTIME_DIR or a PulseAudio
+      #    cookie to reach it -- PULSE_SERVER in the matrix step provides the
+      #    address.
+      - name: Provide a null audio sink (Firefox cannot start Web Audio without a device)
+        run: |
+          set -uo pipefail
+          # Successes are plain output; only real problems become annotations, so
+          # a clean run stays clean and an annotation always means something.
+          report() { echo "audio-sink: $*"; }
+          problem() { echo "::warning::audio-sink: $*"; }
+          sudo apt-get update -qq || problem "apt-get update failed"
+          # pulseaudio (the daemon) is a different package from pulseaudio-utils
+          # (the clients). Installing only the latter was the first attempt and
+          # it produced a step that ran, reported success and created no sink.
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils alsa-utils \
+            || problem "audio package install failed"
+          if ! command -v pulseaudio >/dev/null; then
+            problem "pulseaudio daemon MISSING after install; Firefox will have no audio device and the Firefox leg will fail"
+            exit 0
+          fi
+          rm -f /tmp/arena-pulse.sock
+          # -n: no default config, so nothing depends on a logged-in session.
+          # auth-anonymous: the browser runs as an unprivileged user with no cookie.
+          pulseaudio -D --exit-idle-time=-1 --disallow-exit -n \
+            --load="module-native-protocol-unix socket=/tmp/arena-pulse.sock auth-anonymous=1" \
+            --load="module-null-sink sink_name=arena_null sink_properties=device.description=arena_null" \
+            || problem "pulseaudio daemon failed to start"
+          sleep 1
+          if PULSE_SERVER=unix:/tmp/arena-pulse.sock pactl info >/dev/null 2>&1; then
+            report "PulseAudio server reachable on /tmp/arena-pulse.sock"
+          else
+            problem "PulseAudio server NOT reachable; the Firefox leg will fail without an audio device"
+          fi
+          PULSE_SERVER=unix:/tmp/arena-pulse.sock pactl set-default-sink arena_null \
+            || problem "set-default-sink arena_null failed"
+          PULSE_SERVER=unix:/tmp/arena-pulse.sock pactl list short sinks || problem "no sinks listed"
+          # Not required (the browser talks to PulseAudio, not ALSA), but a
+          # loaded snd-aloop/snd-dummy is the more faithful device and is worth
+          # knowing about.
+          sudo modprobe snd-aloop 2>/dev/null && report "snd-aloop loaded" \
+            || report "snd-aloop unavailable (expected on a nested-virt runner); relying on the Pulse null sink"
+
       - name: Run cross-browser live-stem timing matrix
         env:
           WAVEYARD_REQUIRE_BROWSER_ENGINES: "1"
+          # The null sink from the previous step. Firefox's cubeb talks to
+          # PulseAudio, so this is the device Web Audio binds to.
+          PULSE_SERVER: unix:/tmp/arena-pulse.sock
         run: |
           set -euo pipefail
           sudo env PATH="$PATH" PORT=80 BASE_PATH=/ node artifacts/arenaforge/node_modules/vite/bin/vite.js \
@@ -44,8 +111,10 @@ jobs:
             > "$RUNNER_TEMP/waveyard-vite.log" 2>&1 &
           vite_pid=$!
           cleanup() {
+            # vite runs under sudo, so a plain kill of the sudo wrapper can leave
+            # it alive and block `wait` until the job times out.
+            sudo pkill -f "vite.js --config artifacts/arenaforge" 2>/dev/null || true
             kill "$vite_pid" 2>/dev/null || true
-            wait "$vite_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
           ready=0
@@ -57,8 +126,45 @@ jobs:
             sleep 1
           done
           if [ "$ready" -ne 1 ]; then
-            cat "$RUNNER_TEMP/waveyard-vite.log"
+            # A bare `cat` leaves this failure as an unexplained 60 s stall
+            # (step timings show exactly 60 s). `::error::` puts the cause into
+            # the check-run annotation, which is the only part of a failed job
+            # readable without downloading the log archive.
+            echo "::error::Vite never answered http://127.0.0.1:80/ within 60 s (readiness loop timed out)."
+            echo "--- vite log ---"
+            cat "$RUNNER_TEMP/waveyard-vite.log" || true
+            echo "--- listeners on :80 ---"
+            (sudo ss -ltnp 2>/dev/null || ss -ltnp 2>/dev/null) | grep -E ':80\b' || echo "nothing listening on :80"
+            echo "--- vite process ---"
+            pgrep -af "vite.js" || echo "no vite process running"
+            echo "--- curl ---"
+            curl -sS -m 5 -o /dev/null -w "http=%{http_code}\n" http://127.0.0.1:80/ || true
+            echo "--- audit capability (sudo may hide the process) ---"
+            sudo -n true 2>/dev/null && echo "passwordless sudo present" || echo "no passwordless sudo"
             exit 1
           fi
-          node scripts/waveyard-live-stems.mjs --studio-persistence-only
-          node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix
+          # Readiness only proves vite answered once. Confirm it is still the
+          # process we started before blaming the browsers for what follows.
+          if ! curl --fail --silent -m 5 http://127.0.0.1:80/ >/dev/null; then
+            echo "::error::Vite answered readiness but is not reachable now; the matrix cannot start."
+            cat "$RUNNER_TEMP/waveyard-vite.log" || true
+            exit 1
+          fi
+
+          echo "::group::studio-persistence-only"
+          if ! node scripts/waveyard-live-stems.mjs --studio-persistence-only; then
+            echo "::error::--studio-persistence-only failed (first diagnostic below)."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::live-stem-timing-matrix"
+          if ! node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix; then
+            # The matrix tails three engines. Name the failing one in the
+            # annotation so the check-run is diagnostic without log access.
+            echo "::error::Cross-browser live-stem timing matrix failed; see the failing engine(s) named above."
+            echo "--- vite log ---"
+            cat "$RUNNER_TEMP/waveyard-vite.log" || true
+            exit 1
+          fi
+          echo "::endgroup::"

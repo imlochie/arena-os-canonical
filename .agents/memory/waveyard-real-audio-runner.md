@@ -15,6 +15,12 @@ For the opt-in real library-worker acceptance in `service.test.ts`, the default 
 
 **How to apply:** use the single-process test runner for this opt-in real-worker acceptance when the isolated runner only reports a generic file failure, and remove only the disposable `waveyard-library-test-*` directories left by that failed run.
 
+When an acceptance test imports a user-provided audio file, compare saved source metadata to that file's `ffprobe` result rather than a synthetic fixture's fixed sample rate. Keep explicit 44.1 kHz assertions for generated 44.1 kHz controls, while allowing and checking genuine source rates such as 48 kHz.
+
+**Why:** A real 48 kHz MP3 was correctly recorded as 48 kHz by the importer, but the acceptance helper's hard-coded 44.1 kHz expectation rejected it before model processing.
+
+**How to apply:** Probe each real input before import and assert codec, rate, and channels against the persisted source row; do not resample a real input merely to satisfy a fixture-specific expectation.
+
 When a browser acceptance test forwards `/api` calls to an isolated API process, rewrite `Origin` and `Referer` to that process's loopback origin and remove the page's original `Host` header. Desktop-mode write routes reject the original preview origin even when reads work.
 
 **Why:** forwarding a browser request to a different loopback port changes the API's same-origin trust check; leaving the preview `Origin` in place made real session saves return 403.

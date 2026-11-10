@@ -16,7 +16,8 @@ import { desc, ilike, or, sql } from "drizzle-orm";
 
 import { db } from "@workspace/db";
 import { archiveItems, chatMessages } from "@workspace/db/schema";
-import { generate, type ChatMsg } from "@workspace/arena/lib/ai";
+import { generate, type ChatMsg, type GenerateDeps } from "@workspace/arena/lib/ai";
+import type { GenerateResult } from "@workspace/arena/lib/runtime";
 
 export type ResearchSource = {
   id: number;
@@ -97,6 +98,16 @@ export type ResearchResult = {
   via: string;
   fallback: boolean;
   note?: string;
+  /** Exact execution metadata from the generator; callers must not infer this
+   * from the user's Local Mode preference. */
+  runtime: Omit<GenerateResult, "text">;
+};
+
+export type ResearchDependencies = {
+  gatherLocalSources?: typeof gatherLocalSources;
+  gatherWebSources?: typeof gatherWebSources;
+  generate?: typeof generate;
+  generateDeps?: GenerateDeps;
 };
 
 /** Compact, honest footer listing the sources an answer actually used. */
@@ -111,11 +122,15 @@ export function researchSourcesFooter(sources: ResearchSource[]): string {
 export async function researchAnswer(
   query: string,
   opts: { keys?: Record<string, string>; modelId?: string; localOnly?: boolean } = {},
+  deps: ResearchDependencies = {},
 ): Promise<ResearchResult> {
+  const readLocalSources = deps.gatherLocalSources ?? gatherLocalSources;
+  const readWebSources = deps.gatherWebSources ?? gatherWebSources;
+  const runGeneration = deps.generate ?? generate;
   // localOnly: Local Mode stays authoritative — local sources only, zero egress.
   const [local, web] = await Promise.all([
-    gatherLocalSources(query).catch(() => [] as ResearchSource[]),
-    opts.localOnly ? Promise.resolve([]) : gatherWebSources(query),
+    readLocalSources(query).catch(() => [] as ResearchSource[]),
+    opts.localOnly ? Promise.resolve([]) : readWebSources(query),
   ]);
   const webSources: ResearchSource[] = web.map((w, i) => ({
     id: local.length + i + 1,
@@ -141,19 +156,22 @@ export async function researchAnswer(
         `"unverified". Never invent a citation number that is not in SOURCES.`,
     },
   ];
-  const result = await generate({
+  const result = await runGeneration({
     modelId: opts.modelId ?? "local-engine",
     messages,
     keys: opts.keys as never,
     temperature: 0.4,
-  });
+    localOnly: opts.localOnly,
+  }, deps.generateDeps);
+  const { text, ...runtime } = result;
   return {
-    answer: result.text,
+    answer: text,
     sources: local,
     webSources,
     backend: result.backend,
     via: result.via ?? result.backend,
     fallback: result.fallback,
     note: sources.length === 0 ? "No sources matched — answer is unverified general knowledge." : undefined,
+    runtime,
   };
 }

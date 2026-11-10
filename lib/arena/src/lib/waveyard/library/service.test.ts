@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { and, asc, eq } from "drizzle-orm";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
@@ -28,7 +29,23 @@ import { getStorage } from "../storage";
 import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
 import { restoreVerifiedAudioBackupZip } from "./audio-restore";
 
-const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
+// The route handlers under test resolve the desktop/local owner from
+// NODE_ENV. Establish the test mode before any route module is imported
+// dynamically so the suite does not depend on the runner's ambient env.
+process.env.NODE_ENV ??= "test";
+
+function findWorkspaceRoot(start: string): string {
+  let directory = path.resolve(start);
+  while (true) {
+    if (existsSync(path.join(directory, "pnpm-workspace.yaml"))) return directory;
+    const parent = path.dirname(directory);
+    if (parent === directory) throw new Error("Could not locate pnpm-workspace.yaml from the Waveyard service test.");
+    directory = parent;
+  }
+}
+
+const repoRoot = findWorkspaceRoot(path.dirname(fileURLToPath(import.meta.url)));
+const arenaRoot = path.join(repoRoot, "lib", "arena");
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
 const RECOVERY_OWNER = "33333333-3333-4333-8333-333333333333";
@@ -54,11 +71,15 @@ let dataDir: string | null = null;
 function embeddedBinary(name: string): string {
   const pkg = process.platform === "win32" ? "windows-x64" : "linux-x64";
   const exe = process.platform === "win32" ? `${name}.exe` : name;
-  const bundled = path.join(repoRoot, "node_modules", "@embedded-postgres", pkg, "native", "bin", exe);
-  if (existsSync(bundled)) return bundled;
+  const bundledCandidates = [
+    path.join(repoRoot, "node_modules", "@embedded-postgres", pkg, "native", "bin", exe),
+    path.join(repoRoot, "desktop", "node_modules", "@embedded-postgres", pkg, "native", "bin", exe),
+  ];
+  const bundled = bundledCandidates.find(existsSync);
+  if (bundled) return bundled;
   const locator = process.platform === "win32" ? "where.exe" : "which";
   const located = spawnSync(locator, [exe], { encoding: "utf8" }).stdout?.trim().split(/\r?\n/)[0];
-  return located && existsSync(located) ? located : bundled;
+  return located && existsSync(located) ? located : bundledCandidates[0];
 }
 
 function freePort(): Promise<number> {
@@ -183,7 +204,7 @@ before(async () => {
   client = new Client({ connectionString: `postgresql://arena:arena-test@127.0.0.1:${port}/arena_library_test` });
   await client.connect();
   const { migrate } = await import("../../../../../../desktop/database.mjs");
-  await migrate(client, path.join(repoRoot, "desktop-migrations"));
+  await migrate(client, path.join(arenaRoot, "desktop-migrations"));
   const appliedMigrations = await client.query("select name from arena_schema_migrations");
   assert.ok(appliedMigrations.rows.length >= 2, "canonical migrations must apply (initial + listening layer)");
   assert.ok(
@@ -558,7 +579,7 @@ test("migration 0021 repairs a populated pre-migration library without losing sa
   await isolatedClient.connect();
   const legacyDb = drizzlePg(isolatedClient);
   const { migrate } = await import("../../../../../../desktop/database.mjs");
-  const sourceMigrationsDir = path.join(repoRoot, "desktop-migrations");
+  const sourceMigrationsDir = path.join(arenaRoot, "desktop-migrations");
   const migration0021 = "0021_repair_legacy_library_track_duplicates.sql";
   for (const file of readdirSync(sourceMigrationsDir).filter(
     (entry) => entry.endsWith(".sql") && entry < migration0021,
@@ -608,9 +629,16 @@ test("migration 0021 repairs a populated pre-migration library without losing sa
     }).returning({ id: schema.playlistItems.id });
     playlistItemIds.push(item.id);
   }
-  const [session] = await legacyDb.insert(schema.listenSessions).values({
-    ownerId, name: "Pre-migration session",
-  }).returning({ id: schema.listenSessions.id });
+  // This fixture must represent the schema BEFORE migration 0021. The current
+  // Drizzle model includes columns added by later migrations (0024), so using
+  // it here would fail on a column the legacy database does not have yet and
+  // the repair would never be exercised. Insert only the original columns.
+  const sessionId = randomUUID();
+  await isolatedClient.query(
+    "insert into wy_listen_sessions (id, owner_id, name) values ($1, $2, $3)",
+    [sessionId, ownerId, "Pre-migration session"],
+  );
+  const session = { id: sessionId };
   const sessionTrackIds: string[] = [];
   for (const [position, trackId] of trackIds.entries()) {
     const [item] = await legacyDb.insert(schema.listenSessionTracks).values({
@@ -673,11 +701,18 @@ test("migration 0021 repairs a populated pre-migration library without losing sa
       { id: sessionTrackIds[1], trackId: trackIds[0], queueItemId: queueIds[1], position: 1 },
     ],
   );
-  const [repairedSession] = await legacyDb.select().from(schema.listenSessions)
-    .where(eq(schema.listenSessions.id, session.id));
+  // Read the repaired session through the pre-0024 columns. The current
+  // Drizzle model also selects key_match_mode/key_shifts, which this fixture
+  // intentionally does not have yet; selecting them would fail before the
+  // assertion and hide whether migration 0021 preserved the session state.
+  const { rows: repairedSessionRows } = await isolatedClient.query(
+    "select id, current_track_id, position_seconds from wy_listen_sessions where id = $1",
+    [session.id],
+  );
+  const repairedSession = repairedSessionRows[0];
   assert.equal(repairedSession.id, session.id);
-  assert.equal(repairedSession.currentTrackId, sessionTrackIds[1]);
-  assert.equal(repairedSession.positionSeconds, 8.25);
+  assert.equal(repairedSession.current_track_id, sessionTrackIds[1]);
+  assert.equal(repairedSession.position_seconds, 8.25);
 });
 
 test("legacy duplicate repair backfills identity and preserves every listening reference", async (t) => {
@@ -950,7 +985,7 @@ test("forward metadata migration repairs duplicates in an already-migrated deskt
     ["0023_duplicate_track_metadata_preference.sql"],
   );
   const { migrate } = await import("../../../../../../desktop/database.mjs");
-  await migrate(client!, path.join(repoRoot, "desktop-migrations"));
+  await migrate(client!, path.join(arenaRoot, "desktop-migrations"));
 
   const repaired = await db.db.select().from(schema.tracks)
     .where(eq(schema.tracks.ownerId, ownerId));
@@ -3388,11 +3423,17 @@ test("library default four-stem retry reaches real live-mixing controls", {
 }, async t => {
   assert.ok(client && root);
   const { verifyLibraryRetryWithRealWorker } = await import("./retry-worker-acceptance.test-helper");
+  const realInputs = [
+    process.env.WAVEYARD_REAL_LIBRARY_AUDIO_INPUT?.trim(),
+    process.env.WAVEYARD_REAL_LIBRARY_INCOMING_AUDIO_INPUT?.trim(),
+  ].filter((path): path is string => Boolean(path));
   const result = await verifyLibraryRetryWithRealWorker({
     database: db.db, client, directory: root, addTrack: service.addTrackFromAudioFile,
     recipe: "default-four-stem",
+    audioInputPath: process.env.WAVEYARD_REAL_LIBRARY_AUDIO_INPUT?.trim() || undefined,
+    incomingAudioInputPath: process.env.WAVEYARD_REAL_LIBRARY_INCOMING_AUDIO_INPUT?.trim() || undefined,
   });
-  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. Two one-second synthetic MP3s generated from disposable PCM; real pinned CPU execution and UI routing, not subjective quality or Windows speed evidence.`);
+  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. ${realInputs.length}/2 source files were supplied as real audio; remaining files are one-second synthetic controls. Pinned CPU execution and UI routing do not establish subjective separation quality or Windows performance.`);
 });
 
 // Opt-in real CPU load and HTTP latency measurement, using this suite's private

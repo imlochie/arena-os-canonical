@@ -19,7 +19,7 @@ import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 
 export { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 
-const ANALYSIS_PCM_RATE = 22_050; // mono analysis rate (enough to 10 kHz)
+export const ANALYSIS_PCM_RATE = 22_050; // mono analysis rate (enough to 10 kHz)
 
 export type AnalysisResult = {
   bpm: number | null;
@@ -419,6 +419,192 @@ export function analysePcm(pcm: Float32Array): AnalysisResult {
   }
   const { key, confidence: keyConfidence } = keyFromChroma(chromaFromPcm(pcm));
   return { bpm, bpmConfidence, musicalKey: key, keyConfidence, beatGridMs, beatConfidence };
+}
+
+export type LocalDrumTransient = {
+  timestampMs: number;
+  strength: number;
+  confidence: number;
+  rhythmicClass: null;
+};
+
+/** Detect measurable transients in the already-isolated drum/percussion stem.
+ * This engine deliberately leaves semantic class null: spectral onsets alone
+ * do not reliably distinguish kick, snare and hats across arbitrary mixes. */
+export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
+  const { envelope, frameMs } = onsetEnvelope(pcm);
+  if (envelope.length < 3) return [];
+  let maximum = 0;
+  let mean = 0;
+  for (const value of envelope) { maximum = Math.max(maximum, value); mean += value; }
+  mean /= envelope.length;
+  if (maximum < 0.015) return [];
+  const threshold = Math.max(mean * 1.8, maximum * 0.12, 0.025);
+  const events: LocalDrumTransient[] = [];
+  let lastFrame = -Infinity;
+  const refractoryFrames = Math.max(1, Math.round(55 / frameMs));
+  for (let frame = 1; frame < envelope.length - 1; frame += 1) {
+    const value = envelope[frame] ?? 0;
+    if (value < threshold || value < (envelope[frame - 1] ?? 0) || value <= (envelope[frame + 1] ?? 0)) continue;
+    if (frame - lastFrame < refractoryFrames) continue;
+    const left = envelope[Math.max(0, frame - 3)] ?? 0;
+    const right = envelope[Math.min(envelope.length - 1, frame + 3)] ?? 0;
+    const baseline = (left + right) / 2;
+    const prominence = Math.max(0, value - baseline);
+    if (prominence < threshold * 0.25) continue;
+    events.push({
+      timestampMs: Math.max(0, Math.round(frame * frameMs)),
+      strength: Math.round(Math.max(0, Math.min(1, value / maximum)) * 1_000_000) / 1_000_000,
+      confidence: Math.round(Math.max(0, Math.min(1, prominence / Math.max(value, 1e-9))) * 1_000_000) / 1_000_000,
+      rhythmicClass: null,
+    });
+    lastFrame = frame;
+  }
+  return events;
+}
+
+export type LocalHarmonyEvent = {
+  startMs: number;
+  endMs: number;
+  root: string | null;
+  quality: "major" | "minor" | "dominant7" | "minor7" | "major7" | "diminished" | "augmented" | "unknown";
+  confidence: number;
+};
+
+const CHORD_TEMPLATES: ReadonlyArray<{ quality: LocalHarmonyEvent["quality"]; intervals: readonly number[] }> = [
+  { quality: "major", intervals: [0, 4, 7] },
+  { quality: "minor", intervals: [0, 3, 7] },
+  { quality: "dominant7", intervals: [0, 4, 7, 10] },
+  { quality: "minor7", intervals: [0, 3, 7, 10] },
+  { quality: "major7", intervals: [0, 4, 7, 11] },
+  { quality: "diminished", intervals: [0, 3, 6] },
+  { quality: "augmented", intervals: [0, 4, 8] },
+];
+
+/** Conservative, source-relative chord windows using the same harmonic
+ * salience chroma as the local BPM/key engine. Weak/ambiguous windows remain
+ * explicitly unknown. */
+export function detectHarmonyTimeline(pcm: Float32Array, windowSeconds = 2): LocalHarmonyEvent[] {
+  if (pcm.length === 0 || !Number.isSafeInteger(windowSeconds) || windowSeconds < 1 || windowSeconds > 8) return [];
+  const durationMs = Math.round((pcm.length / ANALYSIS_PCM_RATE) * 1000);
+  const windowSamples = windowSeconds * ANALYSIS_PCM_RATE;
+  const events: LocalHarmonyEvent[] = [];
+  for (let start = 0; start < pcm.length; start += windowSamples) {
+    const end = Math.min(pcm.length, start + windowSamples);
+    const chroma = chromaFromPcm(pcm.subarray(start, end));
+    const total = chroma.reduce((sum, value) => sum + value, 0);
+    let best: { root: number; quality: LocalHarmonyEvent["quality"]; score: number } | null = null;
+    let runner = 0;
+    if (total > 1e-8) {
+      const normalized = chroma.map((value) => value / total);
+      for (let root = 0; root < 12; root += 1) {
+        for (const template of CHORD_TEMPLATES) {
+          let score = 0;
+          for (let pitch = 0; pitch < 12; pitch += 1) {
+            const interval = (pitch - root + 12) % 12;
+            const weight = template.intervals.includes(interval) ? 1 : 0.08;
+            score += normalized[pitch] * weight;
+          }
+          if (!best || score > best.score) {
+            runner = best?.score ?? 0;
+            best = { root, quality: template.quality, score };
+          } else if (score > runner) runner = score;
+        }
+      }
+    }
+    const margin = best ? Math.max(0, (best.score - runner) / Math.max(best.score, 1e-9)) : 0;
+    const confident = best !== null && best.score >= 0.28 && margin >= 0.04;
+    const startMs = Math.round((start / ANALYSIS_PCM_RATE) * 1000);
+    const endMs = Math.min(durationMs, Math.round((end / ANALYSIS_PCM_RATE) * 1000));
+    if (endMs > startMs) events.push({
+      startMs,
+      endMs,
+      root: confident && best ? PITCH_CLASSES[best.root]! : null,
+      quality: confident && best ? best.quality : "unknown",
+      confidence: Math.round((confident ? Math.min(1, margin) : Math.max(0, Math.min(1, best?.score ?? 0))) * 1_000_000) / 1_000_000,
+    });
+  }
+  return events;
+}
+
+export type LocalVocalPitchFrame = {
+  timestampMs: number;
+  frequencyHz: number | null;
+  midiFloat: number | null;
+  nearestMidiNote: number | null;
+  confidence: number;
+  voiced: boolean;
+};
+
+/** Monophonic YIN-style pitch observations on isolated vocal stems. It emits
+ * null pitch for unvoiced/ambiguous frames; it never guesses through silence. */
+export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[] {
+  const decimation = 4;
+  const rate = ANALYSIS_PCM_RATE / decimation;
+  const windowSize = Math.round(rate * 0.06);
+  const hopSize = Math.round(rate * 0.03);
+  const minLag = Math.floor(rate / 1_200);
+  const maxLag = Math.floor(rate / 50);
+  if (pcm.length < windowSize * decimation) return [];
+  const frames: LocalVocalPitchFrame[] = [];
+  const signal = new Float32Array(windowSize);
+  for (let start = 0; start + (windowSize - 1) * decimation < pcm.length; start += hopSize * decimation) {
+    let energy = 0;
+    for (let index = 0; index < windowSize; index += 1) {
+      const sample = pcm[start + index * decimation] ?? 0;
+      signal[index] = sample;
+      energy += sample * sample;
+    }
+    const timestampMs = Math.round(((start + (windowSize * decimation) / 2) / ANALYSIS_PCM_RATE) * 1000);
+    if (energy / windowSize < 1e-5) {
+      frames.push({ timestampMs, frequencyHz: null, midiFloat: null, nearestMidiNote: null, confidence: 0, voiced: false });
+      continue;
+    }
+    const max = Math.min(maxLag, Math.floor(windowSize / 2));
+    const differences = new Float64Array(max + 1);
+    for (let lag = minLag; lag <= max; lag += 1) {
+      let difference = 0;
+      for (let index = 0; index + lag < windowSize; index += 1) {
+        const delta = signal[index] - signal[index + lag];
+        difference += delta * delta;
+      }
+      differences[lag] = difference;
+    }
+    let running = 0;
+    let bestLag = -1;
+    let bestValue = Number.POSITIVE_INFINITY;
+    let previousNormalized = Number.POSITIVE_INFINITY;
+    for (let lag = minLag; lag <= max; lag += 1) {
+      running += differences[lag] ?? 0;
+      const normalized = running > 0 ? ((differences[lag] ?? 0) * (lag - minLag + 1)) / running : 1;
+      if (normalized < bestValue) { bestValue = normalized; bestLag = lag; }
+      if (lag > minLag && normalized < 0.16 && normalized >= previousNormalized) {
+        // The first CMND valley is the fundamental period. Searching the
+        // global minimum biases toward octave/subharmonic multiples.
+        bestLag = lag - 1;
+        bestValue = previousNormalized;
+        break;
+      }
+      previousNormalized = normalized;
+      if (lag === max && normalized < 0.16) {
+        bestLag = lag;
+        bestValue = normalized;
+      }
+    }
+    if (bestLag < 0 || bestValue > 0.24) {
+      frames.push({ timestampMs, frequencyHz: null, midiFloat: null, nearestMidiNote: null, confidence: 0, voiced: false });
+      continue;
+    }
+    const frequencyHz = rate / bestLag;
+    const midiFloat = 69 + 12 * Math.log2(frequencyHz / 440);
+    const confidence = Math.max(0, Math.min(1, 1 - bestValue));
+    if (frequencyHz < 50 || frequencyHz > 1_200 || !Number.isFinite(midiFloat)) {
+      frames.push({ timestampMs, frequencyHz: null, midiFloat: null, nearestMidiNote: null, confidence: 0, voiced: false });
+    } else {
+      frames.push({ timestampMs, frequencyHz, midiFloat, nearestMidiNote: Math.round(midiFloat), confidence, voiced: true });
+    }
+  }
+  return frames;
 }
 
 /** Beat positions are canonical source milliseconds and must be strictly ordered. (worker port) */

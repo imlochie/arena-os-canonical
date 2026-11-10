@@ -21,6 +21,9 @@ import {
   onsetEnvelope,
   beatConfidenceFromGrid,
   decodeMonoPcm,
+  detectDrumTransients,
+  detectHarmonyTimeline,
+  detectVocalPitchFrames,
 } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
   currentKeyConfidence,
@@ -191,6 +194,49 @@ test("harmonic-salience chroma recognizes a bass-register I–IV–V progression
   const result = keyFromChroma(chromaFromPcm(samples));
   assert.equal(result.key, "C major");
   assert.ok((result.confidence ?? 0) >= 0.5, "the repeated diatonic progression should support a confident key");
+});
+
+test("local drum analysis executes onset detection without inventing drum classes", () => {
+  const pcm = new Float32Array(RATE * 3);
+  for (const time of [0.25, 0.75, 1.25, 2.25]) {
+    const start = Math.round(time * RATE);
+    for (let index = start; index < Math.min(start + 600, pcm.length); index += 1) {
+      const offset = index - start;
+      pcm[index] += 0.8 * Math.exp(-offset / 90) * Math.sin((2 * Math.PI * 90 * offset) / RATE);
+    }
+  }
+  const events = detectDrumTransients(pcm);
+  assert.ok(events.length >= 3, `expected detected transients, got ${events.length}`);
+  for (const event of events) {
+    assert.equal(event.rhythmicClass, null, "spectral transients do not prove kick/snare/hat identity");
+    assert.ok(event.timestampMs >= 0 && event.timestampMs < 3000);
+    assert.ok(event.confidence >= 0 && event.confidence <= 1);
+  }
+});
+
+test("local harmony analysis returns timed chord evidence and unknowns for silence", () => {
+  const pcm = new Float32Array(RATE * 4);
+  const chords = [[261.63, 329.63, 392], [349.23, 440, 523.25]];
+  for (let index = 0; index < pcm.length; index += 1) {
+    const chord = chords[Math.floor(index / (RATE * 2))]!;
+    pcm[index] = chord.reduce((sum, frequency) => sum + 0.3 * Math.sin((2 * Math.PI * frequency * index) / RATE), 0);
+  }
+  const events = detectHarmonyTimeline(pcm, 2);
+  assert.equal(events.length, 2);
+  assert.ok(events.every((event) => event.root && event.quality !== "unknown"), JSON.stringify(events));
+  assert.deepEqual(detectHarmonyTimeline(new Float32Array(RATE * 2), 2).map((event) => event.quality), ["unknown"]);
+});
+
+test("local vocal analysis tracks voiced pitch and leaves silence unvoiced", () => {
+  const pcm = new Float32Array(RATE * 2);
+  for (let index = 0; index < RATE; index += 1) pcm[index] = 0.4 * Math.sin((2 * Math.PI * 220 * index) / RATE);
+  const frames = detectVocalPitchFrames(pcm);
+  const voiced = frames.filter((frame) => frame.voiced);
+  const unvoiced = frames.filter((frame) => !frame.voiced);
+  assert.ok(voiced.length > 10);
+  assert.ok(voiced.every((frame) => Math.abs((frame.frequencyHz ?? 0) - 220) < 8));
+  assert.ok(unvoiced.length > 10);
+  assert.ok(unvoiced.every((frame) => frame.frequencyHz === null && frame.midiFloat === null));
 });
 
 test("key confidence separates clear tonal evidence from ambiguous chords", () => {
