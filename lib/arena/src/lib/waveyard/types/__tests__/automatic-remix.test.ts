@@ -112,25 +112,25 @@ describe("deterministic automatic remix arranger", () => {
     expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
   });
 
-  it("does not treat within-track pattern or energy labels as semantic cross-song roles", () => {
+  it("uses conservative fallback when semantic role evidence is unavailable", () => {
     for (const structuralLabel of ["pattern-repeat-a", "rhythm-repeat-a", "energy-rise", "energy-drop"]) {
       const anchor = withRoles(source({ id: "a" }), [structuralLabel, structuralLabel]);
       const donor = withRoles(source({ id: "b" }), [structuralLabel, structuralLabel]);
       const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("no_compatible_hybrid_source");
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.plan.provenance.decisions).toContain("arranged both complete sources as alternating half-song passages");
     }
   });
 
-  it("rejects reversed role order instead of mapping by ordinal position", () => {
+  it("uses fallback instead of mapping reversed role order by ordinal position", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({ id: "b" }), ["chorus", "verse"]);
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("no_compatible_hybrid_source");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.plan.tracks).toHaveLength(8);
   });
 
-  it("does not enable a hybrid from low-confidence tempo, key, or beat analysis", () => {
+  it("does not enable transforms from low-confidence tempo, key, or beat analysis", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({
       id: "b",
@@ -140,10 +140,10 @@ describe("deterministic automatic remix arranger", () => {
       },
     }));
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe("no_compatible_hybrid_source");
-      expect(result.compatibility?.missingEvidence).toContain("trusted BPM analysis for both sources");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.plan.tracks).toHaveLength(8);
+      expect(result.plan.tracks.every((track) => track.clips.every((clip) => !clip.tempoSyncEnabled && !clip.keySyncEnabled && !clip.beatSnapEnabled))).toBe(true);
     }
   });
 
@@ -165,10 +165,10 @@ describe("deterministic automatic remix arranger", () => {
   it("does not force an incompatible second source into a hybrid", () => {
     const incompatible = source({ id: "b", analysis: { id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 168, musicalKey: "F# minor", beatGridMs: Array.from({ length: 33 }, (_, index) => index * 357) } });
     const result = buildAutomaticRemixPlan([source({ id: "a" }), incompatible], { variant: "hybrid" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe("no_compatible_hybrid_source");
-      expect(result.compatibility?.missingEvidence).toContain("current passage fingerprints for every section; rerun section analysis with engine 1.5.0");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.plan.tracks).toHaveLength(8);
+      expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
     }
   });
 
@@ -185,18 +185,22 @@ describe("deterministic automatic remix arranger", () => {
       },
     });
     const result = buildAutomaticRemixPlan([source({ id: "a" }), donor], { variant: "hybrid" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe("no_compatible_hybrid_source");
-      expect(result.compatibility?.missingEvidence).toContain("current checksum-verified source analysis for b.wav");
-      expect(result.compatibility?.missingEvidence).toContain("current passage fingerprints for b.wav; rerun section analysis with engine 1.5.0");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.plan.tracks).toHaveLength(8);
+      expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
     }
   });
 
   it("refuses a hybrid when anchor structural evidence is incomplete", () => {
     const unknown = source({ id: "unproven", analysis: { id: "unproven-analysis", status: "processing", sourceChecksumSha256: "unproven-checksum", bpm: null, musicalKey: null, beatGridMs: null }, sections: [] });
     const result = buildAutomaticRemixPlan([unknown], { variant: "hybrid", instrumental: true });
-    expect(result).toEqual({ ok: false, reason: "hybrid_evidence_unavailable" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.plan.tracks).toHaveLength(4);
+      expect(result.plan.provenance.decisions).toContain("arranged both complete sources as alternating half-song passages");
+      expect(result.plan.tracks.every((track) => track.stemType !== "vocals")).toBe(true);
+    }
   });
 
   it("rejects an empty source set rather than inventing material", () => {
