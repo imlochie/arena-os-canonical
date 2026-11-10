@@ -475,7 +475,6 @@ export function buildAutomaticRemixPlan(
   const targetKey = trustedKey(anchor);
   const notices: string[] = [];
   const decisions = ["anchored to one preserved source structure"];
-  if (variant === "hybrid" && !sourceCanStructure(anchor)) return { ok: false, reason: "hybrid_evidence_unavailable" };
   if (!sourceCanStructure(anchor)) notices.push("Structural analysis is incomplete, so Waveyard preserved the source as one continuous arrangement.");
   if (!anchorBpm) notices.push("Tempo confidence is insufficient, so Waveyard will not claim BPM matching or beat snapping for this arrangement.");
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
@@ -563,7 +562,9 @@ export function buildAutomaticRemixPlan(
   }
 
   if (constraints.instrumental) {
-    selected.delete("vocals");
+    for (const [key, choice] of selected) {
+      if (choice.stem.stemType === "vocals") selected.delete(key);
+    }
     decisions.push("removed vocals at the user’s request");
   }
   if (!selected.size) return { ok: false, reason: "no_stems" };

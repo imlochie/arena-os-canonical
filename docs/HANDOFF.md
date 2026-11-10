@@ -4,6 +4,14 @@ Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
 Last updated: 2026-11-10.
 
+## Current verification update — 2026-11-10, fallback reachability fix
+
+* **Highest-priority fix:** removed the stale `hybrid_evidence_unavailable` early return that made the conservative full-song fallback unreachable whenever the anchor lacked trusted structure. Instrumental mode now removes vocals correctly from source-qualified fallback track IDs.
+* **Files changed:** `lib/arena/src/lib/waveyard/types/automatic-remix.ts` and this handoff.
+* **Verification:** repository `pnpm run typecheck` passes across libraries, API server, ArenaForge, mockup sandbox, and scripts. `git diff --check` is required before commit. The focused automatic-remix test remains blocked because this checkout does not provide `tsx`.
+* **Remaining limitation:** real-song render/export/save-reopen evidence is still pending; this fix makes the existing fallback reachable but does not add a second renderer or claim musical quality.
+* **Exact Git revision:** `4a6ad6697e3de6e6761a1da653a470b9a2c47d31`.
+
 ## Current verification update — 2026-11-10, full-song fallback vertical slice
 
 * **Implementation completed:** `buildAutomaticRemixPlan` no longer rejects a requested hybrid solely because passage evidence is missing or no pair clears the existing confidence gates. It preserves those gates and falls back to the existing persisted `AutomaticRemixPlan`/`RemixClip` shape: every usable stem from both complete sources is arranged as alternating first-half/second-half passages across a continuous timeline. The fallback makes no unverified BPM, key, or beat-snap claim, uses conservative gain and short fades, and records notices/decisions explaining the evidence boundary.
