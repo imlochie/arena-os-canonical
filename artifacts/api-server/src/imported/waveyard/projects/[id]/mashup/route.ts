@@ -35,7 +35,7 @@ import {
   sumInstrumentalStems,
   type InstrumentalBedStem,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
-import { planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
+import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
 export const dynamic = "force-dynamic";
@@ -297,6 +297,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       ]);
       if (vocals === null || bed === null) {
         return Response.json({ error: "One of the tracks is not in this project." }, { status: 404 });
+      }
+
+      // If either profile lacks BPM or key analysis, decode real PCM and analyse on the fly
+      if (vocals.bpm === null || vocals.musicalKey === null) {
+        await mkdir(tempDir, { recursive: true });
+        const vPcm = await sourcePcm(projectId, vocalsId, tempDir);
+        if (vPcm?.pcm) {
+          const analysis = analyseStereoPcm(vPcm.pcm);
+          if (vocals.bpm === null && analysis.bpm) vocals.bpm = analysis.bpm;
+          if (vocals.musicalKey === null && analysis.musicalKey) vocals.musicalKey = analysis.musicalKey;
+        }
+      }
+      if (bed.bpm === null || bed.musicalKey === null) {
+        await mkdir(tempDir, { recursive: true });
+        const bPcm = await sourcePcm(projectId, bedId, tempDir);
+        if (bPcm?.pcm) {
+          const analysis = analyseStereoPcm(bPcm.pcm);
+          if (bed.bpm === null && analysis.bpm) bed.bpm = analysis.bpm;
+          if (bed.musicalKey === null && analysis.musicalKey) bed.musicalKey = analysis.musicalKey;
+        }
       }
 
       const planned = planMashup(vocals, bed);

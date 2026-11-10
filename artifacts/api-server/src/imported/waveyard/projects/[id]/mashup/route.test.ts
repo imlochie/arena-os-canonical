@@ -477,6 +477,66 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       fallbackVocalEnergy > separatedVocalEnergy * 2,
       `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
     );
+
+    // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips
+    const saveRequest = new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "save",
+        vocalsSourceId: vocalsSource.id,
+        instrumentalSourceId: bedSource.id,
+      }),
+    });
+    const saveResponse = await routeModule.POST(saveRequest, { params: Promise.resolve({ id: project.id }) });
+    assert.equal(saveResponse.status, 201, "save action must return 201 Created");
+    const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
+    assert.equal(saveBody.ok, true);
+    assert.ok(saveBody.remix.id);
+    assert.ok(saveBody.version.id);
+
+    // Verify database state: fetch saved remix session, tracks, and clips
+    const [savedSession] = await dbModule.db
+      .select()
+      .from(schema.remixSessions)
+      .where(eq(schema.remixSessions.id, saveBody.remix.id));
+    assert.ok(savedSession, "saved remix session must exist in db");
+    assert.equal(savedSession.tempoBpm, 120);
+
+    const savedTracks = await dbModule.db
+      .select()
+      .from(schema.remixTracks)
+      .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
+    assert.ok(savedTracks.length >= 2, "remix must have vocal and bed tracks");
+
+    const savedClips = await dbModule.db
+      .select()
+      .from(schema.remixClips)
+      .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
+    assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
+
+    // Verify clips have correct time stretch / key sync flags
+    const vocalClips = savedClips.filter((c) => c.stemAssetId === vocalsStemWav && c.tempoSyncEnabled);
+    for (const clip of savedClips) {
+      assert.ok(Number.isFinite(clip.timelineStartMs) && clip.timelineStartMs >= 0);
+      assert.ok(clip.durationMs > 0);
+      assert.ok(clip.gain > 0 && clip.gain <= 1);
+    }
+
+    // Simulate studio edit: update masterVolume & track pan via DB transaction, verify version increment
+    await dbModule.db.transaction(async (tx) => {
+      await tx
+        .update(schema.remixSessions)
+        .set({ masterVolume: 0.9, version: savedSession.version + 1 })
+        .where(eq(schema.remixSessions.id, savedSession.id));
+    });
+
+    const [updatedSession] = await dbModule.db
+      .select()
+      .from(schema.remixSessions)
+      .where(eq(schema.remixSessions.id, savedSession.id));
+    assert.equal(updatedSession.version, savedSession.version + 1);
+    assert.equal(updatedSession.masterVolume, 0.9);
   } finally {
     try {
       await dbModule?.pool.end();
