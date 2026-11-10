@@ -332,9 +332,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
                 sourceChecksumSha256: asset.checksumSha256,
                 bpm: analysis.bpm,
-                bpmConfidence: analysis.bpmConfidence ?? 0.8,
+                bpmConfidence: analysis.bpmConfidence,
                 musicalKey: analysis.musicalKey,
-                keyConfidence: analysis.keyConfidence ?? 0.8,
+                keyConfidence: analysis.keyConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
             }
@@ -365,9 +365,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
                 sourceChecksumSha256: asset.checksumSha256,
                 bpm: analysis.bpm,
-                bpmConfidence: analysis.bpmConfidence ?? 0.8,
+                bpmConfidence: analysis.bpmConfidence,
                 musicalKey: analysis.musicalKey,
-                keyConfidence: analysis.keyConfidence ?? 0.8,
+                keyConfidence: analysis.keyConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
             }

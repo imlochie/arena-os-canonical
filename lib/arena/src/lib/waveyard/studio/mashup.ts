@@ -18,6 +18,7 @@ import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
 import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
+import { trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v1";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
@@ -27,7 +28,11 @@ export type MashupSection = { label: string; startMs: number; endMs: number };
 export type MashupSourceProfile = {
   role: "vocals" | "instrumental";
   bpm: number | null;
+  bpmConfidence?: number | null;
   musicalKey: string | null;
+  keyConfidence?: number | null;
+  beatGridMs?: number[] | null;
+  beatConfidence?: number | null;
   durationMs: number;
   sections: MashupSection[];
   stems?: Array<{ id: string; stemType: string }>;
@@ -122,7 +127,7 @@ export function analyseStereoPcm(stereo44k: Float32Array): AnalysisResult {
   return analysePcm(mono);
 }
 
-export function estimateFallbackTempo(profile: MashupSourceProfile): { bpm: number; confidence: number; source: "sections" | "duration" | "default" } {
+export function estimateFallbackTempo(profile: MashupSourceProfile): { bpm: number; confidence: number; source: "sections" | "default" } {
   if (profile.sections && profile.sections.length >= 2) {
     const intervals: number[] = [];
     for (let i = 0; i < profile.sections.length - 1; i++) {
@@ -142,16 +147,8 @@ export function estimateFallbackTempo(profile: MashupSourceProfile): { bpm: numb
     }
   }
 
-  // Duration heuristic: if duration fits an exact multiple of 4-beat bars around 120 BPM
-  if (profile.durationMs > 10_000) {
-    const targetBeats = Math.round((profile.durationMs / 60_000) * 120);
-    const candidateBpm = (targetBeats * 60_000) / profile.durationMs;
-    if (candidateBpm >= 80 && candidateBpm <= 150) {
-      return { bpm: Math.round(candidateBpm * 10) / 10, confidence: 0.4, source: "duration" };
-    }
-  }
-
-  return { bpm: 120, confidence: 0.2, source: "default" };
+  // Never invent a duration-derived BPM guess presented as musical synchronization.
+  return { bpm: 120, confidence: 0.0, source: "default" };
 }
 
 /** The vocal's pitch move into the bed's key. Relative major/minor shares
@@ -204,25 +201,34 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   let estimatedBed = false;
   let estimatedVocal = false;
 
-  if (bed.bpm !== null && bed.bpm > 0) {
+  const trustedBedBpm = trustedAnalysisBpm(bed.bpm, bed.bpmConfidence);
+  const trustedVocalBpm = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence);
+
+  if (trustedBedBpm !== null) {
+    masterBpm = trustedBedBpm;
+    rationale.push(`master tempo = the instrumental's verified ${masterBpm} BPM.`);
+  } else if (bed.bpm !== null && bed.bpm > 0) {
     masterBpm = bed.bpm;
-    rationale.push(`master tempo = the instrumental's ${masterBpm} BPM (the bed wins the tempo war).`);
-  } else if (vocals.bpm !== null && vocals.bpm > 0) {
-    // When the bed lacks tempo but the vocal tempo is verified, adopt the vocal's tempo
-    masterBpm = vocals.bpm;
-    rationale.push(`master tempo = the verified vocal's ${masterBpm} BPM (adopted because instrumental tempo is unanalyzed).`);
+    warnings.push(`Instrumental tempo (${masterBpm} BPM) has low confidence (${bed.bpmConfidence ?? 0}); beat synchronization may drift.`);
+    rationale.push(`master tempo = the instrumental's ${masterBpm} BPM (low confidence).`);
+  } else if (trustedVocalBpm !== null || (vocals.bpm !== null && vocals.bpm > 0)) {
+    masterBpm = trustedVocalBpm ?? vocals.bpm!;
+    rationale.push(`master tempo = the vocal's ${masterBpm} BPM (adopted because instrumental tempo is unanalyzed).`);
     warnings.push(`The instrumental has no complete tempo analysis — adopting vocal tempo (${masterBpm} BPM) as master.`);
   } else {
     const fallbackBed = estimateFallbackTempo(bed);
     masterBpm = fallbackBed.bpm;
     estimatedBed = true;
-    warnings.push(`Neither track has complete tempo analysis — using estimated ${masterBpm} BPM reference.`);
-    rationale.push(`master tempo = estimated reference tempo (${masterBpm} BPM).`);
+    warnings.push(`Neither track has complete tempo analysis — using unaligned reference (${masterBpm} BPM). Musical beat synchronization cannot be guaranteed.`);
+    rationale.push(`master tempo = reference tempo (${masterBpm} BPM, untrusted).`);
   }
 
   let effectiveVocalBpm: number;
-  if (vocals.bpm !== null && vocals.bpm > 0) {
+  if (trustedVocalBpm !== null) {
+    effectiveVocalBpm = trustedVocalBpm;
+  } else if (vocals.bpm !== null && vocals.bpm > 0) {
     effectiveVocalBpm = vocals.bpm;
+    warnings.push(`Vocal tempo (${effectiveVocalBpm} BPM) has low confidence (${vocals.bpmConfidence ?? 0}).`);
   } else {
     const fallbackVocal = estimateFallbackTempo(vocals);
     effectiveVocalBpm = fallbackVocal.bpm;

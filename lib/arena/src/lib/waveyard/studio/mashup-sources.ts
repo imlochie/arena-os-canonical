@@ -54,7 +54,9 @@ export async function loadSourceProfile(
   return {
     role,
     bpm: analysis?.bpm ?? null,
+    bpmConfidence: analysis?.bpmConfidence ?? null,
     musicalKey: analysis?.musicalKey ?? null,
+    keyConfidence: analysis?.keyConfidence ?? null,
     durationMs: Math.round(asset.durationSeconds * 1000),
     sections,
   };
