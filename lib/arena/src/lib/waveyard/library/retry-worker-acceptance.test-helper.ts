@@ -32,6 +32,25 @@ type BrowserRoute = {
   fulfill(input: { status?: number; json?: unknown; headers?: Record<string, string>; body?: string | Buffer }): Promise<void>;
 };
 
+async function probeAudioInput(filePath: string) {
+  const { stdout } = await execTool("ffprobe", [
+    "-v", "error", "-select_streams", "a:0",
+    "-show_entries", "stream=codec_name,sample_rate,channels",
+    "-of", "json", filePath,
+  ], { timeoutMs: 30_000 });
+  const probe = JSON.parse(stdout) as {
+    streams?: Array<{ codec_name?: string; sample_rate?: string; channels?: number }>;
+  };
+  const stream = probe.streams?.[0];
+  assert.ok(stream?.codec_name && stream.sample_rate && stream.channels,
+    `ffprobe must identify the audio stream in ${basename(filePath)}`);
+  return {
+    codec: stream.codec_name,
+    sampleRate: Number(stream.sample_rate),
+    channels: stream.channels,
+  };
+}
+
 export async function verifyLibraryRetryWithRealWorker(options: {
   database: typeof workspaceDb;
   client: Client;
@@ -96,17 +115,14 @@ export async function verifyLibraryRetryWithRealWorker(options: {
         "-i", wavFixturePath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
         inputPath,
       ], { timeoutMs: 30_000 });
-      const { stdout: probeOutput } = await execTool("ffprobe", [
-        "-v", "error", "-select_streams", "a:0",
-        "-show_entries", "stream=codec_name,sample_rate,channels",
-        "-of", "json", inputPath,
-      ], { timeoutMs: 30_000 });
-      const probe = JSON.parse(probeOutput) as {
-        streams?: Array<{ codec_name?: string; sample_rate?: string; channels?: number }>;
-      };
-      assert.equal(probe.streams?.[0]?.codec_name, "mp3", "the disposable compressed fixture is actually MP3");
-      assert.equal(probe.streams?.[0]?.sample_rate, "44100");
-      assert.equal(probe.streams?.[0]?.channels, 2);
+    }
+    const inputAudio = fourStem ? await probeAudioInput(inputPath) : null;
+    if (fourStem) {
+      assert.equal(inputAudio?.codec, "mp3", "the compressed four-stem input is actually MP3");
+      if (!options.audioInputPath) {
+        assert.equal(inputAudio?.sampleRate, 44_100, "the generated fixture is encoded at its pinned 44.1 kHz rate");
+        assert.equal(inputAudio?.channels, 2);
+      }
     }
     const originalChecksum = await checksumFile(inputPath);
     const intake = await addTrack({
@@ -134,10 +150,12 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       .where(eq(sourceAssets.id, intake.track.sourceAssetId)).limit(1);
     assert.ok(importedSource, "desktop library intake persists the imported audio source");
     if (fourStem) {
-      assert.equal(importedSource.codec, "mp3", "the desktop importer recognizes the compressed codec");
+      assert.equal(importedSource.codec, inputAudio?.codec, "the desktop importer preserves the source codec");
       assert.equal(importedSource.mimeType, "audio/mpeg");
-      assert.equal(importedSource.sampleRate, 44_100);
-      assert.equal(importedSource.channels, 2);
+      assert.equal(importedSource.sampleRate, inputAudio?.sampleRate,
+        "the desktop importer preserves the source sample rate instead of normalizing metadata to the fixture rate");
+      assert.equal(importedSource.channels, inputAudio?.channels,
+        "the desktop importer preserves the source channel count");
       assert.match(importedSource.originalFilename, /\.mp3$/i);
 
       const incomingWavPath = join(directory, "retry-acceptance-transition-incoming.wav");
@@ -153,6 +171,12 @@ export async function verifyLibraryRetryWithRealWorker(options: {
           "-i", incomingWavPath, "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100",
           incomingInputPath,
         ], { timeoutMs: 30_000 });
+      }
+      const incomingAudio = await probeAudioInput(incomingInputPath);
+      assert.equal(incomingAudio.codec, "mp3", "the incoming compressed source is actually MP3");
+      if (!options.incomingAudioInputPath) {
+        assert.equal(incomingAudio.sampleRate, 44_100, "the generated incoming fixture is encoded at 44.1 kHz");
+        assert.equal(incomingAudio.channels, 2);
       }
       incomingOriginalChecksum = await checksumFile(incomingInputPath);
       const incomingIntake = await addTrack({
@@ -176,9 +200,11 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       const [incomingSource] = await database.select().from(sourceAssets)
         .where(eq(sourceAssets.id, incomingSourceId)).limit(1);
       assert.ok(incomingSource);
-      assert.equal(incomingSource.codec, "mp3");
-      assert.equal(incomingSource.sampleRate, 44_100);
-      assert.equal(incomingSource.channels, 2);
+      assert.equal(incomingSource.codec, incomingAudio.codec);
+      assert.equal(incomingSource.sampleRate, incomingAudio.sampleRate,
+        "the incoming source record preserves its actual input sample rate");
+      assert.equal(incomingSource.channels, incomingAudio.channels,
+        "the incoming source record preserves its actual input channel count");
       incomingJobIdsBefore = (await database.select().from(processingJobs)
         .where(eq(processingJobs.sourceAssetId, incomingSourceId))).map(job => job.id);
     }
@@ -488,10 +514,16 @@ export async function verifyLibraryRetryWithRealWorker(options: {
 
       const incomingAssets = incomingStems.map(stem => stem.id);
       await page.getByTestId(`button-next-${incomingTrack!.id}`).click();
-      await page.waitForFunction(
+      // Standby media is normally loaded from a private in-memory Blob URL.
+      // Its currentSrc is therefore an ephemeral blob: URL, not the library
+      // asset ID. Use the explicit logical identity attached to each element.
+      const deckIdentityReady = await page.waitForFunction(
         `({ outgoingIds, incomingIds }) => {
           const idsForRole = role => Array.from(document.querySelectorAll('[data-role="' + role + '"] audio'))
-            .map(audio => new URL(audio.currentSrc || audio.src).pathname.split('/').pop());
+            .map(audio => {
+              const logicalUrl = audio.dataset.waveyardAssetUrl;
+              return logicalUrl ? new URL(logicalUrl, location.href).pathname.split('/').pop() : null;
+            });
           const outgoing = idsForRole('current');
           const incoming = idsForRole('next');
           const exact = (actual, expected) =>
@@ -504,18 +536,43 @@ export async function verifyLibraryRetryWithRealWorker(options: {
         }`,
         { outgoingIds: expectedAssets, incomingIds: incomingAssets },
         { timeout: 30_000 },
-      );
-      await page.waitForTimeout(250);
-      const deckStateAfterReady = {
+      ).then(() => true, () => false);
+      const deckStateAtRead = {
         current: await page.locator('[data-role="current"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1) ?? ""),
+          elements.map(audio => {
+            const logicalUrl = audio.dataset.waveyardAssetUrl;
+            return logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) ?? "" : "";
+          }),
         ),
         next: await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
-          elements.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1) ?? ""),
+          elements.map(audio => {
+            const logicalUrl = audio.dataset.waveyardAssetUrl;
+            return logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) ?? "" : "";
+          }),
+        ),
+        incomingReady: await page.locator('[data-role="next"] audio').evaluateAll(
+          (elements: HTMLAudioElement[]) => elements.length > 0 && elements.every(audio => audio.readyState >= 2),
+        ),
+        incomingMedia: await page.locator('[data-role="next"] audio').evaluateAll((elements: HTMLAudioElement[]) =>
+          elements.map(audio => {
+            const logicalUrl = audio.dataset.waveyardAssetUrl;
+            return {
+              assetId: logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) : null,
+              readyState: audio.readyState,
+              networkState: audio.networkState,
+              paused: audio.paused,
+              currentTime: audio.currentTime,
+              srcProtocol: audio.currentSrc ? new URL(audio.currentSrc, location.href).protocol : null,
+              errorCode: audio.error?.code ?? null,
+            };
+          }),
         ),
       };
-      if (deckStateAfterReady.next.length !== incomingAssets.length
-        || !incomingAssets.every(id => deckStateAfterReady.next.includes(id))) {
+      if (!deckIdentityReady || !deckStateAtRead.incomingReady
+        || deckStateAtRead.current.length !== expectedAssets.length
+        || !expectedAssets.every(id => deckStateAtRead.current.includes(id))
+        || deckStateAtRead.next.length !== incomingAssets.length
+        || !incomingAssets.every(id => deckStateAtRead.next.includes(id))) {
         assert.ok(observedSessionId, "the real session route was observed for persisted-state diagnostics");
         const allStemRows = await database.select().from(stemAssets);
         const describeStemIds = (ids: string[]) => ids.map(id => {
@@ -531,16 +588,17 @@ export async function verifyLibraryRetryWithRealWorker(options: {
           const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
           return response.ok ? await response.json() : { status: response.status };
         }, observedSessionId);
-        console.error("Persisted and loaded incoming stem IDs differ", JSON.stringify({
+        console.error("Persisted Waveyard deck acceptance state did not settle", JSON.stringify({
           expectedOutgoing: expectedAssets,
           expectedIncoming: incomingAssets,
           firstTrackId: intake.track.id,
           secondTrackId: incomingTrack?.id,
           expectedOutgoingRows: describeStemIds(expectedAssets),
           expectedIncomingRows: describeStemIds(incomingAssets),
-          actualCurrentRows: describeStemIds(deckStateAfterReady.current),
-          actualNextRows: describeStemIds(deckStateAfterReady.next),
-          deckStateAfterReady,
+          actualCurrentRows: describeStemIds(deckStateAtRead.current),
+          actualNextRows: describeStemIds(deckStateAtRead.next),
+          deckStateAtRead,
+          deckIdentityReady,
           persistedTracks: persistedSession?.session?.tracks?.map((item: any) => ({
             id: item.id,
             trackId: item.track?.id,
@@ -552,12 +610,14 @@ export async function verifyLibraryRetryWithRealWorker(options: {
         }));
       }
       assert.deepEqual(
-        deckStateAfterReady.current.sort(),
+        deckStateAtRead.current.sort(),
         [...expectedAssets].sort(),
         "the outgoing deck contains only the first track's real separated assets",
       );
+      assert.equal(deckStateAtRead.incomingReady, true,
+        "every incoming stem has decodable media before the transition");
       assert.deepEqual(
-        deckStateAfterReady.next.sort(),
+        deckStateAtRead.next.sort(),
         [...incomingAssets].sort(),
         "the incoming deck contains only the second track's real separated assets",
       );
@@ -580,7 +640,10 @@ export async function verifyLibraryRetryWithRealWorker(options: {
       }, undefined, { timeout: 5_000 });
       await page.waitForFunction((ids: string[]) => {
         const current = [...document.querySelectorAll<HTMLAudioElement>('[data-role="current"] audio')];
-        const actual = current.map(audio => new URL(audio.currentSrc || audio.src).pathname.split("/").at(-1));
+        const actual = current.map(audio => {
+          const logicalUrl = audio.dataset.waveyardAssetUrl;
+          return logicalUrl ? new URL(logicalUrl, location.href).pathname.split("/").at(-1) : null;
+        });
         return current.length === 4 && ids.every(id => actual.includes(id))
           && current.every(audio => !audio.paused && audio.currentTime > 0.03);
       }, incomingAssets, { timeout: 5_000 });

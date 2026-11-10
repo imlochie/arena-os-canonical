@@ -182,3 +182,9 @@ Tempo-match browser fixtures must provide confidence values as well as BPM numbe
 **Why:** BPM values without confidence metadata intentionally fall back to native donor pace, and low beat confidence reports a different status even when tempo matching is reliable.
 
 **How to apply:** Set confidence metadata explicitly in tempo-match fixtures; omit beat-grid data only when the test expects tempo matching without beat synchronization.
+
+Waveyard standby-deck audio can use private in-memory Blob URLs, so `audio.currentSrc` is not a persistent library asset ID. Compare logical identity through `data-waveyard-asset-url`, and verify fetch provenance, readiness, and playback separately.
+
+**Why:** A real two-track acceptance showed that the persisted incoming stem IDs exactly matched the standby deck; parsing each Blob URL's path produced unrelated UUIDs and a false asset mismatch.
+
+**How to apply:** Use the explicit asset identity attribute for ID assertions. Check that the private asset route served those IDs and the corresponding media is decoded and actually plays through the transition.
