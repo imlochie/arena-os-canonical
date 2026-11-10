@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { db } from "@workspace/db";
-import { processingJobs, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
+import { processingJobs, remixClips, remixSessions, remixTracks, remixVersions, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
@@ -72,7 +72,7 @@ type BedLoadResult =
 /** Latest stem of a type for a source, or null. */
 async function latestStem(projectId: string, sourceAssetId: string, stemType: string) {
   const [stem] = await db
-    .select({ storageKey: stemAssets.storageKey })
+    .select({ id: stemAssets.id, storageKey: stemAssets.storageKey })
     .from(stemAssets)
     .where(
       and(
@@ -281,7 +281,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const body = (await request.json().catch(() => ({}))) as MashupBody;
     const action = typeof body.action === "string" ? body.action : "plan";
 
-    if (action === "plan" || action === "render") {
+    if (action === "plan" || action === "render" || action === "save") {
       const vocalsId = typeof body.vocalsSourceId === "string" ? body.vocalsSourceId : "";
       const bedId = typeof body.instrumentalSourceId === "string" ? body.instrumentalSourceId : "";
       if (!isUuid(vocalsId) || !isUuid(bedId)) {
@@ -306,6 +306,152 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (action === "plan") {
         const bedInfo = await inspectBed(projectId, bedId);
         return Response.json({ plan: planned.plan, bed: bedInfo }, { status: 200 });
+      }
+
+      if (action === "save") {
+        const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
+        const bedStems = await db
+          .select()
+          .from(stemAssets)
+          .where(and(eq(stemAssets.projectId, projectId), eq(stemAssets.sourceAssetId, bedId)));
+
+        const result = await db.transaction(async (tx) => {
+          const [remix] = await tx.insert(remixSessions).values({
+            projectId,
+            ownerId: user.id,
+            name: `Mashup: ${vocals.role} × ${bed.role}`,
+            masterVolume: 1,
+            loopStartMs: 0,
+            loopEndMs: null,
+            tempoBpm: planned.plan.masterBpm,
+            timeSignatureNumerator: 4,
+            timeSignatureDenominator: 4,
+            gridDivision: "beat",
+            snapEnabled: true,
+            targetKey: bed.musicalKey,
+          }).returning();
+
+          const tracksToInsert: Array<{
+            remixSessionId: string;
+            stemAssetId: string;
+            name: string;
+            sortOrder: number;
+            volume: number;
+            pan: number;
+          }> = [];
+
+          if (vocalsStem) {
+            tracksToInsert.push({
+              remixSessionId: remix.id,
+              stemAssetId: vocalsStem.id,
+              name: "Lead Vocals (Donor)",
+              sortOrder: 0,
+              volume: 1,
+              pan: 0,
+            });
+          }
+
+          let sortOrder = 1;
+          for (const bStem of bedStems) {
+            if (bStem.stemType !== "vocals") {
+              tracksToInsert.push({
+                remixSessionId: remix.id,
+                stemAssetId: bStem.id,
+                name: `${bStem.stemType[0].toUpperCase()}${bStem.stemType.slice(1)} (Bed)`,
+                sortOrder: sortOrder++,
+                volume: 0.8,
+                pan: 0,
+              });
+            }
+          }
+
+          const insertedTracks = tracksToInsert.length ? await tx.insert(remixTracks).values(tracksToInsert).returning() : [];
+          const trackByStemId = new Map(insertedTracks.map((t) => [t.stemAssetId, t]));
+
+          const clipsToInsert: Array<{
+            remixTrackId: string;
+            stemAssetId: string;
+            timelineStartMs: number;
+            durationMs: number;
+            sourceOffsetMs: number;
+            gain: number;
+            fadeInMs: number;
+            fadeOutMs: number;
+            tempoSyncEnabled: boolean;
+            keySyncEnabled: boolean;
+            beatSnapEnabled: boolean;
+          }> = [];
+
+          // Vocal clips from planned segments
+          if (vocalsStem && trackByStemId.has(vocalsStem.id)) {
+            const vocalTrackId = trackByStemId.get(vocalsStem.id)!.id;
+            for (const seg of planned.plan.segments) {
+              clipsToInsert.push({
+                remixTrackId: vocalTrackId,
+                stemAssetId: vocalsStem.id,
+                timelineStartMs: seg.mashupStartMs,
+                durationMs: seg.mashupEndMs - seg.mashupStartMs,
+                sourceOffsetMs: seg.vocalsFromMs,
+                gain: 0.85,
+                fadeInMs: seg.crossfadeMs,
+                fadeOutMs: seg.crossfadeMs,
+                tempoSyncEnabled: true,
+                keySyncEnabled: true,
+                beatSnapEnabled: true,
+              });
+            }
+          }
+
+          // Bed clips spanning full duration
+          for (const bStem of bedStems) {
+            if (bStem.stemType !== "vocals" && trackByStemId.has(bStem.id)) {
+              clipsToInsert.push({
+                remixTrackId: trackByStemId.get(bStem.id)!.id,
+                stemAssetId: bStem.id,
+                timelineStartMs: 0,
+                durationMs: planned.plan.durationMs,
+                sourceOffsetMs: 0,
+                gain: 0.8,
+                fadeInMs: 50,
+                fadeOutMs: 150,
+                tempoSyncEnabled: false,
+                keySyncEnabled: false,
+                beatSnapEnabled: true,
+              });
+            }
+          }
+
+          const insertedClips = clipsToInsert.length ? await tx.insert(remixClips).values(clipsToInsert).returning() : [];
+
+          const snapshot = {
+            name: remix.name,
+            masterVolume: remix.masterVolume,
+            loopStartMs: remix.loopStartMs,
+            loopEndMs: remix.loopEndMs,
+            tempoBpm: remix.tempoBpm,
+            timeSignatureNumerator: remix.timeSignatureNumerator,
+            timeSignatureDenominator: remix.timeSignatureDenominator,
+            gridDivision: remix.gridDivision,
+            snapEnabled: remix.snapEnabled,
+            targetKey: remix.targetKey,
+            tracks: insertedTracks.map((track) => ({
+              ...track,
+              clips: insertedClips.filter((clip) => clip.remixTrackId === track.id),
+            })),
+            automation: [],
+          };
+
+          const [version] = await tx.insert(remixVersions).values({
+            remixSessionId: remix.id,
+            createdById: user.id,
+            name: "Initial mashup arrangement",
+            snapshot: JSON.stringify(snapshot),
+          }).returning();
+
+          return { remix, version };
+        });
+
+        return Response.json({ ok: true, remix: result.remix, version: result.version }, { status: 201 });
       }
 
       // Render: donor vocal over a clean instrumental bed. The bed is built

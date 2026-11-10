@@ -29,18 +29,22 @@ export type MashupSourceProfile = {
   musicalKey: string | null;
   durationMs: number;
   sections: MashupSection[];
+  stems?: Array<{ id: string; stemType: string }>;
 };
 
 export type MashupSegment = {
   /** Placement on the mashup (bed) timeline. */
   mashupStartMs: number;
   mashupEndMs: number;
-  /** Span of the VOCAL source this segment carries (before stretch). */
+  /** Span of the source audio this segment carries (before stretch). */
   vocalsFromMs: number;
   vocalsToMs: number;
   /** Trapezoid fade in/out on the segment (ms). */
   crossfadeMs: number;
   rationale: string;
+  /** Stem role for multi-stem arrangement (defaults to "vocals"). */
+  stemType?: string;
+  sourceRole?: "vocals" | "instrumental";
 };
 
 export type MashupPlan = {
@@ -256,6 +260,8 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
         vocalsToMs: body.toMs,
         crossfadeMs: CROSSFADE_MS,
         rationale: `primary vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s`,
+        stemType: "vocals",
+        sourceRole: "vocals",
       });
       if (stretchedMs > bedRoomMs) {
         warnings.push(`The stretched vocal (${(stretchedMs / 1000).toFixed(1)}s) is longer than the bed has room (${(bedRoomMs / 1000).toFixed(1)}s) — it fades out at the bed's end.`);
@@ -272,6 +278,8 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
         vocalsToMs: body.toMs,
         crossfadeMs: CROSSFADE_MS,
         rationale: `first vocal passage runs ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
+        stemType: "vocals",
+        sourceRole: "vocals",
       });
 
       // Calculate bar-aligned breakdown gap
@@ -289,6 +297,8 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
           vocalsToMs: body.fromMs + vocalPortionMs,
           crossfadeMs: CROSSFADE_MS,
           rationale: `re-entry after instrumental breakdown (${(breakdownMs / 1000).toFixed(1)}s pocket) extending vocals to song climax`,
+          stemType: "vocals",
+          sourceRole: "vocals",
         });
         rationale.push(`arranged secondary vocal re-entry at ${(secondStart / 1000).toFixed(1)}s following an instrumental section`);
       }
@@ -302,6 +312,8 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
       vocalsToMs: body.toMs,
       crossfadeMs: CROSSFADE_MS,
       rationale: `vocals run ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
+      stemType: "vocals",
+      sourceRole: "vocals",
     });
   }
 

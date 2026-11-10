@@ -42,6 +42,8 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     warning: string;
     includedStemTypes?: string[];
   } | null>(null);
+  const [savingRemix, setSavingRemix] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -106,6 +108,30 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const renderMashup = async () => {
     if (plan === null) return;
     await call({ action: "render", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }, "mashup");
+  };
+
+  const saveMashupAsRemix = async () => {
+    if (plan === null) return;
+    setSavingRemix(true);
+    setError(null);
+    setSaveSuccess(null);
+    try {
+      const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error ?? "Could not save mashup as remix.");
+      } else {
+        setSaveSuccess("Mashup saved to project arrangement timeline as an editable remix.");
+      }
+    } catch {
+      setError("Failed to save mashup as remix.");
+    } finally {
+      setSavingRemix(false);
+    }
   };
 
   const extendTrack = async () => {
@@ -195,9 +221,13 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
               <button className="button" disabled={rendering !== null} onClick={() => void renderMashup()}>
                 {rendering === "mashup" ? "Rendering…" : "Render mashup (WAV)"}
               </button>
+              <button className="button secondary" disabled={savingRemix} onClick={() => void saveMashupAsRemix()}>
+                {savingRemix ? "Saving…" : "Save as project remix"}
+              </button>
               <small>The plan is a proposal — your arrangement is never touched.</small>
             </div>
           )}
+          {saveSuccess && <p className="success" role="status" style={{ color: "var(--playback)", fontSize: 13, marginTop: 8 }}>✓ {saveSuccess}</p>}
         </div>
       )}
 
