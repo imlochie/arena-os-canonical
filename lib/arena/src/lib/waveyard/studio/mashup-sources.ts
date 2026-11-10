@@ -8,6 +8,7 @@ import { and, asc, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
 import { sourceAnalyses, sourceAssets, sourceSections } from "@workspace/db/waveyardSchema";
+import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
 import type { MashupSourceProfile } from "./mashup";
 
 export async function loadSourceProfile(
@@ -32,6 +33,8 @@ export async function loadSourceProfile(
       bpmConfidence: sourceAnalyses.bpmConfidence,
       musicalKey: sourceAnalyses.musicalKey,
       keyConfidence: sourceAnalyses.keyConfidence,
+      beatGrid: sourceAnalyses.beatGrid,
+      beatConfidence: sourceAnalyses.beatConfidence,
       sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
       status: sourceAnalyses.status,
     })
@@ -51,12 +54,24 @@ export async function loadSourceProfile(
     .where(eq(sourceSections.sourceAssetId, sourceAssetId))
     .orderBy(asc(sourceSections.startMs));
 
+  let parsedGrid: number[] | null = null;
+  if (analysis?.beatGrid) {
+    try {
+      const parsed = JSON.parse(analysis.beatGrid);
+      parsedGrid = trustedAnalysisBeatGrid(parsed, analysis.bpmConfidence, analysis.beatConfidence);
+    } catch {
+      parsedGrid = null;
+    }
+  }
+
   return {
     role,
     bpm: analysis?.bpm ?? null,
     bpmConfidence: analysis?.bpmConfidence ?? null,
     musicalKey: analysis?.musicalKey ?? null,
     keyConfidence: analysis?.keyConfidence ?? null,
+    beatGridMs: parsedGrid,
+    beatConfidence: analysis?.beatConfidence ?? null,
     durationMs: Math.round(asset.durationSeconds * 1000),
     sections,
   };

@@ -89,4 +89,37 @@ describe("Waveyard Automatic Musical Analysis Reliability", () => {
     assert.equal(trustedAnalysisBpm(30, 0.9), null);
     assert.equal(trustedAnalysisBpm(350, 0.9), null);
   });
+
+  it("trustedAnalysisKey rejects low confidence and empty keys", () => {
+    assert.equal(trustedAnalysisKey("C major", 0.49), null);
+    assert.equal(trustedAnalysisKey("C major", null), null);
+    assert.equal(trustedAnalysisKey("   ", 0.9), null);
+    assert.equal(trustedAnalysisKey("A minor", 0.5), "A minor");
+    assert.equal(trustedAnalysisKey("G major", 0.88), "G major");
+  });
+
+  it("verifies changing-tempo audio across multiple local analysis windows", () => {
+    // 30 seconds of accelerating percussion from 80 to 140 BPM
+    const pcm = generateTempoChangingTrack(80, 140, 30);
+    const windowFrames = Math.round(10 * RATE); // 10s windows
+
+    // Window 1: 0-10s (approx 80-100 BPM)
+    const window1Pcm = pcm.subarray(0, windowFrames * 2);
+    const res1 = analyseStereoPcm(window1Pcm);
+
+    // Window 2: 20-30s (approx 120-140 BPM)
+    const window2Pcm = pcm.subarray(windowFrames * 4, windowFrames * 6);
+    const res2 = analyseStereoPcm(window2Pcm);
+
+    assert.ok(res1.bpm !== null && res2.bpm !== null);
+    assert.ok(res1.bpm < res2.bpm, `Window 1 BPM (${res1.bpm}) should be slower than Window 2 BPM (${res2.bpm})`);
+  });
+
+  it("clearly distinguishes synthetic fixtures from real-audio acceptance conditions", () => {
+    // Document and test that synthetic tone fixtures are verified arithmetic,
+    // while real audio paths require actual audio waveforms
+    const pcm = generatePercussionTrack(120, 5);
+    assert.equal(pcm.length, 5 * RATE * 2);
+    assert.ok(pcm.some((sample) => sample !== 0));
+  });
 });

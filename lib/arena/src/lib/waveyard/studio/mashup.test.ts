@@ -27,7 +27,16 @@ function section(label: string, startMs: number, endMs: number): MashupSection {
 }
 
 function profile(overrides: Partial<MashupSourceProfile>): MashupSourceProfile {
-  return { role: "instrumental", bpm: 120, musicalKey: null, durationMs: 60_000, sections: [], ...overrides };
+  return {
+    role: "instrumental",
+    bpm: 120,
+    bpmConfidence: 0.9,
+    musicalKey: null,
+    keyConfidence: overrides.musicalKey ? 0.9 : null,
+    durationMs: 60_000,
+    sections: [],
+    ...overrides,
+  };
 }
 
 // --- tempo warping ---------------------------------------------------------

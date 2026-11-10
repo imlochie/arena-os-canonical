@@ -141,7 +141,8 @@ export function estimateFallbackTempo(profile: MashupSourceProfile): { bpm: numb
       for (const beats of [32, 16, 64, 8]) {
         const candidateBpm = (beats * 60_000) / medianMs;
         if (candidateBpm >= 75 && candidateBpm <= 160) {
-          return { bpm: Math.round(candidateBpm * 10) / 10, confidence: 0.6, source: "sections" };
+          // Section timing is phrase cadence, never verified beat timing. Set confidence to 0.0.
+          return { bpm: Math.round(candidateBpm * 10) / 10, confidence: 0.0, source: "sections" };
         }
       }
     }
@@ -246,15 +247,31 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
     rationale.push("tempos are near-equal — a light stretch, not a resample.");
   }
 
-  const pitchMove = pitchMoveForKeys(vocals.musicalKey, bed.musicalKey);
+  // When key confidence is provided, enforce trusted threshold >= 0.5.
+  // When key is present without confidence specified (e.g. legacy/unit fixtures), accept the key.
+  const trustedVocalKey = vocals.keyConfidence !== undefined
+    ? trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence)
+    : vocals.musicalKey;
+  const trustedBedKey = bed.keyConfidence !== undefined
+    ? trustedAnalysisKey(bed.musicalKey, bed.keyConfidence)
+    : bed.musicalKey;
+
+  const pitchMove = (trustedVocalKey && trustedBedKey)
+    ? pitchMoveForKeys(trustedVocalKey, trustedBedKey)
+    : { semitones: 0, relationship: "unknown" as const };
+
   if (pitchMove.relationship === "unknown") {
-    warnings.push("Key analysis is missing for at least one track — no pitch move was made (0 semitones).");
+    if (!vocals.musicalKey || !bed.musicalKey) {
+      warnings.push("Key analysis is missing for at least one track — no pitch move was made (0 semitones).");
+    } else {
+      warnings.push("Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).");
+    }
   } else if (pitchMove.semitones === 0 && pitchMove.relationship === "relative") {
-    rationale.push(`keys are relative (${vocals.musicalKey} / ${bed.musicalKey}) — same scale, no pitch shift needed.`);
+    rationale.push(`keys are relative (${trustedVocalKey} / ${trustedBedKey}) — same scale, no pitch shift needed.`);
   } else if (pitchMove.semitones === 0) {
-    rationale.push(`same key (${bed.musicalKey}) — no pitch shift needed.`);
+    rationale.push(`same key (${trustedBedKey}) — no pitch shift needed.`);
   } else {
-    rationale.push(`vocals shift ${pitchMove.semitones > 0 ? "+" : ""}${pitchMove.semitones} semitones (${vocals.musicalKey} → ${bed.musicalKey}, ${pitchMove.relationship}).`);
+    rationale.push(`vocals shift ${pitchMove.semitones > 0 ? "+" : ""}${pitchMove.semitones} semitones (${trustedVocalKey} → ${trustedBedKey}, ${pitchMove.relationship}).`);
   }
   if (Math.abs(pitchMove.semitones) > 4) {
     warnings.push(`A ${pitchMove.semitones}-semitone shift is large — expect audible formant change. Trust your ears; you can veto the shift.`);

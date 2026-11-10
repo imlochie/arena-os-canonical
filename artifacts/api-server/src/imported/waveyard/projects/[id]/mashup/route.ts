@@ -37,6 +37,7 @@ import {
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
 import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
+import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
 export const dynamic = "force-dynamic";
@@ -91,7 +92,8 @@ async function latestStem(projectId: string, sourceAssetId: string, stemType: st
     .from(processingJobs)
     .where(eq(processingJobs.id, stem.separationJobId))
     .limit(1);
-  if (job && job.status !== "complete") return null;
+  // Missing separation job records or non-complete jobs fail closed
+  if (!job || job.status !== "complete") return null;
 
   return stem;
 }
@@ -316,7 +318,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         if (vPcm?.pcm) {
           const analysis = analyseStereoPcm(vPcm.pcm);
           if (vocals.bpm === null && analysis.bpm) vocals.bpm = analysis.bpm;
+          if (vocals.bpmConfidence === null || vocals.bpmConfidence === undefined) vocals.bpmConfidence = analysis.bpmConfidence;
           if (vocals.musicalKey === null && analysis.musicalKey) vocals.musicalKey = analysis.musicalKey;
+          if (vocals.keyConfidence === null || vocals.keyConfidence === undefined) vocals.keyConfidence = analysis.keyConfidence;
+          if (!vocals.beatGridMs && analysis.beatGridMs) vocals.beatGridMs = analysis.beatGridMs;
+          if (vocals.beatConfidence === null || vocals.beatConfidence === undefined) vocals.beatConfidence = analysis.beatConfidence;
 
           // Persist analysis so subsequent runs reuse the analysis result
           try {
@@ -335,6 +341,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 bpmConfidence: analysis.bpmConfidence,
                 musicalKey: analysis.musicalKey,
                 keyConfidence: analysis.keyConfidence,
+                beatGrid: analysis.beatGridMs ? JSON.stringify(analysis.beatGridMs) : null,
+                beatConfidence: analysis.beatConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
             }
@@ -349,7 +357,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         if (bPcm?.pcm) {
           const analysis = analyseStereoPcm(bPcm.pcm);
           if (bed.bpm === null && analysis.bpm) bed.bpm = analysis.bpm;
+          if (bed.bpmConfidence === null || bed.bpmConfidence === undefined) bed.bpmConfidence = analysis.bpmConfidence;
           if (bed.musicalKey === null && analysis.musicalKey) bed.musicalKey = analysis.musicalKey;
+          if (bed.keyConfidence === null || bed.keyConfidence === undefined) bed.keyConfidence = analysis.keyConfidence;
+          if (!bed.beatGridMs && analysis.beatGridMs) bed.beatGridMs = analysis.beatGridMs;
+          if (bed.beatConfidence === null || bed.beatConfidence === undefined) bed.beatConfidence = analysis.beatConfidence;
 
           // Persist analysis so subsequent runs reuse the analysis result
           try {
@@ -368,6 +380,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 bpmConfidence: analysis.bpmConfidence,
                 musicalKey: analysis.musicalKey,
                 keyConfidence: analysis.keyConfidence,
+                beatGrid: analysis.beatGridMs ? JSON.stringify(analysis.beatGridMs) : null,
+                beatConfidence: analysis.beatConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
             }
@@ -465,6 +479,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             beatSnapEnabled: boolean;
           }> = [];
 
+          // Verify genuine analysis confidence before enabling transform and snap flags
+          const vocalTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
+          const vocalKeyTrusted = trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence) !== null;
+          const vocalGridTrusted = vocals.beatGridMs !== null && vocals.beatGridMs !== undefined;
+
           // Vocal clips from planned segments
           if (vocalsStem && trackByStemId.has(vocalsStem.id)) {
             const vocalTrackId = trackByStemId.get(vocalsStem.id)!.id;
@@ -478,9 +497,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 gain: 0.85,
                 fadeInMs: seg.crossfadeMs,
                 fadeOutMs: seg.crossfadeMs,
-                tempoSyncEnabled: true,
-                keySyncEnabled: true,
-                beatSnapEnabled: true,
+                tempoSyncEnabled: vocalTempoTrusted,
+                keySyncEnabled: vocalKeyTrusted,
+                beatSnapEnabled: vocalGridTrusted,
               });
             }
           }
