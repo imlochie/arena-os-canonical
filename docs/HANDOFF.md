@@ -1,5 +1,37 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-12, vocal-activity timing enters the mashup plan
+
+* **What changed:** the mashup source loader now admits voiced-interval data only
+  from the latest completed vocal stem, with matching source and stem
+  checksums, completed local analysis, and the current analysis-engine version.
+  Stale or unavailable evidence fails closed. The planner keeps a 250ms pad
+  around the first and last qualifying voiced intervals and aligns the padded
+  vocal crop to the next trusted beat in the instrumental's measured beat grid.
+  Single-frame pitch detections no longer persist as zero-duration intervals.
+* **Full real-song proof:** the production route acceptance now runs the local
+  pitch/voicing detector on the real separated Queen vocal stem, persists the
+  resulting intervals in the test PostgreSQL database, and proves the route
+  uses them for planning. It also changes the persisted stem checksum and proves
+  the planner then rejects the stale intervals. Current report:
+  `generated-artifacts/waveyard-real-world-acceptance/full-vocal-flow-acceptance-final.json`.
+  For this run the detector returned 89 intervals with pitch-tracking
+  confidence ≥0.5, spanning 25.233–206.710s; the planner retained
+  24.983–206.960s with safety padding and placed the crop at 2.009s on the bed
+  beat grid. The full bed remains 215s.
+* **Important boundary:** this is voiced-pitch continuity, not speech detection
+  or lyric understanding. The 0.5 value is pitch-tracker confidence, not speech
+  confidence. There is no word/syllable timing, lyric transcription, verse or
+  chorus recognition, downbeat/meter inference, or fit against distinct
+  kick/bass events. It can time a coarse vocal crop and align its start to a
+  measured beat; it does not prove a smart or listenable mashup. The source
+  tempo/key confidence still withheld automatic tempo and pitch transforms.
+* **Verification:** real-song production route and persisted save/reopen/export
+  acceptance 1/1; mashup planner tests 17/17; vocal analysis tests 4/4;
+  API-server typecheck and `git diff --check` passed. This is a bounded vocal
+  timing capability, not the finish line for full-length arbitrary-song
+  mashups.
+
 ## Current verification update — 2026-11-12, full real-stem workflow
 
 * **Real source processing:** two owner-provided full-length recordings

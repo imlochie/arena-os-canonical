@@ -93,6 +93,54 @@ test("plan: bed owns the tempo, vocal stretch + entry are explained", () => {
   assert.ok(plan.rationale.some((line) => line.includes("master tempo")));
 });
 
+test("plan: voiced-run timing keeps safety padding and aligns the entrance to a measured bed beat", () => {
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      durationMs: 60_000,
+      vocalPhrases: [
+        { startMs: 2_500, endMs: 5_000, confidence: 0.92 },
+        { startMs: 7_000, endMs: 10_000, confidence: 0.88 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      bpm: 120,
+      bpmConfidence: 0.9,
+      beatConfidence: 0.9,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => 100 + index * 500),
+      durationMs: 60_000,
+      sections: [section("intro", 0, 8_500), section("chorus", 8_500, 60_000)],
+    }),
+  );
+
+  assert.ok(result.ok);
+  const [segment] = result.plan.segments;
+  assert.equal(segment.vocalsFromMs, 2_250);
+  assert.equal(segment.vocalsToMs, 10_250);
+  assert.equal(segment.mashupStartMs, 8_600);
+  assert.ok(result.plan.rationale.some((line) => line.includes("measured voiced activity")));
+  assert.ok(result.plan.rationale.some((line) => line.includes("measured bed beat")));
+  assert.ok(result.plan.rationale.some((line) => line.includes("word, syllable, and lyrical-meaning timing are not analyzed")));
+  assert.ok(!result.plan.warnings.some((line) => line.includes("No current isolated-vocal voicing intervals")));
+});
+
+test("plan: low-confidence vocal phrases are not used as lyric timing evidence", () => {
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      durationMs: 60_000,
+      vocalPhrases: [{ startMs: 4_000, endMs: 8_000, confidence: 0.49 }],
+    }),
+    profile({ role: "instrumental", durationMs: 60_000 }),
+  );
+
+  assert.ok(result.ok);
+  assert.equal(result.plan.segments[0].vocalsFromMs, 0);
+  assert.equal(result.plan.segments[0].vocalsToMs, 60_000);
+  assert.ok(result.plan.warnings.some((line) => line.includes("not lyric-aware")));
+});
+
 test("plan: missing tempo analysis adapts with fallback estimation and honest warning", () => {
   const resultVocalMissing = planMashup(profile({ role: "vocals", bpm: null }), profile({ bpm: 100 }));
   assert.ok(resultVocalMissing.ok);

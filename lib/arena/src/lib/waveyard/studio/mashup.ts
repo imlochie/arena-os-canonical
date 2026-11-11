@@ -186,7 +186,7 @@ function bedEntryMs(bed: MashupSourceProfile, barMs: number): { at: number; why:
   return { at: Math.round(barMs), why: "no section analysis for the bed — vocals enter after one bar" };
 }
 
-function alignBedEntryToMeasuredBar(
+function alignBedEntryToMeasuredBeat(
   bed: MashupSourceProfile,
   requestedEntryMs: number,
   masterBpm: number,
@@ -196,21 +196,20 @@ function alignBedEntryToMeasuredBar(
     return { at: requestedEntryMs, why: null };
   }
 
-  // The project stores beats but does not yet estimate meter. Use Studio's
-  // current 4/4 default, and only align when the beat grid is confidence-gated.
-  const barMs = 240_000 / masterBpm;
-  const originMs = grid[0];
-  const barsAfterOrigin = Math.max(0, Math.ceil((requestedEntryMs - originMs - 20) / barMs));
-  const alignedMs = Math.round(originMs + barsAfterOrigin * barMs);
-  if (alignedMs < requestedEntryMs - 20 || alignedMs >= bed.durationMs) return { at: requestedEntryMs, why: null };
+  // A beat grid does not establish meter or downbeat phase. Align only to a
+  // measured beat; do not call this a bar/downbeat without that evidence.
+  const alignedMs = grid.find((beatMs) => beatMs >= requestedEntryMs - 20);
+  if (alignedMs === undefined) return { at: requestedEntryMs, why: null };
+  const roundedMs = Math.round(alignedMs);
+  if (roundedMs < requestedEntryMs - 20 || roundedMs >= bed.durationMs) return { at: requestedEntryMs, why: null };
   return {
-    at: alignedMs,
-    why: `the vocal entry is on the measured bed bar grid at ${(alignedMs / 1000).toFixed(2)}s`,
+    at: roundedMs,
+    why: `the padded vocal crop enters on a measured bed beat at ${(roundedMs / 1000).toFixed(2)}s`,
   };
 }
 
-/** The vocal span that carries content, using only checksum-current phrase timing. */
-function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: number; why: string; phraseEvidence: boolean } {
+/** Build a padded crop from checksum-current voiced runs, not linguistic phrases. */
+function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: number; why: string; voicedEvidence: boolean } {
   const phrases = (vocals.vocalPhrases ?? [])
     .filter((phrase) => Number.isSafeInteger(phrase.startMs)
       && Number.isSafeInteger(phrase.endMs)
@@ -229,35 +228,39 @@ function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: num
     if (bodyPhrases.length > 0) {
       const from = bodyPhrases[0].startMs;
       const to = bodyPhrases[bodyPhrases.length - 1].endMs;
+      const paddedFrom = Math.max(0, from - 250);
+      const paddedTo = Math.min(vocals.durationMs, to + 250);
       return {
-        fromMs: from,
-        toMs: to,
-        why: `the measured vocal-phrase window spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s within ${active.length} body section${active.length === 1 ? "" : "s"}`,
-        phraseEvidence: true,
+        fromMs: paddedFrom,
+        toMs: paddedTo,
+        why: `measured voiced activity spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s; a 250ms safety pad is kept on both ends`,
+        voicedEvidence: true,
       };
     }
     return {
       fromMs: sectionFrom,
       toMs: sectionTo,
       why: `vocal body spans ${active.length} section${active.length === 1 ? "" : "s"} (${(sectionFrom / 1000).toFixed(1)}s–${(sectionTo / 1000).toFixed(1)}s)`,
-      phraseEvidence: false,
+      voicedEvidence: false,
     };
   }
   if (phrases.length > 0) {
     const from = phrases[0].startMs;
     const to = phrases[phrases.length - 1].endMs;
+    const paddedFrom = Math.max(0, from - 250);
+    const paddedTo = Math.min(vocals.durationMs, to + 250);
     return {
-      fromMs: from,
-      toMs: to,
-      why: `the measured vocal-phrase window spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s`,
-      phraseEvidence: true,
+      fromMs: paddedFrom,
+      toMs: paddedTo,
+      why: `measured voiced activity spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s; a 250ms safety pad is kept on both ends`,
+      voicedEvidence: true,
     };
   }
   return {
     fromMs: 0,
     toMs: vocals.durationMs,
     why: "no current vocal phrase timing — the full vocal source is used",
-    phraseEvidence: false,
+    voicedEvidence: false,
   };
 }
 
@@ -352,7 +355,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   const beatMs = 60_000 / masterBpm;
   const barMs = beatMs * 4;
   const requestedEntry = bedEntryMs(bed, barMs);
-  const alignedEntry = alignBedEntryToMeasuredBar(bed, requestedEntry.at, masterBpm);
+  const alignedEntry = alignBedEntryToMeasuredBeat(bed, requestedEntry.at, masterBpm);
   const entry = {
     at: alignedEntry.at,
     why: [requestedEntry.why, alignedEntry.why].filter(Boolean).join("; "),
@@ -361,10 +364,10 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
 
   const body = vocalBodySpan(vocals);
   rationale.push(body.why);
-  if (body.phraseEvidence) {
-    rationale.push("the vocal clip starts at a detected voiced phrase boundary; words, syllables, and lyrical meaning are not identified.");
+  if (body.voicedEvidence) {
+    rationale.push("the crop keeps 250ms around measured voiced activity; word, syllable, and lyrical-meaning timing are not analyzed.");
   } else {
-    warnings.push("No current isolated-vocal phrase timing is available; the entry is not lyric-aware and the full vocal source window is retained.");
+    warnings.push("No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.");
   }
 
   const vocalSpanMs = Math.max(0, body.toMs - body.fromMs);

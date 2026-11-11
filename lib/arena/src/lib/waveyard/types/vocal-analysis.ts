@@ -70,7 +70,9 @@ export function segmentVocalPhrases(frames: VocalPitchFrame[], silenceGapMs = 26
   let count = 0;
   const finish = () => {
     if (!start || !previous) return;
-    phrases.push({ startMs: start.timestampMs, endMs: previous.timestampMs, confidence: Number((confidenceTotal / Math.max(1, count)).toFixed(6)) });
+    if (previous.timestampMs > start.timestampMs) {
+      phrases.push({ startMs: start.timestampMs, endMs: previous.timestampMs, confidence: Number((confidenceTotal / Math.max(1, count)).toFixed(6)) });
+    }
     start = null; previous = null; confidenceTotal = 0; count = 0;
   };
   for (const frame of frames) {

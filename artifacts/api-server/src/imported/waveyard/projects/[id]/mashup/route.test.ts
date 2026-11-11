@@ -167,6 +167,14 @@ test(
   let postgresProcess: ReturnType<typeof spawn> | undefined;
   let dbModule: typeof import("@workspace/db") | undefined;
   let routeModule: typeof import("./route") | undefined;
+  let realVocalAnalysisId: string | null = null;
+  let realVocalVoicingEvidence: {
+    count: number;
+    firstVoicedRun: { startMs: number; endMs: number; confidence: number };
+    lastVoicedRun: { startMs: number; endMs: number; confidence: number };
+    analysisEngine: string;
+    analysisEngineVersion: string;
+  } | null = null;
 
   try {
     await mkdir(dataDir, { recursive: true });
@@ -432,6 +440,53 @@ test(
     }).returning({ id: schema.stemAssets.id });
     assert.ok(vocalsStemRow);
 
+    if (realFixture && vocalsStemRow) {
+      const [{ decodeMonoPcm, detectVocalPitchFrames }, vocalTypes] = await Promise.all([
+        import("@workspace/arena/lib/waveyard/worker-local/analysis-engine"),
+        import("@workspace/arena/lib/waveyard/types/vocal-analysis"),
+      ]);
+      const analysisPcm = await decodeMonoPcm(vocalsStemPath);
+      const phrases = vocalTypes.segmentVocalPhrases(detectVocalPitchFrames(analysisPcm))
+        .filter((phrase) => phrase.endMs > phrase.startMs && phrase.confidence >= 0.5);
+      assert.ok(phrases.length > 0, "real separated vocals must yield at least one confidence-qualified voiced phrase");
+      realVocalVoicingEvidence = {
+        count: phrases.length,
+        firstVoicedRun: phrases[0],
+        lastVoicedRun: phrases[phrases.length - 1],
+        analysisEngine: vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE,
+        analysisEngineVersion: vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      };
+      const [vocalAnalysis] = await dbModule.db.insert(schema.vocalAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        stemAssetId: vocalsStemRow.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: vocalTypes.vocalAnalysisIdempotencyKey(
+          vocalsStemRow.id,
+          vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE,
+          vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+        ),
+        analysisEngine: vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE,
+        analysisEngineVersion: vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: sha256(vocalsOriginal),
+        stemChecksumSha256: sha256(vocalsStemWav),
+        startedAt: new Date(),
+        analyzedAt: new Date(),
+        completedAt: new Date(),
+      }).returning({ id: schema.vocalAnalyses.id });
+      assert.ok(vocalAnalysis);
+      realVocalAnalysisId = vocalAnalysis.id;
+      await dbModule.db.insert(schema.vocalPhrases).values(phrases.map((phrase, phraseIndex) => ({
+        vocalAnalysisId: vocalAnalysis.id,
+        phraseIndex,
+        startMs: phrase.startMs,
+        endMs: phrase.endMs,
+        confidence: phrase.confidence,
+      })));
+    }
+
     const bedStemFixtures: Array<{ stemType: FixtureStemType; wav: Uint8Array }> = realFixture
       ? await Promise.all((["drums", "bass", "other", "vocals"] as const).map(async (stemType) => ({
         stemType,
@@ -547,6 +602,12 @@ test(
       assert.ok(planBody.plan.warnings.some((warning) => warning.includes("Key analysis confidence is below the trusted threshold")));
       assert.ok(planBody.plan.durationMs >= (bedDurationSeconds - 1) * 1000,
         "the arrangement must span essentially the complete instrumental source");
+        assert.ok(planBody.plan.rationale.some((line) => line.includes("measured voiced activity")),
+          "the production route must load persisted voiced intervals measured from the real isolated vocal");
+        assert.ok(planBody.plan.rationale.some((line) => line.includes("measured bed beat")),
+          "the production route must place the vocal entrance on the persisted trusted bed beat grid");
+        assert.ok(planBody.plan.rationale.some((line) => line.includes("word, syllable, and lyrical-meaning timing are not analyzed")),
+          "the plan must distinguish voicing activity from lyric understanding");
     }
     const realSourceAnalyses = realFixture
       ? await dbModule.db.select({
@@ -592,6 +653,33 @@ test(
         sha256(bedOriginal),
         "the bed analysis must be tied to the exact original file bytes",
       );
+    }
+
+    if (realFixture && realVocalAnalysisId) {
+      await dbModule.db.update(schema.vocalAnalyses)
+        .set({ stemChecksumSha256: "stale-vocal-stem-checksum" })
+        .where(eq(schema.vocalAnalyses.id, realVocalAnalysisId));
+      const stalePlanResponse = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "plan",
+            vocalsSourceId: vocalsSource.id,
+            instrumentalSourceId: bedSource.id,
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(stalePlanResponse.status, 200);
+      const stalePlan = await stalePlanResponse.json() as { plan?: { rationale: string[]; warnings: string[] } };
+      assert.ok(stalePlan.plan?.warnings.some((warning) => warning.includes("No current isolated-vocal voicing intervals")),
+        "stale phrase analysis must be excluded from the plan");
+      assert.ok(!stalePlan.plan?.rationale.some((line) => line.includes("measured voiced activity")),
+        "a previous vocal-stem checksum must never guide current clip boundaries");
+      await dbModule.db.update(schema.vocalAnalyses)
+        .set({ stemChecksumSha256: sha256(vocalsStemWav) })
+        .where(eq(schema.vocalAnalyses.id, realVocalAnalysisId));
     }
 
     // Actual production route render.
@@ -731,6 +819,7 @@ test(
           analysisReferenceTracks: analysisReference?.tracks?.filter((track) =>
             [sha256(vocalsOriginal), sha256(bedOriginal)].includes(track.sourceChecksumSha256)) ?? [],
           persistedSourceAnalyses: realSourceAnalyses,
+          persistedVocalVoicingIntervals: realVocalVoicingEvidence,
           sources: {
             vocals: {
               filename: vocalsFilename,
