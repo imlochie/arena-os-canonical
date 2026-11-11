@@ -15,6 +15,9 @@
   request-time detection. The stem endpoint exposes analysis status and current
   events. A remote bass worker is not configured; hosted runtimes do not claim
   that queued local analysis will run.
+* **Schema deployment:** additive migration `0026_bass_stem_analysis.sql` is
+  applied to the development database. Production schema application was not
+  performed; it remains a separate publish-time step.
 * **Real-track acceptance:** the production mashup route test processed the
   full 215-second separated bass stem from *September* and persisted 1,833
   low-band attack events. The route then loaded those database events while
