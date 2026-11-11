@@ -384,6 +384,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.ok(completedVocalsStem && pendingVocalsStem);
 
     const bedStems: Array<[string, number]> = [["drums", 110], ["bass", 220], ["other", 330], ["vocals", 1500]];
+    const bedStemIds: string[] = [];
     for (const [stemType, frequency] of bedStems) {
       const wav = encodeWav16(
         tone([frequency], BED_SECONDS, stemType === "vocals" ? 0.4 : 0.1),
@@ -393,7 +394,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       const filePath = path.join(fixtureRoot, `bed-${stemType}.wav`);
       await writeFile(filePath, wav);
       await storage.putFile(storageKey, filePath);
-      await dbModule.db.insert(schema.stemAssets).values({
+      const [stem] = await dbModule.db.insert(schema.stemAssets).values({
         projectId: project.id,
         sourceAssetId: bedSource.id,
         separationJobId: bedJob.id,
@@ -409,7 +410,9 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
         codec: "wav",
         format: "wav",
         fileSizeBytes: wav.length,
-      });
+      }).returning({ id: schema.stemAssets.id });
+      assert.ok(stem);
+      if (stemType !== "vocals") bedStemIds.push(stem.id);
     }
 
     for (const [source, checksum] of [
@@ -477,15 +480,129 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.equal(renderResponse.status, 200, "the render route must succeed");
     assert.match(renderResponse.headers.get("content-type") ?? "", /audio\/wav/);
     assert.equal(renderResponse.headers.get("x-waveyard-bed-source"), "separated", "the route must use the synthesized bed");
-    assert.equal(renderResponse.headers.get("x-waveyard-warning"), null,
-      "a valid separated vocal stem must not silently fall back to the original source");
+    const initialRenderWarnings = decodeURIComponent(renderResponse.headers.get("x-waveyard-warning") ?? "");
+    assert.doesNotMatch(initialRenderWarnings, /donor vocal uses the original/i,
+      "a valid separated donor vocal must not fall back to the original source");
+    assert.match(
+      initialRenderWarnings,
+      /donor.*complement|complement.*donor/i,
+      "the absent optional donor complements must be omitted with an explicit warning",
+    );
+
+    // A complementary donor stem must be selected from the same completed run
+    // as the selected vocal stem. Older completed, running, failed, cancelled,
+    // and malformed rows are deliberately present as distractors.
+    const priorDonorJob = (await dbModule.db.insert(schema.processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      type: "separation",
+      status: "complete",
+      stage: "complete",
+      attempts: 1,
+      idempotencyKey: `mashup-vocals-prior-${randomUUID()}`,
+      model: "test",
+      requestedDevice: "cpu",
+      createdAt: new Date(Date.now() - 120_000),
+      completedAt: new Date(Date.now() - 120_000),
+    }).returning({ id: schema.processingJobs.id }))[0]!;
+    const failedDonorJob = (await dbModule.db.insert(schema.processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      type: "separation",
+      status: "failed",
+      stage: "failed",
+      attempts: 1,
+      idempotencyKey: `mashup-vocals-failed-${randomUUID()}`,
+      model: "test",
+      requestedDevice: "cpu",
+      completedAt: new Date(),
+    }).returning({ id: schema.processingJobs.id }))[0]!;
+    const cancelledDonorJob = (await dbModule.db.insert(schema.processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      type: "separation",
+      status: "cancelled",
+      stage: "cancelled",
+      attempts: 1,
+      idempotencyKey: `mashup-vocals-cancelled-${randomUUID()}`,
+      model: "test",
+      requestedDevice: "cpu",
+    }).returning({ id: schema.processingJobs.id }))[0]!;
+    const supersededDonorJob = (await dbModule.db.insert(schema.processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      type: "separation",
+      status: "superseded",
+      stage: "superseded",
+      attempts: 1,
+      idempotencyKey: `mashup-vocals-superseded-${randomUUID()}`,
+      model: "test",
+      requestedDevice: "cpu",
+    }).returning({ id: schema.processingJobs.id }))[0]!;
+
+    const addDonorStem = async (
+      jobId: string,
+      stemType: string,
+      frequency: number,
+      options: { malformed?: boolean } = {},
+    ) => {
+      const bytes = options.malformed
+        ? Buffer.from("not a wav file")
+        : encodeWav16(tone([frequency], VOCAL_SECONDS, 0.1), RATE);
+      const storageKey = `mashup-fixture/donor-${jobId}-${stemType}.wav`;
+      const filePath = path.join(fixtureRoot, `donor-${jobId}-${stemType}.wav`);
+      await writeFile(filePath, bytes);
+      await storage.putFile(storageKey, filePath);
+      const [stem] = await dbModule.db.insert(schema.stemAssets).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        separationJobId: jobId,
+        stemType,
+        engine: "demucs",
+        model: "test",
+        modelVersion: "test",
+        storageKey,
+        checksumSha256: sha256(bytes),
+        durationSeconds: VOCAL_SECONDS,
+        sampleRate: RATE,
+        channels: 2,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: bytes.length,
+      }).returning({ id: schema.stemAssets.id });
+      assert.ok(stem);
+      return stem;
+    };
+
+    const [selectedDonorGuitar] = await Promise.all([
+      addDonorStem(vocalsJob.id, "guitar", 660),
+      addDonorStem(vocalsJob.id, "piano", 4400, { malformed: true }),
+      addDonorStem(priorDonorJob.id, "other", 1200),
+      addDonorStem(pendingVocalsJob.id, "bass", 2200),
+      addDonorStem(failedDonorJob.id, "percussion", 2800),
+      addDonorStem(failedDonorJob.id, "vocals", 1700),
+      addDonorStem(cancelledDonorJob.id, "strings", 3400),
+      addDonorStem(supersededDonorJob.id, "synth", 4000),
+    ]);
+    assert.ok(selectedDonorGuitar);
+
+    const donorRenderResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+    assert.equal(donorRenderResponse.status, 200, "invalid optional donor complements must not fail the primary render");
+    const donorRenderWarnings = decodeURIComponent(donorRenderResponse.headers.get("x-waveyard-warning") ?? "");
+    assert.doesNotMatch(donorRenderWarnings, /donor vocal uses the original/i,
+      "invalid optional complements must not force donor-vocal fallback");
+    assert.match(
+      donorRenderWarnings,
+      /donor|complement|piano/i,
+      "omitted malformed donor complements must be reported",
+    );
     const bedStemsHeader = (renderResponse.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort();
     assert.deepEqual(bedStemsHeader, ["bass", "drums", "other"], "the bed must be drums + bass + other, not vocals");
-    const bedWarning = renderResponse.headers.get("x-waveyard-bed-warning");
+    const bedWarning = donorRenderResponse.headers.get("x-waveyard-bed-warning");
     assert.ok(bedWarning, "the route must expose the leakage warning");
     assert.match(decodeURIComponent(bedWarning!), /leakage/i);
 
-    const renderedBytes = new Uint8Array(await renderResponse.arrayBuffer());
+    const renderedBytes = new Uint8Array(await donorRenderResponse.arrayBuffer());
     const rendered = decodeWav16(renderedBytes);
     assert.ok(rendered, "the route must return a decodable WAV");
     assert.equal(rendered!.sampleRate, RATE);
@@ -498,12 +615,29 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const drumEnergy = energyAt(rendered!.samples, 110, 0, 2);
     const bassEnergy = energyAt(rendered!.samples, 220, 0, 2);
     const otherEnergy = energyAt(rendered!.samples, 330, 0, 2);
+    const selectedDonorInstrumentEnergy = energyAt(rendered!.samples, 660, 0, 2);
+    const priorRunEnergy = energyAt(rendered!.samples, 1200, 0, 2);
+    const runningRunEnergy = energyAt(rendered!.samples, 2200, 0, 2);
+    const failedRunEnergy = energyAt(rendered!.samples, 2800, 0, 2);
+    const cancelledRunEnergy = energyAt(rendered!.samples, 3400, 0, 2);
+    const supersededRunEnergy = energyAt(rendered!.samples, 4000, 0, 2);
+    const malformedDonorEnergy = energyAt(rendered!.samples, 4400, 0, 2);
+    const nonSelectedVocalEnergy = energyAt(rendered!.samples, 1700, 0, 2);
     const earlyVocalEnergy = energyAt(rendered!.samples, 1000, 0, 2);
     const donorVocalEnergy = energyAt(rendered!.samples, 1000, 2, 4);
     const vocalStemEnergy = energyAt(decodeWav16(vocalsStemWav)!.samples, 1000, 0, 2);
     assert.ok(drumEnergy > 0.005, `separated bed render must contain drums (${drumEnergy})`);
     assert.ok(bassEnergy > 0.005, `separated bed render must contain bass (${bassEnergy})`);
     assert.ok(otherEnergy > 0.005, `separated bed render must contain other (${otherEnergy})`);
+    assert.ok(selectedDonorInstrumentEnergy > 0.005,
+      `render must include a valid donor instrument from the selected completed run (${selectedDonorInstrumentEnergy})`);
+    assert.ok(priorRunEnergy < 0.001, `older completed donor runs must be excluded (${priorRunEnergy})`);
+    assert.ok(runningRunEnergy < 0.001, `running donor runs must be excluded (${runningRunEnergy})`);
+    assert.ok(failedRunEnergy < 0.001, `failed donor runs must be excluded (${failedRunEnergy})`);
+    assert.ok(cancelledRunEnergy < 0.001, `cancelled donor runs must be excluded (${cancelledRunEnergy})`);
+    assert.ok(supersededRunEnergy < 0.001, `superseded donor runs must be excluded (${supersededRunEnergy})`);
+    assert.ok(malformedDonorEnergy < 0.001, `malformed optional donor stems must be omitted (${malformedDonorEnergy})`);
+    assert.ok(nonSelectedVocalEnergy < 0.001, `non-authoritative donor vocals must not leak (${nonSelectedVocalEnergy})`);
     assert.ok(separatedVocalEnergy < 0.001,
       `separated bed render must exclude the bed's vocal stem (${separatedVocalEnergy})`);
     assert.ok(earlyVocalEnergy < 0.001,
@@ -534,10 +668,20 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     });
     const saveResponse = await routeModule.POST(saveRequest, { params: Promise.resolve({ id: project.id }) });
     assert.equal(saveResponse.status, 201, "save action must return 201 Created");
-    const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
+    const saveBody = (await saveResponse.json()) as {
+      ok: boolean;
+      warnings?: string[];
+      remix: { id: string; name: string };
+      version: { id: string };
+    };
     assert.equal(saveBody.ok, true);
     assert.ok(saveBody.remix.id);
     assert.ok(saveBody.version.id);
+    assert.match(
+      (saveBody.warnings ?? []).join(" "),
+      /donor|complement|piano/i,
+      "save must report optional donor complements omitted for missing or malformed PCM",
+    );
 
     const [savedSession] = await dbModule.db
       .select()
@@ -551,6 +695,13 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       .from(schema.remixTracks)
       .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
     assert.ok(savedTracks.length >= 2, "remix must have vocal and bed tracks");
+    const savedStemIds = savedTracks.map((track) => track.stemAssetId).filter((id): id is string => id !== null).sort();
+    const expectedSavedStemIds = [completedVocalsStem.id, selectedDonorGuitar.id, ...bedStemIds].sort();
+    assert.deepEqual(
+      savedStemIds,
+      expectedSavedStemIds,
+      "saved tracks must contain exactly the selected donor vocal, its valid same-run complement, and rendered bed stems",
+    );
     assert.ok(
       savedTracks.some((track) => track.stemAssetId === completedVocalsStem.id),
       "the remix must use the last completed vocal stem while a newer attempt is still running",
@@ -565,6 +716,15 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       .from(schema.remixClips)
       .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
     assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
+    const savedClipStemIds = [...new Set(savedClips.map((clip) => clip.stemAssetId).filter((id): id is string => id !== null))].sort();
+    assert.deepEqual(savedClipStemIds, expectedSavedStemIds,
+      "saved clips must point to exactly the assets represented by the rendered donor and bed stems");
+    const selectedInstrumentTrack = savedTracks.find((track) => track.stemAssetId === selectedDonorGuitar.id);
+    assert.ok(selectedInstrumentTrack, "the rendered donor complement must be persisted as an editable track");
+    const selectedInstrumentClip = savedClips.find((clip) => clip.remixTrackId === selectedInstrumentTrack.id);
+    assert.ok(selectedInstrumentClip, "the rendered donor complement must have a persisted clip");
+    assert.equal(selectedInstrumentClip.tempoSyncEnabled, false, "instrument clips must retain native tempo");
+    assert.equal(selectedInstrumentClip.keySyncEnabled, false, "instrument clips must retain native key");
 
     for (const clip of savedClips) {
       assert.ok(Number.isFinite(clip.timelineStartMs) && clip.timelineStartMs >= 0);
