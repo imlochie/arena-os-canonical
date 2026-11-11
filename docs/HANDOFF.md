@@ -1,5 +1,40 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, close PR #30 mashup acceptance gaps
+
+* **Duplicate-stem route coverage:** Replaced the misleading local-`Set` unit
+  check with a real API/database acceptance case. In its disposable PostgreSQL
+  database only, the test temporarily removes the production unique index to
+  seed a corrupt duplicate stem row, verifies both render and save return 422
+  through the actual route, confirms no partial remix was created, then removes
+  the fixture and restores the unique index.
+* **Persisted donor ducking:** The save route now writes the same donor-stem
+  volume envelope used by the stateless renderer into `remixAutomationPoints`
+  and the immutable initial version snapshot. The `/api/remixes/[id]` read-back
+  test confirms the donor automation survives reopening. Studio's arrangement
+  preview now applies persisted volume lanes for decoded, segmented-WAV, and
+  streamed-encoded playback; volume values are absolute track levels, matching
+  the offline export renderer. The shared envelope is checked against rendered
+  donor PCM at fade-in, full-duck, fade-out and un-ducked positions.
+* **CI acceptance:** Added the mashup route acceptance, mashup planning/render,
+  donor-integrity, and preview-gain tests to the Linux Waveyard database CI
+  job, installing the API-server workspace dependencies. A normal-name wrapper
+  imports the `[id]` route test because direct `tsx --test` discovery can
+  silently report zero tests for that path. CI now explicitly requests TAP and
+  fails unless the route acceptance reports one passed test and zero skips.
+* **Verification run:** Passed 28/28 tests across the API route acceptance,
+  mashup, donor-integrity, and arrangement-preview-gain suites; the API-server
+  and library TypeScript checks passed; the workflow YAML parsed; `git diff
+  --check` passed. The route test uses generated PCM and an ephemeral database,
+  not real separated commercial tracks.
+* **Still unverified:** The updated CI workflow has not yet run on this revision.
+  No listening test or Windows run has been performed on these new changes.
+  Database assertions establish that the saved/reopened arrangement carries
+  the renderer-matched automation; focused gain tests establish that the Studio
+  preview applies those lanes. Neither establishes subjective mashup quality.
+* **Branch:** This work remains on `jules-2321982355158174303-7f554415` (PR #30);
+  implementation commit: `86e5cc62810533ffad899c1a76ba1952edb75330`.
+
 ## Current verification update — 2026-11-11, persist mashup donor stems and select completed runs
 
 * **Repository preservation:** Fast-forwarded the clean shared PR branch from
