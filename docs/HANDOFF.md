@@ -1,36 +1,40 @@
 # Arena handoff — read this first
 
-## Current verification update — 2026-11-12, vocal-activity timing enters the mashup plan
+## Current verification update — 2026-11-12, vocal entry compared with drum and bass attacks
 
-* **What changed:** the mashup source loader now admits voiced-interval data only
-  from the latest completed vocal stem, with matching source and stem
-  checksums, completed local analysis, and the current analysis-engine version.
-  Stale or unavailable evidence fails closed. The planner keeps a 250ms pad
-  around the first and last qualifying voiced intervals and aligns the padded
-  vocal crop to the next trusted beat in the instrumental's measured beat grid.
-  Single-frame pitch detections no longer persist as zero-duration intervals.
-* **Full real-song proof:** the production route acceptance now runs the local
-  pitch/voicing detector on the real separated Queen vocal stem, persists the
-  resulting intervals in the test PostgreSQL database, and proves the route
-  uses them for planning. It also changes the persisted stem checksum and proves
-  the planner then rejects the stale intervals. Current report:
+* **What changed:** mashup planning now measures transient events from the
+  exact latest completed separated bed stems. It verifies each stem file's
+  checksum against its saved asset record and accepts only 44.1 kHz stereo
+  WAV. The drum detector reports unlabeled full-band transients; the bass
+  detector measures spectral changes from 35–250 Hz and rejects frames where
+  that band contributes less than 4% of spectral energy. The planner compares
+  the first 16 seconds of confidence-qualified voiced-run starts against those
+  events, scores the first beat plus the next four trusted beats, and moves the
+  entry only when the measured overlap score improves. A bounded 10-minute,
+  eight-entry process cache stores event timings only, never audio bytes.
+* **Full real-song proof:** the production route acceptance used the real
+  separated Queen vocal, September drum stem and September bass stem, persisted
+  vocal timing, and an ephemeral PostgreSQL database. It measured eight early
+  voiced-run starts: 6/8 fell within 90 ms of a drum transient and 8/8 within
+  90 ms of a low-band bass attack. The selected entry moved 952 ms from the
+  first grid candidate at 2.009s to 2.961s; the detector's timing-overlap score
+  improved by 0.106. A separate route call with a deliberately stale bass-stem
+  checksum excluded bass events; the checksum was restored before rendering.
+  The full bed remains 215s. Report:
   `generated-artifacts/waveyard-real-world-acceptance/full-vocal-flow-acceptance-final.json`.
-  For this run the detector returned 89 intervals with pitch-tracking
-  confidence ≥0.5, spanning 25.233–206.710s; the planner retained
-  24.983–206.960s with safety padding and placed the crop at 2.009s on the bed
-  beat grid. The full bed remains 215s.
-* **Important boundary:** this is voiced-pitch continuity, not speech detection
-  or lyric understanding. The 0.5 value is pitch-tracker confidence, not speech
-  confidence. There is no word/syllable timing, lyric transcription, verse or
-  chorus recognition, downbeat/meter inference, or fit against distinct
-  kick/bass events. It can time a coarse vocal crop and align its start to a
-  measured beat; it does not prove a smart or listenable mashup. The source
-  tempo/key confidence still withheld automatic tempo and pitch transforms.
-* **Verification:** real-song production route and persisted save/reopen/export
-  acceptance 1/1; mashup planner tests 17/17; vocal analysis tests 4/4;
-  API-server typecheck and `git diff --check` passed. This is a bounded vocal
-  timing capability, not the finish line for full-length arbitrary-song
-  mashups.
+* **Important boundary:** this is measurable timing proximity, not proof of a
+  listenable or intelligent mashup. The vocal intervals are pitch-tracker
+  continuity, not words or syllables. Drum transients are not identified as
+  kick/snare/hat, and bass attacks are not bass-note or pitch labels. This does
+  not infer lyrics, meter, or musical quality; no human listening evaluation
+  was performed. Drum/bass events are computed on demand and held only in a
+  bounded process cache; they are not durable analysis records. Automatic vocal
+  tempo/key changes remain withheld below their confidence thresholds.
+* **Verification:** real-song production route plus persisted save/reopen/export
+  acceptance 1/1; mashup planner tests 18/18; local analysis-engine tests 17/17;
+  API-server typecheck passed. This closes a measurable timing gap, not the
+  larger requirement for full-length arbitrary-song mashups that adapt lyrics,
+  bass notes, and distinct drum parts.
 
 ## Current verification update — 2026-11-12, full real-stem workflow
 

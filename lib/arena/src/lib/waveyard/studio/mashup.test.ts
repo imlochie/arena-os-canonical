@@ -125,6 +125,47 @@ test("plan: voiced-run timing keeps safety padding and aligns the entrance to a 
   assert.ok(!result.plan.warnings.some((line) => line.includes("No current isolated-vocal voicing intervals")));
 });
 
+test("plan: measured drum and bass attacks can improve voiced-run entry timing", () => {
+  const attacks = [750, 1_750, 2_750].map((timestampMs) => ({
+    timestampMs,
+    strength: 0.8,
+    confidence: 0.9,
+  }));
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      durationMs: 30_000,
+      vocalPhrases: [
+        { startMs: 5_000, endMs: 5_500, confidence: 0.9 },
+        { startMs: 6_000, endMs: 6_500, confidence: 0.9 },
+        { startMs: 7_000, endMs: 7_500, confidence: 0.9 },
+      ],
+    }),
+    profile({
+      bpm: 120,
+      bpmConfidence: 0.9,
+      beatConfidence: 0.9,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [section("verse", 0, 60_000)],
+      drumEvents: attacks,
+      bassEvents: attacks,
+    }),
+  );
+
+  assert.ok(result.ok);
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 500,
+    "the planner should select the nearby beat with stronger measured transient overlap");
+  assert.ok(result.plan.rationale.some((line) =>
+    line.includes("3/3 fall within 90ms of measured drum transients")
+    && line.includes("3/3 within 90ms of low-band bass attacks")
+    && line.includes("timing-overlap score improved"),
+  ));
+  assert.ok(result.plan.warnings.some((line) =>
+    line.includes("does not identify kick/snare, bass notes, meter, lyrics, or listening quality"),
+  ));
+});
+
 test("plan: low-confidence vocal phrases are not used as lyric timing evidence", () => {
   const result = planMashup(
     profile({

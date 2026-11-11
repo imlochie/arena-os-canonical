@@ -21,6 +21,7 @@ import {
   onsetEnvelope,
   beatConfidenceFromGrid,
   decodeMonoPcm,
+  detectBassAttacks,
   detectDrumTransients,
   detectHarmonyTimeline,
   detectVocalPitchFrames,
@@ -212,6 +213,26 @@ test("local drum analysis executes onset detection without inventing drum classe
     assert.ok(event.timestampMs >= 0 && event.timestampMs < 3000);
     assert.ok(event.confidence >= 0 && event.confidence <= 1);
   }
+});
+
+test("bass attack analysis measures only low-band changes and leaves silence or high clicks unclassified", () => {
+  const renderBursts = (frequencyHz: number) => {
+    const pcm = new Float32Array(RATE * 4);
+    for (const time of [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25]) {
+      const start = Math.round(time * RATE);
+      for (let index = start; index < Math.min(start + 2_000, pcm.length); index += 1) {
+        const offset = index - start;
+        pcm[index] = 0.7 * Math.exp(-offset / 500) * Math.sin((2 * Math.PI * frequencyHz * offset) / RATE);
+      }
+    }
+    return pcm;
+  };
+
+  const bassAttacks = detectBassAttacks(renderBursts(65));
+  assert.ok(bassAttacks.length >= 5, `expected low-band attacks, got ${bassAttacks.length}`);
+  assert.ok(bassAttacks.every((event) => event.confidence >= 0 && event.confidence <= 1));
+  assert.equal(detectBassAttacks(renderBursts(5_000)).length, 0, "high-only clicks must not be called bass attacks");
+  assert.equal(detectBassAttacks(new Float32Array(RATE * 4)).length, 0, "silence must not create bass attacks");
 });
 
 test("local harmony analysis returns timed chord evidence and unknowns for silence", () => {

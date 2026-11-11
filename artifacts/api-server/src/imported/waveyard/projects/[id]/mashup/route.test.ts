@@ -168,6 +168,7 @@ test(
   let dbModule: typeof import("@workspace/db") | undefined;
   let routeModule: typeof import("./route") | undefined;
   let realVocalAnalysisId: string | null = null;
+  let realGrooveTimingSummary: string | null = null;
   let realVocalVoicingEvidence: {
     count: number;
     firstVoicedRun: { startMs: number; endMs: number; confidence: number };
@@ -608,6 +609,11 @@ test(
           "the production route must place the vocal entrance on the persisted trusted bed beat grid");
         assert.ok(planBody.plan.rationale.some((line) => line.includes("word, syllable, and lyrical-meaning timing are not analyzed")),
           "the plan must distinguish voicing activity from lyric understanding");
+        realGrooveTimingSummary = planBody.plan.rationale.find((line) => line.includes("early voiced-run starts")) ?? null;
+        assert.ok(realGrooveTimingSummary,
+          "the real-stem plan must compare measured vocal activity with separated drum and bass attacks");
+        assert.ok(realGrooveTimingSummary.includes("measured drum transients"));
+        assert.ok(realGrooveTimingSummary.includes("low-band bass attacks"));
     }
     const realSourceAnalyses = realFixture
       ? await dbModule.db.select({
@@ -653,6 +659,44 @@ test(
         sha256(bedOriginal),
         "the bed analysis must be tied to the exact original file bytes",
       );
+    }
+
+    if (realFixture) {
+      const bassFixture = bedStemFixtures.find((stem) => stem.stemType === "bass");
+      assert.ok(bassFixture, "the real bed fixture must include its separated bass stem");
+      const [bassStemAsset] = await dbModule.db.select({
+        id: schema.stemAssets.id,
+      }).from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.stemType, "bass"),
+      ));
+      assert.ok(bassStemAsset);
+      await dbModule.db.update(schema.stemAssets)
+        .set({ checksumSha256: "stale-bass-stem-checksum" })
+        .where(eq(schema.stemAssets.id, bassStemAsset.id));
+      const staleBassPlanResponse = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "plan",
+            vocalsSourceId: vocalsSource.id,
+            instrumentalSourceId: bedSource.id,
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(staleBassPlanResponse.status, 200);
+      const staleBassPlan = await staleBassPlanResponse.json() as {
+        plan?: { rationale: string[]; warnings: string[] };
+      };
+      assert.ok(staleBassPlan.plan?.warnings.some((warning) => warning.includes("bass stem checksum does not match")),
+        "bass attack evidence must fail closed when its saved checksum no longer matches the file");
+      assert.ok(staleBassPlan.plan?.rationale.some((line) => line.includes("unavailable within 90ms of low-band bass attacks")),
+        "a stale bass stem must not contribute event matches");
+      await dbModule.db.update(schema.stemAssets)
+        .set({ checksumSha256: sha256(bassFixture.wav) })
+        .where(eq(schema.stemAssets.id, bassStemAsset.id));
     }
 
     if (realFixture && realVocalAnalysisId) {
@@ -820,6 +864,7 @@ test(
             [sha256(vocalsOriginal), sha256(bedOriginal)].includes(track.sourceChecksumSha256)) ?? [],
           persistedSourceAnalyses: realSourceAnalyses,
           persistedVocalVoicingIntervals: realVocalVoicingEvidence,
+          measuredGrooveTimingSummary: realGrooveTimingSummary,
           sources: {
             vocals: {
               filename: vocalsFilename,

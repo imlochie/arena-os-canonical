@@ -99,11 +99,35 @@ function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
  * hop). RMS-only flux misses beat attacks when sustained and percussive parts
  * trade energy without changing the whole-frame loudness.
  */
-export function onsetEnvelope(pcm: Float32Array): { envelope: Float32Array; frameMs: number } {
+export function onsetEnvelope(
+  pcm: Float32Array,
+  options?: {
+    frequencyBandHz?: { minHz: number; maxHz: number };
+    minBandEnergyFraction?: number;
+  },
+): { envelope: Float32Array; frameMs: number } {
   const frameMs = (ONSET_HOP_SIZE / ANALYSIS_PCM_RATE) * 1000;
   const frameCount = Math.max(0, Math.floor((pcm.length - ONSET_WINDOW_SIZE) / ONSET_HOP_SIZE) + 1);
   const envelope = new Float32Array(Math.max(0, frameCount - 1));
   if (frameCount < 2) return { envelope, frameMs };
+  const binWidthHz = ANALYSIS_PCM_RATE / ONSET_WINDOW_SIZE;
+  const frequencyBandHz = options?.frequencyBandHz;
+  const minBandEnergyFraction = options?.minBandEnergyFraction ?? 0;
+  const minBin = frequencyBandHz ? Math.max(1, Math.floor(frequencyBandHz.minHz / binWidthHz)) : 1;
+  const maxBin = frequencyBandHz
+    ? Math.min(ONSET_WINDOW_SIZE / 2 - 1, Math.ceil(frequencyBandHz.maxHz / binWidthHz))
+    : ONSET_WINDOW_SIZE / 2 - 1;
+  if (
+    frequencyBandHz
+    && (!Number.isFinite(frequencyBandHz.minHz)
+      || !Number.isFinite(frequencyBandHz.maxHz)
+      || frequencyBandHz.minHz < 0
+      || frequencyBandHz.maxHz <= frequencyBandHz.minHz
+      || maxBin < minBin
+      || !Number.isFinite(minBandEnergyFraction)
+      || minBandEnergyFraction < 0
+      || minBandEnergyFraction > 1)
+  ) return { envelope, frameMs };
 
   const window = Float64Array.from({ length: ONSET_WINDOW_SIZE }, (_, index) =>
     0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (ONSET_WINDOW_SIZE - 1)),
@@ -122,16 +146,23 @@ export function onsetEnvelope(pcm: Float32Array): { envelope: Float32Array; fram
     fftInPlace(real, imaginary);
 
     let total = 0;
+    let broadbandTotal = 0;
     let positiveFlux = 0;
     for (let bin = 1; bin < ONSET_WINDOW_SIZE / 2; bin += 1) {
       const magnitude = Math.hypot(real[bin], imaginary[bin]);
-      total += magnitude;
-      if (frame > 0) positiveFlux += Math.max(0, magnitude - previousMagnitudes[bin]);
+      broadbandTotal += magnitude;
+      if (bin >= minBin && bin <= maxBin) {
+        total += magnitude;
+        if (frame > 0) positiveFlux += Math.max(0, magnitude - previousMagnitudes[bin]);
+      }
       previousMagnitudes[bin] = magnitude;
     }
     if (frame > 0) {
       const scale = (total + previousTotal) / 2;
-      envelope[frame - 1] = scale > 1e-8 ? Math.min(1, positiveFlux / scale) : 0;
+      const energyFraction = broadbandTotal > 1e-8 ? total / broadbandTotal : 0;
+      envelope[frame - 1] = scale > 1e-8 && energyFraction >= minBandEnergyFraction
+        ? Math.min(1, positiveFlux / scale)
+        : 0;
     }
     previousTotal = total;
   }
@@ -428,11 +459,21 @@ export type LocalDrumTransient = {
   rhythmicClass: null;
 };
 
-/** Detect measurable transients in the already-isolated drum/percussion stem.
- * This engine deliberately leaves semantic class null: spectral onsets alone
- * do not reliably distinguish kick, snare and hats across arbitrary mixes. */
-export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
-  const { envelope, frameMs } = onsetEnvelope(pcm);
+export type LocalBassAttack = {
+  timestampMs: number;
+  strength: number;
+  confidence: number;
+};
+
+/**
+ * Detect transient evidence in an onset envelope. Strength is relative to this
+ * file's strongest event; confidence is a local prominence measure, not a
+ * probability or instrument classifier.
+ */
+function transientEventsFromEnvelope(
+  envelope: Float32Array,
+  frameMs: number,
+): LocalDrumTransient[] {
   if (envelope.length < 3) return [];
   let maximum = 0;
   let mean = 0;
@@ -461,6 +502,25 @@ export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
     lastFrame = frame;
   }
   return events;
+}
+
+/** Detect measurable transients in an isolated drum/percussion stem.
+ * Spectral onsets alone do not reliably distinguish kick, snare and hats. */
+export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
+  const { envelope, frameMs } = onsetEnvelope(pcm);
+  return transientEventsFromEnvelope(envelope, frameMs);
+}
+
+/**
+ * Detect low-band attacks from an isolated bass stem. These are not note or
+ * pitch labels: they mark measured spectral changes between 35 and 250 Hz.
+ */
+export function detectBassAttacks(pcm: Float32Array): LocalBassAttack[] {
+  const { envelope, frameMs } = onsetEnvelope(pcm, {
+    frequencyBandHz: { minHz: 35, maxHz: 250 },
+    minBandEnergyFraction: 0.04,
+  });
+  return transientEventsFromEnvelope(envelope, frameMs);
 }
 
 export type LocalHarmonyEvent = {

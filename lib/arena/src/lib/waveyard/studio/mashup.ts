@@ -21,10 +21,16 @@ import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine
 import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
 import type { VocalPhrase } from "../types/vocal-analysis";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v1";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v2";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = { label: string; startMs: number; endMs: number };
+
+export type MashupTransientEvent = {
+  timestampMs: number;
+  strength: number;
+  confidence: number;
+};
 
 export type MashupSourceProfile = {
   role: "vocals" | "instrumental";
@@ -39,6 +45,12 @@ export type MashupSourceProfile = {
   stems?: Array<{ id: string; stemType: string }>;
   /** Checksum-current isolated-vocal phrase intervals; not lyric transcription. */
   vocalPhrases?: VocalPhrase[];
+  /** Measured from the current isolated bed stems; classes are intentionally absent. */
+  drumEvents?: MashupTransientEvent[];
+  /** Low-band attacks measured from the current isolated bass stem, not note labels. */
+  bassEvents?: MashupTransientEvent[];
+  /** Provenance/availability notes for transient evidence loaded by the route. */
+  grooveWarnings?: string[];
 };
 
 export type MashupSegment = {
@@ -264,6 +276,148 @@ function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: num
   };
 }
 
+const GROOVE_MATCH_TOLERANCE_MS = 90;
+const GROOVE_ENTRY_SEARCH_BEATS = 4;
+const GROOVE_VOICE_LOOKAHEAD_MS = 16_000;
+
+function nearestTransientScore(timestampMs: number, events: MashupTransientEvent[]): number {
+  let low = 0;
+  let high = events.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (events[middle]!.timestampMs < timestampMs) low = middle + 1;
+    else high = middle;
+  }
+  let best = 0;
+  for (const index of [low - 1, low]) {
+    const event = events[index];
+    if (!event) continue;
+    const distance = Math.abs(event.timestampMs - timestampMs);
+    if (distance > GROOVE_MATCH_TOLERANCE_MS) continue;
+    const confidence = Number.isFinite(event.confidence) ? Math.max(0, Math.min(1, event.confidence)) : 0;
+    best = Math.max(best, confidence * (1 - distance / GROOVE_MATCH_TOLERANCE_MS));
+  }
+  return best;
+}
+
+function scoreEntryAgainstTransients(
+  entryMs: number,
+  vocalOnsetOffsetsMs: number[],
+  stretchRatio: number,
+  drumEvents: MashupTransientEvent[],
+  bassEvents: MashupTransientEvent[],
+): { score: number; drumMatches: number; bassMatches: number } {
+  const availableSources = [drumEvents, bassEvents].filter((events) => events.length > 0);
+  if (availableSources.length === 0 || vocalOnsetOffsetsMs.length === 0)
+    return { score: 0, drumMatches: 0, bassMatches: 0 };
+
+  let score = 0;
+  let drumMatches = 0;
+  let bassMatches = 0;
+  for (const offsetMs of vocalOnsetOffsetsMs) {
+    const targetMs = entryMs + offsetMs * stretchRatio;
+    const drumScore = nearestTransientScore(targetMs, drumEvents);
+    const bassScore = nearestTransientScore(targetMs, bassEvents);
+    if (drumScore > 0) drumMatches += 1;
+    if (bassScore > 0) bassMatches += 1;
+    score += (drumScore + bassScore) / availableSources.length;
+  }
+  return {
+    score: score / vocalOnsetOffsetsMs.length,
+    drumMatches,
+    bassMatches,
+  };
+}
+
+function grooveAwareBedEntry(
+  vocals: MashupSourceProfile,
+  bed: MashupSourceProfile,
+  body: ReturnType<typeof vocalBodySpan>,
+  requestedEntryMs: number,
+  masterBpm: number,
+  stretchRatio: number,
+): { at: number; why: string | null; warning: string | null } {
+  const base = alignBedEntryToMeasuredBeat(bed, requestedEntryMs, masterBpm);
+  const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  if (!body.voicedEvidence || !grid) {
+    return {
+      ...base,
+      warning: "Groove-aware entry was not applied: current voiced-run timing and a trusted bed beat grid are both required.",
+    };
+  }
+
+  const drumEvents = (bed.drumEvents ?? [])
+    .filter((event) => Number.isSafeInteger(event.timestampMs) && event.timestampMs >= 0
+      && Number.isFinite(event.confidence) && event.confidence > 0 && event.confidence <= 1)
+    .slice()
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+  const bassEvents = (bed.bassEvents ?? [])
+    .filter((event) => Number.isSafeInteger(event.timestampMs) && event.timestampMs >= 0
+      && Number.isFinite(event.confidence) && event.confidence > 0 && event.confidence <= 1)
+    .slice()
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+  const availableSourceCount = Number(drumEvents.length > 0) + Number(bassEvents.length > 0);
+  if (availableSourceCount === 0) {
+    return {
+      ...base,
+      warning: "Groove-aware entry was not applied: no current transient evidence was measured from the separated drum or bass stems.",
+    };
+  }
+
+  const vocalOnsetOffsetsMs = (vocals.vocalPhrases ?? [])
+    .filter((phrase) => phrase.startMs >= body.fromMs
+      && phrase.startMs < Math.min(body.toMs, body.fromMs + GROOVE_VOICE_LOOKAHEAD_MS)
+      && Number.isFinite(phrase.confidence) && phrase.confidence >= 0.5 && phrase.confidence <= 1)
+    .map((phrase) => phrase.startMs - body.fromMs);
+  if (vocalOnsetOffsetsMs.length < 3) {
+    return {
+      ...base,
+      warning: "Groove-aware entry was not applied: fewer than three confidence-qualified voiced-run starts are available in the opening 16 seconds.",
+    };
+  }
+
+  const beatMs = 60_000 / masterBpm;
+  const candidates = grid.filter((beatMsOnGrid) =>
+    beatMsOnGrid >= base.at - 20
+    && beatMsOnGrid <= base.at + beatMs * GROOVE_ENTRY_SEARCH_BEATS
+    && beatMsOnGrid < bed.durationMs,
+  );
+  if (candidates.length < 2) {
+    return {
+      ...base,
+      warning: "Groove-aware entry was not applied: the trusted bed grid has no nearby alternative beat to compare.",
+    };
+  }
+
+  const scores = candidates.map((at) => ({
+    at: Math.round(at),
+    ...scoreEntryAgainstTransients(at, vocalOnsetOffsetsMs, stretchRatio, drumEvents, bassEvents),
+  }));
+  const baseline = scores.find((candidate) => candidate.at === base.at) ?? scores[0]!;
+  const best = scores.reduce((current, candidate) =>
+    candidate.score > current.score + 1e-9 ? candidate : current,
+  baseline);
+  const drumLabel = drumEvents.length > 0 ? `${best.drumMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
+  const bassLabel = bassEvents.length > 0 ? `${best.bassMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
+  const measurement = `among ${vocalOnsetOffsetsMs.length} early voiced-run starts, ${drumLabel} fall within 90ms of measured drum transients and ${bassLabel} within 90ms of low-band bass attacks`;
+  if (best.at !== baseline.at && best.score > baseline.score + 1e-9) {
+    const improvement = (best.score - baseline.score).toFixed(3);
+    return {
+      at: best.at,
+      why: [
+        base.why,
+        `entry moved ${(best.at - baseline.at).toFixed(0)}ms within the next four measured beats; ${measurement} (timing-overlap score improved by ${improvement})`,
+      ].filter(Boolean).join("; "),
+      warning: "This compares voiced activity to unlabeled transients and low-band attacks; it does not identify kick/snare, bass notes, meter, lyrics, or listening quality.",
+    };
+  }
+  return {
+    at: baseline.at,
+    why: `${measurement}; no nearby beat scored higher`,
+    warning: "This compares voiced activity to unlabeled transients and low-band attacks; it does not identify kick/snare, bass notes, meter, lyrics, or listening quality.",
+  };
+}
+
 export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile): MashupPlanResult {
   const rationale: string[] = [];
   const warnings: string[] = [];
@@ -354,15 +508,17 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
 
   const beatMs = 60_000 / masterBpm;
   const barMs = beatMs * 4;
+  const body = vocalBodySpan(vocals);
   const requestedEntry = bedEntryMs(bed, barMs);
-  const alignedEntry = alignBedEntryToMeasuredBeat(bed, requestedEntry.at, masterBpm);
+  const alignedEntry = grooveAwareBedEntry(vocals, bed, body, requestedEntry.at, masterBpm, stretchRatio);
   const entry = {
     at: alignedEntry.at,
     why: [requestedEntry.why, alignedEntry.why].filter(Boolean).join("; "),
   };
   rationale.push(entry.why);
+  if (alignedEntry.warning) warnings.push(alignedEntry.warning);
+  warnings.push(...(bed.grooveWarnings ?? []));
 
-  const body = vocalBodySpan(vocals);
   rationale.push(body.why);
   if (body.voicedEvidence) {
     rationale.push("the crop keeps 250ms around measured voiced activity; word, syllable, and lyrical-meaning timing are not analyzed.");

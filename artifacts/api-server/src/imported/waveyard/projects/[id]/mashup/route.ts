@@ -17,7 +17,7 @@
 
 
 import { and, desc, eq } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +35,8 @@ import {
   sumInstrumentalStems,
   type InstrumentalBedStem,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
-import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
+import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension, type MashupTransientEvent } from "@workspace/arena/lib/waveyard/studio/mashup";
+import { detectBassAttacks, detectDrumTransients } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
@@ -45,6 +46,16 @@ export const dynamic = "force-dynamic";
 const RENDER_SAMPLE_RATE = 44_100;
 const MAX_STEM_BYTES = 128 * 1024 * 1024;
 const MAX_RENDER_SECONDS = 900;
+const GROOVE_EVIDENCE_CACHE_TTL_MS = 10 * 60_000;
+const GROOVE_EVIDENCE_CACHE_MAX_ENTRIES = 8;
+const GROOVE_EVIDENCE_VERSION = "waveyard-on-demand-stem-transients-v1";
+
+type MeasuredBedGrooveEvidence = {
+  drumEvents: MashupTransientEvent[];
+  bassEvents: MashupTransientEvent[];
+  warnings: string[];
+};
+const measuredBedGrooveCache = new Map<string, { createdAt: number; evidence: MeasuredBedGrooveEvidence }>();
 
 type MashupBody = {
   action?: unknown;
@@ -210,6 +221,89 @@ async function findBedSource(projectId: string, bedId: string): Promise<BedSourc
     },
     stems: usable,
   };
+}
+
+/** Downmix and 2:1 decimate the validated 44.1 kHz stereo WAV for local DSP. */
+function stemPcmToAnalysisMono(stereo: Float32Array): Float32Array {
+  const sourceFrames = Math.floor(stereo.length / 2);
+  const output = new Float32Array(Math.floor(sourceFrames / 2));
+  for (let frame = 0; frame < output.length; frame += 1) {
+    const first = frame * 4;
+    output[frame] = (
+      stereo[first]! + stereo[first + 1]! + stereo[first + 2]! + stereo[first + 3]!
+    ) * 0.25;
+  }
+  return output;
+}
+
+/**
+ * Measure timing evidence from the exact latest completed bed separation.
+ * Only transient timestamps are cached; source audio is never retained here.
+ */
+async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): Promise<MeasuredBedGrooveEvidence> {
+  const bedSource = await findBedSource(projectId, bedId);
+  if (bedSource.info.source !== "separated" || !bedSource.info.separationJobId) {
+    return {
+      drumEvents: [],
+      bassEvents: [],
+      warnings: ["No completed separated drum/bass stems are available; entry timing uses the beat grid only."],
+    };
+  }
+
+  const relevantStems = bedSource.stems
+    .filter((stem) => stem.stemType === "drums" || stem.stemType === "percussion" || stem.stemType === "bass")
+    .sort((left, right) => left.stemType.localeCompare(right.stemType) || left.id.localeCompare(right.id));
+  const cacheKey = [
+    bedId,
+    bedSource.info.separationJobId,
+    GROOVE_EVIDENCE_VERSION,
+    ...relevantStems.map((stem) => `${stem.id}:${stem.checksumSha256}`),
+  ].join("|");
+  const now = Date.now();
+  const cached = measuredBedGrooveCache.get(cacheKey);
+  if (cached && now - cached.createdAt < GROOVE_EVIDENCE_CACHE_TTL_MS) return cached.evidence;
+  if (cached) measuredBedGrooveCache.delete(cacheKey);
+
+  const evidence: MeasuredBedGrooveEvidence = { drumEvents: [], bassEvents: [], warnings: [] };
+  if (!relevantStems.some((stem) => stem.stemType === "drums" || stem.stemType === "percussion")) {
+    evidence.warnings.push("The selected separation has no separate drum/percussion stem; drum-transient matching is unavailable.");
+  }
+  if (!relevantStems.some((stem) => stem.stemType === "bass")) {
+    evidence.warnings.push("The selected separation has no separate bass stem; low-band attack matching is unavailable.");
+  }
+
+  for (const stem of relevantStems) {
+    try {
+      const bytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
+      const actualChecksum = createHash("sha256").update(bytes).digest("hex");
+      if (actualChecksum !== stem.checksumSha256) {
+        evidence.warnings.push(`The ${stem.stemType} stem checksum does not match its saved record; its timing evidence was excluded.`);
+        continue;
+      }
+      const decoded = decodeWav16(new Uint8Array(bytes));
+      if (!decoded || decoded.sampleRate !== RENDER_SAMPLE_RATE || decoded.channels !== 2) {
+        evidence.warnings.push(`The ${stem.stemType} stem is not a validated 44.1 kHz stereo WAV; its timing evidence was excluded.`);
+        continue;
+      }
+      const mono = stemPcmToAnalysisMono(decoded.samples);
+      const events = stem.stemType === "bass" ? detectBassAttacks(mono) : detectDrumTransients(mono);
+      const mapped = events.map(({ timestampMs, strength, confidence }) => ({ timestampMs, strength, confidence }));
+      if (stem.stemType === "bass") evidence.bassEvents.push(...mapped);
+      else evidence.drumEvents.push(...mapped);
+    } catch {
+      evidence.warnings.push(`The ${stem.stemType} stem could not be read; its timing evidence was excluded.`);
+    }
+  }
+
+  evidence.drumEvents.sort((left, right) => left.timestampMs - right.timestampMs);
+  evidence.bassEvents.sort((left, right) => left.timestampMs - right.timestampMs);
+  while (measuredBedGrooveCache.size >= GROOVE_EVIDENCE_CACHE_MAX_ENTRIES) {
+    const oldestKey = measuredBedGrooveCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    measuredBedGrooveCache.delete(oldestKey);
+  }
+  measuredBedGrooveCache.set(cacheKey, { createdAt: now, evidence });
+  return evidence;
 }
 
 /**
@@ -390,6 +484,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         }
       }
+
+      const grooveEvidence = await loadMeasuredBedGrooveEvidence(projectId, bedId);
+      bed.drumEvents = grooveEvidence.drumEvents;
+      bed.bassEvents = grooveEvidence.bassEvents;
+      bed.grooveWarnings = grooveEvidence.warnings;
 
       const planned = planMashup(vocals, bed);
       if (!planned.ok) {
