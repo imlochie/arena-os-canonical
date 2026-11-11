@@ -34,7 +34,8 @@
   real separated songs, and no audio export initiated from the reopened Studio
   session. These remain separate acceptance gates; this test proves data and
   audio selection/persistence, not subjective mashup quality.
-* **Exact Git revision:** Update after the implementation commit is pushed.
+* **Implementation commit:** `5d4d6bebb0dc2fadd4cb7125872d8a2111716e57`,
+  pushed to the shared PR #30 branch.
 
 ## Current verification update — 2026-11-10, end-to-end mashup route integration, multi-stem arrangements, and database round-trip acceptance
 
