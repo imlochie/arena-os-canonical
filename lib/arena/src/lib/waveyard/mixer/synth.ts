@@ -163,52 +163,26 @@ export function decodeWav16(bytes: Uint8Array): DecodedWav | null {
   const tag = (offset: number, length: number) =>
     String.fromCharCode(...bytes.subarray(offset, offset + length));
   if (tag(0, 4) !== "RIFF" || tag(8, 4) !== "WAVE") return null;
-  const riffSize = view.getUint32(4, true);
-  const riffEnd = 8 + riffSize;
-  if (riffSize < 4 || riffEnd > bytes.byteLength) return null;
-
   let offset = 12;
-  let format: { channels: number; sampleRate: number; blockAlign: number } | null = null;
-  while (offset + 8 <= riffEnd) {
+  let sampleRate = 0;
+  let channels = 0;
+  let bits = 0;
+  while (offset + 8 <= bytes.length) {
     const chunkId = tag(offset, 4);
     const size = view.getUint32(offset + 4, true);
-    const chunkData = offset + 8;
-    const chunkEnd = chunkData + size;
-    if (chunkEnd > riffEnd) return null;
-
     if (chunkId === "fmt ") {
-      if (format !== null || size < 16) return null;
-      const audioFormat = view.getUint16(chunkData, true);
-      const channels = view.getUint16(chunkData + 2, true);
-      const sampleRate = view.getUint32(chunkData + 4, true);
-      const byteRate = view.getUint32(chunkData + 8, true);
-      const blockAlign = view.getUint16(chunkData + 12, true);
-      const bits = view.getUint16(chunkData + 14, true);
-      if (
-        audioFormat !== 1
-        || channels < 1
-        || sampleRate < 1
-        || bits !== 16
-        || blockAlign !== channels * 2
-        || byteRate !== sampleRate * blockAlign
-      ) return null;
-      format = { channels, sampleRate, blockAlign };
+      channels = view.getUint16(offset + 10, true);
+      sampleRate = view.getUint32(offset + 12, true);
+      bits = view.getUint16(offset + 22, true);
     } else if (chunkId === "data") {
-      if (format === null || size === 0 || size % format.blockAlign !== 0) return null;
+      if (bits !== 16) return null;
       const sampleCount = Math.floor(size / 2);
-      if (sampleCount % format.channels !== 0) return null;
       const samples = new Float32Array(sampleCount);
       for (let i = 0; i < sampleCount; i += 1)
-        samples[i] = view.getInt16(chunkData + i * 2, true) / 32768;
-      return {
-        sampleRate: format.sampleRate,
-        channels: format.channels,
-        frames: sampleCount / format.channels,
-        samples,
-      };
+        samples[i] = view.getInt16(offset + 8 + i * 2, true) / 32768;
+      return { sampleRate, channels, frames: Math.floor(sampleCount / channels), samples };
     }
-    offset = chunkEnd + (size % 2);
-    if (offset > riffEnd) return null;
+    offset += 8 + size + (size % 2);
   }
   return null;
 }

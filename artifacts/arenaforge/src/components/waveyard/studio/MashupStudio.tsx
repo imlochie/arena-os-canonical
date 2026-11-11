@@ -44,7 +44,6 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   } | null>(null);
   const [savingRemix, setSavingRemix] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
-  const [operationWarnings, setOperationWarnings] = useState<string[]>([]);
   const renderUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -56,7 +55,6 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const call = async (payload: Record<string, unknown>, kind: "mashup" | "extended") => {
     setRendering(kind === "mashup" ? "mashup" : "extend");
     setError(null);
-    setOperationWarnings([]);
     const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -82,17 +80,6 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     }
     const bedSource = response.headers.get("x-waveyard-bed-source");
     const bedWarning = response.headers.get("x-waveyard-bed-warning");
-    const renderWarnings = (response.headers.get("x-waveyard-warning") ?? "")
-      .split(",")
-      .map((warning) => {
-        try {
-          return decodeURIComponent(warning);
-        } catch {
-          return warning;
-        }
-      })
-      .filter(Boolean);
-    setOperationWarnings(renderWarnings);
     if (bedSource) {
       setBedInfo({
         source: bedSource,
@@ -128,7 +115,6 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setSavingRemix(true);
     setError(null);
     setSaveSuccess(null);
-    setOperationWarnings([]);
     try {
       const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
         method: "POST",
@@ -140,9 +126,6 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
         setError(data.error ?? "Could not save mashup as remix.");
       } else {
         setSaveSuccess("Mashup saved to project arrangement timeline as an editable remix.");
-        setOperationWarnings(Array.isArray(data.warnings)
-          ? data.warnings.filter((warning: unknown): warning is string => typeof warning === "string")
-          : []);
       }
     } catch {
       setError("Failed to save mashup as remix.");
@@ -256,11 +239,6 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             : "original file fallback"}
           . {bedInfo.warning}
         </p>
-      )}
-      {operationWarnings.length > 0 && (
-        <ul className="mashup-warnings" aria-label="Mashup audio warnings">
-          {operationWarnings.map((warning, index) => <li key={`${index}:${warning}`}>⚠ {warning}</li>)}
-        </ul>
       )}
 
       {canEdit && (

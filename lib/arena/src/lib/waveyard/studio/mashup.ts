@@ -75,7 +75,7 @@ export type MashupPlanResult =
 const LOCK_TOLERANCE = 0.03;
 const CROSSFADE_MS = 250;
 /** Bed attenuation while vocals are active (the classic mashup pocket). */
-export const MASHUP_DUCK_DEPTH = 0.28;
+const DUCK_DEPTH = 0.28;
 
 function isIntro(label: string): boolean {
   return /intro/i.test(label);
@@ -407,39 +407,6 @@ function trapezoidGain(atMs: number, startMs: number, endMs: number, crossfadeMs
   return 1;
 }
 
-/** Shared bed/donor-instrument gain curve used by the preview render and saved remix automation. */
-export function mashupDuckGainAt(plan: MashupPlan, timelineMs: number): number {
-  let duck = 0;
-  for (const segment of plan.segments) {
-    duck = Math.max(
-      duck,
-      trapezoidGain(timelineMs, segment.mashupStartMs, segment.mashupEndMs, segment.crossfadeMs),
-    );
-  }
-  return 1 - MASHUP_DUCK_DEPTH * duck;
-}
-
-/**
- * Linear automation vertices for the planned non-overlapping vocal passages.
- * The planner places gaps between passages, so the max-of-trapezoids duck curve
- * is represented exactly by each segment's fade and full-gain boundaries.
- */
-export function mashupDuckAutomationPoints(plan: MashupPlan): Array<{ timelineMs: number; value: number }> {
-  const durationMs = Math.max(0, Math.round(plan.durationMs));
-  const times = new Set<number>([0, durationMs]);
-  for (const segment of plan.segments) {
-    const start = Math.max(0, Math.min(durationMs, Math.round(segment.mashupStartMs)));
-    const end = Math.max(start, Math.min(durationMs, Math.round(segment.mashupEndMs)));
-    const crossfade = Math.max(0, Math.round(segment.crossfadeMs));
-    for (const time of [start, start + crossfade, end - crossfade, end]) {
-      times.add(Math.max(0, Math.min(durationMs, time)));
-    }
-  }
-  return [...times]
-    .sort((left, right) => left - right)
-    .map((timelineMs) => ({ timelineMs, value: mashupDuckGainAt(plan, timelineMs) }));
-}
-
 /** Mix the plan: bed (ducked under vocals) + stretched/pitched vocal
  *  segments with trapezoid fades. Deterministic from the plan. */
 export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuffer {
@@ -459,13 +426,20 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     return { segment, pcm: pitchShift(stretched, plan.vocalsPitchSemitones, sampleRate) };
   });
 
-  // Complementary donor instruments stay at their native pace and key.
-  // Vocal tempo/key decisions apply only to the lead vocal layer.
+  // Pre-process complementary donor stems ONCE before the rendering loop.
+  // Instrumental stems (drums, bass, guitar, keys, other) must NEVER inherit vocal-specific
+  // pitch transposition or vocal transformations. Preserve their native pitch.
+  // Time-stretching is applied only when beat synchronization is mutually trusted.
   const preparedStems: Array<{ name: string; pcm: StereoBuffer }> = [];
   if (input.stems) {
     for (const [stemName, rawStemBuffer] of input.stems) {
       if (stemName !== "vocals") {
-        preparedStems.push({ name: stemName, pcm: rawStemBuffer });
+        // Instrumental donor stems preserve native pitch (0 semitones shift).
+        // Only time-stretch to match master tempo if tempo stretch ratio differs from 1.0.
+        const pcm = (stemName.startsWith("donor_") && Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6)
+          ? timeStretch(rawStemBuffer, plan.vocalsStretchRatio, sampleRate)
+          : rawStemBuffer;
+        preparedStems.push({ name: stemName, pcm });
       }
     }
   }
@@ -474,7 +448,12 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
   for (let frame = 0; frame < totalFrames; frame += 1) {
     const atMs = (frame / sampleRate) * 1000;
 
-    const bedGain = mashupDuckGainAt(plan, atMs);
+    // Bed gain: 1.0, ducked by a smoothed trapezoid under active vocals.
+    let duck = 0;
+    for (const { segment } of prepared) {
+      duck = Math.max(duck, trapezoidGain(atMs, segment.mashupStartMs, segment.mashupEndMs, segment.crossfadeMs));
+    }
+    const bedGain = 1 - DUCK_DEPTH * duck;
 
     let left = 0;
     let right = 0;
@@ -496,8 +475,10 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     for (const { pcm: stemBuffer } of preparedStems) {
       if (frame * 2 + 1 < stemBuffer.length) {
         const stemGain = 0.6;
-        left += stemBuffer[frame * 2] * stemGain * bedGain;
-        right += stemBuffer[frame * 2 + 1] * stemGain * bedGain;
+        const stemDuck = DUCK_DEPTH;
+        const dynamicGain = stemGain * (1 - stemDuck * duck);
+        left += stemBuffer[frame * 2] * dynamicGain;
+        right += stemBuffer[frame * 2 + 1] * dynamicGain;
       }
     }
 

@@ -105,10 +105,22 @@ for (const mode of ['checksum', 'oversized', 'truncated', 'changed-representatio
 }
 
 function child(f: Awaited<ReturnType<typeof fixture>>) {
-  const process = fork(fileURLToPath(new URL('../../../test-fixtures/model-seed-child.mjs', import.meta.url)), [JSON.stringify({ spec: f.spec, dir: f.dir })], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-  let output = ''; process.stdout!.on('data', (b) => { output += b; }); process.stderr!.on('data', (b) => { output += b; });
-  const exit = once(process, 'exit');
-  return { process, exit, output: () => output };
+  const execArgv = process.execArgv.filter(
+    (arg, i, arr) =>
+      arg === '--import' ||
+      arg === '--require' ||
+      arr[i - 1] === '--import' ||
+      arr[i - 1] === '--require' ||
+      arg.includes('tsx')
+  );
+  const processChild = fork(
+    fileURLToPath(new URL('../../../test-fixtures/model-seed-child.mjs', import.meta.url)),
+    [JSON.stringify({ spec: f.spec, dir: f.dir })],
+    { execArgv: execArgv.length > 0 ? execArgv : ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] },
+  );
+  let output = ''; processChild.stdout!.on('data', (b) => { output += b; }); processChild.stderr!.on('data', (b) => { output += b; });
+  const exit = once(processChild, 'exit');
+  return { process: processChild, exit, output: () => output };
 }
 
 // No local cap: the suite declares its per-test bound once (scripts/test-source.mjs,

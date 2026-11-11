@@ -281,53 +281,6 @@ test("render: bed ducks under active vocals, crossfades, never clips", () => {
   for (const value of out) assert.ok(value >= -1.0001 && value <= 1.0001);
 });
 
-test("render: donor instrumental complements retain native pace and key", () => {
-  const result = planMashup(
-    profile({ role: "vocals", bpm: 140, musicalKey: "C major", durationMs: 10_000 }),
-    profile({ bpm: 100, musicalKey: "F# major", durationMs: 10_000 }),
-  );
-  assert.ok(result.ok);
-  assert.notEqual(result.plan.vocalsStretchRatio, 1);
-  assert.notEqual(result.plan.vocalsPitchSemitones, 0);
-
-  // Isolate the discrete donor instrument stem from the lead-vocal segments.
-  // It must remain byte-for-byte PCM-equivalent apart from its fixed stem gain,
-  // regardless of the vocal stretch/pitch proposal.
-  const plan = { ...result.plan, segments: [] };
-  for (const [stemType, frequency] of [
-    ["donor_drums", 220],
-    ["donor_bass", 330],
-    ["donor_guitar", 440],
-  ] as const) {
-    const instrument = toneStemForTransformCheck(frequency, 10);
-    const rendered = renderMashup(plan, {
-      vocals: new Float32Array(instrument.length),
-      bed: new Float32Array(instrument.length),
-      stems: new Map([[stemType, instrument]]),
-      sampleRate: RATE,
-    });
-
-    assert.equal(rendered.length, instrument.length, `${stemType} must retain native duration`);
-    for (let index = 0; index < instrument.length; index += 1) {
-      assert.ok(
-        Math.abs(rendered[index]! - instrument[index]! * 0.6) < 1e-6,
-        `${stemType} sample ${index} must retain native timing and pitch`,
-      );
-    }
-  }
-});
-
-function toneStemForTransformCheck(frequency: number, seconds: number): Float32Array {
-  const frames = Math.round(seconds * RATE);
-  const samples = new Float32Array(frames * 2);
-  for (let frame = 0; frame < frames; frame += 1) {
-    const value = 0.1 * Math.sin((2 * Math.PI * frequency * frame) / RATE);
-    samples[frame * 2] = value;
-    samples[frame * 2 + 1] = value;
-  }
-  return samples;
-}
-
 // --- extension -------------------------------------------------------------
 
 test("extension: plan loops the last body section with bar-aligned fades", () => {
