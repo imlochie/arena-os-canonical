@@ -1,14 +1,12 @@
 /**
  * API-level mashup render acceptance.
  *
- * This is not a helper-only test: it boots the real embedded PostgreSQL
- * cluster, applies the canonical migrations, inserts real database source/stem
- * rows and private WAV objects containing generated tones, then calls the
- * production route handler. It
- * proves that the synthesized instrumental bed (drums + bass + other, with
- * the bed's vocal stem excluded) actually reaches renderMashup, and that the
- * original-file fallback is reported honestly. It does not assess real-song
- * separation or subjective mashup quality.
+ * This boots PostgreSQL, applies canonical migrations, seeds private audio and
+ * calls the production route handlers. By default it uses generated tones for
+ * exact stem-routing assertions. With WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST it
+ * instead exercises full real source/stem files, Studio persistence/reopen and
+ * the persisted-version WAV export worker. Passing the real fixture path proves
+ * technical workflow execution, not subjective mashup quality.
  */
 
 import test from "node:test";
@@ -16,7 +14,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -32,6 +30,37 @@ const { Client } = requireFromDb("pg") as typeof import("pg");
 const RATE = 44_100;
 const BED_SECONDS = 4;
 const VOCAL_SECONDS = 2;
+type FixtureStemType = "vocals" | "drums" | "bass" | "other";
+type RealSeparationProvenance = {
+  engine: "mdx" | "demucs";
+  recipeModel: string;
+  models: Record<FixtureStemType, { id: string; sha256: string }>;
+  reportPath: string;
+};
+type RealMashupSourceFixture = {
+  path: string;
+  filename: string;
+  durationSeconds: number;
+  stems: Record<FixtureStemType, string>;
+  separation: RealSeparationProvenance;
+};
+type RealMashupFixtureManifest = {
+  vocals: RealMashupSourceFixture;
+  bed: RealMashupSourceFixture;
+  analysisReportPath: string;
+};
+
+function realFixturePath(value: string): string {
+  return path.isAbsolute(value) ? value : path.resolve(root, value);
+}
+
+function sourceAudioMetadata(filename: string) {
+  const extension = path.extname(filename).toLowerCase();
+  if (extension === ".mp3") return { extension, mimeType: "audio/mpeg", codec: "mp3" };
+  if (extension === ".m4a" || extension === ".mp4") return { extension: ".m4a", mimeType: "audio/mp4", codec: "aac" };
+  if (extension === ".flac") return { extension, mimeType: "audio/flac", codec: "flac" };
+  return { extension: extension || ".wav", mimeType: "audio/wav", codec: "pcm_s16le" };
+}
 
 function findPostgresBinary(name: string): string | undefined {
   const extension = process.platform === "win32" ? ".exe" : "";
@@ -119,7 +148,12 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-test("Waveyard API renders generated PCM and persists Arena handoffs atomically", async (t) => {
+const hasRealMashupFixture = Boolean(process.env.WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST?.trim());
+test(
+  hasRealMashupFixture
+    ? "Waveyard real-song mashup persists, reopens, edits, restores, and exports"
+    : "Waveyard synthetic-route fallback and Arena handoff regressions",
+  async (t) => {
   if (!postgresBinaries.initdb || !postgresBinaries.postgres || !postgresBinaries.pgCtl) {
     t.skip("PostgreSQL binaries are unavailable");
     return;
@@ -191,6 +225,25 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
     const { LOCAL_OWNER_ID, artifacts: arenaArtifacts, projects: arenaProjects, roomHandoffs } = await import("@workspace/db/schema");
     const { getStorage } = await import("@workspace/arena/lib/waveyard/storage");
     const storage = getStorage();
+    const realFixtureManifestPath = process.env.WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST?.trim();
+    const realFixture = realFixtureManifestPath
+      ? JSON.parse(await readFile(realFixturePath(realFixtureManifestPath), "utf8")) as RealMashupFixtureManifest
+      : null;
+    const analysisReference = realFixture
+      ? JSON.parse(await readFile(realFixturePath(realFixture.analysisReportPath), "utf8")) as {
+        tracks?: Array<{
+          filename: string;
+          sourceChecksumSha256: string;
+          analysisEngine: string;
+          analysisEngineVersion: string;
+          analyzedDurationSeconds: number;
+          bpm: number | null;
+          bpmConfidence: number | null;
+          musicalKey: string | null;
+          keyConfidence: number | null;
+        }>;
+      }
+      : null;
 
     const [project] = await dbModule.db.insert(schema.projects).values({
       ownerId: LOCAL_OWNER_ID,
@@ -261,46 +314,62 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
     assert.equal(workspaceBody.artifacts[0]?.kind, "room-handoff");
     assert.equal(workspaceBody.artifacts[0]?.sourceType, "waveyard");
 
-    const vocalsOriginal = encodeWav16(tone([1000], VOCAL_SECONDS, 0.2), RATE);
-    // The bed's original vocal is deliberately loud. If the separated bed were
-    // accidentally including the vocal stem, the 880 Hz energy would be large.
-    const bedOriginal = encodeWav16(
-      mixTones([[110, 0.1], [220, 0.1], [330, 0.1], [1500, 0.4]], BED_SECONDS),
-      RATE,
-    );
-    const vocalsOriginalPath = path.join(fixtureRoot, "vocals-original.wav");
-    const bedOriginalPath = path.join(fixtureRoot, "bed-original.wav");
+    const vocalsFilename = realFixture?.vocals.filename ?? "vocals-original.wav";
+    const bedFilename = realFixture?.bed.filename ?? "bed-original.wav";
+    const vocalsAudio = sourceAudioMetadata(vocalsFilename);
+    const bedAudio = sourceAudioMetadata(bedFilename);
+    const vocalsDurationSeconds = realFixture
+      ? Math.max(1, Math.round(realFixture.vocals.durationSeconds))
+      : VOCAL_SECONDS;
+    const bedDurationSeconds = realFixture
+      ? Math.max(1, Math.round(realFixture.bed.durationSeconds))
+      : BED_SECONDS;
+    const vocalsOriginal = realFixture
+      ? new Uint8Array(await readFile(realFixturePath(realFixture.vocals.path)))
+      : encodeWav16(tone([1000], VOCAL_SECONDS, 0.2), RATE);
+    // The generated fixture's bed vocal is deliberately loud. For real inputs,
+    // the original is the user-provided compressed source file.
+    const bedOriginal = realFixture
+      ? new Uint8Array(await readFile(realFixturePath(realFixture.bed.path)))
+      : encodeWav16(
+        mixTones([[110, 0.1], [220, 0.1], [330, 0.1], [1500, 0.4]], BED_SECONDS),
+        RATE,
+      );
+    const vocalsOriginalPath = path.join(fixtureRoot, `vocals-original${vocalsAudio.extension}`);
+    const bedOriginalPath = path.join(fixtureRoot, `bed-original${bedAudio.extension}`);
+    const vocalsStorageKey = `mashup-fixture/vocals-original${vocalsAudio.extension}`;
+    const bedStorageKey = `mashup-fixture/bed-original${bedAudio.extension}`;
     await writeFile(vocalsOriginalPath, vocalsOriginal);
     await writeFile(bedOriginalPath, bedOriginal);
 
     const [vocalsSource] = await dbModule.db.insert(schema.sourceAssets).values({
       projectId: project.id,
-      originalFilename: "vocals-original.wav",
-      mimeType: "audio/wav",
-      storageKey: "mashup-fixture/vocals-original.wav",
+      originalFilename: vocalsFilename,
+      mimeType: vocalsAudio.mimeType,
+      storageKey: vocalsStorageKey,
       checksumSha256: sha256(vocalsOriginal),
-      durationSeconds: VOCAL_SECONDS,
+      durationSeconds: vocalsDurationSeconds,
       sampleRate: RATE,
       channels: 2,
-      codec: "pcm_s16le",
+      codec: vocalsAudio.codec,
       fileSizeBytes: vocalsOriginal.length,
     }).returning({ id: schema.sourceAssets.id });
     const [bedSource] = await dbModule.db.insert(schema.sourceAssets).values({
       projectId: project.id,
-      originalFilename: "bed-original.wav",
-      mimeType: "audio/wav",
-      storageKey: "mashup-fixture/bed-original.wav",
+      originalFilename: bedFilename,
+      mimeType: bedAudio.mimeType,
+      storageKey: bedStorageKey,
       checksumSha256: sha256(bedOriginal),
-      durationSeconds: BED_SECONDS,
+      durationSeconds: bedDurationSeconds,
       sampleRate: RATE,
       channels: 2,
-      codec: "pcm_s16le",
+      codec: bedAudio.codec,
       fileSizeBytes: bedOriginal.length,
     }).returning({ id: schema.sourceAssets.id });
     assert.ok(vocalsSource && bedSource);
 
-    await storage.putFile("mashup-fixture/vocals-original.wav", vocalsOriginalPath);
-    await storage.putFile("mashup-fixture/bed-original.wav", bedOriginalPath);
+    await storage.putFile(vocalsStorageKey, vocalsOriginalPath);
+    await storage.putFile(bedStorageKey, bedOriginalPath);
 
     const [vocalsJob] = await dbModule.db.insert(schema.processingJobs).values({
       projectId: project.id,
@@ -310,8 +379,9 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
       stage: "complete",
       attempts: 1,
       idempotencyKey: `mashup-vocals-${randomUUID()}`,
-      model: "test",
+      model: realFixture?.vocals.separation.recipeModel ?? "test",
       requestedDevice: "cpu",
+      resolvedDevice: realFixture ? "cpu" : null,
       completedAt: new Date(),
     }).returning({ id: schema.processingJobs.id });
     const [bedJob] = await dbModule.db.insert(schema.processingJobs).values({
@@ -322,55 +392,82 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
       stage: "complete",
       attempts: 1,
       idempotencyKey: `mashup-bed-${randomUUID()}`,
-      model: "test",
+      model: realFixture?.bed.separation.recipeModel ?? "test",
       requestedDevice: "cpu",
+      resolvedDevice: realFixture ? "cpu" : null,
       completedAt: new Date(),
     }).returning({ id: schema.processingJobs.id });
     assert.ok(vocalsJob && bedJob);
 
-    const vocalsStemWav = encodeWav16(tone([1000], VOCAL_SECONDS, 0.2), RATE);
+    const readRealStem = async (source: RealMashupSourceFixture, type: FixtureStemType) =>
+      new Uint8Array(await readFile(realFixturePath(source.stems[type])));
+    const vocalsStemWav = realFixture
+      ? await readRealStem(realFixture.vocals, "vocals")
+      : encodeWav16(tone([1000], VOCAL_SECONDS, 0.2), RATE);
     const vocalsStemPath = path.join(fixtureRoot, "vocals-stem.wav");
     await writeFile(vocalsStemPath, vocalsStemWav);
     await storage.putFile("mashup-fixture/vocals-stem.wav", vocalsStemPath);
-    await dbModule.db.insert(schema.stemAssets).values({
+    const decodedVocalStem = decodeWav16(vocalsStemWav);
+    assert.ok(decodedVocalStem, "the donor vocal stem must be a decodable WAV");
+    assert.equal(decodedVocalStem.sampleRate, RATE);
+    assert.equal(decodedVocalStem.channels, 2);
+    assert.ok(Math.abs(decodedVocalStem.frames / RATE - vocalsDurationSeconds) < 1.1,
+      "the donor vocal stem must cover the full source duration");
+    const [vocalsStemRow] = await dbModule.db.insert(schema.stemAssets).values({
       projectId: project.id,
       sourceAssetId: vocalsSource.id,
       separationJobId: vocalsJob.id,
       stemType: "vocals",
-      engine: "demucs",
-      model: "test",
-      modelVersion: "test",
+      engine: realFixture?.vocals.separation.engine ?? "demucs",
+      model: realFixture?.vocals.separation.models.vocals.id ?? "test",
+      modelVersion: realFixture?.vocals.separation.models.vocals.sha256 ?? "test",
       storageKey: "mashup-fixture/vocals-stem.wav",
       checksumSha256: sha256(vocalsStemWav),
-      durationSeconds: VOCAL_SECONDS,
+      durationSeconds: vocalsDurationSeconds,
       sampleRate: RATE,
       channels: 2,
       codec: "wav",
       format: "wav",
       fileSizeBytes: vocalsStemWav.length,
-    });
+    }).returning({ id: schema.stemAssets.id });
+    assert.ok(vocalsStemRow);
 
-    const bedStems: Array<[string, number]> = [["drums", 110], ["bass", 220], ["other", 330], ["vocals", 1500]];
-    for (const [stemType, frequency] of bedStems) {
-      const wav = encodeWav16(
-        tone([frequency], BED_SECONDS, stemType === "vocals" ? 0.4 : 0.1),
-        RATE,
-      );
+    const bedStemFixtures: Array<{ stemType: FixtureStemType; wav: Uint8Array }> = realFixture
+      ? await Promise.all((["drums", "bass", "other", "vocals"] as const).map(async (stemType) => ({
+        stemType,
+        wav: await readRealStem(realFixture.bed, stemType),
+      })))
+      : ([
+        ["drums", 110], ["bass", 220], ["other", 330], ["vocals", 1500],
+      ] as const).map(([stemType, frequency]) => ({
+        stemType,
+        wav: encodeWav16(
+          tone([frequency], BED_SECONDS, stemType === "vocals" ? 0.4 : 0.1),
+          RATE,
+        ),
+      }));
+    for (const { stemType, wav } of bedStemFixtures) {
       const storageKey = `mashup-fixture/bed-${stemType}.wav`;
       const filePath = path.join(fixtureRoot, `bed-${stemType}.wav`);
       await writeFile(filePath, wav);
       await storage.putFile(storageKey, filePath);
+      const decodedStem = decodeWav16(wav);
+      assert.ok(decodedStem, `${stemType} must be a decodable WAV`);
+      assert.equal(decodedStem.sampleRate, RATE, `${stemType} must retain 44.1 kHz`);
+      assert.equal(decodedStem.channels, 2, `${stemType} must remain stereo`);
+      assert.ok(Math.abs(decodedStem.frames / RATE - bedDurationSeconds) < 1.1,
+        `${stemType} must cover the full source duration`);
       await dbModule.db.insert(schema.stemAssets).values({
         projectId: project.id,
         sourceAssetId: bedSource.id,
         separationJobId: bedJob.id,
         stemType,
-        engine: "demucs",
-        model: "test",
-        modelVersion: "test",
+        engine: realFixture?.bed.separation.engine ?? "demucs",
+        model: realFixture?.bed.separation.models[stemType].id ?? "test",
+        modelVersion: realFixture?.bed.separation.models[stemType].sha256 ?? "test",
         storageKey,
         checksumSha256: sha256(wav),
-        durationSeconds: BED_SECONDS,
+        durationSeconds: bedDurationSeconds,
         sampleRate: RATE,
         channels: 2,
         codec: "wav",
@@ -379,26 +476,28 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
       });
     }
 
-    for (const [source, checksum] of [
-      [vocalsSource, sha256(vocalsOriginal)],
-      [bedSource, sha256(bedOriginal)],
-    ] as const) {
-      await dbModule.db.insert(schema.sourceAnalyses).values({
-        projectId: project.id,
-        sourceAssetId: source.id,
-        status: "complete",
-        stage: "complete",
-        attempts: 1,
-        idempotencyKey: `mashup-analysis-${randomUUID()}`,
-        analysisEngine: "test",
-        analysisEngineVersion: "test",
-        sourceChecksumSha256: checksum,
-        bpm: 120,
-        bpmConfidence: 0.9,
-        musicalKey: "C major",
-        keyConfidence: 0.9,
-        completedAt: new Date(),
-      });
+    if (!realFixture) {
+      for (const [source, checksum] of [
+        [vocalsSource, sha256(vocalsOriginal)],
+        [bedSource, sha256(bedOriginal)],
+      ] as const) {
+        await dbModule.db.insert(schema.sourceAnalyses).values({
+          projectId: project.id,
+          sourceAssetId: source.id,
+          status: "complete",
+          stage: "complete",
+          attempts: 1,
+          idempotencyKey: `mashup-analysis-${randomUUID()}`,
+          analysisEngine: "test",
+          analysisEngineVersion: "test",
+          sourceChecksumSha256: checksum,
+          bpm: 120,
+          bpmConfidence: 0.9,
+          musicalKey: "C major",
+          keyConfidence: 0.9,
+          completedAt: new Date(),
+        });
+      }
     }
 
     const renderRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
@@ -425,9 +524,75 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
       { params: Promise.resolve({ id: project.id }) },
     );
     assert.equal(planResponse.status, 200);
-    const planBody = await planResponse.json() as { bed?: { source: string; warning: string } };
+    const planBody = await planResponse.json() as {
+      plan?: {
+        masterBpm: number;
+        vocalsStretchRatio: number;
+        vocalsPitchSemitones: number;
+        durationMs: number;
+        warnings: string[];
+        rationale: string[];
+      };
+      bed?: { source: string; warning: string };
+    };
     assert.equal(planBody.bed?.source, "separated", "the plan must report the separated bed");
-    assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
+    if (!realFixture) assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
+    assert.ok(planBody.plan && planBody.plan.durationMs > 0, "the production planner must return an arrangement");
+    if (realFixture) {
+      assert.equal(planBody.plan.vocalsStretchRatio, 1,
+        "low-confidence donor tempo must not be presented as verified beat synchronization");
+      assert.equal(planBody.plan.vocalsPitchSemitones, 0,
+        "low-confidence keys must not trigger an automatic pitch transform");
+      assert.ok(planBody.plan.warnings.some((warning) => warning.includes("Automatic tempo stretching withheld")));
+      assert.ok(planBody.plan.warnings.some((warning) => warning.includes("Key analysis confidence is below the trusted threshold")));
+      assert.ok(planBody.plan.durationMs >= (bedDurationSeconds - 1) * 1000,
+        "the arrangement must span essentially the complete instrumental source");
+    }
+    const realSourceAnalyses = realFixture
+      ? await dbModule.db.select({
+        sourceAssetId: schema.sourceAnalyses.sourceAssetId,
+        status: schema.sourceAnalyses.status,
+        analysisEngine: schema.sourceAnalyses.analysisEngine,
+        analysisEngineVersion: schema.sourceAnalyses.analysisEngineVersion,
+        sourceChecksumSha256: schema.sourceAnalyses.sourceChecksumSha256,
+        bpm: schema.sourceAnalyses.bpm,
+        bpmConfidence: schema.sourceAnalyses.bpmConfidence,
+        musicalKey: schema.sourceAnalyses.musicalKey,
+        keyConfidence: schema.sourceAnalyses.keyConfidence,
+      }).from(schema.sourceAnalyses).where(inArray(schema.sourceAnalyses.sourceAssetId, [vocalsSource.id, bedSource.id]))
+      : [];
+    if (realFixture) {
+      assert.equal(realSourceAnalyses.length, 2,
+        "the production route must persist analysis for both real original tracks");
+      for (const analysis of realSourceAnalyses) {
+        assert.equal(analysis.status, "complete");
+        assert.ok(analysis.bpm !== null && Number.isFinite(analysis.bpm) && analysis.bpm > 0,
+          "full real-song route analysis must produce a measured BPM");
+        assert.ok(analysis.musicalKey, "full real-song route analysis must produce a measured key");
+        const expectedChecksum = analysis.sourceAssetId === vocalsSource.id ? sha256(vocalsOriginal) : sha256(bedOriginal);
+        const reference = analysisReference?.tracks?.find((track) => track.sourceChecksumSha256 === expectedChecksum);
+        assert.ok(reference, "the route result must be comparable to the independently recorded full-track analysis");
+        assert.equal(analysis.analysisEngine, reference.analysisEngine);
+        assert.equal(analysis.analysisEngineVersion, reference.analysisEngineVersion);
+        assert.ok(reference.bpm !== null && Number.isFinite(reference.bpm));
+        assert.ok(Math.abs(analysis.bpm - reference.bpm) <= 0.1,
+          `route BPM ${analysis.bpm} should match full-track reference ${reference.bpm}`);
+        if ((reference.keyConfidence ?? 0) >= 0.5) {
+          assert.equal(analysis.musicalKey, reference.musicalKey,
+            "high-confidence measured keys should agree with full-track analysis");
+        }
+      }
+      assert.equal(
+        realSourceAnalyses.find((analysis) => analysis.sourceAssetId === vocalsSource.id)?.sourceChecksumSha256,
+        sha256(vocalsOriginal),
+        "the donor analysis must be tied to the exact original file bytes",
+      );
+      assert.equal(
+        realSourceAnalyses.find((analysis) => analysis.sourceAssetId === bedSource.id)?.sourceChecksumSha256,
+        sha256(bedOriginal),
+        "the bed analysis must be tied to the exact original file bytes",
+      );
+    }
 
     // Actual production route render.
     const renderResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
@@ -437,8 +602,10 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
     const bedStemsHeader = (renderResponse.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort();
     assert.deepEqual(bedStemsHeader, ["bass", "drums", "other"], "the bed must be drums + bass + other, not vocals");
     const bedWarning = renderResponse.headers.get("x-waveyard-bed-warning");
-    assert.ok(bedWarning, "the route must expose the leakage warning");
-    assert.match(decodeURIComponent(bedWarning!), /leakage/i);
+    if (!realFixture) {
+      assert.ok(bedWarning, "the route must expose the leakage warning");
+      assert.match(decodeURIComponent(bedWarning!), /leakage/i);
+    }
 
     const renderedBytes = new Uint8Array(await renderResponse.arrayBuffer());
     const rendered = decodeWav16(renderedBytes);
@@ -446,43 +613,189 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
     assert.equal(rendered!.sampleRate, RATE);
     assert.equal(rendered!.channels, 2);
 
-    // The bed's vocal stem (880 Hz) must not be in the rendered bed.
-    const separatedVocalEnergy = energyAt(rendered!.samples, 1500, 0, 2);
-    const drumEnergy = energyAt(rendered!.samples, 110, 0, 2);
-    const bassEnergy = energyAt(rendered!.samples, 220, 0, 2);
-    const otherEnergy = energyAt(rendered!.samples, 330, 0, 2);
-    const donorVocalEnergy = energyAt(rendered!.samples, 1000, 2, 4);
-    // An existing but undecodable stem must fail closed (422), never fall back
-    // to the original file, which would silently reintroduce the bed's vocal.
-    const garbagePath = path.join(fixtureRoot, "bed-bass-corrupt.wav");
-    await writeFile(garbagePath, Buffer.from("not a wav file"));
-    await storage.putFile("mashup-fixture/bed-bass.wav", garbagePath);
-    const invalidResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
-    assert.equal(invalidResponse.status, 422, "an invalid existing stem must fail the render");
-    assert.equal(invalidResponse.headers.get("x-waveyard-bed-source"), null);
-    assert.match(((await invalidResponse.json()) as { error: string }).error, /bass stem/);
-    await storage.putFile("mashup-fixture/bed-bass.wav", path.join(fixtureRoot, "bed-bass.wav"));
+    if (realFixture) {
+      const frameCount = rendered!.samples.length / 2;
+      const durationSeconds = frameCount / rendered!.sampleRate;
+      let peak = 0;
+      let squareSum = 0;
+      let clippedFrames = 0;
+      let silentFrames = 0;
+      for (let frame = 0; frame < frameCount; frame += 1) {
+        const left = rendered!.samples[frame * 2]!;
+        const right = rendered!.samples[frame * 2 + 1]!;
+        const magnitude = Math.max(Math.abs(left), Math.abs(right));
+        peak = Math.max(peak, magnitude);
+        squareSum += left * left + right * right;
+        if (magnitude >= 0.999) clippedFrames += 1;
+        if (magnitude < 0.0001) silentFrames += 1;
+      }
+      const metrics = {
+        sampleRate: rendered!.sampleRate,
+        channels: rendered!.channels,
+        frames: frameCount,
+        durationSeconds,
+        peak,
+        rms: Math.sqrt(squareSum / (frameCount * 2)),
+        clippedFrames,
+        silentFrameRatio: silentFrames / Math.max(1, frameCount),
+        bytes: renderedBytes.byteLength,
+        sha256: sha256(renderedBytes),
+      };
+      assert.ok(durationSeconds >= bedDurationSeconds - 1,
+        `real output must preserve the full bed duration (${durationSeconds}s vs ${bedDurationSeconds}s)`);
+      assert.ok(metrics.rms > 0.00001, "real output must contain non-silent PCM");
+      assert.ok(metrics.peak <= 1, "real output must remain inside the normalized PCM range");
 
-    // Make the separation unavailable: rendering must fall back to the original
-    // file and say so, and the original bed's vocal must become audible.
-    // Keep the rows so this test can restore a completed run before the separate
-    // save assertion; editable Studio saves require a completed separated bed.
-    await dbModule.db.update(schema.processingJobs)
-      .set({ status: "failed", stage: "failed" })
-      .where(eq(schema.processingJobs.id, bedJob.id));
-    const fallbackResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
-    assert.equal(fallbackResponse.status, 200);
-    assert.equal(fallbackResponse.headers.get("x-waveyard-bed-source"), "original-fallback");
-    assert.match(decodeURIComponent(fallbackResponse.headers.get("x-waveyard-bed-warning") ?? ""), /original/i);
-    const fallbackBytes = new Uint8Array(await fallbackResponse.arrayBuffer());
-    const fallback = decodeWav16(fallbackBytes);
-    assert.ok(fallback);
-    const fallbackVocalEnergy = energyAt(fallback!.samples, 1500, 0, 2);
-    assert.ok(fallbackVocalEnergy > 0.005, `the original bed's vocal should be audible in the fallback (${fallbackVocalEnergy})`);
-    assert.ok(
-      fallbackVocalEnergy > separatedVocalEnergy * 2,
-      `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
-    );
+      const outputPath = process.env.WAVEYARD_MASHUP_REAL_OUTPUT_PATH?.trim();
+      if (outputPath) {
+        const resolvedOutputPath = realFixturePath(outputPath);
+        await mkdir(path.dirname(resolvedOutputPath), { recursive: true });
+        await writeFile(resolvedOutputPath, renderedBytes);
+      }
+      const reportPath = process.env.WAVEYARD_MASHUP_REAL_REPORT_PATH?.trim();
+      if (reportPath) {
+        const resolvedReportPath = realFixturePath(reportPath);
+        await mkdir(path.dirname(resolvedReportPath), { recursive: true });
+        const persistedStemEvidence = await dbModule.db.select({
+          sourceAssetId: schema.stemAssets.sourceAssetId,
+          separationJobId: schema.stemAssets.separationJobId,
+          stemType: schema.stemAssets.stemType,
+          checksumSha256: schema.stemAssets.checksumSha256,
+          durationSeconds: schema.stemAssets.durationSeconds,
+          sampleRate: schema.stemAssets.sampleRate,
+          channels: schema.stemAssets.channels,
+          fileSizeBytes: schema.stemAssets.fileSizeBytes,
+        }).from(schema.stemAssets).where(eq(schema.stemAssets.projectId, project.id));
+        const readSeparationEvidence = async (source: RealMashupSourceFixture) => {
+          const report = JSON.parse(await readFile(realFixturePath(source.separation.reportPath), "utf8")) as {
+            models?: Array<{ id?: string; sha256?: string }>;
+            input?: { sha256?: string; durationSeconds?: number; sampleRate?: number; channels?: number };
+            requestedDevice?: string;
+            result?: {
+              resolvedDevice?: string;
+              elapsedMs?: number;
+              realtimeFactor?: number;
+              objectiveOutputChecks?: {
+                allFourStemFilesReadablePcm16Stereo44100?: boolean;
+                allFourStemsMatchExcerptDuration?: boolean;
+                allSamplesFinite?: boolean;
+                allSamplesWithinPcmRange?: boolean;
+                belowLiveSwapEnergyFloorStems?: string[];
+                soundQualityEvaluated?: boolean;
+              };
+            };
+          };
+          const original = new Uint8Array(await readFile(realFixturePath(source.path)));
+          assert.equal(report.input?.sha256, sha256(original),
+            "separation report must be tied to the original source bytes");
+          assert.ok(Math.abs((report.input?.durationSeconds ?? 0) - source.durationSeconds) < 0.1);
+          assert.equal(report.input?.sampleRate, RATE);
+          assert.equal(report.input?.channels, 2);
+          assert.equal(report.requestedDevice, "cpu");
+          assert.equal(report.result?.resolvedDevice, "cpu");
+          assert.equal(report.result?.objectiveOutputChecks?.allFourStemFilesReadablePcm16Stereo44100, true);
+          assert.equal(report.result?.objectiveOutputChecks?.allFourStemsMatchExcerptDuration, true);
+          assert.equal(report.result?.objectiveOutputChecks?.allSamplesFinite, true);
+          assert.equal(report.result?.objectiveOutputChecks?.allSamplesWithinPcmRange, true);
+          assert.deepEqual(report.result?.objectiveOutputChecks?.belowLiveSwapEnergyFloorStems, []);
+          assert.equal(report.result?.objectiveOutputChecks?.soundQualityEvaluated, false,
+            "objective checks must not be represented as subjective audio-quality evidence");
+          for (const stemType of ["vocals", "drums", "bass", "other"] as const) {
+            const expectedModel = source.separation.models[stemType];
+            assert.ok(report.models?.some((model) =>
+              model.id === expectedModel.id && model.sha256 === expectedModel.sha256),
+            `separation report must verify the pinned ${stemType} model hash`);
+          }
+          return {
+            reportPath: source.separation.reportPath,
+            engine: source.separation.engine,
+            recipeModel: source.separation.recipeModel,
+            models: report.models,
+            input: report.input,
+            requestedDevice: report.requestedDevice,
+            resolvedDevice: report.result?.resolvedDevice,
+            elapsedMs: report.result?.elapsedMs,
+            realtimeFactor: report.result?.realtimeFactor,
+            objectiveOutputChecks: report.result?.objectiveOutputChecks,
+          };
+        };
+        await writeFile(resolvedReportPath, `${JSON.stringify({
+          schemaVersion: 1,
+          evidence: "production route, full-length source files, real persisted separated stems",
+          qualityLimit: "objective PCM checks do not establish musical quality or a listenable mashup",
+          separation: {
+            vocals: await readSeparationEvidence(realFixture.vocals),
+            bed: await readSeparationEvidence(realFixture.bed),
+          },
+          analysisReportPath: realFixture.analysisReportPath,
+          analysisReferenceTracks: analysisReference?.tracks?.filter((track) =>
+            [sha256(vocalsOriginal), sha256(bedOriginal)].includes(track.sourceChecksumSha256)) ?? [],
+          persistedSourceAnalyses: realSourceAnalyses,
+          sources: {
+            vocals: {
+              filename: vocalsFilename,
+              durationSeconds: realFixture.vocals.durationSeconds,
+              roundedDatabaseDurationSeconds: vocalsDurationSeconds,
+              checksumSha256: sha256(vocalsOriginal),
+            },
+            bed: {
+              filename: bedFilename,
+              durationSeconds: realFixture.bed.durationSeconds,
+              roundedDatabaseDurationSeconds: bedDurationSeconds,
+              checksumSha256: sha256(bedOriginal),
+            },
+          },
+          stems: persistedStemEvidence,
+          plan: planBody.plan,
+          bed: planBody.bed,
+          output: metrics,
+        }, null, 2)}\n`);
+      }
+    } else {
+      // Exact-frequency assertions apply only to the generated fixture, never
+      // to real songs whose spectral content is not known in advance.
+      const separatedVocalEnergy = energyAt(rendered!.samples, 1500, 0, 2);
+      const drumEnergy = energyAt(rendered!.samples, 110, 0, 2);
+      const bassEnergy = energyAt(rendered!.samples, 220, 0, 2);
+      const otherEnergy = energyAt(rendered!.samples, 330, 0, 2);
+      const donorVocalEnergy = energyAt(rendered!.samples, 1000, 2, 4);
+      assert.ok(drumEnergy > 0.001, `drum stem should reach the render (${drumEnergy})`);
+      assert.ok(bassEnergy > 0.001, `bass stem should reach the render (${bassEnergy})`);
+      assert.ok(otherEnergy > 0.001, `other stem should reach the render (${otherEnergy})`);
+      assert.ok(donorVocalEnergy > 0.001, `donor vocal should reach the render (${donorVocalEnergy})`);
+      assert.ok(separatedVocalEnergy < 0.001, `bed vocals must be excluded (${separatedVocalEnergy})`);
+    }
+    if (!realFixture) {
+      // An existing but undecodable stem must fail closed (422), never fall
+      // back to the original file and reintroduce the bed's vocal.
+      const garbagePath = path.join(fixtureRoot, "bed-bass-corrupt.wav");
+      await writeFile(garbagePath, Buffer.from("not a wav file"));
+      await storage.putFile("mashup-fixture/bed-bass.wav", garbagePath);
+      const invalidResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+      assert.equal(invalidResponse.status, 422, "an invalid existing stem must fail the render");
+      assert.equal(invalidResponse.headers.get("x-waveyard-bed-source"), null);
+      assert.match(((await invalidResponse.json()) as { error: string }).error, /bass stem/);
+      await storage.putFile("mashup-fixture/bed-bass.wav", path.join(fixtureRoot, "bed-bass.wav"));
+
+      // A failed run falls back to the source only with a visible warning.
+      await dbModule.db.update(schema.processingJobs)
+        .set({ status: "failed", stage: "failed" })
+        .where(eq(schema.processingJobs.id, bedJob.id));
+      const fallbackResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+      assert.equal(fallbackResponse.status, 200);
+      assert.equal(fallbackResponse.headers.get("x-waveyard-bed-source"), "original-fallback");
+      assert.match(decodeURIComponent(fallbackResponse.headers.get("x-waveyard-bed-warning") ?? ""), /original/i);
+      const fallbackBytes = new Uint8Array(await fallbackResponse.arrayBuffer());
+      const fallback = decodeWav16(fallbackBytes);
+      assert.ok(fallback);
+      const fallbackVocalEnergy = energyAt(fallback!.samples, 1500, 0, 2);
+      const separatedVocalEnergy = energyAt(rendered!.samples, 1500, 0, 2);
+      assert.ok(fallbackVocalEnergy > 0.005, `the original bed's vocal should be audible in the fallback (${fallbackVocalEnergy})`);
+      assert.ok(
+        fallbackVocalEnergy > separatedVocalEnergy * 2,
+        `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
+      );
+    }
 
     const saveRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
@@ -493,17 +806,19 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
         instrumentalSourceId: bedSource.id,
       }),
     });
-    const unavailableSave = await routeModule.POST(
-      saveRequest(),
-      { params: Promise.resolve({ id: project.id }) },
-    );
-    assert.equal(unavailableSave.status, 422, "an editable save refuses an unavailable separated bed");
-    assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, 0,
-      "a refused save does not leave a partial Studio session");
+    if (!realFixture) {
+      const unavailableSave = await routeModule.POST(
+        saveRequest(),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(unavailableSave.status, 422, "an editable save refuses an unavailable separated bed");
+      assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, 0,
+        "a refused save does not leave a partial Studio session");
 
-    await dbModule.db.update(schema.processingJobs)
-      .set({ status: "complete", stage: "complete", completedAt: new Date(), errorCode: null, errorMessage: null })
-      .where(eq(schema.processingJobs.id, bedJob.id));
+      await dbModule.db.update(schema.processingJobs)
+        .set({ status: "complete", stage: "complete", completedAt: new Date(), errorCode: null, errorMessage: null })
+        .where(eq(schema.processingJobs.id, bedJob.id));
+    }
     // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips.
     const saveResponse = await routeModule.POST(saveRequest(), { params: Promise.resolve({ id: project.id }) });
     assert.equal(saveResponse.status, 201, "save action must return 201 Created");
@@ -518,13 +833,32 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
       .from(schema.remixSessions)
       .where(eq(schema.remixSessions.id, saveBody.remix.id));
     assert.ok(savedSession, "saved remix session must exist in db");
-    assert.equal(savedSession.tempoBpm, 120);
+    if (!realFixture) assert.equal(savedSession.tempoBpm, 120);
+    else assert.equal(savedSession.tempoBpm, planBody.plan?.masterBpm,
+      "persisted Studio tempo must match the actual source analysis plan");
 
     const savedTracks = await dbModule.db
       .select()
       .from(schema.remixTracks)
       .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
     assert.ok(savedTracks.length >= 2, "remix must have vocal and bed tracks");
+    const savedTrackStemProvenance = await dbModule.db.select({
+      stemAssetId: schema.stemAssets.id,
+      sourceAssetId: schema.stemAssets.sourceAssetId,
+      stemType: schema.stemAssets.stemType,
+    }).from(schema.stemAssets).where(inArray(schema.stemAssets.id, savedTracks.map((track) => track.stemAssetId)));
+    if (realFixture) {
+      assert.deepEqual(
+        savedTrackStemProvenance.filter((stem) => stem.sourceAssetId === vocalsSource.id).map((stem) => stem.stemType).sort(),
+        ["vocals"],
+        "the saved vocal track must point to the distinct donor song's separated vocal stem",
+      );
+      assert.deepEqual(
+        savedTrackStemProvenance.filter((stem) => stem.sourceAssetId === bedSource.id).map((stem) => stem.stemType).sort(),
+        ["bass", "drums", "other"],
+        "the saved bed must contain the chosen instrumental's three non-vocal stems only",
+      );
+    }
 
     const savedClips = await dbModule.db
       .select()
@@ -532,28 +866,196 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
       .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
     assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
 
-    // Verify clips have correct time stretch / key sync flags
-    const vocalClips = savedClips.filter((c) => c.stemAssetId === vocalsStemWav && c.tempoSyncEnabled);
     for (const clip of savedClips) {
       assert.ok(Number.isFinite(clip.timelineStartMs) && clip.timelineStartMs >= 0);
       assert.ok(clip.durationMs > 0);
       assert.ok(clip.gain > 0 && clip.gain <= 1);
     }
 
-    // Simulate studio edit: update masterVolume & track pan via DB transaction, verify version increment
-    await dbModule.db.transaction(async (tx) => {
-      await tx
-        .update(schema.remixSessions)
-        .set({ masterVolume: 0.9, version: savedSession.version + 1 })
-        .where(eq(schema.remixSessions.id, savedSession.id));
-    });
+    if (realFixture) {
+      const remixRoute = await import("../../../../remixes/[id]/route");
+      const versionsRoute = await import("../../../../remixes/[id]/versions/route");
+      const restoreRoute = await import("../../../../remixes/[id]/versions/[versionId]/restore/route");
+      const remixParams = { params: Promise.resolve({ id: saveBody.remix.id }) };
+      const reload = await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        remixParams,
+      );
+      assert.equal(reload.status, 200, "a saved real-stem session must reopen through the production Studio API");
+      const reopened = await reload.json() as {
+        remix: typeof savedSession;
+        tracks: Array<Record<string, unknown> & { id: string; clips: Array<Record<string, unknown>> }>;
+        automation: unknown[];
+      };
+      assert.equal(reopened.remix.id, saveBody.remix.id);
+      assert.ok(reopened.tracks.length >= 2);
+      assert.ok(reopened.tracks.reduce((sum, track) => sum + track.clips.length, 0) >= 2);
 
-    const [updatedSession] = await dbModule.db
-      .select()
-      .from(schema.remixSessions)
-      .where(eq(schema.remixSessions.id, savedSession.id));
-    assert.equal(updatedSession.version, savedSession.version + 1);
-    assert.equal(updatedSession.masterVolume, 0.9);
+      const editInput = {
+        ...reopened.remix,
+        masterVolume: 0.85,
+        tracks: reopened.tracks,
+        automation: reopened.automation,
+        expectedVersion: reopened.remix.version,
+      };
+      const editResponse = await remixRoute.PUT(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(editInput),
+        }),
+        remixParams,
+      );
+      assert.equal(editResponse.status, 200, "the real-stem arrangement must accept a version-checked Studio edit");
+
+      const versionResponse = await versionsRoute.POST(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}/versions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Real-song acceptance edit" }),
+        }),
+        remixParams,
+      );
+      assert.equal(versionResponse.status, 201, "the edited real-stem arrangement must persist a named version");
+      const versionBody = await versionResponse.json() as { version: { id: string } };
+      assert.ok(versionBody.version.id);
+
+      const editedReload = await (await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        remixParams,
+      )).json() as { remix: typeof savedSession; tracks: Array<{ clips: unknown[] }> };
+      assert.equal(editedReload.remix.masterVolume, 0.85, "the Studio edit must survive a fresh API read");
+      assert.ok(editedReload.tracks.reduce((sum, track) => sum + track.clips.length, 0) >= 2,
+        "the saved real clips must survive reopening");
+
+      const divergentInput = {
+        ...editedReload.remix,
+        masterVolume: 0.35,
+        tracks: editedReload.tracks,
+        automation: reopened.automation,
+        expectedVersion: editedReload.remix.version,
+      };
+      const divergentSave = await remixRoute.PUT(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(divergentInput),
+        }),
+        remixParams,
+      );
+      assert.equal(divergentSave.status, 200);
+      const restoreResponse = await restoreRoute.POST(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}/versions/${versionBody.version.id}/restore`, {
+          method: "POST",
+        }),
+        { params: Promise.resolve({ id: saveBody.remix.id, versionId: versionBody.version.id }) },
+      );
+      assert.equal(restoreResponse.status, 200, "Studio must restore the saved real-song version");
+      const restored = await (await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        remixParams,
+      )).json() as { remix: typeof savedSession; tracks: Array<{ clips: unknown[] }> };
+      assert.equal(restored.remix.masterVolume, 0.85, "restore must recover the exact saved mixer level");
+      assert.ok(restored.tracks.reduce((sum, track) => sum + track.clips.length, 0) >= 2);
+
+      // Run the same local export worker that consumes versioned Studio state.
+      // This avoids reporting a queued job as a rendered file when no queue is
+      // present in the acceptance sandbox.
+      const [exportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: saveBody.remix.id,
+        remixVersionId: versionBody.version.id,
+        requestedById: (await dbModule.db.select().from(schema.remixSessions)
+          .where(eq(schema.remixSessions.id, saveBody.remix.id)))[0]!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `real-mashup-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(exportJob);
+      const exportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await exportWorker.handleExportJob({
+        exportJobId: exportJob.id,
+        projectId: project.id,
+        remixSessionId: saveBody.remix.id,
+        remixVersionId: versionBody.version.id,
+        format: "wav",
+      });
+      const [completedJob] = await dbModule.db.select().from(schema.exportJobs)
+        .where(eq(schema.exportJobs.id, exportJob.id));
+      assert.equal(completedJob.status, "complete", "the persisted Studio version must finish the actual WAV export worker");
+      const [exportAsset] = await dbModule.db.select().from(schema.exportAssets)
+        .where(eq(schema.exportAssets.exportJobId, exportJob.id));
+      assert.ok(exportAsset, "the worker must persist a verified export asset");
+      assert.equal(exportAsset.sampleRate, RATE);
+      assert.equal(exportAsset.channels, 2);
+      const exportedWavPath = process.env.WAVEYARD_MASHUP_REAL_STUDIO_EXPORT_PATH?.trim();
+      const outputPath = exportedWavPath ? realFixturePath(exportedWavPath) : path.join(fixtureRoot, "studio-export.wav");
+      await mkdir(path.dirname(outputPath), { recursive: true });
+      const exportMediaRoute = await import("../../../../exports/[id]/media/route");
+      const mediaResponse = await exportMediaRoute.GET(
+        new Request(`http://localhost/api/exports/${exportJob.id}/media`),
+        { params: Promise.resolve({ id: exportJob.id }) },
+      );
+      assert.equal(mediaResponse.status, 200, "the persisted Studio export must be downloadable through the production media endpoint");
+      assert.equal(mediaResponse.headers.get("content-type"), "audio/wav");
+      assert.equal(Number(mediaResponse.headers.get("content-length")), exportAsset.fileSizeBytes);
+      const exportedWavBytes = new Uint8Array(await mediaResponse.arrayBuffer());
+      assert.equal(exportedWavBytes.byteLength, exportAsset.fileSizeBytes);
+      assert.equal(sha256(exportedWavBytes), exportAsset.checksumSha256,
+        "the downloaded bytes must match the export worker's persisted checksum");
+      await writeFile(outputPath, exportedWavBytes);
+      const exportedWav = decodeWav16(exportedWavBytes);
+      assert.ok(exportedWav, "the persisted Studio export must decode as WAV");
+      assert.equal(exportedWav!.sampleRate, RATE);
+      assert.equal(exportedWav!.channels, 2);
+      assert.ok(Math.abs(exportedWav!.frames / RATE - bedDurationSeconds) < 1.1,
+        "the persisted Studio export must keep the complete bed duration");
+
+      const reportPath = process.env.WAVEYARD_MASHUP_REAL_REPORT_PATH?.trim();
+      if (reportPath) {
+        const resolvedReportPath = realFixturePath(reportPath);
+        const report = JSON.parse(await readFile(resolvedReportPath, "utf8")) as Record<string, unknown>;
+        report.studio = {
+          sessionId: saveBody.remix.id,
+          versionId: versionBody.version.id,
+          trackCount: restored.tracks.length,
+          clipCount: restored.tracks.reduce((sum, track) => sum + track.clips.length, 0),
+          trackStemProvenance: savedTrackStemProvenance,
+          masterVolumeAfterRestore: restored.remix.masterVolume,
+          export: {
+            jobId: exportJob.id,
+            status: completedJob.status,
+            filename: exportAsset.filename,
+            checksumSha256: exportAsset.checksumSha256,
+            fileSizeBytes: exportAsset.fileSizeBytes,
+            durationSeconds: exportedWav!.frames / RATE,
+            sampleRate: exportedWav!.sampleRate,
+            channels: exportedWav!.channels,
+            storageKey: exportAsset.storageKey,
+          },
+        };
+        await writeFile(resolvedReportPath, `${JSON.stringify(report, null, 2)}\n`);
+      }
+    } else {
+      // Existing fixture regression: persistence and version increments remain
+      // covered for generated tones without requiring a real listening file.
+      await dbModule.db.transaction(async (tx) => {
+        await tx
+          .update(schema.remixSessions)
+          .set({ masterVolume: 0.9, version: savedSession.version + 1 })
+          .where(eq(schema.remixSessions.id, savedSession.id));
+      });
+
+      const [updatedSession] = await dbModule.db
+        .select()
+        .from(schema.remixSessions)
+        .where(eq(schema.remixSessions.id, savedSession.id));
+      assert.equal(updatedSession.version, savedSession.version + 1);
+      assert.equal(updatedSession.masterVolume, 0.9);
+    }
   } finally {
     try {
       await dbModule?.pool.end();
@@ -566,4 +1068,5 @@ test("Waveyard API renders generated PCM and persists Arena handoffs atomically"
     }
     await rm(fixtureRoot, { recursive: true, force: true }).catch(() => undefined);
   }
-});
+  },
+);

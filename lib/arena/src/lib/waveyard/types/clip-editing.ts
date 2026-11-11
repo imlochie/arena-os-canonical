@@ -2,6 +2,8 @@ import type { MusicalClipInput } from "./clip-construction";
 
 export const MAX_CLIPS_PER_TRACK = 256;
 export const MAX_TIMELINE_MS = 86_400_000;
+/** Source/stem duration columns are stored as nearest whole seconds. */
+export const SOURCE_DURATION_ROUNDING_TOLERANCE_MS = 500;
 
 export function sourceConsumedMs(clip: Pick<MusicalClipInput, "durationMs">, tempoRatio = 1) {
   if (!Number.isFinite(tempoRatio) || tempoRatio <= 0) return null;
@@ -12,10 +14,13 @@ export function clipWindowIsValid(
   clip: Pick<MusicalClipInput, "timelineStartMs" | "durationMs" | "sourceOffsetMs">,
   sourceDurationMs: number,
   tempoRatio = 1,
+  sourceDurationToleranceMs = 0,
 ) {
   const consumed = sourceConsumedMs(clip, tempoRatio);
   return Boolean(
     consumed
+    && Number.isFinite(sourceDurationToleranceMs)
+    && sourceDurationToleranceMs >= 0
     && Number.isSafeInteger(clip.timelineStartMs)
     && Number.isSafeInteger(clip.durationMs)
     && Number.isSafeInteger(clip.sourceOffsetMs)
@@ -23,7 +28,7 @@ export function clipWindowIsValid(
     && clip.timelineStartMs + clip.durationMs <= MAX_TIMELINE_MS
     && clip.durationMs > 0
     && clip.sourceOffsetMs >= 0
-    && clip.sourceOffsetMs + consumed <= sourceDurationMs,
+    && clip.sourceOffsetMs + consumed <= sourceDurationMs + sourceDurationToleranceMs,
   );
 }
 

@@ -3,6 +3,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
 import { eq, inArray } from "drizzle-orm";
 import {
   MAX_CLIPS_PER_TRACK,
+  SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
   clipWindowIsValid,
   duplicateEditableClips,
   hasClipCapacity,
@@ -128,7 +129,12 @@ export async function POST(
       const ratio = clip.tempoSyncEnabled
         ? tempoRatioForBpm(remix.tempoBpm, analysis?.status === "complete" && analysis.projectId === remix.projectId ? analysis.bpm ?? Number.NaN : Number.NaN)
         : 1;
-      if (!ratio || !clipWindowIsValid(editable(clip), Math.round(stem.durationSeconds * 1000), ratio))
+      if (!ratio || !clipWindowIsValid(
+        editable(clip),
+        Math.round(stem.durationSeconds * 1000),
+        ratio,
+        SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
+      ))
         return Response.json({ error: "A selected clip has an invalid immutable source window." }, { status: 422 });
     }
     const timing: MusicalTiming = {

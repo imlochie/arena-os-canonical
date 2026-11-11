@@ -1,6 +1,7 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
 import { nearestBeat } from "@workspace/arena/lib/waveyard/types";
+import { SOURCE_DURATION_ROUNDING_TOLERANCE_MS } from "@workspace/arena/lib/waveyard/types/clip-editing";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { AutomaticRemixCompatibilityReport } from "@workspace/arena/lib/waveyard/types/automatic-remix";
 import { db } from "@workspace/db";
@@ -298,7 +299,7 @@ export async function PUT(
         track.clips.some(
           (clip) =>
             !clip.tempoSyncEnabled && clip.sourceOffsetMs + clip.durationMs >
-            durationByAssetId.get(clip.stemAssetId)!,
+            durationByAssetId.get(clip.stemAssetId)! + SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
         ),
       )
     )

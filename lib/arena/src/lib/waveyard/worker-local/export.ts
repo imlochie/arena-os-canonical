@@ -34,6 +34,7 @@ import { drumAnalysisProvenanceReason, harmonyAnalysisProvenanceReason, vocalAna
 import { currentMidiSourceTempo, resolveMidiTempoBpm } from "@workspace/arena/lib/waveyard/midi-analysis-readiness";
 import { encodeMidiFile, parseStandardMidiFile } from "../midi-file";
 import { automatedTrackBusFilters, atempoFilterChain, ffmpegFadeFilters, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
+import { SOURCE_DURATION_ROUNDING_TOLERANCE_MS } from "../types/clip-editing";
 import { isClipFadeShape, type ClipFadeShape } from "../fades";
 
 type SnapshotClip = {
@@ -409,7 +410,13 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
           );
         keyShiftByClip.set(index, resolution.semitones);
       }
-      if (!sourceDurationFits(clip.sourceOffsetMs, clip.durationMs, clip.tempoSyncEnabled ? tempoByClip.get(index)!.ratio : 1, stem.durationSeconds * 1000))
+      if (!sourceDurationFits(
+        clip.sourceOffsetMs,
+        clip.durationMs,
+        clip.tempoSyncEnabled ? tempoByClip.get(index)!.ratio : 1,
+        stem.durationSeconds * 1000,
+        SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
+      ))
         throw new ExportFailure(
           "invalid_snapshot",
           clip.tempoSyncEnabled ? "A tempo-synced clip requires more source audio than its stem contains." : "A persisted remix clip extends beyond its source stem.",

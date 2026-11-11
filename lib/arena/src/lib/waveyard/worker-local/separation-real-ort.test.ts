@@ -1307,13 +1307,19 @@ if (changingMemoryInputsJson) {
 }
 
 // Opt-in real-audio measurement. Arena decodes supported local audio formats
-// into 44.1 kHz stereo PCM, then bounds processing to a 2–20 second excerpt.
+// into 44.1 kHz stereo PCM and accepts a bounded 2–900 second region. The
+// default remains a short excerpt; full-song CPU runs require explicit opt-in.
 const realAudioInputPath =
   process.env.WAVEYARD_REAL_AUDIO_INPUT?.trim() ||
   process.env.WAVEYARD_REAL_AUDIO_WAV?.trim();
 const referenceManifestPath = process.env.WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST?.trim();
 if (realAudioInputPath) {
-  test("the pinned four-model recipe separates a real audio excerpt", { timeout: 600_000 }, async (t) => {
+  const timeoutMs = Number(process.env.WAVEYARD_REAL_AUDIO_TIMEOUT_MS?.trim() || "600000");
+  assert.ok(
+    Number.isSafeInteger(timeoutMs) && timeoutMs >= 600_000 && timeoutMs <= 7_200_000,
+    "WAVEYARD_REAL_AUDIO_TIMEOUT_MS must be an integer from 600000 to 7200000",
+  );
+  test("the pinned four-model recipe separates real audio", { timeout: timeoutMs }, async (t) => {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const workspaceRoot = resolve(arenaRoot, "../..");
     const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
@@ -1342,8 +1348,8 @@ if (realAudioInputPath) {
     const maxSecondsText = process.env.WAVEYARD_REAL_AUDIO_MAX_SECONDS?.trim() || "20";
     const maxSeconds = Number(maxSecondsText);
     assert.ok(
-      Number.isInteger(maxSeconds) && maxSeconds >= 2 && maxSeconds <= 20,
-      "WAVEYARD_REAL_AUDIO_MAX_SECONDS must be an integer from 2 to 20",
+      Number.isInteger(maxSeconds) && maxSeconds >= 2 && maxSeconds <= 900,
+      "WAVEYARD_REAL_AUDIO_MAX_SECONDS must be an integer from 2 to 900",
     );
     const startSecondsText = process.env.WAVEYARD_REAL_AUDIO_START_SECONDS?.trim() || "0";
     const startSeconds = Number(startSecondsText);
@@ -1435,7 +1441,11 @@ if (realAudioInputPath) {
       let retry: Awaited<ReturnType<typeof retrySeparationJob>> | undefined;
       try {
         retry = await retrySeparationJob(f.database, f.job.id);
-        assert.equal(await harness.broker.drain(570_000), true, "the real-audio recipe drains through the production worker");
+        assert.equal(
+          await harness.broker.drain(timeoutMs - 30_000),
+          true,
+          "the real-audio recipe drains through the production worker within its configured limit",
+        );
       } finally {
         clearInterval(playbackTimer);
         stopSamplingProgress = true;

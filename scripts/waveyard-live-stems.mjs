@@ -240,8 +240,11 @@ if (mashupEvaluationOnly) {
       transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
       analysis: {
         bpm: item.analysis?.bpm ?? null,
+        bpmConfidence: item.analysis?.bpmConfidence ?? null,
         musicalKey: item.analysis?.musicalKey ?? null,
+        keyConfidence: item.analysis?.keyConfidence ?? null,
         beatGridMs: item.analysis?.beatGridMs ?? null,
+        beatConfidence: item.analysis?.beatConfidence ?? null,
       },
     };
   });
@@ -2111,6 +2114,17 @@ try {
         || !types.includes(combination.stemType)) {
         throw new Error(`Invalid mashup combination: ${JSON.stringify(combination)}`);
       }
+      const lead = trackById.get(combination.leadTrackId);
+      const donor = trackById.get(combination.donorTrackId);
+      if (!lead || !donor) throw new Error(`Unknown lead or donor track in ${combination.id}`);
+      const leadStem = assets.get(`${lead.browserId}-${combination.stemType}`);
+      const donorStem = assets.get(`${donor.browserId}-${combination.stemType}`);
+      if (!leadStem || !donorStem) throw new Error(`Missing separated audio for ${combination.id}.${combination.stemType}`);
+      assert.notEqual(
+        createHash("sha256").update(leadStem).digest("hex"),
+        createHash("sha256").update(donorStem).digest("hex"),
+        `${combination.id} must replace a genuinely different source stem`,
+      );
       const baseline = await capture(combination, "baseline");
       const swapped = await capture(combination, "swap");
       captures.push({ id: combination.id, leadTrackId: combination.leadTrackId, donorTrackId: combination.donorTrackId,

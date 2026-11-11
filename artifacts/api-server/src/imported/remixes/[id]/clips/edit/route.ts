@@ -11,6 +11,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import {
   MAX_CLIPS_PER_TRACK,
+  SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
   clipWindowIsValid,
   moveClipTimeline,
   nearestBeat,
@@ -107,7 +108,7 @@ export async function POST(
       .select()
       .from(remixClips)
       .where(eq(remixClips.remixTrackId, track.id));
-    if (!clipWindowIsValid(original, sourceDurationMs, tempoRatio))
+    if (!clipWindowIsValid(original, sourceDurationMs, tempoRatio, SOURCE_DURATION_ROUNDING_TOLERANCE_MS))
       return Response.json({ error: "The existing clip has an invalid source window." }, { status: 422 });
     const timing: MusicalTiming = {
       tempoBpm: remix.tempoBpm,
@@ -147,7 +148,7 @@ export async function POST(
     if (operation === "duplicate") {
       const target = asFinite(body.timelineStartMs);
       const duplicate = moveClipTimeline(original, target === null ? original.timelineStartMs + original.durationMs : snapTarget(target));
-      if (!duplicate || !clipWindowIsValid(duplicate, sourceDurationMs, tempoRatio))
+      if (!duplicate || !clipWindowIsValid(duplicate, sourceDurationMs, tempoRatio, SOURCE_DURATION_ROUNDING_TOLERANCE_MS))
         return Response.json({ error: "Duplicate placement is outside the arrangement timeline." }, { status: 422 });
       const current = await db.select({ id: remixClips.id }).from(remixClips).where(eq(remixClips.remixTrackId, track.id));
       if (current.length >= MAX_CLIPS_PER_TRACK)
@@ -189,7 +190,7 @@ export async function POST(
       });
       return Response.json({ operation, replacedClipId: clip.id, clips: created, version: remix.version + 1 });
     }
-    if (!next || !clipWindowIsValid(next, sourceDurationMs, tempoRatio))
+      if (!next || !clipWindowIsValid(next, sourceDurationMs, tempoRatio, SOURCE_DURATION_ROUNDING_TOLERANCE_MS))
       return Response.json({ error: "This edit falls outside immutable source or timeline bounds." }, { status: 422 });
     const crossfadeMessage = crossfadeError({
       clips: trackClips.map((candidate) =>

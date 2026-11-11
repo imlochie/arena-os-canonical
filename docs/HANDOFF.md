@@ -1,5 +1,61 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-12, full real-stem workflow
+
+* **Real source processing:** two owner-provided full-length recordings
+  (September, 215.14s; Another One Bites the Dust, 222.67s) were separated
+  with the pinned four-model ONNX CPU recipe. All eight output stems were
+  readable stereo 44.1 kHz PCM, full-length, finite, in PCM range, non-silent,
+  and above the configured live-swap energy floor. The second separation run
+  exceeded the separate playback scheduling limit by 18ms (1,018ms observed
+  against a 1,000ms limit); its audio outputs are valid, but that responsiveness
+  check is a failure and must not be reported as a full pass.
+* **Production mashup and Studio persistence:** the acceptance test ran the
+  production analysis/render/save routes against real separated PCM and an
+  ephemeral PostgreSQL database. It saved and reopened a four-track session
+  (donor vocal plus three instrumental stems), made a version-checked Studio
+  edit, restored a saved version, ran the export worker, and downloaded the
+  export from the production media endpoint with a matching SHA-256. The
+  exported WAV is 215 seconds, stereo 44.1 kHz PCM; peak 0.438 and zero clipped
+  frames. Retained report:
+  `generated-artifacts/waveyard-real-world-acceptance/full-song-mashup-acceptance.json`.
+* **Honest musical boundary:** analysis measured the September bed at 126.048
+  BPM with 0.711 confidence and key A major at 0.406; the vocal source was
+  measured at 109.957 BPM with 0.435 confidence. Because the vocal tempo and
+  key evidence are below trust thresholds, the plan withheld automatic
+  stretching and pitch shifting. It lays the full vocal over the separated
+  September bed, starting after one bar, and fades at the bed end. This proves
+  a complete technical mashup workflow—not structural understanding,
+  intelligent compatibility, or that the result sounds good.
+* **Real browser live swaps:** Linux Chromium 155 played actual full-length
+  separated stems in `SessionExperience`. Vocal and drum donor swaps were
+  audible in the captured browser output; unaffected lead stems kept advancing,
+  and restoring the original layers succeeded. The session API in this test is
+  fixture-backed, so this is playback/control evidence, not project
+  persistence. Cold click-to-audible measured 2.118s for vocals and 1.357s for
+  drums while fetching/decoding 39.3 MB WAV stems. This is still too slow to
+  call an instant swap; warm-selection latency was not separately measured.
+  Retained browser report and captures are under
+  `generated-artifacts/waveyard-real-world-acceptance/full-song-live-captures/`.
+* **Persistence validation fix found by this run:** source and stem duration
+  metadata is stored as nearest whole seconds, while real arrangement clips use
+  frame-accurate millisecond lengths. A valid 215,137ms clip was rejected
+  against 215,000ms metadata during Studio edit/export. The save, clip-edit,
+  batch-edit, restore, and export validators now allow only the 500ms maximum
+  error introduced by nearest-second rounding; a regression test rejects
+  overruns beyond that boundary.
+* **Verification:** real-song production route acceptance 1/1; synthetic route
+  fallback 1/1; clip editing and render-helper tests 16/16; API-server
+  typecheck, browser script syntax check, and `git diff --check` passed. The
+  real browser live-stem script passed for both stem types. The full separation
+  evidence is objective PCM validation; listening quality remains unevaluated.
+* **Artifacts:** route render and Studio WAV export are available locally at
+  `generated-artifacts/waveyard-real-world-acceptance/full-song-route-render.wav`
+  and `generated-artifacts/waveyard-real-world-acceptance/full-song-studio-export.wav`.
+  Generated audio and reports are ignored build artifacts; do not add them to
+  Git. Windows, iOS/physical-device performance, and human listening are not
+  verified.
+
 ## Current verification update — 2026-11-11, real-audio acceptance boundary
 
 * **Starting revision and scope:** this acceptance pass fast-forwarded the
@@ -103,7 +159,7 @@
 
 Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
-Last updated: 2026-11-10.
+Last updated: 2026-11-12.
 
 ## Current verification update — 2026-11-10, fallback reachability fix
 
