@@ -348,6 +348,125 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       fileSizeBytes: vocalsStemWav.length,
     });
 
+    // A later completed run supersedes the first one. Newer queued/failed/
+    // cancelled attempts must not hide it or contribute audio.
+    const latestCompletedAt = new Date(Date.now() + 10_000);
+    const [latestVocalsJob] = await dbModule.db.insert(schema.processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      type: "separation",
+      status: "complete",
+      stage: "complete",
+      attempts: 1,
+      idempotencyKey: `mashup-vocals-latest-${randomUUID()}`,
+      model: "test",
+      requestedDevice: "cpu",
+      createdAt: latestCompletedAt,
+      updatedAt: latestCompletedAt,
+      completedAt: latestCompletedAt,
+    }).returning({ id: schema.processingJobs.id });
+    assert.ok(latestVocalsJob);
+
+    const latestVocalStemWav = encodeWav16(tone([750], VOCAL_SECONDS, 0.2), RATE);
+    const latestVocalStemPath = path.join(fixtureRoot, "latest-vocals-stem.wav");
+    await writeFile(latestVocalStemPath, latestVocalStemWav);
+    await storage.putFile("mashup-fixture/latest-vocals-stem.wav", latestVocalStemPath);
+    const [latestVocalStem] = await dbModule.db.insert(schema.stemAssets).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      separationJobId: latestVocalsJob.id,
+      stemType: "vocals",
+      engine: "demucs",
+      model: "test",
+      modelVersion: "test",
+      storageKey: "mashup-fixture/latest-vocals-stem.wav",
+      checksumSha256: sha256(latestVocalStemWav),
+      durationSeconds: VOCAL_SECONDS,
+      sampleRate: RATE,
+      channels: 2,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: latestVocalStemWav.length,
+      createdAt: latestCompletedAt,
+    }).returning({ id: schema.stemAssets.id });
+    assert.ok(latestVocalStem);
+
+    const donorStemIds: string[] = [];
+    const donorFixtures: Array<[string, number]> = [["drums", 510], ["bass", 610], ["other", 710]];
+    for (const [stemType, frequency] of donorFixtures) {
+      const wav = encodeWav16(tone([frequency], VOCAL_SECONDS, 0.1), RATE);
+      const storageKey = `mashup-fixture/vocal-donor-${stemType}.wav`;
+      const filePath = path.join(fixtureRoot, `vocal-donor-${stemType}.wav`);
+      await writeFile(filePath, wav);
+      await storage.putFile(storageKey, filePath);
+      const [stem] = await dbModule.db.insert(schema.stemAssets).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        separationJobId: latestVocalsJob.id,
+        stemType,
+        engine: "demucs",
+        model: "test",
+        modelVersion: "test",
+        storageKey,
+        checksumSha256: sha256(wav),
+        durationSeconds: VOCAL_SECONDS,
+        sampleRate: RATE,
+        channels: 2,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: wav.length,
+        createdAt: latestCompletedAt,
+      }).returning({ id: schema.stemAssets.id });
+      assert.ok(stem);
+      donorStemIds.push(stem.id);
+    }
+
+    const laterAttempts: Array<{ status: string; frequency: number }> = [
+      { status: "queued", frequency: 900 },
+      { status: "failed", frequency: 1_100 },
+      { status: "cancelled", frequency: 1_300 },
+    ];
+    for (const [index, attempt] of laterAttempts.entries()) {
+      const createdAt = new Date(Date.now() + 20_000 + index * 1_000);
+      const [job] = await dbModule.db.insert(schema.processingJobs).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        type: "separation",
+        status: attempt.status,
+        stage: attempt.status,
+        attempts: 1,
+        idempotencyKey: `mashup-vocals-${attempt.status}-${randomUUID()}`,
+        model: "test",
+        requestedDevice: "cpu",
+        createdAt,
+        updatedAt: createdAt,
+      }).returning({ id: schema.processingJobs.id });
+      assert.ok(job);
+      const wav = encodeWav16(tone([attempt.frequency], VOCAL_SECONDS, 0.2), RATE);
+      const storageKey = `mashup-fixture/${attempt.status}-vocals.wav`;
+      const filePath = path.join(fixtureRoot, `${attempt.status}-vocals.wav`);
+      await writeFile(filePath, wav);
+      await storage.putFile(storageKey, filePath);
+      await dbModule.db.insert(schema.stemAssets).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        separationJobId: job.id,
+        stemType: "vocals",
+        engine: "demucs",
+        model: "test",
+        modelVersion: "test",
+        storageKey,
+        checksumSha256: sha256(wav),
+        durationSeconds: VOCAL_SECONDS,
+        sampleRate: RATE,
+        channels: 2,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: wav.length,
+        createdAt,
+      });
+    }
+
     const bedStems: Array<[string, number]> = [["drums", 110], ["bass", 220], ["other", 330], ["vocals", 1500]];
     for (const [stemType, frequency] of bedStems) {
       const wav = encodeWav16(
@@ -449,7 +568,85 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const drumEnergy = energyAt(rendered!.samples, 110, 0, 2);
     const bassEnergy = energyAt(rendered!.samples, 220, 0, 2);
     const otherEnergy = energyAt(rendered!.samples, 330, 0, 2);
-    const donorVocalEnergy = energyAt(rendered!.samples, 1000, 2, 4);
+    assert.ok(drumEnergy > 0.001 && bassEnergy > 0.001 && otherEnergy > 0.001, "the separated bed must include its instrumental stems");
+    assert.ok(separatedVocalEnergy < 0.0001, "the separated bed must exclude the bed vocal stem");
+    assert.ok(energyAt(rendered!.samples, 750, 100, 1_900) > 0.001, "render must choose the newest completed vocal stem");
+    assert.ok(energyAt(rendered!.samples, 1_100, 100, 1_900) < 0.0001, "a newer failed vocal stem must not replace the completed stem");
+    assert.ok(energyAt(rendered!.samples, 510, 100, 1_900) > 0.001, "render must include aligned complementary donor stems");
+
+    // The persisted path must reject bad donor duration just as rendering does.
+    const donorDrumsPath = path.join(fixtureRoot, "vocal-donor-drums.wav");
+    const misalignedDonor = encodeWav16(tone([510], 1, 0.1), RATE);
+    const misalignedDonorPath = path.join(fixtureRoot, "vocal-donor-drums-short.wav");
+    await writeFile(misalignedDonorPath, misalignedDonor);
+    await storage.putFile("mashup-fixture/vocal-donor-drums.wav", misalignedDonorPath);
+    const misalignedRender = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+    assert.equal(misalignedRender.status, 422, "render must reject donor PCM that is not aligned with the selected vocal");
+    assert.match(((await misalignedRender.json()) as { error: string }).error, /different PCM duration/i);
+
+    const saveRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "save",
+        vocalsSourceId: vocalsSource.id,
+        instrumentalSourceId: bedSource.id,
+      }),
+    });
+    const misalignedSave = await routeModule.POST(saveRequest(), { params: Promise.resolve({ id: project.id }) });
+    assert.equal(misalignedSave.status, 422, "save must reject the same invalid donor PCM");
+    assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, 0, "invalid donor audio must not create a partial remix");
+
+    const alignedDonor = encodeWav16(tone([510], VOCAL_SECONDS, 0.1), RATE);
+    const alignedDonorPath = path.join(fixtureRoot, "vocal-donor-drums-aligned.wav");
+    await writeFile(alignedDonorPath, alignedDonor);
+    await storage.putFile("mashup-fixture/vocal-donor-drums.wav", alignedDonorPath);
+
+    // Save while the completed instrumental run is still present.
+    const saveResponse = await routeModule.POST(saveRequest(), { params: Promise.resolve({ id: project.id }) });
+    assert.equal(saveResponse.status, 201, "save action must return 201 Created");
+    const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
+    assert.equal(saveBody.ok, true);
+    assert.ok(saveBody.remix.id);
+    assert.ok(saveBody.version.id);
+
+    const [savedSession] = await dbModule.db
+      .select()
+      .from(schema.remixSessions)
+      .where(eq(schema.remixSessions.id, saveBody.remix.id));
+    assert.ok(savedSession, "saved remix session must exist in db");
+    assert.equal(savedSession.tempoBpm, 120);
+
+    const savedTracks = await dbModule.db
+      .select()
+      .from(schema.remixTracks)
+      .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
+    const savedStemIds = new Set(savedTracks.map((track) => track.stemAssetId));
+    assert.ok(savedStemIds.has(latestVocalStem.id), "save must use the newest completed vocal stem");
+    assert.ok(!savedStemIds.has((await dbModule.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets)
+      .where(eq(schema.stemAssets.storageKey, "mashup-fixture/queued-vocals.wav")))[0]!.id), "queued stems must not be saved");
+    for (const donorStemId of donorStemIds) {
+      assert.ok(savedStemIds.has(donorStemId), `saved Studio remix must keep donor stem ${donorStemId}`);
+    }
+
+    const savedClips = await dbModule.db
+      .select()
+      .from(schema.remixClips)
+      .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((track) => track.id)));
+    for (const donorStemId of donorStemIds) {
+      const donorTrack = savedTracks.find((track) => track.stemAssetId === donorStemId);
+      assert.ok(donorTrack, "each complementary stem must have a persisted track");
+      const donorClip = savedClips.find((clip) => clip.remixTrackId === donorTrack.id && clip.stemAssetId === donorStemId);
+      assert.ok(donorClip, "each complementary donor track must have a persisted clip");
+      assert.equal(donorClip.timelineStartMs, 0);
+      assert.equal(donorClip.durationMs, VOCAL_SECONDS * 1000);
+      assert.equal(donorClip.tempoSyncEnabled, false, "a 1:1 tempo plan must reopen without an extra transform");
+      assert.equal(donorClip.keySyncEnabled, false, "instrumental donor stems must not inherit vocal key shifts");
+    }
+
+    const vocalClips = savedClips.filter((clip) => clip.stemAssetId === latestVocalStem.id);
+    assert.ok(vocalClips.length > 0, "the saved vocal track must reference the selected completed stem");
+
     // An existing but undecodable stem must fail closed (422), never fall back
     // to the original file, which would silently reintroduce the bed's vocal.
     const garbagePath = path.join(fixtureRoot, "bed-bass-corrupt.wav");
@@ -477,51 +674,6 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       fallbackVocalEnergy > separatedVocalEnergy * 2,
       `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
     );
-
-    // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips
-    const saveRequest = new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        action: "save",
-        vocalsSourceId: vocalsSource.id,
-        instrumentalSourceId: bedSource.id,
-      }),
-    });
-    const saveResponse = await routeModule.POST(saveRequest, { params: Promise.resolve({ id: project.id }) });
-    assert.equal(saveResponse.status, 201, "save action must return 201 Created");
-    const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
-    assert.equal(saveBody.ok, true);
-    assert.ok(saveBody.remix.id);
-    assert.ok(saveBody.version.id);
-
-    // Verify database state: fetch saved remix session, tracks, and clips
-    const [savedSession] = await dbModule.db
-      .select()
-      .from(schema.remixSessions)
-      .where(eq(schema.remixSessions.id, saveBody.remix.id));
-    assert.ok(savedSession, "saved remix session must exist in db");
-    assert.equal(savedSession.tempoBpm, 120);
-
-    const savedTracks = await dbModule.db
-      .select()
-      .from(schema.remixTracks)
-      .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
-    assert.ok(savedTracks.length >= 2, "remix must have vocal and bed tracks");
-
-    const savedClips = await dbModule.db
-      .select()
-      .from(schema.remixClips)
-      .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
-    assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
-
-    // Verify clips have correct time stretch / key sync flags
-    const vocalClips = savedClips.filter((c) => c.stemAssetId === vocalsStemWav && c.tempoSyncEnabled);
-    for (const clip of savedClips) {
-      assert.ok(Number.isFinite(clip.timelineStartMs) && clip.timelineStartMs >= 0);
-      assert.ok(clip.durationMs > 0);
-      assert.ok(clip.gain > 0 && clip.gain <= 1);
-    }
 
     // Simulate studio edit: update masterVolume & track pan via DB transaction, verify version increment
     await dbModule.db.transaction(async (tx) => {
