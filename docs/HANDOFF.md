@@ -1,12 +1,14 @@
 # Arena handoff — read this first
 
-## Current verification update — 2026-11-11, mashup route acceptance discovery
+## Current verification update — 2026-11-11, mashup render and persisted-route assertions
 
-* **Hardening:** Added `scripts/waveyard-mashup-route-acceptance.test.mjs` as a path-safe Node test entry point for the production mashup route acceptance. Passing the literal `[id]` route path directly to `tsx --test` silently discovers zero tests; the wrapper imports that exact route test so its database-backed test is registered.
-* **Persisted evidence:** The PGlite save/reopen and analysis-selection tests passed 2/2. The production route acceptance passed 1/1 against temporary migrated PostgreSQL, verifying a real API save, persisted remix rows and clips, pending-separation retry provenance, and separated-bed output.
-* **Verification:** `pnpm --filter @workspace/scripts exec tsx --test $PWD/scripts/waveyard-mashup-route-acceptance.test.mjs` passed 1/1. The direct-path zero-test behavior was confirmed and is no longer the documented invocation.
-* **Files changed:** The path-safe test entry point and this handoff.
-* **Remaining limitation:** These generated-tone route fixtures establish route and persistence behavior, not source-separation quality or subjective mashup listenability.
+* **Hardening:** Added `scripts/waveyard-mashup-route-acceptance.test.mjs` as a path-safe Node test entry point for the production mashup route acceptance. Passing the literal `[id]` route path directly to `tsx --test` silently discovers zero tests; the wrapper imports that exact route test so its database-backed test is registered. Corrected the route test's tone-energy helper to accept seconds, matching its call sites; its previous millisecond conversion made the audio measurements inspect only the first two milliseconds and produced a false failure.
+* **Render evidence:** The production route test now checks the planned vocal placement, successful separated-vocal use, each expected instrumental-bed component, exclusion of the bed's vocal stem, no lead vocal before its arranged entry, and lead-vocal energy above 80% of the measured source through the arranged passage.
+* **Persisted evidence:** The PGlite save/reopen and analysis-selection tests passed 2/2. The production route acceptance passed 1/1 against temporary migrated PostgreSQL, verifying real API rendering and save behavior, persisted remix rows and clips, pending-separation retry provenance, malformed-stem rejection, and separated-bed output.
+* **Route documentation:** Corrected the route header to distinguish read-only plan/render requests from the explicit save action, which persists remix records without modifying source tracks or stems.
+* **Verification:** `pnpm --filter @workspace/scripts exec tsx --test "$PWD/scripts/waveyard-mashup-route-acceptance.test.mjs"` passed 1/1; `pnpm --filter @workspace/scripts exec tsx --test "$PWD/lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts"` passed 2/2; `pnpm --filter @workspace/scripts exec tsx --test "$PWD/lib/arena/src/lib/waveyard/studio/mashup.test.ts"` passed 15/15; `pnpm --filter @workspace/api-server run typecheck` and `git diff --check` passed. The direct-path zero-test behavior was confirmed and is no longer the documented invocation.
+* **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, its route test, `scripts/waveyard-mashup-route-acceptance.test.mjs`, and this handoff.
+* **Remaining limitation:** These generated-tone fixtures establish route, rendered-component, and persistence behavior; they do not establish source-separation quality or subjective mashup listenability with real music.
 
 ## Current verification update — 2026-11-11, mobile timeline touch-scroll validation
 

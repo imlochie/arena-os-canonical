@@ -11,8 +11,9 @@
  *     PCM WAV (vocals stretched/pitched over the instrumental bed, ducked,
  *     crossfaded). extend: the source with a section looped to lengthen it.
  *
- * Nothing is persisted and no source is touched — the plan is a proposal,
- * the render is stateless. The user's own arrangement stays theirs.
+ * Plan and render are read-only; the explicit save action persists the
+ * arrangement into Waveyard remix tables. Source tracks and stems are never
+ * modified by these actions.
  */
 
 

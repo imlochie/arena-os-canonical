@@ -93,9 +93,9 @@ function mixTones(parts: Array<[number, number]>, seconds: number): Float32Array
   return pcm;
 }
 
-function energyAt(pcm: Float32Array, frequency: number, startMs: number, endMs: number): number {
-  const start = Math.floor((startMs / 1000) * RATE);
-  const end = Math.floor((endMs / 1000) * RATE);
+function energyAt(pcm: Float32Array, frequency: number, startSeconds: number, endSeconds: number): number {
+  const start = Math.floor(startSeconds * RATE);
+  const end = Math.floor(endSeconds * RATE);
   let real = 0;
   let imaginary = 0;
   let count = 0;
@@ -458,15 +458,27 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       { params: Promise.resolve({ id: project.id }) },
     );
     assert.equal(planResponse.status, 200);
-    const planBody = await planResponse.json() as { bed?: { source: string; warning: string } };
+    const planBody = await planResponse.json() as {
+      bed?: { source: string; warning: string };
+      plan?: { durationMs?: number; segments?: Array<{ mashupStartMs: number; mashupEndMs: number; vocalsFromMs: number; vocalsToMs: number }> };
+    };
     assert.equal(planBody.bed?.source, "separated", "the plan must report the separated bed");
     assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
+    assert.equal(planBody.plan?.durationMs, BED_SECONDS * 1000);
+    assert.deepEqual(planBody.plan?.segments?.map((segment) => [
+      segment.mashupStartMs,
+      segment.mashupEndMs,
+      segment.vocalsFromMs,
+      segment.vocalsToMs,
+    ]), [[2_000, 4_000, 0, 2_000]], "the voice must be arranged only in the planned second half");
 
     // Actual production route render.
     const renderResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
     assert.equal(renderResponse.status, 200, "the render route must succeed");
     assert.match(renderResponse.headers.get("content-type") ?? "", /audio\/wav/);
     assert.equal(renderResponse.headers.get("x-waveyard-bed-source"), "separated", "the route must use the synthesized bed");
+    assert.equal(renderResponse.headers.get("x-waveyard-warning"), null,
+      "a valid separated vocal stem must not silently fall back to the original source");
     const bedStemsHeader = (renderResponse.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort();
     assert.deepEqual(bedStemsHeader, ["bass", "drums", "other"], "the bed must be drums + bass + other, not vocals");
     const bedWarning = renderResponse.headers.get("x-waveyard-bed-warning");
@@ -479,12 +491,25 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.equal(rendered!.sampleRate, RATE);
     assert.equal(rendered!.channels, 2);
 
-    // The bed's vocal stem (880 Hz) must not be in the rendered bed.
+    // Verify the separated bed contributes every intended stem and excludes
+    // the bed's 1500 Hz vocal stem while the planned lead-vocal passage is
+    // distinguishable from leakage and PCM quantization.
     const separatedVocalEnergy = energyAt(rendered!.samples, 1500, 0, 2);
     const drumEnergy = energyAt(rendered!.samples, 110, 0, 2);
     const bassEnergy = energyAt(rendered!.samples, 220, 0, 2);
     const otherEnergy = energyAt(rendered!.samples, 330, 0, 2);
+    const earlyVocalEnergy = energyAt(rendered!.samples, 1000, 0, 2);
     const donorVocalEnergy = energyAt(rendered!.samples, 1000, 2, 4);
+    const vocalStemEnergy = energyAt(decodeWav16(vocalsStemWav)!.samples, 1000, 0, 2);
+    assert.ok(drumEnergy > 0.005, `separated bed render must contain drums (${drumEnergy})`);
+    assert.ok(bassEnergy > 0.005, `separated bed render must contain bass (${bassEnergy})`);
+    assert.ok(otherEnergy > 0.005, `separated bed render must contain other (${otherEnergy})`);
+    assert.ok(separatedVocalEnergy < 0.001,
+      `separated bed render must exclude the bed's vocal stem (${separatedVocalEnergy})`);
+    assert.ok(earlyVocalEnergy < 0.001,
+      `the lead vocal must not appear before its planned passage (${earlyVocalEnergy})`);
+    assert.ok(donorVocalEnergy > vocalStemEnergy * 0.8,
+      `render must retain the intended lead-vocal donor during its arranged passage (${donorVocalEnergy})`);
     // An existing but undecodable stem must fail closed (422), never fall back
     // to the original file, which would silently reintroduce the bed's vocal.
     const garbagePath = path.join(fixtureRoot, "bed-bass-corrupt.wav");
