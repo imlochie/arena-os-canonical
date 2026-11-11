@@ -1,42 +1,52 @@
 # Arena handoff — read this first
 
-## Current verification update — 2026-11-11, protect the live-mix Studio handoff
+## Current verification update — 2026-11-11, schedule and persist live donor onset
 
-* **Verified workflow gap:** a live donor selection is persisted before its audio
-  layer has finished loading. During that interval the session still plays the
-  previous layer, but Studio handoff previously accepted the saved donor row,
-  creating an arrangement that did not yet match what the listener heard.
-* **Change:** Studio handoff now waits only for pending/saving live swaps on the
-  selected session entries. The action is disabled with an explicit status until
-  those donor layers become audible; swaps on entries excluded from the Studio
-  selection no longer block the handoff.
-* **Regression evidence:** `node scripts/waveyard-live-stems.mjs
-  --studio-pending-swap-only` passed in Linux Chromium with synthetic PCM. It
-  confirmed the handoff is available before a swap, disabled while a persisted
-  donor asset is held before installation, and enabled after the donor layer is
-  installed. The test confirmed no Studio request was sent implicitly.
-  ArenaForge TypeScript checking and `node --check` for the browser harness
-  passed.
-* **Not verified:** this checks readiness, not musical quality; it uses a
-  fixture-backed session and synthetic audio. The broader
-  `--switch-recovery-only` browser run did not pass during this check: its
-  original donor fixture was already warm on the next deck, and a diagnostic
-  alternate donor run later hit its existing playhead-progress timeout. Do not
-  count that run as passing evidence.
-* **Remaining product gaps:** `sendSessionToStudio` still does not use the saved
-  swap's `atSeconds` when creating clips, and the session stores only the latest
-  donor per stem rather than an audible swap-event timeline. It also does not
-  persist the actual audible onset or the live tempo/key transform values.
-  Consequently, the handoff can preserve the current donor assignment and mix
-  but cannot yet reconstruct the exact sequence heard during live playback.
-  The performance snap setting currently schedules level/isolation actions,
-  not donor-layer replacement.
-* **Next priorities:** (1) schedule donor substitutions on the selected verified
-  beat boundary and cancel safely on pause/seek; record actual installation
-  timing and applied transforms; (2) persist ordered swap events and convert
-  them to source/donor clips in Studio; (3) test the complete live-mix → Studio
-  edit → export → reopen path with real separated stems and a listening check.
-  No real-song quality or Windows/mobile acceptance is claimed here.
+* **Live replacement scheduling:** with Snap enabled and a verified recipient
+  beat grid, a prepared donor now waits for the next measured beat boundary on
+  the recipient audio clock. The existing donor remains audible while loading
+  and during the wait. Missing or unreliable beat evidence is disclosed rather
+  than described as a snapped swap. Pause, seek, late callbacks and effect
+  disposal cancel the scheduled takeover; cancellation keeps the prior layer
+  and restores the saved donor selection.
+* **Audible timing persistence:** the live layer reports the recipient stem ID,
+  selection time and actual media-element position when its audio source starts
+  (or on first playback when installed while paused). A new owner-checked
+  `PATCH /api/library/sessions/{id}/swaps` records that onset against the exact
+  saved swap ID, session track and stem. Stale onset reports cannot overwrite a
+  newer donor selection. Studio handoff remains blocked until the actual onset
+  is saved; if persistence fails, the UI offers a retry instead of treating an
+  installed-but-unrecorded donor as complete.
+* **Verification:** 169/169 session timing and live-layer unit tests passed,
+  including pause/seek/late/disposal cancellation and actual paused-install
+  onset. The real PostgreSQL Waveyard service suite passed 53 tests with 4
+  existing skips, including onset persistence and stale-swap protection.
+  ArenaForge and API-server TypeScript checks passed. The browser acceptance
+  `node scripts/waveyard-live-stems.mjs --live-swap-snap-only` passed in Linux
+  Chromium: it held the donor response, confirmed the original stayed audible,
+  verified no early takeover, measured the onset within 80 ms of a 500 ms test
+  beat, confirmed the same position was persisted, then paused a second pending
+  swap and confirmed rollback preserved the original layer.
+  The same run forced two temporary onset-write failures, confirmed Studio
+  stayed blocked, then used the retry control and verified the persisted onset
+  before handoff became available.
+  `node scripts/waveyard-live-stems.mjs --studio-pending-swap-only` also passed:
+  Studio stayed disabled while the saved donor was held, then unlocked only
+  after the onset PATCH completed; no handoff was submitted implicitly.
+* **Evidence limits:** the browser test uses a fixture-backed session and
+  synthetic PCM with API responses intercepted by the test harness. It verifies
+  application wiring and timing/persistence, not commercial-song quality,
+  separation-model quality, sample-accurate phase lock, Windows packaging or
+  mobile behavior. The scheduler is bounded by browser media-clock/frame
+  granularity; it is not a hardware clock guarantee.
+* **Remaining workflow gap:** sessions still retain only the latest donor per
+  stem, not a full ordered audible-swap history. Studio handoff does not yet
+  reconstruct timed source/donor clip changes from that history, and live
+  tempo/key transforms are not yet persisted as editable automation.
+* **Next priority:** introduce an ordered, persisted audible event timeline and
+  convert it into source/donor clips on Studio handoff; then verify
+  live-mix → Studio edit → export → reopen with real separated stems and a
+  listening check. No real-song quality or Windows/mobile acceptance is claimed.
 * **Branch:** this work remains on `jules-2321982355158174303-7f554415` (PR #30).
 
 ## Current verification update — 2026-11-11, close PR #30 mashup acceptance gaps

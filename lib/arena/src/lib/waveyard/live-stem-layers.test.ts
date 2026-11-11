@@ -862,7 +862,7 @@ test("idle compressed donor bytes expire after reuse without affecting another a
 
 test("a warmed donor's audible timing starts when the user selects it, not when warming began", async () => {
   const f = fixture(undefined, timing => timings.push(timing));
-  const timings: Array<{ selectionToAudibleMs: number }> = [];
+  const timings: Array<{ selectionToAudibleMs: number; recipientStemId: string; selectedAt: number; audibleAtSeconds: number }> = [];
   globalThis.fetch = async () => response();
   try {
     await f.layers.preload("/donor");
@@ -870,10 +870,34 @@ test("a warmed donor's audible timing starts when the user selects it, not when 
     const selectedAt = performance.now();
     await f.layers.replace("vocals", "/donor", 1, selectedAt);
     assert.equal(timings.length, 1);
+    assert.equal(timings[0].recipientStemId, "vocals");
+    assert.equal(timings[0].selectedAt, selectedAt);
+    assert.equal(timings[0].audibleAtSeconds, 7, "onset is recorded from the receiving playback clock");
     assert.ok(
       timings[0].selectionToAudibleMs <= performance.now() - selectedAt + 10,
       "pre-selection warm time must not inflate the selection-to-audible measurement",
     );
+  } finally { f.layers.dispose(); }
+});
+
+test("a paused donor records its actual first playback position, not its installation time", async () => {
+  const timings: Array<{ recipientStemId: string; audibleAtSeconds: number }> = [];
+  const f = fixture(undefined, (timing) => timings.push(timing));
+  globalThis.fetch = async () => response();
+  try {
+    f.media.paused = true;
+    await f.layers.replace("vocals", "/donor", 1, performance.now());
+    assert.equal(timings.length, 0, "installing into a paused deck is not reported as audible");
+    f.media.currentTime = 13.25;
+    f.media.paused = false;
+    f.layers.sync(["vocals"]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(timings.length, 1);
+    assert.equal(timings[0].recipientStemId, "vocals");
+    assert.equal(timings[0].audibleAtSeconds, 13.25);
+    f.layers.sync(["vocals"]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(timings.length, 1, "one donor selection reports its audible onset only once");
   } finally { f.layers.dispose(); }
 });
 

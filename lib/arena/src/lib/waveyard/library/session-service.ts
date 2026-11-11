@@ -961,7 +961,6 @@ export async function saveSessionState(
   keyMatchState?: { mode: SessionKeyMode; shifts: SessionKeyShifts },
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
-  let changed = false;
   await db.transaction(async (tx) => {
     const trackRows = await tx
       .select({ id: listenSessionTracks.id, trackId: listenSessionTracks.trackId })
@@ -1088,6 +1087,7 @@ export async function recordStemSwapAudiblePosition(input: {
     throw new StemSwapRefusedError("The audible playback position is invalid.");
   }
 
+  let changed = false;
   await db.transaction(async (tx) => {
     await tx.select({ id: listenSessions.id }).from(listenSessions)
       .where(eq(listenSessions.id, input.sessionId)).for("update");

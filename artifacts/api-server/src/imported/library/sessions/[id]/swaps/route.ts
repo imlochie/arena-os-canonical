@@ -1,5 +1,6 @@
 
 import { z } from "zod";
+import { RecordListeningSessionSwapAudiblePositionBody } from "@workspace/api-zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import {
@@ -39,13 +40,6 @@ const swapSchema = z.object({
   toStemAssetId: z.string().uuid().nullable().optional(),
 });
 
-const audiblePositionSchema = z.object({
-  swapId: z.string().uuid(),
-  sessionTrackId: z.string().uuid(),
-  stemType: z.string().min(1).max(64),
-  atSeconds: z.number().finite().min(0),
-});
-
 /** POST /api/library/sessions/[id]/swaps — record a REAL stem swap (validated
  * against actual stem rows; passthrough full-source rows cannot donate). */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -74,7 +68,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const user = await requireUser();
     const { id } = await params;
     if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
-    const parsed = audiblePositionSchema.safeParse(await request.json().catch(() => null));
+    const parsed = RecordListeningSessionSwapAudiblePositionBody.safeParse(await request.json().catch(() => null));
     if (!parsed.success) {
       return Response.json({ error: "A swap, session track, stem type, and valid playback position are required." }, { status: 400 });
     }

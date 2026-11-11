@@ -99,6 +99,7 @@ const sharedDonorRetryOnly = process.argv.includes("--shared-donor-retry-only");
 const sameStemSwapsOnly = process.argv.includes("--same-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
 const studioPendingSwapOnly = process.argv.includes("--studio-pending-swap-only");
+const liveSwapSnapOnly = process.argv.includes("--live-swap-snap-only");
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
 const keyMatchingOnly = process.argv.includes("--key-matching-only");
 const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
@@ -116,6 +117,8 @@ let parallelSwapResponses = null;
 const parallelSwapRequestOrder = [];
 const parallelSwapResponseOrder = [];
 const parallelSwapDeleteRequests = [];
+const liveSwapTimingPatches = [];
+let liveSwapTimingPatchFailures = 0;
 let sameStemSaveResponses = null;
 const sameStemSaveRequestOrder = [];
 const sameStemSaveResponseOrder = [];
@@ -1197,7 +1200,20 @@ try {
         } : item),
       } } });
     }
-    if (url.pathname.endsWith("/swaps") && request.method() === "POST") {
+    if (url.pathname.endsWith("/swaps") && request.method() === "PATCH") {
+      liveSwapTimingPatches.push(structuredClone(body));
+      if (liveSwapTimingPatchFailures > 0) {
+        liveSwapTimingPatchFailures -= 1;
+        return route.fulfill({ status: 503, json: { error: "Temporary onset-store failure." } });
+      }
+      const currentSwap = session.swaps.find(swap =>
+        swap.id === body.swapId
+        && swap.sessionTrackId === body.sessionTrackId
+        && swap.stemType === body.stemType,
+      );
+      if (currentSwap) currentSwap.atSeconds = body.atSeconds;
+      return route.fulfill({ json: { session } });
+    } else if (url.pathname.endsWith("/swaps") && request.method() === "POST") {
       if (body.expectedSwapId) {
         donorRestoreRequests.push(body);
         if (failNextDonorRestore) {
@@ -1727,13 +1743,17 @@ try {
       assert.equal(studioHandoffRequests, beforeHandoffs,
         "no incomplete donor choice reaches Studio");
 
+      const audiblePositionSaved = page.waitForResponse(response =>
+        response.url().endsWith("/swaps") && response.request().method() === "PATCH",
+      );
       heldAssetId = null;
       heldAssetGate = null;
       releaseDonor();
       await waitForSignal(routeFinished, "the prepared donor release");
+      await audiblePositionSaved;
       await page.waitForFunction(before => window.audioProbe.buffers.length > before, buffersBefore);
       await page.getByTestId("restore-live-swap-vocals").waitFor();
-      await deck.getByTestId("live-swap-pending-vocals").waitFor({ state: "detached" });
+      await page.getByTestId("live-swap-pending-vocals").waitFor({ state: "detached" });
       assert.equal(await handoff.isDisabled(), false,
         "Studio handoff unlocks only after the donor layer is installed");
       assert.equal(studioHandoffRequests, beforeHandoffs,
@@ -1744,6 +1764,161 @@ try {
       heldAssetGate = null;
       signalHeldAssetRequest = null;
       signalHeldAssetRouteFinished = null;
+      releaseDonor?.();
+    }
+  }
+
+  async function verifyBeatScheduledLiveSwapAndAudiblePosition() {
+    suppressSessionStateWritesForStemSwitchFixture = true;
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    session.swaps = [];
+    session.tracks[0].analysis.beatConfidence = 0.95;
+    session.tracks[0].analysis.beatGridMs = Array.from({ length: 41 }, (_, beat) => beat * 500);
+    session.tracks[0].transition.performance = {
+      snap: "beat",
+      instantRestore: true,
+      recall: {},
+      isolatedStem: null,
+      beforeIsolation: null,
+    };
+    liveSwapTimingPatches.length = 0;
+    liveSwapTimingPatchFailures = 2;
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element =>
+        element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+      );
+    });
+    await page.getByTestId("session-play").click();
+    await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')]
+      .some(audio => !audio.paused && audio.currentTime > 0.1));
+
+    const deck = page.locator('[data-role="current"]');
+    const buffersBefore = await page.evaluate(() => window.audioProbe.buffers.length);
+    let releaseDonor;
+    let signalRequest;
+    let finishRoute;
+    heldAssetId = "c-vocals";
+    heldAssetGate = new Promise(resolve => { releaseDonor = resolve; });
+    const requested = new Promise(resolve => { signalRequest = resolve; });
+    const routeFinished = new Promise(resolve => { finishRoute = resolve; });
+    signalHeldAssetRequest = signalRequest;
+    signalHeldAssetRouteFinished = finishRoute;
+    try {
+      const save = page.waitForResponse(response =>
+        response.url().endsWith("/swaps") && response.request().method() === "POST",
+      );
+      await deck.getByTestId("open-live-swap-vocals").click();
+      await deck.getByTestId("live-swap-candidate-vocals-c").click();
+      await save;
+      await waitForSignal(requested, "the delayed donor preparation");
+      await page.getByTestId("live-swap-pending-vocals").waitFor();
+      assert.equal(session.swaps.length, 1, "the donor choice is persisted while its audio is prepared");
+      assert.equal(liveSwapTimingPatches.length, 0, "no onset is recorded before donor audio starts");
+      assert.ok(await page.evaluate(before =>
+        window.audioProbe.buffers.length === before &&
+        (window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0) > 0.9,
+      buffersBefore), "the original vocal stem stays audible while the donor response is held");
+
+      const onsetPatch = page.waitForResponse(response =>
+        response.url().endsWith("/swaps") && response.request().method() === "PATCH",
+      );
+      heldAssetId = null;
+      heldAssetGate = null;
+      releaseDonor();
+      await waitForSignal(routeFinished, "the released donor response");
+      const waiting = page.getByTestId("session-status").filter({ hasText: /switching on the next measured beat boundary/i });
+      await waiting.waitFor();
+      const scheduled = await page.evaluate(() => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')]
+          .find(element => element.src.endsWith("/a-vocals"));
+        if (!(audio instanceof HTMLAudioElement)) return null;
+        const position = audio.currentTime;
+        const targetMs = Array.from({ length: 41 }, (_, beat) => beat * 500)
+          .find(milliseconds => milliseconds / 1000 > position + 0.18 + 0.000001);
+        return targetMs === undefined ? null : { position, target: targetMs / 1000 };
+      });
+      assert.ok(scheduled, "a future verified beat boundary is selected");
+      await page.waitForTimeout(55);
+      const stillWaiting = await page.evaluate(({ target, before }) => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')]
+          .find(element => element.src.endsWith("/a-vocals"));
+        return audio instanceof HTMLAudioElement
+          && audio.currentTime < target
+          && window.audioProbe.buffers.length === before
+          && (window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0) > 0.9;
+      }, { target: scheduled.target, before: buffersBefore });
+      assert.ok(stillWaiting, "the donor does not interrupt the original before the beat boundary");
+
+      await page.waitForFunction(before =>
+        window.audioProbe.buffers.length > before &&
+        window.audioProbe.buffers.slice(before).some(source => source.inputNode?.gain?.value > 0.03),
+      buffersBefore, { timeout: 10_000 });
+      const onset = await page.evaluate(() => window.liveStemTimings
+        .filter(timing => timing.recipientStemId === "a-vocals")
+        .at(-1) ?? null);
+      assert.ok(onset && Number.isFinite(onset.audibleAtSeconds), "the audio engine reports the receiving track's actual onset position");
+      const nearestBeat = Math.round(onset.audibleAtSeconds * 2) / 2;
+      assert.ok(Math.abs(onset.audibleAtSeconds - nearestBeat) <= 0.08,
+        `the donor begins within 80ms of a measured beat: ${JSON.stringify({ onset, nearestBeat })}`);
+      await onsetPatch;
+      const selectedPosition = session.swaps[0].atSeconds;
+      await page.waitForFunction(() => {
+        const retry = document.querySelector('[data-testid="retry-live-stem-onset-vocals"]');
+        return retry instanceof HTMLButtonElement && !retry.disabled;
+      }, undefined, { timeout: 10_000 });
+      assert.equal(session.swaps[0].atSeconds, selectedPosition,
+        "failed onset writes do not falsely replace the saved selection position");
+      assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
+        "Studio stays blocked while actual audible timing remains unsaved");
+      assert.ok(liveSwapTimingPatches.length >= 2, "a transient onset failure receives one automatic retry");
+      const retryPatch = page.waitForResponse(response =>
+        response.url().endsWith("/swaps") && response.request().method() === "PATCH",
+      );
+      await page.getByTestId("retry-live-stem-onset-vocals").click();
+      await retryPatch;
+      const savedOnset = liveSwapTimingPatches.at(-1);
+      assert.equal(savedOnset.swapId, session.swaps[0].id, "onset write is guarded by the exact saved donor row");
+      assert.equal(session.swaps[0].atSeconds, savedOnset.atSeconds, "the persisted ledger stores the actual playback-clock onset");
+      assert.ok(Math.abs(savedOnset.atSeconds - onset.audibleAtSeconds) < 0.002,
+        "the saved switch position matches the measured receiving audio clock");
+      await page.getByTestId("live-swap-pending-vocals").waitFor({ state: "detached" });
+      assert.equal(await page.getByTestId("session-handoff").isDisabled(), false,
+        "Studio unlocks only after the measured onset has been persisted");
+
+      const restoreResponse = page.waitForResponse(response =>
+        response.url().includes("/swaps?swapId=") && response.request().method() === "DELETE",
+      );
+      await deck.getByTestId("restore-live-swap-vocals").click();
+      await restoreResponse;
+      await page.waitForFunction(() =>
+        (window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0) > 0.9,
+      );
+      assert.equal(session.swaps.length, 0, "restoring the donor removes its saved swap row");
+
+      const buffersBeforeCancelledSwap = await page.evaluate(() => window.audioProbe.buffers.length);
+      await deck.getByTestId("open-live-swap-vocals").click();
+      await deck.getByTestId("live-swap-candidate-vocals-c").click();
+      await page.getByTestId("session-status").filter({ hasText: /switching on the next measured beat boundary/i }).waitFor();
+      const cancelResponse = page.waitForResponse(response =>
+        response.url().includes("/swaps?swapId=") && response.request().method() === "DELETE",
+      );
+      await page.getByTestId("session-play").click();
+      await cancelResponse;
+      await page.waitForFunction(before =>
+        window.audioProbe.buffers.length === before &&
+        (window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0) > 0.9,
+      buffersBeforeCancelledSwap);
+      assert.equal(session.swaps.length, 0, "pausing during the boundary wait removes the pending saved donor");
+      console.log("PASS: live donors wait for a verified beat, persist their measured audible position, and roll back safely when playback pauses");
+    } finally {
+      heldAssetId = null;
+      heldAssetGate = null;
+      signalHeldAssetRequest = null;
+      signalHeldAssetRouteFinished = null;
+      liveSwapTimingPatchFailures = 0;
       releaseDonor?.();
     }
   }
@@ -3960,6 +4135,8 @@ try {
     console.log("PASS: failed donor B preserves audible and saved A, other donors and the recipient clock; recovery save retries, reload and a real B retry work");
   } else if (process.argv.includes("--cross-tab-switch-recovery-only")) {
     await verifyCrossTabStemSwitchRecovery();
+  } else if (liveSwapSnapOnly) {
+    await verifyBeatScheduledLiveSwapAndAudiblePosition();
   } else if (studioPendingSwapOnly) {
     await verifyStudioHandoffWaitsForLiveSwap();
   } else if (process.argv.includes("--switch-recovery-only")) {
