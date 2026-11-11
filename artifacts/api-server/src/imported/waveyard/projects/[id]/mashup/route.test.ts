@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import { buildMashupDonorDuckingAutomation } from "@workspace/arena/lib/waveyard/studio/mashup";
 
 const root = fileURLToPath(new URL("../../../../../../../../", import.meta.url));
 const requireFromDb = createRequire(path.join(root, "lib/db/package.json"));
@@ -547,7 +548,14 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       { params: Promise.resolve({ id: project.id }) },
     );
     assert.equal(planResponse.status, 200);
-    const planBody = await planResponse.json() as { bed?: { source: string; warning: string } };
+    const planBody = await planResponse.json() as {
+      plan?: {
+        durationMs: number;
+        segments: Array<{ mashupStartMs: number; mashupEndMs: number; crossfadeMs: number }>;
+      };
+      bed?: { source: string; warning: string };
+    };
+    assert.ok(planBody.plan, "the route must return the plan used by both render and save");
     assert.equal(planBody.bed?.source, "separated", "the plan must report the separated bed");
     assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
 
@@ -618,6 +626,54 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     await writeFile(alignedDonorPath, alignedDonor);
     await storage.putFile("mashup-fixture/vocal-donor-drums.wav", alignedDonorPath);
 
+    // The production schema prevents duplicate job/type rows. Temporarily
+    // remove that index in this isolated test database to simulate a legacy or
+    // manually-corrupted run and prove that both public route actions fail
+    // closed instead of silently choosing one row.
+    const duplicateDrums = encodeWav16(tone([810], VOCAL_SECONDS, 0.1), RATE);
+    const duplicateDrumsPath = path.join(fixtureRoot, "vocal-donor-drums-duplicate.wav");
+    await writeFile(duplicateDrumsPath, duplicateDrums);
+    await storage.putFile("mashup-fixture/vocal-donor-drums-duplicate.wav", duplicateDrumsPath);
+    await dbModule.pool.query('DROP INDEX "stem_assets_job_stem_unique"');
+    let duplicateStemId: string | undefined;
+    try {
+      const [duplicateStem] = await dbModule.db.insert(schema.stemAssets).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        separationJobId: latestVocalsJob.id,
+        stemType: "drums",
+        engine: "demucs",
+        model: "test",
+        modelVersion: "test",
+        storageKey: "mashup-fixture/vocal-donor-drums-duplicate.wav",
+        checksumSha256: sha256(duplicateDrums),
+        durationSeconds: VOCAL_SECONDS,
+        sampleRate: RATE,
+        channels: 2,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: duplicateDrums.length,
+        createdAt: latestCompletedAt,
+      }).returning({ id: schema.stemAssets.id });
+      assert.ok(duplicateStem);
+      duplicateStemId = duplicateStem.id;
+
+      const duplicateRender = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+      assert.equal(duplicateRender.status, 422, "render must reject duplicate stem types through the production route");
+      assert.match(((await duplicateRender.json()) as { error: string }).error, /duplicate drums stems/i);
+      const duplicateSave = await routeModule.POST(saveRequest(), { params: Promise.resolve({ id: project.id }) });
+      assert.equal(duplicateSave.status, 422, "save must reject duplicate stem types through the production route");
+      assert.match(((await duplicateSave.json()) as { error: string }).error, /duplicate drums stems/i);
+      assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, 0, "duplicate stems must not create a partial remix");
+    } finally {
+      if (duplicateStemId) {
+        await dbModule.db.delete(schema.stemAssets).where(eq(schema.stemAssets.id, duplicateStemId));
+      }
+      await dbModule.pool.query(
+        'CREATE UNIQUE INDEX "stem_assets_job_stem_unique" ON "stem_assets" ("separation_job_id", "stem_type")',
+      );
+    }
+
     // Save while the completed instrumental run is still present.
     const saveResponse = await routeModule.POST(saveRequest(), { params: Promise.resolve({ id: project.id }) });
     assert.equal(saveResponse.status, 201, "save action must return 201 Created");
@@ -673,6 +729,11 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.equal(reopenedResponse.status, 200, "the persisted remix must be readable through the Studio route");
     const reopened = await reopenedResponse.json() as {
       tracks: Array<{ stemAssetId: string; clips: Array<{ stemAssetId: string; timelineStartMs: number; durationMs: number }> }>;
+      automation: Array<{
+        remixTrackId: string;
+        parameter: string;
+        points: Array<{ timelineMs: number; value: number }>;
+      }>;
     };
     for (const donorStemId of donorStemIds) {
       const reopenedTrack = reopened.tracks.find((track) => track.stemAssetId === donorStemId);
@@ -681,7 +742,22 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
         reopenedTrack.clips.some((clip) => clip.stemAssetId === donorStemId),
         "reopened Studio state must retain each complementary donor clip",
       );
+      const track = savedTracks.find((candidate) => candidate.stemAssetId === donorStemId);
+      assert.ok(track);
+      const lane = reopened.automation.find((candidate) =>
+        candidate.remixTrackId === track.id && candidate.parameter === "volume",
+      );
+      assert.ok(lane, "reopened Studio state must retain donor-vocal ducking automation");
+      assert.deepEqual(
+        lane.points.map(({ timelineMs, value }) => ({ timelineMs, value })),
+        buildMashupDonorDuckingAutomation(planBody.plan!).map(({ timelineMs, value }) => ({ timelineMs, value })),
+        "persisted automation must reproduce the exact plan envelope used by the renderer",
+      );
     }
+    const savedVersionSnapshot = JSON.parse(
+      (await dbModule.db.select().from(schema.remixVersions).where(eq(schema.remixVersions.id, saveBody.version.id)))[0]!.snapshot,
+    ) as { automation: Array<{ remixTrackId: string; parameter: string; points: Array<{ timelineMs: number; value: number }> }> };
+    assert.equal(savedVersionSnapshot.automation.length, donorStemIds.length, "the initial saved version must include all donor ducking lanes");
 
     // An existing but undecodable stem must fail closed (422), never fall back
     // to the original file, which would silently reintroduce the bed's vocal.

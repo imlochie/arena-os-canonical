@@ -275,20 +275,4 @@ describe("Agent B Independent Regression Tests: Measurable Signal & Route Invari
     assert.ok(sumTargetLag > 0, "Native pitch lag should correlate strongly");
   });
 
-  it("10. Reject duplicate stem types: deduplicates rather than corrupting audio buffer", () => {
-    const drumsA = { ...makeStem("drums"), samples: createStereoPcm(5, 100, 0.3) };
-    const drumsB = { ...makeStem("drums"), samples: createStereoPcm(5, 100, 0.3) };
-
-    // When identical stem types are present in a run, sumInstrumentalStems includes both if valid
-    // but the route deduplicates seenTypes so only one is mounted in complementaryDonorStems
-    const seenTypes = new Set<string>();
-    const filteredRows: Array<{ stemType: string }> = [];
-    for (const row of [drumsA, drumsB]) {
-      if (!seenTypes.has(row.stemType)) {
-        seenTypes.add(row.stemType);
-        filteredRows.push(row);
-      }
-    }
-    assert.equal(filteredRows.length, 1);
-  });
 });

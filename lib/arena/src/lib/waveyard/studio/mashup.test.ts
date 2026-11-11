@@ -10,15 +10,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildMashupDonorDuckingAutomation,
+  MASHUP_DONOR_STEM_BASE_VOLUME,
+  MASHUP_DUCK_DEPTH,
   pitchMoveForKeys,
   planMashup,
   planSongExtension,
   renderMashup,
   renderSongExtension,
   warpRatioForTempos,
+  type MashupPlan,
   type MashupSourceProfile,
   type MashupSection,
 } from "./mashup";
+import { evaluateAutomation } from "../types/arrangement-automation";
 
 const RATE = 44_100;
 
@@ -279,6 +284,50 @@ test("render: bed ducks under active vocals, crossfades, never clips", () => {
   const early = out[Math.round(0.02 * RATE) * 2];
   assert.ok(early > 0.8, `early bed ${early}`);
   for (const value of out) assert.ok(value >= -1.0001 && value <= 1.0001);
+});
+
+test("saved donor automation reproduces the renderer's vocal ducking envelope", () => {
+  const plan: MashupPlan = {
+    engine: "waveyard-mashup-planner-v1",
+    masterBpm: 120,
+    vocalsStretchRatio: 1,
+    vocalsPitchSemitones: 0,
+    keyRelationship: "same",
+    segments: [{
+      mashupStartMs: 200,
+      mashupEndMs: 800,
+      vocalsFromMs: 0,
+      vocalsToMs: 600,
+      crossfadeMs: 100,
+      rationale: "fixture",
+    }],
+    durationMs: 1_000,
+    rationale: ["fixture"],
+    warnings: [],
+  };
+  const donor = new Float32Array(RATE * 2).fill(0.2);
+  const rendered = renderMashup(plan, {
+    vocals: new Float32Array(RATE * 2),
+    bed: new Float32Array(RATE * 2),
+    stems: new Map([["donor_drums", donor]]),
+    sampleRate: RATE,
+  });
+  const lane = buildMashupDonorDuckingAutomation(plan);
+
+  for (const timeMs of [100, 200, 250, 300, 500, 700, 750, 800, 900]) {
+    const frame = Math.round((timeMs / 1_000) * RATE);
+    const duck = timeMs < 200 || timeMs > 800
+      ? 0
+      : Math.min(
+        (timeMs - 200) / 100 < 1 ? (timeMs - 200) / 100 : 1,
+        (800 - timeMs) / 100 < 1 ? (800 - timeMs) / 100 : 1,
+      );
+    const renderGain = MASHUP_DONOR_STEM_BASE_VOLUME * (1 - MASHUP_DUCK_DEPTH * duck);
+    const savedGain = evaluateAutomation(lane, timeMs, MASHUP_DONOR_STEM_BASE_VOLUME);
+    assert.ok(Math.abs(savedGain - renderGain) < 0.001, `automation gain at ${timeMs} ms matches the renderer`);
+    assert.ok(Math.abs(rendered[frame * 2]! - donor[frame * 2]! * renderGain) < 0.001,
+      `rendered donor signal at ${timeMs} ms uses the same ducking gain`);
+  }
 });
 
 // --- extension -------------------------------------------------------------
