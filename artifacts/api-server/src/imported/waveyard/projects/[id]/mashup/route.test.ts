@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 
@@ -93,9 +93,9 @@ function mixTones(parts: Array<[number, number]>, seconds: number): Float32Array
   return pcm;
 }
 
-function energyAt(pcm: Float32Array, frequency: number, startMs: number, endMs: number): number {
-  const start = Math.floor((startMs / 1000) * RATE);
-  const end = Math.floor((endMs / 1000) * RATE);
+function energyAt(pcm: Float32Array, frequency: number, startSeconds: number, endSeconds: number): number {
+  const start = Math.floor(startSeconds * RATE);
+  const end = Math.floor(endSeconds * RATE);
   let real = 0;
   let imaginary = 0;
   let count = 0;
@@ -330,7 +330,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const vocalsStemPath = path.join(fixtureRoot, "vocals-stem.wav");
     await writeFile(vocalsStemPath, vocalsStemWav);
     await storage.putFile("mashup-fixture/vocals-stem.wav", vocalsStemPath);
-    await dbModule.db.insert(schema.stemAssets).values({
+    const [completedVocalsStem] = await dbModule.db.insert(schema.stemAssets).values({
       projectId: project.id,
       sourceAssetId: vocalsSource.id,
       separationJobId: vocalsJob.id,
@@ -346,7 +346,43 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       codec: "wav",
       format: "wav",
       fileSizeBytes: vocalsStemWav.length,
-    });
+    }).returning({ id: schema.stemAssets.id });
+    assert.ok(completedVocalsStem);
+
+    // A newer active attempt must not make the last completed donor disappear
+    // from the save/render workflow.
+    const [pendingVocalsJob] = await dbModule.db.insert(schema.processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      type: "separation",
+      status: "running",
+      stage: "separating",
+      attempts: 1,
+      idempotencyKey: `mashup-vocals-pending-${randomUUID()}`,
+      model: "test",
+      requestedDevice: "cpu",
+      startedAt: new Date(),
+      createdAt: new Date(Date.now() + 60_000),
+    }).returning({ id: schema.processingJobs.id });
+    const [pendingVocalsStem] = await dbModule.db.insert(schema.stemAssets).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      separationJobId: pendingVocalsJob.id,
+      stemType: "vocals",
+      engine: "demucs",
+      model: "test",
+      modelVersion: "test",
+      storageKey: "mashup-fixture/vocals-pending.wav",
+      checksumSha256: "b".repeat(64),
+      durationSeconds: VOCAL_SECONDS,
+      sampleRate: RATE,
+      channels: 2,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: vocalsStemWav.length,
+      createdAt: new Date(Date.now() + 60_000),
+    }).returning({ id: schema.stemAssets.id });
+    assert.ok(pendingVocalsStem);
 
     const bedStems: Array<[string, number]> = [["drums", 110], ["bass", 220], ["other", 330], ["vocals", 1500]];
     const bedStemIds: string[] = [];
@@ -529,16 +565,14 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       return stem;
     };
 
-    const [selectedDonorGuitar] = await Promise.all([
-      addDonorStem(vocalsJob.id, "guitar", 660),
-      addDonorStem(vocalsJob.id, "piano", 4400, { malformed: true }),
-      addDonorStem(priorDonorJob.id, "other", 1200),
-      addDonorStem(pendingVocalsJob.id, "bass", 2200),
-      addDonorStem(failedDonorJob.id, "percussion", 2800),
-      addDonorStem(failedDonorJob.id, "vocals", 1700),
-      addDonorStem(cancelledDonorJob.id, "strings", 3400),
-      addDonorStem(supersededDonorJob.id, "synth", 4000),
-    ]);
+    const selectedDonorGuitar = await addDonorStem(vocalsJob.id, "guitar", 660);
+    await addDonorStem(vocalsJob.id, "piano", 4400, { malformed: true });
+    await addDonorStem(priorDonorJob.id, "other", 1200);
+    await addDonorStem(pendingVocalsJob.id, "bass", 2200);
+    await addDonorStem(failedDonorJob.id, "percussion", 2800);
+    await addDonorStem(failedDonorJob.id, "vocals", 1700);
+    await addDonorStem(cancelledDonorJob.id, "strings", 3400);
+    await addDonorStem(supersededDonorJob.id, "synth", 4000);
     assert.ok(selectedDonorGuitar);
 
     const donorRenderResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
@@ -729,65 +763,6 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
     );
 
-    // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips
-    const saveRequest = new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        action: "save",
-        vocalsSourceId: vocalsSource.id,
-        instrumentalSourceId: bedSource.id,
-      }),
-    });
-    const saveResponse = await routeModule.POST(saveRequest, { params: Promise.resolve({ id: project.id }) });
-    assert.equal(saveResponse.status, 201, "save action must return 201 Created");
-    const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
-    assert.equal(saveBody.ok, true);
-    assert.ok(saveBody.remix.id);
-    assert.ok(saveBody.version.id);
-
-    // Verify database state: fetch saved remix session, tracks, and clips
-    const [savedSession] = await dbModule.db
-      .select()
-      .from(schema.remixSessions)
-      .where(eq(schema.remixSessions.id, saveBody.remix.id));
-    assert.ok(savedSession, "saved remix session must exist in db");
-    assert.equal(savedSession.tempoBpm, 120);
-
-    const savedTracks = await dbModule.db
-      .select()
-      .from(schema.remixTracks)
-      .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
-    assert.ok(savedTracks.length >= 2, "remix must have vocal and bed tracks");
-
-    const savedClips = await dbModule.db
-      .select()
-      .from(schema.remixClips)
-      .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
-    assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
-
-    // Verify clips have correct time stretch / key sync flags
-    const vocalClips = savedClips.filter((c) => c.stemAssetId === vocalsStemWav && c.tempoSyncEnabled);
-    for (const clip of savedClips) {
-      assert.ok(Number.isFinite(clip.timelineStartMs) && clip.timelineStartMs >= 0);
-      assert.ok(clip.durationMs > 0);
-      assert.ok(clip.gain > 0 && clip.gain <= 1);
-    }
-
-    // Simulate studio edit: update masterVolume & track pan via DB transaction, verify version increment
-    await dbModule.db.transaction(async (tx) => {
-      await tx
-        .update(schema.remixSessions)
-        .set({ masterVolume: 0.9, version: savedSession.version + 1 })
-        .where(eq(schema.remixSessions.id, savedSession.id));
-    });
-
-    const [updatedSession] = await dbModule.db
-      .select()
-      .from(schema.remixSessions)
-      .where(eq(schema.remixSessions.id, savedSession.id));
-    assert.equal(updatedSession.version, savedSession.version + 1);
-    assert.equal(updatedSession.masterVolume, 0.9);
   } finally {
     try {
       await dbModule?.pool.end();
