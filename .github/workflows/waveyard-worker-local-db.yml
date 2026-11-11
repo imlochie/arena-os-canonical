@@ -53,11 +53,9 @@ jobs:
       # is included because separation.test.ts applies the schema through the
       # production migrator, desktop/database.mjs, which imports pg from
       # desktop/node_modules; without it the three real-PostgreSQL tests fail
-      # with "Cannot find package 'pg'" (CI run 42648653978). api-server is
-      # included so the mashup acceptance test executes its production route
-      # and all of that package's declared runtime dependencies.
+      # with "Cannot find package 'pg'" (CI run 42648653978).
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..." --filter "@workspace/desktop..." --filter "@workspace/api-server..."
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..." --filter "@workspace/desktop..."
 
       - name: Provide PostgreSQL server binaries, ffmpeg and Python 3
         shell: bash
@@ -138,17 +136,13 @@ jobs:
             "../lib/arena/src/lib/waveyard/worker-local/separation.test.ts"
             "../lib/arena/src/lib/waveyard/worker-local/stem-analysis.test.ts"
             "../lib/arena/src/lib/waveyard/worker-local/analysis-recovery.test.ts"
-            "../lib/arena/src/lib/waveyard/studio/mashup.test.ts"
-            "../lib/arena/src/lib/waveyard/studio/donor-stem-integrity.test.ts"
-            "../lib/arena/src/lib/waveyard/arrangement-preview-gain.test.ts"
-            "../scripts/waveyard-mashup-route-acceptance.test.ts"
           )
           failed=0
           cd scripts
           for test in "${tests[@]}"; do
             name="$(printf '%s' "$test" | sed 's|^\.\./||; s|/|_|g')"
             echo "=== $test ==="
-            if ./node_modules/.bin/tsx --test --test-reporter=tap "$test" >"$evidence/$name.txt" 2>&1; then
+            if ./node_modules/.bin/tsx --test "$test" >"$evidence/$name.txt" 2>&1; then
               echo "PASS $test" | tee -a "$evidence/summary.txt"
             else
               echo "FAIL $test" | tee -a "$evidence/summary.txt"
@@ -196,17 +190,6 @@ jobs:
               echo "::warning::$(basename "$file") skipped $skipped_count test(s); skipped is not proven."
             fi
           done
-
-          # This API acceptance test is part of the mashup release gate, not
-          # an optional suite. A skipped test (including missing embedded
-          # PostgreSQL binaries) must fail the workflow rather than look green.
-          mashup_route="$evidence/scripts_waveyard-mashup-route-acceptance.test.ts.txt"
-          if ! grep -qx '# tests 1' "$mashup_route" \
-            || ! grep -qx '# pass 1' "$mashup_route" \
-            || ! grep -qx '# skipped 0' "$mashup_route"; then
-            echo "::error::Mashup route database acceptance must run exactly one test with zero skips."
-            failed=1
-          fi
 
           if [ "$failed" -ne 0 ]; then
             echo "::error::At least one worker-local DB suite failed on Linux."

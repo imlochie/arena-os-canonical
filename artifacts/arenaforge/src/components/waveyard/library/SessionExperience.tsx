@@ -72,7 +72,6 @@ import {
   nextPerformanceBoundary,
   performMix,
   performanceTick,
-  waitForPerformanceBoundary,
   type PerformanceAction,
   type PerformanceSettings,
   type PerformanceSnap,
@@ -205,10 +204,6 @@ interface PendingLiveSwap {
   };
   previousSwap?: SessionDetail["swaps"][number];
   failed?: boolean;
-  audiblePositionSaving?: boolean;
-  audiblePositionSaved?: boolean;
-  audibleAtSeconds?: number;
-  layerInstalled?: boolean;
 }
 
 interface FailedLiveSwap {
@@ -485,9 +480,7 @@ function SessionDeck({
   openSwapPickerStem,
   onOpenSwapPicker,
   onLiveLayerReady,
-  onLiveLayerAudible,
   onLiveLayerFailed,
-  onLiveLayerStatus,
   liveSwapFailure,
   onRetryLiveSwap,
   onReturnToSource,
@@ -538,9 +531,7 @@ function SessionDeck({
   openSwapPickerStem?: string | null;
   onOpenSwapPicker?: (stemType: string) => void;
   onLiveLayerReady?: (sessionTrackId: string, stemType: string, selectedAt: number | null) => void;
-  onLiveLayerAudible?: (sessionTrackId: string, stemType: string, selectedAt: number, audibleAtSeconds: number) => void;
   onLiveLayerFailed?: (sessionTrackId: string, stemType: string, message: string, selectedAt: number | null) => void;
-  onLiveLayerStatus?: (message: string) => void;
   liveSwapFailure?: string | null;
   onRetryLiveSwap?: () => void;
   onReturnToSource?: () => void;
@@ -580,8 +571,6 @@ function SessionDeck({
   // the replacement is ready. In particular, a failed donor load must not
   // pause the source that is currently audible.
   const transport = useStemTransport(transportIds, duration, assetIds, outputGroup, audioAssetPool);
-  const playbackClockRef = useRef({ playing: transport.playing, currentPosition: transport.currentPosition });
-  playbackClockRef.current = { playing: transport.playing, currentPosition: transport.currentPosition };
   const [cuePosition, setCuePosition] = useState(0);
   const [selectedLoopBeats, setSelectedLoopBeats] = useState<number | null>(null);
   useEffect(() => {
@@ -708,163 +697,36 @@ function SessionDeck({
   }));
   useEffect(() => {
     let stale = false;
-    let cancelBoundary: (() => void) | null = null;
     const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null, number, number]>;
-    const pendingDonorLayers = layers.filter(([, donor, , selectedAt]) => donor !== null && selectedAt !== null);
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
-    const failLayer = (id: string, stemType: string, selectedAt: number | null, error: unknown) => {
-      if (stale || item === null) return;
-      const message = error instanceof Error ? error.message : "Live stem loading failed.";
-      onLiveLayerFailed?.(item.id, stemType, `${stemType} switch failed: ${message} The previous layer was kept.`, selectedAt);
-    };
-    const installLayers = async () => {
-      const failedIds = new Set<string>();
-      if (playbackClockRef.current.playing && performanceSettings.snap !== "off" && pendingDonorLayers.length > 0) {
-        const preparationResults = await Promise.all(pendingDonorLayers.map(async ([id, donor, ratio, selectedAt]) => {
-          const stemType = stemTypeByAsset.get(id) ?? "source";
-          try {
-            await transport.preloadStem(id, `/api/assets/${donor}`, ratio, selectedAt ?? undefined);
-            return { id, ok: true as const };
-          } catch (error) {
-            failedIds.add(id);
-            failLayer(id, stemType, selectedAt, error);
-            return { id, ok: false as const };
-          }
-        }));
-        if (stale) return;
-        const readyLayers = pendingDonorLayers.filter(([id]) =>
-          preparationResults.some((result) => result.id === id && result.ok),
-        );
-        if (readyLayers.length > 0) {
-          const position = playbackClockRef.current.currentPosition();
-          const beatEvidenceReliable = hasReliableSessionBeatEvidence(item?.analysis?.beatConfidence);
-          let target = beatEvidenceReliable
-            ? nextPerformanceBoundary(
-              position,
-              item?.analysis?.beatGridMs,
-              performanceSettings.snap,
-              undefined,
-              PERFORMANCE_MINIMUM_LEAD_SECONDS,
-            )
-            : null;
-          let boundaryLabel = performanceSettings.snap;
-          if (performanceSettings.snap === "bar") {
-            target = beatEvidenceReliable
-              ? nextPerformanceBoundary(position, item?.analysis?.beatGridMs, "beat", undefined, PERFORMANCE_MINIMUM_LEAD_SECONDS)
-              : null;
-            boundaryLabel = "beat";
-            if (target !== null) onLiveLayerStatus?.("No measured bar downbeats are available; switching on the next verified beat.");
-          }
-          if (!beatEvidenceReliable) {
-            onLiveLayerStatus?.("No reliable measured beat grid is available; the prepared stem is switching now.");
-          } else if (target === null) {
-            onLiveLayerStatus?.("No upcoming verified boundary is available; the prepared stem is switching now.");
-          } else if (target > position) {
-            onLiveLayerStatus?.(`Stem ready — switching on the next measured ${boundaryLabel} boundary.`);
-            const waiter = waitForPerformanceBoundary(
-              target,
-              position,
-              () => playbackClockRef.current.currentPosition(),
-              () => playbackClockRef.current.playing,
-              {
-                request: (callback) => window.requestAnimationFrame(callback),
-                cancel: (frameId) => window.cancelAnimationFrame(frameId),
-              },
-            );
-            cancelBoundary = waiter.cancel;
-            const decision = await waiter.result;
-            cancelBoundary = null;
-            if (stale) return;
-            if (decision === "cancel") {
-              for (const [id, donor, , selectedAt] of readyLayers) {
-                if (donor === null) continue;
-                failLayer(
-                  id,
-                  stemTypeByAsset.get(id) ?? "source",
-                  selectedAt,
-                  new Error("Beat-scheduled switch cancelled because playback paused, sought, or missed the boundary."),
-                );
-                failedIds.add(id);
-              }
-              setLoadingLayers(false);
-              return;
-            }
-          }
-        }
-      }
-      if (stale) return;
-      const replacements = layers
-        .filter(([id]) => !failedIds.has(id))
-        .map(([id, donor, tempoStretchRatio, selectedAt, beatOffset, keyCorrection]) => {
+    const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt, beatOffset, keyCorrection]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
       return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined, beatOffset, keyCorrection).then((installed) => {
         if (!stale && installed !== false && donor !== null && item !== null) {
           onLiveLayerReady?.(item.id, stemType, selectedAt);
         }
       }).catch((error: unknown) => {
-        if (donor !== null) failLayer(id, stemType, selectedAt, error);
+        if (!stale && donor !== null && item !== null) {
+          // The engine returns false for cancellation. Any rejection here is a
+          // real preparation failure; roll back only this pending stem.
+          const message = error instanceof Error ? error.message : "Live stem loading failed.";
+          onLiveLayerFailed?.(item.id, stemType, `${stemType} switch failed: ${message} The previous layer was kept.`, selectedAt);
+        }
         throw error;
       });
     });
-      // One rejected donor must not mark other preparations complete or cancel
-      // their independent audio layers.
-      const results = await Promise.allSettled(replacements);
+    // One rejected donor must not mark other preparations complete or cancel
+    // their independent audio layers.
+    void Promise.allSettled(replacements).then((results) => {
       if (stale) return;
       const failure = results.find((result) => result.status === "rejected");
       setMediaError(failure?.status === "rejected"
         ? `${failure.reason instanceof Error ? failure.reason.message : "Live stem loading failed."} The previous layer was kept.`
         : null);
       setLoadingLayers(false);
-    };
-    void installLayers().catch((error: unknown) => {
-      if (!stale) {
-        setMediaError(error instanceof Error ? error.message : "Live stem loading failed.");
-        setLoadingLayers(false);
-      }
     });
-    return () => {
-      stale = true;
-      cancelBoundary?.();
-    };
-  }, [
-    swapKey,
-    stemTypeByAsset,
-    tempoStretchRatios,
-    transport.replaceStem,
-    transport.preloadStem,
-    onLiveLayerReady,
-    onLiveLayerFailed,
-    onLiveLayerStatus,
-    item?.id,
-    item?.analysis?.beatConfidence,
-    item?.analysis?.beatGridMs,
-    performanceSettings.snap,
-    swapRetry,
-  ]);
-
-  useEffect(() => {
-    if (item === null || onLiveLayerAudible === undefined) return;
-    const handleTiming = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        recipientStemId?: unknown;
-        selectedAt?: unknown;
-        audibleAtSeconds?: unknown;
-      }>).detail;
-      const stemType = typeof detail?.recipientStemId === "string"
-        ? stemTypeByAsset.get(detail.recipientStemId)
-        : undefined;
-      if (
-        stemType === undefined
-        || typeof detail.selectedAt !== "number"
-        || !Number.isFinite(detail.selectedAt)
-        || typeof detail.audibleAtSeconds !== "number"
-        || !Number.isFinite(detail.audibleAtSeconds)
-      ) return;
-      onLiveLayerAudible(item.id, stemType, detail.selectedAt, detail.audibleAtSeconds);
-    };
-    window.addEventListener("waveyard:live-stem-timing", handleTiming);
-    return () => window.removeEventListener("waveyard:live-stem-timing", handleTiming);
-  }, [item?.id, stemTypeByAsset, onLiveLayerAudible]);
+    return () => { stale = true; };
+  }, [swapKey, stemTypeByAsset, tempoStretchRatios, transport.replaceStem, onLiveLayerReady, onLiveLayerFailed, item?.id, swapRetry]);
 
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
@@ -1602,13 +1464,7 @@ export default function SessionExperience({
     });
   }, []);
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
-  const pendingSelectedStudioSwap = pendingSwaps.some((pending) =>
-    selectedStudioTrackIds.includes(pending.sessionTrackId));
-  const savingSelectedStudioSwap = [...savingSwapKeys].some((key) =>
-    selectedStudioTrackIds.some((sessionTrackId) => key.startsWith(`${sessionTrackId}:`)));
-  const selectedStudioSwapNotAudible = pendingSelectedStudioSwap || savingSelectedStudioSwap;
   const pendingLiveSwapRef = useRef(new Map<string, PendingLiveSwap>());
-  const pendingAudibleSwapRef = useRef(new Map<string, PendingLiveSwap>());
   const [failedLiveSwaps, setFailedLiveSwaps] = useState<FailedLiveSwap[]>([]);
   const [cancelledSwapIds, setCancelledSwapIds] = useState<Set<string>>(() => new Set());
   const pendingSwapRequestSequenceRef = useRef(0);
@@ -3345,13 +3201,12 @@ export default function SessionExperience({
         savePending: true,
       };
       pendingLiveSwapRef.current.set(swapMutationKey(scope), pendingChoice);
-      pendingAudibleSwapRef.current.set(swapMutationKey(scope), pendingChoice);
       setPendingSwaps((previous) => [
         ...previous.filter((pending) => !(pending.sessionTrackId === currentItem.id && pending.stemType === stemType)),
         pendingChoice,
       ]);
       setSwapSaving(currentItem.id, stemType, true);
-      setStatus(`Saving ${stemType} source from “${donor.title}”… current playback continues until it is ready.`);
+      setStatus(`Saving ${stemType} source from “${donor.title}”… current playback continues.`);
       try {
         const detail = await mutate(`/api/library/sessions/${session.id}/swaps`, {
           method: "POST",
@@ -3379,13 +3234,11 @@ export default function SessionExperience({
                 cancelRequested,
               };
               pendingLiveSwapRef.current.set(swapMutationKey(scope), savedChoice);
-              pendingAudibleSwapRef.current.set(swapMutationKey(scope), savedChoice);
               setPendingSwaps((previous) => previous.map((pending) =>
                 pending.swapId === localSwapId ? savedChoice : pending,
               ));
             }
             if (cancelRequested) {
-              pendingAudibleSwapRef.current.delete(swapMutationKey(scope));
               if (isLatestChoice) {
                 setCancelledSwapIds((previous) => new Set([...previous, savedSwap.id]));
                 for (const deck of decksRef.current) {
@@ -3401,7 +3254,6 @@ export default function SessionExperience({
               );
               if (removal && isLatestChoice) {
                 pendingLiveSwapRef.current.delete(swapMutationKey(scope));
-                pendingAudibleSwapRef.current.delete(swapMutationKey(scope));
                 setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== savedSwap.id));
                 setCancelledSwapIds((previous) => {
                   const next = new Set(previous);
@@ -3417,14 +3269,12 @@ export default function SessionExperience({
             }
           } else if (isLatestChoice) {
             pendingLiveSwapRef.current.delete(swapMutationKey(scope));
-            pendingAudibleSwapRef.current.delete(swapMutationKey(scope));
             setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== localSwapId));
             setStatus(`${stemType} source saved, but the selected source could not be confirmed.`);
           }
         } else {
           if (swapMutationRequestVersionsRef.current.get(swapMutationKey(scope)) === requestSequence) {
             pendingLiveSwapRef.current.delete(swapMutationKey(scope));
-            pendingAudibleSwapRef.current.delete(swapMutationKey(scope));
           }
           setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== localSwapId));
           if (swapMutationRequestVersionsRef.current.get(swapMutationKey(scope)) === requestSequence) {
@@ -3434,9 +3284,6 @@ export default function SessionExperience({
       } finally {
         pendingSwapCancelRequestsRef.current.delete(localSwapId);
         if (swapMutationRequestVersionsRef.current.get(swapMutationKey(scope)) === requestSequence) {
-          if (pendingLiveSwapRef.current.get(swapMutationKey(scope))?.savePending) {
-            pendingAudibleSwapRef.current.delete(swapMutationKey(scope));
-          }
           setSwapSaving(currentItem.id, stemType, false);
         }
       }
@@ -3557,9 +3404,6 @@ export default function SessionExperience({
           if (pendingLiveSwapRef.current.get(scopeKey)?.selectedAt === pending?.selectedAt) {
             pendingLiveSwapRef.current.delete(scopeKey);
           }
-          if (pendingAudibleSwapRef.current.get(scopeKey)?.selectedAt === pending?.selectedAt) {
-            pendingAudibleSwapRef.current.delete(scopeKey);
-          }
           setPendingSwaps((previous) => previous.filter((pending) =>
             pending.swapId !== swapId && pending.swapId !== persistedSwapId,
           ));
@@ -3592,9 +3436,6 @@ export default function SessionExperience({
         swap.sessionTrackId === sessionTrackId && swap.stemType === stemType && swap.selectedAt === selectedAt,
       );
     if (pending) {
-      if (scopeKey && pendingAudibleSwapRef.current.get(scopeKey)?.selectedAt === selectedAt) {
-        pendingAudibleSwapRef.current.delete(scopeKey);
-      }
       setFailedLiveSwaps((previous) => [
         ...previous.filter((failed) => failed.sessionTrackId !== sessionTrackId || failed.stemType !== stemType),
         { sessionTrackId, stemType, selectedAt: pending.selectedAt, message, donor: pending.retryDonor },
@@ -3608,131 +3449,20 @@ export default function SessionExperience({
 
   const markLiveLayerReady = useCallback((sessionTrackId: string, stemType: string, selectedAt: number | null) => {
     const activeSessionId = sessionRef.current?.id;
-    let waitingForAudiblePosition = false;
     if (activeSessionId) {
       const key = swapMutationKey({ sessionId: activeSessionId, sessionTrackId, stemType });
       if (pendingLiveSwapRef.current.get(key)?.selectedAt === selectedAt) {
         pendingLiveSwapRef.current.delete(key);
       }
-      const audible = pendingAudibleSwapRef.current.get(key);
-      waitingForAudiblePosition = selectedAt !== null
-        && audible?.selectedAt === selectedAt
-        && audible.audiblePositionSaved !== true;
     }
-    setPendingSwaps((previous) => waitingForAudiblePosition
-      ? previous.map((pending) =>
-        pending.sessionTrackId === sessionTrackId && pending.stemType === stemType && pending.selectedAt === selectedAt
-          ? { ...pending, layerInstalled: true }
-          : pending,
-      )
-      : previous.filter(
-        (pending) => pending.sessionTrackId !== sessionTrackId || pending.stemType !== stemType || pending.selectedAt !== selectedAt,
-      ));
+    setPendingSwaps((previous) => previous.filter(
+      (pending) => pending.sessionTrackId !== sessionTrackId || pending.stemType !== stemType || pending.selectedAt !== selectedAt,
+    ));
     setFailedLiveSwaps((previous) => previous.filter(
       (failed) => failed.sessionTrackId !== sessionTrackId || failed.stemType !== stemType ||
         failed.selectedAt !== selectedAt,
     ));
   }, []);
-
-  const markLiveLayerAudible = useCallback((
-    sessionTrackId: string,
-    stemType: string,
-    selectedAt: number,
-    audibleAtSeconds: number,
-  ) => {
-    const currentSession = sessionRef.current;
-    if (!currentSession || !Number.isFinite(audibleAtSeconds) || audibleAtSeconds < 0) return;
-    const scope: SwapMutationScope = {
-      sessionId: currentSession.id,
-      sessionTrackId,
-      stemType,
-    };
-    const key = swapMutationKey(scope);
-    const pending = pendingAudibleSwapRef.current.get(key);
-    if (!pending || pending.selectedAt !== selectedAt || pending.savePending || pending.audiblePositionSaving) return;
-    let savedSwapId = pending.swapId;
-    let currentSavedSwap = currentSession.swaps.find((swap) =>
-      swap.id === pending.swapId &&
-      swap.sessionTrackId === sessionTrackId &&
-      swap.stemType === stemType,
-    );
-    if (!currentSavedSwap && pending.swapId.startsWith("pending-")) {
-      currentSavedSwap = currentSession.swaps.find((swap) =>
-        swap.sessionTrackId === sessionTrackId &&
-        swap.stemType === stemType &&
-        swap.toTrackId === pending.retryDonor.id,
-      );
-      if (currentSavedSwap) savedSwapId = currentSavedSwap.id;
-    }
-    if (!currentSavedSwap) {
-      pendingAudibleSwapRef.current.delete(key);
-      return;
-    }
-    const saving = {
-      ...pending,
-      swapId: savedSwapId,
-      audiblePositionSaving: true,
-      audibleAtSeconds,
-    };
-    pendingAudibleSwapRef.current.set(key, saving);
-    setPendingSwaps((previous) => previous.map((entry) =>
-      entry.sessionTrackId === sessionTrackId && entry.stemType === stemType && entry.selectedAt === selectedAt
-        ? { ...entry, audiblePositionSaving: true, audibleAtSeconds }
-        : entry,
-    ));
-    const mutationScope = { ...scope, requestSequence: pending.requestSequence };
-    void (async () => {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const detail = await mutate(`/api/library/sessions/${currentSession.id}/swaps`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            swapId: savedSwapId,
-            sessionTrackId,
-            stemType,
-            atSeconds: audibleAtSeconds,
-          }),
-        }, mutationScope);
-        const latest = pendingAudibleSwapRef.current.get(key);
-        if (latest?.selectedAt !== selectedAt) return;
-        if (swapMutationRequestVersionsRef.current.get(key) !== pending.requestSequence) {
-          pendingAudibleSwapRef.current.delete(key);
-          return;
-        }
-        if (detail) {
-          pendingAudibleSwapRef.current.set(key, {
-            ...latest,
-            audiblePositionSaving: false,
-            audiblePositionSaved: true,
-            audibleAtSeconds,
-          });
-          setStatus(`${stemType} donor began at ${formatClock(audibleAtSeconds)}; its playback-clock position was saved.`);
-          markLiveLayerReady(sessionTrackId, stemType, selectedAt);
-          return;
-        }
-        if (swapMutationRequestVersionsRef.current.get(key) !== pending.requestSequence) {
-          pendingAudibleSwapRef.current.delete(key);
-          return;
-        }
-        if (attempt === 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
-      }
-      const latest = pendingAudibleSwapRef.current.get(key);
-      if (latest?.selectedAt === selectedAt) {
-        pendingAudibleSwapRef.current.set(key, {
-          ...latest,
-          audiblePositionSaving: false,
-          audiblePositionSaved: false,
-          audibleAtSeconds,
-        });
-        setPendingSwaps((previous) => previous.map((entry) =>
-          entry.sessionTrackId === sessionTrackId && entry.stemType === stemType && entry.selectedAt === selectedAt
-            ? { ...entry, audiblePositionSaving: false, audiblePositionSaved: false, audibleAtSeconds }
-            : entry,
-        ));
-        setStatus(`${stemType} donor is audible, but its actual switch position could not be saved. The audio itself is unchanged.`);
-      }
-    })();
-  }, [markLiveLayerReady, mutate]);
 
   const retryFailedLiveSwaps = useCallback(async (sessionTrackId: string) => {
     const failures = failedLiveSwaps.filter((failed) => failed.sessionTrackId === sessionTrackId);
@@ -3741,13 +3471,6 @@ export default function SessionExperience({
 
   useEffect(() => {
     const savedSwapIds = new Set(session?.swaps.map((swap) => swap.id) ?? []);
-    for (const [key, pending] of pendingAudibleSwapRef.current) {
-      if (
-        session === null
-        || !key.startsWith(`${session.id}:`)
-        || (!pending.savePending && !savedSwapIds.has(pending.swapId))
-      ) pendingAudibleSwapRef.current.delete(key);
-    }
     setPendingSwaps((previous) => previous.filter((pending) =>
       pending.savePending || savedSwapIds.has(pending.swapId),
     ));
@@ -3764,12 +3487,8 @@ export default function SessionExperience({
       setStatus("Select at least one session track to send to Studio.");
       return;
     }
-    if (savingSelectedStudioSwap) {
+    if (savingSwap) {
       setStatus("Wait for the selected live stem swap to finish saving before sending it to Studio.");
-      return;
-    }
-    if (pendingSelectedStudioSwap) {
-      setStatus("Wait until each selected donor is audible and its actual playback position is saved before sending it to Studio.");
       return;
     }
     const selectedFullSourceEntries = session.tracks.filter((item) => {
@@ -3872,7 +3591,7 @@ export default function SessionExperience({
         setSendingToStudio(false);
       }
     })();
-  }, [session, selectedStudioTrackIds, library, savingSelectedStudioSwap, pendingSelectedStudioSwap, mixes]);
+  }, [session, selectedStudioTrackIds, library, savingSwap, mixes]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -4779,10 +4498,8 @@ export default function SessionExperience({
       stemExtra: isActive ? swapExtra : undefined,
       openSwapPickerStem: openSwapStem,
       onOpenSwapPicker: isActive ? (stemType: string) => setOpenSwapStem(stemType) : undefined,
-      onLiveLayerReady: markLiveLayerReady,
-      onLiveLayerAudible: markLiveLayerAudible,
-      onLiveLayerFailed: markLiveLayerFailed,
-      onLiveLayerStatus: setStatus,
+      onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
+      onLiveLayerFailed: isActive ? markLiveLayerFailed : undefined,
       liveSwapFailure: isActive && liveSwapFailures.length > 0
         ? liveSwapFailures.map((failure) => failure.message).join(" ")
         : null,
@@ -4981,32 +4698,9 @@ export default function SessionExperience({
             ? `Stopping ${pending.stemType} switch to “${pending.donorTitle}”; current playback continues. `
             : pending.savePending
             ? `Saving ${pending.stemType} source from “${pending.donorTitle}”; current playback continues. `
-            : pending.layerInstalled && pending.audiblePositionSaving
-            ? `${pending.stemType} donor is audible; saving its actual playback position. `
-            : pending.layerInstalled && pending.audibleAtSeconds !== undefined && !pending.audiblePositionSaved
-            ? `${pending.stemType} donor is audible, but its switch position still needs saving. `
-            : pending.layerInstalled
-            ? `${pending.stemType} donor is installed; start playback to confirm and save its actual switch position before Studio handoff. `
             : cancelledSwapIds.has(pending.swapId)
             ? `${pending.stemType} switch stopped; current playback continues. `
             : `Preparing ${pending.stemType} from “${pending.donorTitle}”; current playback continues. `}
-          {pending.layerInstalled && pending.audibleAtSeconds !== undefined && !pending.audiblePositionSaved && (
-            <button
-              type="button"
-              className="button tiny"
-              aria-label={`Retry saving ${pending.stemType} switch position`}
-              data-testid={`retry-live-stem-onset-${pending.stemType}`}
-              disabled={pending.audiblePositionSaving}
-              onClick={() => markLiveLayerAudible(
-                pending.sessionTrackId,
-                pending.stemType,
-                pending.selectedAt,
-                pending.audibleAtSeconds!,
-              )}
-            >
-              {pending.audiblePositionSaving ? "Saving position…" : "Retry position save"}
-            </button>
-          )}
           <button
             type="button"
             className="button tiny"
@@ -5235,20 +4929,11 @@ export default function SessionExperience({
           </div>
         </fieldset>
         <div className="wy-drawer-actions sess-studio-action">
-          {selectedStudioSwapNotAudible && (
-            <small
-              className="sess-studio-note"
-              data-testid="session-handoff-awaiting-live-stem"
-              role="status"
-            >
-              Selected live stem changes must become audible and save their actual playback positions before Studio handoff.
-            </small>
-          )}
           <button
             type="button"
             className="button secondary"
             onClick={sendToStudio}
-            disabled={selectedStudioTrackIds.length === 0 || sendingToStudio || selectedStudioSwapNotAudible}
+            disabled={selectedStudioTrackIds.length === 0 || sendingToStudio}
             data-testid="session-handoff"
           >
             {sendingToStudio

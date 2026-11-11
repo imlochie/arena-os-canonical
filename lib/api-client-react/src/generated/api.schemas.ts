@@ -5,18 +5,6 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-export interface SessionStemSwapAudibleInput {
-  swapId: string;
-  sessionTrackId: string;
-  /**
-     * @minLength 1
-     * @maxLength 64
-     */
-  stemType: string;
-  /** @minimum 0 */
-  atSeconds: number;
-}
-
 export interface ListeningSessionOrderInput {
   sessionTrackId: string;
   /** @minimum 0 */
@@ -859,8 +847,6 @@ export interface SeparationCancellationResponse {
   stage: string;
   message?: string;
 }
-
-export type RecordListeningSessionSwapAudiblePosition200 = { [key: string]: unknown };
 
 export type ReorderListeningSession200 = { [key: string]: unknown };
 

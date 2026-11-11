@@ -9,29 +9,6 @@ import * as zod from 'zod';
 
 
 /**
- * @summary Record the playback position where a saved donor stem begins
- */
-export const RecordListeningSessionSwapAudiblePositionParams = zod.object({
-  "id": zod.coerce.string().uuid()
-})
-
-export const recordListeningSessionSwapAudiblePositionBodyStemTypeMax = 64;
-
-export const recordListeningSessionSwapAudiblePositionBodyAtSecondsMin = 0;
-
-
-
-export const RecordListeningSessionSwapAudiblePositionBody = zod.object({
-  "swapId": zod.string().uuid(),
-  "sessionTrackId": zod.string().uuid(),
-  "stemType": zod.string().min(1).max(recordListeningSessionSwapAudiblePositionBodyStemTypeMax),
-  "atSeconds": zod.number().min(recordListeningSessionSwapAudiblePositionBodyAtSecondsMin)
-})
-
-export const RecordListeningSessionSwapAudiblePositionResponse = zod.record(zod.string(), zod.unknown())
-
-
-/**
  * @summary Move a session entry, optionally within playlist-only slots
  */
 export const ReorderListeningSessionParams = zod.object({

@@ -19,7 +19,6 @@ import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
 import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
 import { trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
-import type { AutomationPoint } from "../types/arrangement-automation";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v1";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
@@ -76,8 +75,7 @@ export type MashupPlanResult =
 const LOCK_TOLERANCE = 0.03;
 const CROSSFADE_MS = 250;
 /** Bed attenuation while vocals are active (the classic mashup pocket). */
-export const MASHUP_DUCK_DEPTH = 0.28;
-export const MASHUP_DONOR_STEM_BASE_VOLUME = 0.6;
+const DUCK_DEPTH = 0.28;
 
 function isIntro(label: string): boolean {
   return /intro/i.test(label);
@@ -409,83 +407,6 @@ function trapezoidGain(atMs: number, startMs: number, endMs: number, crossfadeMs
   return 1;
 }
 
-/**
- * Build the saved Studio volume lane that mirrors the renderer's donor-stem
- * ducking. The max of overlapping vocal trapezoids is piecewise linear; add
- * both their corners and any pairwise crossings so linear automation retains
- * that same envelope after a remix is reopened.
- */
-export function buildMashupDonorDuckingAutomation(
-  plan: MashupPlan,
-  baseVolume = MASHUP_DONOR_STEM_BASE_VOLUME,
-): AutomationPoint[] {
-  if (!Number.isFinite(plan.durationMs) || plan.durationMs <= 0
-    || !Number.isFinite(baseVolume) || baseVolume < 0 || baseVolume > 2) return [];
-
-  const segments = plan.segments.filter((segment) =>
-    Number.isFinite(segment.mashupStartMs)
-    && Number.isFinite(segment.mashupEndMs)
-    && Number.isFinite(segment.crossfadeMs)
-    && segment.mashupEndMs > segment.mashupStartMs,
-  );
-  if (segments.length === 0) return [];
-
-  const clampTime = (time: number) => Math.max(0, Math.min(plan.durationMs, time));
-  const boundaries = new Set<number>([0, plan.durationMs]);
-  for (const segment of segments) {
-    const start = clampTime(segment.mashupStartMs);
-    const end = clampTime(segment.mashupEndMs);
-    const crossfade = Math.max(0, segment.crossfadeMs);
-    boundaries.add(start);
-    boundaries.add(end);
-    boundaries.add(clampTime(segment.mashupStartMs + crossfade));
-    boundaries.add(clampTime(segment.mashupEndMs - crossfade));
-  }
-
-  const envelopeAt = (time: number) => segments.reduce(
-    (maximum, segment) => Math.max(
-      maximum,
-      trapezoidGain(time, segment.mashupStartMs, segment.mashupEndMs, Math.max(0, segment.crossfadeMs)),
-    ),
-    0,
-  );
-  const orderedBoundaries = [...boundaries].sort((left, right) => left - right);
-  const breakpoints = new Set(orderedBoundaries);
-  for (let index = 1; index < orderedBoundaries.length; index += 1) {
-    const left = orderedBoundaries[index - 1]!;
-    const right = orderedBoundaries[index]!;
-    if (right <= left) continue;
-    const leftValues = segments.map((segment) =>
-      trapezoidGain(left, segment.mashupStartMs, segment.mashupEndMs, Math.max(0, segment.crossfadeMs)),
-    );
-    const rightValues = segments.map((segment) =>
-      trapezoidGain(right, segment.mashupStartMs, segment.mashupEndMs, Math.max(0, segment.crossfadeMs)),
-    );
-    for (let first = 0; first < segments.length; first += 1) {
-      for (let second = first + 1; second < segments.length; second += 1) {
-        const differenceAtLeft = leftValues[first]! - leftValues[second]!;
-        const differenceAtRight = rightValues[first]! - rightValues[second]!;
-        if (differenceAtLeft * differenceAtRight >= 0) continue;
-        const fraction = differenceAtLeft / (differenceAtLeft - differenceAtRight);
-        if (fraction > 0 && fraction < 1) breakpoints.add(left + (right - left) * fraction);
-      }
-    }
-  }
-
-  // The persistence schema stores integer milliseconds. Merge points that
-  // round to the same frame, evaluating the original envelope at that time.
-  const pointsByTime = new Map<number, AutomationPoint>();
-  for (const time of [...breakpoints].sort((left, right) => left - right)) {
-    const timelineMs = Math.round(clampTime(time));
-    const duck = envelopeAt(timelineMs);
-    pointsByTime.set(timelineMs, {
-      timelineMs,
-      value: baseVolume * (1 - MASHUP_DUCK_DEPTH * duck),
-    });
-  }
-  return [...pointsByTime.values()].sort((left, right) => left.timelineMs - right.timelineMs);
-}
-
 /** Mix the plan: bed (ducked under vocals) + stretched/pitched vocal
  *  segments with trapezoid fades. Deterministic from the plan. */
 export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuffer {
@@ -532,7 +453,7 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     for (const { segment } of prepared) {
       duck = Math.max(duck, trapezoidGain(atMs, segment.mashupStartMs, segment.mashupEndMs, segment.crossfadeMs));
     }
-    const bedGain = 1 - MASHUP_DUCK_DEPTH * duck;
+    const bedGain = 1 - DUCK_DEPTH * duck;
 
     let left = 0;
     let right = 0;
@@ -553,7 +474,9 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     // Mix prepared discrete stems with dynamic ducking into the vocal pocket
     for (const { pcm: stemBuffer } of preparedStems) {
       if (frame * 2 + 1 < stemBuffer.length) {
-        const dynamicGain = MASHUP_DONOR_STEM_BASE_VOLUME * (1 - MASHUP_DUCK_DEPTH * duck);
+        const stemGain = 0.6;
+        const stemDuck = DUCK_DEPTH;
+        const dynamicGain = stemGain * (1 - stemDuck * duck);
         left += stemBuffer[frame * 2] * dynamicGain;
         right += stemBuffer[frame * 2 + 1] * dynamicGain;
       }

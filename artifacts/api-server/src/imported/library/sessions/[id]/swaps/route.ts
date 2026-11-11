@@ -1,6 +1,5 @@
 
 import { z } from "zod";
-import { RecordListeningSessionSwapAudiblePositionBody } from "@workspace/api-zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import {
@@ -10,7 +9,6 @@ import {
   TrackNotInLibraryError,
   getSession,
   recordStemSwap,
-  recordStemSwapAudiblePosition,
   removeStemSwap,
 } from "@workspace/arena/lib/waveyard/library/session-service";
 
@@ -56,26 +54,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (error instanceof SessionTrackNotFoundError) return Response.json({ error: "Session track not found." }, { status: 404 });
     if (error instanceof TrackNotInLibraryError) return Response.json({ error: "Track not found." }, { status: 404 });
     if (error instanceof StemSwapRefusedError) return Response.json({ error: error.message }, { status: 409 });
-    if (error instanceof Response) return error;
-    throw error;
-  }
-}
-
-/** PATCH /api/library/sessions/[id]/swaps — record the actual playback-clock
- * position after the selected donor layer starts, guarded by its swap id. */
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const user = await requireUser();
-    const { id } = await params;
-    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
-    const parsed = RecordListeningSessionSwapAudiblePositionBody.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) {
-      return Response.json({ error: "A swap, session track, stem type, and valid playback position are required." }, { status: 400 });
-    }
-    const session = await recordStemSwapAudiblePosition({ ownerId: user.id, sessionId: id, ...parsed.data });
-    return Response.json({ session });
-  } catch (error) {
-    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }

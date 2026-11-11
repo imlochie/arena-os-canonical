@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { clipFadeShapeOrLinear, fadeCurveSamples, fadeGainAt } from "./fades";
 import { clearArrangementPreviewGraph } from "./arrangement-preview-graph";
 import { selectArrangementPreviewTracks } from "./arrangement-preview-selection";
-import { arrangementPreviewGainCurve, hasArrangementVolumeAutomation } from "./arrangement-preview-gain";
 import {
   ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES,
   ARRANGEMENT_PREVIEW_MAX_STREAM_ASSET_BYTES,
@@ -23,7 +22,6 @@ import {
   type Pcm16WavHeader,
 } from "./arrangement-preview-segments";
 import type { RemixTrackInput } from "./remix";
-import type { RemixAutomationLane } from "./types/arrangement-automation";
 
 type PreviewClip = RemixTrackInput["clips"][number];
 type PreviewTrack = RemixTrackInput;
@@ -32,7 +30,6 @@ type PreviewState = {
   loopStartMs: number;
   loopEndMs: number | null;
   tracks: PreviewTrack[];
-  automation?: RemixAutomationLane[];
   previewAssets?: ArrangementPreviewAssetMetadata[];
 };
 
@@ -416,17 +413,13 @@ export function useArrangementPreview(
       if (panner) { gain.connect(panner); panner.pan.value = segment.track.pan; panner.connect(master); }
       else gain.connect(master);
 
+      const baseGain = segment.track.volume * segment.clip.gain;
       const clipElapsedMs = segment.clipElapsedMs + lateMs;
-      const curve = arrangementPreviewGainCurve({
-        trackId: segment.track.id,
-        trackVolume: segment.track.volume,
-        automation: state.automation,
-        clip: segment.clip,
-        clipElapsedMs,
-        timelineStartMs: segment.timelineStartMs + lateMs,
-        durationMs: remainingMs,
-        samples: Math.max(33, Math.ceil(remainingMs / 20) + 1),
-      });
+      const curve = new Float32Array(33);
+      for (let index = 0; index < curve.length; index += 1) {
+        const offset = clipElapsedMs + remainingMs * index / (curve.length - 1);
+        curve[index] = baseGain * clipLevelAt(segment.clip, offset);
+      }
       gain.gain.setValueCurveAtTime(curve, startAt, playDurationSeconds);
       source.start(startAt, sourceOffsetSeconds, playDurationSeconds);
       source.onended = () => {
@@ -580,62 +573,48 @@ export function useArrangementPreview(
         const remainingMs = playDurationMs;
         const clipElapsedMs = plan.clipElapsedMs;
         const baseGain = plan.track.volume * plan.clip.gain;
+        const initialGain = baseGain * clipLevelAt(plan.clip, clipElapsedMs);
         item.gain.gain.setValueAtTime(0, audio.currentTime);
-        if (hasArrangementVolumeAutomation(state.automation, plan.track.id)) {
-          const curve = arrangementPreviewGainCurve({
-            trackId: plan.track.id,
-            trackVolume: plan.track.volume,
-            automation: state.automation,
-            clip: plan.clip,
-            clipElapsedMs,
-            timelineStartMs: plan.timelineStartMs,
-            durationMs: remainingMs,
-            samples: Math.max(65, Math.ceil(remainingMs / 20) + 1),
-          });
-          item.gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1_000);
+        item.gain.gain.setValueAtTime(initialGain, startAt);
+        const fadeShape = clipFadeShapeOrLinear(plan.clip.fadeShape);
+        const fadeOutStart = plan.clip.durationMs - plan.clip.fadeOutMs;
+        if (fadeShape === "linear") {
+          if (plan.clip.fadeInMs > clipElapsedMs) {
+            item.gain.gain.linearRampToValueAtTime(
+              baseGain,
+              startAt + (plan.clip.fadeInMs - clipElapsedMs) / 1_000,
+            );
+          }
+          if (plan.clip.fadeOutMs > 0) {
+            const untilFadeMs = fadeOutStart - clipElapsedMs;
+            const endAt = startAt + remainingMs / 1_000;
+            if (untilFadeMs > 0) {
+              item.gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1_000);
+            }
+            item.gain.gain.linearRampToValueAtTime(0, endAt);
+          }
         } else {
-          const initialGain = baseGain * clipLevelAt(plan.clip, clipElapsedMs);
-          item.gain.gain.setValueAtTime(initialGain, startAt);
-          const fadeShape = clipFadeShapeOrLinear(plan.clip.fadeShape);
-          const fadeOutStart = plan.clip.durationMs - plan.clip.fadeOutMs;
-          if (fadeShape === "linear") {
-            if (plan.clip.fadeInMs > clipElapsedMs) {
-              item.gain.gain.linearRampToValueAtTime(
-                baseGain,
-                startAt + (plan.clip.fadeInMs - clipElapsedMs) / 1_000,
-              );
-            }
-            if (plan.clip.fadeOutMs > 0) {
-              const untilFadeMs = fadeOutStart - clipElapsedMs;
-              const endAt = startAt + remainingMs / 1_000;
-              if (untilFadeMs > 0) {
-                item.gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1_000);
-              }
-              item.gain.gain.linearRampToValueAtTime(0, endAt);
-            }
-          } else {
-            if (plan.clip.fadeInMs > clipElapsedMs) {
-              const curve = fadeCurveSamples(fadeShape, clipElapsedMs / plan.clip.fadeInMs, 1, 65);
-              for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
-              item.gain.gain.setValueCurveAtTime(
-                curve,
-                startAt,
-                (plan.clip.fadeInMs - clipElapsedMs) / 1_000,
-              );
-            }
-            if (plan.clip.fadeOutMs > 0 && fadeOutStart > clipElapsedMs) {
-              const curve = fadeCurveSamples(fadeShape, 1, 0, 65);
-              for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
-              item.gain.gain.setValueCurveAtTime(
-                curve,
-                startAt + (fadeOutStart - clipElapsedMs) / 1_000,
-                plan.clip.fadeOutMs / 1_000,
-              );
-            } else if (plan.clip.fadeOutMs > 0) {
-              const curve = fadeCurveSamples(fadeShape, remainingMs / plan.clip.fadeOutMs, 0, 65);
-              for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
-              item.gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1_000);
-            }
+          if (plan.clip.fadeInMs > clipElapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, clipElapsedMs / plan.clip.fadeInMs, 1, 65);
+            for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
+            item.gain.gain.setValueCurveAtTime(
+              curve,
+              startAt,
+              (plan.clip.fadeInMs - clipElapsedMs) / 1_000,
+            );
+          }
+          if (plan.clip.fadeOutMs > 0 && fadeOutStart > clipElapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, 1, 0, 65);
+            for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
+            item.gain.gain.setValueCurveAtTime(
+              curve,
+              startAt + (fadeOutStart - clipElapsedMs) / 1_000,
+              plan.clip.fadeOutMs / 1_000,
+            );
+          } else if (plan.clip.fadeOutMs > 0) {
+            const curve = fadeCurveSamples(fadeShape, remainingMs / plan.clip.fadeOutMs, 0, 65);
+            for (let index = 0; index < curve.length; index += 1) curve[index] *= baseGain;
+            item.gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1_000);
           }
         }
 
@@ -817,52 +796,38 @@ export function useArrangementPreview(
         source.connect(gain);
         if (panner) { gain.connect(panner); panner.pan.value = track.pan; panner.connect(master); }
         else gain.connect(master);
+        const baseGain = track.volume * clip.gain;
         const startAt = audio.currentTime + Math.max(0, (clip.timelineStartMs - startMs) / 1000);
         const remainingMs = clip.durationMs - elapsedMs;
-        if (hasArrangementVolumeAutomation(state.automation, track.id)) {
-          gain.gain.setValueAtTime(0, audio.currentTime);
-          gain.gain.setValueCurveAtTime(arrangementPreviewGainCurve({
-            trackId: track.id,
-            trackVolume: track.volume,
-            automation: state.automation,
-            clip,
-            clipElapsedMs: elapsedMs,
-            timelineStartMs: clip.timelineStartMs + elapsedMs,
-            durationMs: remainingMs,
-            samples: Math.max(65, Math.ceil(remainingMs / 20) + 1),
-          }), startAt, remainingMs / 1_000);
+        const level = baseGain * clipLevelAt(clip, elapsedMs);
+        gain.gain.setValueAtTime(level, startAt);
+        const fadeShape = clipFadeShapeOrLinear(clip.fadeShape);
+        const fadeOutStart = clip.durationMs - clip.fadeOutMs;
+        if (fadeShape === "linear") {
+          if (clip.fadeInMs > elapsedMs)
+            gain.gain.linearRampToValueAtTime(baseGain, startAt + (clip.fadeInMs - elapsedMs) / 1000);
+          if (clip.fadeOutMs > 0) {
+            const untilFadeMs = fadeOutStart - elapsedMs;
+            const endAt = startAt + remainingMs / 1000;
+            if (untilFadeMs > 0) {
+              gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1000);
+              gain.gain.linearRampToValueAtTime(0, endAt);
+            } else gain.gain.linearRampToValueAtTime(0, endAt);
+          }
         } else {
-          const baseGain = track.volume * clip.gain;
-          const level = baseGain * clipLevelAt(clip, elapsedMs);
-          gain.gain.setValueAtTime(level, startAt);
-          const fadeShape = clipFadeShapeOrLinear(clip.fadeShape);
-          const fadeOutStart = clip.durationMs - clip.fadeOutMs;
-          if (fadeShape === "linear") {
-            if (clip.fadeInMs > elapsedMs)
-              gain.gain.linearRampToValueAtTime(baseGain, startAt + (clip.fadeInMs - elapsedMs) / 1000);
-            if (clip.fadeOutMs > 0) {
-              const untilFadeMs = fadeOutStart - elapsedMs;
-              const endAt = startAt + remainingMs / 1000;
-              if (untilFadeMs > 0) {
-                gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1000);
-                gain.gain.linearRampToValueAtTime(0, endAt);
-              } else gain.gain.linearRampToValueAtTime(0, endAt);
-            }
-          } else {
-            if (clip.fadeInMs > elapsedMs) {
-              const curve = fadeCurveSamples(fadeShape, elapsedMs / clip.fadeInMs, 1, 65);
-              for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
-              gain.gain.setValueCurveAtTime(curve, startAt, (clip.fadeInMs - elapsedMs) / 1000);
-            }
-            if (clip.fadeOutMs > 0 && fadeOutStart > elapsedMs) {
-              const curve = fadeCurveSamples(fadeShape, 1, 0, 65);
-              for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
-              gain.gain.setValueCurveAtTime(curve, startAt + (fadeOutStart - elapsedMs) / 1000, clip.fadeOutMs / 1000);
-            } else if (clip.fadeOutMs > 0) {
-              const curve = fadeCurveSamples(fadeShape, remainingMs / clip.fadeOutMs, 0, 65);
-              for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
-              gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1000);
-            }
+          if (clip.fadeInMs > elapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, elapsedMs / clip.fadeInMs, 1, 65);
+            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
+            gain.gain.setValueCurveAtTime(curve, startAt, (clip.fadeInMs - elapsedMs) / 1000);
+          }
+          if (clip.fadeOutMs > 0 && fadeOutStart > elapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, 1, 0, 65);
+            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
+            gain.gain.setValueCurveAtTime(curve, startAt + (fadeOutStart - elapsedMs) / 1000, clip.fadeOutMs / 1000);
+          } else if (clip.fadeOutMs > 0) {
+            const curve = fadeCurveSamples(fadeShape, remainingMs / clip.fadeOutMs, 0, 65);
+            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
+            gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1000);
           }
         }
         source.start(startAt, (clip.sourceOffsetMs + elapsedMs) / 1000, remainingMs / 1000);

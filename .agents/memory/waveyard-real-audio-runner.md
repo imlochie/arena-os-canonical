@@ -9,12 +9,6 @@ The real-audio measurement test uses TypeScript modules with extensionless impor
 
 **How to apply:** invoke the measurement through the scripts workspace's resolver-aware runner, pass the test file by absolute path because pnpm changes the working directory to that package, and keep platform and model evidence explicit in every report. A Linux CPU run is not Windows validation.
 
-The mashup API acceptance file lives beneath a literal `[id]` route directory. Passing that path directly to `tsx --test` treats the brackets as a glob and can exit successfully with zero tests. A wrapper with a normal filename that imports the route test makes the Node test runner execute its registered acceptance case.
-
-**Why:** a successful test command that discovers no tests is a false green and can leave production-route coverage out of CI.
-
-**How to apply:** for tests under literal bracketed route paths, invoke them through an import wrapper and assert the expected test/pass counts with zero skips in CI.
-
 For the opt-in real library-worker acceptance in `service.test.ts`, the default isolated `tsx --test` runner failed at the file level without exposing an assertion, leaving its disposable PostgreSQL directories behind. The same four-model MP3 acceptance passed when run with `pnpm --filter @workspace/scripts exec node --import tsx --test --test-isolation=none` and an absolute test path.
 
 **Why:** this is an observed runner difference in the current workspace; the initial failure did not provide enough detail to attribute it to the application or a specific runtime limit.

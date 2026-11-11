@@ -1069,47 +1069,6 @@ export async function recordStemSwap(input: {
   return sessionPayload(input.sessionId);
 }
 
-/**
- * Persist the recipient playback-clock position when a selected donor layer
- * actually starts. The swap id is a compare token: an older audible event
- * cannot rewrite the timing for a newer donor selection on the same stem.
- */
-export async function recordStemSwapAudiblePosition(input: {
-  ownerId: string;
-  sessionId: string;
-  swapId: string;
-  sessionTrackId: string;
-  stemType: string;
-  atSeconds: number;
-}): Promise<SessionDetailPayload> {
-  await ownedSession(input.ownerId, input.sessionId);
-  if (!Number.isFinite(input.atSeconds) || input.atSeconds < 0) {
-    throw new StemSwapRefusedError("The audible playback position is invalid.");
-  }
-
-  let changed = false;
-  await db.transaction(async (tx) => {
-    await tx.select({ id: listenSessions.id }).from(listenSessions)
-      .where(eq(listenSessions.id, input.sessionId)).for("update");
-    const [updated] = await tx.update(listenSessionSwaps)
-      .set({ atSeconds: input.atSeconds })
-      .where(and(
-        eq(listenSessionSwaps.id, input.swapId),
-        eq(listenSessionSwaps.sessionId, input.sessionId),
-        eq(listenSessionSwaps.sessionTrackId, input.sessionTrackId),
-        eq(listenSessionSwaps.stemType, input.stemType),
-      ))
-      .returning({ id: listenSessionSwaps.id });
-    if (updated) {
-      changed = true;
-      await tx.update(listenSessions).set({ updatedAt: new Date() })
-        .where(and(eq(listenSessions.id, input.sessionId), eq(listenSessions.ownerId, input.ownerId)));
-    }
-  });
-  if (changed) await touchSession(input.sessionId);
-  return sessionPayload(input.sessionId);
-}
-
 export async function removeStemSwap(ownerId: string, sessionId: string, swapId: string): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
   await db.transaction(async (tx) => {

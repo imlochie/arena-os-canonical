@@ -2064,19 +2064,6 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     detail.tracks[0].stems.find((stem) => stem.stemType === "drums")?.id,
     "the original stem asset is pinned",
   );
-  const audiblePositionSaved = await sessions.recordStemSwapAudiblePosition({
-    ownerId: OWNER,
-    sessionId: created.id,
-    swapId: swap.id,
-    sessionTrackId: sessionTrackB,
-    stemType: "drums",
-    atSeconds: 12.875,
-  });
-  assert.equal(
-    audiblePositionSaved.swaps.find((entry) => entry.id === swap.id)?.atSeconds,
-    12.875,
-    "the persisted swap position is updated from the receiving audio clock after the donor starts",
-  );
   assert.equal(swap.donorTrack?.id, trackA.id, "restored swap includes the donor track");
   assert.ok(swap.donorTrack?.stems.some((stem) => stem.stemType === "drums"), "restored donor includes the real replacement stem");
   assert.equal(
@@ -2155,19 +2142,6 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     stemType: "drums", toTrackId: trackB.id, atSeconds: 21,
   });
   const newerDrums = newSelection.swaps.find((entry) => entry.stemType === "drums")!;
-  const staleAudiblePosition = await sessions.recordStemSwapAudiblePosition({
-    ownerId: OWNER,
-    sessionId: created.id,
-    swapId: previousDrums.id,
-    sessionTrackId: sessionTrackB,
-    stemType: "drums",
-    atSeconds: 99,
-  });
-  assert.equal(
-    staleAudiblePosition.swaps.find((entry) => entry.stemType === "drums")?.atSeconds,
-    21,
-    "a late timing report for a removed swap cannot overwrite the latest donor's onset",
-  );
   const staleRestore = await sessions.recordStemSwap(rollback);
   assert.equal(staleRestore.swaps.find((entry) => entry.stemType === "drums")!.id, newerDrums.id,
     "a late failed-B restore cannot overwrite a newer selection");
