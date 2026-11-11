@@ -29,7 +29,7 @@
 - [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, use raw TSX instrumentation, and label WebKit emulation honestly.
 - [Waveyard output protection](waveyard-output-protection.md) — protect the actual summed output without rewriting faders; sample peaks are not true-peak or hardware evidence.
 - [Waveyard worklet test boundary](waveyard-worklet-boundary.md) — keep Vite-only worklet URLs at the browser adapter so Node tests can import the DSP core.
-- [Waveyard touch gesture tests](waveyard-touch-tests.md) — preflight visible touch coordinates so offscreen clip bounds do not turn gesture failures into misleading scroll results.
+- [Waveyard touch gesture tests](waveyard-touch-tests.md) — intersect with the scrollport and dispatch the exact validated point away from `touch-action:none` controls.
 - [Waveyard startup recovery](waveyard-startup-recovery.md) — retry transient database outages at boot within bounds; fail fast on schema errors.
 - [Playwright touch evidence](playwright-touch-emulation.md) — native pan needs touch input; Chromium emulation is not proof of iOS Safari or physical Android behavior.
 - [Arcade emulator evidence](arcade-emulator-test-evidence.md) — wait for initialized fixture output; distinguish import refusal from runtime sandbox isolation.

@@ -1,5 +1,13 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, mobile timeline touch-scroll validation
+
+* **Hardening:** The Arena smoke test now chooses a touch start inside the intersection of the visible clip, timeline scrollport, and viewport; it validates the exact hit target and dispatches that exact point away from trim/move controls. This avoids rounding a valid clip point onto a `touch-action:none` trim handle. Failed swipes capture the actual touch/pointer target and effective touch-action path.
+* **Regression evidence:** The phone-sized horizontal timeline swipe passed while confirming the slider value and clip position stayed unchanged. This corrects a false test failure; no application runtime behavior changed.
+* **Verification:** The configured `test` command was run directly and exited 0. `node --check scripts/arena-smoke.mjs` and `git diff --check` passed. The live-stem timing matrix passed in Chromium; WebKit and Firefox were skipped because their Playwright browser binaries are absent.
+* **Files changed:** `scripts/arena-smoke.mjs` and this handoff. Agent memory also records the exact-coordinate touch-test constraint.
+* **Remaining limitation:** Chromium CDP touch emulation is not physical Android/iOS testing. This verification does not establish native-device scrolling or Windows packaged-app behavior.
+
 ## Current verification update — 2026-11-11, retain completed donor stems during retries
 
 * **Hardening:** Mashup donor lookup now joins stems to completed separation jobs in one query and verifies the job belongs to the requested project and source. A newer queued/running/failed attempt no longer hides a usable stem from the last completed run; incomplete stems remain excluded.
