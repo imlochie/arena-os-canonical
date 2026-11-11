@@ -11,6 +11,8 @@ import {
   projects,
   sourceAssets,
   sourceAnalyses,
+  sourceSectionAnalyses,
+  sourceSections,
   processingJobs,
   stemAssets,
   remixSessions,
@@ -22,6 +24,7 @@ import { applyDesktopMigrationsToPGlite } from "../worker-local/pglite-migration
 import { planMashup, renderMashup, type MashupSourceProfile } from "./mashup";
 import { loadSourceProfile } from "./mashup-sources";
 import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
+import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 
 test("Genuine database round-trip acceptance: plan -> save remix -> query tracks/clips -> edit -> update version", async () => {
   const client = new PGlite();
@@ -376,7 +379,7 @@ test("deterministic analysis selection and beat snapping gating across competing
 
     // Insert initial analysis
     const initialGrid = [0, 500, 1000, 1500, 2000];
-    await db.insert(sourceAnalyses).values({
+    const [sourceAnalysis] = await db.insert(sourceAnalyses).values({
       projectId: project.id,
       sourceAssetId: source.id,
       status: "complete",
@@ -394,7 +397,8 @@ test("deterministic analysis selection and beat snapping gating across competing
       beatGrid: JSON.stringify(initialGrid),
       completedAt: new Date(),
       createdAt: new Date(),
-    });
+    }).returning({ id: sourceAnalyses.id });
+    assert.ok(sourceAnalysis);
 
     // Query analysis using loadSourceProfile
     const profile = await loadSourceProfile(project.id, source.id, "instrumental", db);
@@ -405,6 +409,101 @@ test("deterministic analysis selection and beat snapping gating across competing
     assert.equal(profile.bpmConfidence, 0.95);
     assert.equal(profile.beatConfidence, 0.92);
     assert.deepEqual(profile.beatGridMs, initialGrid);
+    assert.deepEqual(profile.sections, [], "sections without a completed current analysis must be ignored");
+
+    const oldSectionVersion = "1.4.0";
+    const [sectionAnalysis] = await db.insert(sourceSectionAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      sourceAnalysisId: sourceAnalysis.id,
+      status: "complete",
+      stage: "complete",
+      attempts: 1,
+      idempotencyKey: `section-analysis-${randomUUID()}`,
+      analysisEngine: DESKTOP_SECTION_ENGINE,
+      analysisEngineVersion: oldSectionVersion,
+      sourceChecksumSha256: "a".repeat(64),
+      completedAt: new Date(),
+    }).returning({ id: sourceSectionAnalyses.id });
+    assert.ok(sectionAnalysis);
+
+    const sectionRow = (input: {
+      id: string;
+      sectionIndex: number;
+      label: string;
+      startMs: number;
+      endMs: number;
+      sourceChecksumSha256: string;
+      analysisEngineVersion: string;
+    }) => ({
+      id: input.id,
+      projectId: project.id,
+      sourceAssetId: source.id,
+      sourceAnalysisId: sourceAnalysis.id,
+      sourceSectionAnalysisId: sectionAnalysis.id,
+      sectionIndex: input.sectionIndex,
+      startMs: input.startMs,
+      endMs: input.endMs,
+      startBeatIndex: input.sectionIndex * 8,
+      endBeatIndex: input.sectionIndex * 8 + 8,
+      startBar: input.sectionIndex * 2,
+      endBar: input.sectionIndex * 2 + 2,
+      label: input.label,
+      labelConfidence: 0.9,
+      structuralConfidence: 0.9,
+      analysisEngine: DESKTOP_SECTION_ENGINE,
+      analysisEngineVersion: input.analysisEngineVersion,
+      sourceChecksumSha256: input.sourceChecksumSha256,
+    });
+
+    await db.insert(sourceSections).values(sectionRow({
+      id: "stale-section-engine",
+      sectionIndex: 0,
+      label: "stale verse",
+      startMs: 0,
+      endMs: 30_000,
+      sourceChecksumSha256: "a".repeat(64),
+      analysisEngineVersion: oldSectionVersion,
+    }));
+    let profileWithOldSections = await loadSourceProfile(project.id, source.id, "instrumental", db);
+    assert.deepEqual(profileWithOldSections?.sections, [], "old section-engine versions must not shape the mashup");
+
+    await db.update(sourceSectionAnalyses)
+      .set({ analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION })
+      .where(eq(sourceSectionAnalyses.id, sectionAnalysis.id));
+    await db.insert(sourceSections).values([
+      sectionRow({
+        id: "stale-section-checksum",
+        sectionIndex: 1,
+        label: "stale outro",
+        startMs: 90_000,
+        endMs: 120_000,
+        sourceChecksumSha256: "b".repeat(64),
+        analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+      }),
+      sectionRow({
+        id: "current-section",
+        sectionIndex: 2,
+        label: "current chorus",
+        startMs: 40_000,
+        endMs: 60_000,
+        sourceChecksumSha256: "a".repeat(64),
+        analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+      }),
+      sectionRow({
+        id: "invalid-duration-section",
+        sectionIndex: 3,
+        label: "invalid outro",
+        startMs: 110_000,
+        endMs: 121_000,
+        sourceChecksumSha256: "a".repeat(64),
+        analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+      }),
+    ]);
+    profileWithOldSections = await loadSourceProfile(project.id, source.id, "instrumental", db);
+    assert.deepEqual(profileWithOldSections?.sections, [
+      { label: "current chorus", startMs: 40_000, endMs: 60_000 },
+    ], "only source-checksum-, analysis-, engine-, and duration-current sections may shape a mashup");
 
     // Verify scoping: query with a different project ID yields null
     const foreignProjectProfile = await loadSourceProfile(randomUUID(), source.id, "instrumental", db);

@@ -7,8 +7,9 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
-import { sourceAnalyses, sourceAssets, sourceSections } from "@workspace/db/waveyardSchema";
+import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections } from "@workspace/db/waveyardSchema";
 import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
+import { isCurrentDesktopSectionAnalysis } from "../types/analysis-provenance";
 import type { MashupSourceProfile } from "./mashup";
 
 export async function loadSourceProfile(
@@ -30,6 +31,7 @@ export async function loadSourceProfile(
 
   const [analysis] = await database
     .select({
+      id: sourceAnalyses.id,
       bpm: sourceAnalyses.bpm,
       bpmConfidence: sourceAnalyses.bpmConfidence,
       musicalKey: sourceAnalyses.musicalKey,
@@ -51,11 +53,53 @@ export async function loadSourceProfile(
     .orderBy(desc(sourceAnalyses.createdAt), desc(sourceAnalyses.id))
     .limit(1);
 
-  const sections = await database
-    .select({ label: sourceSections.label, startMs: sourceSections.startMs, endMs: sourceSections.endMs })
-    .from(sourceSections)
-    .where(eq(sourceSections.sourceAssetId, sourceAssetId))
-    .orderBy(asc(sourceSections.startMs));
+  let sections: MashupSourceProfile["sections"] = [];
+  if (analysis) {
+    const [sectionAnalysis] = await database
+      .select({
+        id: sourceSectionAnalyses.id,
+        analysisEngine: sourceSectionAnalyses.analysisEngine,
+        analysisEngineVersion: sourceSectionAnalyses.analysisEngineVersion,
+        sourceChecksumSha256: sourceSectionAnalyses.sourceChecksumSha256,
+      })
+      .from(sourceSectionAnalyses)
+      .where(and(
+        eq(sourceSectionAnalyses.projectId, projectId),
+        eq(sourceSectionAnalyses.sourceAssetId, sourceAssetId),
+        eq(sourceSectionAnalyses.sourceAnalysisId, analysis.id),
+        eq(sourceSectionAnalyses.status, "complete"),
+        eq(sourceSectionAnalyses.sourceChecksumSha256, asset.checksumSha256),
+      ))
+      .limit(1);
+
+    if (sectionAnalysis && isCurrentDesktopSectionAnalysis(sectionAnalysis)) {
+      const rows: MashupSourceProfile["sections"] = await database
+        .select({
+          label: sourceSections.label,
+          startMs: sourceSections.startMs,
+          endMs: sourceSections.endMs,
+        })
+        .from(sourceSections)
+        .where(and(
+          eq(sourceSections.projectId, projectId),
+          eq(sourceSections.sourceAssetId, sourceAssetId),
+          eq(sourceSections.sourceAnalysisId, analysis.id),
+          eq(sourceSections.sourceSectionAnalysisId, sectionAnalysis.id),
+          eq(sourceSections.sourceChecksumSha256, asset.checksumSha256),
+          eq(sourceSections.analysisEngine, sectionAnalysis.analysisEngine),
+          eq(sourceSections.analysisEngineVersion, sectionAnalysis.analysisEngineVersion),
+        ))
+        .orderBy(asc(sourceSections.startMs), asc(sourceSections.sectionIndex));
+      const durationMs = Math.round(asset.durationSeconds * 1000);
+      sections = rows.filter((section) =>
+        Number.isSafeInteger(section.startMs)
+        && Number.isSafeInteger(section.endMs)
+        && section.startMs >= 0
+        && section.endMs > section.startMs
+        && section.endMs <= durationMs,
+      );
+    }
+  }
 
   let parsedGrid: number[] | null = null;
   if (analysis?.beatGrid) {

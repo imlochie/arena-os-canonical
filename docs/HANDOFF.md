@@ -1,5 +1,14 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, persisted mashup section provenance
+
+* **Hardening:** `loadSourceProfile` now supplies section boundaries to mashup planning only when a completed section-analysis row belongs to the current project/source analysis and source checksum, uses the current desktop section engine version, and its section rows match the same analysis, checksum, and engine provenance. Section bounds outside the source duration are ignored. Missing or stale section evidence remains an empty section list rather than a fallback to unverified labels.
+* **Regression evidence:** the PGlite acceptance test persists old-version, stale-checksum, current, and out-of-duration section rows and proves only the current in-range section reaches the mashup profile.
+* **Route acceptance:** the production mashup-route test now saves and verifies the remix while the completed separation run exists, then removes the already-verified remix before deleting the run for the fallback-render check. The previous ordering attempted to save after deleting the required stems and also violated the clips-to-stems foreign key; the route itself correctly rejected that invalid save.
+* **Files changed:** `lib/arena/src/lib/waveyard/studio/mashup-sources.ts`, `lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts`, `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.test.ts`, and this handoff.
+* **Verification:** focused Waveyard mashup/analysis suites passed 44/44; the API-level embedded-PostgreSQL mashup route acceptance passed 1/1; `pnpm run typecheck:libs` and `pnpm --filter @workspace/api-server run typecheck` passed. Full workspace typecheck was not run.
+* **Remaining limitation:** these checks verify provenance and persisted workflow correctness, not subjective audio quality or whether automatic section labels correctly describe verse/chorus form.
+
 ## Current verification update — 2026-11-10, end-to-end mashup route integration, multi-stem arrangements, and database round-trip acceptance
 
 * **Highest-priority capability completed:** Connected `analyseStereoPcm` directly to the `POST /api/waveyard/projects/[id]/mashup` route workflow. When either selected track lacks formal BPM or musical key analysis, raw decoded audio PCM is analysed on the fly using native autocorrelation and spectral/chroma DSP to populate the source profile before planning, rendering, or persisting. The resulting analysis is persisted to the `sourceAnalyses` table using canonical desktop provenance (`arena-js-dsp` v1.4.0) to prevent redundant re-analysis.

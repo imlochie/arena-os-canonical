@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 
@@ -461,24 +461,8 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.match(((await invalidResponse.json()) as { error: string }).error, /bass stem/);
     await storage.putFile("mashup-fixture/bed-bass.wav", path.join(fixtureRoot, "bed-bass.wav"));
 
-    // Remove the separation run: the route must fall back to the original
-    // file and say so, and the original bed's vocal must become audible.
-    await dbModule.db.delete(schema.processingJobs).where(eq(schema.processingJobs.id, bedJob.id));
-    const fallbackResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
-    assert.equal(fallbackResponse.status, 200);
-    assert.equal(fallbackResponse.headers.get("x-waveyard-bed-source"), "original-fallback");
-    assert.match(decodeURIComponent(fallbackResponse.headers.get("x-waveyard-bed-warning") ?? ""), /original/i);
-    const fallbackBytes = new Uint8Array(await fallbackResponse.arrayBuffer());
-    const fallback = decodeWav16(fallbackBytes);
-    assert.ok(fallback);
-    const fallbackVocalEnergy = energyAt(fallback!.samples, 1500, 0, 2);
-    assert.ok(fallbackVocalEnergy > 0.005, `the original bed's vocal should be audible in the fallback (${fallbackVocalEnergy})`);
-    assert.ok(
-      fallbackVocalEnergy > separatedVocalEnergy * 2,
-      `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
-    );
-
-    // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips
+    // Save while the completed separation run is still present: editable Studio
+    // remixes require persisted donor and bed stems, not merely source audio.
     const saveRequest = new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -495,7 +479,6 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.ok(saveBody.remix.id);
     assert.ok(saveBody.version.id);
 
-    // Verify database state: fetch saved remix session, tracks, and clips
     const [savedSession] = await dbModule.db
       .select()
       .from(schema.remixSessions)
@@ -515,15 +498,13 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
     assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
 
-    // Verify clips have correct time stretch / key sync flags
-    const vocalClips = savedClips.filter((c) => c.stemAssetId === vocalsStemWav && c.tempoSyncEnabled);
     for (const clip of savedClips) {
       assert.ok(Number.isFinite(clip.timelineStartMs) && clip.timelineStartMs >= 0);
       assert.ok(clip.durationMs > 0);
       assert.ok(clip.gain > 0 && clip.gain <= 1);
     }
 
-    // Simulate studio edit: update masterVolume & track pan via DB transaction, verify version increment
+    // Simulate a Studio edit and verify the persisted version advances.
     await dbModule.db.transaction(async (tx) => {
       await tx
         .update(schema.remixSessions)
@@ -537,6 +518,36 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       .where(eq(schema.remixSessions.id, savedSession.id));
     assert.equal(updatedSession.version, savedSession.version + 1);
     assert.equal(updatedSession.masterVolume, 0.9);
+
+    // The fallback check removes the separation job, which cascades to its
+    // stems. Remove the already-verified saved remix first because its clips
+    // correctly retain foreign keys to those stems.
+    await dbModule.db.delete(schema.remixVersions)
+      .where(eq(schema.remixVersions.remixSessionId, savedSession.id));
+    await dbModule.db.delete(schema.remixClips)
+      .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((track) => track.id)));
+    await dbModule.db.delete(schema.remixTracks)
+      .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
+    await dbModule.db.delete(schema.remixSessions)
+      .where(eq(schema.remixSessions.id, savedSession.id));
+
+    // Remove the separation run: the route must fall back to the original
+    // file and say so, and the original bed's vocal must become audible.
+    await dbModule.db.delete(schema.processingJobs).where(eq(schema.processingJobs.id, bedJob.id));
+    const fallbackResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+    assert.equal(fallbackResponse.status, 200);
+    assert.equal(fallbackResponse.headers.get("x-waveyard-bed-source"), "original-fallback");
+    assert.match(decodeURIComponent(fallbackResponse.headers.get("x-waveyard-bed-warning") ?? ""), /original/i);
+    const fallbackBytes = new Uint8Array(await fallbackResponse.arrayBuffer());
+    const fallback = decodeWav16(fallbackBytes);
+    assert.ok(fallback);
+    const fallbackVocalEnergy = energyAt(fallback!.samples, 1500, 0, 2);
+    assert.ok(fallbackVocalEnergy > 0.005, `the original bed's vocal should be audible in the fallback (${fallbackVocalEnergy})`);
+    assert.ok(
+      fallbackVocalEnergy > separatedVocalEnergy * 2,
+      `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
+    );
+
   } finally {
     try {
       await dbModule?.pool.end();
