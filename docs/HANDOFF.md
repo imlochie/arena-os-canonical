@@ -1,5 +1,45 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-12, durable bass-attack evidence
+
+* **Durable measurement:** Waveyard now has separate `bass_analyses` and
+  `bass_events` records for low-band attacks measured from an isolated bass
+  stem. Results are versioned (`arena-js-dsp-bass-lowband` 1.0.0) and bound to
+  the source and stem IDs and SHA-256 values. The worker verifies the stored
+  stem bytes, then rechecks both asset checksums transactionally before
+  persisting events and beat-grid projections. Stale inputs are rejected, and
+  interrupted jobs are recovered at API startup.
+* **Planner workflow:** a mashup request reuses only complete, current
+  persisted bass results. If none exists, the local worker is asked to produce
+  one while the current request uses explicitly identified, checksum-verified
+  request-time detection. The stem endpoint exposes analysis status and current
+  events. A remote bass worker is not configured; hosted runtimes do not claim
+  that queued local analysis will run.
+* **Real-track acceptance:** the production mashup route test processed the
+  full 215-second separated bass stem from *September* and persisted 1,833
+  low-band attack events. The route then loaded those database events while
+  planning the full-length *Another One Bites the Dust* vocal over the
+  instrumental bed. Eight of eight early voiced-run starts fell within 90 ms
+  of a measured bass attack; the chosen entry moved 952 ms from the initial
+  grid candidate, and the measured timing-overlap score improved by 0.094.
+  The 215-second mashup was saved, reopened, edited, restored and exported by
+  the same production acceptance test. Report:
+  `generated-artifacts/waveyard-real-world-acceptance/stage2-durable-bass-acceptance.json`.
+* **Verification:** the local stem-analysis database test passed 1/1, including
+  durable event writes, startup recovery, changed-checksum rejection and
+  corrupted stored-byte rejection. The synthetic route acceptance passed 1/1,
+  proving seeded persisted drum and bass events affect planning. The real-track
+  production route acceptance passed 1/1, including the worker-produced bass
+  evidence and save/reopen/export workflow. `pnpm --filter
+  @workspace/api-server typecheck`, `pnpm run typecheck:libs`, and
+  `git diff --check` passed.
+* **Limits:** 1,833 events are low-band attack measurements, not bass-note or
+  pitch recognition. The eight timing matches demonstrate that persisted
+  measurements reached the planner; they do not establish musical
+  compatibility, lyric understanding, an intelligent full-song arrangement,
+  or listenability. There was no human listening evaluation, and this is one
+  song pair, not arbitrary-song proof.
+
 ## Current verification update — 2026-11-12, provenance-backed mashup evidence
 
 * **Shared evidence packet:** Waveyard mashup planning now carries one
@@ -15,9 +55,9 @@
 * **Persisted drum reuse:** when a completed drum analysis matches the current
   source and exact saved stem checksums and a supported engine/version, mashup
   planning uses its persisted event timestamps. Otherwise the route explicitly
-  warns and uses checksum-verified request-time detection. Bass low-band attacks
-  remain request-time only because no persistent per-stem bass-event analysis
-  contract exists yet.
+  warns and uses checksum-verified request-time detection. At this earlier
+  checkpoint bass attacks were request-time only; the later Stage 2 update above
+  adds checksum-bound persisted bass analysis.
 * **User-visible evidence:** Mashup Studio now shows each source's measured or
   unavailable inputs, including the engine/version and saved-versus-current-run
   provenance. This reports measurements; it does not label a track's verse,

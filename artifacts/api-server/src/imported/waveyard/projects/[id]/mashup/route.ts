@@ -25,6 +25,8 @@ import { join } from "node:path";
 
 import { db } from "@workspace/db";
 import {
+  bassAnalyses,
+  bassEvents,
   drumAnalyses,
   drumEvents,
   processingJobs,
@@ -38,6 +40,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
+import { ensureBassAnalysis } from "@workspace/arena/lib/waveyard/bass-analysis";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import { loadSourceProfile } from "@workspace/arena/lib/waveyard/studio/mashup-sources";
@@ -57,6 +60,11 @@ import {
 } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import {
+  bassAnalysisProvenanceReason,
+  LOCAL_BASS_ANALYSIS_ENGINE,
+  LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/bass-analysis";
+import {
   measuredEvidence,
   unavailableEvidence,
   type MusicalEvidenceProvenance,
@@ -72,7 +80,7 @@ const MAX_STEM_BYTES = 128 * 1024 * 1024;
 const MAX_RENDER_SECONDS = 900;
 const GROOVE_EVIDENCE_CACHE_TTL_MS = 10 * 60_000;
 const GROOVE_EVIDENCE_CACHE_MAX_ENTRIES = 8;
-const GROOVE_EVIDENCE_VERSION = "waveyard-persisted-first-stem-transients-v2";
+const GROOVE_EVIDENCE_VERSION = "waveyard-persisted-first-stem-transients-v3";
 
 type MeasuredBedGrooveEvidence = {
   drumEvents: MashupTransientEvent[];
@@ -314,7 +322,12 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
     .filter((stem) => stem.stemType === "drums" || stem.stemType === "percussion" || stem.stemType === "bass")
     .sort((left, right) => left.stemType.localeCompare(right.stemType) || left.id.localeCompare(right.id));
   const [source] = await db
-    .select({ checksumSha256: sourceAssets.checksumSha256, durationSeconds: sourceAssets.durationSeconds })
+    .select({
+      id: sourceAssets.id,
+      projectId: sourceAssets.projectId,
+      checksumSha256: sourceAssets.checksumSha256,
+      durationSeconds: sourceAssets.durationSeconds,
+    })
     .from(sourceAssets)
     .where(and(eq(sourceAssets.id, bedId), eq(sourceAssets.projectId, projectId)))
     .limit(1);
@@ -334,6 +347,11 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
     ? await db.select().from(drumAnalyses).where(inArray(drumAnalyses.stemAssetId, drumStemIds))
     : [];
   const drumAnalysisByStem = new Map(persistedDrumAnalyses.map((analysis) => [analysis.stemAssetId, analysis]));
+  const bassStemIds = relevantStems.filter((stem) => stem.stemType === "bass").map((stem) => stem.id);
+  const persistedBassAnalyses = bassStemIds.length
+    ? await db.select().from(bassAnalyses).where(inArray(bassAnalyses.stemAssetId, bassStemIds))
+    : [];
+  const bassAnalysisByStem = new Map(persistedBassAnalyses.map((analysis) => [analysis.stemAssetId, analysis]));
   const cacheKey = [
     bedId,
     source.checksumSha256,
@@ -341,6 +359,8 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
     GROOVE_EVIDENCE_VERSION,
     ...relevantStems.map((stem) => `${stem.id}:${stem.checksumSha256}`),
     ...persistedDrumAnalyses.map((analysis) =>
+      `${analysis.id}:${analysis.status}:${analysis.sourceChecksumSha256}:${analysis.stemChecksumSha256}:${analysis.analysisEngine}:${analysis.analysisEngineVersion}:${analysis.updatedAt?.getTime() ?? 0}`),
+    ...persistedBassAnalyses.map((analysis) =>
       `${analysis.id}:${analysis.status}:${analysis.sourceChecksumSha256}:${analysis.stemChecksumSha256}:${analysis.analysisEngine}:${analysis.analysisEngineVersion}:${analysis.updatedAt?.getTime() ?? 0}`),
   ].join("|");
   const now = Date.now();
@@ -366,6 +386,68 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
 
   for (const stem of relevantStems) {
     try {
+      if (stem.stemType === "bass") {
+        const analysis = bassAnalysisByStem.get(stem.id);
+        const currentAnalysis = analysis
+          && analysis.status === "complete"
+          && !bassAnalysisProvenanceReason({
+            sourceAssetId: analysis.sourceAssetId,
+            expectedSourceAssetId: source.id,
+            stemAssetId: analysis.stemAssetId,
+            expectedStemAssetId: stem.id,
+            sourceChecksumSha256: analysis.sourceChecksumSha256,
+            expectedSourceChecksumSha256: source.checksumSha256,
+            stemChecksumSha256: analysis.stemChecksumSha256,
+            expectedStemChecksumSha256: stem.checksumSha256,
+            analysisEngine: analysis.analysisEngine,
+            analysisEngineVersion: analysis.analysisEngineVersion,
+          });
+        if (currentAnalysis) {
+          const persisted = await db.select({
+            timestampMs: bassEvents.timestampMs,
+            strength: bassEvents.strength,
+            confidence: bassEvents.confidence,
+          }).from(bassEvents)
+            .where(eq(bassEvents.bassAnalysisId, analysis.id))
+            .orderBy(bassEvents.timestampMs, bassEvents.eventIndex);
+          evidence.bassEvents.push(...persisted
+            .filter((event) => Number.isSafeInteger(event.timestampMs)
+              && event.timestampMs >= 0
+              && event.timestampMs <= Math.round(source.durationSeconds * 1000)
+              && Number.isFinite(event.strength)
+              && event.strength >= 0
+              && event.strength <= 1
+              && Number.isFinite(event.confidence)
+              && event.confidence > 0
+              && event.confidence <= 1)
+            .map(({ timestampMs, strength, confidence }) => ({ timestampMs, strength, confidence })));
+          bassContributors.push({
+            analysisId: analysis.id,
+            analysisEngine: analysis.analysisEngine,
+            analysisEngineVersion: analysis.analysisEngineVersion,
+            sourceChecksumSha256: source.checksumSha256,
+            stemAssetId: stem.id,
+            stemChecksumSha256: stem.checksumSha256,
+            persistence: "database",
+          });
+          continue;
+        }
+        try {
+          const ensured = await ensureBassAnalysis(db, source, stem);
+          if (ensured.workerUnavailable) {
+            evidence.warnings.push("No local bass-analysis worker is active; bass attacks are measured for this request only.");
+          } else if (ensured.stale) {
+            evidence.warnings.push("A saved bass analysis has stale source, stem, or engine provenance; fresh request-time measurement is used instead.");
+          } else if (ensured.queued || ensured.analysis?.status === "queued" || ensured.analysis?.status === "processing" || ensured.analysis?.status === "preparing") {
+            evidence.warnings.push("Durable bass attack analysis is queued or running; this plan uses checksum-verified request-time measurements until it completes.");
+          } else if (ensured.analysis?.status === "failed") {
+            evidence.warnings.push("Durable bass attack analysis failed; this plan uses checksum-verified request-time measurements.");
+          }
+        } catch {
+          evidence.warnings.push("Durable bass analysis could not be queued; checksum-verified request-time measurements are used.");
+        }
+      }
+
       const bytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
       const actualChecksum = createHash("sha256").update(bytes).digest("hex");
       if (actualChecksum !== stem.checksumSha256) {

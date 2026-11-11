@@ -21,6 +21,7 @@ import type {
   SeparationJobPayload,
   SourceAnalysisJobPayload,
   DrumAnalysisJobPayload,
+  BassAnalysisJobPayload,
   HarmonyAnalysisJobPayload,
   SourceEventAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
@@ -34,6 +35,7 @@ export const SOURCE_ANALYSIS_QUEUE = "waveyard-source-analysis";
 export const SOURCE_SECTION_ANALYSIS_QUEUE = "waveyard-source-section-analysis";
 export const SOURCE_EVENT_ANALYSIS_QUEUE = "waveyard-source-event-analysis";
 export const DRUM_ANALYSIS_QUEUE = "waveyard-drum-analysis";
+export const BASS_ANALYSIS_QUEUE = "waveyard-bass-analysis";
 export const HARMONY_ANALYSIS_QUEUE = "waveyard-harmony-analysis";
 export const VOCAL_ANALYSIS_QUEUE = "waveyard-vocal-analysis";
 export const EXPORT_QUEUE = "waveyard-export";
@@ -204,6 +206,13 @@ export async function enqueueSourceEventAnalysis(payload: SourceEventAnalysisJob
 
 export async function enqueueDrumAnalysis(payload: DrumAnalysisJobPayload) {
   return enqueue(DRUM_ANALYSIS_QUEUE, "analyze-drums", payload as unknown as Record<string, unknown>, payload.drumAnalysisId);
+}
+
+export async function enqueueBassAnalysis(payload: BassAnalysisJobPayload) {
+  if (!localWorkerActive()) {
+    throw new Error("Bass attack analysis requires the local Waveyard worker; no remote bass-analysis worker is configured.");
+  }
+  return enqueue(BASS_ANALYSIS_QUEUE, "analyze-bass-attacks", payload as unknown as Record<string, unknown>, payload.bassAnalysisId);
 }
 
 export async function enqueueHarmonyAnalysis(payload: HarmonyAnalysisJobPayload) {

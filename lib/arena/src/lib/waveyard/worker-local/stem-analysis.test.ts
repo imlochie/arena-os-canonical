@@ -13,7 +13,7 @@ import { applyDesktopMigrationsToPGlite } from "./pglite-migrations.test-helper"
 import { encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { LocalStorageProvider, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import {
-  projects, processingJobs, sourceAssets, stemAssets, drumAnalyses, drumEvents,
+  projects, processingJobs, sourceAssets, stemAssets, bassAnalyses, bassEvents, drumAnalyses, drumEvents,
   harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalPitchFrames,
   remixSessions, remixVersions, exportJobs, exportAssets,
 } from "@workspace/db/waveyardSchema";
@@ -21,16 +21,20 @@ import {
   LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, drumAnalysisIdempotencyKey,
 } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import {
+  LOCAL_BASS_ANALYSIS_ENGINE, LOCAL_BASS_ANALYSIS_ENGINE_VERSION, bassAnalysisIdempotencyKey,
+} from "@workspace/arena/lib/waveyard/types/bass-analysis";
+import {
   LOCAL_HARMONY_ANALYSIS_ENGINE, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION, harmonyAnalysisIdempotencyKey,
 } from "@workspace/arena/lib/waveyard/types/harmony-analysis";
 import {
   LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION, vocalAnalysisIdempotencyKey,
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
-import { handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
+import { handleBassAnalysisJob, handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
 import { handleMidiExportJob } from "./export";
 import { parseStandardMidiFile } from "../midi-file";
 import {
   recoverPendingLocalDrumAnalyses,
+  recoverPendingLocalBassAnalyses,
   recoverPendingLocalHarmonyAnalyses,
   recoverPendingLocalVocalAnalyses,
 } from "./recovery";
@@ -81,15 +85,16 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
       codec: "pcm_s16le", fileSizeBytes: files[0]!.length }).returning();
     const [separation] = await db.insert(processingJobs).values({ projectId: project.id, sourceAssetId: source.id, type: "separation",
       model: "test-local", requestedDevice: "cpu", idempotencyKey: `separation:${source.id}` }).returning();
-    const createStem = async (stemType: "drums" | "vocals", fileIndex: number) => {
+    const createStem = async (stemType: "drums" | "vocals" | "bass", fileIndex: number, separationJobId = separation.id) => {
       const storageKey = privateObjectKey(project.id, "stem", "wav");
       await storage.putFile(storageKey, paths[fileIndex]!, "audio/wav");
-      return (await db.insert(stemAssets).values({ projectId: project.id, sourceAssetId: source.id, separationJobId: separation.id,
+      return (await db.insert(stemAssets).values({ projectId: project.id, sourceAssetId: source.id, separationJobId,
         stemType, engine: "test", model: "test-local", modelVersion: "1", storageKey, checksumSha256: checksum(files[fileIndex]!),
         durationSeconds: 4, sampleRate: RATE, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: files[fileIndex]!.length }).returning())[0]!;
     };
     const drumStem = await createStem("drums", 1);
     const vocalStem = await createStem("vocals", 2);
+    const bassStem = await createStem("bass", 1);
     const [drum] = await db.insert(drumAnalyses).values({ projectId: project.id, sourceAssetId: source.id, stemAssetId: drumStem.id,
       idempotencyKey: drumAnalysisIdempotencyKey(drumStem.id, LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION),
       analysisEngine: LOCAL_DRUM_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
@@ -102,9 +107,15 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
       idempotencyKey: vocalAnalysisIdempotencyKey(vocalStem.id, LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION),
       analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
       sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: vocalStem.checksumSha256 }).returning();
+    const [bass] = await db.insert(bassAnalyses).values({ projectId: project.id, sourceAssetId: source.id, stemAssetId: bassStem.id,
+      idempotencyKey: bassAnalysisIdempotencyKey(bassStem.id),
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: bassStem.checksumSha256 }).returning();
     const deps = { db, storage };
     await handleDrumAnalysisJob({ drumAnalysisId: drum.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: drumStem.id,
       analysisEngine: LOCAL_DRUM_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION }, deps);
+    await handleBassAnalysisJob({ bassAnalysisId: bass.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: bassStem.id,
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION }, deps);
     await handleHarmonyAnalysisJob({ harmonyAnalysisId: harmony.id, projectId: project.id, sourceAssetId: source.id,
       analysisEngine: LOCAL_HARMONY_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION }, deps);
     await handleVocalAnalysisJob({ vocalAnalysisId: vocal.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: vocalStem.id,
@@ -112,26 +123,83 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     const [drumDone] = await db.select().from(drumAnalyses).where(eq(drumAnalyses.id, drum.id));
     const [harmonyDone] = await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.id, harmony.id));
     const [vocalDone] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.id, vocal.id));
+    const [bassDone] = await db.select().from(bassAnalyses).where(eq(bassAnalyses.id, bass.id));
     assert.equal(drumDone.status, "complete"); assert.equal(drumDone.attempts, 1); assert.equal(drumDone.analysisEngine, LOCAL_DRUM_ANALYSIS_ENGINE);
     assert.equal(harmonyDone.status, "complete"); assert.equal(harmonyDone.analysisEngineVersion, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION);
     assert.equal(vocalDone.status, "complete"); assert.equal(vocalDone.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE);
+    assert.equal(bassDone.status, "complete"); assert.equal(bassDone.analysisEngine, LOCAL_BASS_ANALYSIS_ENGINE);
     assert.ok((await db.select().from(drumEvents).where(eq(drumEvents.drumAnalysisId, drum.id))).length > 0);
     assert.ok((await db.select().from(harmonyEvents).where(eq(harmonyEvents.harmonyAnalysisId, harmony.id))).length > 0);
     assert.ok((await db.select().from(vocalPitchFrames).where(eq(vocalPitchFrames.vocalAnalysisId, vocal.id))).length > 0);
+    assert.ok((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, bass.id))).length > 0);
 
     await db.update(drumAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(drumAnalyses.id, drum.id));
+    await db.update(bassAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(bassAnalyses.id, bass.id));
     await db.update(harmonyAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(harmonyAnalyses.id, harmony.id));
     await db.update(vocalAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(vocalAnalyses.id, vocal.id));
-    const recoveredDrums: unknown[] = []; const recoveredHarmony: unknown[] = []; const recoveredVocals: unknown[] = [];
+    const recoveredDrums: unknown[] = []; const recoveredBass: unknown[] = []; const recoveredHarmony: unknown[] = []; const recoveredVocals: unknown[] = [];
     assert.deepEqual(await recoverPendingLocalDrumAnalyses(db, async (payload) => { recoveredDrums.push(payload); }), { requeuedJobIds: [drum.id], failedJobIds: [] });
+    assert.deepEqual(await recoverPendingLocalBassAnalyses(db, async (payload) => { recoveredBass.push(payload); }), { requeuedJobIds: [bass.id], failedJobIds: [] });
     assert.deepEqual(await recoverPendingLocalHarmonyAnalyses(db, async (payload) => { recoveredHarmony.push(payload); }), { requeuedJobIds: [harmony.id], failedJobIds: [] });
     assert.deepEqual(await recoverPendingLocalVocalAnalyses(db, async (payload) => { recoveredVocals.push(payload); }), { requeuedJobIds: [vocal.id], failedJobIds: [] });
     assert.equal((await db.select().from(drumAnalyses).where(eq(drumAnalyses.id, drum.id)))[0]!.status, "queued");
+    assert.equal((await db.select().from(bassAnalyses).where(eq(bassAnalyses.id, bass.id)))[0]!.status, "queued");
     assert.equal((await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.id, harmony.id)))[0]!.status, "queued");
     assert.equal((await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.id, vocal.id)))[0]!.status, "queued");
-    assert.equal(recoveredDrums.length, 1); assert.equal(recoveredHarmony.length, 1); assert.equal(recoveredVocals.length, 1);
+    assert.equal(recoveredDrums.length, 1); assert.equal(recoveredBass.length, 1); assert.equal(recoveredHarmony.length, 1); assert.equal(recoveredVocals.length, 1);
+    assert.deepEqual(recoveredBass, [{
+      bassAnalysisId: bass.id,
+      projectId: project.id,
+      sourceAssetId: source.id,
+      stemAssetId: bassStem.id,
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+    }]);
+
+    const [staleSeparation] = await db.insert(processingJobs).values({
+      projectId: project.id, sourceAssetId: source.id, type: "separation", model: "test-local", requestedDevice: "cpu",
+      idempotencyKey: `separation-stale:${source.id}`,
+    }).returning();
+    const staleBassStem = await createStem("bass", 2, staleSeparation.id);
+    const [staleBass] = await db.insert(bassAnalyses).values({
+      projectId: project.id, sourceAssetId: source.id, stemAssetId: staleBassStem.id,
+      idempotencyKey: bassAnalysisIdempotencyKey(staleBassStem.id),
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: staleBassStem.checksumSha256,
+    }).returning();
+    await db.update(stemAssets).set({ checksumSha256: "c".repeat(64) }).where(eq(stemAssets.id, staleBassStem.id));
+    await assert.rejects(handleBassAnalysisJob({
+      bassAnalysisId: staleBass.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: staleBassStem.id,
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+    }, deps), /changed before analysis/);
+    const [staleBassAfter] = await db.select().from(bassAnalyses).where(eq(bassAnalyses.id, staleBass.id));
+    assert.equal(staleBassAfter.status, "failed");
+    assert.equal(staleBassAfter.errorCode, "analysis_stale");
+    assert.equal((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, staleBass.id))).length, 0);
+
+    const [corruptSeparation] = await db.insert(processingJobs).values({
+      projectId: project.id, sourceAssetId: source.id, type: "separation", model: "test-local", requestedDevice: "cpu",
+      idempotencyKey: `separation-corrupt:${source.id}`,
+    }).returning();
+    const corruptBassStem = await createStem("bass", 2, corruptSeparation.id);
+    const [corruptBass] = await db.insert(bassAnalyses).values({
+      projectId: project.id, sourceAssetId: source.id, stemAssetId: corruptBassStem.id,
+      idempotencyKey: bassAnalysisIdempotencyKey(corruptBassStem.id),
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: corruptBassStem.checksumSha256,
+    }).returning();
+    await storage.putFile(corruptBassStem.storageKey, paths[0]!, "audio/wav");
+    await assert.rejects(handleBassAnalysisJob({
+      bassAnalysisId: corruptBass.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: corruptBassStem.id,
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+    }, deps), /stored bass stem bytes do not match/);
+    const [corruptBassAfter] = await db.select().from(bassAnalyses).where(eq(bassAnalyses.id, corruptBass.id));
+    assert.equal(corruptBassAfter.status, "failed");
+    assert.equal((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, corruptBass.id))).length, 0);
+
     // Let the recovered jobs finish before introducing a separate failed row.
     await db.update(drumAnalyses).set({ status: "complete", stage: "complete" }).where(eq(drumAnalyses.id, drum.id));
+    await db.update(bassAnalyses).set({ status: "complete", stage: "complete" }).where(eq(bassAnalyses.id, bass.id));
     await db.update(harmonyAnalyses).set({ status: "complete", stage: "complete" }).where(eq(harmonyAnalyses.id, harmony.id));
     await db.update(vocalAnalyses).set({ status: "complete", stage: "complete" }).where(eq(vocalAnalyses.id, vocal.id));
 

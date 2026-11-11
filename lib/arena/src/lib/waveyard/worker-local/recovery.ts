@@ -9,6 +9,7 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import {
   enqueueSourceAnalysis,
   enqueueSourceSectionAnalysis,
+  enqueueBassAnalysis,
   enqueueDrumAnalysis,
   enqueueHarmonyAnalysis,
   enqueueVocalAnalysis,
@@ -21,12 +22,16 @@ import {
 import type {
   SourceAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
+  BassAnalysisJobPayload,
   DrumAnalysisJobPayload,
   HarmonyAnalysisJobPayload,
   VocalAnalysisJobPayload,
   WaveformJobPayload,
 } from "@workspace/arena/lib/waveyard/types";
-import { drumAnalyses, harmonyAnalyses, processingJobs, sourceAnalyses, sourceSectionAnalyses, vocalAnalyses, waveformJobs } from "@workspace/db/waveyardSchema";
+import { bassAnalyses, drumAnalyses, harmonyAnalyses, processingJobs, sourceAnalyses, sourceSectionAnalyses, vocalAnalyses, waveformJobs } from "@workspace/db/waveyardSchema";
+import {
+  LOCAL_BASS_ANALYSIS_ENGINE, LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/bass-analysis";
 import {
   LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
 } from "@workspace/arena/lib/waveyard/types/drum-analysis";
@@ -496,6 +501,53 @@ export async function recoverPendingLocalDrumAnalyses(
         errorCode: "queue_unavailable", errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
         completedAt: new Date(), updatedAt: new Date(),
       }).where(and(eq(drumAnalyses.id, row.id), eq(drumAnalyses.status, "queued"), eq(drumAnalyses.stage, recoveryStage))).returning({ id: drumAnalyses.id });
+      return Boolean(failed);
+    },
+  );
+}
+
+export async function recoverPendingLocalBassAnalyses(
+  db: ReturnType<typeof drizzle>,
+  enqueue: (payload: BassAnalysisJobPayload) => Promise<unknown> = enqueueBassAnalysis,
+): Promise<AnalysisRecoveryResult> {
+  const pendingStatuses = ["queued", "preparing", "processing"];
+  const rows = await db.select().from(bassAnalyses).where(and(
+    inArray(bassAnalyses.status, pendingStatuses),
+    eq(bassAnalyses.analysisEngine, LOCAL_BASS_ANALYSIS_ENGINE),
+    eq(bassAnalyses.analysisEngineVersion, LOCAL_BASS_ANALYSIS_ENGINE_VERSION),
+  ));
+  return requeuePendingAnalysisRows(rows,
+    async (row, recoveryStage) => {
+      const [claimed] = await db.update(bassAnalyses).set({
+        status: "queued", stage: recoveryStage, errorCode: null, errorMessage: null,
+        startedAt: null, completedAt: null, updatedAt: new Date(),
+      }).where(and(
+        eq(bassAnalyses.id, row.id),
+        inArray(bassAnalyses.status, pendingStatuses),
+        eq(bassAnalyses.stage, row.stage),
+        eq(bassAnalyses.analysisEngine, LOCAL_BASS_ANALYSIS_ENGINE),
+        eq(bassAnalyses.analysisEngineVersion, LOCAL_BASS_ANALYSIS_ENGINE_VERSION),
+      )).returning();
+      return claimed;
+    },
+    (row) => enqueue({
+      bassAnalysisId: row.id,
+      projectId: row.projectId,
+      sourceAssetId: row.sourceAssetId,
+      stemAssetId: row.stemAssetId,
+      analysisEngine: row.analysisEngine,
+      analysisEngineVersion: row.analysisEngineVersion,
+    }),
+    async (row, recoveryStage, error) => {
+      const [failed] = await db.update(bassAnalyses).set({
+        status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable",
+        errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(), updatedAt: new Date(),
+      }).where(and(
+        eq(bassAnalyses.id, row.id),
+        eq(bassAnalyses.status, "queued"),
+        eq(bassAnalyses.stage, recoveryStage),
+      )).returning({ id: bassAnalyses.id });
       return Boolean(failed);
     },
   );

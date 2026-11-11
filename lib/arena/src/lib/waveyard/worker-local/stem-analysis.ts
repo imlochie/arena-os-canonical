@@ -5,16 +5,24 @@
  */
 
 import { and, eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db as defaultDb } from "@workspace/db";
 import {
-  drumAnalyses, drumEvents, harmonyAnalyses, harmonyEvents,
+  bassAnalyses, bassEvents, drumAnalyses, drumEvents, harmonyAnalyses, harmonyEvents,
   sourceAnalyses, sourceAssets, stemAssets,
   vocalAnalyses, vocalPitchFrames, vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
-import type { DrumAnalysisJobPayload, HarmonyAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
+import type { BassAnalysisJobPayload, DrumAnalysisJobPayload, HarmonyAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
+import {
+  bassAnalysisProvenanceReason,
+  LOCAL_BASS_ANALYSIS_ENGINE,
+  LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+  normaliseBassEvents,
+} from "@workspace/arena/lib/waveyard/types/bass-analysis";
 import {
   classifiedDrumEvent, drumAnalysisProvenanceReason, LOCAL_DRUM_ANALYSIS_ENGINE,
   LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, normaliseDrumEvents,
@@ -28,7 +36,7 @@ import {
   normaliseVocalPitchFrames, segmentVocalPhrases, vocalAnalysisProvenanceReason,
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
-import { decodeMonoPcm, detectDrumTransients, detectHarmonyTimeline, detectVocalPitchFrames } from "./analysis-engine";
+import { decodeMonoPcm, detectBassAttacks, detectDrumTransients, detectHarmonyTimeline, detectVocalPitchFrames } from "./analysis-engine";
 
 type AnalysisDb = ReturnType<typeof drizzle>;
 type StemAnalysisDeps = {
@@ -39,11 +47,17 @@ type StemAnalysisDeps = {
 
 const active = (status: string) => status === "queued" || status === "failed";
 
-async function rejectPayload(db: AnalysisDb, table: typeof drumAnalyses | typeof vocalAnalyses, id: string, checksum: string, message: string) {
+async function rejectPayload(db: AnalysisDb, table: typeof bassAnalyses | typeof drumAnalyses | typeof vocalAnalyses, id: string, checksum: string, message: string) {
   await db.update(table).set({
     status: "failed", stage: "invalid-payload", errorCode: "invalid_payload",
     errorMessage: message, completedAt: new Date(), updatedAt: new Date(),
   }).where(and(eq(table.id, id), eq(table.sourceChecksumSha256, checksum)));
+}
+
+async function fileSha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Uint8Array);
+  return hash.digest("hex");
 }
 
 function aborted(signal?: AbortSignal) {
@@ -152,6 +166,110 @@ async function removeStemFile(inputPath: string) {
 function parseBeatGrid(value: string | null): number[] | null {
   if (!value) return null;
   try { return usableBeatGrid(JSON.parse(value)); } catch { return null; }
+}
+
+export async function handleBassAnalysisJob(payloadInput: Record<string, unknown>, deps: StemAnalysisDeps = {}): Promise<void> {
+  const payload = payloadInput as unknown as BassAnalysisJobPayload;
+  const database = deps.db ?? defaultDb;
+  const storage = deps.storage ?? getStorage();
+  const decode = deps.decode ?? decodeMonoPcm;
+  const [job] = await database.select().from(bassAnalyses).where(eq(bassAnalyses.id, payload.bassAnalysisId)).limit(1);
+  if (!job || job.status === "complete" || job.status === "cancelled") return;
+  const valid = job.projectId === payload.projectId && job.sourceAssetId === payload.sourceAssetId
+    && job.stemAssetId === payload.stemAssetId && job.analysisEngine === payload.analysisEngine
+    && job.analysisEngineVersion === payload.analysisEngineVersion
+    && job.analysisEngine === LOCAL_BASS_ANALYSIS_ENGINE && job.analysisEngineVersion === LOCAL_BASS_ANALYSIS_ENGINE_VERSION;
+  if (!valid) {
+    await rejectPayload(database, bassAnalyses, job.id, job.sourceChecksumSha256, "Local bass analysis payload does not match its versioned target.");
+    throw new Error("Local bass analysis payload does not match its durable target.");
+  }
+  const [source] = await database.select().from(sourceAssets).where(and(eq(sourceAssets.id, job.sourceAssetId), eq(sourceAssets.projectId, job.projectId))).limit(1);
+  const [stem] = await database.select().from(stemAssets).where(and(eq(stemAssets.id, job.stemAssetId), eq(stemAssets.projectId, job.projectId))).limit(1);
+  const provenance = source && stem ? bassAnalysisProvenanceReason({
+    sourceAssetId: job.sourceAssetId, expectedSourceAssetId: source.id,
+    stemAssetId: job.stemAssetId, expectedStemAssetId: stem.id,
+    sourceChecksumSha256: job.sourceChecksumSha256, expectedSourceChecksumSha256: source.checksumSha256,
+    stemChecksumSha256: job.stemChecksumSha256, expectedStemChecksumSha256: stem.checksumSha256,
+    analysisEngine: job.analysisEngine, analysisEngineVersion: job.analysisEngineVersion,
+  }) : "source_stem_mismatch";
+  if (!source || !stem || stem.stemType !== "bass" || provenance) {
+    await database.update(bassAnalyses).set({
+      status: "failed", stage: "provenance-failed", errorCode: "analysis_stale",
+      errorMessage: "The source or isolated bass stem changed before analysis.",
+      completedAt: new Date(), updatedAt: new Date(),
+    }).where(and(eq(bassAnalyses.id, job.id), eq(bassAnalyses.status, job.status)));
+    throw new Error("The source or isolated bass stem changed before analysis.");
+  }
+  const [claimed] = await database.update(bassAnalyses).set({
+    status: "preparing", stage: "preparing", attempts: job.attempts + 1, errorCode: null,
+    errorMessage: null, startedAt: new Date(), completedAt: null, updatedAt: new Date(),
+  }).where(and(eq(bassAnalyses.id, job.id), eq(bassAnalyses.status, job.status))).returning({ id: bassAnalyses.id });
+  if (!claimed || !active(job.status)) return;
+  const [processing] = await database.update(bassAnalyses).set({ status: "processing", stage: "analyzing", updatedAt: new Date() })
+    .where(and(eq(bassAnalyses.id, job.id), eq(bassAnalyses.status, "preparing"))).returning({ id: bassAnalyses.id });
+  if (!processing) return;
+  try {
+    const inputPath = await prepareStemFile(storage, stem.storageKey);
+    try {
+      if (await fileSha256(inputPath) !== job.stemChecksumSha256) {
+        throw new Error("The stored bass stem bytes do not match their saved checksum.");
+      }
+      const pcm = await decode(inputPath);
+      if (pcm.length < 2_205) throw new Error("The isolated bass stem is too short for attack analysis.");
+      const events = normaliseBassEvents(detectBassAttacks(pcm), Math.round(source.durationSeconds * 1000));
+      if (events === null) throw new Error("The local DSP engine returned invalid bass attack events.");
+      const [sourceTempo] = await database.select({ beatGrid: sourceAnalyses.beatGrid }).from(sourceAnalyses)
+        .where(and(eq(sourceAnalyses.sourceAssetId, source.id), eq(sourceAnalyses.status, "complete"))).limit(1);
+      const beatGrid = parseBeatGrid(sourceTempo?.beatGrid ?? null);
+      const analyzedAt = new Date();
+      await database.transaction(async (tx) => {
+        const [currentSource] = await tx.select().from(sourceAssets).where(eq(sourceAssets.id, source.id)).for("update").limit(1);
+        const [currentStem] = await tx.select().from(stemAssets).where(eq(stemAssets.id, stem.id)).for("update").limit(1);
+        if (!currentSource || !currentStem || currentSource.checksumSha256 !== job.sourceChecksumSha256
+          || currentStem.checksumSha256 !== job.stemChecksumSha256) {
+          throw new Error("The source or isolated bass stem changed while it was being analyzed.");
+        }
+        await tx.delete(bassEvents).where(eq(bassEvents.bassAnalysisId, job.id));
+        if (events.length) await tx.insert(bassEvents).values(events.map((event, eventIndex) => {
+          const beatIndex = beatGrid ? nearestBeatIndex(event.timestampMs, beatGrid) : null;
+          return {
+            bassAnalysisId: job.id,
+            eventIndex,
+            ...event,
+            nearestBeatIndex: beatIndex,
+            beatOffsetMs: beatIndex === null ? null : event.timestampMs - beatGrid![beatIndex]!,
+          };
+        }));
+        const [completed] = await tx.update(bassAnalyses).set({
+          status: "complete", stage: "complete",
+          analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE,
+          analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+          errorCode: null, errorMessage: null, analyzedAt, completedAt: analyzedAt, updatedAt: analyzedAt,
+        }).where(and(
+          eq(bassAnalyses.id, job.id),
+          eq(bassAnalyses.status, "processing"),
+          eq(bassAnalyses.sourceChecksumSha256, job.sourceChecksumSha256),
+          eq(bassAnalyses.stemChecksumSha256, job.stemChecksumSha256),
+        )).returning({ id: bassAnalyses.id });
+        if (!completed) throw new Error("Bass analysis lost its active durable claim before completion.");
+      });
+    } finally { await removeStemFile(inputPath); }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Local bass analysis failed.";
+    const stale = /checksum|changed while/i.test(message);
+    await database.update(bassAnalyses).set({
+      status: "failed", stage: stale ? "provenance-failed" : "failed",
+      errorCode: stale ? "analysis_stale" : "analysis_failed",
+      errorMessage: message.slice(0, 1000),
+      completedAt: new Date(), updatedAt: new Date(),
+    }).where(and(
+      eq(bassAnalyses.id, job.id),
+      eq(bassAnalyses.status, "processing"),
+      eq(bassAnalyses.sourceChecksumSha256, job.sourceChecksumSha256),
+      eq(bassAnalyses.stemChecksumSha256, job.stemChecksumSha256),
+    ));
+    throw error;
+  }
 }
 
 export async function handleHarmonyAnalysisJob(payloadInput: Record<string, unknown>, deps: StemAnalysisDeps = {}): Promise<void> {

@@ -29,6 +29,11 @@ import {
   LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
 } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import {
+  bassAnalysisIdempotencyKey,
+  LOCAL_BASS_ANALYSIS_ENGINE,
+  LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/bass-analysis";
+import {
   LOCAL_VOCAL_ANALYSIS_ENGINE,
   LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
   vocalAnalysisIdempotencyKey,
@@ -179,6 +184,7 @@ test(
   let routeModule: typeof import("./route") | undefined;
   let realVocalAnalysisId: string | null = null;
   let realGrooveTimingSummary: string | null = null;
+  let realPersistedBassAttackCount: number | null = null;
   let realVocalVoicingEvidence: {
     count: number;
     firstVoicedRun: { startMs: number; endMs: number; confidence: number };
@@ -639,6 +645,74 @@ test(
         nearestBeatIndex: timestampMs / 500,
         beatOffsetMs: 0,
       })));
+      const [bassStem] = await dbModule.db.select({
+        id: schema.stemAssets.id,
+        checksumSha256: schema.stemAssets.checksumSha256,
+      }).from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, bedSource.id),
+        eq(schema.stemAssets.stemType, "bass"),
+      ));
+      assert.ok(bassStem);
+      const [bassAnalysis] = await dbModule.db.insert(schema.bassAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: bedSource.id,
+        stemAssetId: bassStem.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: bassAnalysisIdempotencyKey(bassStem.id),
+        analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: sha256(bedOriginal),
+        stemChecksumSha256: bassStem.checksumSha256,
+        startedAt: new Date(),
+        analyzedAt: new Date(),
+        completedAt: new Date(),
+      }).returning({ id: schema.bassAnalyses.id });
+      assert.ok(bassAnalysis);
+      await dbModule.db.insert(schema.bassEvents).values([2_500, 3_000, 3_500].map((timestampMs, eventIndex) => ({
+        bassAnalysisId: bassAnalysis.id,
+        eventIndex,
+        timestampMs,
+        strength: 0.85,
+        confidence: 0.9,
+        nearestBeatIndex: timestampMs / 500,
+        beatOffsetMs: 0,
+      })));
+    } else if (realFixture) {
+      const [bassStem] = await dbModule.db.select().from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, bedSource.id),
+        eq(schema.stemAssets.stemType, "bass"),
+      ));
+      assert.ok(bassStem, "the real separation fixture must include its bass stem");
+      const [bassAnalysis] = await dbModule.db.insert(schema.bassAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: bedSource.id,
+        stemAssetId: bassStem.id,
+        idempotencyKey: bassAnalysisIdempotencyKey(bassStem.id),
+        analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: sha256(bedOriginal),
+        stemChecksumSha256: bassStem.checksumSha256,
+      }).returning();
+      assert.ok(bassAnalysis);
+      const { handleBassAnalysisJob } = await import("@workspace/arena/lib/waveyard/worker-local/stem-analysis");
+      await handleBassAnalysisJob({
+        bassAnalysisId: bassAnalysis.id,
+        projectId: project.id,
+        sourceAssetId: bedSource.id,
+        stemAssetId: bassStem.id,
+        analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+      }, { db: dbModule.db, storage });
+      const persistedBass = await dbModule.db.select().from(schema.bassEvents)
+        .where(eq(schema.bassEvents.bassAnalysisId, bassAnalysis.id));
+      realPersistedBassAttackCount = persistedBass.length;
+      assert.ok(persistedBass.length > 0, "the full-length real separated bass stem must yield persisted low-band attack events");
+      assert.equal((await dbModule.db.select().from(schema.bassAnalyses)
+        .where(eq(schema.bassAnalyses.id, bassAnalysis.id)))[0]?.status, "complete");
     }
 
     const renderRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
@@ -685,7 +759,10 @@ test(
       "the plan response must expose the current persisted vocal activity used by the planner");
     assert.equal(planBody.evidence?.bed.drumEvents.status, "measured",
       "the plan response must expose current persisted drum evidence");
+    assert.equal(planBody.evidence?.bed.bassAttacks.status, "measured",
+      "the plan response must expose current persisted bass-attack evidence");
     if (!realFixture) assert.equal(planBody.evidence?.bed.drumEvents.persistence, "database");
+    if (!realFixture) assert.equal(planBody.evidence?.bed.bassAttacks.persistence, "database");
     if (!realFixture) assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
     assert.ok(planBody.plan && planBody.plan.durationMs > 0, "the production planner must return an arrangement");
     if (!realFixture) {
@@ -694,7 +771,12 @@ test(
       assert.ok(persistedDrumAlignment.includes("3/3"), "the route must use persisted drum event timestamps, not just re-detect the stem");
       assert.ok(persistedDrumAlignment.includes("entry moved 500ms"),
         "the saved drum events must move the donor entry to the best matching beat");
+      assert.ok(persistedDrumAlignment.includes("3/3 within 90ms of low-band bass attacks"),
+        "the saved bass events must also inform the planner's vocal-entry choice");
     } else {
+      assert.equal(planBody.evidence?.bed.bassAttacks.persistence, "database",
+        "the real-track plan must use events persisted by the local bass-analysis worker");
+      assert.equal(typeof realPersistedBassAttackCount, "number");
       assert.equal(planBody.plan.vocalsStretchRatio, 1,
         "low-confidence donor tempo must not be presented as verified beat synchronization");
       assert.equal(planBody.plan.vocalsPitchSemitones, 0,
@@ -964,6 +1046,7 @@ test(
             [sha256(vocalsOriginal), sha256(bedOriginal)].includes(track.sourceChecksumSha256)) ?? [],
           persistedSourceAnalyses: realSourceAnalyses,
           persistedVocalVoicingIntervals: realVocalVoicingEvidence,
+          persistedBassAttackCount: realPersistedBassAttackCount,
           measuredGrooveTimingSummary: realGrooveTimingSummary,
           sources: {
             vocals: {
