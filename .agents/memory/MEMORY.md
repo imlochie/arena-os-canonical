@@ -14,7 +14,6 @@
 - [Windows build resource limits](windows-build-resources.md) — user has seen Windows builds exhaust laptop disk; distinguish RAM, dependencies, staging, installers, and downloaded models.
 - [Windows validation timing](windows-validation-timing.md) — keep preparing Windows checks, but defer asking for user runs until product gaps are nearly cleared.
 - [Waveyard database tests](waveyard-db-tests.md) — separate startup failures from queue evidence; seed real-route acceptance data with the API's actual identity.
-- [Node test discovery for dynamic routes](node-test-route-globs.md) — import bracketed route tests through a path-safe entry point and confirm a nonzero test count.
 - [PostgreSQL test binaries](postgresql-test-binaries.md) — database integration tests should use bundled binaries when present and PATH tools otherwise.
 - [Waveyard clip donor provenance](waveyard-clip-donor-provenance.md) — a clip's stem reference can differ from its lane default; loading, permissions, playback, export, and deletion protection must follow clip IDs.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
@@ -28,10 +27,9 @@
 - [Arena baseline reconciliation](arena-baseline-reconciliation.md) — recover branch intent as user outcomes, then verify current end-to-end workflows; code similarity is not proof.
 - [SourceForge release evidence](sourceforge-release-evidence.md) — a provider SHA pins bytes, but license provenance and archive safety remain separate install gates.
 - [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, use raw TSX instrumentation, and label WebKit emulation honestly.
-- [Waveyard audio measurement windows](waveyard-audio-measurement-windows.md) — label interval units and verify the analyzer spans the intended passage before interpreting signal levels.
 - [Waveyard output protection](waveyard-output-protection.md) — protect the actual summed output without rewriting faders; sample peaks are not true-peak or hardware evidence.
 - [Waveyard worklet test boundary](waveyard-worklet-boundary.md) — keep Vite-only worklet URLs at the browser adapter so Node tests can import the DSP core.
-- [Waveyard touch gesture tests](waveyard-touch-tests.md) — intersect with the scrollport and dispatch the exact validated point away from `touch-action:none` controls.
+- [Waveyard touch gesture tests](waveyard-touch-tests.md) — preflight visible touch coordinates so offscreen clip bounds do not turn gesture failures into misleading scroll results.
 - [Waveyard startup recovery](waveyard-startup-recovery.md) — retry transient database outages at boot within bounds; fail fast on schema errors.
 - [Playwright touch evidence](playwright-touch-emulation.md) — native pan needs touch input; Chromium emulation is not proof of iOS Safari or physical Android behavior.
 - [Arcade emulator evidence](arcade-emulator-test-evidence.md) — wait for initialized fixture output; distinguish import refusal from runtime sandbox isolation.

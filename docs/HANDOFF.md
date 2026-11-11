@@ -1,40 +1,5 @@
 # Arena handoff — read this first
 
-## Current verification update — 2026-11-11, mashup render and persisted-route assertions
-
-* **Hardening:** Added `scripts/waveyard-mashup-route-acceptance.test.mjs` as a path-safe Node test entry point for the production mashup route acceptance. Passing the literal `[id]` route path directly to `tsx --test` silently discovers zero tests; the wrapper imports that exact route test so its database-backed test is registered. Corrected the route test's tone-energy helper to accept seconds, matching its call sites; its previous millisecond conversion made the audio measurements inspect only the first two milliseconds and produced a false failure.
-* **Render evidence:** The production route test now checks the planned vocal placement, successful separated-vocal use, each expected instrumental-bed component, exclusion of the bed's vocal stem, no lead vocal before its arranged entry, and lead-vocal energy above 80% of the measured source through the arranged passage.
-* **Persisted evidence:** The PGlite save/reopen and analysis-selection tests passed 2/2. The production route acceptance passed 1/1 against temporary migrated PostgreSQL, verifying real API rendering and save behavior, persisted remix rows and clips, pending-separation retry provenance, malformed-stem rejection, and separated-bed output.
-* **Route documentation:** Corrected the route header to distinguish read-only plan/render requests from the explicit save action, which persists remix records without modifying source tracks or stems.
-* **Verification:** `pnpm --filter @workspace/scripts exec tsx --test "$PWD/scripts/waveyard-mashup-route-acceptance.test.mjs"` passed 1/1; `pnpm --filter @workspace/scripts exec tsx --test "$PWD/lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts"` passed 2/2; `pnpm --filter @workspace/scripts exec tsx --test "$PWD/lib/arena/src/lib/waveyard/studio/mashup.test.ts"` passed 15/15; `pnpm --filter @workspace/api-server run typecheck` and `git diff --check` passed. The direct-path zero-test behavior was confirmed and is no longer the documented invocation.
-* **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, its route test, `scripts/waveyard-mashup-route-acceptance.test.mjs`, and this handoff.
-* **Remaining limitation:** These generated-tone fixtures establish route, rendered-component, and persistence behavior; they do not establish source-separation quality or subjective mashup listenability with real music.
-
-## Current verification update — 2026-11-11, mobile timeline touch-scroll validation
-
-* **Hardening:** The Arena smoke test now chooses a touch start inside the intersection of the visible clip, timeline scrollport, and viewport; it validates the exact hit target and dispatches that exact point away from trim/move controls. This avoids rounding a valid clip point onto a `touch-action:none` trim handle. Failed swipes capture the actual touch/pointer target and effective touch-action path.
-* **Regression evidence:** The phone-sized horizontal timeline swipe passed while confirming the slider value and clip position stayed unchanged. This corrects a false test failure; no application runtime behavior changed.
-* **Verification:** The configured `test` command was run directly and exited 0. `node --check scripts/arena-smoke.mjs` and `git diff --check` passed. The live-stem timing matrix passed in Chromium; WebKit and Firefox were skipped because their Playwright browser binaries are absent.
-* **Files changed:** `scripts/arena-smoke.mjs` and this handoff. Agent memory also records the exact-coordinate touch-test constraint.
-* **Remaining limitation:** Chromium CDP touch emulation is not physical Android/iOS testing. This verification does not establish native-device scrolling or Windows packaged-app behavior.
-
-## Current verification update — 2026-11-11, retain completed donor stems during retries
-
-* **Hardening:** Mashup donor lookup now joins stems to completed separation jobs in one query and verifies the job belongs to the requested project and source. A newer queued/running/failed attempt no longer hides a usable stem from the last completed run; incomplete stems remain excluded.
-* **Regression evidence:** The production API acceptance test stores a newer running vocal-separation attempt and a newer stem row, then proves the saved remix still references the prior completed vocal stem and never persists the unfinished one.
-* **Verification:** API-level embedded-PostgreSQL route acceptance passed 1/1; focused Waveyard mashup/analysis tests passed 44/44; library and API-server typechecks passed; `git diff --check` passed. Full workspace typecheck was not run.
-* **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.test.ts`, and this handoff.
-* **Remaining limitation:** This protects the last completed donor through retries; it does not establish perceptual mashup quality or validate that separation output is musically clean.
-
-## Current verification update — 2026-11-11, persisted mashup section provenance
-
-* **Hardening:** `loadSourceProfile` now supplies section boundaries to mashup planning only when a completed section-analysis row belongs to the current project/source analysis and source checksum, uses the current desktop section engine version, and its section rows match the same analysis, checksum, and engine provenance. Section bounds outside the source duration are ignored. Missing or stale section evidence remains an empty section list rather than a fallback to unverified labels.
-* **Regression evidence:** the PGlite acceptance test persists old-version, stale-checksum, current, and out-of-duration section rows and proves only the current in-range section reaches the mashup profile.
-* **Route acceptance:** the production mashup-route test now saves and verifies the remix while the completed separation run exists, then removes the already-verified remix before deleting the run for the fallback-render check. The previous ordering attempted to save after deleting the required stems and also violated the clips-to-stems foreign key; the route itself correctly rejected that invalid save.
-* **Files changed:** `lib/arena/src/lib/waveyard/studio/mashup-sources.ts`, `lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts`, `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.test.ts`, and this handoff.
-* **Verification:** focused Waveyard mashup/analysis suites passed 44/44; the API-level embedded-PostgreSQL mashup route acceptance passed 1/1; `pnpm run typecheck:libs` and `pnpm --filter @workspace/api-server run typecheck` passed. Full workspace typecheck was not run.
-* **Remaining limitation:** these checks verify provenance and persisted workflow correctness, not subjective audio quality or whether automatic section labels correctly describe verse/chorus form.
-
 ## Current verification update — 2026-11-10, end-to-end mashup route integration, multi-stem arrangements, and database round-trip acceptance
 
 * **Highest-priority capability completed:** Connected `analyseStereoPcm` directly to the `POST /api/waveyard/projects/[id]/mashup` route workflow. When either selected track lacks formal BPM or musical key analysis, raw decoded audio PCM is analysed on the fly using native autocorrelation and spectral/chroma DSP to populate the source profile before planning, rendering, or persisting. The resulting analysis is persisted to the `sourceAnalyses` table using canonical desktop provenance (`arena-js-dsp` v1.4.0) to prevent redundant re-analysis.
@@ -47,7 +12,7 @@
 * **Automatic musical analysis reliability:** Enforced `trustedAnalysisKey` and `trustedAnalysisBpm` in mashup planning; low-confidence keys withhold automatic pitch shifting (0 semitones); removed fabricated confidence in section-derived fallback estimates; integrated beat grid end-to-end; failed closed in `latestStem` when separation job rows are missing; and strengthened multi-window tempo testing.
 * **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, `lib/arena/src/lib/waveyard/studio/mashup-sources.ts`, `lib/arena/src/lib/waveyard/studio/mashup.ts`, `lib/arena/src/lib/waveyard/studio/analysis-reliability.test.ts`, `lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts`, and this handoff.
 * **Verification:** Passed all 148 test cases cleanly across Waveyard studio test suites (`analysis-reliability.test.ts`, `mashup-db-acceptance.test.ts`, `mashup-full-length.test.ts`, `mashup.test.ts`, `mashup-regression.test.ts`, `mashup-bed.test.ts`); full workspace `pnpm run typecheck` passed cleanly across libraries, API server, ArenaForge, mockup sandbox, and scripts with zero errors; `git diff --check` cleanly passed.
-* **Exact Git revision:** Pending commit of verified hardening fixes.
+* **Exact Git revision:** `5206390`.
 * **Remaining limitation:** Subjective musical quality of arbitrary song mashups depends on source stem separation quality and listening evaluation; fallback decisions preserve provenance and explain all assumptions.
 
 ## Current verification update — 2026-11-10, fallback renderability checks

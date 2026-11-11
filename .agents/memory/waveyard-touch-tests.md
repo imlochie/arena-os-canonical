@@ -3,11 +3,11 @@ name: Waveyard touch gesture tests
 description: Make mobile timeline gesture checks target visible controls and distinguish drag behavior from scrolling.
 ---
 
-When testing timeline gestures with Playwright and CDP touch input, a clip's bounding box can extend beyond the scrollport. A touch dispatched into that offscreen portion may hit an ancestor instead of the clip. Recomputing a selected point from a bounding-box fraction can also round it onto a nearby `touch-action:none` trim handle, falsely making native scrolling appear broken.
+When testing timeline gestures with Playwright and CDP touch input, a clip's bounding box can extend well beyond the visible viewport. A touch dispatched into that offscreen portion may hit an ancestor instead of the clip, producing false failures for scrolling or selection.
 
-**Why:** Phone-sized arrangement testing exposed both failure modes: a center-based point landed outside the visible clip, and a later fraction-to-coordinate conversion shifted a valid body point onto the trim handle. In both cases the real CDP touch target differed from the intended timeline surface.
+**Why:** During phone-sized arrangement testing, a long clip was wider than the viewport and its center-based touch point was outside the visible area. Debugging the actual event target showed the gesture landing on the surrounding page rather than the clip or lane.
 
-**How to apply:** Intersect the target with its scrollport and viewport, use `document.elementFromPoint` to find a small safe area away from controls, then dispatch at that exact validated coordinate rather than converting it back to a fraction. Capture the actual pointer target on failure. Test pointer-capture move/trim interactions separately; verify lane movement thresholds, `touch-action`, and seek isolation.
+**How to apply:** Keep CDP touch starts inside the visible portion of controls and use `document.elementFromPoint` to confirm the target before interpreting native-scroll behavior. Test pointer-capture move/trim interactions with real touch input; verify lane movement thresholds, `touch-action`, and seek isolation separately.
 
 For persistence acceptance, distinguish gesture preview from server state: await the relevant move or remix-save response, retain successful API writes in the fixture's server-side state, and assert both edited values after reopening. Force a failed write separately, require visible failure feedback, and confirm reopening still shows the last successful values.
 

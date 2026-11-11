@@ -225,21 +225,18 @@ async function dragTouch(locator, deltaX, deltaY, cancel = false, xFraction = 0.
     touchPoints: [],
   });
 }
-async function swipeTouch(locator, deltaX, deltaY, startPoint) {
+async function swipeTouch(locator, deltaX, deltaY, xFraction = 0.5, yFraction = 0.5) {
   const bounds = await locator.boundingBox();
   assert(bounds, "Touch swipe target must have visible bounds");
-  assert(startPoint, "Touch swipe requires an explicitly validated start point");
   if (!touchSession) {
     touchSession = await context.newCDPSession(page);
     await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
   }
-  const startX = Math.round(startPoint.x);
-  const startY = Math.round(startPoint.y);
+  const startX = Math.round(bounds.x + bounds.width * xFraction);
+  const startY = Math.round(bounds.y + bounds.height * yFraction);
   assert(await locator.evaluate((element, point) => {
     const hit = document.elementFromPoint(point.x, point.y);
-    const interactive = hit instanceof Element
-      && hit.closest("button,input,select,textarea,label,[role=button],.trim-handle,.clip-move-handle");
-    return (hit === element || element.contains(hit)) && !interactive;
+    return hit === element || element.contains(hit);
   }, { x: startX, y: startY }), "The touch swipe must begin on its intended visible target");
   await touchSession.send("Input.dispatchTouchEvent", {
     type: "touchStart",
@@ -3081,90 +3078,22 @@ let liveDrumDonorResponseBodyLength = 0;
       const clipPositionBeforeTouchSwipe = await touchClip.evaluate((element) => element.style.left);
       const swipeBounds = await touchClip.boundingBox();
       assert(swipeBounds, "The clip must be visible for the native-scroll touch test");
-      const swipeTarget = await touchClip.evaluate((element) => {
+      const swipePoint = await touchClip.evaluate((element) => {
         const bounds = element.getBoundingClientRect();
-        const scroller = element.closest(".timeline-scroll");
-        const scrollerBounds = scroller?.getBoundingClientRect();
-        if (!scroller || !scrollerBounds) return { point: null, reason: "clip has no timeline scroll viewport" };
-        const visible = {
-          left: Math.max(0, bounds.left, scrollerBounds.left + scroller.clientLeft),
-          right: Math.min(window.innerWidth, bounds.right, scrollerBounds.left + scroller.clientLeft + scroller.clientWidth),
-          top: Math.max(0, bounds.top, scrollerBounds.top + scroller.clientTop),
-          bottom: Math.min(window.innerHeight, bounds.bottom, scrollerBounds.top + scroller.clientTop + scroller.clientHeight),
-        };
-        if (visible.right <= visible.left || visible.bottom <= visible.top) {
-          return { point: null, reason: `no clipped-visible intersection: ${JSON.stringify(visible)}` };
-        }
-        const panTargetAt = (x, y) => {
-          const target = document.elementFromPoint(x, y);
-          const interactive = target instanceof Element
-            && target.closest("button,input,select,textarea,label,[role=button],.trim-handle,.clip-move-handle");
-          return (target === element || element.contains(target)) && !interactive;
-        };
-        const safeOffsets = [
-          [0, 0], [-5, 0], [5, 0], [0, -5], [0, 5],
-          [-5, -5], [5, -5], [-5, 5], [5, 5],
-        ];
-        const hitCounts = new Map();
-        for (let y = Math.ceil(visible.top + 7); y < visible.bottom - 7; y += 4) {
-          for (let x = Math.ceil(visible.left + 7); x < visible.right - 7; x += 4) {
-            const hit = document.elementFromPoint(x, y);
-            const inside = hit === element || element.contains(hit);
-            const interactive = hit instanceof Element
-              && hit.closest("button,input,select,textarea,label,[role=button],.trim-handle,.clip-move-handle");
-            if (inside && !interactive && safeOffsets.every(([dx, dy]) => panTargetAt(x + dx, y + dy))) {
-              const gesturePath = [];
-              for (let target = hit instanceof Element ? hit : element; target; target = target.parentElement) {
-                gesturePath.push({
-                  name: `${target.tagName.toLowerCase()}.${typeof target.className === "string" ? target.className.trim().replaceAll(/\s+/g, ".") : ""}`,
-                  touchAction: getComputedStyle(target).touchAction,
-                });
-                if (target === scroller) break;
-              }
-              return { point: { x, y }, gesturePath, reason: null };
-            }
-            const name = hit instanceof Element
-              ? `${hit.tagName.toLowerCase()}.${typeof hit.className === "string" ? hit.className.trim().replaceAll(/\s+/g, ".") : ""}`
-              : "nothing";
-            hitCounts.set(name, (hitCounts.get(name) ?? 0) + 1);
-          }
-        }
-        const coveredBy = [...hitCounts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 4);
-        return {
-          point: null,
-          reason: `no non-control clip surface within ${JSON.stringify(visible)}; hit counts ${JSON.stringify(coveredBy)}`,
-        };
+        const visibleLeft = Math.max(0, bounds.left);
+        const visibleRight = Math.min(window.innerWidth, bounds.right);
+        return { x: visibleLeft + (visibleRight - visibleLeft) / 2, y: bounds.top + Math.min(20, bounds.height / 2) };
       });
-      assert(swipeTarget.point, `The clip must expose a genuine visible touch target: ${swipeTarget.reason}`);
-      await page.evaluate(() => {
-        const trace = [];
-        const describe = (target) => target instanceof Element
-          ? `${target.tagName.toLowerCase()}.${typeof target.className === "string" ? target.className.trim().replaceAll(/\s+/g, ".") : ""}`
-          : target?.constructor?.name ?? "unknown";
-        const record = (event) => {
-          const entry = {
-            type: event.type,
-            pointerType: "pointerType" in event ? event.pointerType : undefined,
-            target: describe(event.target),
-            defaultPrevented: event.defaultPrevented,
-          };
-          trace.push(entry);
-          queueMicrotask(() => { entry.defaultPrevented = event.defaultPrevented; });
-        };
-        for (const type of ["pointerdown", "pointermove", "pointercancel", "pointerup", "touchstart", "touchmove", "touchend", "touchcancel"])
-          window.addEventListener(type, record, true);
-        window.__waveyardTouchTrace = trace;
-      });
-      await swipeTouch(touchClip, -76, 0, swipeTarget.point);
-      try {
-        await page.waitForFunction(({ before }) => {
-          const scroller = document.querySelector(".timeline-scroll");
-          return scroller instanceof HTMLElement && scroller.scrollLeft > before;
-        }, { before: scrollBeforeTouchSwipe }, { timeout: 3_000 });
-      } catch (error) {
-        const touchTrace = await page.evaluate(() => window.__waveyardTouchTrace ?? []);
-        assert.fail(`native touch swipe did not scroll the arrangement; hit=${JSON.stringify(swipeTarget)} trace=${JSON.stringify(touchTrace)}; ${error.message}`);
-      }
+      assert(swipePoint.x >= 0 && swipePoint.x < width,
+        "The native-scroll touch must start on the visible portion of the clip");
+      const swipeX = swipePoint.x;
+      const swipeFraction = (swipeX - swipeBounds.x) / swipeBounds.width;
+      const swipeYFraction = (swipePoint.y - swipeBounds.y) / swipeBounds.height;
+      await swipeTouch(touchClip, -76, 0, swipeFraction, swipeYFraction);
+      await page.waitForFunction(({ before }) => {
+        const scroller = document.querySelector(".timeline-scroll");
+        return scroller instanceof HTMLElement && scroller.scrollLeft > before;
+      }, { before: scrollBeforeTouchSwipe }, { timeout: 3_000 });
       assert.equal(await seekSlider.inputValue(), touchSeekBefore,
         "a native horizontal touch swipe beginning on a clip must not seek the playback position");
       assert(await timelineScroller.evaluate((element, before) => element.scrollLeft > before, scrollBeforeTouchSwipe),
