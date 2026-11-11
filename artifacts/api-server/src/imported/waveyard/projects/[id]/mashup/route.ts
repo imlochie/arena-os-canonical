@@ -165,6 +165,9 @@ async function decodeStemAsset(stem: StemIntegrityAsset): Promise<DecodedWav | n
     || decoded.frames < 1
     || stem.sampleRate !== decoded.sampleRate
     || stem.channels !== decoded.channels
+    || !Number.isSafeInteger(stem.durationSeconds)
+    || stem.durationSeconds < 0
+    || Math.round(decoded.frames / decoded.sampleRate) !== stem.durationSeconds
   ) return null;
   return decoded;
 }
@@ -251,59 +254,20 @@ async function loadComplementaryDonorStems(
  * run and only its non-vocal stems. Never combine stems across runs.
  */
 async function findBedSource(projectId: string, bedId: string): Promise<BedSource> {
-  const [instrumental] = await db
-    .select({
-      id: stemAssets.id,
-      projectId: stemAssets.projectId,
-      sourceAssetId: stemAssets.sourceAssetId,
-      separationJobId: stemAssets.separationJobId,
-      stemType: stemAssets.stemType,
-      storageKey: stemAssets.storageKey,
-      checksumSha256: stemAssets.checksumSha256,
-      durationSeconds: stemAssets.durationSeconds,
-      sampleRate: stemAssets.sampleRate,
-      channels: stemAssets.channels,
-      fileSizeBytes: stemAssets.fileSizeBytes,
-    })
-    .from(stemAssets)
-    .innerJoin(processingJobs, eq(stemAssets.separationJobId, processingJobs.id))
+  const [job] = await db
+    .select({ id: processingJobs.id })
+    .from(processingJobs)
     .where(and(
-      eq(stemAssets.projectId, projectId),
-      eq(stemAssets.sourceAssetId, bedId),
-      eq(stemAssets.stemType, "instrumental"),
       eq(processingJobs.projectId, projectId),
       eq(processingJobs.sourceAssetId, bedId),
       eq(processingJobs.type, "separation"),
       eq(processingJobs.status, "complete"),
     ))
-    .orderBy(desc(processingJobs.completedAt), desc(processingJobs.createdAt), desc(stemAssets.createdAt), desc(stemAssets.id))
-    .limit(1);
-
-  if (instrumental) {
-    return {
-      info: {
-        source: "separated",
-        separationJobId: instrumental.separationJobId,
-        includedStemTypes: ["instrumental"],
-        warning:
-          "The bed uses a separated instrumental stem. Separation is not perfect; residual leakage may remain.",
-      },
-      stems: [instrumental],
-    };
-  }
-
-  const [job] = await db
-    .select()
-    .from(processingJobs)
-    .where(
-      and(
-        eq(processingJobs.projectId, projectId),
-        eq(processingJobs.sourceAssetId, bedId),
-        eq(processingJobs.type, "separation"),
-        eq(processingJobs.status, "complete"),
-      ),
+    .orderBy(
+      desc(sql`coalesce(${processingJobs.completedAt}, ${processingJobs.createdAt})`),
+      desc(processingJobs.createdAt),
+      desc(processingJobs.id),
     )
-    .orderBy(desc(processingJobs.completedAt), desc(processingJobs.createdAt))
     .limit(1);
 
   if (!job) {
@@ -339,6 +303,29 @@ async function findBedSource(projectId: string, bedId: string): Promise<BedSourc
         eq(stemAssets.separationJobId, job.id),
       ),
     );
+
+  // The latest completed run is authoritative. Never select an instrumental
+  // output from an older run just because the current run emitted split stems.
+  const instrumentalStems = stems.filter((stem) => stem.stemType === "instrumental");
+  if (instrumentalStems.length > 1) {
+    throw new InstrumentalBedError(
+      "invalid-provenance",
+      "The latest completed separation run contains duplicate instrumental stems. Re-run separation for the instrumental track.",
+    );
+  }
+  if (instrumentalStems.length === 1) {
+    return {
+      info: {
+        source: "separated",
+        separationJobId: job.id,
+        includedStemTypes: ["instrumental"],
+        warning:
+          "The bed uses a separated instrumental stem. Separation is not perfect; residual leakage may remain.",
+      },
+      stems: instrumentalStems,
+    };
+  }
+
   const bedStemTypes = new Set<string>(INSTRUMENTAL_BED_STEM_TYPES);
   const usable = stems.filter((stem) => bedStemTypes.has(stem.stemType));
   const stemTypeCounts = new Map<string, number>();
