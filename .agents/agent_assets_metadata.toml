@@ -224,3 +224,17 @@ mtime_ms = 1793863849958
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5ac505f9-b99b-46c1-b140-8ab42d145216/25323f6d-b162-4bbb-b031-88e3da5320e7"
 storage_version_token = "1793864092251520"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "qAKNyI632vitrRJVYKAoF"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/full-song-studio-export.wav"
+type = "audio"
+title = "Waveyard full-song Studio export"
+description = "215-second, 44.1 kHz stereo WAV produced from real separated stems through analysis, render, save/reopen, edit, restore and export. The technical workflow passed; musical quality has not been evaluated."
+logical_id = "da948470-8de6-4f41-8ca8-4817137ca124"
+content_hash = "sha256:483ce67e44b51e2b807914e33118c600761dc03a31e52682b923fd2cb885bf98"
+size = 37926078
+mtime_ms = 1794405335444
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/da948470-8de6-4f41-8ca8-4817137ca124/01b17abc-1315-4c4b-b701-694e0716f5de"
+storage_version_token = "1794405917444562"
+content_type = "audio/wav"

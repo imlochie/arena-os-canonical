@@ -18,7 +18,8 @@ import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
 import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
-import { trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
+import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
+import type { VocalPhrase } from "../types/vocal-analysis";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v1";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
@@ -36,6 +37,8 @@ export type MashupSourceProfile = {
   durationMs: number;
   sections: MashupSection[];
   stems?: Array<{ id: string; stemType: string }>;
+  /** Checksum-current isolated-vocal phrase intervals; not lyric transcription. */
+  vocalPhrases?: VocalPhrase[];
 };
 
 export type MashupSegment = {
@@ -183,15 +186,79 @@ function bedEntryMs(bed: MashupSourceProfile, barMs: number): { at: number; why:
   return { at: Math.round(barMs), why: "no section analysis for the bed — vocals enter after one bar" };
 }
 
-/** The vocal span that carries content (skipping its intro/outro padding). */
-function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: number; why: string } {
+function alignBedEntryToMeasuredBar(
+  bed: MashupSourceProfile,
+  requestedEntryMs: number,
+  masterBpm: number,
+): { at: number; why: string | null } {
+  const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  if (!grid || trustedAnalysisBpm(bed.bpm, bed.bpmConfidence) === null || !Number.isFinite(masterBpm) || masterBpm <= 0) {
+    return { at: requestedEntryMs, why: null };
+  }
+
+  // The project stores beats but does not yet estimate meter. Use Studio's
+  // current 4/4 default, and only align when the beat grid is confidence-gated.
+  const barMs = 240_000 / masterBpm;
+  const originMs = grid[0];
+  const barsAfterOrigin = Math.max(0, Math.ceil((requestedEntryMs - originMs - 20) / barMs));
+  const alignedMs = Math.round(originMs + barsAfterOrigin * barMs);
+  if (alignedMs < requestedEntryMs - 20 || alignedMs >= bed.durationMs) return { at: requestedEntryMs, why: null };
+  return {
+    at: alignedMs,
+    why: `the vocal entry is on the measured bed bar grid at ${(alignedMs / 1000).toFixed(2)}s`,
+  };
+}
+
+/** The vocal span that carries content, using only checksum-current phrase timing. */
+function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: number; why: string; phraseEvidence: boolean } {
+  const phrases = (vocals.vocalPhrases ?? [])
+    .filter((phrase) => Number.isSafeInteger(phrase.startMs)
+      && Number.isSafeInteger(phrase.endMs)
+      && phrase.startMs >= 0
+      && phrase.endMs > phrase.startMs
+      && phrase.endMs <= vocals.durationMs
+      && Number.isFinite(phrase.confidence)
+      && phrase.confidence >= 0.5
+      && phrase.confidence <= 1)
+    .sort((left, right) => left.startMs - right.startMs);
   const active = vocals.sections.filter((section) => !isIntro(section.label) && !isOutro(section.label));
   if (active.length > 0) {
-    const from = active[0].startMs;
-    const to = active[active.length - 1].endMs;
-    return { fromMs: from, toMs: Math.min(vocals.durationMs, to), why: `vocal body spans ${active.length} section${active.length === 1 ? "" : "s"} (${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s)` };
+    const sectionFrom = active[0].startMs;
+    const sectionTo = Math.min(vocals.durationMs, active[active.length - 1].endMs);
+    const bodyPhrases = phrases.filter((phrase) => phrase.startMs >= sectionFrom && phrase.endMs <= sectionTo);
+    if (bodyPhrases.length > 0) {
+      const from = bodyPhrases[0].startMs;
+      const to = bodyPhrases[bodyPhrases.length - 1].endMs;
+      return {
+        fromMs: from,
+        toMs: to,
+        why: `the measured vocal-phrase window spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s within ${active.length} body section${active.length === 1 ? "" : "s"}`,
+        phraseEvidence: true,
+      };
+    }
+    return {
+      fromMs: sectionFrom,
+      toMs: sectionTo,
+      why: `vocal body spans ${active.length} section${active.length === 1 ? "" : "s"} (${(sectionFrom / 1000).toFixed(1)}s–${(sectionTo / 1000).toFixed(1)}s)`,
+      phraseEvidence: false,
+    };
   }
-  return { fromMs: 0, toMs: vocals.durationMs, why: "no section analysis for the vocal — its full length is used" };
+  if (phrases.length > 0) {
+    const from = phrases[0].startMs;
+    const to = phrases[phrases.length - 1].endMs;
+    return {
+      fromMs: from,
+      toMs: to,
+      why: `the measured vocal-phrase window spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s`,
+      phraseEvidence: true,
+    };
+  }
+  return {
+    fromMs: 0,
+    toMs: vocals.durationMs,
+    why: "no current vocal phrase timing — the full vocal source is used",
+    phraseEvidence: false,
+  };
 }
 
 export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile): MashupPlanResult {
@@ -284,11 +351,21 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
 
   const beatMs = 60_000 / masterBpm;
   const barMs = beatMs * 4;
-  const entry = bedEntryMs(bed, barMs);
+  const requestedEntry = bedEntryMs(bed, barMs);
+  const alignedEntry = alignBedEntryToMeasuredBar(bed, requestedEntry.at, masterBpm);
+  const entry = {
+    at: alignedEntry.at,
+    why: [requestedEntry.why, alignedEntry.why].filter(Boolean).join("; "),
+  };
   rationale.push(entry.why);
 
   const body = vocalBodySpan(vocals);
   rationale.push(body.why);
+  if (body.phraseEvidence) {
+    rationale.push("the vocal clip starts at a detected voiced phrase boundary; words, syllables, and lyrical meaning are not identified.");
+  } else {
+    warnings.push("No current isolated-vocal phrase timing is available; the entry is not lyric-aware and the full vocal source window is retained.");
+  }
 
   const vocalSpanMs = Math.max(0, body.toMs - body.fromMs);
   const stretchedMs = vocalSpanMs * stretchRatio;
