@@ -98,7 +98,8 @@ const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only"
 const sharedDonorRetryOnly = process.argv.includes("--shared-donor-retry-only");
 const sameStemSwapsOnly = process.argv.includes("--same-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
-const pitchModesOnly = process.argv.includes("--pitch-modes-only");
+const pitchTransitionOnly = process.argv.includes("--pitch-transition-only");
+const pitchModesOnly = process.argv.includes("--pitch-modes-only") || pitchTransitionOnly;
 const keyMatchingOnly = process.argv.includes("--key-matching-only");
 const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
 const mobileBrowserEmulation = process.argv.includes("--mobile-browser-emulation");
@@ -5865,6 +5866,7 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
     document.querySelector('[data-testid="session-loop-1"]')?.getAttribute("aria-pressed") === "false",
   );
 
+  if (!pitchTransitionOnly) {
   const donorMirror = await context.newPage();
   await donorMirror.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await donorMirror.waitForFunction(() =>
@@ -6160,6 +6162,7 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
   );
   session.swaps = pitchModeSwapBaseline;
   console.log("PASS: pitch-locked donor replacement and failed preparation preserve source pitch, audible output, and the shared playhead");
+  }
 
   const pitchTransitionBaseline = { ...session };
   const pitchTransitionExposeSeparatedSource = exposeSeparatedSource;
@@ -6204,19 +6207,39 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   current = page.locator('[data-role="current"]');
-  await page.waitForFunction(() => {
+  try {
+    await page.waitForFunction(() => {
     const currentDeck = document.querySelector('[data-testid="session-deck-a"]');
     const standbyDeck = document.querySelector('[data-testid="session-deck-b"]');
-    const audioFor = (deck, id) => [...(deck?.querySelectorAll("audio") ?? [])]
-      .find(audio => new URL(audio.src).pathname.endsWith(`/${id}`));
+    const audioFor = (deck, id) => [...(deck?.querySelectorAll("audio") ?? [])].find(audio => {
+      const source = audio.dataset.waveyardAssetUrl || audio.dataset.waveyardFixtureSrc || audio.currentSrc || audio.src;
+      return source && new URL(source, location.href).pathname.endsWith(`/${id}`);
+    });
     return audioFor(currentDeck, "a-vocals")?.readyState === 4
       && audioFor(standbyDeck, "b-drums")?.readyState === 4;
-  }, undefined, { timeout: 10_000 });
+    }, undefined, { timeout: 10_000 });
+  } catch (error) {
+    console.error("PITCH_TRANSITION_FIXTURE_STATE", JSON.stringify(await page.evaluate(() => ({
+      title: document.querySelector('[data-role="current"] h3')?.textContent,
+      decks: ["a", "b"].map(id => ({
+        id,
+        audios: [...document.querySelectorAll(`[data-testid="session-deck-${id}"] audio`)].map(audio => ({
+          src: audio.src,
+          currentSrc: audio.currentSrc,
+          fixtureSrc: audio.dataset.waveyardFixtureSrc,
+          readyState: audio.readyState,
+          error: audio.error?.code ?? null,
+        })),
+      })),
+      body: document.body.innerText.slice(0, 1600),
+    }))));
+    throw error;
+  }
   await page.waitForFunction(() => {
     const currentSource = window.audioProbe.sources.find(source =>
-      source.mediaElement.currentSrc.endsWith("/a-vocals"));
+      source.mediaElement.dataset.waveyardAssetUrl?.endsWith("/a-vocals"));
     const standbySource = window.audioProbe.sources.find(source =>
-      source.mediaElement.currentSrc.endsWith("/b-drums"));
+      source.mediaElement.dataset.waveyardAssetUrl?.endsWith("/b-drums"));
     return currentSource && standbySource
       && window.liveStemAssetFetchTrace.includes("/api/assets/b-vocals")
       && window.liveStemAssetFetchTrace.includes("/api/assets/c-drums")
@@ -6227,12 +6250,14 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
   }, undefined, { timeout: 10_000 });
   const preparedStandby = await page.evaluate(() => {
     const standbySource = window.audioProbe.sources.find(source =>
-      source.mediaElement.currentSrc.endsWith("/b-drums"));
+      source.mediaElement.dataset.waveyardAssetUrl?.endsWith("/b-drums"));
     return {
       donorDecoded: window.audioProbe.decodedAudio.some(entry =>
         entry.context === standbySource?.context && Math.abs(entry.duration - 12) < 0.1),
       donorStartedBeforeTransition: window.audioProbe.buffers.some(source =>
-        source.inputNode?.nextNode === standbySource?.inputNode?.nextNode && source.startedOffset !== undefined),
+        Math.abs((source.buffer?.duration ?? 0) - 12) < 0.1
+          && source.startedOffset !== undefined && (source.stopCount ?? 0) === 0
+          && (source.inputNode?.gain?.value ?? 0) > 0.03),
       playing: [...document.querySelectorAll('[data-testid="session-deck-b"] audio')]
         .some(audio => !audio.paused),
     };
@@ -6251,13 +6276,12 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
   await page.getByRole("button", { name: "Finish", exact: true }).waitFor();
   const standbyDeckStarted = await page.waitForFunction(() => {
     const standby = document.querySelector('[data-testid="session-deck-b"]');
-    const standbySource = window.audioProbe.sources.find(source =>
-      source.mediaElement.currentSrc.endsWith("/b-drums"));
     return standby?.querySelectorAll("audio").length === 4
       && [...standby.querySelectorAll("audio")].every(audio => !audio.paused)
-      && standbySource
       && window.audioProbe.buffers.some(source =>
-        source.inputNode?.nextNode === standbySource.inputNode?.nextNode && source.startedOffset !== undefined);
+        Math.abs((source.buffer?.duration ?? 0) - 12) < 0.1
+          && source.startedOffset !== undefined && (source.stopCount ?? 0) === 0
+          && (source.inputNode?.gain?.value ?? 0) > 0.03);
   }, undefined, { timeout: 4_000 }).then(() => true, () => false);
   if (!standbyDeckStarted) {
     const standbyState = await page.evaluate(() => {
@@ -6266,7 +6290,18 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
         audioCount: standby?.querySelectorAll("audio").length ?? 0,
         paused: [...(standby?.querySelectorAll("audio") ?? [])].map(audio => audio.paused),
         sources: [...window.audioProbe.sources]
-          .map(source => source.mediaElement.currentSrc).filter(src => src.includes("b-drums")),
+          .map(source => ({
+            asset: source.mediaElement.dataset.waveyardAssetUrl,
+            currentSrc: source.mediaElement.currentSrc,
+            inputNext: source.inputNode?.nextNode,
+          })).filter(source => source.asset?.endsWith("/b-drums")),
+        buffers: window.audioProbe.buffers.map(source => ({
+          duration: source.buffer?.duration,
+          startedOffset: source.startedOffset,
+          stopped: source.stopCount ?? 0,
+          gain: source.inputNode?.gain?.value,
+          inputNext: source.inputNode?.nextNode,
+        })),
         loadedDonors: window.audioProbe.workletLoads.length,
       };
     });
@@ -6291,7 +6326,7 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
   }
   const transitionProbeReady = await page.evaluate(() => {
     const sourceFor = assetId => window.audioProbe.sources.find(source =>
-      source.mediaElement.currentSrc.endsWith(`/${assetId}`));
+      source.mediaElement.dataset.waveyardAssetUrl?.endsWith(`/${assetId}`));
     const sourceA = sourceFor("a-drums");
     const sourceB = sourceFor("b-drums");
     if (!sourceA || !sourceB) return false;
@@ -6315,9 +6350,78 @@ if (donorAlignment != null && donorAlignment.errorSeconds >= 0.18 && engineName 
       originalB: analyserFor(sourceB, 16_384),
       outputA: analyserFor(masterA, 2_048),
       outputB: analyserFor(masterB, 2_048),
+      donorOutputA: null,
+      donorOutputB: null,
       outputRms: [],
     };
     window.transitionPitchProbe = probe;
+    window.attachTransitionDonorOutputMeters = () => {
+      const activeWorkletFor = channel => [...window.audioProbe.worklets].reverse().find(node =>
+        node.probeName === "waveyard-live-stem"
+          && node.probeConnections.some(input => input.nextNode === channel));
+      const workletA = activeWorkletFor(probe.channelA);
+      const workletB = activeWorkletFor(probe.channelB);
+      if (!workletA || !workletB) return { attached: false };
+      for (const [deck, worklet] of [["A", workletA], ["B", workletB]]) {
+        const key = `donorOutput${deck}`;
+        if (probe[key]?.worklet === worklet) continue;
+        const analyser = worklet.context.createAnalyser();
+        analyser.fftSize = 16_384;
+        worklet.connect(analyser);
+        probe[key] = { worklet, analyser };
+      }
+      return {
+        attached: true,
+        worklets: [probe.donorOutputA.worklet === workletA, probe.donorOutputB.worklet === workletB],
+      };
+    };
+    window.readTransitionDonorOutputMeters = () => {
+      const frequency = analyser => {
+        const samples = new Float32Array(analyser.fftSize);
+        analyser.getFloatTimeDomainData(samples);
+        const minLag = Math.max(2, Math.floor(analyser.context.sampleRate / 1_000));
+        const maxLag = Math.min(samples.length / 2, Math.ceil(analyser.context.sampleRate / 80));
+        const correlations = new Float32Array(maxLag + 1);
+        for (let lag = minLag; lag <= maxLag; lag += 1) {
+          let product = 0, leftEnergy = 0, rightEnergy = 0;
+          for (let index = 0; index < samples.length - lag; index += 1) {
+            const left = samples[index], right = samples[index + lag];
+            product += left * right;
+            leftEnergy += left * left;
+            rightEnergy += right * right;
+          }
+          correlations[lag] = product / Math.sqrt(Math.max(leftEnergy * rightEnergy, 1e-20));
+        }
+        for (let lag = minLag + 1; lag < maxLag; lag += 1) {
+          if (correlations[lag] >= 0.25
+            && correlations[lag] >= correlations[lag - 1]
+            && correlations[lag] > correlations[lag + 1]) {
+            return analyser.context.sampleRate / lag;
+          }
+        }
+        return 0;
+      };
+      const rms = analyser => {
+        const data = new Float32Array(analyser.fftSize);
+        analyser.getFloatTimeDomainData(data);
+        return Math.sqrt(data.reduce((sum, sample) => sum + sample * sample, 0) / data.length);
+      };
+      const deck = (key, channel) => {
+        const tap = probe[`donorOutput${key}`];
+        const legacySources = window.audioProbe.buffers.filter(source =>
+          source.inputNode?.nextNode === channel);
+        return {
+          hz: tap ? frequency(tap.analyser) : 0,
+          rms: tap ? rms(tap.analyser) : 0,
+          activeWorklet: Boolean(tap && tap.worklet.probeConnections.some(input => input.nextNode === channel)),
+          legacySources: legacySources.map(source => ({ stopped: (source.stopCount ?? 0) > 0 })),
+        };
+      };
+      return {
+        a: deck("A", probe.channelA),
+        b: deck("B", probe.channelB),
+      };
+    };
     window.startTransitionOutputSampling = () => {
       probe.outputRms = [];
       const left = new Float32Array(probe.outputA.fftSize);
@@ -6396,10 +6500,29 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   assert.equal(transitionDonorWorkletsReady, true,
     "both decks install their pitch-preserving donors during a live transition");
   await page.waitForTimeout(450);
+  await page.waitForFunction(() => {
+    const probe = window.transitionPitchProbe;
+    const activeWorkletFor = channel => [...window.audioProbe.worklets].reverse().find(node =>
+      node.probeName === "waveyard-live-stem"
+        && node.probeConnections.some(input => input.nextNode === channel));
+    const retiredDonorsFor = channel => window.audioProbe.buffers.filter(source =>
+      source.inputNode?.nextNode === channel);
+    return [probe.channelA, probe.channelB].every(channel => {
+      const worklet = activeWorkletFor(channel);
+      const legacySources = retiredDonorsFor(channel);
+      return worklet && legacySources.length > 0
+        && legacySources.every(source => (source.stopCount ?? 0) > 0);
+    });
+  }, undefined, { timeout: 4_000 });
+  const donorOutputMetersAttached = await page.evaluate(() =>
+    window.attachTransitionDonorOutputMeters());
+  assert.deepEqual(donorOutputMetersAttached, { attached: true, worklets: [true, true] },
+    `each output meter taps the migrated donor after its old source is retired: ${JSON.stringify(donorOutputMetersAttached)}`);
   const transitionPitchState = await page.evaluate(() => {
     const probe = window.transitionPitchProbe;
     const activeWorkletFor = channel => [...window.audioProbe.worklets].reverse().find(node =>
-      node.probeConnections.some(input => input.nextNode === channel));
+      node.probeName === "waveyard-live-stem"
+        && node.probeConnections.some(input => input.nextNode === channel));
     const workletA = activeWorkletFor(probe.channelA);
     const workletB = activeWorkletFor(probe.channelB);
     if (!workletA || !workletB) return null;
@@ -6418,7 +6541,7 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
     const alignment = (worklet, recipientAsset, duration) => {
       const seek = [...window.audioProbe.workletSeeks].reverse().find(entry => entry.node === worklet);
       const media = [...document.querySelectorAll("audio")].find(audio =>
-        audio.currentSrc.endsWith(`/${recipientAsset}`));
+        audio.dataset.waveyardAssetUrl?.endsWith(`/${recipientAsset}`));
       if (!seek || !media || duration <= 0) return null;
       const expected = (seek.frame / worklet.context.sampleRate
         + (worklet.context.currentTime - seek.contextTime) * media.playbackRate) % duration;
@@ -6447,6 +6570,7 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
         b: document.querySelector('[data-testid="session-deck-b"] audio')?.currentTime ?? null,
       },
       outputRms: [...probe.outputRms],
+      donorOutput: window.readTransitionDonorOutputMeters(),
       decksPlaying: ["a", "b"].map(deck => [...document.querySelectorAll(
         `[data-testid="session-deck-${deck}"] audio`,
       )].every(audio => !audio.paused)),
@@ -6490,6 +6614,17 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   assert.ok(Math.abs(donorPcmEvidence.find(worklet => worklet.deck === "a").inputHz - 230) < 4
     && Math.abs(donorPcmEvidence.find(worklet => worklet.deck === "b").inputHz - 370) < 4,
   `both donor inputs retain their selected source frequencies: ${JSON.stringify(donorPcmEvidence)}`);
+  assert.ok(Math.abs(transitionPitchState.donorOutput.a.hz - 230) < 14
+    && Math.abs(transitionPitchState.donorOutput.b.hz - 370) < 14
+    && transitionPitchState.donorOutput.a.activeWorklet
+    && transitionPitchState.donorOutput.b.activeWorklet
+    && transitionPitchState.donorOutput.a.rms > 0.0001
+    && transitionPitchState.donorOutput.b.rms > 0.0001
+    && transitionPitchState.donorOutput.a.legacySources.length > 0
+    && transitionPitchState.donorOutput.b.legacySources.length > 0
+    && transitionPitchState.donorOutput.a.legacySources.every(source => source.stopped)
+    && transitionPitchState.donorOutput.b.legacySources.every(source => source.stopped),
+  `both migrated donor outputs retain source pitch after the old sources stop: ${JSON.stringify(transitionPitchState.donorOutput)}`);
   assert.ok(transitionPitchState.alignmentA !== null && transitionPitchState.alignmentA < 0.18
     && transitionPitchState.alignmentB !== null && transitionPitchState.alignmentB < 0.18,
   `both prepared donors remain aligned to their own deck clocks: ${JSON.stringify({
@@ -6510,6 +6645,45 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   `combined deck output remains audible during pitch migration: ${JSON.stringify(transitionPitchState.outputRms)}`);
   assert.deepEqual(transitionPitchState.decksPlaying, [true, true],
     "both decks keep playing while the mix is in progress");
+
+  await page.locator('[data-role="current"] [data-testid="session-pitch-lock"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-role="current"] [data-testid="session-pitch-lock"]')
+      ?.getAttribute("aria-pressed") === "false",
+  );
+  await page.waitForTimeout(450);
+  const transitionPitchFollow = await page.evaluate(() => ({
+    speed: document.querySelector('[data-role="current"] [data-testid="session-speed-value"]')?.textContent,
+    donorOutput: window.readTransitionDonorOutputMeters(),
+    pitchModes: ["a", "b"].map(deck => {
+      const channel = window.transitionPitchProbe[`channel${deck.toUpperCase()}`];
+      const worklet = [...window.audioProbe.worklets].reverse().find(node =>
+        node.probeName === "waveyard-live-stem"
+          && node.probeConnections.some(input => input.nextNode === channel));
+      return [...window.audioProbe.workletPitchModes].reverse()
+        .find(entry => entry.node === worklet)?.enabled ?? null;
+    }),
+  }));
+  assert.equal(transitionPitchFollow.speed, "1.10×");
+  assert.deepEqual(transitionPitchFollow.pitchModes, [false, false],
+    `pitch-follow reaches both donor worklets: ${JSON.stringify(transitionPitchFollow)}`);
+  assert.ok(Math.abs(transitionPitchFollow.donorOutput.a.hz - 253) < 18
+    && Math.abs(transitionPitchFollow.donorOutput.b.hz - 407) < 22
+    && transitionPitchFollow.donorOutput.a.rms > 0.0001
+    && transitionPitchFollow.donorOutput.b.rms > 0.0001,
+  `both donor outputs follow the 1.10× speed during the crossfade: ${JSON.stringify(transitionPitchFollow.donorOutput)}`);
+
+  await page.locator('[data-role="current"] [data-testid="session-pitch-lock"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector('[data-role="current"] [data-testid="session-pitch-lock"]')
+      ?.getAttribute("aria-pressed") === "true",
+  );
+  await page.waitForTimeout(450);
+  const transitionRelockedOutput = await page.evaluate(() =>
+    window.readTransitionDonorOutputMeters());
+  assert.ok(Math.abs(transitionRelockedOutput.a.hz - 230) < 14
+    && Math.abs(transitionRelockedOutput.b.hz - 370) < 14,
+  `both donor outputs return to source pitch before handoff: ${JSON.stringify(transitionRelockedOutput)}`);
 }
   await page.getByRole("button", { name: "Finish", exact: true }).click();
   await page.waitForFunction(() =>
@@ -6529,6 +6703,24 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   assert.ok(await page.locator('[data-role="current"] audio').evaluateAll(elements =>
     elements.every(audio => !audio.paused)),
   "the incoming deck continues audible playback after the transition is completed");
+  const handoffDonorOutput = await page.evaluate(() => {
+    const currentDeck = document.querySelector('[data-role="current"]');
+    if (!currentDeck?.matches('[data-testid="session-deck-b"]')) return null;
+    const output = window.readTransitionDonorOutputMeters().b;
+    return {
+      ...output,
+      currentTrack: currentDeck.querySelector("h3")?.textContent,
+      pitchLocked: document.querySelector('[data-role="current"] [data-testid="session-pitch-lock"]')
+        ?.getAttribute("aria-pressed") === "true",
+    };
+  });
+  assert.ok(handoffDonorOutput
+    && handoffDonorOutput.currentTrack === "Test b"
+    && handoffDonorOutput.pitchLocked
+    && handoffDonorOutput.activeWorklet
+    && handoffDonorOutput.rms > 0.0001
+    && Math.abs(handoffDonorOutput.hz - 370) < 14,
+  `the incoming deck's donor remains pitch-locked after handoff at 1.10×: ${JSON.stringify(handoffDonorOutput)}`);
   assert.ok(await page.evaluate(() => {
     const audio = document.querySelector('[data-role="current"] audio');
     const currentContext = window.audioProbe.sources.find(source => source.mediaElement === audio)?.context;
@@ -6536,7 +6728,7 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
       node.context === currentContext && node.probeConnections.length > 0);
   }),
   "the incoming track's prepared donor stays in its pitch-preserving live graph");
-  console.log("PASS: pitch mode, donor clocks, source frequencies, and audible output stay aligned across a live deck transition");
+  console.log("PASS: migrated donor output pitch, clock alignment, and audibility stay correct during a 1.10× crossfade and after handoff");
   Object.assign(session, pitchTransitionBaseline);
   exposeSeparatedSource = pitchTransitionExposeSeparatedSource;
   if (pitchModesOnly) {
