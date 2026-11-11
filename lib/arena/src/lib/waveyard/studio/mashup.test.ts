@@ -294,19 +294,26 @@ test("render: donor instrumental complements retain native pace and key", () => 
   // It must remain byte-for-byte PCM-equivalent apart from its fixed stem gain,
   // regardless of the vocal stretch/pitch proposal.
   const plan = { ...result.plan, segments: [] };
-  const instrument = toneStemForTransformCheck(440, 10);
-  const rendered = renderMashup(plan, {
-    vocals: new Float32Array(instrument.length),
-    bed: new Float32Array(instrument.length),
-    stems: new Map([["donor_guitar", instrument]]),
-    sampleRate: RATE,
-  });
+  for (const [stemType, frequency] of [
+    ["donor_drums", 220],
+    ["donor_bass", 330],
+    ["donor_guitar", 440],
+  ] as const) {
+    const instrument = toneStemForTransformCheck(frequency, 10);
+    const rendered = renderMashup(plan, {
+      vocals: new Float32Array(instrument.length),
+      bed: new Float32Array(instrument.length),
+      stems: new Map([[stemType, instrument]]),
+      sampleRate: RATE,
+    });
 
-  for (let index = 0; index < instrument.length; index += 1) {
-    assert.ok(
-      Math.abs(rendered[index]! - instrument[index]! * 0.6) < 1e-6,
-      `instrument sample ${index} must retain native timing and pitch`,
-    );
+    assert.equal(rendered.length, instrument.length, `${stemType} must retain native duration`);
+    for (let index = 0; index < instrument.length; index += 1) {
+      assert.ok(
+        Math.abs(rendered[index]! - instrument[index]! * 0.6) < 1e-6,
+        `${stemType} sample ${index} must retain native timing and pitch`,
+      );
+    }
   }
 });
 

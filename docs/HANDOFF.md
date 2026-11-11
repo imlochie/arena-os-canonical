@@ -1,5 +1,15 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, donor-stem production path and persisted mashup acceptance
+
+* **Branch and integration:** Work is on `jules-2321982355158174303-7f554415` (PR #30), not `main`. Agent A production commits and Agent B route-test commit are integrated locally; PR #30 has not been merged or retargeted. Production fixes are at `af9b4111`; the added donor-key renderer assertions and this handoff update are still uncommitted.
+* **Donor provenance:** The mashup route selects vocals from a completed separation run and accepts complementary stems only from that same run, source, and project. Newer running work no longer hides the last completed vocal output. Older, failed, cancelled, superseded, duplicate, mismatched, and malformed data are either excluded or explicitly warned about; invalid required bed stems fail closed.
+* **Audio integrity:** Donor PCM is checksum- and storage-key-verified, decoded as supported PCM WAV, and checked for channel/sample-rate alignment and stored duration. Non-vocal donor stems keep native timing and key; vocal stretch/pitch decisions apply only to vocals. The saved editable remix references the same selected donor and bed assets used by the render, with instrument sync flags disabled and bed duck automation persisted consistently.
+* **Production-path evidence:** The real mashup API route test boots the canonical database migrations, inserts source/job/stem rows and WAV objects, calls plan/render/save, measures distinct frequency energy in the rendered WAV, excludes stems from older/running/failed/cancelled/superseded runs and malformed PCM, then queries persisted sessions/tracks/clips. It passed 1/1 after the final test update. Renderer tests compare every donor-instrument PCM sample against its native signal at fixed gain for `donor_drums`, `donor_bass`, and `donor_guitar`, assert the output frame count is unchanged, and exercise a plan requesting nontrivial vocal stretch and pitch changes.
+* **Focused checks:** `pnpm run typecheck:libs`, API-server and ArenaForge typechecks passed. Focused mixer, donor, arrangement, and PGlite persistence tests passed 43/43 before the last test-only expansion; the expanded mashup renderer suite passed 16/16, `typecheck:libs` passed again, and the API route test passed again.
+* **Full verification workflow:** The configured `test` workflow completed successfully on implementation revision `af9b4111`, including Arena browser smoke, audio conversion, Waveyard recovery/accessibility, live stem timing, and cross-tab playback checks. Afterward, only the renderer test was expanded for the three donor instrument keys; its focused suite, library typecheck, and API route acceptance all passed. The full workflow was not rerun after that test-only expansion.
+* **Evidence boundary:** API acceptance uses generated sine-wave PCM fixtures, not separated commercial songs or a listening test. It proves selection, signal flow, saved asset identity, and transform flags; it does not prove mashup quality on arbitrary music. The local Chromium timing run reported measured live swaps (about 192 ms native-tempo and 580 ms tempo-matched in that run); WebKit and Firefox timing were skipped because their executables are unavailable. Chromium mobile emulation also logged an unsupported mirror-tab return observation with silent samples; this is not physical-device evidence and must not be described as a passing mobile cross-tab audio test. The schema enforces one stem type per separation job, so duplicate rows cannot be seeded through ordinary inserts.
+
 ## Current verification update — 2026-11-10, end-to-end mashup route integration, multi-stem arrangements, and database round-trip acceptance
 
 * **Highest-priority capability completed:** Connected `analyseStereoPcm` directly to the `POST /api/waveyard/projects/[id]/mashup` route workflow. When either selected track lacks formal BPM or musical key analysis, raw decoded audio PCM is analysed on the fly using native autocorrelation and spectral/chroma DSP to populate the source profile before planning, rendering, or persisting. The resulting analysis is persisted to the `sourceAnalyses` table using canonical desktop provenance (`arena-js-dsp` v1.4.0) to prevent redundant re-analysis.
@@ -34,7 +44,7 @@
 
 Living document for every human or AI agent working on Arena. **Update it in
 the same PR as any change that alters status, priorities or the ledger.**
-Last updated: 2026-11-10.
+Last updated: 2026-11-11.
 
 ## Current verification update — 2026-11-10, fallback reachability fix
 
