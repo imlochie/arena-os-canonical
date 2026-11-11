@@ -11,8 +11,17 @@
 * **Real-audio & 4-pair acceptance:** Passed `mashup-full-length.test.ts` (4 distinct song pairings testing tempo divergence [85 vs 135 BPM], on-the-fly PCM analysis of unanalyzed audio, harmonic clash adaptation, and full-length multi-stem export with WAV encoding/decoding and lossless plan reopening). Passed all 15 unit tests in `mashup.test.ts`.
 * **Automatic musical analysis reliability:** Enforced `trustedAnalysisKey` and `trustedAnalysisBpm` in mashup planning; low-confidence keys withhold automatic pitch shifting (0 semitones); removed fabricated confidence in section-derived fallback estimates; integrated beat grid end-to-end; failed closed in `latestStem` when separation job rows are missing; and strengthened multi-window tempo testing.
 * **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, `lib/arena/src/lib/waveyard/studio/mashup-sources.ts`, `lib/arena/src/lib/waveyard/studio/mashup.ts`, `lib/arena/src/lib/waveyard/studio/analysis-reliability.test.ts`, `lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts`, and this handoff.
-* **Verification:** Passed all 148 test cases cleanly across Waveyard studio test suites (`analysis-reliability.test.ts`, `mashup-db-acceptance.test.ts`, `mashup-full-length.test.ts`, `mashup.test.ts`, `mashup-regression.test.ts`, `mashup-bed.test.ts`); full workspace `pnpm run typecheck` passed cleanly across libraries, API server, ArenaForge, mockup sandbox, and scripts with zero errors; `git diff --check` cleanly passed.
-* **Exact Git revision:** `5206390`.
+* **Verification:** Passed all 156 test cases cleanly across Waveyard studio test suites (`donor-stem-integrity.test.ts`, `analysis-reliability.test.ts`, `mashup-db-acceptance.test.ts`, `mashup-full-length.test.ts`, `mashup.test.ts`, `mashup-regression.test.ts`, `mashup-bed.test.ts`); full workspace `pnpm run typecheck` passed cleanly across libraries, API server, ArenaForge, mockup sandbox, and scripts with zero errors; `git diff --check` cleanly passed.
+* **Exact Git revision:** Pending commit of Agent B donor-stem regression suite.
+* **Agent B Coverage Matrix (Donor-Stem Integrity):**
+  - Completed-run provenance: `donor-stem-integrity.test.ts` (Test 1) — PASS
+  - Retry isolation: `donor-stem-integrity.test.ts` (Test 2) — PASS
+  - Failed/cancelled exclusion: `donor-stem-integrity.test.ts` (Test 3) — PASS
+  - No mixed-run stems: `donor-stem-integrity.test.ts` (Test 4) — PASS
+  - PCM validation: `donor-stem-integrity.test.ts` (Test 5) — PASS
+  - Vocal isolation: `donor-stem-integrity.test.ts` (Test 6) — PASS
+  - Instrumental transformation safety: `donor-stem-integrity.test.ts` (Test 7) — PASS
+  - Missing optional stems: `donor-stem-integrity.test.ts` (Test 8) — PASS
 * **Remaining limitation:** Subjective musical quality of arbitrary song mashups depends on source stem separation quality and listening evaluation; fallback decisions preserve provenance and explain all assumptions.
 
 ## Current verification update — 2026-11-10, fallback renderability checks
