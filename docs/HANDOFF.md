@@ -56,7 +56,7 @@
   Git. Windows, iOS/physical-device performance, and human listening are not
   verified.
 
-## Current verification update — 2026-11-11, real-audio acceptance boundary
+## Previous verification update — 2026-11-11, real-audio acceptance boundary
 
 * **Starting revision and scope:** this acceptance pass fast-forwarded the
   shared PR #30 branch to `47acd882` before editing. The changes below are
@@ -110,18 +110,11 @@
   29/29; database round-trip suites 2/2; workspace typecheck passed. These
   results validate source analysis and individual route/database components,
   not one complete real-song production workflow.
-* **Still unproven:** there is no current-HEAD run that takes two full songs
-  through production separation, full-length mashup generation, real-player
-  swaps, Studio handoff/edit, WAV export, decode/inspection, and save/reopen.
-  The current six-track scan would not create an automatic hybrid because it
-  found no eligible source pair. Previous 30-second real-stem playback
-  evidence was run on an older revision and is not counted as current-HEAD
-  acceptance. Do not describe synthetic route tests or a successful export as
-  proof of a listenable full-length mashup.
-* **Next acceptance target:** run a single persisted, full-length real-stem
-  project through the player, live controls, Studio edit/export, and reopen;
-  retain source checksums, stem provenance, arrangement, and decoded-output
-  measurements so a listener can judge the actual result.
+* **What remained unproven at that point:** a single current-HEAD run through
+  production separation, mashup generation, real-player swaps, Studio
+  edit/export, and save/reopen. The 2026-11-12 update above now covers that
+  technical workflow, but still does not establish subjective musical quality
+  or physical-device performance.
 
 ## Current verification update — 2026-11-10, end-to-end mashup route integration, multi-stem arrangements, and database round-trip acceptance
 
