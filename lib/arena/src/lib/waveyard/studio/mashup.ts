@@ -425,13 +425,14 @@ export function mashupDuckGainAt(plan: MashupPlan, timelineMs: number): number {
  * is represented exactly by each segment's fade and full-gain boundaries.
  */
 export function mashupDuckAutomationPoints(plan: MashupPlan): Array<{ timelineMs: number; value: number }> {
-  const times = new Set<number>([0, Math.max(0, Math.round(plan.durationMs))]);
+  const durationMs = Math.max(0, Math.round(plan.durationMs));
+  const times = new Set<number>([0, durationMs]);
   for (const segment of plan.segments) {
-    const start = Math.max(0, Math.min(plan.durationMs, Math.round(segment.mashupStartMs)));
-    const end = Math.max(start, Math.min(plan.durationMs, Math.round(segment.mashupEndMs)));
+    const start = Math.max(0, Math.min(durationMs, Math.round(segment.mashupStartMs)));
+    const end = Math.max(start, Math.min(durationMs, Math.round(segment.mashupEndMs)));
     const crossfade = Math.max(0, Math.round(segment.crossfadeMs));
     for (const time of [start, start + crossfade, end - crossfade, end]) {
-      times.add(Math.max(0, Math.min(plan.durationMs, time)));
+      times.add(Math.max(0, Math.min(durationMs, time)));
     }
   }
   return [...times]

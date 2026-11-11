@@ -69,7 +69,7 @@ type BedSource = {
 };
 
 type BedLoadResult =
-  | { ok: true; pcm: Float32Array; frames: number; appliedGain: number; info: BedSourceInfo }
+  | { ok: true; pcm: Float32Array; frames: number; appliedGain: number; info: BedSourceInfo; stems: StemIntegrityAsset[] }
   | { ok: false; info: BedSourceInfo };
 
 type StemIntegrityAsset = Pick<typeof stemAssets.$inferSelect,
@@ -130,9 +130,13 @@ async function latestStem(projectId: string, sourceAssetId: string, stemType: st
 
 /** Verify stored identity/metadata and decode a render-rate stereo stem WAV. */
 async function decodeStemAsset(stem: StemIntegrityAsset): Promise<DecodedWav | null> {
+  const storageKey = typeof stem.storageKey === "string" ? stem.storageKey.trim() : "";
   if (
-    typeof stem.storageKey !== "string"
-    || stem.storageKey.trim() === ""
+    storageKey === ""
+    || storageKey !== stem.storageKey
+    || storageKey.startsWith("/")
+    || storageKey.includes("\\")
+    || storageKey.split("/").some((part) => part === "" || part === "." || part === "..")
     || !Number.isSafeInteger(stem.fileSizeBytes)
     || stem.fileSizeBytes < 44
     || !/^[a-f0-9]{64}$/i.test(stem.checksumSha256)
@@ -148,7 +152,12 @@ async function decodeStemAsset(stem: StemIntegrityAsset): Promise<DecodedWav | n
   const checksum = createHash("sha256").update(bytes).digest("hex");
   if (checksum !== stem.checksumSha256.toLowerCase()) return null;
 
-  const decoded = decodeWav16(new Uint8Array(bytes));
+  let decoded: DecodedWav | null;
+  try {
+    decoded = decodeWav16(new Uint8Array(bytes));
+  } catch {
+    return null;
+  }
   if (decoded === null) return null;
   if (
     decoded.sampleRate !== RENDER_SAMPLE_RATE
@@ -205,6 +214,9 @@ async function loadComplementaryDonorStems(
     const group = rowsByType.get(row.stemType) ?? [];
     group.push(row);
     rowsByType.set(row.stemType, group);
+  }
+  if (rows.length === 0) {
+    warnings.push("No complementary non-vocal donor stems are available from the selected completed separation run; the mashup uses its lead vocal and bed only.");
   }
 
   const stems: LoadedComplementaryStem[] = [];
@@ -329,6 +341,15 @@ async function findBedSource(projectId: string, bedId: string): Promise<BedSourc
     );
   const bedStemTypes = new Set<string>(INSTRUMENTAL_BED_STEM_TYPES);
   const usable = stems.filter((stem) => bedStemTypes.has(stem.stemType));
+  const stemTypeCounts = new Map<string, number>();
+  for (const stem of usable) stemTypeCounts.set(stem.stemType, (stemTypeCounts.get(stem.stemType) ?? 0) + 1);
+  const duplicateType = [...stemTypeCounts].find(([, count]) => count > 1)?.[0];
+  if (duplicateType) {
+    throw new InstrumentalBedError(
+      "invalid-provenance",
+      `The completed separation run contains duplicate ${duplicateType} stems. Re-run separation for the instrumental track.`,
+    );
+  }
   if (usable.length === 0) {
     return {
       info: {
@@ -374,7 +395,7 @@ async function loadInstrumentalBed(projectId: string, bedId: string): Promise<Be
         "The separated instrumental stem failed its stored-file integrity or PCM checks. Re-run separation for the instrumental track.",
       );
     }
-    return { ok: true, pcm: decoded.samples, frames: decoded.frames, appliedGain: 1, info };
+    return { ok: true, pcm: decoded.samples, frames: decoded.frames, appliedGain: 1, info, stems };
   }
 
   const decodedStems: InstrumentalBedStem[] = [];
@@ -399,7 +420,7 @@ async function loadInstrumentalBed(projectId: string, bedId: string): Promise<Be
   }
 
   const bed = sumInstrumentalStems(decodedStems);
-  return { ok: true, pcm: bed.pcm, frames: bed.frames, appliedGain: bed.appliedGain, info };
+  return { ok: true, pcm: bed.pcm, frames: bed.frames, appliedGain: bed.appliedGain, info, stems };
 }
 
 async function inspectBed(projectId: string, bedId: string): Promise<BedSourceInfo> {
@@ -541,15 +562,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
       if (action === "save") {
         const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
-        const bedSource = await findBedSource(projectId, bedId);
-        const bedStems = bedSource.stems;
+        const decodedVocals = vocalsStem ? await decodeStemAsset(vocalsStem) : null;
+        const bedLoad = await loadInstrumentalBed(projectId, bedId);
 
-        if (!vocalsStem || bedStems.length === 0) {
+        if (!vocalsStem || decodedVocals === null || !bedLoad.ok || bedLoad.stems.length === 0) {
           return Response.json(
-            { error: "Both a completed separated vocal stem and an instrumental bed are required to save an editable Studio remix." },
+            { error: "A valid completed separated vocal stem and an integrity-checked separated instrumental bed are required to save an editable Studio remix." },
             { status: 422 },
           );
         }
+        const bedStems = bedLoad.stems;
+        const complementary = await loadComplementaryDonorStems(projectId, vocalsId, vocalsStem, decodedVocals.frames);
 
         // Verify genuine analysis confidence before enabling transform and snap flags
         const vocalTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
@@ -583,29 +606,35 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             pan: number;
           }> = [];
 
-          if (vocalsStem) {
+          tracksToInsert.push({
+            remixSessionId: remix.id,
+            stemAssetId: vocalsStem.id,
+            name: "Lead Vocals (Donor)",
+            sortOrder: 0,
+            volume: 1,
+            pan: 0,
+          });
+
+          let sortOrder = 1;
+          for (const bStem of bedStems) {
             tracksToInsert.push({
               remixSessionId: remix.id,
-              stemAssetId: vocalsStem.id,
-              name: "Lead Vocals (Donor)",
-              sortOrder: 0,
+              stemAssetId: bStem.id,
+              name: `${bStem.stemType[0].toUpperCase()}${bStem.stemType.slice(1)} (Bed)`,
+              sortOrder: sortOrder++,
               volume: 1,
               pan: 0,
             });
           }
-
-          let sortOrder = 1;
-          for (const bStem of bedStems) {
-            if (bStem.stemType !== "vocals") {
-              tracksToInsert.push({
-                remixSessionId: remix.id,
-                stemAssetId: bStem.id,
-                name: `${bStem.stemType[0].toUpperCase()}${bStem.stemType.slice(1)} (Bed)`,
-                sortOrder: sortOrder++,
-                volume: 0.8,
-                pan: 0,
-              });
-            }
+          for (const donorStem of complementary.stems) {
+            tracksToInsert.push({
+              remixSessionId: remix.id,
+              stemAssetId: donorStem.asset.id,
+              name: `${donorStem.asset.stemType[0]!.toUpperCase()}${donorStem.asset.stemType.slice(1)} (Donor)`,
+              sortOrder: sortOrder++,
+              volume: 1,
+              pan: 0,
+            });
           }
 
           const insertedTracks = tracksToInsert.length ? await tx.insert(remixTracks).values(tracksToInsert).returning() : [];
@@ -635,7 +664,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 timelineStartMs: seg.mashupStartMs,
                 durationMs: seg.mashupEndMs - seg.mashupStartMs,
                 sourceOffsetMs: seg.vocalsFromMs,
-                gain: 0.85,
+                gain: 1,
                 fadeInMs: seg.crossfadeMs,
                 fadeOutMs: seg.crossfadeMs,
                 tempoSyncEnabled: vocalTempoTrusted,
@@ -645,18 +674,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             }
           }
 
-          // Bed clips spanning full duration
+          // Persist the same bed PCM gain and end boundary used by the render.
           for (const bStem of bedStems) {
-            if (bStem.stemType !== "vocals" && trackByStemId.has(bStem.id)) {
+            if (trackByStemId.has(bStem.id)) {
               clipsToInsert.push({
                 remixTrackId: trackByStemId.get(bStem.id)!.id,
                 stemAssetId: bStem.id,
                 timelineStartMs: 0,
-                durationMs: planned.plan.durationMs,
+                durationMs: Math.min(
+                  planned.plan.durationMs,
+                  Math.floor((bedLoad.frames * 1000) / RENDER_SAMPLE_RATE),
+                ),
                 sourceOffsetMs: 0,
-                gain: 0.8,
-                fadeInMs: 50,
-                fadeOutMs: 150,
+                gain: bedLoad.appliedGain,
+                fadeInMs: 0,
+                fadeOutMs: 0,
                 tempoSyncEnabled: false,
                 keySyncEnabled: false,
                 beatSnapEnabled: bedGridTrusted,
@@ -664,7 +696,50 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             }
           }
 
+          // Complementary donor instruments are persisted from the same run
+          // that supplied the lead vocal, with no vocal stretch/key flags.
+          for (const donorStem of complementary.stems) {
+            const track = trackByStemId.get(donorStem.asset.id);
+            if (!track) continue;
+            clipsToInsert.push({
+              remixTrackId: track.id,
+              stemAssetId: donorStem.asset.id,
+              timelineStartMs: 0,
+              durationMs: Math.min(
+                planned.plan.durationMs,
+                Math.floor((donorStem.decoded.frames * 1000) / donorStem.decoded.sampleRate),
+              ),
+              sourceOffsetMs: 0,
+              gain: 0.6,
+              fadeInMs: 0,
+              fadeOutMs: 0,
+              tempoSyncEnabled: false,
+              keySyncEnabled: false,
+              beatSnapEnabled: false,
+            });
+          }
+
           const insertedClips = clipsToInsert.length ? await tx.insert(remixClips).values(clipsToInsert).returning() : [];
+          const duckedStemIds = new Set([
+            ...bedStems.map((stem) => stem.id),
+            ...complementary.stems.map((stem) => stem.asset.id),
+          ]);
+          const automationPoints = mashupDuckAutomationPoints(planned.plan);
+          const automationLanes = insertedTracks
+            .filter((track) => duckedStemIds.has(track.stemAssetId))
+            .map((track) => ({
+              remixTrackId: track.id,
+              parameter: "volume" as const,
+              points: automationPoints,
+            }));
+          const automationRows = automationLanes.flatMap((lane) => lane.points.map((point) => ({
+            remixSessionId: remix.id,
+            remixTrackId: lane.remixTrackId,
+            parameter: lane.parameter,
+            timelineMs: point.timelineMs,
+            value: point.value,
+          })));
+          if (automationRows.length) await tx.insert(remixAutomationPoints).values(automationRows);
 
           const snapshot = {
             name: remix.name,
@@ -681,7 +756,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               ...track,
               clips: insertedClips.filter((clip) => clip.remixTrackId === track.id),
             })),
-            automation: [],
+            automation: automationLanes,
           };
 
           const [version] = await tx.insert(remixVersions).values({
@@ -694,7 +769,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           return { remix, version };
         });
 
-        return Response.json({ ok: true, remix: result.remix, version: result.version }, { status: 201 });
+        return Response.json({
+          ok: true,
+          remix: result.remix,
+          version: result.version,
+          warnings: complementary.warnings,
+        }, { status: 201 });
       }
 
       // Render: donor vocal over a clean instrumental bed. The bed is built
@@ -707,11 +787,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       await mkdir(tempDir, { recursive: true });
 
       const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
-      const decodedVocals = vocalsStem !== null ? await stemPcm(vocalsStem.storageKey) : null;
       const warnings: string[] = [];
       let vocalsPcm: Float32Array;
-      if (decodedVocals !== null) {
-        vocalsPcm = decodedVocals;
+      const decodedVocalWav = vocalsStem !== null ? await decodeStemAsset(vocalsStem) : null;
+      if (decodedVocalWav !== null) {
+        vocalsPcm = decodedVocalWav.samples;
       } else {
         const vocalsFile = await sourcePcm(projectId, vocalsId, tempDir);
         if (vocalsFile === null) {
@@ -738,23 +818,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         bedInfo = bedResult.info;
       }
 
-      // Load available complementary stems from the donor vocal track (e.g. guitar/keys/other)
-      // to enrich breakdown/solo pockets without duplicating bed stems
+      // Load only valid non-vocal complements from the selected lead vocal's
+      // exact completed separation run. Missing/corrupt optional layers are
+      // safely omitted and disclosed instead of silently mixed or overwritten.
       const complementaryDonorStems = new Map<string, Float32Array>();
-      try {
-        const donorStemRows = await db
-          .select({ stemType: stemAssets.stemType, storageKey: stemAssets.storageKey })
-          .from(stemAssets)
-          .where(and(eq(stemAssets.projectId, projectId), eq(stemAssets.sourceAssetId, vocalsId)));
-
-        for (const stemRow of donorStemRows) {
-          if (stemRow.stemType !== "vocals") {
-            const pcm = await stemPcm(stemRow.storageKey);
-            if (pcm) complementaryDonorStems.set(`donor_${stemRow.stemType}`, pcm);
-          }
+      if (vocalsStem !== null && decodedVocalWav !== null) {
+        const complementary = await loadComplementaryDonorStems(
+          projectId,
+          vocalsId,
+          vocalsStem,
+          decodedVocalWav.frames,
+        );
+        warnings.push(...complementary.warnings);
+        for (const donorStem of complementary.stems) {
+          complementaryDonorStems.set(`donor_${donorStem.asset.stemType}`, donorStem.decoded.samples);
         }
-      } catch {
-        // Fall back gracefully
       }
 
       const mixed = renderMashup(planned.plan, {
