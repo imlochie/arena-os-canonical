@@ -14,6 +14,7 @@
 - [Windows build resource limits](windows-build-resources.md) — user has seen Windows builds exhaust laptop disk; distinguish RAM, dependencies, staging, installers, and downloaded models.
 - [Windows validation timing](windows-validation-timing.md) — keep preparing Windows checks, but defer asking for user runs until product gaps are nearly cleared.
 - [Waveyard database tests](waveyard-db-tests.md) — separate startup failures from queue evidence; seed real-route acceptance data with the API's actual identity.
+- [Node test discovery for dynamic routes](node-test-route-globs.md) — import bracketed route tests through a path-safe entry point and confirm a nonzero test count.
 - [PostgreSQL test binaries](postgresql-test-binaries.md) — database integration tests should use bundled binaries when present and PATH tools otherwise.
 - [Waveyard clip donor provenance](waveyard-clip-donor-provenance.md) — a clip's stem reference can differ from its lane default; loading, permissions, playback, export, and deletion protection must follow clip IDs.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.

@@ -1,5 +1,13 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, mashup route acceptance discovery
+
+* **Hardening:** Added `scripts/waveyard-mashup-route-acceptance.test.mjs` as a path-safe Node test entry point for the production mashup route acceptance. Passing the literal `[id]` route path directly to `tsx --test` silently discovers zero tests; the wrapper imports that exact route test so its database-backed test is registered.
+* **Persisted evidence:** The PGlite save/reopen and analysis-selection tests passed 2/2. The production route acceptance passed 1/1 against temporary migrated PostgreSQL, verifying a real API save, persisted remix rows and clips, pending-separation retry provenance, and separated-bed output.
+* **Verification:** `pnpm --filter @workspace/scripts exec tsx --test $PWD/scripts/waveyard-mashup-route-acceptance.test.mjs` passed 1/1. The direct-path zero-test behavior was confirmed and is no longer the documented invocation.
+* **Files changed:** The path-safe test entry point and this handoff.
+* **Remaining limitation:** These generated-tone route fixtures establish route and persistence behavior, not source-separation quality or subjective mashup listenability.
+
 ## Current verification update — 2026-11-11, mobile timeline touch-scroll validation
 
 * **Hardening:** The Arena smoke test now chooses a touch start inside the intersection of the visible clip, timeline scrollport, and viewport; it validates the exact hit target and dispatches that exact point away from trim/move controls. This avoids rounding a valid clip point onto a `touch-action:none` trim handle. Failed swipes capture the actual touch/pointer target and effective touch-action path.
