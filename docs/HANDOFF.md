@@ -1,5 +1,13 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, retain completed donor stems during retries
+
+* **Hardening:** Mashup donor lookup now joins stems to completed separation jobs in one query and verifies the job belongs to the requested project and source. A newer queued/running/failed attempt no longer hides a usable stem from the last completed run; incomplete stems remain excluded.
+* **Regression evidence:** The production API acceptance test stores a newer running vocal-separation attempt and a newer stem row, then proves the saved remix still references the prior completed vocal stem and never persists the unfinished one.
+* **Verification:** API-level embedded-PostgreSQL route acceptance passed 1/1; focused Waveyard mashup/analysis tests passed 44/44; library and API-server typechecks passed; `git diff --check` passed. Full workspace typecheck was not run.
+* **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.test.ts`, and this handoff.
+* **Remaining limitation:** This protects the last completed donor through retries; it does not establish perceptual mashup quality or validate that separation output is musically clean.
+
 ## Current verification update — 2026-11-11, persisted mashup section provenance
 
 * **Hardening:** `loadSourceProfile` now supplies section boundaries to mashup planning only when a completed section-analysis row belongs to the current project/source analysis and source checksum, uses the current desktop section engine version, and its section rows match the same analysis, checksum, and engine provenance. Section bounds outside the source duration are ignored. Missing or stale section evidence remains an empty section list rather than a fallback to unverified labels.

@@ -330,7 +330,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const vocalsStemPath = path.join(fixtureRoot, "vocals-stem.wav");
     await writeFile(vocalsStemPath, vocalsStemWav);
     await storage.putFile("mashup-fixture/vocals-stem.wav", vocalsStemPath);
-    await dbModule.db.insert(schema.stemAssets).values({
+    const [completedVocalsStem] = await dbModule.db.insert(schema.stemAssets).values({
       projectId: project.id,
       sourceAssetId: vocalsSource.id,
       separationJobId: vocalsJob.id,
@@ -346,7 +346,42 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       codec: "wav",
       format: "wav",
       fileSizeBytes: vocalsStemWav.length,
-    });
+    }).returning({ id: schema.stemAssets.id });
+
+    // A newer active attempt must not make the last completed donor disappear
+    // from the save/render workflow.
+    const [pendingVocalsJob] = await dbModule.db.insert(schema.processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      type: "separation",
+      status: "running",
+      stage: "separating",
+      attempts: 1,
+      idempotencyKey: `mashup-vocals-pending-${randomUUID()}`,
+      model: "test",
+      requestedDevice: "cpu",
+      startedAt: new Date(),
+      createdAt: new Date(Date.now() + 60_000),
+    }).returning({ id: schema.processingJobs.id });
+    const [pendingVocalsStem] = await dbModule.db.insert(schema.stemAssets).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      separationJobId: pendingVocalsJob.id,
+      stemType: "vocals",
+      engine: "demucs",
+      model: "test",
+      modelVersion: "test",
+      storageKey: "mashup-fixture/vocals-pending.wav",
+      checksumSha256: "b".repeat(64),
+      durationSeconds: VOCAL_SECONDS,
+      sampleRate: RATE,
+      channels: 2,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: vocalsStemWav.length,
+      createdAt: new Date(Date.now() + 60_000),
+    }).returning({ id: schema.stemAssets.id });
+    assert.ok(completedVocalsStem && pendingVocalsStem);
 
     const bedStems: Array<[string, number]> = [["drums", 110], ["bass", 220], ["other", 330], ["vocals", 1500]];
     for (const [stemType, frequency] of bedStems) {
@@ -491,6 +526,14 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       .from(schema.remixTracks)
       .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
     assert.ok(savedTracks.length >= 2, "remix must have vocal and bed tracks");
+    assert.ok(
+      savedTracks.some((track) => track.stemAssetId === completedVocalsStem.id),
+      "the remix must use the last completed vocal stem while a newer attempt is still running",
+    );
+    assert.ok(
+      !savedTracks.some((track) => track.stemAssetId === pendingVocalsStem.id),
+      "an unfinished vocal stem must never be persisted into the remix",
+    );
 
     const savedClips = await dbModule.db
       .select()

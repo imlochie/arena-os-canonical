@@ -16,7 +16,7 @@
  */
 
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -71,30 +71,28 @@ type BedLoadResult =
   | { ok: true; pcm: Float32Array; info: BedSourceInfo }
   | { ok: false; info: BedSourceInfo };
 
-/** Latest stem of a type for a source whose separation job completed, or null. */
+/** Latest stem of a type backed by a completed separation run, or null. */
 async function latestStem(projectId: string, sourceAssetId: string, stemType: string) {
   const [stem] = await db
     .select({ id: stemAssets.id, storageKey: stemAssets.storageKey, separationJobId: stemAssets.separationJobId })
     .from(stemAssets)
-    .where(
-      and(
+    .innerJoin(processingJobs, eq(stemAssets.separationJobId, processingJobs.id))
+    .where(and(
         eq(stemAssets.projectId, projectId),
         eq(stemAssets.sourceAssetId, sourceAssetId),
         eq(stemAssets.stemType, stemType),
-      ),
+        eq(processingJobs.projectId, projectId),
+        eq(processingJobs.sourceAssetId, sourceAssetId),
+        eq(processingJobs.type, "separation"),
+        eq(processingJobs.status, "complete"),
+      ))
+    .orderBy(
+      desc(sql`coalesce(${processingJobs.completedAt}, ${processingJobs.createdAt})`),
+      desc(stemAssets.createdAt),
+      desc(stemAssets.id),
     )
-    .orderBy(desc(stemAssets.createdAt))
     .limit(1);
   if (!stem) return null;
-
-  const [job] = await db
-    .select({ status: processingJobs.status })
-    .from(processingJobs)
-    .where(eq(processingJobs.id, stem.separationJobId))
-    .limit(1);
-  // Missing separation job records or non-complete jobs fail closed
-  if (!job || job.status !== "complete") return null;
-
   return stem;
 }
 
