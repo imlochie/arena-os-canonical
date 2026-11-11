@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
@@ -25,9 +26,23 @@ const skipReason = tracks.length === 6
   ? false
   : "Set WAVEYARD_ACCEPTANCE_TRACKS to six full-length audio paths; the test deliberately does not substitute generated tones.";
 
-test("six full-track audio files produce persisted-feature comparisons without false compatibility claims", { skip: skipReason }, async () => {
-  const outputDir = await mkdtemp(join(tmpdir(), "waveyard-cross-track-"));
-  const reportPath = join(outputDir, "report.json");
+test("six full-track audio files produce persisted-feature comparisons without false compatibility claims", { skip: skipReason }, async (t) => {
+  const requestedReportPath = process.env.WAVEYARD_ACCEPTANCE_REPORT?.trim();
+  const outputDir = requestedReportPath
+    ? null
+    : await mkdtemp(join(tmpdir(), "waveyard-cross-track-"));
+  const reportPath = requestedReportPath
+    ? resolve(workspaceRoot, requestedReportPath)
+    : join(outputDir, "report.json");
+  if (requestedReportPath) {
+    const generatedRoot = `${resolve(workspaceRoot, "generated-artifacts")}${sep}`;
+    assert.ok(
+      reportPath.startsWith(generatedRoot),
+      "WAVEYARD_ACCEPTANCE_REPORT must stay inside generated-artifacts",
+    );
+    assert.equal(existsSync(reportPath), false, "refusing to overwrite an existing acceptance report");
+    await mkdir(dirname(reportPath), { recursive: true });
+  }
   try {
     const checksums = await Promise.all(tracks.map(async (path) =>
       createHash("sha256").update(await readFile(path)).digest("hex"),
@@ -50,7 +65,15 @@ test("six full-track audio files produce persisted-feature comparisons without f
     assert.ok(report.crossSourceCompatibility.evaluatedPassagePairs > 0);
     assert.equal(report.crossSourceCompatibility.coreEligibleMatches, 0,
       "the current six-track acceptance set has no pair that meets every independent compatibility gate");
+    t.diagnostic(JSON.stringify({
+      report: requestedReportPath ?? "temporary report (removed after the run)",
+      trackDurationsSeconds: report.tracks.map((track) => track.analyzedDurationSeconds),
+      sectionCount: report.tracks.reduce((total, track) => total + track.sections.length, 0),
+      evaluatedPassagePairs: report.crossSourceCompatibility.evaluatedPassagePairs,
+      eligibleMatches: report.crossSourceCompatibility.coreEligibleMatches,
+      missingEvidence: report.crossSourceCompatibility.missingEvidence,
+    }));
   } finally {
-    await rm(outputDir, { recursive: true, force: true });
+    if (outputDir) await rm(outputDir, { recursive: true, force: true });
   }
 });

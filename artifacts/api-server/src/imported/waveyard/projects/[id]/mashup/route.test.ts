@@ -2,11 +2,13 @@
  * API-level mashup render acceptance.
  *
  * This is not a helper-only test: it boots the real embedded PostgreSQL
- * cluster, applies the canonical migrations, inserts real source/stem rows
- * and private WAV objects, then calls the production route handler. It
+ * cluster, applies the canonical migrations, inserts real database source/stem
+ * rows and private WAV objects containing generated tones, then calls the
+ * production route handler. It
  * proves that the synthesized instrumental bed (drums + bass + other, with
  * the bed's vocal stem excluded) actually reaches renderMashup, and that the
- * original-file fallback is reported honestly.
+ * original-file fallback is reported honestly. It does not assess real-song
+ * separation or subjective mashup quality.
  */
 
 import test from "node:test";
@@ -20,7 +22,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 
@@ -117,7 +119,7 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-test("Waveyard API renders mashups and persists Arena handoffs atomically", async (t) => {
+test("Waveyard API renders generated PCM and persists Arena handoffs atomically", async (t) => {
   if (!postgresBinaries.initdb || !postgresBinaries.postgres || !postgresBinaries.pgCtl) {
     t.skip("PostgreSQL binaries are unavailable");
     return;
@@ -461,9 +463,13 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.match(((await invalidResponse.json()) as { error: string }).error, /bass stem/);
     await storage.putFile("mashup-fixture/bed-bass.wav", path.join(fixtureRoot, "bed-bass.wav"));
 
-    // Remove the separation run: the route must fall back to the original
+    // Make the separation unavailable: rendering must fall back to the original
     // file and say so, and the original bed's vocal must become audible.
-    await dbModule.db.delete(schema.processingJobs).where(eq(schema.processingJobs.id, bedJob.id));
+    // Keep the rows so this test can restore a completed run before the separate
+    // save assertion; editable Studio saves require a completed separated bed.
+    await dbModule.db.update(schema.processingJobs)
+      .set({ status: "failed", stage: "failed" })
+      .where(eq(schema.processingJobs.id, bedJob.id));
     const fallbackResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
     assert.equal(fallbackResponse.status, 200);
     assert.equal(fallbackResponse.headers.get("x-waveyard-bed-source"), "original-fallback");
@@ -478,8 +484,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       `the fallback must be distinguishable from the separated bed (${fallbackVocalEnergy} vs ${separatedVocalEnergy})`,
     );
 
-    // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips
-    const saveRequest = new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const saveRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -488,7 +493,19 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
         instrumentalSourceId: bedSource.id,
       }),
     });
-    const saveResponse = await routeModule.POST(saveRequest, { params: Promise.resolve({ id: project.id }) });
+    const unavailableSave = await routeModule.POST(
+      saveRequest(),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(unavailableSave.status, 422, "an editable save refuses an unavailable separated bed");
+    assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, 0,
+      "a refused save does not leave a partial Studio session");
+
+    await dbModule.db.update(schema.processingJobs)
+      .set({ status: "complete", stage: "complete", completedAt: new Date(), errorCode: null, errorMessage: null })
+      .where(eq(schema.processingJobs.id, bedJob.id));
+    // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips.
+    const saveResponse = await routeModule.POST(saveRequest(), { params: Promise.resolve({ id: project.id }) });
     assert.equal(saveResponse.status, 201, "save action must return 201 Created");
     const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
     assert.equal(saveBody.ok, true);

@@ -1,5 +1,72 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, real-audio acceptance boundary
+
+* **Starting revision and scope:** this acceptance pass fast-forwarded the
+  shared PR #30 branch to `47acd882` before editing. The changes below are
+  limited to test discovery, test-fixture correctness, truthful test labels,
+  and retained acceptance evidence; no production audio behavior was changed.
+* **Full-track source analysis:** the six checksum-pinned, owner-provided
+  recordings were analyzed from beginning to end (215.14–405.93 seconds each;
+  1,703.95 seconds total). The run produced 246 section records and evaluated
+  24,941 cross-source passage pairs. **Zero** pairs met all compatibility
+  gates. Missing measurements include donor vocal activity, anchor
+  non-vocal-stem activity, and downbeat confidence. Only one recording had
+  both tempo and key confidence at the engine's 0.5 threshold. The result is
+  an honest analysis rejection, not a generated mashup.
+* **Retained report:** the test now supports `WAVEYARD_ACCEPTANCE_REPORT` and
+  refuses to overwrite an existing file or write outside `generated-artifacts`.
+  The current full analysis report is
+  `generated-artifacts/waveyard-real-world-acceptance/full-track-analysis-47acd882.json`.
+  Re-run with six original files using:
+
+  ```sh
+  WAVEYARD_ACCEPTANCE_TRACKS="<six full paths separated by the OS path delimiter>" \
+  WAVEYARD_ACCEPTANCE_REPORT="generated-artifacts/waveyard-real-world-acceptance/<new-report>.json" \
+  node --test scripts/waveyard-cross-track-acceptance.test.mjs
+  ```
+
+  This checks the pinned input checksums, full-track durations, section
+  fingerprints, and absence of false-positive matches. It does not synthesize
+  audio or establish subjective quality.
+* **Route acceptance discovery and repair:** running the route test directly
+  through `tsx --test` returned TAP `0 tests`; Node interpreted its literal
+  `[id]` directory as a glob. Restored the normal-name entry point
+  `scripts/waveyard-mashup-route-acceptance.test.ts`, which imports and runs the
+  actual route test. Its generated-tone fixture now marks the bed separation
+  unavailable for the fallback render, asserts that editable save returns 422
+  without creating a partial session, restores the completed run, and then
+  verifies successful persistence. The test uses an ephemeral PostgreSQL
+  database and the production route, but its PCM is synthetic—not real songs.
+* **Synthetic-test wording:** `mashup-full-length.test.ts` uses generated tones
+  and click patterns, including a 120-second WAV encode/decode check and plan
+  JSON round-trip. Its test names now say “synthetic”; none of those cases is a
+  real-song or save/reopen listening acceptance.
+* **Existing audition files measured:** seven WAV files under
+  `generated-artifacts/waveyard-real-mashup` are 16.470–16.515 seconds,
+  44.1 kHz, stereo, 16-bit PCM. They have no clipped samples; each contains a
+  0.507–0.513-second interval below −60 dB. There is no source/arrangement
+  manifest to establish whether those intervals are intended A/B separators,
+  or to verify that the audio matches the planned arrangement. They are not
+  full-length mashups.
+* **Verification on this pass:** full-track acceptance 1/1; production route
+  acceptance 1/1; donor-integrity, mashup, and synthetic full-duration suites
+  29/29; database round-trip suites 2/2; workspace typecheck passed. These
+  results validate source analysis and individual route/database components,
+  not one complete real-song production workflow.
+* **Still unproven:** there is no current-HEAD run that takes two full songs
+  through production separation, full-length mashup generation, real-player
+  swaps, Studio handoff/edit, WAV export, decode/inspection, and save/reopen.
+  The current six-track scan would not create an automatic hybrid because it
+  found no eligible source pair. Previous 30-second real-stem playback
+  evidence was run on an older revision and is not counted as current-HEAD
+  acceptance. Do not describe synthetic route tests or a successful export as
+  proof of a listenable full-length mashup.
+* **Next acceptance target:** run a single persisted, full-length real-stem
+  project through the player, live controls, Studio edit/export, and reopen;
+  retain source checksums, stem provenance, arrangement, and decoded-output
+  measurements so a listener can judge the actual result.
+
 ## Current verification update — 2026-11-10, end-to-end mashup route integration, multi-stem arrangements, and database round-trip acceptance
 
 * **Highest-priority capability completed:** Connected `analyseStereoPcm` directly to the `POST /api/waveyard/projects/[id]/mashup` route workflow. When either selected track lacks formal BPM or musical key analysis, raw decoded audio PCM is analysed on the fly using native autocorrelation and spectral/chroma DSP to populate the source profile before planning, rendering, or persisting. The resulting analysis is persisted to the `sourceAnalyses` table using canonical desktop provenance (`arena-js-dsp` v1.4.0) to prevent redundant re-analysis.
@@ -8,7 +75,7 @@
 * **Checksum & provenance validation:** Updated `loadSourceProfile` in `lib/arena/src/lib/waveyard/studio/mashup-sources.ts` to verify source checksum matches `sourceChecksumSha256` and `status === 'complete'`, preventing consumption of stale or unverified analyses.
 * **Intelligent multi-stem arrangement:** Enhanced `renderMashup` and route rendering so discrete stems receive structured timeline placements with role-aware dynamic gains without duplicating bed audio.
 * **Genuine database round-trip acceptance:** Created and passed `lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts` running against PGlite with canonical desktop migrations. Verified the full lifecycle: creating project, source assets, and stem assets; executing the mashup save transaction into `remixSessions`, `remixTracks`, and `remixClips`; querying and verifying tracks and clips from the database; and updating track volume, clip gain, and master volume with proper session version incrementation.
-* **Real-audio & 4-pair acceptance:** Passed `mashup-full-length.test.ts` (4 distinct song pairings testing tempo divergence [85 vs 135 BPM], on-the-fly PCM analysis of unanalyzed audio, harmonic clash adaptation, and full-length multi-stem export with WAV encoding/decoding and lossless plan reopening). Passed all 15 unit tests in `mashup.test.ts`.
+* **Synthetic-signal & 4-plan coverage:** `mashup-full-length.test.ts` uses generated tones and click patterns to test tempo divergence (85 vs 135 BPM), on-the-fly analysis, harmonic adaptation, and a 120-second multi-stem WAV encode/decode plus plan-serialization round-trip. It does not use real recordings or persist and reopen a Studio session. Passed all 15 unit tests in `mashup.test.ts`.
 * **Automatic musical analysis reliability:** Enforced `trustedAnalysisKey` and `trustedAnalysisBpm` in mashup planning; low-confidence keys withhold automatic pitch shifting (0 semitones); removed fabricated confidence in section-derived fallback estimates; integrated beat grid end-to-end; failed closed in `latestStem` when separation job rows are missing; and strengthened multi-window tempo testing.
 * **Files changed:** `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`, `lib/arena/src/lib/waveyard/studio/mashup-sources.ts`, `lib/arena/src/lib/waveyard/studio/mashup.ts`, `lib/arena/src/lib/waveyard/studio/analysis-reliability.test.ts`, `lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts`, and this handoff.
 * **Verification:** Passed all 158 test cases cleanly across Waveyard studio test suites (`donor-stem-integrity.test.ts`, `analysis-reliability.test.ts`, `mashup-db-acceptance.test.ts`, `mashup-full-length.test.ts`, `mashup.test.ts`, `mashup-regression.test.ts`, `mashup-bed.test.ts`), plus 15/15 passing tests in `seed-http.test.ts`; full workspace `pnpm run typecheck` passed cleanly across libraries, API server, ArenaForge, mockup sandbox, and scripts with zero errors; `git diff --check` cleanly passed.

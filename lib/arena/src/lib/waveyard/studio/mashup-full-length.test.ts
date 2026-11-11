@@ -10,6 +10,8 @@ import {
 } from "./mashup";
 import { encodeWav16, decodeWav16 } from "../mixer/synth";
 
+// These are generated PCM signals for planner/renderer and WAV-format
+// regression coverage. They are not real-song or subjective mashup evidence.
 const RATE = 44_100;
 
 function tone(freq: number, seconds: number, gain: number): Float32Array {
@@ -39,7 +41,7 @@ function clickPattern(bpm: number, seconds: number, gain = 0.5): Float32Array {
   return out;
 }
 
-test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () => {
+test("synthetic Pair A: BPM difference (85 vs 135) and differing keys", () => {
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 85,
@@ -91,7 +93,7 @@ test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () =
   }
 });
 
-test("Pair B: Completely unanalyzed audio with on-the-fly native analysis", () => {
+test("synthetic Pair B: click-pattern audio with on-the-fly native analysis", () => {
   const rawVocalPcm = clickPattern(120, 20, 0.5);
   const rawBedPcm = clickPattern(120, 30, 0.5);
 
@@ -128,7 +130,7 @@ test("Pair B: Completely unanalyzed audio with on-the-fly native analysis", () =
   assert.ok(rendered.some((sample) => Math.abs(sample) > 0.1), "Audible audio present");
 });
 
-test("Pair C: Harmonic clash requiring pitch transposition", () => {
+test("synthetic Pair C: tone signals with a harmonic clash", () => {
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 120,
@@ -161,7 +163,7 @@ test("Pair C: Harmonic clash requiring pitch transposition", () => {
   assert.equal(rendered.length, 50 * RATE * 2);
 });
 
-test("Pair D: Full-length multi-stem arrangement with save, reopen, and WAV export", () => {
+test("synthetic Pair D: 120-second multi-stem WAV round-trip and plan serialization", () => {
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 124,
