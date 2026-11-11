@@ -87,6 +87,41 @@ test("WAV encode/decode round-trips sample data", () => {
   assert.equal(decodeWav16(new Uint8Array(10)), null);
 });
 
+test("WAV decoder rejects malformed chunk sizes and non-PCM formats before reading data", () => {
+  const valid = encodeWav16(new Float32Array([0.1, -0.1, 0.2, -0.2]), FS);
+  const corrupt = (edit: (view: DataView) => void) => {
+    const bytes = valid.slice();
+    edit(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    return decodeWav16(bytes);
+  };
+
+  assert.equal(
+    corrupt((view) => view.setUint32(40, 0xffff_ffff, true)),
+    null,
+    "a data chunk that exceeds the declared RIFF/file bounds must not allocate from its header",
+  );
+  assert.equal(
+    corrupt((view) => view.setUint32(4, 0xffff_ffff, true)),
+    null,
+    "a RIFF size beyond the supplied bytes must be rejected",
+  );
+  assert.equal(
+    corrupt((view) => view.setUint16(20, 3, true)),
+    null,
+    "IEEE-float data must not be interpreted as signed 16-bit PCM",
+  );
+  assert.equal(
+    corrupt((view) => view.setUint16(22, 0, true)),
+    null,
+    "zero-channel files are invalid",
+  );
+  assert.equal(
+    corrupt((view) => view.setUint16(32, 2, true)),
+    null,
+    "a block alignment inconsistent with the channel count must be rejected",
+  );
+});
+
 test("renderNotesToWav produces a playable WAV body", () => {
   const wav = renderNotesToWav([{ startMs: 0, durationMs: 200, midi: 60, velocity: 0.5 }], "sub-bass", FS, 0.4);
   const decoded = decodeWav16(wav);
