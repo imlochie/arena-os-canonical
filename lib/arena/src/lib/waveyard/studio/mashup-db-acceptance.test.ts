@@ -11,6 +11,8 @@ import {
   projects,
   sourceAssets,
   sourceAnalyses,
+  sourceSectionAnalyses,
+  sourceSections,
   processingJobs,
   stemAssets,
   remixSessions,
@@ -22,6 +24,7 @@ import { applyDesktopMigrationsToPGlite } from "../worker-local/pglite-migration
 import { planMashup, renderMashup, type MashupSourceProfile } from "./mashup";
 import { loadSourceProfile } from "./mashup-sources";
 import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
+import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 
 test("Genuine database round-trip acceptance: plan -> save remix -> query tracks/clips -> edit -> update version", async () => {
   const client = new PGlite();
@@ -376,7 +379,7 @@ test("deterministic analysis selection and beat snapping gating across competing
 
     // Insert initial analysis
     const initialGrid = [0, 500, 1000, 1500, 2000];
-    await db.insert(sourceAnalyses).values({
+    const [currentAnalysis] = await db.insert(sourceAnalyses).values({
       projectId: project.id,
       sourceAssetId: source.id,
       status: "complete",
@@ -394,6 +397,40 @@ test("deterministic analysis selection and beat snapping gating across competing
       beatGrid: JSON.stringify(initialGrid),
       completedAt: new Date(),
       createdAt: new Date(),
+    }).returning();
+
+    const [sectionAnalysis] = await db.insert(sourceSectionAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      sourceAnalysisId: currentAnalysis.id,
+      status: "complete",
+      stage: "complete",
+      attempts: 1,
+      idempotencyKey: `sections-${randomUUID()}`,
+      analysisEngine: DESKTOP_SECTION_ENGINE,
+      analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256,
+      completedAt: new Date(),
+    }).returning();
+    await db.insert(sourceSections).values({
+      id: `section-${randomUUID()}`,
+      projectId: project.id,
+      sourceAssetId: source.id,
+      sourceAnalysisId: currentAnalysis.id,
+      sourceSectionAnalysisId: sectionAnalysis.id,
+      sectionIndex: 0,
+      startMs: 0,
+      endMs: 2_000,
+      startBeatIndex: 0,
+      endBeatIndex: 4,
+      startBar: 1,
+      endBar: 1,
+      label: "chorus",
+      labelConfidence: 0.8,
+      structuralConfidence: 0.8,
+      analysisEngine: DESKTOP_SECTION_ENGINE,
+      analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256,
     });
 
     // Query analysis using loadSourceProfile
@@ -405,6 +442,20 @@ test("deterministic analysis selection and beat snapping gating across competing
     assert.equal(profile.bpmConfidence, 0.95);
     assert.equal(profile.beatConfidence, 0.92);
     assert.deepEqual(profile.beatGridMs, initialGrid);
+    assert.deepEqual(profile.sections, [{ label: "chorus", startMs: 0, endMs: 2_000 }]);
+    assert.equal(profile.evidence?.features.sections.status, "measured");
+    if (profile.evidence?.features.sections.status === "measured") {
+      assert.equal(profile.evidence.features.sections.provenance.sourceChecksumSha256, source.checksumSha256);
+      assert.equal(profile.evidence.features.sections.provenance.analysisId, sectionAnalysis.id);
+    }
+
+    // Stale section rows must not leak back into the source profile.
+    await db.update(sourceSections)
+      .set({ sourceChecksumSha256: "b".repeat(64) })
+      .where(eq(sourceSections.sourceAssetId, source.id));
+    const profileWithStaleSection = await loadSourceProfile(project.id, source.id, "instrumental", db);
+    assert.deepEqual(profileWithStaleSection?.sections, []);
+    assert.equal(profileWithStaleSection?.evidence?.features.sections.status, "unavailable");
 
     // Verify scoping: query with a different project ID yields null
     const foreignProjectProfile = await loadSourceProfile(randomUUID(), source.id, "instrumental", db);

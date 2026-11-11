@@ -20,6 +20,7 @@ import { semitoneShift } from "../types/musical-key";
 import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
 import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
 import type { VocalPhrase } from "../types/vocal-analysis";
+import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v2";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
@@ -34,6 +35,8 @@ export type MashupTransientEvent = {
 
 export type MashupSourceProfile = {
   role: "vocals" | "instrumental";
+  sourceAssetId?: string;
+  sourceChecksumSha256?: string;
   bpm: number | null;
   bpmConfidence?: number | null;
   musicalKey: string | null;
@@ -51,6 +54,8 @@ export type MashupSourceProfile = {
   bassEvents?: MashupTransientEvent[];
   /** Provenance/availability notes for transient evidence loaded by the route. */
   grooveWarnings?: string[];
+  /** Canonical evidence snapshot; legacy flat fields remain for test fixtures and older callers. */
+  evidence?: MusicalEvidencePacket;
 };
 
 export type MashupSegment = {
@@ -419,6 +424,8 @@ function grooveAwareBedEntry(
 }
 
 export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile): MashupPlanResult {
+  vocals = profileFromCurrentEvidence(vocals);
+  bed = profileFromCurrentEvidence(bed);
   const rationale: string[] = [];
   const warnings: string[] = [];
 
@@ -617,6 +624,40 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
       rationale,
       warnings,
     },
+  };
+}
+
+function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceProfile {
+  const packet = profile.evidence;
+  if (!packet
+    || packet.format !== "waveyard-musical-evidence-v1"
+    || (profile.sourceAssetId !== undefined && packet.source.assetId !== profile.sourceAssetId)
+    || (profile.sourceChecksumSha256 !== undefined && packet.source.checksumSha256 !== profile.sourceChecksumSha256)) {
+    return profile;
+  }
+
+  const sourceChecksum = packet.source.checksumSha256;
+  const tempo = currentEvidenceValue(packet.features.tempo, sourceChecksum);
+  const key = currentEvidenceValue(packet.features.key, sourceChecksum);
+  const beatGrid = currentEvidenceValue(packet.features.beatGrid, sourceChecksum);
+  const sections = currentEvidenceValue(packet.features.sections, sourceChecksum);
+  const vocalPhrases = currentEvidenceValue(packet.features.vocalPhrases, sourceChecksum);
+  const drumEvents = currentEvidenceValue(packet.features.drumEvents, sourceChecksum);
+  const bassAttacks = currentEvidenceValue(packet.features.bassAttacks, sourceChecksum);
+  return {
+    ...profile,
+    sourceAssetId: packet.source.assetId,
+    sourceChecksumSha256: sourceChecksum,
+    bpm: tempo?.bpm ?? profile.bpm,
+    bpmConfidence: tempo?.confidence ?? profile.bpmConfidence ?? null,
+    musicalKey: key?.key ?? profile.musicalKey,
+    keyConfidence: key?.confidence ?? profile.keyConfidence ?? null,
+    beatGridMs: beatGrid?.beatsMs ?? profile.beatGridMs ?? null,
+    beatConfidence: beatGrid?.confidence ?? profile.beatConfidence ?? null,
+    sections: sections ?? profile.sections,
+    vocalPhrases: vocalPhrases ?? profile.vocalPhrases ?? [],
+    drumEvents: drumEvents ?? profile.drumEvents ?? [],
+    bassEvents: bassAttacks ?? profile.bassEvents ?? [],
   };
 }
 

@@ -11,19 +11,31 @@
  *     PCM WAV (vocals stretched/pitched over the instrumental bed, ducked,
  *     crossfaded). extend: the source with a section looped to lengthen it.
  *
- * Nothing is persisted and no source is touched — the plan is a proposal,
- * the render is stateless. The user's own arrangement stays theirs.
+ * Plan and render do not alter original sources. Missing source analysis may
+ * be computed and persisted; the explicit save action persists an editable
+ * remix into Studio. The user's existing arrangements remain untouched.
  */
 
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { db } from "@workspace/db";
-import { processingJobs, remixClips, remixSessions, remixTracks, remixVersions, sourceAnalyses, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
+import {
+  drumAnalyses,
+  drumEvents,
+  processingJobs,
+  remixClips,
+  remixSessions,
+  remixTracks,
+  remixVersions,
+  sourceAnalyses,
+  sourceAssets,
+  stemAssets,
+} from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
@@ -37,7 +49,19 @@ import {
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension, type MashupTransientEvent } from "@workspace/arena/lib/waveyard/studio/mashup";
 import { detectBassAttacks, detectDrumTransients } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
-import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
+import {
+  DESKTOP_ANALYSIS_ENGINE,
+  DESKTOP_ANALYSIS_ENGINE_VERSION,
+  DESKTOP_STEM_ANALYSIS_ENGINE,
+  DESKTOP_STEM_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/analysis-provenance";
+import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/drum-analysis";
+import {
+  measuredEvidence,
+  unavailableEvidence,
+  type MusicalEvidenceProvenance,
+  type MusicalEvidencePacket,
+} from "@workspace/arena/lib/waveyard/studio/musical-evidence";
 import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
@@ -48,12 +72,14 @@ const MAX_STEM_BYTES = 128 * 1024 * 1024;
 const MAX_RENDER_SECONDS = 900;
 const GROOVE_EVIDENCE_CACHE_TTL_MS = 10 * 60_000;
 const GROOVE_EVIDENCE_CACHE_MAX_ENTRIES = 8;
-const GROOVE_EVIDENCE_VERSION = "waveyard-on-demand-stem-transients-v1";
+const GROOVE_EVIDENCE_VERSION = "waveyard-persisted-first-stem-transients-v2";
 
 type MeasuredBedGrooveEvidence = {
   drumEvents: MashupTransientEvent[];
   bassEvents: MashupTransientEvent[];
   warnings: string[];
+  drumProvenance: MusicalEvidenceProvenance | null;
+  bassProvenance: MusicalEvidenceProvenance | null;
 };
 const measuredBedGrooveCache = new Map<string, { createdAt: number; evidence: MeasuredBedGrooveEvidence }>();
 
@@ -236,9 +262,41 @@ function stemPcmToAnalysisMono(stereo: Float32Array): Float32Array {
   return output;
 }
 
+function aggregateGrooveProvenance(
+  feature: "drums" | "bass-attacks",
+  sourceChecksumSha256: string,
+  contributors: MusicalEvidenceProvenance[],
+): MusicalEvidenceProvenance | null {
+  if (contributors.length === 0) return null;
+  if (contributors.length === 1) return contributors[0]!;
+  return {
+    analysisEngine: `waveyard-${feature}-evidence-aggregate`,
+    analysisEngineVersion: GROOVE_EVIDENCE_VERSION,
+    sourceChecksumSha256,
+    persistence: contributors.every((item) => item.persistence === "database") ? "database" : "request",
+    contributors,
+  };
+}
+
+function summarizeEvidencePacket(packet: MusicalEvidencePacket) {
+  return Object.fromEntries(Object.entries(packet.features).map(([name, evidence]) => [
+    name,
+    evidence.status === "measured"
+      ? {
+        status: evidence.status,
+        analysisEngine: evidence.provenance.analysisEngine,
+        analysisEngineVersion: evidence.provenance.analysisEngineVersion,
+        persistence: evidence.provenance.persistence,
+      }
+      : { status: evidence.status, reason: evidence.reason },
+  ]));
+}
+
 /**
  * Measure timing evidence from the exact latest completed bed separation.
- * Only transient timestamps are cached; source audio is never retained here.
+ * Reuse checksum-current persisted drum events where available. Request-time
+ * detection remains an explicit fallback until every separated stem has a
+ * persisted event analysis; only timestamps and provenance are cached.
  */
 async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): Promise<MeasuredBedGrooveEvidence> {
   const bedSource = await findBedSource(projectId, bedId);
@@ -247,24 +305,58 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
       drumEvents: [],
       bassEvents: [],
       warnings: ["No completed separated drum/bass stems are available; entry timing uses the beat grid only."],
+      drumProvenance: null,
+      bassProvenance: null,
     };
   }
 
   const relevantStems = bedSource.stems
     .filter((stem) => stem.stemType === "drums" || stem.stemType === "percussion" || stem.stemType === "bass")
     .sort((left, right) => left.stemType.localeCompare(right.stemType) || left.id.localeCompare(right.id));
+  const [source] = await db
+    .select({ checksumSha256: sourceAssets.checksumSha256, durationSeconds: sourceAssets.durationSeconds })
+    .from(sourceAssets)
+    .where(and(eq(sourceAssets.id, bedId), eq(sourceAssets.projectId, projectId)))
+    .limit(1);
+  if (!source) {
+    return {
+      drumEvents: [],
+      bassEvents: [],
+      warnings: ["The source record is missing; stem timing evidence was excluded."],
+      drumProvenance: null,
+      bassProvenance: null,
+    };
+  }
+  const drumStemIds = relevantStems
+    .filter((stem) => stem.stemType === "drums" || stem.stemType === "percussion")
+    .map((stem) => stem.id);
+  const persistedDrumAnalyses = drumStemIds.length
+    ? await db.select().from(drumAnalyses).where(inArray(drumAnalyses.stemAssetId, drumStemIds))
+    : [];
+  const drumAnalysisByStem = new Map(persistedDrumAnalyses.map((analysis) => [analysis.stemAssetId, analysis]));
   const cacheKey = [
     bedId,
+    source.checksumSha256,
     bedSource.info.separationJobId,
     GROOVE_EVIDENCE_VERSION,
     ...relevantStems.map((stem) => `${stem.id}:${stem.checksumSha256}`),
+    ...persistedDrumAnalyses.map((analysis) =>
+      `${analysis.id}:${analysis.status}:${analysis.sourceChecksumSha256}:${analysis.stemChecksumSha256}:${analysis.analysisEngine}:${analysis.analysisEngineVersion}:${analysis.updatedAt?.getTime() ?? 0}`),
   ].join("|");
   const now = Date.now();
   const cached = measuredBedGrooveCache.get(cacheKey);
   if (cached && now - cached.createdAt < GROOVE_EVIDENCE_CACHE_TTL_MS) return cached.evidence;
   if (cached) measuredBedGrooveCache.delete(cacheKey);
 
-  const evidence: MeasuredBedGrooveEvidence = { drumEvents: [], bassEvents: [], warnings: [] };
+  const evidence: MeasuredBedGrooveEvidence = {
+    drumEvents: [],
+    bassEvents: [],
+    warnings: [],
+    drumProvenance: null,
+    bassProvenance: null,
+  };
+  const drumContributors: MusicalEvidenceProvenance[] = [];
+  const bassContributors: MusicalEvidenceProvenance[] = [];
   if (!relevantStems.some((stem) => stem.stemType === "drums" || stem.stemType === "percussion")) {
     evidence.warnings.push("The selected separation has no separate drum/percussion stem; drum-transient matching is unavailable.");
   }
@@ -280,6 +372,53 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
         evidence.warnings.push(`The ${stem.stemType} stem checksum does not match its saved record; its timing evidence was excluded.`);
         continue;
       }
+
+      if (stem.stemType === "drums" || stem.stemType === "percussion") {
+        const analysis = drumAnalysisByStem.get(stem.id);
+        const supportedEngine = analysis && (
+          (analysis.analysisEngine === DRUM_ANALYSIS_ENGINE && analysis.analysisEngineVersion === DRUM_ANALYSIS_ENGINE_VERSION)
+          || (analysis.analysisEngine === DESKTOP_STEM_ANALYSIS_ENGINE && analysis.analysisEngineVersion === DESKTOP_STEM_ANALYSIS_ENGINE_VERSION)
+        );
+        if (analysis?.status === "complete"
+          && supportedEngine
+          && analysis.projectId === projectId
+          && analysis.sourceAssetId === bedId
+          && analysis.sourceChecksumSha256 === source.checksumSha256
+          && analysis.stemChecksumSha256 === actualChecksum) {
+          const persisted = await db
+            .select({
+              timestampMs: drumEvents.timestampMs,
+              strength: drumEvents.strength,
+              confidence: drumEvents.confidence,
+            })
+            .from(drumEvents)
+            .where(eq(drumEvents.drumAnalysisId, analysis.id))
+            .orderBy(drumEvents.timestampMs, drumEvents.eventIndex);
+          evidence.drumEvents.push(...persisted
+            .filter((event) => Number.isSafeInteger(event.timestampMs)
+              && event.timestampMs >= 0
+              && event.timestampMs <= Math.round(source.durationSeconds * 1000)
+              && Number.isFinite(event.strength)
+              && event.strength >= 0
+              && event.strength <= 1
+              && Number.isFinite(event.confidence)
+              && event.confidence > 0
+              && event.confidence <= 1)
+            .map(({ timestampMs, strength, confidence }) => ({ timestampMs, strength, confidence })));
+          drumContributors.push({
+            analysisId: analysis.id,
+            analysisEngine: analysis.analysisEngine,
+            analysisEngineVersion: analysis.analysisEngineVersion,
+            sourceChecksumSha256: source.checksumSha256,
+            stemAssetId: stem.id,
+            stemChecksumSha256: actualChecksum,
+            persistence: "database",
+          });
+          continue;
+        }
+        evidence.warnings.push(`No current persisted drum analysis matches the ${stem.stemType} stem; checksum-verified request-time detection was used.`);
+      }
+
       const decoded = decodeWav16(new Uint8Array(bytes));
       if (!decoded || decoded.sampleRate !== RENDER_SAMPLE_RATE || decoded.channels !== 2) {
         evidence.warnings.push(`The ${stem.stemType} stem is not a validated 44.1 kHz stereo WAV; its timing evidence was excluded.`);
@@ -288,8 +427,21 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
       const mono = stemPcmToAnalysisMono(decoded.samples);
       const events = stem.stemType === "bass" ? detectBassAttacks(mono) : detectDrumTransients(mono);
       const mapped = events.map(({ timestampMs, strength, confidence }) => ({ timestampMs, strength, confidence }));
-      if (stem.stemType === "bass") evidence.bassEvents.push(...mapped);
-      else evidence.drumEvents.push(...mapped);
+      const runtimeProvenance: MusicalEvidenceProvenance = {
+        analysisEngine: stem.stemType === "bass" ? "arena-js-dsp-bass-lowband" : DESKTOP_STEM_ANALYSIS_ENGINE,
+        analysisEngineVersion: DESKTOP_STEM_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: source.checksumSha256,
+        stemAssetId: stem.id,
+        stemChecksumSha256: actualChecksum,
+        persistence: "request",
+      };
+      if (stem.stemType === "bass") {
+        evidence.bassEvents.push(...mapped);
+        bassContributors.push(runtimeProvenance);
+      } else {
+        evidence.drumEvents.push(...mapped);
+        drumContributors.push(runtimeProvenance);
+      }
     } catch {
       evidence.warnings.push(`The ${stem.stemType} stem could not be read; its timing evidence was excluded.`);
     }
@@ -297,6 +449,8 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
 
   evidence.drumEvents.sort((left, right) => left.timestampMs - right.timestampMs);
   evidence.bassEvents.sort((left, right) => left.timestampMs - right.timestampMs);
+  evidence.drumProvenance = aggregateGrooveProvenance("drums", source.checksumSha256, drumContributors);
+  evidence.bassProvenance = aggregateGrooveProvenance("bass-attacks", source.checksumSha256, bassContributors);
   while (measuredBedGrooveCache.size >= GROOVE_EVIDENCE_CACHE_MAX_ENTRIES) {
     const oldestKey = measuredBedGrooveCache.keys().next().value;
     if (oldestKey === undefined) break;
@@ -363,9 +517,9 @@ async function inspectBed(projectId: string, bedId: string): Promise<BedSourceIn
 }
 
 /** Decode a source's ORIGINAL file (any codec) via the pcm pipeline. */
-async function sourcePcm(projectId: string, sourceAssetId: string, tempDir: string): Promise<{ pcm: Float32Array } | null> {
+async function sourcePcm(projectId: string, sourceAssetId: string, tempDir: string): Promise<{ pcm: Float32Array; checksumSha256: string } | null> {
   const [asset] = await db
-    .select({ storageKey: sourceAssets.storageKey })
+    .select({ storageKey: sourceAssets.storageKey, checksumSha256: sourceAssets.checksumSha256 })
     .from(sourceAssets)
     .where(and(eq(sourceAssets.id, sourceAssetId), eq(sourceAssets.projectId, projectId)))
     .limit(1);
@@ -373,7 +527,39 @@ async function sourcePcm(projectId: string, sourceAssetId: string, tempDir: stri
   const filePath = join(tempDir, `source-${randomUUID()}`);
   await getStorage().getToFile(asset.storageKey, filePath);
   const decoded = await decodeSourceToStereoPcm(filePath, {}, {}, { requireSampleRate: RENDER_SAMPLE_RATE });
-  return { pcm: decoded.pcm };
+  return { pcm: decoded.pcm, checksumSha256: asset.checksumSha256 };
+}
+
+function recordRuntimeSourceAnalysis(
+  profile: NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>>,
+  sourceChecksumSha256: string,
+  analysis: ReturnType<typeof analyseStereoPcm>,
+) {
+  if (!profile.evidence || profile.evidence.source.checksumSha256 !== sourceChecksumSha256) return;
+  const provenance: MusicalEvidenceProvenance = {
+    analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+    analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256,
+    persistence: "request",
+  };
+  if (analysis.bpm !== null) {
+    profile.evidence.features.tempo = measuredEvidence({
+      bpm: analysis.bpm,
+      confidence: analysis.bpmConfidence,
+    }, provenance);
+  }
+  if (analysis.musicalKey !== null) {
+    profile.evidence.features.key = measuredEvidence({
+      key: analysis.musicalKey,
+      confidence: analysis.keyConfidence,
+    }, provenance);
+  }
+  if (analysis.beatGridMs !== null) {
+    profile.evidence.features.beatGrid = measuredEvidence({
+      beatsMs: analysis.beatGridMs,
+      confidence: analysis.beatConfidence,
+    }, provenance);
+  }
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -409,7 +595,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (vocals.bpm === null || vocals.musicalKey === null) {
         await mkdir(tempDir, { recursive: true });
         const vPcm = await sourcePcm(projectId, vocalsId, tempDir);
-        if (vPcm?.pcm) {
+        if (vPcm?.pcm && vPcm.checksumSha256 === vocals.sourceChecksumSha256) {
           const analysis = analyseStereoPcm(vPcm.pcm);
           if (vocals.bpm === null && analysis.bpm) vocals.bpm = analysis.bpm;
           if (vocals.bpmConfidence === null || vocals.bpmConfidence === undefined) vocals.bpmConfidence = analysis.bpmConfidence;
@@ -417,12 +603,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           if (vocals.keyConfidence === null || vocals.keyConfidence === undefined) vocals.keyConfidence = analysis.keyConfidence;
           if (!vocals.beatGridMs && analysis.beatGridMs) vocals.beatGridMs = analysis.beatGridMs;
           if (vocals.beatConfidence === null || vocals.beatConfidence === undefined) vocals.beatConfidence = analysis.beatConfidence;
+          recordRuntimeSourceAnalysis(vocals, vPcm.checksumSha256, analysis);
 
           // Persist analysis so subsequent runs reuse the analysis result
           try {
-            const [asset] = await db.select({ checksumSha256: sourceAssets.checksumSha256 }).from(sourceAssets).where(eq(sourceAssets.id, vocalsId)).limit(1);
-            if (asset) {
-              await db.insert(sourceAnalyses).values({
+            await db.insert(sourceAnalyses).values({
                 projectId,
                 sourceAssetId: vocalsId,
                 status: "complete",
@@ -430,7 +615,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 idempotencyKey: `mashup-onthefly-${vocalsId}`,
                 analysisEngine: DESKTOP_ANALYSIS_ENGINE,
                 analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
-                sourceChecksumSha256: asset.checksumSha256,
+                sourceChecksumSha256: vPcm.checksumSha256,
                 bpm: analysis.bpm,
                 bpmConfidence: analysis.bpmConfidence,
                 musicalKey: analysis.musicalKey,
@@ -439,7 +624,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 beatConfidence: analysis.beatConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
-            }
           } catch {
             // Non-blocking if concurrent or read-only
           }
@@ -448,7 +632,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (bed.bpm === null || bed.musicalKey === null) {
         await mkdir(tempDir, { recursive: true });
         const bPcm = await sourcePcm(projectId, bedId, tempDir);
-        if (bPcm?.pcm) {
+        if (bPcm?.pcm && bPcm.checksumSha256 === bed.sourceChecksumSha256) {
           const analysis = analyseStereoPcm(bPcm.pcm);
           if (bed.bpm === null && analysis.bpm) bed.bpm = analysis.bpm;
           if (bed.bpmConfidence === null || bed.bpmConfidence === undefined) bed.bpmConfidence = analysis.bpmConfidence;
@@ -456,12 +640,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           if (bed.keyConfidence === null || bed.keyConfidence === undefined) bed.keyConfidence = analysis.keyConfidence;
           if (!bed.beatGridMs && analysis.beatGridMs) bed.beatGridMs = analysis.beatGridMs;
           if (bed.beatConfidence === null || bed.beatConfidence === undefined) bed.beatConfidence = analysis.beatConfidence;
+          recordRuntimeSourceAnalysis(bed, bPcm.checksumSha256, analysis);
 
           // Persist analysis so subsequent runs reuse the analysis result
           try {
-            const [asset] = await db.select({ checksumSha256: sourceAssets.checksumSha256 }).from(sourceAssets).where(eq(sourceAssets.id, bedId)).limit(1);
-            if (asset) {
-              await db.insert(sourceAnalyses).values({
+            await db.insert(sourceAnalyses).values({
                 projectId,
                 sourceAssetId: bedId,
                 status: "complete",
@@ -469,7 +652,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 idempotencyKey: `mashup-onthefly-${bedId}`,
                 analysisEngine: DESKTOP_ANALYSIS_ENGINE,
                 analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
-                sourceChecksumSha256: asset.checksumSha256,
+                sourceChecksumSha256: bPcm.checksumSha256,
                 bpm: analysis.bpm,
                 bpmConfidence: analysis.bpmConfidence,
                 musicalKey: analysis.musicalKey,
@@ -478,7 +661,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 beatConfidence: analysis.beatConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
-            }
           } catch {
             // Non-blocking if concurrent or read-only
           }
@@ -489,6 +671,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       bed.drumEvents = grooveEvidence.drumEvents;
       bed.bassEvents = grooveEvidence.bassEvents;
       bed.grooveWarnings = grooveEvidence.warnings;
+      if (bed.evidence) {
+        bed.evidence.features.drumEvents = grooveEvidence.drumProvenance
+          ? measuredEvidence(grooveEvidence.drumEvents, grooveEvidence.drumProvenance)
+          : unavailableEvidence("No checksum-current drum event evidence is available.");
+        bed.evidence.features.bassAttacks = grooveEvidence.bassProvenance
+          ? measuredEvidence(grooveEvidence.bassEvents, grooveEvidence.bassProvenance)
+          : unavailableEvidence("No checksum-current low-band bass attack evidence is available.");
+      }
 
       const planned = planMashup(vocals, bed);
       if (!planned.ok) {
@@ -496,7 +686,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       }
       if (action === "plan") {
         const bedInfo = await inspectBed(projectId, bedId);
-        return Response.json({ plan: planned.plan, bed: bedInfo }, { status: 200 });
+        return Response.json({
+          plan: planned.plan,
+          bed: bedInfo,
+          evidence: {
+            vocals: vocals.evidence ? summarizeEvidencePacket(vocals.evidence) : null,
+            bed: bed.evidence ? summarizeEvidencePacket(bed.evidence) : null,
+          },
+        }, { status: 200 });
       }
 
       if (action === "save") {

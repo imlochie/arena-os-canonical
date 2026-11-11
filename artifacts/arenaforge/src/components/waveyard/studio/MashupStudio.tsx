@@ -28,10 +28,31 @@ type Plan = {
   warnings: string[];
 };
 
+type EvidenceFeatureSummary =
+  | { status: "measured"; analysisEngine: string; analysisEngineVersion: string; persistence: "database" | "request" }
+  | { status: "unavailable"; reason: string };
+
+type EvidenceSummary = {
+  vocals: Record<string, EvidenceFeatureSummary> | null;
+  bed: Record<string, EvidenceFeatureSummary> | null;
+};
+
+const EVIDENCE_FEATURE_LABELS: Record<string, string> = {
+  tempo: "Tempo",
+  key: "Key",
+  beatGrid: "Beat grid",
+  sections: "Sections",
+  vocalPhrases: "Vocal activity",
+  harmony: "Chord events",
+  drumEvents: "Drum events",
+  bassAttacks: "Bass attacks",
+};
+
 export function MashupStudio({ projectId, sources, canEdit }: { projectId: string; sources: Source[]; canEdit: boolean }) {
   const [vocalsId, setVocalsId] = useState(sources[0]?.id ?? "");
   const [bedId, setBedId] = useState(sources[1]?.id ?? sources[0]?.id ?? "");
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceSummary | null>(null);
   const [planning, setPlanning] = useState(false);
   const [rendering, setRendering] = useState<"mashup" | "extend" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +91,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       if (body.bed) {
         setBedInfo(body.bed as { source: string; warning: string; includedStemTypes?: string[] });
       }
+      setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
       return body.plan as Plan;
     }
     if (!response.ok) {
@@ -100,6 +122,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const planMashup = async () => {
     setPlanning(true);
     setError(null);
+    setEvidence(null);
     const result = await call({ action: "plan", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }, "mashup");
     setPlan(result);
     setPlanning(false);
@@ -216,6 +239,31 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
               {plan.segments.map((segment, index) => <li key={`s${index}`}>{segment.rationale}.</li>)}
             </ul>
           </details>
+          {evidence && (
+            <details className="mashup-evidence">
+              <summary>Analysis evidence used</summary>
+              <div className="mashup-evidence-grid">
+                {([
+                  ["vocals", sources.find((source) => source.id === vocalsId)?.originalFilename ?? "Vocal source", evidence.vocals],
+                  ["bed", sources.find((source) => source.id === bedId)?.originalFilename ?? "Instrumental source", evidence.bed],
+                ] as const).map(([key, title, features]) => (
+                  <section key={key} aria-label={`${title} analysis evidence`}>
+                    <b>{title}</b>
+                    {Object.entries(features ?? {}).map(([name, feature]) => (
+                      <div className="mashup-evidence-item" key={name}>
+                        <span>{EVIDENCE_FEATURE_LABELS[name] ?? name}</span>
+                        <small>
+                          {feature.status === "measured"
+                            ? `Measured · ${feature.persistence === "database" ? "saved" : "this run"} · ${feature.analysisEngine} ${feature.analysisEngineVersion}`
+                            : `Unavailable · ${feature.reason}`}
+                        </small>
+                      </div>
+                    ))}
+                  </section>
+                ))}
+              </div>
+            </details>
+          )}
           {canEdit && (
             <div className="remix-actions">
               <button className="button" disabled={rendering !== null} onClick={() => void renderMashup()}>

@@ -426,6 +426,8 @@
     "./lib/waveyard/studio/layer-edit.test": "./src/lib/waveyard/studio/layer-edit.test.ts",
     "./lib/waveyard/studio/layer-edit": "./src/lib/waveyard/studio/layer-edit.ts",
     "./lib/waveyard/studio/mashup-sources": "./src/lib/waveyard/studio/mashup-sources.ts",
+    "./lib/waveyard/studio/musical-evidence.test": "./src/lib/waveyard/studio/musical-evidence.test.ts",
+    "./lib/waveyard/studio/musical-evidence": "./src/lib/waveyard/studio/musical-evidence.ts",
     "./lib/waveyard/studio/mashup-bed": "./src/lib/waveyard/studio/mashup-bed.ts",
     "./lib/waveyard/studio/mashup-bed.test": "./src/lib/waveyard/studio/mashup-bed.test.ts",
     "./lib/waveyard/studio/mashup.test": "./src/lib/waveyard/studio/mashup.test.ts",

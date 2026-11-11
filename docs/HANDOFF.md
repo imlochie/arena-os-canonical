@@ -1,5 +1,39 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-12, provenance-backed mashup evidence
+
+* **Shared evidence packet:** Waveyard mashup planning now carries one
+  versioned, per-source evidence packet for tempo, key, beat grid, sections,
+  vocal activity, harmony, drum events, and bass attacks. Each available
+  measurement records its source checksum, analysis engine/version, and whether
+  it came from saved analysis or the current request. The planner consumes
+  checksum-current values while retaining a fallback for older test fixtures.
+* **Stale section protection:** mashup source loading now requires the section
+  analysis to match the current source analysis and checksum. Individual rows
+  must also match the same source/section analysis IDs, checksum, engine/version,
+  valid time bounds, and confidence ranges. A stale section row is excluded.
+* **Persisted drum reuse:** when a completed drum analysis matches the current
+  source and exact saved stem checksums and a supported engine/version, mashup
+  planning uses its persisted event timestamps. Otherwise the route explicitly
+  warns and uses checksum-verified request-time detection. Bass low-band attacks
+  remain request-time only because no persistent per-stem bass-event analysis
+  contract exists yet.
+* **User-visible evidence:** Mashup Studio now shows each source's measured or
+  unavailable inputs, including the engine/version and saved-versus-current-run
+  provenance. This reports measurements; it does not label a track's verse,
+  chorus, lyrics, or musical quality.
+* **Evidence limits:** the route test seeds three deterministic drum events and
+  three vocal-activity intervals; the resulting plan moves entry by 500 ms and
+  reports 3/3 timestamp matches. This verifies that persisted events drive the
+  planner, not that a generated or real mashup is listenable. Harmony is loaded
+  into the evidence packet but is not yet a cross-song decision input. Lyric
+  timing, bass-note identity, structural form understanding, and human listening
+  quality remain unverified.
+* **Verification:** `mashup-db-acceptance.test.ts` 2/2; production route and
+  Arena handoff acceptance 1/1; musical evidence provenance tests 2/2; API
+  server and ArenaForge typechecks passed; library typecheck and `git diff
+  --check` passed. No migration or dependency change was made. Windows and
+  human listening were not tested in this pass.
 ## Current verification update — 2026-11-12, vocal entry compared with drum and bass attacks
 
 * **What changed:** mashup planning now measures transient events from the

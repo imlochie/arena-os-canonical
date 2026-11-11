@@ -968,6 +968,13 @@
 .mashup-warnings{margin:0;padding-left:18px;color:var(--orange);font-size:12px;display:grid;gap:4px}
 .mashup-rationale{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;display:grid;gap:4px}
 .mashup-plan summary,.chef-rationale summary{cursor:pointer;font-size:12px;color:var(--cyan)}
+.mashup-evidence{border-top:1px solid var(--line);padding-top:8px}
+.mashup-evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:10px}
+.mashup-evidence-grid section{display:grid;gap:7px;min-width:0}
+.mashup-evidence-grid section>b{font-size:11px;color:var(--ink);overflow-wrap:anywhere}
+.mashup-evidence-item{display:grid;gap:2px;padding:6px 8px;background:#0e110d;border-radius:4px}
+.mashup-evidence-item span{font-size:11px;color:var(--ink)}
+.mashup-evidence-item small{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
 .mashup-extend{border-top:1px solid var(--line);padding-top:10px}
 .chef-rationale ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;display:grid;gap:3px}
 .cleanup-report{border:1px solid #465126;background:#131811;padding:10px;font-size:12px;display:grid;gap:6px}

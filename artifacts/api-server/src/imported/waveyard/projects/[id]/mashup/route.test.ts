@@ -23,6 +23,16 @@ import { fileURLToPath } from "node:url";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import {
+  drumAnalysisIdempotencyKey,
+  LOCAL_DRUM_ANALYSIS_ENGINE,
+  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/drum-analysis";
+import {
+  LOCAL_VOCAL_ANALYSIS_ENGINE,
+  LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+  vocalAnalysisIdempotencyKey,
+} from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 
 const root = fileURLToPath(new URL("../../../../../../../../", import.meta.url));
 const requireFromDb = createRequire(path.join(root, "lib/db/package.json"));
@@ -486,6 +496,33 @@ test(
         endMs: phrase.endMs,
         confidence: phrase.confidence,
       })));
+    } else if (vocalsStemRow) {
+      const [vocalAnalysis] = await dbModule.db.insert(schema.vocalAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        stemAssetId: vocalsStemRow.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: vocalAnalysisIdempotencyKey(
+          vocalsStemRow.id,
+          LOCAL_VOCAL_ANALYSIS_ENGINE,
+          LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+        ),
+        analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: sha256(vocalsOriginal),
+        stemChecksumSha256: sha256(vocalsStemWav),
+        startedAt: new Date(),
+        analyzedAt: new Date(),
+        completedAt: new Date(),
+      }).returning({ id: schema.vocalAnalyses.id });
+      assert.ok(vocalAnalysis);
+      await dbModule.db.insert(schema.vocalPhrases).values([
+        { vocalAnalysisId: vocalAnalysis.id, phraseIndex: 0, startMs: 0, endMs: 250, confidence: 0.9 },
+        { vocalAnalysisId: vocalAnalysis.id, phraseIndex: 1, startMs: 500, endMs: 750, confidence: 0.9 },
+        { vocalAnalysisId: vocalAnalysis.id, phraseIndex: 2, startMs: 1_000, endMs: 1_250, confidence: 0.9 },
+      ]);
     }
 
     const bedStemFixtures: Array<{ stemType: FixtureStemType; wav: Uint8Array }> = realFixture
@@ -513,7 +550,7 @@ test(
       assert.equal(decodedStem.channels, 2, `${stemType} must remain stereo`);
       assert.ok(Math.abs(decodedStem.frames / RATE - bedDurationSeconds) < 1.1,
         `${stemType} must cover the full source duration`);
-      await dbModule.db.insert(schema.stemAssets).values({
+        await dbModule.db.insert(schema.stemAssets).values({
         projectId: project.id,
         sourceAssetId: bedSource.id,
         separationJobId: bedJob.id,
@@ -551,9 +588,57 @@ test(
           bpmConfidence: 0.9,
           musicalKey: "C major",
           keyConfidence: 0.9,
+          beatGrid: JSON.stringify(Array.from(
+            { length: source.id === bedSource.id ? 8 : 4 },
+            (_, index) => index * 500,
+          )),
+          beatConfidence: 0.9,
           completedAt: new Date(),
         });
       }
+    }
+
+    if (!realFixture) {
+      const [drumStem] = await dbModule.db.select({
+        id: schema.stemAssets.id,
+        checksumSha256: schema.stemAssets.checksumSha256,
+      }).from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, bedSource.id),
+        eq(schema.stemAssets.stemType, "drums"),
+      ));
+      assert.ok(drumStem);
+      const [drumAnalysis] = await dbModule.db.insert(schema.drumAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: bedSource.id,
+        stemAssetId: drumStem.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: drumAnalysisIdempotencyKey(
+          drumStem.id,
+          LOCAL_DRUM_ANALYSIS_ENGINE,
+          LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+        ),
+        analysisEngine: LOCAL_DRUM_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: sha256(bedOriginal),
+        stemChecksumSha256: drumStem.checksumSha256,
+        startedAt: new Date(),
+        analyzedAt: new Date(),
+        completedAt: new Date(),
+      }).returning({ id: schema.drumAnalyses.id });
+      assert.ok(drumAnalysis);
+      await dbModule.db.insert(schema.drumEvents).values([2_500, 3_000, 3_500].map((timestampMs, eventIndex) => ({
+        drumAnalysisId: drumAnalysis.id,
+        eventIndex,
+        timestampMs,
+        strength: 0.9,
+        confidence: 0.95,
+        rhythmicClass: null,
+        nearestBeatIndex: timestampMs / 500,
+        beatOffsetMs: 0,
+      })));
     }
 
     const renderRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
@@ -590,11 +675,26 @@ test(
         rationale: string[];
       };
       bed?: { source: string; warning: string };
+      evidence?: {
+        vocals: Record<string, { status: string; persistence?: string }>;
+        bed: Record<string, { status: string; persistence?: string }>;
+      };
     };
     assert.equal(planBody.bed?.source, "separated", "the plan must report the separated bed");
+    assert.equal(planBody.evidence?.vocals.vocalPhrases.status, "measured",
+      "the plan response must expose the current persisted vocal activity used by the planner");
+    assert.equal(planBody.evidence?.bed.drumEvents.status, "measured",
+      "the plan response must expose current persisted drum evidence");
+    if (!realFixture) assert.equal(planBody.evidence?.bed.drumEvents.persistence, "database");
     if (!realFixture) assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
     assert.ok(planBody.plan && planBody.plan.durationMs > 0, "the production planner must return an arrangement");
-    if (realFixture) {
+    if (!realFixture) {
+      const persistedDrumAlignment = planBody.plan.rationale.find((line) => line.includes("early voiced-run starts"));
+      assert.ok(persistedDrumAlignment, "the plan must report measured vocal-to-groove comparisons");
+      assert.ok(persistedDrumAlignment.includes("3/3"), "the route must use persisted drum event timestamps, not just re-detect the stem");
+      assert.ok(persistedDrumAlignment.includes("entry moved 500ms"),
+        "the saved drum events must move the donor entry to the best matching beat");
+    } else {
       assert.equal(planBody.plan.vocalsStretchRatio, 1,
         "low-confidence donor tempo must not be presented as verified beat synchronization");
       assert.equal(planBody.plan.vocalsPitchSemitones, 0,
