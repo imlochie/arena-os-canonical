@@ -43,7 +43,9 @@ test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () =
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 85,
+    bpmConfidence: 0.9,
     musicalKey: "E minor",
+    keyConfidence: 0.9,
     durationMs: 45_000,
     sections: [
       { label: "intro", startMs: 0, endMs: 5_000 },
@@ -55,7 +57,9 @@ test("Pair A: Large BPM difference (85 BPM vs 135 BPM) and differing keys", () =
   const bedProfile: MashupSourceProfile = {
     role: "instrumental",
     bpm: 135,
+    bpmConfidence: 0.9,
     musicalKey: "C major",
+    keyConfidence: 0.9,
     durationMs: 90_000,
     sections: [
       { label: "intro", startMs: 0, endMs: 7_111 },
@@ -128,14 +132,18 @@ test("Pair C: Harmonic clash requiring pitch transposition", () => {
   const vocalProfile: MashupSourceProfile = {
     role: "vocals",
     bpm: 120,
+    bpmConfidence: 0.9,
     musicalKey: "F# major",
+    keyConfidence: 0.9,
     durationMs: 50_000,
     sections: [{ label: "body", startMs: 0, endMs: 50_000 }],
   };
   const bedProfile: MashupSourceProfile = {
     role: "instrumental",
     bpm: 120,
+    bpmConfidence: 0.9,
     musicalKey: "C major",
+    keyConfidence: 0.9,
     durationMs: 50_000,
     sections: [{ label: "body", startMs: 0, endMs: 50_000 }],
   };

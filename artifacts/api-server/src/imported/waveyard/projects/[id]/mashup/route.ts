@@ -412,6 +412,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           );
         }
 
+        // Verify genuine analysis confidence before enabling transform and snap flags
+        const vocalTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
+        const vocalKeyTrusted = trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence) !== null;
+        const vocalGridTrusted = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence) !== null;
+        const bedGridTrusted = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence) !== null;
+        const sessionSnapEnabled = vocalGridTrusted && bedGridTrusted;
+
         const result = await db.transaction(async (tx) => {
           const [remix] = await tx.insert(remixSessions).values({
             projectId,
@@ -424,7 +431,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             timeSignatureNumerator: 4,
             timeSignatureDenominator: 4,
             gridDivision: "beat",
-            snapEnabled: true,
+            snapEnabled: sessionSnapEnabled,
             targetKey: bed.musicalKey,
           }).returning();
 
@@ -479,11 +486,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             beatSnapEnabled: boolean;
           }> = [];
 
-          // Verify genuine analysis confidence before enabling transform and snap flags
-          const vocalTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
-          const vocalKeyTrusted = trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence) !== null;
-          const vocalGridTrusted = vocals.beatGridMs !== null && vocals.beatGridMs !== undefined;
-
           // Vocal clips from planned segments
           if (vocalsStem && trackByStemId.has(vocalsStem.id)) {
             const vocalTrackId = trackByStemId.get(vocalsStem.id)!.id;
@@ -518,7 +520,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 fadeOutMs: 150,
                 tempoSyncEnabled: false,
                 keySyncEnabled: false,
-                beatSnapEnabled: true,
+                beatSnapEnabled: bedGridTrusted,
               });
             }
           }

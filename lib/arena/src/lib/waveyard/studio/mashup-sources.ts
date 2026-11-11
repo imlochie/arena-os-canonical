@@ -4,7 +4,7 @@
  * both see exactly the same evidence.
  */
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
 import { sourceAnalyses, sourceAssets, sourceSections } from "@workspace/db/waveyardSchema";
@@ -15,8 +15,9 @@ export async function loadSourceProfile(
   projectId: string,
   sourceAssetId: string,
   role: "vocals" | "instrumental",
+  database: any = db,
 ): Promise<MashupSourceProfile | null> {
-  const [asset] = await db
+  const [asset] = await database
     .select({
       id: sourceAssets.id,
       durationSeconds: sourceAssets.durationSeconds,
@@ -27,7 +28,7 @@ export async function loadSourceProfile(
     .limit(1);
   if (!asset) return null;
 
-  const [analysis] = await db
+  const [analysis] = await database
     .select({
       bpm: sourceAnalyses.bpm,
       bpmConfidence: sourceAnalyses.bpmConfidence,
@@ -42,13 +43,15 @@ export async function loadSourceProfile(
     .where(
       and(
         eq(sourceAnalyses.sourceAssetId, sourceAssetId),
+        eq(sourceAnalyses.projectId, projectId),
         eq(sourceAnalyses.sourceChecksumSha256, asset.checksumSha256),
         eq(sourceAnalyses.status, "complete"),
       ),
     )
+    .orderBy(desc(sourceAnalyses.createdAt), desc(sourceAnalyses.id))
     .limit(1);
 
-  const sections = await db
+  const sections = await database
     .select({ label: sourceSections.label, startMs: sourceSections.startMs, endMs: sourceSections.endMs })
     .from(sourceSections)
     .where(eq(sourceSections.sourceAssetId, sourceAssetId))

@@ -10,6 +10,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import {
   projects,
   sourceAssets,
+  sourceAnalyses,
   processingJobs,
   stemAssets,
   remixSessions,
@@ -19,6 +20,8 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { applyDesktopMigrationsToPGlite } from "../worker-local/pglite-migrations.test-helper";
 import { planMashup, renderMashup, type MashupSourceProfile } from "./mashup";
+import { loadSourceProfile } from "./mashup-sources";
+import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
 
 test("Genuine database round-trip acceptance: plan -> save remix -> query tracks/clips -> edit -> update version", async () => {
   const client = new PGlite();
@@ -339,6 +342,81 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
       .from(remixClips)
       .where(eq(remixClips.id, clipToEdit.id));
     assert.equal(editedClip.gain, 0.9);
+  } finally {
+    await client.close();
+  }
+});
+
+test("deterministic analysis selection and beat snapping gating across competing source analyses", async () => {
+  const client = new PGlite();
+  const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+
+  try {
+    await applyDesktopMigrationsToPGlite(client, join(arenaRoot, "desktop-migrations"));
+    const db = drizzle(client);
+
+    const ownerId = randomUUID();
+    const [project] = await db.insert(projects).values({
+      ownerId,
+      title: "Analysis Selection Project",
+    }).returning();
+
+    const [source] = await db.insert(sourceAssets).values({
+      projectId: project.id,
+      originalFilename: "competing-track.wav",
+      mimeType: "audio/wav",
+      storageKey: `projects/${project.id}/competing-track.wav`,
+      checksumSha256: "a".repeat(64),
+      durationSeconds: 120,
+      sampleRate: 44_100,
+      channels: 2,
+      codec: "pcm_s16le",
+      fileSizeBytes: 120 * 44100 * 4,
+    }).returning();
+
+    // Insert initial analysis
+    const initialGrid = [0, 500, 1000, 1500, 2000];
+    await db.insert(sourceAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      status: "complete",
+      stage: "complete",
+      attempts: 1,
+      idempotencyKey: `analysis-${randomUUID()}`,
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: "1.4.0",
+      sourceChecksumSha256: "a".repeat(64),
+      bpm: 128,
+      bpmConfidence: 0.95,
+      musicalKey: "A minor",
+      keyConfidence: 0.88,
+      beatConfidence: 0.92,
+      beatGrid: JSON.stringify(initialGrid),
+      completedAt: new Date(),
+      createdAt: new Date(),
+    });
+
+    // Query analysis using loadSourceProfile
+    const profile = await loadSourceProfile(project.id, source.id, "instrumental", db);
+    assert.ok(profile, "Profile should load");
+    assert.equal(profile.bpm, 128);
+    assert.equal(profile.musicalKey, "A minor");
+    assert.equal(profile.keyConfidence, 0.88);
+    assert.equal(profile.bpmConfidence, 0.95);
+    assert.equal(profile.beatConfidence, 0.92);
+    assert.deepEqual(profile.beatGridMs, initialGrid);
+
+    // Verify scoping: query with a different project ID yields null
+    const foreignProjectProfile = await loadSourceProfile(randomUUID(), source.id, "instrumental", db);
+    assert.equal(foreignProjectProfile, null, "Should return null for foreign project ID");
+
+    // Verify snapping gating: with high confidence beat grid, snapping is enabled
+    const validatedGrid = trustedAnalysisBeatGrid(profile.beatGridMs, profile.bpmConfidence, profile.beatConfidence);
+    assert.deepEqual(validatedGrid, initialGrid);
+
+    // If beat grid or confidence drops below threshold, snapping is disabled
+    const untrustedGrid = trustedAnalysisBeatGrid(profile.beatGridMs, 0.4, profile.beatConfidence);
+    assert.equal(untrustedGrid, null);
   } finally {
     await client.close();
   }

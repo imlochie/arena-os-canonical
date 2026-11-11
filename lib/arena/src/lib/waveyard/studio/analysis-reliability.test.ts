@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test, { describe, it } from "node:test";
 import { analyseStereoPcm } from "./mashup";
-import { trustedAnalysisBpm, trustedAnalysisKey, hasReliableMixingConfidence } from "../types/analysis-confidence";
+import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid, hasReliableMixingConfidence } from "../types/analysis-confidence";
+import { planMashup, type MashupSourceProfile } from "./mashup";
 
 const RATE = 44_100;
 
@@ -121,5 +122,48 @@ describe("Waveyard Automatic Musical Analysis Reliability", () => {
     const pcm = generatePercussionTrack(120, 5);
     assert.equal(pcm.length, 5 * RATE * 2);
     assert.ok(pcm.some((sample) => sample !== 0));
+  });
+
+  it("trustedAnalysisBeatGrid rejects low confidence, unordered, or malformed beat grids", () => {
+    const valid = [0, 500, 1000, 1500, 2000];
+    assert.deepEqual(trustedAnalysisBeatGrid(valid, 0.8, 0.8), valid);
+    assert.equal(trustedAnalysisBeatGrid(valid, 0.49, 0.8), null);
+    assert.equal(trustedAnalysisBeatGrid(valid, 0.8, 0.49), null);
+    assert.equal(trustedAnalysisBeatGrid(valid, null, 0.8), null);
+    assert.equal(trustedAnalysisBeatGrid([0, 500, 400], 0.8, 0.8), null);
+    assert.equal(trustedAnalysisBeatGrid([-10, 500], 0.8, 0.8), null);
+    assert.equal(trustedAnalysisBeatGrid([0], 0.8, 0.8), null);
+  });
+
+  it("disables WSOLA tempo stretching unless both source BPM values pass trusted confidence", () => {
+    const vocalUntrusted: MashupSourceProfile = {
+      role: "vocals",
+      bpm: 90,
+      bpmConfidence: 0.4, // untrusted
+      musicalKey: "C major",
+      keyConfidence: 0.9,
+      durationMs: 30_000,
+      sections: [{ label: "verse", startMs: 0, endMs: 30_000 }],
+    };
+    const bedTrusted: MashupSourceProfile = {
+      role: "instrumental",
+      bpm: 120,
+      bpmConfidence: 0.9,
+      musicalKey: "C major",
+      keyConfidence: 0.9,
+      durationMs: 60_000,
+      sections: [{ label: "verse", startMs: 0, endMs: 60_000 }],
+    };
+
+    const planUntrusted = planMashup(vocalUntrusted, bedTrusted);
+    assert.ok(planUntrusted.ok);
+    assert.equal(planUntrusted.plan.vocalsStretchRatio, 1.0, "Must preserve natural speed (1.0) when vocal BPM is untrusted");
+    assert.ok(planUntrusted.plan.warnings.some((w) => /Automatic tempo stretching withheld/i.test(w)));
+
+    // When both are trusted, stretching is applied
+    const vocalTrusted: MashupSourceProfile = { ...vocalUntrusted, bpmConfidence: 0.9 };
+    const planTrusted = planMashup(vocalTrusted, bedTrusted);
+    assert.ok(planTrusted.ok);
+    assert.notEqual(planTrusted.plan.vocalsStretchRatio, 1.0, "Applies stretching when both BPMs are trusted");
   });
 });

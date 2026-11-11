@@ -237,26 +237,31 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
     warnings.push(`Vocal tempo analysis is incomplete — estimated at ${effectiveVocalBpm} BPM (${fallbackVocal.source}).`);
   }
 
-  const stretchRatio = warpRatioForTempos(effectiveVocalBpm, masterBpm);
-  if (Math.abs(stretchRatio - 1) < 1e-9) {
-    rationale.push(`vocals stay at natural speed (${effectiveVocalBpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
+  // Only calculate automatic tempo stretching when BOTH sources have trustworthy BPM evidence.
+  // Otherwise preserve natural speed (1.0), mark alignment unverified, and explain honestly.
+  let stretchRatio = 1.0;
+  if (trustedBedBpm !== null && trustedVocalBpm !== null) {
+    stretchRatio = warpRatioForTempos(effectiveVocalBpm, masterBpm);
+    if (Math.abs(stretchRatio - 1) < 1e-9) {
+      rationale.push(`vocals stay at natural speed (${effectiveVocalBpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
+    } else {
+      rationale.push(`vocals are time-stretched ×${stretchRatio.toFixed(3)} (${effectiveVocalBpm} → ${masterBpm} BPM, pitch preserved by WSOLA).`);
+    }
+    if (vocals.bpm !== null && vocals.bpm !== masterBpm && Math.abs(vocals.bpm - masterBpm) <= 6) {
+      rationale.push("tempos are near-equal — a light stretch, not a resample.");
+    }
   } else {
-    rationale.push(`vocals are time-stretched ×${stretchRatio.toFixed(3)} (${effectiveVocalBpm} → ${masterBpm} BPM, pitch preserved by WSOLA).`);
-  }
-  if (vocals.bpm !== null && vocals.bpm !== masterBpm && Math.abs(vocals.bpm - masterBpm) <= 6) {
-    rationale.push("tempos are near-equal — a light stretch, not a resample.");
+    stretchRatio = 1.0;
+    warnings.push("Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.");
+    rationale.push("vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.");
   }
 
-  // When key confidence is provided, enforce trusted threshold >= 0.5.
-  // When key is present without confidence specified (e.g. legacy/unit fixtures), accept the key.
-  const trustedVocalKey = vocals.keyConfidence !== undefined
-    ? trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence)
-    : vocals.musicalKey;
-  const trustedBedKey = bed.keyConfidence !== undefined
-    ? trustedAnalysisKey(bed.musicalKey, bed.keyConfidence)
-    : bed.musicalKey;
+  // Enforce trustedAnalysisKey strictly: missing confidence means untrusted evidence,
+  // including legacy records. Only verified keys from both sources may trigger automatic pitch shifting.
+  const trustedVocalKey = trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence);
+  const trustedBedKey = trustedAnalysisKey(bed.musicalKey, bed.keyConfidence);
 
-  const pitchMove = (trustedVocalKey && trustedBedKey)
+  const pitchMove = (trustedVocalKey !== null && trustedBedKey !== null)
     ? pitchMoveForKeys(trustedVocalKey, trustedBedKey)
     : { semitones: 0, relationship: "unknown" as const };
 
