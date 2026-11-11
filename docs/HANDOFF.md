@@ -1,5 +1,41 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, persist mashup donor stems and select completed runs
+
+* **Repository preservation:** Fast-forwarded the clean shared PR branch from
+  `a8c73862` to the remote review HEAD `d8c014524067d680892fd271f5ddeb31e200b485`;
+  no branch switch, reset, rebase, or merge commit was used. All new work stays
+  on `jules-2321982355158174303-7f554415` (PR #30).
+* **Persisted donor audio:** The mashup `save` action now records every validated
+  complementary stem from the selected vocal's exact completed separation run
+  as a Studio track and clip. The donor asset IDs match the render path, so
+  donor drums/bass/other no longer disappear when Studio state is read again.
+* **Completed-run selection:** Vocal and direct-instrumental lookup now filters
+  completed separation jobs before ordering candidates. A newer queued, failed,
+  or cancelled retry therefore cannot mask the newest completed run; older
+  completed vocal runs are superseded consistently in both render and save.
+* **PCM and transform integrity:** The render and save paths share donor-stem
+  WAV, sample-rate, stereo-channel, and exact frame-length checks against the
+  chosen vocal PCM. Invalid or misaligned donor audio returns 422 and cannot
+  silently disappear or create a partial remix. Saved vocal tempo/key flags
+  now agree with the trusted, non-identity transforms actually planned.
+* **Real route/database acceptance:** The production API test now seeds a
+  completed run followed by newer queued/failed/cancelled attempts, a
+  superseded completed run, and distinct PCM tones. It calls the actual render,
+  save, and remix GET routes; verifies the completed vocal and donor stems in
+  rendered audio, rejects misaligned PCM in both render and save, verifies no
+  partial remix was created, and confirms donor clips survive the Studio
+  read-back.
+* **Verification run:** Mashup API route acceptance passed 1/1 against an
+  ephemeral PostgreSQL database; donor-integrity and mashup unit tests passed
+  25/25; API-server and library TypeScript checks passed; `git diff --check`
+  passed. The fixture is generated tones, not separated commercial songs.
+* **Not verified in this pass:** no Windows build or run, no listening test with
+  real separated songs, and no audio export initiated from the reopened Studio
+  session. These remain separate acceptance gates; this test proves data and
+  audio selection/persistence, not subjective mashup quality.
+* **Exact Git revision:** Update after the implementation commit is pushed.
+
 ## Current verification update — 2026-11-10, end-to-end mashup route integration, multi-stem arrangements, and database round-trip acceptance
 
 * **Highest-priority capability completed:** Connected `analyseStereoPcm` directly to the `POST /api/waveyard/projects/[id]/mashup` route workflow. When either selected track lacks formal BPM or musical key analysis, raw decoded audio PCM is analysed on the fly using native autocorrelation and spectral/chroma DSP to populate the source profile before planning, rendering, or persisting. The resulting analysis is persisted to the `sourceAnalyses` table using canonical desktop provenance (`arena-js-dsp` v1.4.0) to prevent redundant re-analysis.

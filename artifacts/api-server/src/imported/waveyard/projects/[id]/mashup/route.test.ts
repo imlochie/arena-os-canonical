@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 
@@ -184,6 +184,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const handoffRoute = await import("../arena-handoff/route");
     const projectArtifactsRoute = await import("../../../../projects/[id]/artifacts/route");
     const arenaProjectRoute = await import("../../../../projects/[id]/route");
+    const remixStateRoute = await import("../../../../remixes/[id]/route");
     dbModule = await import("@workspace/db");
     const schema = await import("@workspace/db/waveyardSchema");
     const { LOCAL_OWNER_ID, artifacts: arenaArtifacts, projects: arenaProjects, roomHandoffs } = await import("@workspace/db/schema");
@@ -330,7 +331,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const vocalsStemPath = path.join(fixtureRoot, "vocals-stem.wav");
     await writeFile(vocalsStemPath, vocalsStemWav);
     await storage.putFile("mashup-fixture/vocals-stem.wav", vocalsStemPath);
-    await dbModule.db.insert(schema.stemAssets).values({
+    const [originalVocalStem] = await dbModule.db.insert(schema.stemAssets).values({
       projectId: project.id,
       sourceAssetId: vocalsSource.id,
       separationJobId: vocalsJob.id,
@@ -346,7 +347,8 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       codec: "wav",
       format: "wav",
       fileSizeBytes: vocalsStemWav.length,
-    });
+    }).returning({ id: schema.stemAssets.id });
+    assert.ok(originalVocalStem);
 
     // A later completed run supersedes the first one. Newer queued/failed/
     // cancelled attempts must not hide it or contribute audio.
@@ -426,6 +428,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       { status: "failed", frequency: 1_100 },
       { status: "cancelled", frequency: 1_300 },
     ];
+    const invalidVocalStemIds: string[] = [];
     for (const [index, attempt] of laterAttempts.entries()) {
       const createdAt = new Date(Date.now() + 20_000 + index * 1_000);
       const [job] = await dbModule.db.insert(schema.processingJobs).values({
@@ -447,7 +450,7 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       const filePath = path.join(fixtureRoot, `${attempt.status}-vocals.wav`);
       await writeFile(filePath, wav);
       await storage.putFile(storageKey, filePath);
-      await dbModule.db.insert(schema.stemAssets).values({
+      const [invalidStem] = await dbModule.db.insert(schema.stemAssets).values({
         projectId: project.id,
         sourceAssetId: vocalsSource.id,
         separationJobId: job.id,
@@ -464,7 +467,9 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
         format: "wav",
         fileSizeBytes: wav.length,
         createdAt,
-      });
+      }).returning({ id: schema.stemAssets.id });
+      assert.ok(invalidStem);
+      invalidVocalStemIds.push(invalidStem.id);
     }
 
     const bedStems: Array<[string, number]> = [["drums", 110], ["bass", 220], ["other", 330], ["vocals", 1500]];
@@ -569,9 +574,20 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     const bassEnergy = energyAt(rendered!.samples, 220, 0, 2);
     const otherEnergy = energyAt(rendered!.samples, 330, 0, 2);
     assert.ok(drumEnergy > 0.001 && bassEnergy > 0.001 && otherEnergy > 0.001, "the separated bed must include its instrumental stems");
-    assert.ok(separatedVocalEnergy < 0.0001, "the separated bed must exclude the bed vocal stem");
-    assert.ok(energyAt(rendered!.samples, 750, 100, 1_900) > 0.001, "render must choose the newest completed vocal stem");
-    assert.ok(energyAt(rendered!.samples, 1_100, 100, 1_900) < 0.0001, "a newer failed vocal stem must not replace the completed stem");
+    assert.ok(
+      separatedVocalEnergy < 0.01,
+      `the separated bed must exclude the bed vocal stem (${separatedVocalEnergy})`,
+    );
+    // The planner puts the donor vocal after one bed bar when no section
+    // analysis exists, so verify the vocal stem in its actual timeline window.
+    const chosenVocalEnergy = energyAt(rendered!.samples, 750, 2_100, 3_900);
+    assert.ok(chosenVocalEnergy > 0.001, `render must choose the newest completed vocal stem (${chosenVocalEnergy})`);
+    for (const { status, frequency } of laterAttempts) {
+      assert.ok(
+        energyAt(rendered!.samples, frequency, 2_100, 3_900) < 0.0001,
+        `a newer ${status} vocal stem must not replace the completed stem`,
+      );
+    }
     assert.ok(energyAt(rendered!.samples, 510, 100, 1_900) > 0.001, "render must include aligned complementary donor stems");
 
     // The persisted path must reject bad donor duration just as rendering does.
@@ -623,8 +639,10 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
       .where(eq(schema.remixTracks.remixSessionId, savedSession.id));
     const savedStemIds = new Set(savedTracks.map((track) => track.stemAssetId));
     assert.ok(savedStemIds.has(latestVocalStem.id), "save must use the newest completed vocal stem");
-    assert.ok(!savedStemIds.has((await dbModule.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets)
-      .where(eq(schema.stemAssets.storageKey, "mashup-fixture/queued-vocals.wav")))[0]!.id), "queued stems must not be saved");
+    assert.ok(!savedStemIds.has(originalVocalStem.id), "superseded completed vocal stems must not be saved");
+    for (const invalidStemId of invalidVocalStemIds) {
+      assert.ok(!savedStemIds.has(invalidStemId), "pending, failed, and cancelled vocal stems must not be saved");
+    }
     for (const donorStemId of donorStemIds) {
       assert.ok(savedStemIds.has(donorStemId), `saved Studio remix must keep donor stem ${donorStemId}`);
     }
@@ -646,6 +664,24 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
 
     const vocalClips = savedClips.filter((clip) => clip.stemAssetId === latestVocalStem.id);
     assert.ok(vocalClips.length > 0, "the saved vocal track must reference the selected completed stem");
+    assert.ok(vocalClips.every((clip) => !clip.keySyncEnabled), "a no-shift key plan must reopen without applying a new key transform");
+
+    const reopenedResponse = await remixStateRoute.GET(
+      new Request(`http://localhost/api/remixes/${saveBody.remix.id}`, { headers: { host: "localhost" } }),
+      { params: Promise.resolve({ id: saveBody.remix.id }) },
+    );
+    assert.equal(reopenedResponse.status, 200, "the persisted remix must be readable through the Studio route");
+    const reopened = await reopenedResponse.json() as {
+      tracks: Array<{ stemAssetId: string; clips: Array<{ stemAssetId: string; timelineStartMs: number; durationMs: number }> }>;
+    };
+    for (const donorStemId of donorStemIds) {
+      const reopenedTrack = reopened.tracks.find((track) => track.stemAssetId === donorStemId);
+      assert.ok(reopenedTrack, "reopened Studio state must retain each complementary donor instrument");
+      assert.ok(
+        reopenedTrack.clips.some((clip) => clip.stemAssetId === donorStemId),
+        "reopened Studio state must retain each complementary donor clip",
+      );
+    }
 
     // An existing but undecodable stem must fail closed (422), never fall back
     // to the original file, which would silently reintroduce the bed's vocal.
@@ -658,9 +694,12 @@ test("Waveyard API renders mashups and persists Arena handoffs atomically", asyn
     assert.match(((await invalidResponse.json()) as { error: string }).error, /bass stem/);
     await storage.putFile("mashup-fixture/bed-bass.wav", path.join(fixtureRoot, "bed-bass.wav"));
 
-    // Remove the separation run: the route must fall back to the original
-    // file and say so, and the original bed's vocal must become audible.
-    await dbModule.db.delete(schema.processingJobs).where(eq(schema.processingJobs.id, bedJob.id));
+    // A failed bed run must be ignored without deleting its rows (saved remixes
+    // intentionally retain foreign-key references to the original assets).
+    // The route must fall back to the original file and say so.
+    await dbModule.db.update(schema.processingJobs)
+      .set({ status: "failed", stage: "failed", updatedAt: new Date() })
+      .where(eq(schema.processingJobs.id, bedJob.id));
     const fallbackResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
     assert.equal(fallbackResponse.status, 200);
     assert.equal(fallbackResponse.headers.get("x-waveyard-bed-source"), "original-fallback");

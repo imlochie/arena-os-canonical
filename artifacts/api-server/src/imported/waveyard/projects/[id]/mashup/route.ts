@@ -500,6 +500,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const vocalTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
         const vocalKeyTrusted = trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence) !== null;
         const bedTempoTrusted = trustedAnalysisBpm(bed.bpm, bed.bpmConfidence) !== null;
+        const bedKeyTrusted = trustedAnalysisKey(bed.musicalKey, bed.keyConfidence) !== null;
         const vocalGridTrusted = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence) !== null;
         const bedGridTrusted = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence) !== null;
         const sessionSnapEnabled = vocalGridTrusted && bedGridTrusted;
@@ -507,6 +508,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           vocalTempoTrusted &&
           bedTempoTrusted &&
           Math.abs(planned.plan.vocalsStretchRatio - 1) > 1e-6;
+        const vocalKeySyncEnabled =
+          vocalKeyTrusted &&
+          bedKeyTrusted &&
+          Math.abs(planned.plan.vocalsPitchSemitones) > 1e-6;
 
         const result = await db.transaction(async (tx) => {
           const [remix] = await tx.insert(remixSessions).values({
@@ -600,7 +605,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 fadeInMs: seg.crossfadeMs,
                 fadeOutMs: seg.crossfadeMs,
                 tempoSyncEnabled: vocalTempoSyncEnabled,
-                keySyncEnabled: vocalKeyTrusted,
+                keySyncEnabled: vocalKeySyncEnabled,
                 beatSnapEnabled: vocalGridTrusted,
               });
             }
