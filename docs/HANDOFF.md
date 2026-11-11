@@ -1,5 +1,44 @@
 # Arena handoff — read this first
 
+## Current verification update — 2026-11-11, protect the live-mix Studio handoff
+
+* **Verified workflow gap:** a live donor selection is persisted before its audio
+  layer has finished loading. During that interval the session still plays the
+  previous layer, but Studio handoff previously accepted the saved donor row,
+  creating an arrangement that did not yet match what the listener heard.
+* **Change:** Studio handoff now waits only for pending/saving live swaps on the
+  selected session entries. The action is disabled with an explicit status until
+  those donor layers become audible; swaps on entries excluded from the Studio
+  selection no longer block the handoff.
+* **Regression evidence:** `node scripts/waveyard-live-stems.mjs
+  --studio-pending-swap-only` passed in Linux Chromium with synthetic PCM. It
+  confirmed the handoff is available before a swap, disabled while a persisted
+  donor asset is held before installation, and enabled after the donor layer is
+  installed. The test confirmed no Studio request was sent implicitly.
+  ArenaForge TypeScript checking and `node --check` for the browser harness
+  passed.
+* **Not verified:** this checks readiness, not musical quality; it uses a
+  fixture-backed session and synthetic audio. The broader
+  `--switch-recovery-only` browser run did not pass during this check: its
+  original donor fixture was already warm on the next deck, and a diagnostic
+  alternate donor run later hit its existing playhead-progress timeout. Do not
+  count that run as passing evidence.
+* **Remaining product gaps:** `sendSessionToStudio` still does not use the saved
+  swap's `atSeconds` when creating clips, and the session stores only the latest
+  donor per stem rather than an audible swap-event timeline. It also does not
+  persist the actual audible onset or the live tempo/key transform values.
+  Consequently, the handoff can preserve the current donor assignment and mix
+  but cannot yet reconstruct the exact sequence heard during live playback.
+  The performance snap setting currently schedules level/isolation actions,
+  not donor-layer replacement.
+* **Next priorities:** (1) schedule donor substitutions on the selected verified
+  beat boundary and cancel safely on pause/seek; record actual installation
+  timing and applied transforms; (2) persist ordered swap events and convert
+  them to source/donor clips in Studio; (3) test the complete live-mix → Studio
+  edit → export → reopen path with real separated stems and a listening check.
+  No real-song quality or Windows/mobile acceptance is claimed here.
+* **Branch:** this work remains on `jules-2321982355158174303-7f554415` (PR #30).
+
 ## Current verification update — 2026-11-11, close PR #30 mashup acceptance gaps
 
 * **Duplicate-stem route coverage:** Replaced the misleading local-`Set` unit

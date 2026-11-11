@@ -98,6 +98,7 @@ const parallelStemSwapsOnly = process.argv.includes("--parallel-stem-swaps-only"
 const sharedDonorRetryOnly = process.argv.includes("--shared-donor-retry-only");
 const sameStemSwapsOnly = process.argv.includes("--same-stem-swaps-only");
 const stemControlsReopenOnly = process.argv.includes("--stem-controls-reopen-only");
+const studioPendingSwapOnly = process.argv.includes("--studio-pending-swap-only");
 const pitchModesOnly = process.argv.includes("--pitch-modes-only");
 const keyMatchingOnly = process.argv.includes("--key-matching-only");
 const crossTabSpeedOnly = process.argv.includes("--cross-tab-speed-only");
@@ -1683,6 +1684,68 @@ try {
       }
     }
     console.log("PASS: cancellation and the real preparation timeout keep original audio audible and aligned; late donors stay silent even while cancellation persistence stalls");
+  }
+
+  async function verifyStudioHandoffWaitsForLiveSwap() {
+    suppressSessionStateWritesForStemSwitchFixture = true;
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    session.swaps = [];
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element =>
+        element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+      );
+    });
+
+    const deck = page.locator('[data-role="current"]');
+    const handoff = page.getByTestId("session-handoff");
+    assert.equal(await handoff.isDisabled(), false,
+      "the ready session is handoff-eligible before a donor change begins");
+    const beforeHandoffs = studioHandoffRequests;
+    const buffersBefore = await page.evaluate(() => window.audioProbe.buffers.length);
+    let releaseDonor, signalRequest, finishRoute;
+    heldAssetId = "c-vocals";
+    heldAssetGate = new Promise(resolve => { releaseDonor = resolve; });
+    const requested = new Promise(resolve => { signalRequest = resolve; });
+    const routeFinished = new Promise(resolve => { finishRoute = resolve; });
+    signalHeldAssetRequest = signalRequest;
+    signalHeldAssetRouteFinished = finishRoute;
+    try {
+      await page.getByTestId("session-play").click();
+      await deck.getByTestId("open-live-swap-vocals").click();
+      await deck.getByTestId("live-swap-candidate-vocals-c").click();
+      await waitForSignal(requested, "the donor asset used for the Studio handoff boundary");
+      await deck.getByTestId("restore-live-swap-vocals").waitFor();
+      await page.getByTestId("live-swap-pending-vocals").waitFor();
+      assert.ok(session.swaps.some(swap => swap.sessionTrackId === "a" && swap.stemType === "vocals"),
+        "the donor selection is persisted before its prepared audio is audible");
+      assert.equal(await handoff.isDisabled(), true,
+        "Studio handoff is disabled while selected replacement audio is not audible");
+      await page.getByTestId("session-handoff-awaiting-live-stem").waitFor();
+      assert.equal(studioHandoffRequests, beforeHandoffs,
+        "no incomplete donor choice reaches Studio");
+
+      heldAssetId = null;
+      heldAssetGate = null;
+      releaseDonor();
+      await waitForSignal(routeFinished, "the prepared donor release");
+      await page.waitForFunction(before => window.audioProbe.buffers.length > before, buffersBefore);
+      await page.getByTestId("restore-live-swap-vocals").waitFor();
+      await deck.getByTestId("live-swap-pending-vocals").waitFor({ state: "detached" });
+      assert.equal(await handoff.isDisabled(), false,
+        "Studio handoff unlocks only after the donor layer is installed");
+      assert.equal(studioHandoffRequests, beforeHandoffs,
+        "checking readiness does not implicitly create a Studio project");
+      console.log("PASS: Studio handoff waits for the persisted live donor to become audible, then unlocks without auto-submitting");
+    } finally {
+      heldAssetId = null;
+      heldAssetGate = null;
+      signalHeldAssetRequest = null;
+      signalHeldAssetRouteFinished = null;
+      releaseDonor?.();
+    }
   }
 
   async function verifyCrossTabStemSwitchRecovery() {
@@ -3897,6 +3960,8 @@ try {
     console.log("PASS: failed donor B preserves audible and saved A, other donors and the recipient clock; recovery save retries, reload and a real B retry work");
   } else if (process.argv.includes("--cross-tab-switch-recovery-only")) {
     await verifyCrossTabStemSwitchRecovery();
+  } else if (studioPendingSwapOnly) {
+    await verifyStudioHandoffWaitsForLiveSwap();
   } else if (process.argv.includes("--switch-recovery-only")) {
     await verifyStemSwitchRecovery();
     await verifyCrossTabStemSwitchRecovery();

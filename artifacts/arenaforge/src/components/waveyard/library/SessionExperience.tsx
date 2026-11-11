@@ -1464,6 +1464,11 @@ export default function SessionExperience({
     });
   }, []);
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
+  const pendingSelectedStudioSwap = pendingSwaps.some((pending) =>
+    selectedStudioTrackIds.includes(pending.sessionTrackId));
+  const savingSelectedStudioSwap = [...savingSwapKeys].some((key) =>
+    selectedStudioTrackIds.some((sessionTrackId) => key.startsWith(`${sessionTrackId}:`)));
+  const selectedStudioSwapNotAudible = pendingSelectedStudioSwap || savingSelectedStudioSwap;
   const pendingLiveSwapRef = useRef(new Map<string, PendingLiveSwap>());
   const [failedLiveSwaps, setFailedLiveSwaps] = useState<FailedLiveSwap[]>([]);
   const [cancelledSwapIds, setCancelledSwapIds] = useState<Set<string>>(() => new Set());
@@ -3487,8 +3492,12 @@ export default function SessionExperience({
       setStatus("Select at least one session track to send to Studio.");
       return;
     }
-    if (savingSwap) {
+    if (savingSelectedStudioSwap) {
       setStatus("Wait for the selected live stem swap to finish saving before sending it to Studio.");
+      return;
+    }
+    if (pendingSelectedStudioSwap) {
+      setStatus("Wait until the selected live stem swap is audible before sending it to Studio.");
       return;
     }
     const selectedFullSourceEntries = session.tracks.filter((item) => {
@@ -3591,7 +3600,7 @@ export default function SessionExperience({
         setSendingToStudio(false);
       }
     })();
-  }, [session, selectedStudioTrackIds, library, savingSwap, mixes]);
+  }, [session, selectedStudioTrackIds, library, savingSelectedStudioSwap, pendingSelectedStudioSwap, mixes]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -4929,11 +4938,20 @@ export default function SessionExperience({
           </div>
         </fieldset>
         <div className="wy-drawer-actions sess-studio-action">
+          {selectedStudioSwapNotAudible && (
+            <small
+              className="sess-studio-note"
+              data-testid="session-handoff-awaiting-live-stem"
+              role="status"
+            >
+              Selected live stem changes are still preparing. Studio handoff unlocks when they are audible.
+            </small>
+          )}
           <button
             type="button"
             className="button secondary"
             onClick={sendToStudio}
-            disabled={selectedStudioTrackIds.length === 0 || sendingToStudio}
+            disabled={selectedStudioTrackIds.length === 0 || sendingToStudio || selectedStudioSwapNotAudible}
             data-testid="session-handoff"
           >
             {sendingToStudio
