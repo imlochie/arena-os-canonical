@@ -493,6 +493,7 @@ try {
     window.audioProbe = {
       sources: [], buffers: [], worklets: [], masterGains: [], outputAnalyzers: [], decodedAudio: [],
       combinedInputs: [], combinedOutputs: [], playStarts: [],
+      assetUrl: element => element?.dataset?.waveyardAssetUrl ?? element?.src ?? "",
       renderCaptureDestinations: [],
       workletLoads: [], workletSeeks: [], workletRates: [], workletPitchModes: [], keyShifts: [], transportMessages: [],
       storageTransportMessages: [], storageTransportReceives: [],
@@ -730,7 +731,7 @@ try {
     window.audioProbe.currentStemGain = stemType => {
       const deck = document.querySelector('[data-role="current"]');
       const audio = [...(deck?.querySelectorAll("audio") ?? [])]
-        .find(element => element.src.endsWith(`/a-${stemType}`));
+        .find(element => window.audioProbe.assetUrl(element).endsWith(`/a-${stemType}`));
       const source = window.audioProbe.sources.find(entry => entry.mediaElement === audio);
       return source?.inputNode?.nextNode?.gain?.value ?? null;
     };
@@ -2756,14 +2757,34 @@ try {
     await deck.getByLabel("Mute drums", { exact: true }).click();
     await assertStemGains({ vocals: 0.37, drums: 0 });
     await page.getByTestId("button-return-full-track-a").click();
-    await page.waitForFunction(() => {
-      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-      return audio.length === 1 && audio[0].src.endsWith("/a-source") && !audio[0].paused;
-    });
+    try {
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+        return audio.length === 1
+          && window.audioProbe.assetUrl(audio[0]).endsWith("/a-source")
+          && !audio[0].paused;
+      });
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        audio: [...document.querySelectorAll('[data-role="current"] audio')].map(element => ({
+          src: element.src,
+          paused: element.paused,
+          readyState: element.readyState,
+          currentTime: element.currentTime,
+        })),
+        status: document.querySelector('[data-testid="session-status"]')?.textContent,
+        alerts: [...document.querySelectorAll('[role="alert"]')].map(element => element.textContent),
+        errors: window.audioProbe.pageErrors.slice(-5),
+        assets: window.liveStemAssetFetchTrace.slice(-8),
+      }));
+      console.error("STEM_CONTROLS_SOURCE_HANDOFF_TIMEOUT", JSON.stringify(state));
+      throw error;
+    }
     await page.getByTestId("button-switch-stems-a").click();
     await page.waitForFunction(() => {
       const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-      return audio.length === 4 && audio.every(element => !element.paused && element.src.includes("/a-"));
+      return audio.length === 4 && audio.every(element =>
+        !element.paused && window.audioProbe.assetUrl(element).includes("/a-"));
     });
     assert.equal(await deck.getByLabel("vocals level, current deck", { exact: true }).inputValue(), "0.37");
     assert.equal(await deck.getByLabel("drums level, current deck", { exact: true }).inputValue(), "0");
@@ -6984,7 +7005,7 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => {
     const audio = document.querySelector('[data-role="current"] audio');
-    return audio?.src.endsWith("/a-source") && audio.readyState >= 2;
+    return audio && window.audioProbe.assetUrl(audio).endsWith("/a-source") && audio.readyState >= 2;
   });
   current = page.locator('[data-role="current"]');
   await toggle();
@@ -7005,7 +7026,7 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   await page.reload();
   await page.waitForFunction(() => {
     const audio = document.querySelector('[data-role="current"] audio');
-    return audio?.src.endsWith("/a-source") && audio.readyState >= 2;
+    return audio && window.audioProbe.assetUrl(audio).endsWith("/a-source") && audio.readyState >= 2;
   });
   current = page.locator('[data-role="current"]');
   if (await current.locator('audio[data-waveyard-fixture-src$="/a-source"]').evaluate(audio => audio.paused)) await toggle();
@@ -7037,14 +7058,15 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   await page.getByTestId("button-switch-stems-a").click();
   await page.waitForFunction(() => {
     const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-    return audio.length === 4 && audio.every(element => element.readyState >= 2 && !element.paused);
+    return audio.length === 4 && audio.every(element =>
+      element.readyState >= 2 && !element.paused && window.audioProbe.assetUrl(element).includes("/a-"));
   });
   const afterHandoff = await current.locator("audio").evaluateAll(elements => elements.map(element => element.currentTime));
   const expectedPosition = beforeHandoff + (Date.now() - handoffStarted) / 1000;
   assert.ok(afterHandoff.every(time => Math.abs(time - expectedPosition) < 0.4),
     `successful handoff must preserve the live playhead; expected ${expectedPosition}, received ${afterHandoff}`);
   const handoffGains = await page.evaluate(() => window.audioProbe.sources.map(source => ({
-    url: source.mediaElement.src,
+    url: window.audioProbe.assetUrl(source.mediaElement),
     gain: source.inputNode?.nextNode?.gain?.value,
   })).filter(source => source.url.includes("/a-source") || ["vocals", "drums", "bass", "other"].some(type => source.url.endsWith(`/a-${type}`))));
   assert.equal(handoffGains.find(source => source.url.endsWith("/a-source"))?.gain, 0,
@@ -7109,7 +7131,8 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   releaseHeldRequest();
   await page.waitForFunction(() => {
     const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-    return audio.length === 1 && audio[0].src.endsWith("/a-source") && audio[0].readyState >= 2 && !audio[0].paused;
+    return audio.length === 1 && window.audioProbe.assetUrl(audio[0]).endsWith("/a-source")
+      && audio[0].readyState >= 2 && !audio[0].paused;
   });
   const afterReturn = await current.locator("audio").evaluate(element => element.currentTime);
   const expectedReturnPosition = beforeReturn + (Date.now() - returnStartedAt) / 1000;
@@ -7119,7 +7142,7 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.currentMasterGain()) - 0.63) < 0.01,
     "returning preserves the actual master gain");
   const returnGains = await page.evaluate(() => window.audioProbe.sources.map(source => ({
-    url: source.mediaElement.src, gain: source.inputNode?.nextNode?.gain?.value,
+    url: window.audioProbe.assetUrl(source.mediaElement), gain: source.inputNode?.nextNode?.gain?.value,
   })));
   assert.ok(returnGains.filter(source => source.url.endsWith("/a-source")).at(-1)?.gain > 0.9,
     "the original full-track signal is audible after the handoff");
@@ -7133,7 +7156,8 @@ if (!transitionDonorWorkletsReady && engineName === "webkit") {
   await page.getByTestId("button-switch-stems-a").click();
   await page.waitForFunction(() => {
     const audio = [...document.querySelectorAll('[data-role="current"] audio')];
-    return audio.length === 4 && audio.every(element => !element.paused && element.src.includes("/a-"));
+    return audio.length === 4 && audio.every(element =>
+      !element.paused && window.audioProbe.assetUrl(element).includes("/a-"));
   });
   const afterStemsSwitch = await current.locator("audio").evaluateAll(elements => elements.map(element => element.currentTime));
   const expectedStemsPosition = beforeStemsSwitch + (Date.now() - stemsSwitchStartedAt) / 1000;

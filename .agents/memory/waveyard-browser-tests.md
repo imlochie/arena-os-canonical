@@ -19,6 +19,12 @@ Live-swap donor audio may be fetched before the picker opens or before a fixture
 
 **Why:** Requiring exactly one request made a successful browser-measured swap fail even though the selected donor decoded and became audible.
 
+Session audio elements may expose temporary `blob:` URLs after the asset pool finishes loading, while the stable asset path remains in `data-waveyard-asset-url`.
+
+**Why:** Looking up an audio graph by `HTMLAudioElement.src` can miss the current source after object-URL replacement, making restored fader checks time out despite correct UI and saved state.
+
+**How to apply:** Match media elements by `dataset.waveyardAssetUrl` (falling back to `src` only when needed) in browser probes and reload assertions.
+
 **How to apply:** For recovery tests that need a stalled donor, arm per-page response gates before loading either session tab and verify both requests are held before canceling or timing out. Release both gates afterward. For performance tests, record whether the donor was already loaded, allow cache reuse or at most one additional fetch, and assert audible selection plus no duplicate transfer.
 
 For app-background audio recovery tests, this workspace's Chromium build does not expose the CDP `Emulation.setPageVisibilityState` command. Override `document.visibilityState` in the test page and dispatch `visibilitychange`, while suspending real audio contexts and pausing actual media elements.
