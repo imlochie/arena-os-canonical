@@ -28,6 +28,7 @@
 - [Arena baseline reconciliation](arena-baseline-reconciliation.md) — recover branch intent as user outcomes, then verify current end-to-end workflows; code similarity is not proof.
 - [SourceForge release evidence](sourceforge-release-evidence.md) — a provider SHA pins bytes, but license provenance and archive safety remain separate install gates.
 - [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, use raw TSX instrumentation, and label WebKit emulation honestly.
+- [Waveyard audio measurement windows](waveyard-audio-measurement-windows.md) — label interval units and verify the analyzer spans the intended passage before interpreting signal levels.
 - [Waveyard output protection](waveyard-output-protection.md) — protect the actual summed output without rewriting faders; sample peaks are not true-peak or hardware evidence.
 - [Waveyard worklet test boundary](waveyard-worklet-boundary.md) — keep Vite-only worklet URLs at the browser adapter so Node tests can import the DSP core.
 - [Waveyard touch gesture tests](waveyard-touch-tests.md) — intersect with the scrollport and dispatch the exact validated point away from `touch-action:none` controls.
