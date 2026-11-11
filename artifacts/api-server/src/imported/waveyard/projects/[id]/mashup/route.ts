@@ -17,17 +17,17 @@
  */
 
 
-import { and, desc, eq, sql } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { db } from "@workspace/db";
-import { processingJobs, remixClips, remixSessions, remixTracks, remixVersions, sourceAnalyses, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
+import { processingJobs, remixAutomationPoints, remixClips, remixSessions, remixTracks, remixVersions, sourceAnalyses, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
-import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import { decodeWav16, encodeWav16, type DecodedWav } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import { loadSourceProfile } from "@workspace/arena/lib/waveyard/studio/mashup-sources";
 import {
@@ -36,7 +36,7 @@ import {
   sumInstrumentalStems,
   type InstrumentalBedStem,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
-import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
+import { analyseStereoPcm, mashupDuckAutomationPoints, planMashup, planSongExtension, renderMashup, renderSongExtension } from "@workspace/arena/lib/waveyard/studio/mashup";
 import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
@@ -65,17 +65,48 @@ type BedSourceInfo = {
 
 type BedSource = {
   info: BedSourceInfo;
-  stems: Array<typeof stemAssets.$inferSelect>;
+  stems: StemIntegrityAsset[];
 };
 
 type BedLoadResult =
-  | { ok: true; pcm: Float32Array; info: BedSourceInfo }
+  | { ok: true; pcm: Float32Array; frames: number; appliedGain: number; info: BedSourceInfo }
   | { ok: false; info: BedSourceInfo };
+
+type StemIntegrityAsset = Pick<typeof stemAssets.$inferSelect,
+  | "id"
+  | "projectId"
+  | "sourceAssetId"
+  | "separationJobId"
+  | "stemType"
+  | "storageKey"
+  | "checksumSha256"
+  | "durationSeconds"
+  | "sampleRate"
+  | "channels"
+  | "fileSizeBytes"
+>;
+
+type LoadedComplementaryStem = {
+  asset: StemIntegrityAsset;
+  decoded: DecodedWav;
+};
 
 /** Latest stem of a type backed by a completed separation run, or null. */
 async function latestStem(projectId: string, sourceAssetId: string, stemType: string) {
   const [stem] = await db
-    .select({ id: stemAssets.id, storageKey: stemAssets.storageKey, separationJobId: stemAssets.separationJobId })
+    .select({
+      id: stemAssets.id,
+      projectId: stemAssets.projectId,
+      sourceAssetId: stemAssets.sourceAssetId,
+      separationJobId: stemAssets.separationJobId,
+      stemType: stemAssets.stemType,
+      storageKey: stemAssets.storageKey,
+      checksumSha256: stemAssets.checksumSha256,
+      durationSeconds: stemAssets.durationSeconds,
+      sampleRate: stemAssets.sampleRate,
+      channels: stemAssets.channels,
+      fileSizeBytes: stemAssets.fileSizeBytes,
+    })
     .from(stemAssets)
     .innerJoin(processingJobs, eq(stemAssets.separationJobId, processingJobs.id))
     .where(and(
@@ -97,17 +128,107 @@ async function latestStem(projectId: string, sourceAssetId: string, stemType: st
   return stem;
 }
 
-/** Decode a stem WAV from storage at the render rate. */
-async function stemPcm(storageKey: string): Promise<Float32Array | null> {
-  const bytes = await getStorage().getBuffer(storageKey, MAX_STEM_BYTES);
+/** Verify stored identity/metadata and decode a render-rate stereo stem WAV. */
+async function decodeStemAsset(stem: StemIntegrityAsset): Promise<DecodedWav | null> {
+  if (
+    typeof stem.storageKey !== "string"
+    || stem.storageKey.trim() === ""
+    || !Number.isSafeInteger(stem.fileSizeBytes)
+    || stem.fileSizeBytes < 44
+    || !/^[a-f0-9]{64}$/i.test(stem.checksumSha256)
+  ) return null;
+
+  let bytes: Buffer;
+  try {
+    bytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
+  } catch {
+    return null;
+  }
+  if (bytes.byteLength !== stem.fileSizeBytes) return null;
+  const checksum = createHash("sha256").update(bytes).digest("hex");
+  if (checksum !== stem.checksumSha256.toLowerCase()) return null;
+
   const decoded = decodeWav16(new Uint8Array(bytes));
   if (decoded === null) return null;
-  // Stems are rendered at 44.1 kHz stereo. A foreign rate or channel layout
-  // is NOT acceptable — refuse rather than degrade silently.
-  if (decoded.sampleRate === RENDER_SAMPLE_RATE && decoded.channels === 2) {
-    return decoded.samples;
+  if (
+    decoded.sampleRate !== RENDER_SAMPLE_RATE
+    || decoded.channels !== 2
+    || decoded.frames < 1
+    || stem.sampleRate !== decoded.sampleRate
+    || stem.channels !== decoded.channels
+  ) return null;
+  return decoded;
+}
+
+/**
+ * Load complementary donor instruments from the exact completed separation
+ * run that supplied the selected lead vocal. Invalid optional stems are omitted
+ * with a warning; they never replace or contaminate the lead vocal.
+ */
+async function loadComplementaryDonorStems(
+  projectId: string,
+  sourceAssetId: string,
+  vocalsStem: StemIntegrityAsset,
+  vocalFrames: number,
+): Promise<{ stems: LoadedComplementaryStem[]; warnings: string[] }> {
+  const rows: StemIntegrityAsset[] = await db
+    .select({
+      id: stemAssets.id,
+      projectId: stemAssets.projectId,
+      sourceAssetId: stemAssets.sourceAssetId,
+      separationJobId: stemAssets.separationJobId,
+      stemType: stemAssets.stemType,
+      storageKey: stemAssets.storageKey,
+      checksumSha256: stemAssets.checksumSha256,
+      durationSeconds: stemAssets.durationSeconds,
+      sampleRate: stemAssets.sampleRate,
+      channels: stemAssets.channels,
+      fileSizeBytes: stemAssets.fileSizeBytes,
+    })
+    .from(stemAssets)
+    .innerJoin(processingJobs, eq(stemAssets.separationJobId, processingJobs.id))
+    .where(and(
+      eq(stemAssets.projectId, projectId),
+      eq(stemAssets.sourceAssetId, sourceAssetId),
+      eq(stemAssets.separationJobId, vocalsStem.separationJobId),
+      eq(processingJobs.projectId, projectId),
+      eq(processingJobs.sourceAssetId, sourceAssetId),
+      eq(processingJobs.type, "separation"),
+      eq(processingJobs.status, "complete"),
+      inArray(stemAssets.stemType, [...INSTRUMENTAL_BED_STEM_TYPES]),
+    ))
+    .orderBy(asc(stemAssets.stemType), desc(stemAssets.createdAt), desc(stemAssets.id));
+
+  const warnings: string[] = [];
+  const rowsByType = new Map<string, StemIntegrityAsset[]>();
+  for (const row of rows) {
+    const group = rowsByType.get(row.stemType) ?? [];
+    group.push(row);
+    rowsByType.set(row.stemType, group);
   }
-  return null;
+
+  const stems: LoadedComplementaryStem[] = [];
+  for (const [stemType, matchingRows] of rowsByType) {
+    if (matchingRows.length !== 1) {
+      warnings.push(`The donor ${stemType} layer was omitted because its completed separation run contains duplicate stem records.`);
+      continue;
+    }
+    const asset = matchingRows[0]!;
+    const decoded = await decodeStemAsset(asset);
+    if (
+      decoded === null
+      || asset.projectId !== projectId
+      || asset.sourceAssetId !== sourceAssetId
+      || asset.separationJobId !== vocalsStem.separationJobId
+      || decoded.frames !== vocalFrames
+      || asset.durationSeconds !== vocalsStem.durationSeconds
+    ) {
+      warnings.push(`The donor ${stemType} layer was omitted because its stored audio failed integrity or alignment checks.`);
+      continue;
+    }
+    stems.push({ asset, decoded });
+  }
+  return { stems, warnings };
 }
 
 /**
@@ -119,36 +240,44 @@ async function stemPcm(storageKey: string): Promise<Float32Array | null> {
  */
 async function findBedSource(projectId: string, bedId: string): Promise<BedSource> {
   const [instrumental] = await db
-    .select()
+    .select({
+      id: stemAssets.id,
+      projectId: stemAssets.projectId,
+      sourceAssetId: stemAssets.sourceAssetId,
+      separationJobId: stemAssets.separationJobId,
+      stemType: stemAssets.stemType,
+      storageKey: stemAssets.storageKey,
+      checksumSha256: stemAssets.checksumSha256,
+      durationSeconds: stemAssets.durationSeconds,
+      sampleRate: stemAssets.sampleRate,
+      channels: stemAssets.channels,
+      fileSizeBytes: stemAssets.fileSizeBytes,
+    })
     .from(stemAssets)
-    .where(
-      and(
-        eq(stemAssets.projectId, projectId),
-        eq(stemAssets.sourceAssetId, bedId),
-        eq(stemAssets.stemType, "instrumental"),
-      ),
-    )
-    .orderBy(desc(stemAssets.createdAt))
+    .innerJoin(processingJobs, eq(stemAssets.separationJobId, processingJobs.id))
+    .where(and(
+      eq(stemAssets.projectId, projectId),
+      eq(stemAssets.sourceAssetId, bedId),
+      eq(stemAssets.stemType, "instrumental"),
+      eq(processingJobs.projectId, projectId),
+      eq(processingJobs.sourceAssetId, bedId),
+      eq(processingJobs.type, "separation"),
+      eq(processingJobs.status, "complete"),
+    ))
+    .orderBy(desc(processingJobs.completedAt), desc(processingJobs.createdAt), desc(stemAssets.createdAt), desc(stemAssets.id))
     .limit(1);
 
   if (instrumental) {
-    const [job] = await db
-      .select({ status: processingJobs.status })
-      .from(processingJobs)
-      .where(eq(processingJobs.id, instrumental.separationJobId))
-      .limit(1);
-    if (job?.status === "complete") {
-      return {
-        info: {
-          source: "separated",
-          separationJobId: instrumental.separationJobId,
-          includedStemTypes: ["instrumental"],
-          warning:
-            "The bed uses a separated instrumental stem. Separation is not perfect; residual leakage may remain.",
-        },
-        stems: [instrumental],
-      };
-    }
+    return {
+      info: {
+        source: "separated",
+        separationJobId: instrumental.separationJobId,
+        includedStemTypes: ["instrumental"],
+        warning:
+          "The bed uses a separated instrumental stem. Separation is not perfect; residual leakage may remain.",
+      },
+      stems: [instrumental],
+    };
   }
 
   const [job] = await db
@@ -176,8 +305,20 @@ async function findBedSource(projectId: string, bedId: string): Promise<BedSourc
     };
   }
 
-  const stems = await db
-    .select()
+  const stems: StemIntegrityAsset[] = await db
+    .select({
+      id: stemAssets.id,
+      projectId: stemAssets.projectId,
+      sourceAssetId: stemAssets.sourceAssetId,
+      separationJobId: stemAssets.separationJobId,
+      stemType: stemAssets.stemType,
+      storageKey: stemAssets.storageKey,
+      checksumSha256: stemAssets.checksumSha256,
+      durationSeconds: stemAssets.durationSeconds,
+      sampleRate: stemAssets.sampleRate,
+      channels: stemAssets.channels,
+      fileSizeBytes: stemAssets.fileSizeBytes,
+    })
     .from(stemAssets)
     .where(
       and(
@@ -226,24 +367,23 @@ async function loadInstrumentalBed(projectId: string, bedId: string): Promise<Be
   }
 
   if (stems.length === 1 && stems[0]!.stemType === "instrumental") {
-    const pcm = await stemPcm(stems[0]!.storageKey);
-    if (pcm === null) {
+    const decoded = await decodeStemAsset(stems[0]!);
+    if (decoded === null) {
       throw new InstrumentalBedError(
         "invalid-stem",
-        "The separated instrumental stem is not a valid 44.1 kHz stereo WAV. Re-run separation for the instrumental track.",
+        "The separated instrumental stem failed its stored-file integrity or PCM checks. Re-run separation for the instrumental track.",
       );
     }
-    return { ok: true, pcm, info };
+    return { ok: true, pcm: decoded.samples, frames: decoded.frames, appliedGain: 1, info };
   }
 
   const decodedStems: InstrumentalBedStem[] = [];
   for (const stem of stems) {
-    const bytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
-    const decoded = decodeWav16(new Uint8Array(bytes));
-    if (decoded === null || decoded.sampleRate !== RENDER_SAMPLE_RATE) {
+    const decoded = await decodeStemAsset(stem);
+    if (decoded === null) {
       throw new InstrumentalBedError(
         "invalid-stem",
-        `The separated ${stem.stemType} stem is not a valid 44.1 kHz WAV. Re-run separation for the instrumental track.`,
+        `The separated ${stem.stemType} stem failed its stored-file integrity or PCM checks. Re-run separation for the instrumental track.`,
       );
     }
     decodedStems.push({
@@ -259,7 +399,7 @@ async function loadInstrumentalBed(projectId: string, bedId: string): Promise<Be
   }
 
   const bed = sumInstrumentalStems(decodedStems);
-  return { ok: true, pcm: bed.pcm, info };
+  return { ok: true, pcm: bed.pcm, frames: bed.frames, appliedGain: bed.appliedGain, info };
 }
 
 async function inspectBed(projectId: string, bedId: string): Promise<BedSourceInfo> {
