@@ -13,6 +13,31 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /library/sessions/{id}/swaps:
+    patch:
+      operationId: recordListeningSessionSwapAudiblePosition
+      tags: [waveyard]
+      summary: Record the playback position where a saved donor stem begins
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionStemSwapAudibleInput" }
+      responses:
+        "200":
+          description: Current session envelope; stale swap identifiers leave newer selections unchanged
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400":
+          description: Invalid swap identifier or playback position
+        "404":
+          description: Session not found
   /library/sessions/{id}/tracks:
     patch:
       operationId: reorderListeningSession
@@ -785,6 +810,14 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
 components:
   schemas:
+    SessionStemSwapAudibleInput:
+      type: object
+      required: [swapId, sessionTrackId, stemType, atSeconds]
+      properties:
+        swapId: { type: string, format: uuid }
+        sessionTrackId: { type: string, format: uuid }
+        stemType: { type: string, minLength: 1, maxLength: 64 }
+        atSeconds: { type: number, minimum: 0 }
     ListeningSessionOrderInput:
       type: object
       required: [sessionTrackId, position]

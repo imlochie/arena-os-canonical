@@ -108,6 +108,9 @@ type PreparedAudio = {
 };
 
 export type LiveStemTiming = {
+  recipientStemId: string;
+  selectedAt: number;
+  audibleAtSeconds: number;
   selectionToAudibleMs: number;
   downloadMs: number;
   decodeMs: number;
@@ -645,10 +648,13 @@ export class LiveStemLayers {
     layer.sourceMode = "buffer";
   }
 
-  private reportAudible(layer: Layer) {
+  private reportAudible(recipientStemId: string, layer: Layer, audibleAtSeconds: number) {
     const timing = layer.timing;
     if (!timing) return;
     this.onTiming?.({
+      recipientStemId,
+      selectedAt: timing.selectedAt,
+      audibleAtSeconds,
       selectionToAudibleMs: Math.max(0, performance.now() - timing.selectedAt),
       downloadMs: timing.downloadMs,
       decodeMs: timing.decodeMs,
@@ -1089,7 +1095,7 @@ export class LiveStemLayers {
       this.layers.set(id, layer);
       this.ramp(input, 1);
       this.ramp(channel.inputGain, 0);
-      if (layer.source) this.reportAudible(layer);
+      if (layer.source) this.reportAudible(id, layer, channel.source.mediaElement.currentTime);
       if (previous) this.retire(previous);
       replacementKeyNode = null; // The installed layer owns the processor.
       return undefined;
@@ -1117,7 +1123,7 @@ export class LiveStemLayers {
       const channel = layer && this.channel(id);
       if (layer && channel) {
         void this.start(layer, channel).then(() => {
-          if (layer.source) this.reportAudible(layer);
+          if (layer.source) this.reportAudible(id, layer, channel.source.mediaElement.currentTime);
         }).catch(() => undefined);
       }
     }

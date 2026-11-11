@@ -101,6 +101,7 @@ import {
   nextPerformanceBoundary,
   performMix,
   performanceTick,
+  waitForPerformanceBoundary,
 } from "./performance";
 
 // ------------------------------------------------------------ transitions
@@ -187,6 +188,56 @@ test("performance boundary rejects late or interrupted source-clock callbacks", 
   assert.equal(performanceTick(1, 0.9, 1.2, true), "cancel");
   assert.equal(performanceTick(1, 1, 0.7, true), "cancel");
   assert.equal(performanceTick(1, 0.9, 1, false), "cancel");
+});
+
+test("scheduled performance boundary waits on playback time and cancels on pause, seek, lateness or disposal", async () => {
+  let position = 0.8;
+  let playing = true;
+  let nextFrameId = 0;
+  const frames = new Map<number, () => void>();
+  const scheduler = {
+    request(callback: () => void) {
+      const id = ++nextFrameId;
+      frames.set(id, callback);
+      return id;
+    },
+    cancel(id: number) {
+      frames.delete(id);
+    },
+    tick(nextPosition: number, nextPlaying = true) {
+      position = nextPosition;
+      playing = nextPlaying;
+      const [id, callback] = frames.entries().next().value ?? [];
+      if (id !== undefined && callback !== undefined) {
+        frames.delete(id);
+        callback();
+      }
+    },
+  };
+
+  const scheduled = waitForPerformanceBoundary(1, position, () => position, () => playing, scheduler);
+  scheduler.tick(0.9);
+  assert.equal(frames.size, 1, "the selected donor remains staged before the boundary");
+  scheduler.tick(1);
+  assert.equal(await scheduled.result, "apply");
+
+  const paused = waitForPerformanceBoundary(2, 1.5, () => position, () => playing, scheduler);
+  scheduler.tick(1.6, false);
+  assert.equal(await paused.result, "cancel", "pause leaves the current donor untouched");
+
+  playing = true;
+  const seeked = waitForPerformanceBoundary(2, 1.7, () => position, () => playing, scheduler);
+  scheduler.tick(1.6);
+  assert.equal(await seeked.result, "cancel", "a backwards seek cancels rather than firing on the wrong beat");
+
+  const late = waitForPerformanceBoundary(2, 1.8, () => position, () => playing, scheduler);
+  scheduler.tick(2.2);
+  assert.equal(await late.result, "cancel", "a delayed callback is rejected instead of applying late");
+
+  const disposed = waitForPerformanceBoundary(3, 2.5, () => position, () => playing, scheduler);
+  disposed.cancel();
+  assert.equal(await disposed.result, "cancel");
+  assert.equal(frames.size, 0, "cancelling removes the outstanding animation callback");
 });
 
 test("crossfade envelope: equal-power throughout with exact endpoints", () => {
