@@ -6,18 +6,18 @@
       "id": "another-one-bites-the-dust",
       "title": "Another One Bites the Dust",
       "expectedDurationSeconds": 222.67,
-      "sourceFileName": null,
+      "sourceFileName": "0_another_one_bites_the_dust_1793860743093.mp3",
       "durationSeconds": 222.67,
-      "sourceSha256": null,
+      "sourceSha256": "30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c",
       "rightsEvidencePresent": false
     },
     {
       "id": "september",
       "title": "September",
       "expectedDurationSeconds": 215.14,
-      "sourceFileName": null,
+      "sourceFileName": "0_ytmp3free.cc_earth-wind-fire-september-official-hd-video-you_1793303155539.mp3",
       "durationSeconds": 215.14,
-      "sourceSha256": null,
+      "sourceSha256": "6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1",
       "rightsEvidencePresent": false
     }
   ],
@@ -30,15 +30,10 @@
   "validation": {
     "complete": false,
     "issues": [
-      "both distinct source files must have unique SHA-256 identities",
       "dataset status must be adjudicated after both blind reviews are locked",
       "dataset creation/adjudication timestamp missing or invalid",
-      "another-one-bites-the-dust: exact source filename missing",
-      "another-one-bites-the-dust: exact source SHA-256 missing",
       "another-one-bites-the-dust: source attribution and documented rights basis missing",
       "another-one-bites-the-dust: independent adjudication missing",
-      "september: exact source filename missing",
-      "september: exact source SHA-256 missing",
       "september: source attribution and documented rights basis missing",
       "september: independent adjudication missing"
     ]
@@ -47,9 +42,7 @@
     "complete": false,
     "issues": [
       "exact 40-character producer revision missing",
-      "prediction capture timestamp missing or invalid",
-      "another-one-bites-the-dust: prediction source SHA-256 missing",
-      "september: prediction source SHA-256 missing"
+      "prediction capture timestamp missing or invalid"
     ]
   },
   "thresholds": {

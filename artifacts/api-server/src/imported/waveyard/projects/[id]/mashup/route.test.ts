@@ -758,7 +758,18 @@ test(
           rankableDonorPassageCount: number;
           selectedDonorSectionId: string | null;
           selectedBedSectionId: string | null;
-          evaluations: Array<{ donorSectionId: string; status: string; selected: boolean }>;
+          evaluations: Array<{
+            donorSectionId: string;
+            status: string;
+            selected: boolean;
+            rankedBedCandidates?: Array<{
+              rank: number;
+              bedSourceSha256: string | null;
+              bedSectionId: string;
+              relativeScore: number;
+              selected: boolean;
+            }>;
+          }>;
         };
       };
       bed?: { source: string; warning: string };
@@ -896,6 +907,37 @@ test(
           planBody.plan.passageSearch.evaluatedDonorPassageCount,
           "every voice-bearing donor section must have an explicit outcome, not only the selected passage",
         );
+        const rankedPassages = planBody.plan.passageSearch.evaluations.filter(
+          (evaluation) => (evaluation.rankedBedCandidates?.length ?? 0) > 0,
+        );
+        assert.ok(rankedPassages.length > 0,
+          "the production API must expose the feasible bed rankings used by the whole-track evaluation");
+        for (const evaluation of rankedPassages) {
+          const rankedCandidates = evaluation.rankedBedCandidates!;
+          assert.deepEqual(
+            rankedCandidates.map((candidate) => candidate.rank),
+            rankedCandidates.map((_, index) => index + 1),
+            "the full feasible candidate ranking must survive production serialization in consecutive order",
+          );
+          assert.equal(
+            rankedCandidates.filter((candidate) => candidate.selected).length,
+            1,
+            "each ranked donor passage must identify exactly one candidate selected by the existing planner",
+          );
+          assert.equal(
+            rankedCandidates[0]?.selected,
+            true,
+            "the selected candidate must remain first without rescoring or reordering the rest");
+          assert.ok(
+            rankedCandidates.every(
+              (candidate) =>
+                /^[a-f0-9]{64}$/i.test(candidate.bedSourceSha256 ?? "")
+                && candidate.bedSectionId.length > 0
+                && Number.isFinite(candidate.relativeScore),
+            ),
+            "every ranked candidate must retain source identity, passage identity and its measured score",
+          );
+        }
         const passageDecision = planBody.plan.rationale.find((line) =>
           line.includes("aligned voice-bearing donor section")
           || line.includes("no voice-bearing donor passage"),
