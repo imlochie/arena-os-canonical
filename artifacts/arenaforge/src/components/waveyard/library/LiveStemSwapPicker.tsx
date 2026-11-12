@@ -91,11 +91,13 @@ function TempoCorrectionControl({
   return (
     <details
       className="wy-tempo-correction"
-      open={hasManualTempo || uncertain}
+      open={hasManualTempo}
       data-testid={`tempo-correction-${trackId}`}
     >
       <summary>
-        {hasManualTempo ? `Manual BPM · ${correctedBpm} · edit` : uncertain ? "Tempo uncertain · correct BPM" : "Correct BPM"}
+        {hasManualTempo
+          ? `Manual BPM · ${correctedBpm} · edit`
+          : `${trackTitle} · ${uncertain ? "tempo uncertain" : "correct BPM"}`}
       </summary>
       <div className="wy-tempo-correction-controls">
         <label>
@@ -455,17 +457,14 @@ export default function LiveStemSwapPicker({
             </div>
             <button type="button" className="wy-swap-close" aria-label="Close source picker" onClick={closeAndReturnFocus}>×</button>
           </header>
-          <div className="wy-swap-current-tempo">
-            <strong>Current track: {currentTrackTitle}</strong>
-            <TempoCorrectionControl
-              trackId={currentTrackId}
-              trackTitle={currentTrackTitle}
-              automaticBpm={currentAutomaticBpm}
-              correctedBpm={currentTempoCorrected ? currentBpm : null}
-              confidence={currentTempoCorrected ? 1 : currentBpmConfidence}
-              onApply={onTempoCorrection}
-            />
-          </div>
+          <TempoCorrectionControl
+            trackId={currentTrackId}
+            trackTitle={`Current track · ${currentTrackTitle}`}
+            automaticBpm={currentAutomaticBpm}
+            correctedBpm={currentTempoCorrected ? currentBpm : null}
+            confidence={currentTempoCorrected ? 1 : currentBpmConfidence}
+            onApply={onTempoCorrection}
+          />
           {selectedDonorId && (
             <div className="wy-swap-original-row">
               <span>Using {selectedDonorTitle ?? "another source"}</span>
