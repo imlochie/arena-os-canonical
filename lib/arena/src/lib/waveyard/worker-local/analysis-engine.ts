@@ -747,6 +747,108 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
   return frames;
 }
 
+export type LocalVocalActivityInterval = { startMs: number; endMs: number; confidence: number };
+
+/**
+ * Finds coarse activity passages from the isolated vocal stem independently
+ * of monophonic pitch. Adaptive hysteresis handles speech, breathy/unvoiced
+ * consonants, and separated vocals that do not produce a stable YIN pitch.
+ * These are activity intervals, not word or lyric boundaries.
+ */
+export function detectVocalActivityIntervals(
+  pcm: Float32Array,
+  pitchFrames: readonly LocalVocalPitchFrame[] = [],
+): LocalVocalActivityInterval[] {
+  const windowSamples = Math.round(ANALYSIS_PCM_RATE * 0.03);
+  const hopSamples = Math.round(ANALYSIS_PCM_RATE * 0.01);
+  const minimumDurationMs = 120;
+  const silenceGapMs = 260;
+  if (pcm.length < windowSamples || pcm.some((sample) => !Number.isFinite(sample))) return [];
+
+  const energyFrames: Array<{ startMs: number; endMs: number; levelDb: number }> = [];
+  for (let startSample = 0; startSample + windowSamples <= pcm.length; startSample += hopSamples) {
+    let squaredEnergy = 0;
+    for (let sampleIndex = startSample; sampleIndex < startSample + windowSamples; sampleIndex += 1) {
+      const sample = pcm[sampleIndex]!;
+      squaredEnergy += sample * sample;
+    }
+    const rms = Math.sqrt(squaredEnergy / windowSamples);
+    energyFrames.push({
+      startMs: Math.round(startSample * 1000 / ANALYSIS_PCM_RATE),
+      endMs: Math.round((startSample + windowSamples) * 1000 / ANALYSIS_PCM_RATE),
+      levelDb: 20 * Math.log10(Math.max(rms, 1e-6)),
+    });
+  }
+  if (energyFrames.length < 10) return [];
+
+  const sortedLevels = energyFrames.map((frame) => frame.levelDb).sort((left, right) => left - right);
+  const percentile = (fraction: number) => sortedLevels[Math.floor((sortedLevels.length - 1) * fraction)]!;
+  const noiseFloorDb = percentile(0.2);
+  const activeReferenceDb = percentile(0.75);
+  const dynamicRangeDb = activeReferenceDb - noiseFloorDb;
+  if (!Number.isFinite(dynamicRangeDb) || dynamicRangeDb < 12) return [];
+
+  const openThresholdDb = noiseFloorDb + dynamicRangeDb * 0.62;
+  const closeThresholdDb = noiseFloorDb + dynamicRangeDb * 0.4;
+  const rawIntervals: Array<{ startMs: number; endMs: number }> = [];
+  let startMs: number | null = null;
+  let lastActiveEndMs = 0;
+  const finish = () => {
+    if (startMs !== null && lastActiveEndMs > startMs) rawIntervals.push({ startMs, endMs: lastActiveEndMs });
+    startMs = null;
+    lastActiveEndMs = 0;
+  };
+
+  for (const frame of energyFrames) {
+    if (startMs === null) {
+      if (frame.levelDb >= openThresholdDb) {
+        startMs = frame.startMs;
+        lastActiveEndMs = frame.endMs;
+      }
+      continue;
+    }
+    if (frame.levelDb >= closeThresholdDb) lastActiveEndMs = frame.endMs;
+    else finish();
+  }
+  finish();
+
+  const mergedIntervals: Array<{ startMs: number; endMs: number }> = [];
+  for (const interval of rawIntervals) {
+    const previous = mergedIntervals.at(-1);
+    if (previous && interval.startMs - previous.endMs <= silenceGapMs) {
+      previous.endMs = interval.endMs;
+    } else if (interval.endMs - interval.startMs >= minimumDurationMs) {
+      mergedIntervals.push({ ...interval });
+    }
+  }
+
+  const roundedDurationMs = Math.floor(pcm.length * 1000 / ANALYSIS_PCM_RATE);
+  return mergedIntervals
+    .map((interval) => {
+      const start = Math.max(0, Math.min(roundedDurationMs, interval.startMs));
+      const end = Math.max(start, Math.min(roundedDurationMs, interval.endMs));
+      const voicedFrames = pitchFrames.filter((frame) =>
+        frame.voiced && frame.timestampMs >= start && frame.timestampMs <= end);
+      const expectedFrameCount = Math.max(1, Math.ceil((end - start) / 30));
+      const pitchSupport = Math.min(1, voicedFrames.length / expectedFrameCount);
+      const activeLevels = energyFrames
+        .filter((frame) => frame.endMs > start && frame.startMs < end && frame.levelDb >= closeThresholdDb)
+        .map((frame) => frame.levelDb);
+      const meanActiveDb = activeLevels.length
+        ? activeLevels.reduce((total, level) => total + level, 0) / activeLevels.length
+        : openThresholdDb;
+      const contrast = Math.max(0, Math.min(1,
+        (meanActiveDb - noiseFloorDb) / Math.max(12, dynamicRangeDb)));
+      const confidence = Math.max(0, Math.min(0.9, 0.52 + 0.23 * contrast + 0.15 * pitchSupport));
+      return {
+        startMs: start,
+        endMs: end,
+        confidence: Math.round(confidence * 1000) / 1000,
+      };
+    })
+    .filter((interval) => interval.endMs - interval.startMs >= minimumDurationMs);
+}
+
 /** Beat positions are canonical source milliseconds and must be strictly ordered. (worker port) */
 export function normaliseBeatGrid(value: unknown, durationSeconds: number): number[] | null {
   if (value === null || value === undefined) return null;
