@@ -6,6 +6,10 @@ import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runAutomaticFadeAcceptance, runLoudAutomaticFadeAcceptance } from "./waveyard-auto-fades.mjs";
+import {
+  assertLiveStemTimingBudget,
+  LIVE_STEM_TIMING_SAMPLE_COUNT,
+} from "./waveyard-live-stem-timing-budget.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
 const mashupEvaluationOnly = process.argv.includes("--mashup-evaluation-only");
 const mashupManifestPath = process.env.WAVEYARD_MASHUP_MANIFEST?.trim();
@@ -2214,12 +2218,25 @@ try {
     ignoreSessionStateWrites = true;
     const timings = {};
     const scenarios = [
-      { name: "nativeTempo", donorId: "c", ratio: 1 },
-      { name: "tempoMatched", donorId: "b", ratio: 124 / 120 },
+      ...Array.from({ length: LIVE_STEM_TIMING_SAMPLE_COUNT }, (_, index) => ({
+        name: "nativeTempo",
+        sampleIndex: index + 1,
+        donorId: "c",
+        ratio: 1,
+      })),
+      ...Array.from({ length: LIVE_STEM_TIMING_SAMPLE_COUNT }, (_, index) => ({
+        name: "tempoMatched",
+        sampleIndex: index + 1,
+        donorId: "b",
+        ratio: 124 / 120,
+      })),
       { name: "delayedDownload", donorId: "d", ratio: 1, delayMs: 450 },
     ];
 
     for (const scenario of scenarios) {
+      const scenarioLabel = scenario.sampleIndex
+        ? `${scenario.name} sample ${scenario.sampleIndex}/${LIVE_STEM_TIMING_SAMPLE_COUNT}`
+        : scenario.name;
       // Unmount the previous session before resetting its server fixture. This
       // makes the scenario boundary deterministic even when WebKit's unload
       // keepalive request is scheduled late.
@@ -2238,7 +2255,7 @@ try {
       } catch (error) {
         const state = await page.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')]
           .map(element => ({ readyState: element.readyState, networkState: element.networkState, src: element.src, error: element.error?.code ?? null }))).catch(() => "page unavailable");
-        console.error(`TIMING_SETUP_AUDIO_STATE ${scenario.name} ${JSON.stringify(state)}`);
+        console.error(`TIMING_SETUP_AUDIO_STATE ${scenarioLabel} ${JSON.stringify(state)}`);
         throw error;
       }
       const deck = page.locator('[data-role="current"]');
@@ -2313,7 +2330,7 @@ try {
             outputLatency: target?.outputLatency ?? null,
           };
         }).catch(() => 'page unavailable');
-        console.error(`TIMING_SETUP_ERRORS ${scenario.name} ${JSON.stringify(head)}`);
+        console.error(`TIMING_SETUP_ERRORS ${scenarioLabel} ${JSON.stringify(head)}`);
         const state = await page.evaluate(() => {
           const audio = [...document.querySelectorAll('[data-role="current"] audio')];
           const probe = window.audioProbe;
@@ -2360,7 +2377,7 @@ try {
             })),
           };
         }).catch(() => 'page unavailable');
-        console.error(`TIMING_SETUP_PLAY_STATE ${scenario.name} ${JSON.stringify(state)}`);
+        console.error(`TIMING_SETUP_PLAY_STATE ${scenarioLabel} ${JSON.stringify(state)}`);
         throw error;
       }
       await deck.getByTestId("open-live-swap-vocals").click();
@@ -2386,10 +2403,10 @@ try {
       const swapSaveResponse = await swapSave;
       if (!swapSaveResponse.ok()) {
         const body = await swapSaveResponse.text().catch(() => "<unreadable>");
-        throw new Error(`${engineName} ${scenario.name} swap save failed (${swapSaveResponse.status()}): ${body.slice(0, 240)}`);
+        throw new Error(`${engineName} ${scenarioLabel} swap save failed (${swapSaveResponse.status()}): ${body.slice(0, 240)}`);
       }
       assert.equal(session.currentSessionTrackId, "a",
-        `${engineName} ${scenario.name} keeps the intended recipient while the donor loads`);
+        `${engineName} ${scenarioLabel} keeps the intended recipient while the donor loads`);
       try {
         try {
           await page.waitForFunction(({ bufferCount }) => {
@@ -2441,7 +2458,7 @@ try {
               liveStemTimingsAdded: (window.liveStemTimings?.length ?? 0) - timingCount,
             };
           }, { bufferCount: before.buffers, timingCount: before.timings }).catch(() => "page unavailable");
-          console.error(`LIVE_STEM_ASSET_TRACE ${scenario.name} ${JSON.stringify({
+          console.error(`LIVE_STEM_ASSET_TRACE ${scenarioLabel} ${JSON.stringify({
             donor: scenario.donorId,
             fixtureTracks: session.tracks.map(item => ({ id: item.id, durationSeconds: item.track.durationSeconds })),
             serverCurrentTrackId: session.currentSessionTrackId,
@@ -2449,7 +2466,7 @@ try {
             swapRequestOrder: liveSwapRequestOrder.slice(-12),
             savedSwaps: session.swaps.map(({ sessionTrackId, stemType, toTrackId, toStemAssetId }) => ({ sessionTrackId, stemType, toTrackId, toStemAssetId })),
           })}`);
-          console.error(`LIVE_STEM_AUDIBILITY_TIMEOUT ${engineName} ${scenario.name} ${JSON.stringify(state)}`);
+          console.error(`LIVE_STEM_AUDIBILITY_TIMEOUT ${engineName} ${scenarioLabel} ${JSON.stringify(state)}`);
           throw error;
         }
         await page.waitForFunction(timingCount => window.liveStemTimings.length > timingCount,
@@ -2466,7 +2483,7 @@ try {
         };
       }, { timingIndex: before.timings });
       assert.equal(measurement.tempoStretchRatio, scenario.ratio,
-        `${engineName} ${scenario.name} must use the intended tempo mode: ${JSON.stringify(measurement)}`);
+        `${engineName} ${scenarioLabel} must use the intended tempo mode: ${JSON.stringify(measurement)}`);
       for (const field of ["selectionToAudibleMs", "observedSelectionToAudibleMs", "downloadMs", "decodeMs", "tempoMatchMs"]) {
         assert.ok(Number.isFinite(measurement[field]) && measurement[field] >= 0,
           `${engineName} timing must report a finite ${field}: ${JSON.stringify(measurement)}`);
@@ -2483,7 +2500,8 @@ try {
         assert.ok(measurement.downloadMs >= scenario.delayMs,
           `${engineName} download timing must include the injected ${scenario.delayMs}ms response delay: ${JSON.stringify(measurement)}`);
       }
-      timings[scenario.name] = measurement;
+      timings[scenario.name] ??= [];
+      timings[scenario.name].push(measurement);
 
       const restore = deck.getByTestId("restore-live-swap-vocals");
       try {
@@ -2508,7 +2526,7 @@ try {
             timings: window.liveStemTimings?.length ?? null,
           };
         }).catch(() => "page unavailable");
-        console.error(`RESTORE_CONTROL_MISSING ${scenario.name} ${JSON.stringify(state)}`);
+        console.error(`RESTORE_CONTROL_MISSING ${scenarioLabel} ${JSON.stringify(state)}`);
         throw error;
       }
       // Playwright reports "not stable" / "detached" when a control keeps
@@ -2541,7 +2559,7 @@ try {
         await restore.click();
       } catch (error) {
         const probe = await page.evaluate(() => window.restoreButtonProbe).catch(() => "page unavailable");
-        console.error(`RESTORE_CLICK_FAILED ${scenario.name} ${JSON.stringify(probe)}`);
+        console.error(`RESTORE_CLICK_FAILED ${scenarioLabel} ${JSON.stringify(probe)}`);
         throw error;
       }
       await page.waitForFunction(() => {
@@ -2549,7 +2567,8 @@ try {
         return source?.inputNode?.gain?.value > 0.9;
       });
     }
-    console.log("LIVE_STEM_SWAP_TIMINGS", JSON.stringify({ browserEngine: engineName, timings }));
+    const latencyBudget = assertLiveStemTimingBudget(engineName, timings);
+    console.log("LIVE_STEM_SWAP_TIMINGS", JSON.stringify({ browserEngine: engineName, timings, latencyBudget }));
     console.log(`PASS: ${engineName} native-tempo, tempo-matched, and injected-delay live stem timings`);
   } else if (process.argv.includes("--live-stem-device-benchmark-only")) {
     // This is a functional check of the real-device harness in a simulated

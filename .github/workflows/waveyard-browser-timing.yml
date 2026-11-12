@@ -98,6 +98,9 @@ jobs:
           sudo modprobe snd-aloop 2>/dev/null && report "snd-aloop loaded" \
             || report "snd-aloop unavailable (expected on a nested-virt runner); relying on the Pulse null sink"
 
+      - name: Verify live-swap latency budget noise handling
+        run: node --test scripts/waveyard-live-stem-timing-budget.test.mjs
+
       - name: Run cross-browser live-stem timing matrix
         env:
           WAVEYARD_REQUIRE_BROWSER_ENGINES: "1"

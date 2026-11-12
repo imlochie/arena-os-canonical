@@ -1573,6 +1573,29 @@ not.
 unchanged; the failure moved from "some engine times out" to "all three engines
 pass".
 
+**Latency regression gate.** Each browser now records five independent
+native-tempo and five tempo-matched swaps. The gate uses the median of the
+browser-observed selection-to-audible timings, so one or two scheduler spikes do
+not fail CI; three slow samples do. The 450 ms delayed-download case remains a
+separate functional check and is intentionally excluded from the latency budget.
+
+The limits are deliberately above the observed normal range, with additional
+room for runner noise:
+
+| Browser engine | Native-tempo median | Tempo-matched median |
+|---|---:|---:|
+| Chromium | 900 ms | 1,200 ms |
+| WebKit | 750 ms | 1,200 ms |
+| Firefox | 600 ms | 900 ms |
+
+These are Linux CI guardrails, not claims about hardware latency. In eight
+successful recent runs before repeated sampling was added, the observed medians
+were 190/479 ms for Chromium, 180/445 ms for WebKit, and 92/296 ms for Firefox
+(native/tempo-matched). One Chromium native-tempo run had a 1,469 ms sample;
+median-of-five is specifically intended to tolerate isolated runner stalls
+while still failing when the majority of swaps slow down. Pure budget tests
+cover both that noise case and an injected sustained slowdown.
+
 ### Why the cause is not being quoted from CI logs
 
 Job logs are unreachable from the environment this work ran in:
