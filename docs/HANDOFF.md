@@ -22,7 +22,12 @@
   25 and 34 source-bound structural sections, 24 and 33 internal boundary
   timestamps, 89 pitch-continuity runs for the donor, and all 17 donor windows
   with feasible ranked bed candidates. Prediction provenance validates for
-  producer revision `d92d676f5f964f15da738ad0792aec2d1db6ab7f`. The 89 runs are
+  producer revision `5699f22100c3128cfdb30019b0aa69751c4edf72`. Section analysis
+  now clamps its final persisted windows to decoded PCM length instead of the
+  source table's rounded whole-second duration: the two latest captures end at
+  222,673 ms versus 222,670 ms metadata and 215,137 ms versus 215,140 ms.
+  This fixes trailing-window overrun only; it does not improve the 6/18
+  exploratory internal-boundary comparison. The 89 runs are
   not words, syllables, or lyric meanings; the bed track has no pitch-continuity
   analysis in this route direction. The captured report
   `generated-artifacts/waveyard-real-world-acceptance/owner-review-pending-report-v2.json`
@@ -32,6 +37,12 @@
   found nearest structural boundaries within 2 seconds for 6/18 and within 1
   second for 1/18. This is not a formal accuracy score or evidence of semantic
   section recognition.
+  Production-code inspection confirms these are not semantic section
+  predictions: candidate boundaries are local onset-envelope peaks at
+  four-beat bar positions, and repeated 2/4/8-bar patterns split the windows.
+  The 6/18 comparison therefore cannot distinguish missed song-form changes
+  from different structural events. No thresholds were changed to fit these
+  notes; independent section annotations are still required before tuning.
 * **Additional regression coverage:** the production route test now requires
   full feasible candidate rankings to survive API serialization, in consecutive
   rank order, with the selected candidate first and source-bound passage IDs. A
@@ -43,7 +54,7 @@
   checks evidence transport only; it does not change candidate scoring or
   selection. Do not provide the repository, handoff, or report to blind
   annotators until their independent labels are locked.
-* **Verification:** evaluator tests 11/11, Waveyard planner tests 24/24, real production route acceptance 1/1, API and library typechecks, `git diff --check`, and Prettier checks on the evaluation files passed.
+* **Verification:** ground-truth evaluator tests 11/11, source-section tests 9/9, local section-rhythm tests 10/10, real production route acceptance 1/1, API TypeScript typecheck, `git diff --check`, and Prettier checks on the evaluation files passed.
 * **Next:** establish review authorization, obtain and lock two independent blind section reviews, and adjudicate disagreements. The owner has supplied first-pass listening notes in chat; they are not a second review or a committed annotation file. The vocal detector produces pitch-continuity intervals, not lyric phrases, so do not claim lyric-timing accuracy from the 89 predictions.
 
 ## Current verification update — 2026-11-12, whole-track passage search

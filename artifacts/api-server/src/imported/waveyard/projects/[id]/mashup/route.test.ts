@@ -1728,15 +1728,11 @@ test(
             predictionSnapshot.recordings,
           )) {
             assert.ok(
-              recording.sections.every((section, index, sections) => {
-                const allowedPaddingMs =
-                  index === sections.length - 1 ? 250 : 50;
-                return (
-                  section.endMs <=
-                  recording.sourceDurationMs + allowedPaddingMs
-                );
-              }),
-              "only the final bar-aligned structural section may exceed source duration, by at most 250 ms",
+              recording.sections.every(
+                (section) =>
+                  section.endMs <= recording.sourceDurationMs + 50,
+              ),
+              "persisted structural sections must end within 50 ms of source duration metadata",
             );
           }
           assert.equal(
