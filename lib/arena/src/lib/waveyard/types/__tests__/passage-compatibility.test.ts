@@ -88,6 +88,29 @@ test("fingerprint parser binds every persisted feature to its exact source passa
   assert.equal(parsePassageFingerprint({ ...value, stemActivity: { status: "measured", value: [{ stemType: "vocals", sectionRmsDb: -10 }], method: "bad", confidence: null } }), null);
 });
 
+test("fingerprint parser validates checksum-bound rolling beat windows and keeps old fingerprints readable", () => {
+  const legacy = fingerprint("sha-a");
+  assert.deepEqual(parsePassageFingerprint(legacy), legacy, "pre-rolling persisted fingerprints remain readable");
+  const rolling = fingerprint("sha-a", 0, 16, {
+    rollingWindows: measured([{
+      startBeatIndex: 4,
+      endBeatIndex: 12,
+      rhythm: measured(Array.from({ length: 32 }, (_, index) => index % 4 === 0 ? 1 : 0)),
+      chroma: measured(Array.from({ length: 48 }, (_, index) => index % 12 === 0 ? 1 : -1 / 11)),
+      beatPhase: measured({ subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 }),
+    }]),
+  });
+  assert.deepEqual(parsePassageFingerprint(rolling), rolling);
+  const invalid = {
+    ...rolling,
+    rollingWindows: measured([{
+      ...rolling.rollingWindows!.value[0]!,
+      rhythm: measured([1, 0]),
+    }]),
+  };
+  assert.equal(parsePassageFingerprint(invalid), null, "malformed local vectors are rejected rather than treated as evidence");
+});
+
 test("per-stem shifts are visible as context but never decide cross-song eligibility", () => {
   const stemActivity = {
     status: "measured" as const,

@@ -135,6 +135,38 @@ export type ChopDetection = {
   score: number;
 };
 
+/**
+ * Keep the highest-scoring take for each available pitch class before filling
+ * the remaining slots by score. This gives a sampler useful note choices
+ * without pretending a lower-ranked take is higher quality.
+ */
+export function diversifyChopDetections(
+  detections: readonly ChopDetection[],
+  maxChops = 12,
+): ChopDetection[] {
+  if (!Number.isSafeInteger(maxChops) || maxChops <= 0) return [];
+  const ranked = [...detections].sort((left, right) => right.score - left.score);
+  const selected: ChopDetection[] = [];
+  const selectedSet = new Set<ChopDetection>();
+  const pitchClasses = new Set<number>();
+
+  for (const detection of ranked) {
+    const pitchClass = ((Math.round(detection.rootMidi) % 12) + 12) % 12;
+    if (pitchClasses.has(pitchClass)) continue;
+    selected.push(detection);
+    selectedSet.add(detection);
+    pitchClasses.add(pitchClass);
+    if (selected.length >= maxChops) return selected.sort((left, right) => right.score - left.score);
+  }
+
+  for (const detection of ranked) {
+    if (selectedSet.has(detection)) continue;
+    selected.push(detection);
+    if (selected.length >= maxChops) break;
+  }
+  return selected.sort((left, right) => right.score - left.score);
+}
+
 /** A decoded PCM buffer (interleaved, any channel count). */
 export type PcmBuffer = {
   samples: Float32Array;
@@ -434,8 +466,7 @@ export function detectVocalChops(buffer: PcmBuffer, options: ChopScanOptions = {
     });
   }
 
-  detections.sort((left, right) => right.score - left.score);
-  return detections.slice(0, maxChops);
+  return diversifyChopDetections(detections, maxChops);
 }
 
 export type ExtractedChop = {

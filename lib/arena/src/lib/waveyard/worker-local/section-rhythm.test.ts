@@ -110,6 +110,15 @@ test("passage fingerprint persists measured source features and marks unsupporte
   assert.equal(fingerprint.downbeatConfidence.status, "unavailable");
   assert.equal(fingerprint.vocalActivity.status, "unavailable");
   assert.equal(fingerprint.instrumentalDensity.status, "unavailable");
+  assert.equal(fingerprint.rollingWindows?.status, "measured");
+  if (fingerprint.rollingWindows?.status === "measured") {
+    assert.deepEqual(fingerprint.rollingWindows.value.map((window) => window.startBeatIndex), [0, 4, 8]);
+    assert.ok(fingerprint.rollingWindows.value.every((window) =>
+      window.endBeatIndex - window.startBeatIndex === 8
+      && window.rhythm.status === "measured"
+      && window.chroma.status === "measured",
+    ));
+  }
   assert.deepEqual(parsePassageFingerprint(fingerprint, {
     sourceChecksumSha256: "a".repeat(64),
     startBeatIndex: 0,
@@ -279,6 +288,14 @@ test("per-stem PCM adds a boundary only for a sustained activity change, not a o
   const candidatesWithStemEvidence = desktopSectionCandidates(longGrid, envelope, frameMs, sourcePcm, [], changes);
   assert.equal(candidatesWithStemEvidence?.find((candidate) => candidate.startBeatIndex === 16)?.label, "stem-change");
   assert.ok(candidatesWithStemEvidence?.some((candidate) => candidate.startBeatIndex === 0));
+  const overlappingRepeat = desktopSectionCandidates(longGrid, envelope, frameMs, sourcePcm, [{
+    startBeatIndex: 12,
+    endBeatIndex: 20,
+    label: "pattern-repeat-test",
+    labelConfidence: 0.97,
+  }], changes);
+  assert.equal(overlappingRepeat?.find((candidate) => candidate.startBeatIndex === 16)?.label, "stem-change");
+  assert.ok(overlappingRepeat?.some((candidate) => candidate.endBeatIndex === 16));
 
   const transient = new Float32Array(ANALYSIS_PCM_RATE * 32);
   for (let sample = 0; sample < transient.length; sample += 1) {

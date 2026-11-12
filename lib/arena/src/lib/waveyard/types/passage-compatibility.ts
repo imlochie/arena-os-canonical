@@ -14,6 +14,15 @@ export type PassageStemActivity = {
   boundaryChanges: { beatIndex: number; deltaDb: number }[];
 };
 
+/** Local measured signatures used to compare phrase-sized windows inside longer passages. */
+export type PassageRollingWindow = {
+  startBeatIndex: number;
+  endBeatIndex: number;
+  rhythm: PassageEvidence<number[]>;
+  chroma: PassageEvidence<number[]>;
+  beatPhase: PassageEvidence<{ subdivisionProfile: number[]; beatPeriodMs: number }>;
+};
+
 export type PassageEvidence<T> =
   | { status: "measured"; value: T; method: string; confidence: number | null }
   | { status: "unavailable"; reason: string };
@@ -41,6 +50,8 @@ export type PassageFingerprint = {
   instrumentalDensity: PassageEvidence<{ activeCoverage: number; stemTypes: string[]; analysisIds: string[] }>;
   /** Per-stem PCM evidence; this is structural context, not semantic form. */
   stemActivity: PassageEvidence<PassageStemActivity[]>;
+  /** Optional for older persisted fingerprints; current analyses store local rolling windows. */
+  rollingWindows?: PassageEvidence<PassageRollingWindow[]>;
 };
 
 export type PassageCompatibilityDimension = {
@@ -114,6 +125,48 @@ export function parsePassageFingerprint(
     return profile && typeof item.beatPeriodMs === "number" && Number.isFinite(item.beatPeriodMs) && item.beatPeriodMs > 0
       ? { subdivisionProfile: profile, beatPeriodMs: item.beatPeriodMs } : null;
   });
+  const rollingWindows = value.rollingWindows === undefined
+    ? undefined
+    : parseEvidence(value.rollingWindows, (raw) => {
+      if (!Array.isArray(raw) || raw.length > 256) return null;
+      const windows: PassageRollingWindow[] = [];
+      let previousStart = -1;
+      for (const entry of raw) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+        const item = entry as Record<string, unknown>;
+        if (!Number.isInteger(item.startBeatIndex) || !Number.isInteger(item.endBeatIndex)
+          || (item.startBeatIndex as number) < (value.startBeatIndex as number)
+          || (item.endBeatIndex as number) > (value.endBeatIndex as number)
+          || (item.startBeatIndex as number) < previousStart
+          || (item.endBeatIndex as number) - (item.startBeatIndex as number) < 8
+          || ((item.endBeatIndex as number) - (item.startBeatIndex as number)) % 4 !== 0) return null;
+        const beats = (item.endBeatIndex as number) - (item.startBeatIndex as number);
+        const rhythm = parseEvidence(item.rhythm, (vector) =>
+          Array.isArray(vector) && vector.length === beats * 4 && vector.length <= 128
+            && vector.every((sample) => typeof sample === "number" && Number.isFinite(sample))
+            ? vector as number[] : null);
+        const chroma = parseEvidence(item.chroma, (vector) => numericArray(vector, 48, 48));
+        const phase = parseEvidence(item.beatPhase, (vector) => {
+          if (!vector || typeof vector !== "object" || Array.isArray(vector)) return null;
+          const phaseValue = vector as Record<string, unknown>;
+          const profile = numericArray(phaseValue.subdivisionProfile, 4, 4);
+          return profile && typeof phaseValue.beatPeriodMs === "number"
+            && Number.isFinite(phaseValue.beatPeriodMs) && phaseValue.beatPeriodMs > 0
+            ? { subdivisionProfile: profile, beatPeriodMs: phaseValue.beatPeriodMs }
+            : null;
+        });
+        if (!rhythm || !chroma || !phase) return null;
+        windows.push({
+          startBeatIndex: item.startBeatIndex as number,
+          endBeatIndex: item.endBeatIndex as number,
+          rhythm,
+          chroma,
+          beatPhase: phase,
+        });
+        previousStart = item.startBeatIndex as number;
+      }
+      return windows;
+    });
   const energy = parseEvidence(value.energy, (raw) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const rmsDb = (raw as Record<string, unknown>).rmsDb;
@@ -194,7 +247,8 @@ export function parsePassageFingerprint(
     return measurements;
   });
   const downbeatConfidence = parseEvidence(value.downbeatConfidence, scalar);
-  if (!rhythm || !chroma || !beatPhase || !energy || !vocalActivity || !instrumentalDensity || !downbeatConfidence || !stemActivity) return null;
+  if (!rhythm || !chroma || !beatPhase || !energy || !vocalActivity || !instrumentalDensity || !downbeatConfidence || !stemActivity
+    || (value.rollingWindows !== undefined && !rollingWindows)) return null;
   return {
     schemaVersion: 2,
     engine: PASSAGE_FINGERPRINT_ENGINE,
@@ -203,6 +257,7 @@ export function parsePassageFingerprint(
     startBeatIndex: value.startBeatIndex as number,
     endBeatIndex: value.endBeatIndex as number,
     rhythm, chroma, beatPhase, energy, downbeatConfidence, vocalActivity, instrumentalDensity, stemActivity,
+    ...(rollingWindows ? { rollingWindows } : {}),
   };
 }
 

@@ -1,5 +1,44 @@
 # Arena handoff — read this first
 
+## Current implementation — rolling mashup windows and pitch-aware chops
+
+* **Passage evidence:** current source analysis persists checksum-bound local
+  eight-beat rhythm, chroma, and beat-phase windows every four beats across
+  longer passages (up to 256 windows per passage). Legacy fingerprints without
+  this optional field remain readable. A desktop database round-trip test now
+  verifies that these windows survive persistence and reload.
+* **Mashup selection:** when both sources have valid local windows and measured
+  beat grids, the planner compares voiced-activity windows against candidate
+  backing windows throughout the full section instead of only comparing one
+  whole-section summary. It samples bounded candidate sets, still uses the
+  existing measured rhythm/harmony/phase/tempo evidence, and keeps the safe
+  fallback when local evidence is missing. The selected local match changes
+  alignment, not the full vocal recording; this is not word-level lyric timing
+  or a semantic verse/chorus classifier.
+* **Beat tracking:** the local beat-grid estimator now phase-locks against the
+  opening attacks, corrects gradual drift from measured local attacks, and
+  bounds each correction. Synthetic gradual-drift coverage passes. This is not
+  yet a real-song beat-accuracy benchmark.
+* **Stem-boundary precedence:** repeat-pattern labels can no longer swallow a
+  checksum-verified sustained stem-activity boundary. The persisted worker test
+  confirms the boundary and its source-linked evidence survive the database
+  route.
+* **Sampler controls:** the vocal-chop panel now offers pitch-class and
+  estimated-key filters, prefers a diverse set of detected notes, and exposes
+  Chopped, Chipmunk (+octave), and Screwed (−octave) sequencing styles instead
+  of always sending the same default style.
+* **Verification:** 99 focused tests passed across beat analysis (18), section
+  structure (12), mashup planning/rendering (26), fingerprint parsing (11),
+  persisted fingerprint round-trip (1), persisted stem-activity workflow (5),
+  vocal chops (16), and the soul-chef sequencer (10). Workspace typecheck and
+  `git diff --check` passed.
+* **Not proven:** no independent word/phrase transcription, human annotation
+  accuracy, real rendered two-song listening evaluation, or listener-rated
+  mashup quality was performed in this change. The new ranking is measured
+  relative evidence, not proof that the generated mashup sounds good. Continue
+  with local vocal phrase timing and a real full-length rendered-mix acceptance
+  before claiming intelligent mashups.
+
 ## Current verification — AAC/M4A library import
 
 * **Acceptance command:** `WAVEYARD_RUN_REAL_LIBRARY_M4A=1 pnpm --filter @workspace/scripts exec node --import tsx --test --test-isolation=none "$(pwd)/lib/arena/src/lib/waveyard/library/service.test.ts"`.

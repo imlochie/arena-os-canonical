@@ -23,6 +23,7 @@ import {
   PASSAGE_FINGERPRINT_ENGINE,
   PASSAGE_FINGERPRINT_ENGINE_VERSION,
   unavailablePassageEvidence,
+  type PassageRollingWindow,
   type PassageFingerprint,
 } from "../types/passage-compatibility";
 
@@ -51,6 +52,7 @@ function passageFingerprint(
   endBeatIndex: number,
   kind: "compatible" | "different" | "near" = "compatible",
   beatPeriodMs = 500,
+  rollingWindows?: PassageRollingWindow[],
 ): PassageFingerprint {
   const compatible = kind === "compatible";
   const measure = <T>(value: T) => ({ status: "measured" as const, value, method: "fixture", confidence: 0.95 });
@@ -77,6 +79,20 @@ function passageFingerprint(
     vocalActivity: unavailablePassageEvidence("not available in this fixture"),
     instrumentalDensity: unavailablePassageEvidence("not available in this fixture"),
     stemActivity: unavailablePassageEvidence("not available in this fixture"),
+    ...(rollingWindows
+      ? { rollingWindows: measure(rollingWindows) }
+      : {}),
+  };
+}
+
+function rollingWindow(startBeatIndex: number, endBeatIndex: number, kind: "compatible" | "different" = "compatible"): PassageRollingWindow {
+  const fingerprint = passageFingerprint("r".repeat(64), startBeatIndex, endBeatIndex, kind);
+  return {
+    startBeatIndex,
+    endBeatIndex,
+    rhythm: fingerprint.rhythm,
+    chroma: fingerprint.chroma,
+    beatPhase: fingerprint.beatPhase,
   };
 }
 
@@ -647,6 +663,74 @@ test("plan: evaluates every full-track vocal passage and can select a later repe
   assert.ok(result.plan.warnings.some((warning) =>
     warning.includes("not calibrated or listener-validated"),
   ), "a relative structural rank is not presented as proven arrangement quality");
+});
+
+test("plan: compares a voiced-activity window with a later beat-window inside a longer bed section", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const donorSectionFingerprint = passageFingerprint(checksumDonor, 0, 16, "different", 500, [
+    rollingWindow(0, 8, "different"),
+    rollingWindow(4, 12, "compatible"),
+    rollingWindow(8, 16, "compatible"),
+  ]);
+  const bedSectionFingerprint = passageFingerprint(checksumBed, 0, 32, "different", 500, [
+    rollingWindow(0, 8, "different"),
+    rollingWindow(4, 12, "different"),
+    rollingWindow(8, 16, "different"),
+    rollingWindow(12, 20, "different"),
+    rollingWindow(16, 24, "compatible"),
+    rollingWindow(20, 28, "different"),
+    rollingWindow(24, 32, "different"),
+  ]);
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [{
+        id: "donor-long",
+        label: "section",
+        startMs: 0,
+        endMs: 8_000,
+        startBeatIndex: 0,
+        endBeatIndex: 16,
+        passageFingerprint: donorSectionFingerprint,
+      }],
+      vocalPhrases: [{ startMs: 4_200, endMs: 5_000, confidence: 0.95 }],
+    }),
+    profile({
+      role: "instrumental",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [{
+        id: "bed-long",
+        label: "section",
+        startMs: 0,
+        endMs: 16_000,
+        startBeatIndex: 0,
+        endBeatIndex: 32,
+        passageFingerprint: bedSectionFingerprint,
+      }],
+    }),
+  );
+
+  assert.ok(result.ok);
+  const selected = result.plan.passageSearch?.evaluations.find((evaluation) => evaluation.selected);
+  assert.equal(selected?.bestBedSectionId, "bed-long");
+  assert.equal(selected?.rankedBedCandidates?.[0]?.bedStartMs, 8_000,
+    "the later local match must be surfaced even though it sits inside one longer bed section");
+  assert.ok(result.plan.rationale.some((line) =>
+    line.includes("eight-beat local voiced-activity window")
+    && line.includes("not lyric timing"),
+  ));
 });
 
 test("plan: missing passage fingerprints and sparse measured features keep the safe fallback", () => {

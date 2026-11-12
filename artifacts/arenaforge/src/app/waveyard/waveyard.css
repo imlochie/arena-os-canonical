@@ -937,6 +937,8 @@
 .chop-confidence i{display:block;height:100%;background:var(--acid)}
 .chop-chipmunk-toggle{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}
 .chop-chipmunk-toggle input{accent-color:var(--acid)}
+.chop-filter-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+.chop-filter-controls>small{color:var(--muted);font-size:11px}
 .chop-builder{border-top:1px solid var(--line);margin-top:14px;padding-top:12px;display:grid;gap:10px}
 .chop-render-result{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .chop-render-result audio{flex:1;min-width:260px}

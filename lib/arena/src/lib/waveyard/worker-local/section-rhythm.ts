@@ -5,6 +5,7 @@ import {
   MINIMUM_PERSISTENT_STEM_CHANGE_DB,
   type PassageStemActivity,
   type PassageFingerprint,
+  type PassageRollingWindow,
   type PassageVocalRun,
   unavailablePassageEvidence,
 } from "../types/passage-compatibility";
@@ -107,7 +108,13 @@ export function desktopSectionCandidates(
       structuralConfidence: Math.round(Math.max(0.05, Math.min(1, Math.max(onsetStrength, stemChange?.evidenceStrength ?? 0))) * 1000) / 1000,
     });
   }
-  const phraseMatches = precomputedPhraseMatches ?? detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, pcm);
+  const detectedPhraseMatches = precomputedPhraseMatches
+    ?? detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, pcm);
+  const phraseMatches = detectedPhraseMatches.filter((match) =>
+    ![...stemChangesByBeat.keys()].some((boundary) =>
+      boundary > match.startBeatIndex && boundary < match.endBeatIndex,
+    ),
+  );
   const phraseAwareSections = applyRepeatedPhraseMatches(candidates, phraseMatches);
   const withRepeats = labelRepeatedRhythmSections(phraseAwareSections, beatGridMs, envelope, frameMs, pcm);
   const withEnergy = pcm ? labelSectionEnergyChanges(withRepeats, beatGridMs, pcm) : withRepeats;
@@ -344,6 +351,81 @@ export function sectionHarmonicSignature(
   return magnitude > 0 ? signature.map((value) => value / magnitude) : null;
 }
 
+/** Builds local two-bar comparisons across a whole passage without semantic labels. */
+export function buildRollingPassageWindows(
+  startBeatIndex: number,
+  endBeatIndex: number,
+  beatGridMs: number[],
+  envelope: Float32Array,
+  frameMs: number,
+  pcm: Float32Array,
+  confidence: number | null,
+): PassageRollingWindow[] {
+  const windowBeats = 8;
+  const minimumHopBeats = 4;
+  const availableStarts = Math.max(0, Math.floor((endBeatIndex - startBeatIndex - windowBeats) / minimumHopBeats) + 1);
+  if (availableStarts === 0) return [];
+  const hopBeats = minimumHopBeats * Math.max(1, Math.ceil(availableStarts / 256));
+  const fallbackBeatMs = median(
+    beatGridMs.slice(1).map((time, index) => time - beatGridMs[index]!)
+      .filter((interval) => Number.isFinite(interval) && interval > 0),
+  );
+  const windows: PassageRollingWindow[] = [];
+  for (
+    let windowStart = startBeatIndex;
+    windowStart + windowBeats <= endBeatIndex && windows.length < 256;
+    windowStart += hopBeats
+  ) {
+    const windowEnd = windowStart + windowBeats;
+    const rhythm = sectionRhythmSignature(windowStart, windowEnd, beatGridMs, envelope, frameMs);
+    const chroma = sectionHarmonicSignature(pcm, windowStart, windowEnd, beatGridMs);
+    const intervals = Array.from({ length: windowBeats }, (_, offset) => {
+      const current = beatGridMs[windowStart + offset];
+      const next = beatGridMs[windowStart + offset + 1];
+      return current !== undefined && next !== undefined && next > current ? next - current : null;
+    }).filter((interval): interval is number => interval !== null);
+    const beatPeriodMs = intervals.length ? median(intervals) : fallbackBeatMs;
+    const phase = [0, 0, 0, 0];
+    if (frameMs > 0 && Number.isFinite(beatPeriodMs) && beatPeriodMs > 0) {
+      for (let beat = windowStart; beat < windowEnd; beat += 1) {
+        const beatStart = beatGridMs[beat];
+        const beatEnd = beatGridMs[beat + 1] ?? (beatStart === undefined ? undefined : beatStart + beatPeriodMs);
+        if (beatStart === undefined || beatEnd === undefined || beatEnd <= beatStart) continue;
+        for (let subdivision = 0; subdivision < 4; subdivision += 1) {
+          const from = Math.max(0, Math.floor((beatStart + (beatEnd - beatStart) * subdivision / 4) / frameMs));
+          const to = Math.min(envelope.length, Math.max(from + 1, Math.ceil((beatStart + (beatEnd - beatStart) * (subdivision + 1) / 4) / frameMs)));
+          for (let frame = from; frame < to; frame += 1)
+            phase[subdivision] = Math.max(phase[subdivision]!, envelope[frame] ?? 0);
+        }
+      }
+    }
+    const phaseMagnitude = Math.sqrt(phase.reduce((total, value) => total + value * value, 0));
+    const phaseEvidence = phaseMagnitude > 1e-8 && Number.isFinite(beatPeriodMs)
+      ? {
+        status: "measured" as const,
+        value: {
+          subdivisionProfile: phase.map((value) => value / phaseMagnitude),
+          beatPeriodMs,
+        },
+        method: "local onset energy by beat subdivision across an eight-beat window",
+        confidence,
+      }
+      : unavailablePassageEvidence("Local beat-phase evidence is unavailable for this window.");
+    windows.push({
+      startBeatIndex: windowStart,
+      endBeatIndex: windowEnd,
+      rhythm: rhythm
+        ? { status: "measured", value: rhythm, method: "four onset-envelope subdivisions per beat in an eight-beat window", confidence }
+        : unavailablePassageEvidence("Local onset rhythm has insufficient variation."),
+      chroma: chroma
+        ? { status: "measured", value: chroma, method: "four time-ordered 12-bin chroma windows in an eight-beat window", confidence }
+        : unavailablePassageEvidence("Local chroma lacks sufficient tonal variation."),
+      beatPhase: phaseEvidence,
+    });
+  }
+  return windows;
+}
+
 function beatBoundaryMs(index: number, beatGridMs: number[]): number | null {
   if (index < 0 || index > beatGridMs.length || beatGridMs.length === 0) return null;
   if (index < beatGridMs.length) return beatGridMs[index];
@@ -442,6 +524,15 @@ export function buildPassageFingerprint(input: {
   const { startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs, pcm } = input;
   const rhythmSignature = sectionRhythmSignature(startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs);
   const chromaSignature = sectionHarmonicSignature(pcm, startBeatIndex, endBeatIndex, beatGridMs);
+  const rollingWindows = buildRollingPassageWindows(
+    startBeatIndex,
+    endBeatIndex,
+    beatGridMs,
+    envelope,
+    frameMs,
+    pcm,
+    input.beatConfidence,
+  );
   const rmsDb = sectionRmsDb(pcm, startBeatIndex, endBeatIndex, beatGridMs);
   const intervals = beatGridMs.slice(startBeatIndex + 1, endBeatIndex)
     .map((time, index) => time - beatGridMs[startBeatIndex + index]!)
@@ -501,6 +592,14 @@ export function buildPassageFingerprint(input: {
       endBeatIndex,
       input.stemActivityBoundaryChanges ?? [],
     ),
+    rollingWindows: rollingWindows.length
+      ? {
+        status: "measured",
+        value: rollingWindows,
+        method: "checksum-bound local eight-beat rhythm, chroma, and beat-phase windows with four-beat hops",
+        confidence: input.beatConfidence,
+      }
+      : unavailablePassageEvidence("The passage is shorter than eight measured beats or lacks rolling-window evidence."),
   };
 }
 

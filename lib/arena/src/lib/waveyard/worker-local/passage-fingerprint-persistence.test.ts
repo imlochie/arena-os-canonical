@@ -32,6 +32,33 @@ const fingerprint: PassageFingerprint = {
   vocalActivity: { status: "unavailable", reason: "No isolated-vocal analysis." },
   instrumentalDensity: { status: "unavailable", reason: "No non-vocal stem activity envelope." },
   stemActivity: { status: "unavailable", reason: "No current separated-stem activity evidence." },
+  rollingWindows: {
+    status: "measured",
+    value: [{
+      startBeatIndex: 0,
+      endBeatIndex: 8,
+      rhythm: {
+        status: "measured",
+        value: Array.from({ length: 32 }, (_, index) => index % 4 === 0 ? 1 : 0),
+        method: "local eight-beat onset envelope",
+        confidence: 0.8,
+      },
+      chroma: {
+        status: "measured",
+        value: Array.from({ length: 48 }, (_, index) => index % 12 === 0 ? 1 : -1 / 11),
+        method: "local eight-beat chroma",
+        confidence: 0.8,
+      },
+      beatPhase: {
+        status: "measured",
+        value: { subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 },
+        method: "local beat subdivision energy",
+        confidence: 0.8,
+      },
+    }],
+    method: "checksum-bound local eight-beat windows",
+    confidence: 0.8,
+  },
 };
 
 test("desktop migration persists and reloads source-section passage fingerprints", async () => {

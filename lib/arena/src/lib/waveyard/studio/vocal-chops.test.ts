@@ -13,6 +13,7 @@ import {
   CHOP_SEQUENCER_TRACK_NAME,
   chopNoteId,
   detectVocalChops,
+  diversifyChopDetections,
   extractChopSample,
   parseChopNoteId,
   readChopSequencerSteps,
@@ -130,6 +131,46 @@ test("a clean note outranks the same note buried in noise", () => {
   const cleanScore = chops.find((chop) => chop.startMs < 600)?.score ?? 0;
   const noisyScore = chops.find((chop) => chop.startMs > 600)?.score ?? 1;
   assert.ok(cleanScore > noisyScore, `clean ${cleanScore} should outrank noisy ${noisyScore}`);
+});
+
+test("top chop choices preserve distinct note options before filling by quality", () => {
+  const detections = [
+    ...Array.from({ length: 5 }, (_, index) => ({
+      startMs: index * 300,
+      durationMs: 250,
+      rootMidi: 60 + index * 12,
+      cents: 0,
+      clarity: 0.95,
+      stability: 0.95,
+      voicedRatio: 1,
+      score: 0.99 - index * 0.01,
+    })),
+    {
+      startMs: 2000,
+      durationMs: 250,
+      rootMidi: 61,
+      cents: 0,
+      clarity: 0.7,
+      stability: 0.7,
+      voicedRatio: 0.8,
+      score: 0.55,
+    },
+    {
+      startMs: 2300,
+      durationMs: 250,
+      rootMidi: 62,
+      cents: 0,
+      clarity: 0.65,
+      stability: 0.65,
+      voicedRatio: 0.75,
+      score: 0.45,
+    },
+  ];
+
+  const selected = diversifyChopDetections(detections, 3);
+  assert.deepEqual(selected.map((chop) => chop.rootMidi % 12), [0, 1, 2]);
+  assert.equal(selected[0]?.score, 0.99, "the best quality take for each pitch class is retained");
+  assert.deepEqual(diversifyChopDetections(detections, 0), []);
 });
 
 test("continuous vocals with no silence gaps still yield chops (split at dips)", () => {

@@ -108,7 +108,7 @@ export function onsetEnvelope(
 ): { envelope: Float32Array; frameMs: number } {
   const frameMs = (ONSET_HOP_SIZE / ANALYSIS_PCM_RATE) * 1000;
   const frameCount = Math.max(0, Math.floor((pcm.length - ONSET_WINDOW_SIZE) / ONSET_HOP_SIZE) + 1);
-  const envelope = new Float32Array(Math.max(0, frameCount - 1));
+  const envelope = new Float32Array(frameCount);
   if (frameCount < 2) return { envelope, frameMs };
   const binWidthHz = ANALYSIS_PCM_RATE / ONSET_WINDOW_SIZE;
   const frequencyBandHz = options?.frequencyBandHz;
@@ -153,17 +153,15 @@ export function onsetEnvelope(
       broadbandTotal += magnitude;
       if (bin >= minBin && bin <= maxBin) {
         total += magnitude;
-        if (frame > 0) positiveFlux += Math.max(0, magnitude - previousMagnitudes[bin]);
+        positiveFlux += Math.max(0, magnitude - previousMagnitudes[bin]);
       }
       previousMagnitudes[bin] = magnitude;
     }
-    if (frame > 0) {
-      const scale = (total + previousTotal) / 2;
-      const energyFraction = broadbandTotal > 1e-8 ? total / broadbandTotal : 0;
-      envelope[frame - 1] = scale > 1e-8 && energyFraction >= minBandEnergyFraction
-        ? Math.min(1, positiveFlux / scale)
-        : 0;
-    }
+    const scale = frame === 0 ? total : (total + previousTotal) / 2;
+    const energyFraction = broadbandTotal > 1e-8 ? total / broadbandTotal : 0;
+    envelope[frame] = scale > 1e-8 && energyFraction >= minBandEnergyFraction
+      ? Math.min(1, positiveFlux / scale)
+      : 0;
     previousTotal = total;
   }
   return { envelope, frameMs };
@@ -283,30 +281,112 @@ export function estimateTrackTempo(
 export function estimateBeatGrid(envelope: Float32Array, frameMs: number, bpm: number): { beatGridMs: number[] | null; confidence: number | null } {
   const periodFrames = 60_000 / bpm / frameMs;
   if (!Number.isFinite(periodFrames) || periodFrames < 2) return { beatGridMs: null, confidence: null };
+  let envelopePeak = 0;
+  for (const value of envelope) envelopePeak = Math.max(envelopePeak, value);
   const phases = Math.max(1, Math.round(periodFrames));
+  const phaseLookaheadFrames = Math.min(envelope.length, Math.ceil(periodFrames * 8));
   let bestPhase = 0;
   let bestScore = -Infinity;
+  let bestPhaseSamples = 0;
   for (let phase = 0; phase < phases; phase += 1) {
     let score = 0;
-    for (let frame = phase; frame < envelope.length; frame += periodFrames) {
+    let sampleCount = 0;
+    for (let frame = phase; frame < phaseLookaheadFrames; frame += periodFrames) {
       const index = Math.round(frame);
-      if (index < envelope.length) score += envelope[index];
+      if (index < envelope.length) {
+        score += envelope[index] ?? 0;
+        sampleCount += 1;
+      }
     }
     if (score > bestScore) {
       bestScore = score;
       bestPhase = phase;
+      bestPhaseSamples = sampleCount;
     }
   }
+
+  // The first spectral-flux frame has no previous audio frame to compare with.
+  // If it contains an attack and another attack follows one beat later, use
+  // that directly observed start instead of allowing a long-track phase fit to
+  // skip the opening beat.
+  const searchRadiusFrames = Math.max(1, Math.min(
+    Math.round(periodFrames * 0.16),
+    Math.round(80 / frameMs),
+  ));
+  const peakInRange = (from: number, to: number): { frame: number; value: number } => {
+    let frame = Math.max(0, from);
+    const end = Math.min(envelope.length - 1, to);
+    for (let index = frame + 1; index <= end; index += 1) {
+      if ((envelope[index] ?? 0) > (envelope[frame] ?? 0)) frame = index;
+    }
+    return { frame, value: envelope[frame] ?? 0 };
+  };
+  const firstAttack = peakInRange(0, searchRadiusFrames);
+  const nextExpected = firstAttack.frame + periodFrames;
+  const nextAttack = peakInRange(
+    Math.floor(nextExpected - searchRadiusFrames),
+    Math.ceil(nextExpected + searchRadiusFrames),
+  );
+  if (
+    envelopePeak > 0
+    && firstAttack.value >= envelopePeak * 0.15
+    && nextAttack.value >= envelopePeak * 0.15
+  ) bestPhase = firstAttack.frame;
+
+  // Follow nearby attacks instead of projecting one perfectly even grid over
+  // the whole song. The bounded phase/period loop tracks small performance
+  // drift while refusing to jump to a syncopated hit far from the pulse.
+  const phaseCorrection = 0.25;
+  const periodCorrection = 0.02;
+  let predictedFrame = bestPhase;
+  let trackedPeriodFrames = periodFrames;
+  let strongPeakCount = 0;
+  let absoluteCorrection = 0;
+  let normalizedPeakStrength = 0;
   const grid: number[] = [];
-  for (let frame = bestPhase; frame < envelope.length; frame += periodFrames) {
-    grid.push(Math.round(frame * frameMs));
+  while (predictedFrame < envelope.length) {
+    const expected = predictedFrame;
+    const from = Math.max(0, Math.floor(expected - searchRadiusFrames));
+    const to = Math.min(envelope.length - 1, Math.ceil(expected + searchRadiusFrames));
+    let localMean = 0;
+    let peakFrame = from;
+    for (let frame = from; frame <= to; frame += 1) {
+      localMean += envelope[frame] ?? 0;
+      if ((envelope[frame] ?? 0) > (envelope[peakFrame] ?? 0)) peakFrame = frame;
+    }
+    localMean /= Math.max(1, to - from + 1);
+    const peakValue = envelope[peakFrame] ?? 0;
+    const hasLocalAttack = peakValue > 1e-9 && peakValue >= localMean * 1.25;
+    const correction = hasLocalAttack ? peakFrame - expected : 0;
+    const beatFrame = hasLocalAttack ? peakFrame : expected;
+    const beatMs = Math.round(beatFrame * frameMs);
+    if (grid.length === 0 || beatMs > grid[grid.length - 1]!) {
+      grid.push(beatMs);
+      if (hasLocalAttack) {
+        strongPeakCount += 1;
+        absoluteCorrection += Math.abs(correction);
+        normalizedPeakStrength += envelopePeak > 0 ? peakValue / envelopePeak : 0;
+      }
+    }
+
+    trackedPeriodFrames = Math.max(
+      periodFrames * 0.85,
+      Math.min(periodFrames * 1.15, trackedPeriodFrames + correction * periodCorrection),
+    );
+    predictedFrame = expected + trackedPeriodFrames + correction * phaseCorrection;
   }
   if (grid.length < 2) return { beatGridMs: null, confidence: null };
-  const strength =
+  const phaseStrength =
     bestScore /
-    Math.max(1e-9, grid.reduce((sum, _beat) => sum + 1, 0)) /
-    Math.max(1e-9, Math.max(...envelope) || 1);
-  const confidence = Math.max(0, Math.min(1, strength * 3));
+    Math.max(1, bestPhaseSamples) /
+    Math.max(1e-9, envelopePeak || 1);
+  const peakCoverage = strongPeakCount / grid.length;
+  const meanPeakStrength = strongPeakCount > 0 ? normalizedPeakStrength / strongPeakCount : 0;
+  const meanCorrection = strongPeakCount > 0 ? absoluteCorrection / strongPeakCount : searchRadiusFrames;
+  const trackingEvidence = peakCoverage
+    * meanPeakStrength
+    * Math.max(0, 1 - meanCorrection / Math.max(1, searchRadiusFrames));
+  const confidence = Math.max(0, Math.min(1, phaseStrength * 3 * (0.5 + 0.5 * trackingEvidence)));
   return { beatGridMs: grid, confidence: Math.round(confidence * 1000) / 1000 };
 }
 

@@ -19,7 +19,7 @@ import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
 import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
 import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
-import { comparePassageCompatibility, type PassageFingerprint } from "../types/passage-compatibility";
+import { comparePassageCompatibility, type PassageFingerprint, type PassageRollingWindow } from "../types/passage-compatibility";
 import type { VocalPhrase } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
@@ -493,6 +493,39 @@ function rankPassagePair(
   };
 }
 
+function fingerprintForRollingWindow(
+  fingerprint: PassageFingerprint,
+  window: PassageRollingWindow,
+): PassageFingerprint {
+  return {
+    ...fingerprint,
+    startBeatIndex: window.startBeatIndex,
+    endBeatIndex: window.endBeatIndex,
+    rhythm: window.rhythm,
+    chroma: window.chroma,
+    beatPhase: window.beatPhase,
+  };
+}
+
+function beatGridBoundaryMs(beatGrid: number[] | null | undefined, beatIndex: number): number | null {
+  if (!beatGrid || beatIndex < 0 || beatIndex > beatGrid.length || !Number.isInteger(beatIndex)) return null;
+  const exact = beatGrid[beatIndex];
+  if (exact !== undefined && Number.isFinite(exact)) return exact;
+  if (beatIndex !== beatGrid.length || beatGrid.length < 2) return null;
+  const intervals = beatGrid.slice(1).map((time, index) => time - beatGrid[index]!)
+    .filter((interval) => Number.isFinite(interval) && interval > 0)
+    .sort((left, right) => left - right);
+  return intervals.length ? beatGrid.at(-1)! + intervals[Math.floor(intervals.length / 2)]! : null;
+}
+
+function evenlySpaced<T>(values: readonly T[], maximum: number): T[] {
+  if (values.length <= maximum) return [...values];
+  if (maximum <= 1) return values.length ? [values[0]!] : [];
+  return Array.from({ length: maximum }, (_, index) =>
+    values[Math.round(index * (values.length - 1) / (maximum - 1))]!,
+  );
+}
+
 function rankedPassageEntry(
   vocals: MashupSourceProfile,
   bed: MashupSourceProfile,
@@ -603,6 +636,105 @@ function rankedPassageEntry(
     for (const bedSection of bedPassages) {
       if (!bedSection.passageFingerprint
         || bedSection.endMs <= bedSection.startMs) continue;
+      const donorRollingWindows = donorFingerprint.rollingWindows?.status === "measured"
+        ? donorFingerprint.rollingWindows.value
+        : [];
+      const bedRollingWindows = bedSection.passageFingerprint.rollingWindows?.status === "measured"
+        ? bedSection.passageFingerprint.rollingWindows.value
+        : [];
+      if (donorRollingWindows.length && bedRollingWindows.length && vocals.beatGridMs && bed.beatGridMs) {
+        const localWindowCandidates: typeof candidates = [];
+        let localPairCount = 0;
+        const voicedDonorWindows = donorRollingWindows.filter((window) => {
+          const startMs = beatGridBoundaryMs(vocals.beatGridMs, window.startBeatIndex);
+          const endMs = beatGridBoundaryMs(vocals.beatGridMs, window.endBeatIndex);
+          return startMs !== null && endMs !== null
+            && phrases.some((phrase) => phrase.startMs < endMs && phrase.endMs > startMs);
+        });
+        const searchDonorWindows = evenlySpaced(voicedDonorWindows, 128);
+        const searchBedWindows = evenlySpaced(bedRollingWindows, 128);
+        for (const donorWindow of searchDonorWindows) {
+          const donorWindowStartMs = beatGridBoundaryMs(vocals.beatGridMs, donorWindow.startBeatIndex);
+          const donorWindowEndMs = beatGridBoundaryMs(vocals.beatGridMs, donorWindow.endBeatIndex);
+          if (donorWindowStartMs === null || donorWindowEndMs === null) continue;
+          const localDonorFingerprint = fingerprintForRollingWindow(donorFingerprint, donorWindow);
+          for (const bedWindow of searchBedWindows) {
+            if (localPairCount >= 16_384) break;
+            const bedWindowStartMs = beatGridBoundaryMs(bed.beatGridMs, bedWindow.startBeatIndex);
+            const bedWindowEndMs = beatGridBoundaryMs(bed.beatGridMs, bedWindow.endBeatIndex);
+            if (bedWindowStartMs === null || bedWindowEndMs === null
+              || bedWindowStartMs < bedSection.startMs || bedWindowEndMs > bedSection.endMs) continue;
+            localPairCount += 1;
+            const localBedFingerprint = fingerprintForRollingWindow(bedSection.passageFingerprint, bedWindow);
+            const comparison = comparePassageCompatibility({
+              anchorSectionId: bedSection.id ?? `${bed.sourceAssetId ?? "bed"}:${bedWindow.startBeatIndex}`,
+              donorSectionId,
+              anchor: localBedFingerprint,
+              donor: localDonorFingerprint,
+              anchorBpm: comparisonBedBpm,
+              donorBpm: comparisonDonorBpm,
+              anchorBeatConfidence: bed.beatConfidence ?? 0,
+              donorBeatConfidence: vocals.beatConfidence ?? 0,
+              anchorKeyTrusted: bedKey !== null,
+              donorKeyTrusted: donorKey !== null,
+              expectedKeyShift,
+            });
+            const ranking = rankPassagePair(
+              comparison,
+              localDonorFingerprint,
+              localBedFingerprint,
+              donorBpm,
+              bedBpm,
+              tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
+            );
+            if (!ranking) continue;
+            const donorWindowOffsetMs = (donorWindowStartMs - body.fromMs) * stretchRatio;
+            const entryMs = Math.round(bedWindowStartMs - donorWindowOffsetMs);
+            if (entryMs < 0) {
+              unplaceableEntryCount += 1;
+              sectionUnplaceableEntryCount += 1;
+              continue;
+            }
+            const candidateCoverageMs = Math.min(vocalSpanMs, Math.max(0, bed.durationMs - entryMs));
+            if (candidateCoverageMs < baselineVocalCoverageMs - 1) {
+              contentLossCount += 1;
+              sectionContentLossCount += 1;
+              continue;
+            }
+            const onsetOffsets = phrases.map((phrase) => phrase.startMs - body.fromMs);
+            const transientScore = onsetOffsets.length >= MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK
+              ? scoreEntryAgainstTransients(entryMs, onsetOffsets, stretchRatio, bed.drumEvents ?? [], bed.bassEvents ?? []).score
+              : 0;
+            const comparisonSummary = [
+              comparison.dimensions.phraseAlignment.detail,
+              comparison.dimensions.rhythm.detail,
+              comparison.dimensions.harmony.detail,
+              comparison.dimensions.beatPhase.detail,
+            ].join("; ");
+            localWindowCandidates.push({
+              at: entryMs,
+              why: `aligned an eight-beat local voiced-activity window (${donorWindowStartMs}–${donorWindowEndMs}ms) with bed window ${bedWindowStartMs}–${bedWindowEndMs}ms inside section ${bedSection.id ?? bedSection.startMs}; full donor vocal coverage is retained; this is structural/audio-feature matching, not lyric timing or a semantic phrase label; relative score ${ranking.score.toFixed(3)} (${ranking.details.join(", ")}); ${comparisonSummary}; transient alignment only breaks near-ties`,
+              musicalScore: ranking.score,
+              minimumFeatureConfidence: ranking.minimumFeatureConfidence,
+              similarities: ranking.similarities,
+              transientScore,
+              donorSectionId,
+              bedSectionId: bedSection.id ?? `${bed.sourceAssetId ?? "bed"}:${bedSection.startMs}`,
+              bedSourceSha256: bedSection.passageFingerprint.sourceChecksumSha256 ?? null,
+              bedStartMs: bedWindowStartMs,
+              bedEndMs: bedWindowEndMs,
+            });
+          }
+          if (localPairCount >= 16_384) break;
+        }
+        if (localWindowCandidates.length) {
+          passagePairCount += localPairCount;
+          sectionCandidates.push(...localWindowCandidates
+            .sort((left, right) => right.musicalScore - left.musicalScore || right.transientScore - left.transientScore || left.at - right.at)
+            .slice(0, 8));
+          continue;
+        }
+      }
       passagePairCount += 1;
       const comparison = comparePassageCompatibility({
         anchorSectionId: bedSection.id ?? `${bed.sourceAssetId ?? "bed"}:${bedSection.startBeatIndex ?? bedSection.startMs}`,

@@ -69,6 +69,23 @@ function accentedClickTrack(bpm: number, seconds: number): Float32Array {
   return samples;
 }
 
+function graduallyDriftingClickTrack(seconds: number): { samples: Float32Array; beatsMs: number[] } {
+  const samples = new Float32Array(Math.round(seconds * RATE));
+  const beatsMs: number[] = [];
+  let timeSeconds = 0;
+  const clickLength = Math.round(RATE * 0.01);
+  while (timeSeconds < seconds - 0.02) {
+    beatsMs.push(Math.round(timeSeconds * 1000));
+    const start = Math.round(timeSeconds * RATE);
+    for (let index = 0; index < clickLength && start + index < samples.length; index += 1) {
+      samples[start + index] = 0.9 * Math.sin((2 * Math.PI * 1000 * (start + index)) / RATE) * (1 - index / clickLength);
+    }
+    const drift = timeSeconds / seconds;
+    timeSeconds += 0.48 + 0.04 * drift;
+  }
+  return { samples, beatsMs };
+}
+
 test("estimateBpm detects an exact 120 BPM click track", () => {
   const pcm = clickTrack(120, 10);
   const { envelope, frameMs } = onsetEnvelope(pcm);
@@ -102,6 +119,27 @@ test("estimateBeatGrid returns evenly spaced beats near the true tempo", () => {
     const interval = beats[i] - beats[i - 1];
     assert.ok(Math.abs(interval - expected) < expected * 0.25, `interval ${interval} vs expected ${expected}`);
   }
+});
+
+test("beat grid follows gradual tempo drift instead of forcing one constant period", () => {
+  const { samples, beatsMs: expectedBeats } = graduallyDriftingClickTrack(36);
+  const { envelope, frameMs } = onsetEnvelope(samples);
+  const grid = estimateBeatGrid(envelope, frameMs, 120);
+  assert.ok(grid.beatGridMs !== null);
+  const tracked = grid.beatGridMs!;
+  const count = Math.min(tracked.length, expectedBeats.length);
+  assert.ok(count > 50, `enough tracked beats: ${count}`);
+  let trackedError = 0;
+  let fixedError = 0;
+  for (let index = 0; index < count; index += 1) {
+    trackedError += Math.abs(tracked[index]! - expectedBeats[index]!);
+    fixedError += Math.abs(index * 500 - expectedBeats[index]!);
+  }
+  const trackedMeanError = trackedError / count;
+  const fixedMeanError = fixedError / count;
+  assert.ok(trackedMeanError < 30, `tracked mean timing error ${trackedMeanError.toFixed(1)}ms`);
+  assert.ok(trackedMeanError < fixedMeanError * 0.5,
+    `tracked error ${trackedMeanError.toFixed(1)}ms should beat fixed-grid error ${fixedMeanError.toFixed(1)}ms`);
 });
 
 test("spectral onset flux recovers quieter intervening beats and reports tempo changes honestly", () => {

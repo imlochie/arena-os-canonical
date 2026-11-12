@@ -44,3 +44,9 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 **Why:** The user wants to scan a QR code to sync the live session, with the laptop hosting it or a free service as fallback, and prioritizes personal privacy.
 
 **How to apply:** Default to direct, local pairing and minimum live-session data. Require secure pairing before exposing control, and never expose owner-scoped library or playback data through an unauthenticated endpoint.
+
+**Whole-track evidence and sampler controls:** Mashup planning should compare local, beat-aligned windows throughout longer sections rather than only comparing one summary per section. Beat tracking should correct gradual drift only from measured attacks and within bounded corrections. Vocal timing must eventually identify actual phrase/word starts independently from form labels. The chop sampler should offer pitch-diverse, key-aware choices and audible Chopped, Chipmunk, and Screwed treatments.
+
+**Why:** The user asked for a long vocal phrase to find a suitable part inside a longer backing passage, better beat detection, and a smart sampler that selects useful note-specific chops for chopping, pitching, and sampling. A detected passage or synthetic test does not prove a real mix sounds good.
+
+**How to apply:** Keep the rolling comparison source-checksum-bound, beat-grid-aware, bounded in cost, and subordinate to a safe fallback. Validate phrase timing and full rendered mixes separately on complete real tracks; do not call pitch-continuity runs lyrics. Keep the sampler’s note/key filters and style selection visible and connected to actual render behavior, and describe quality claims only at the level supported by listening evidence.
