@@ -27,6 +27,12 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **How to apply:** Separate channel-identity diagnostics from musical-quality claims. Show the source stems and an uninterrupted swap/restore, verify retained channels are audible rather than merely advancing, and do not claim STEM.FM parity without the paired-song controls, timing and harmonic behaviour working together.
 
+**Passage-ranking evidence rule:** Move an arrangement entry only when the source passages have comparable phrase lengths and current rhythm, harmonic, and beat-phase measurements. Rank the available candidates without presenting the relative rank as a calibrated quality score; when the evidence is incomplete, preserve a safe fallback and keep mashup creation available.
+
+**Why:** On real full-track audio, transient coincidences can appear persuasive while the corresponding structural passage has missing or mismatched evidence. The user expects complete mashup production, but not unsupported claims that a weak measurement makes the arrangement musically intelligent or listenable.
+
+**How to apply:** Keep transient alignment subordinate to musical evidence, and treat absent lyric timing, semantic form labels, and listening evaluation as genuine capability gaps. Do not invent a numeric quality threshold without real-world validation.
+
 **Stem.fm research boundary (checked 2026-11-05):** its public site describes real-time stem control, but the DAW endpoint returned 401 without a session. Public pages do not establish the product's internal timing or audio algorithms.
 
 **Why:** the supplied mobile screenshots show concrete user-facing controls, while the authenticated app could not be inspected; assuming hidden implementation details would repeat unsupported parity claims.
