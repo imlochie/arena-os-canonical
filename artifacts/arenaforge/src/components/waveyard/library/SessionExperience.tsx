@@ -2843,6 +2843,22 @@ export default function SessionExperience({
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const detail = (await response.json()).session as SessionDetail;
           if (requestId !== sessionRequestVersion.current || sessionRef.current?.id !== detail.id) return;
+          const latest = sessionRef.current;
+          if (latest === null || latest.id !== detail.id) return;
+          const audible = new Set<string>();
+          for (const [index, deck] of decksRef.current.entries()) {
+            const deckItem = deckItems[index as 0 | 1];
+            if (deck?.transport.playing && deckItem) audible.add(deckItem.id);
+          }
+          const tracks = detail.tracks.map((item) => {
+            const old = latest.tracks.find((candidate) => candidate.id === item.id);
+            // Keep the new saved preference, but don't replace media already
+            // playing on either deck. The preference takes effect on a later load.
+            return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id)
+              ? { ...item, playback: old.playback }
+              : item;
+          });
+          const refreshed = { ...detail, tracks };
           const currentRetained = previousCurrentId === null || detail.tracks.some((item) => item.id === previousCurrentId);
           const nextRetained = previousNextId === null || detail.tracks.some((item) => item.id === previousNextId);
           const wasFading = fadeRef.current !== null;
@@ -2858,8 +2874,8 @@ export default function SessionExperience({
           setMixes((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
           setTransitions((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
           setStemsReady((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
-          sessionRef.current = detail;
-          setSession(detail);
+          sessionRef.current = refreshed;
+          setSession(refreshed);
 
           if (previousCurrentId === null || currentRetained) {
             if (!(wasFading && removedNext)) {
@@ -3628,7 +3644,11 @@ export default function SessionExperience({
       }
       const merged = fresh.tracks.map((item) => {
         const old = previous.tracks.find((candidate) => candidate.id === item.id);
-        return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id) ? old : item;
+        // A refresh must retain the saved preference while keeping any
+        // currently audible deck on its existing media until a later load.
+        return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id)
+          ? { ...item, playback: old.playback }
+          : item;
       });
       const next = { ...previous, ...fresh, tracks: merged };
       sessionRef.current = next;
