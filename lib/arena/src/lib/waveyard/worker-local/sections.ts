@@ -25,7 +25,7 @@ import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { currentBeatConfidence } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
-import { decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
+import { ANALYSIS_PCM_RATE, decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
 import {
   applyRepeatedPhraseMatches,
   detectRepeatedPhraseMatches,
@@ -178,6 +178,9 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
     await getStorage().getToFile(source.storageKey, inputPath);
     await updateSectionAnalysis(job.id, { status: "processing", stage: "analyzing" });
     const pcm = await decodeMonoPcm(inputPath);
+    const decodedSourceDurationMs = Math.floor(
+      (pcm.length * 1000) / ANALYSIS_PCM_RATE,
+    );
     const { envelope, frameMs } = onsetEnvelope(pcm);
     const candidates = desktopSectionCandidates(beatGrid, envelope, frameMs, pcm);
     if (!candidates) {
@@ -213,9 +216,9 @@ export async function handleSectionAnalysisJob(payloadInput: Record<string, unkn
         sourceChecksumSha256: source.checksumSha256,
       },
       ({ startBeatIndex, endBeatIndex }) => desktopSectionId(source.id, source.checksumSha256, startBeatIndex, endBeatIndex),
-      source.durationSeconds * 1000,
+      decodedSourceDurationMs,
     );
-    if (!sections.length || !sourceSectionsAreValid(sections, beatGrid, source.durationSeconds * 1000)) {
+    if (!sections.length || !sourceSectionsAreValid(sections, beatGrid, decodedSourceDurationMs)) {
       await updateSectionAnalysis(job.id, {
         status: "unavailable",
         stage: "insufficient-evidence",

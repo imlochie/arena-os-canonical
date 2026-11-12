@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "producer": "Waveyard production mashup route",
-  "captureContract": "Copy the full production plan's source-bound passage evaluations without recalculating, reordering, or truncating rankedBedCandidates. Include sourceDurationMs, all structural sections, and each internal section start in sectionBoundaries. A final bar-aligned section may extend up to 250 ms beyond sourceDurationMs. Structural boundaries are evaluated separately from semantic labels. Pitch-continuity runs are not lyric phrases.",
+  "captureContract": "Copy the full production plan's source-bound passage evaluations without recalculating, reordering, or truncating rankedBedCandidates. Include sourceDurationMs, all structural sections, and each internal section start in sectionBoundaries. Section endpoints must stay within 50 ms of sourceDurationMs. Structural boundaries are evaluated separately from semantic labels. Pitch-continuity runs are not lyric phrases.",
   "producerRevision": null,
   "capturedAt": null,
   "recordings": {

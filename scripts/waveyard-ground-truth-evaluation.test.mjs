@@ -133,7 +133,7 @@ const validPredictions = {
       sections: [
         { startMs: 0, endMs: 5200, label: "section" },
         { startMs: 5200, endMs: 9900, label: "rhythm-repeat-a" },
-        { startMs: 9900, endMs: 222830, label: "section" },
+        { startMs: 9900, endMs: 222673, label: "section" },
       ],
       sectionBoundaries: [5200, 9900],
       donorWindows: [

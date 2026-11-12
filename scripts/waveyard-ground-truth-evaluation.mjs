@@ -7,7 +7,6 @@ export const GROUND_TRUTH_SCHEMA_VERSION = 2;
 const CANDIDATE_WINDOW_IOU_THRESHOLD = 0.5;
 const SECTION_BOUNDARY_TOLERANCE_MS = 2_000;
 const SOURCE_DURATION_METADATA_TOLERANCE_MS = 50;
-const STRUCTURAL_SECTION_END_PADDING_MS = 250;
 const SECTION_COVERAGE_FRACTION = 0.95;
 const REQUIRED_REVIEWER_COUNT = 2;
 export const EXPECTED_RECORDINGS = [
@@ -720,12 +719,8 @@ export function validatePredictionProvenance(predictions) {
       );
     }
     for (const [sectionIndex, section] of predictedSections.entries()) {
-      const isLastSection = sectionIndex === predictedSections.length - 1;
       const maximumEndMs =
-        sourceDurationMs +
-        (isLastSection
-          ? STRUCTURAL_SECTION_END_PADDING_MS
-          : SOURCE_DURATION_METADATA_TOLERANCE_MS);
+        sourceDurationMs + SOURCE_DURATION_METADATA_TOLERANCE_MS;
       if (
         !Number.isSafeInteger(section.startMs) ||
         section.startMs >=
