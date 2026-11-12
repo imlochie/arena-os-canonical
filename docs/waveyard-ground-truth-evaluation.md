@@ -21,6 +21,11 @@ The target pair and expected durations follow the prior production handoff: _Ano
 4. Lock both review files before adjudication. Preserve the original reviews, a list of disagreements, the resolution method, and the adjudicated intervals. Do not copy analyzer labels into either human review.
 5. Capture the exact production plan from the same source files, including the 40-character producer revision, capture time, and source SHA-256s. Copy each donor evaluation's `rankedBedCandidates` without reordering or rescoring. The selected candidate is rank 1 in the serialized selection order. Historical reports that only recorded the winning candidate cannot be expanded into a complete ranking after the fact; rerun the exact inputs.
 
+The `breakdown` label is distinct from `bridge` and `instrumental`: use it when
+the arrangement strips down to core vocals/percussion or the band drops away
+and sparse claps or similar elements remain. Preserve a reviewer’s own term;
+do not remap a breakdown to bridge merely because a taxonomy lacks the label.
+
 ## Metrics and interpretation
 
 - Passage detection uses one-to-one maximum-cardinality matching over interval pairs with IoU >= 0.5, preferring stronger overlaps, and reports precision, recall, F1, and matched start/end boundary error. Confident human vocal intervals are scored; ambiguous intervals are excluded from both false negatives and false positives.

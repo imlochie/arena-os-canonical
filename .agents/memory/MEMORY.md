@@ -23,6 +23,7 @@
 - [Capture performance evidence](waveyard-capture-performance.md) — keep signal observation bounded; separate observer cost and retention from disk, HTTP probes and runtime warmup.
 - [Waveyard CPU separation profiling](waveyard-cpu-separation-profiling.md) — measured local 4-stem CPU cost is dominated by JS STFT/ISTFT transforms, so profile before tuning ONNX inference.
 - [Waveyard product expectations](waveyard-stemfm-expectation.md) — live swapping, pitch behavior, beat-aligned DJ controls, mobile usability, and Studio handoff must all work.
+- [Waveyard breakdown sections](waveyard-breakdown-sections.md) — preserve breakdowns separately from bridges and instrumental sections when the arrangement drops to vocals/percussion or sparse claps.
 - [Arena product expectations](arena-product-expectations.md) — prioritize demonstrable local tools and open-source alternatives over claims, presets, and page-load checks.
 - [Arena baseline reconciliation](arena-baseline-reconciliation.md) — recover branch intent as user outcomes, then verify current end-to-end workflows; code similarity is not proof.
 - [SourceForge release evidence](sourceforge-release-evidence.md) — a provider SHA pins bytes, but license provenance and archive safety remain separate install gates.

@@ -242,6 +242,24 @@ test("ambiguous labels are excluded from classification and ambiguous pair judgm
   assert.equal(result.bedCandidateRanking.top1Accuracy, null);
 });
 
+test("breakdown is an accepted section label distinct from bridge and instrumental", () => {
+  const sectionSegments = [
+    {
+      startMs: 0,
+      endMs: 222670,
+      label: "breakdown",
+      certainty: "confident",
+    },
+  ];
+  const data = dataset({ queen: { sectionSegments } });
+
+  assert.doesNotThrow(() => validateGroundTruth(data));
+  assert.equal(
+    data.recordings[0].adjudicated.sectionSegments[0].label,
+    "breakdown",
+  );
+});
+
 test("unjudged rankings do not become negative labels and absent annotation remains explicitly pending", () => {
   const result = evaluateTrack(
     recording(

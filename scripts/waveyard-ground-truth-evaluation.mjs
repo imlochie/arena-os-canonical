@@ -21,6 +21,7 @@ const SECTION_LABELS = new Set([
   "pre-chorus",
   "chorus",
   "bridge",
+  "breakdown",
   "outro",
   "instrumental",
   "unknown",
