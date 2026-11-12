@@ -139,6 +139,30 @@ function mixTones(parts: Array<[number, number]>, seconds: number): Float32Array
   return pcm;
 }
 
+function windowRms(samples: Float32Array, channels: number, sampleRate: number, fromMs: number, toMs: number): number {
+  const start = Math.max(0, Math.floor(fromMs * sampleRate / 1000) * channels);
+  const end = Math.min(samples.length, Math.floor(toMs * sampleRate / 1000) * channels);
+  let sum = 0;
+  let count = 0;
+  for (let index = start; index < end; index += 1) {
+    sum += samples[index]! * samples[index]!;
+    count += 1;
+  }
+  return count ? Math.sqrt(sum / count) : 0;
+}
+
+function findAudibleSourceOffsetMs(
+  decoded: NonNullable<ReturnType<typeof decodeWav16>>,
+  windowMs: number,
+): number {
+  const durationMs = decoded.frames * 1000 / decoded.sampleRate;
+  for (let startMs = 0; startMs + windowMs <= durationMs; startMs += 10) {
+    if (windowRms(decoded.samples, decoded.channels, decoded.sampleRate, startMs, startMs + windowMs) > 0.003)
+      return startMs;
+  }
+  throw new Error(`No audible ${windowMs}ms window exists in the fixture stem.`);
+}
+
 function energyAt(pcm: Float32Array, frequency: number, startMs: number, endMs: number): number {
   const start = Math.floor((startMs / 1000) * RATE);
   const end = Math.floor((endMs / 1000) * RATE);
@@ -1403,6 +1427,230 @@ test(
       .from(schema.remixClips)
       .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
     assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
+
+    // Exercise the user-facing blank sequencer-track -> save -> reopen -> versioned
+    // WAV path independently of the optional full-song fixture. The existing
+    // source clip is deliberately placed after the first bar so the first two
+    // pad steps can prove their exact audio without being masked by other tracks.
+    {
+      const remixRoute = await import("../../../../remixes/[id]/route");
+      const tracksRoute = await import("../../../../remixes/[id]/tracks/route");
+      const versionsRoute = await import("../../../../remixes/[id]/versions/route");
+      const mediaRoute = await import("../../../../exports/[id]/media/route");
+      const { buildChopSequencerClips, readChopSequencerSteps, CHOP_SEQUENCER_TRACK_NAME } =
+        await import("@workspace/arena/lib/waveyard/studio/vocal-chops");
+      const [chopSession] = await dbModule.db.insert(schema.remixSessions).values({
+        projectId: project.id,
+        ownerId: savedSession.ownerId,
+        name: "Sequencer persistence acceptance",
+        masterVolume: 1,
+        loopStartMs: 0,
+        loopEndMs: null,
+        tempoBpm: 120,
+        timeSignatureNumerator: 4,
+        timeSignatureDenominator: 4,
+        gridDivision: "beat",
+        snapEnabled: true,
+        targetKey: null,
+      }).returning();
+      assert.ok(chopSession);
+      const [originalTrack] = await dbModule.db.insert(schema.remixTracks).values({
+        remixSessionId: chopSession.id,
+        stemAssetId: vocalsStemRow.id,
+        name: "Original vocal source",
+        sortOrder: 0,
+        volume: 1,
+        pan: 0,
+        muted: false,
+        solo: false,
+      }).returning();
+      assert.ok(originalTrack);
+      const [originalClip] = await dbModule.db.insert(schema.remixClips).values({
+        remixTrackId: originalTrack.id,
+        stemAssetId: vocalsStemRow.id,
+        timelineStartMs: 2_000,
+        durationMs: 500,
+        sourceOffsetMs: 0,
+        gain: 1,
+        fadeInMs: 0,
+        fadeOutMs: 0,
+        tempoSyncEnabled: false,
+        keySyncEnabled: false,
+        beatSnapEnabled: false,
+      }).returning();
+      assert.ok(originalClip);
+
+      const chopParams = { params: Promise.resolve({ id: chopSession.id }) };
+      const blankTrackResponse = await tracksRoute.POST(
+        new Request(`http://localhost/api/remixes/${chopSession.id}/tracks`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ stemAssetId: vocalsStemRow.id, name: CHOP_SEQUENCER_TRACK_NAME }),
+        }),
+        chopParams,
+      );
+      assert.equal(blankTrackResponse.status, 201, "a same-project stem must create a blank sequencer track");
+      const blankState = await blankTrackResponse.json() as {
+        remix: typeof chopSession;
+        tracks: Array<Record<string, unknown> & { id: string; name: string; stemAssetId: string; clips: Array<Record<string, unknown>> }>;
+        automation: unknown[];
+      };
+      const sequencerTrack = blankState.tracks.find((track) => track.name === CHOP_SEQUENCER_TRACK_NAME);
+      const originalTrackAfterCreate = blankState.tracks.find((track) => track.id === originalTrack.id);
+      assert.ok(sequencerTrack, "the blank track must be returned by the production route");
+      assert.equal(sequencerTrack.stemAssetId, vocalsStemRow.id);
+      assert.deepEqual(sequencerTrack.clips, [], "creating the sequencer must not copy the source track's clips");
+      assert.equal(originalTrackAfterCreate?.clips.length, 1, "the existing original clip must remain exactly once");
+
+      const createVersion = async (name: string) => {
+        const response = await versionsRoute.POST(
+          new Request(`http://localhost/api/remixes/${chopSession.id}/versions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name }),
+          }),
+          chopParams,
+        );
+        assert.equal(response.status, 201, `the ${name} state must be versioned`);
+        return (await response.json() as { version: { id: string } }).version;
+      };
+      const emptyPatternVersion = await createVersion("Before chop pattern");
+
+      const sampleDurationMs = 80;
+      const sourceOffsetMs = findAudibleSourceOffsetMs(decodedVocalStem, sampleDurationMs);
+      const sample = {
+        id: "audible-vocal-chop",
+        stemAssetId: vocalsStemRow.id,
+        startMs: sourceOffsetMs,
+        durationMs: sampleDurationMs,
+      };
+      const expectedSteps = ["audible-vocal-chop", null, "audible-vocal-chop", ...Array.from({ length: 13 }, () => null)];
+      const sequencerClips = buildChopSequencerClips([sample], expectedSteps, blankState.remix.tempoBpm);
+      assert.equal(sequencerClips.length, 2, "the pattern must create one clip for each assigned pad step");
+      const arrangementInput = (state: typeof blankState, nextTracks: typeof blankState.tracks) => ({
+        ...state.remix,
+        tracks: nextTracks,
+        automation: state.automation,
+        expectedVersion: state.remix.version,
+      });
+      const tracksWithPattern = blankState.tracks.map((track) =>
+        track.id === sequencerTrack.id
+          ? { ...track, clips: sequencerClips }
+          : track,
+      );
+      const patternSaveResponse = await remixRoute.PUT(
+        new Request(`http://localhost/api/remixes/${chopSession.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(arrangementInput(blankState, tracksWithPattern)),
+        }),
+        chopParams,
+      );
+      assert.equal(patternSaveResponse.status, 200, "the generated pad clips must save through the version-checked Studio route");
+
+      const staleSaveResponse = await remixRoute.PUT(
+        new Request(`http://localhost/api/remixes/${chopSession.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(arrangementInput(blankState, blankState.tracks)),
+        }),
+        chopParams,
+      );
+      assert.equal(staleSaveResponse.status, 409, "an older blank-pattern edit must not overwrite the newer saved pattern");
+
+      const reopenedResponse = await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${chopSession.id}`),
+        chopParams,
+      );
+      assert.equal(reopenedResponse.status, 200, "the saved sequencer arrangement must reopen through the production route");
+      const reopened = await reopenedResponse.json() as {
+        remix: typeof chopSession;
+        tracks: Array<Record<string, unknown> & { id: string; name: string; clips: Array<Record<string, unknown> & {
+          stemAssetId: string;
+          timelineStartMs: number;
+          durationMs: number;
+          sourceOffsetMs: number;
+          chopStepIndex: number | null;
+          chopSampleDurationMs: number | null;
+        }> }>;
+        automation: unknown[];
+      };
+      const reopenedSequencer = reopened.tracks.find((track) => track.id === sequencerTrack.id);
+      const reopenedOriginal = reopened.tracks.find((track) => track.id === originalTrack.id);
+      assert.ok(reopenedSequencer);
+      assert.equal(reopenedSequencer.clips.length, 2);
+      assert.equal(reopenedOriginal?.clips.length, 1, "saving the pattern must not duplicate original track clips");
+      assert.deepEqual(
+        readChopSequencerSteps(reopenedSequencer.clips, [sample], reopened.remix.tempoBpm),
+        expectedSteps,
+        "reopening the remix must reconstruct every assigned and empty sequencer step",
+      );
+      assert.deepEqual(
+        reopenedSequencer.clips.map((clip) => [clip.chopStepIndex, clip.chopSampleDurationMs]),
+        [[0, sampleDurationMs], [2, sampleDurationMs]],
+        "step identity and uncapped chop length must survive database save and reload",
+      );
+
+      const patternVersion = await createVersion("Saved chop pattern");
+      const [patternVersionRow] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, patternVersion.id));
+      assert.ok(patternVersionRow);
+      const patternSnapshot = JSON.parse(patternVersionRow.snapshot) as {
+        tracks: Array<{ id: string; clips: Array<{ chopStepIndex: number | null; chopSampleDurationMs: number | null }> }>;
+      };
+      assert.equal(patternSnapshot.tracks.find((track) => track.id === sequencerTrack.id)?.clips.length, 2,
+        "the immutable export version must contain both generated pad hits");
+
+      const exportAndDecodeVersion = async (versionId: string, name: string) => {
+        const [job] = await dbModule.db.insert(schema.exportJobs).values({
+          projectId: project.id,
+          remixSessionId: chopSession.id,
+          remixVersionId: versionId,
+          requestedById: chopSession.ownerId,
+          status: "queued",
+          stage: "queued",
+          idempotencyKey: `chop-pattern-${name}-${randomUUID()}`,
+          format: "wav",
+          sampleRate: RATE,
+          channels: 2,
+        }).returning();
+        assert.ok(job);
+        const exportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+        await exportWorker.handleExportJob({
+          exportJobId: job.id,
+          projectId: project.id,
+          remixSessionId: chopSession.id,
+          remixVersionId: versionId,
+          format: "wav",
+        });
+        const [completed] = await dbModule.db.select().from(schema.exportJobs)
+          .where(eq(schema.exportJobs.id, job.id));
+        assert.equal(completed.status, "complete", `${name} version must finish the local WAV export`);
+        const response = await mediaRoute.GET(
+          new Request(`http://localhost/api/exports/${job.id}/media`),
+          { params: Promise.resolve({ id: job.id }) },
+        );
+        assert.equal(response.status, 200, `${name} WAV must be available through the production media route`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        assert.equal(sha256(bytes), (await dbModule.db.select().from(schema.exportAssets)
+          .where(eq(schema.exportAssets.exportJobId, job.id)))[0]!.checksumSha256);
+        const decoded = decodeWav16(bytes);
+        assert.ok(decoded, `${name} WAV must decode as PCM`);
+        return decoded!;
+      };
+      const staleVersionExport = await exportAndDecodeVersion(emptyPatternVersion.id, "stale-empty");
+      assert.ok(windowRms(staleVersionExport.samples, staleVersionExport.channels, staleVersionExport.sampleRate, 10, 70) < 1e-4,
+        "exporting an older version must not silently read the later live chop pattern");
+      const patternExport = await exportAndDecodeVersion(patternVersion.id, "saved-pattern");
+      assert.ok(windowRms(patternExport.samples, 2, RATE, 10, 70) > 0.0005,
+        "the first saved chop must produce audible audio at its assigned step");
+      assert.ok(windowRms(patternExport.samples, 2, RATE, 130, 240) < 1e-4,
+        "the unassigned second step must remain silent");
+      assert.ok(windowRms(patternExport.samples, 2, RATE, 260, 320) > 0.0005,
+        "the repeated chop must produce audio at its second assigned step");
+      assert.ok(Math.abs(patternExport.frames / RATE - 2.5) < 0.1,
+        "the export duration must come from the original clip and include the sequencer pattern");
+    }
 
     if (realFixture) {
       const donorVocalStem = savedTrackStemProvenance.find((stem) =>

@@ -12,19 +12,20 @@
   their safest known duration. Whole-session saves, versions/restores, track
   edits, and clip moves preserve or deliberately detach the pad identity.
   Ordinary clips are unchanged.
-* **Verification:** 18 vocal-chop tests, 2 database acceptance tests, and 26
-  remix normalization tests passed. `pnpm run typecheck:libs`,
-  `pnpm --filter @workspace/arenaforge run typecheck`, and `git diff --check`
-  passed. The API-server package typecheck is currently blocked by an
-  unrelated incomplete vocal-evidence object in
+* **Verification:** 18 focused vocal-chop tests passed. The API acceptance
+  route test also passed using its synthetic audio fixture and embedded
+  PostgreSQL: it created a blank sequencer track from a same-project stem,
+  saved and reopened two assigned steps, rejected a stale save, kept the
+  existing source clip exactly once, and exported a WAV through the persisted
+  version and production media route. PCM checks found audio on both assigned
+  steps, silence on the empty step, and no chops in an older version's export.
+  `git diff --check` passed. The API-server package typecheck remains blocked by
+  an incomplete vocal-evidence object in
   `artifacts/api-server/src/imported/waveyard/projects/[id]/automatic-remixes/route.ts`.
-  The prescribed full project test chain also failed in the unrelated Arcade
-  smoke check at `scripts/arena-smoke.mjs:4374`: its revised multi-ball touch
-  action remained inactive. An isolated rerun exceeded the five-minute limit
-  after earlier audio checks had passed.
-* **Not proven:** a full WAV export after changing a saved chop pattern's tempo
-  has not yet been run. Verify save, reopen, and rendered WAV output before
-  claiming the complete export workflow.
+* **Not proven:** this sequencer acceptance used generated tones, not a
+  real-world separated vocal stem. Export after changing the saved pattern's
+  tempo remains unverified. These checks prove persistence and rendering, not
+  that a real-world chop pattern sounds musically good.
 
 ## Current verification — active separation memory
 
