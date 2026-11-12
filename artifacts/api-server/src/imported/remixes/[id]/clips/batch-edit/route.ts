@@ -22,6 +22,7 @@ import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 import { crossfadeError, type RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
 import { barMs, beatMs, type MusicalTiming } from "@workspace/arena/lib/waveyard/timing";
+import { bindChopSequencerClipToTimeline } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
 
 const operations = new Set(["move", "nudge", "duplicate", "delete"]);
 type Operation = "move" | "nudge" | "duplicate" | "delete";
@@ -45,10 +46,12 @@ function editable(clip: typeof remixClips.$inferSelect) {
     tempoSyncEnabled: clip.tempoSyncEnabled,
     keySyncEnabled: clip.keySyncEnabled,
     beatSnapEnabled: clip.beatSnapEnabled,
+    chopStepIndex: clip.chopStepIndex,
+    chopSampleDurationMs: clip.chopSampleDurationMs,
   };
 }
 
-function values(clip: Omit<ReturnType<typeof editable>, "id"> & { id?: string }) {
+function values(clip: RemixClipInput & { id?: string }) {
   return {
     stemAssetId: clip.stemAssetId,
     timelineStartMs: clip.timelineStartMs,
@@ -60,6 +63,8 @@ function values(clip: Omit<ReturnType<typeof editable>, "id"> & { id?: string })
     tempoSyncEnabled: clip.tempoSyncEnabled,
     keySyncEnabled: clip.keySyncEnabled,
     beatSnapEnabled: clip.beatSnapEnabled,
+    chopStepIndex: clip.chopStepIndex ?? null,
+    chopSampleDurationMs: clip.chopSampleDurationMs ?? null,
     updatedAt: new Date(),
   };
 }
@@ -163,14 +168,21 @@ export async function POST(
       const moved = delta === null ? null : moveEditableClips(selected.map(editable), delta);
       if (!moved)
         return Response.json({ error: "This group move would exceed the arrangement timeline." }, { status: 422 });
+      const trackNameById = new Map(tracks.map((track) => [track.id, track.name]));
+      const trackByClipId = new Map(selected.map((clip) => [clip.id, clip.remixTrackId]));
+      const movedWithChop = moved.map((clip) => bindChopSequencerClipToTimeline(
+        clip,
+        trackNameById.get(trackByClipId.get(clip.id!) ?? "") ?? "",
+        remix.tempoBpm,
+      ));
       const crossfadeMessage = crossfadeMessageForCandidateTracks(
         allOnTracks,
-        new Map(moved.map((clip) => [clip.id!, clip])),
+        new Map(movedWithChop.map((clip) => [clip.id!, clip])),
       );
       if (crossfadeMessage)
         return Response.json({ error: crossfadeMessage }, { status: 422 });
       updated = await db.transaction(async (tx) => {
-        const result = await Promise.all(moved.map(async (clip) => {
+        const result = await Promise.all(movedWithChop.map(async (clip) => {
           const [row] = await tx.update(remixClips).set(values(clip)).where(eq(remixClips.id, clip.id!)).returning();
           return row;
         }));
@@ -184,6 +196,12 @@ export async function POST(
       const duplicates = duplicateEditableClips(selected.map(editable), offset ?? undefined);
       if (!duplicates)
         return Response.json({ error: "Duplicate placement would exceed the arrangement timeline." }, { status: 422 });
+      const trackNameById = new Map(tracks.map((track) => [track.id, track.name]));
+      const duplicatesWithChop = duplicates.map((clip, index) => bindChopSequencerClipToTimeline(
+        clip,
+        trackNameById.get(selected[index]!.remixTrackId) ?? "",
+        remix.tempoBpm,
+      ));
       const selectedPerTrack = new Map<string, number>();
       for (const clip of selected) selectedPerTrack.set(clip.remixTrackId, (selectedPerTrack.get(clip.remixTrackId) ?? 0) + 1);
       if ([...selectedPerTrack].some(([trackId, additions]) => !hasClipCapacity(allOnTracks.filter((clip) => clip.remixTrackId === trackId).length, additions, MAX_CLIPS_PER_TRACK)))
@@ -192,7 +210,7 @@ export async function POST(
         allOnTracks,
         undefined,
         undefined,
-        duplicates.map((clip, index) => ({
+        duplicatesWithChop.map((clip, index) => ({
           remixTrackId: selected[index].remixTrackId,
           clip,
         })),
@@ -200,7 +218,7 @@ export async function POST(
       if (crossfadeMessage)
         return Response.json({ error: crossfadeMessage }, { status: 422 });
       created = await db.transaction(async (tx) => {
-        const rows = await Promise.all(duplicates.map(async (clip, index) => {
+        const rows = await Promise.all(duplicatesWithChop.map(async (clip, index) => {
           const [row] = await tx.insert(remixClips).values({ remixTrackId: selected[index].remixTrackId, ...values(clip) }).returning();
           return row;
         }));

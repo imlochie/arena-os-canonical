@@ -1,5 +1,27 @@
 # Arena handoff — read this first
 
+## Current implementation — tempo-locked vocal-chop patterns
+
+* **Musical position:** generated pad hits now retain their sixteenth-step
+  identity and original extracted sample length. Studio BPM changes retime the
+  ordinary arrangement clips and cap each hit to the new step while keeping
+  its original sample boundary. Preview, persistence, and export continue to
+  consume the same clip timeline.
+* **Persistence and editing:** migration `0028_remix_chop_grid.sql` adds the
+  optional clip fields and backfills existing on-grid sequencer clips with
+  their safest known duration. Whole-session saves, versions/restores, track
+  edits, and clip moves preserve or deliberately detach the pad identity.
+  Ordinary clips are unchanged.
+* **Verification:** 18 vocal-chop tests, 2 database acceptance tests, and 26
+  remix normalization tests passed. `pnpm run typecheck:libs`,
+  `pnpm --filter @workspace/arenaforge run typecheck`, and `git diff --check`
+  passed. The API-server package typecheck is currently blocked by an
+  unrelated incomplete vocal-evidence object in
+  `artifacts/api-server/src/imported/waveyard/projects/[id]/automatic-remixes/route.ts`.
+* **Not proven:** a full WAV export after changing a saved chop pattern's tempo
+  has not yet been run. Verify save, reopen, and rendered WAV output before
+  claiming the complete export workflow.
+
 ## Current verification — active separation memory
 
 * **Measurement:** each production inference worker samples

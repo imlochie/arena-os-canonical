@@ -31,6 +31,10 @@ export type RemixClipInput = {
   keySyncEnabled: boolean;
   // Missing on historical snapshots retains freehand source editing.
   beatSnapEnabled: boolean;
+  /** Zero-based sixteenth-note position for a Vocal Chop Sequencer hit. */
+  chopStepIndex?: number | null;
+  /** Uncapped extracted sample length, used when the tempo changes. */
+  chopSampleDurationMs?: number | null;
 };
 export type RemixTrackInput = {
   id: string;
@@ -120,6 +124,25 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
       const fadeInMs = Math.round(clamp(clip.fadeInMs ?? 0, 0, durationMs));
       const fadeOutMs = Math.round(clamp(clip.fadeOutMs ?? 0, 0, durationMs));
       if (fadeInMs + fadeOutMs > durationMs) return null;
+      const noChopMetadata = clip.chopStepIndex === undefined && clip.chopSampleDurationMs === undefined;
+      const detachedChopMetadata = clip.chopStepIndex === null && clip.chopSampleDurationMs === null;
+      const hasChopMetadata = typeof clip.chopStepIndex === "number"
+        && typeof clip.chopSampleDurationMs === "number";
+      if (!noChopMetadata && !detachedChopMetadata && !hasChopMetadata) return null;
+      let chopStepIndex: number | null = null;
+      let chopSampleDurationMs: number | null = null;
+      if (hasChopMetadata) {
+        if (!Number.isSafeInteger(clip.chopStepIndex)
+          || Number(clip.chopStepIndex) < 0
+          || Number(clip.chopStepIndex) > 1_728_000)
+          return null;
+        if (!Number.isSafeInteger(clip.chopSampleDurationMs)
+          || Number(clip.chopSampleDurationMs) < durationMs
+          || Number(clip.chopSampleDurationMs) > 86_400_000)
+          return null;
+        chopStepIndex = Number(clip.chopStepIndex);
+        chopSampleDurationMs = Number(clip.chopSampleDurationMs);
+      }
       const fadeShape = clip.fadeShape === undefined ? "linear" : clip.fadeShape;
       if (!isClipFadeShape(fadeShape)) return null;
       clips.push({
@@ -136,6 +159,9 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
         keySyncEnabled: clip.keySyncEnabled === true,
         beatSnapEnabled: clip.beatSnapEnabled === true,
+        ...(detachedChopMetadata
+          ? { chopStepIndex: null, chopSampleDurationMs: null }
+          : chopStepIndex === null ? {} : { chopStepIndex, chopSampleDurationMs: chopSampleDurationMs! }),
       });
     }
     tracks.push({

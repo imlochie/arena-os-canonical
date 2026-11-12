@@ -286,6 +286,15 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
 
       const insertedTracks = await tx.insert(remixTracks).values(tracksToInsert).returning();
       const trackByStemId = new Map(insertedTracks.map((t) => [t.stemAssetId, t]));
+      const [chopTrack] = await tx.insert(remixTracks).values({
+        remixSessionId: remix.id,
+        stemAssetId: vocalStem.id,
+        name: "Vocal Chop Sequencer",
+        sortOrder: 3,
+        volume: 1,
+        pan: 0,
+      }).returning();
+      insertedTracks.push(chopTrack!);
 
       const clipsToInsert: Array<{
         remixTrackId: string;
@@ -299,6 +308,8 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
         tempoSyncEnabled: boolean;
         keySyncEnabled: boolean;
         beatSnapEnabled: boolean;
+        chopStepIndex?: number;
+        chopSampleDurationMs?: number;
       }> = [];
 
       // Vocal clips from planned segments
@@ -336,6 +347,21 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
           beatSnapEnabled: true,
         });
       }
+      clipsToInsert.push({
+        remixTrackId: chopTrack!.id,
+        stemAssetId: vocalStem.id,
+        timelineStartMs: Math.round(7 * (60_000 / plan.masterBpm / 4)),
+        durationMs: Math.round(Math.min(240, 60_000 / plan.masterBpm / 4)),
+        sourceOffsetMs: 500,
+        gain: 1,
+        fadeInMs: 3,
+        fadeOutMs: 3,
+        tempoSyncEnabled: false,
+        keySyncEnabled: false,
+        beatSnapEnabled: false,
+        chopStepIndex: 7,
+        chopSampleDurationMs: 240,
+      });
 
       const insertedClips = await tx.insert(remixClips).values(clipsToInsert).returning();
 
@@ -372,7 +398,7 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
     });
 
     assert.ok(saveResult.remix.id);
-    assert.equal(saveResult.tracks.length, 3);
+    assert.equal(saveResult.tracks.length, 4);
     assert.ok(saveResult.clips.length >= 3);
     const initialSnapshot = JSON.parse(saveResult.version.snapshot) as {
       mashupPlan?: {
@@ -409,7 +435,7 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
       .select()
       .from(remixTracks)
       .where(eq(remixTracks.remixSessionId, reloadedSession.id));
-    assert.equal(reloadedTracks.length, 3);
+    assert.equal(reloadedTracks.length, 4);
 
     const reloadedClips = await db
       .select()
@@ -423,11 +449,21 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
       assert.ok(clip.durationMs > 0);
       assert.ok(clip.gain > 0 && clip.gain <= 1);
     }
-    const reopenedVocalClip = reloadedClips.find((clip) => clip.stemAssetId === vocalStem.id)!;
+    const reopenedVocalClip = reloadedClips.find((clip) =>
+      clip.remixTrackId === saveResult.tracks.find((track) => track.name === "Lead Vocals")!.id &&
+      clip.stemAssetId === vocalStem.id,
+    )!;
     assert.equal(reopenedVocalClip.timelineStartMs, plan.segments[0]!.mashupStartMs,
       "the full-track passage selection must survive the database save/reopen round-trip");
     assert.equal(reopenedVocalClip.sourceOffsetMs, plan.segments[0]!.vocalsFromMs,
       "the earlier vocal material remains attached instead of being cut to the selected later passage");
+    const reopenedChopClip = reloadedClips.find((clip) =>
+      clip.remixTrackId === saveResult.tracks.find((track) => track.name === "Vocal Chop Sequencer")!.id,
+    )!;
+    assert.equal(reopenedChopClip.chopStepIndex, 7,
+      "the database row retains the exact pad step rather than inferring it from a stale timestamp");
+    assert.equal(reopenedChopClip.chopSampleDurationMs, 240,
+      "the original sample limit survives a later tempo change and reload");
 
     // Studio Editing & Re-saving: simulate user adjusting track volume & clip gain
     const trackToEdit = reloadedTracks[0];

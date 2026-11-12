@@ -10,6 +10,7 @@ import {
   stemAssets,
 } from "@workspace/db/waveyardSchema";
 import { ARRANGEMENT_EXTENSION_INTENTS, proposeArrangementExtension, type ArrangementExtensionIntent } from "@workspace/arena/lib/waveyard/types";
+import { bindChopSequencerClipToTimeline } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 
@@ -86,15 +87,25 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     await db.transaction(async (tx) => {
       const tracks = await tx.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id));
       const clips = await tx.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id)));
+      const trackNameById = new Map(tracks.map((track) => [track.id, track.name]));
       const anchor = clips.find((clip) => clip.id === anchorClipId);
       if (!anchor) throw new Response("Anchor clip is no longer available.", { status: 409 });
       if (proposal.shiftFollowingByMs > 0) {
         const threshold = proposal.intent === "extend-intro" ? 0 : anchor.timelineStartMs + anchor.durationMs;
         for (const clip of clips) {
-          if (clip.id !== anchor.id && clip.timelineStartMs >= threshold)
-            await tx.update(remixClips).set({ timelineStartMs: clip.timelineStartMs + proposal.shiftFollowingByMs, updatedAt: new Date() }).where(eq(remixClips.id, clip.id));
-          if (clip.id === anchor.id && proposal.intent === "extend-intro")
-            await tx.update(remixClips).set({ timelineStartMs: clip.timelineStartMs + proposal.shiftFollowingByMs, updatedAt: new Date() }).where(eq(remixClips.id, clip.id));
+          const shouldShift = (clip.id !== anchor.id && clip.timelineStartMs >= threshold)
+            || (clip.id === anchor.id && proposal.intent === "extend-intro");
+          if (!shouldShift) continue;
+          const moved = bindChopSequencerClipToTimeline({
+            ...clip,
+            timelineStartMs: clip.timelineStartMs + proposal.shiftFollowingByMs,
+          }, trackNameById.get(clip.remixTrackId) ?? "", remix.tempoBpm);
+          await tx.update(remixClips).set({
+            timelineStartMs: moved.timelineStartMs,
+            chopStepIndex: moved.chopStepIndex ?? null,
+            chopSampleDurationMs: moved.chopSampleDurationMs ?? null,
+            updatedAt: new Date(),
+          }).where(eq(remixClips.id, clip.id));
         }
       }
       await tx.insert(remixClips).values({

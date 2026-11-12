@@ -694,6 +694,10 @@ export const remixClips = pgTable("remix_clips", {
   keySyncEnabled: boolean("key_sync_enabled").notNull().default(false),
   // Source-editing intent; snapping resolves metadata only and adds no DSP.
   beatSnapEnabled: boolean("beat_snap_enabled").notNull().default(false),
+  /** Pad-grid identity for generated vocal-chop clips; null for ordinary clips. */
+  chopStepIndex: integer("chop_step_index"),
+  /** Original extracted sample length before capping it to one sequencer step. */
+  chopSampleDurationMs: integer("chop_sample_duration_ms"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_clips_track_id_idx").on(table.remixTrackId), index("remix_clips_asset_id_idx").on(table.stemAssetId)]);

@@ -391,6 +391,8 @@ export async function PUT(
           tempoSyncEnabled: clip.tempoSyncEnabled,
           keySyncEnabled: clip.keySyncEnabled,
           beatSnapEnabled: clip.beatSnapEnabled,
+          chopStepIndex: clip.chopStepIndex ?? null,
+          chopSampleDurationMs: clip.chopSampleDurationMs ?? null,
         })),
       );
       if (clips.length) await tx.insert(remixClips).values(clips);
