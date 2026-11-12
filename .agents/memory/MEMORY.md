@@ -56,3 +56,4 @@
 - [Waveyard Studio readiness refresh](waveyard-studio-readiness-refresh.md) — compare source and stem asset identities in session refreshes so disappearing or replaced audio cannot leave picker readiness stale.
 - [Waveyard keyboard selection](waveyard-keyboard-selection.md) — separate focus from membership so arbitrary clip groups do not require hijacking browser shortcuts.
 - [Waveyard fullscreen focus](waveyard-fullscreen-focus.md) — check post-exit layout, hit testing and overlay visibility, not just activeElement.
+- [Waveyard worker memory peaks](waveyard-worker-memory-peaks.md) — ONNX can block the inference worker loop; sample process RSS independently from the parent and report worker counters separately.

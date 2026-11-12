@@ -66,7 +66,12 @@ import {
   verifyModelFile,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { DependencyMissingError } from "@workspace/arena/lib/waveyard/measure/pcm";
-import type { SeparationActiveMemoryPeak } from "./separation-memory";
+import {
+  combineSeparationMemoryPeaks,
+  createSeparationProcessRssSampler,
+  type SeparationActiveMemoryPeak,
+  type SeparationWorkerMemoryPeak,
+} from "./separation-memory";
 
 /** Everything the handler needs from the outside world, injectable so the
  *  e2e test runs the FULL pipeline (decode → demix → encode → persist)
@@ -176,14 +181,21 @@ export function demixMdxInWorker(
   // Keep the decoded mix available for every model in a multi-stem recipe.
   const left = mix[0].slice();
   const right = mix[1].slice();
-
-  return new Promise((resolveResult, rejectResult) => {
-    const worker = new Worker(target.filename, {
+  const processRssSampler = createSeparationProcessRssSampler();
+  let worker: Worker;
+  try {
+    worker = new Worker(target.filename, {
       workerData: { spec, requestedDevice, left: left.buffer, right: right.buffer },
       transferList: [left.buffer, right.buffer],
     });
+  } catch (error) {
+    processRssSampler.stop();
+    return Promise.reject(error);
+  }
+
+  return new Promise((resolveResult, rejectResult) => {
     let settled = false;
-    let result: WorkerDemixResult | undefined;
+    let result: Omit<WorkerDemixResult, "activeMemoryPeak"> & { activeMemoryPeak: SeparationWorkerMemoryPeak } | undefined;
     let workerError: Error | undefined;
     let termination: Promise<number> | undefined;
     const onAbort = () => {
@@ -226,7 +238,7 @@ export function demixMdxInWorker(
           separated: message.separated as SeparatedStems,
           resolvedDevice: String(message.resolvedDevice),
           timings: message.timings as MdxStageTimings,
-          activeMemoryPeak: message.activeMemoryPeak as SeparationActiveMemoryPeak,
+          activeMemoryPeak: message.activeMemoryPeak as SeparationWorkerMemoryPeak,
         };
       }
     });
@@ -234,6 +246,7 @@ export function demixMdxInWorker(
       if (!signal?.aborted) workerError = error instanceof Error ? error : new Error(String(error));
     });
     worker.once("exit", (code) => {
+      const processRssPeak = processRssSampler.stop();
       if (signal?.aborted) {
         settle(() => rejectResult(new SeparationCancelledError()));
       } else if (code !== 0) {
@@ -241,7 +254,10 @@ export function demixMdxInWorker(
       } else if (workerError) {
         settle(() => rejectResult(workerError!));
       } else if (result) {
-        settle(() => resolveResult(result!));
+        settle(() => resolveResult({
+          ...result!,
+          activeMemoryPeak: combineSeparationMemoryPeaks(result!.activeMemoryPeak, processRssPeak),
+        }));
       } else {
         settle(() => rejectResult(new Error("Separation inference worker exited before returning a result (code 0).")));
       }

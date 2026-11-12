@@ -16,7 +16,7 @@ import {
 import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
 import {
   createSeparationActiveMemorySampler,
-  type SeparationActiveMemoryPeak,
+  type SeparationWorkerMemoryPeak,
 } from "./separation-memory";
 
 type RequestData = {
@@ -44,7 +44,7 @@ async function run() {
   const memorySampler = createSeparationActiveMemorySampler();
   let session: MdxSessionLike | undefined;
   let resolvedDevice: string | undefined;
-  let activeMemoryPeak: SeparationActiveMemoryPeak | undefined;
+  let activeMemoryPeak: SeparationWorkerMemoryPeak | undefined;
   let lastError: unknown = null;
   for (const executionProviders of attempts) {
     try {
@@ -80,7 +80,7 @@ async function run() {
         separated: Awaited<ReturnType<typeof demixMdx>>;
         resolvedDevice: string;
         timings: MdxStageTimings | undefined;
-        activeMemoryPeak: SeparationActiveMemoryPeak;
+        activeMemoryPeak: SeparationWorkerMemoryPeak;
       }
     | undefined;
   try {
@@ -89,7 +89,10 @@ async function run() {
       [new Float32Array(request.left), new Float32Array(request.right)],
       request.spec,
       sessionInfer(session, (type, data, dims) => new ort.Tensor(type, data, dims)),
-      (done, total) => port.postMessage({ type: "progress", done, total }),
+      (done, total) => {
+        memorySampler.sampleNow();
+        port.postMessage({ type: "progress", done, total });
+      },
       (measured) => {
         timings = measured;
       },

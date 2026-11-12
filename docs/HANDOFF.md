@@ -1,5 +1,41 @@
 # Arena handoff — read this first
 
+## Current verification — active separation memory
+
+* **Measurement:** each production inference worker samples
+  `process.memoryUsage()` every 500 ms from model-session creation through the
+  end of its model pass and after each completed model chunk. The parent
+  independently samples process RSS every 100 ms, so ONNX calls that block the
+  worker event loop cannot hide short RSS peaks. Both samplers retain only
+  maxima and counts; they keep no sample history. RSS is process-wide; heap,
+  external memory, and array-buffer counters are for the active worker isolate.
+* **Reporting:** schema-v2 real-ORT memory reports record active peaks per model
+  pass separately from `postReleaseMemory`, sampled after each complete
+  four-model job and the existing worker-teardown settle. These are different
+  measurement windows and must not be compared as though they were simultaneous.
+  They are sampled maxima, not allocation tracing: a brief worker-isolate
+  heap/external peak inside a single native call can still fall between chunk
+  callbacks and timer samples.
+* **Verification:** sampler unit coverage checks independent counter maxima,
+  bounded report shape, and both intervals (4/4). The real-length worker and
+  library-responsiveness check passed (1/1). The pinned four-model CPU memory
+  acceptance passed six repeated four-second synthetic-input jobs. Active
+  process-RSS maxima across those passes were 2,494.5 MiB for `kim_vocal_2`,
+  1,488.3 MiB for `kuielab_b_drums`, 1,785.5 MiB for `kuielab_b_bass`, and
+  1,823.4 MiB for `kuielab_b_other`; per-worker heap/external/array-buffer
+  counters are also in each report. Post-release RSS ranged 766.2–1,330.1 MiB.
+  The existing continued-growth check passed at 116.1 MiB against its 128 MiB
+  limit, so this is not evidence that peak memory is safe on low-memory machines.
+  The responsiveness test is not a paired throughput benchmark, so it does not
+  prove that sampling has zero performance cost.
+  A six-job rerun after adding per-chunk worker snapshots was terminated by the
+  runner before it wrote a report; the exact six-job figures above are from the
+  preceding version with the same independent 100 ms RSS sampler. The
+  real-length worker test passed again on the final per-chunk-sampling version.
+  Tests use the rebuilt worker (`pnpm --filter @workspace/api-server run build`)
+  before running the real-ORT acceptance; a stale `dist` worker can report an
+  obsolete sampling interval.
+
 ## Current implementation — rolling mashup windows and pitch-aware chops
 
 * **Passage evidence:** current source analysis persists checksum-bound local
