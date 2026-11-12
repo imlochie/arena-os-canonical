@@ -189,6 +189,21 @@ test(
     vocals: { status: string; sectionCount: number; fingerprintCount: number };
     bed: { status: string; sectionCount: number; fingerprintCount: number };
   } | null = null;
+  let realSectionsBySourceChecksum: Record<string, Array<{
+    startMs: number;
+    endMs: number;
+    label: string;
+    labelConfidence: number;
+    structuralConfidence: number;
+    analysisEngine: string;
+    analysisEngineVersion: string;
+    sourceChecksumSha256: string;
+  }>> = {};
+  let realVocalPhrasePredictions: Array<{
+    startMs: number;
+    endMs: number;
+    confidence: number;
+  }> = [];
   let realVocalVoicingEvidence: {
     count: number;
     firstVoicedRun: { startMs: number; endMs: number; confidence: number };
@@ -470,6 +485,11 @@ test(
       const phrases = vocalTypes.segmentVocalPhrases(detectVocalPitchFrames(analysisPcm))
         .filter((phrase) => phrase.endMs > phrase.startMs && phrase.confidence >= 0.5);
       assert.ok(phrases.length > 0, "real separated vocals must yield at least one confidence-qualified voiced phrase");
+      realVocalPhrasePredictions = phrases.map(({ startMs, endMs, confidence }) => ({
+        startMs,
+        endMs,
+        confidence,
+      }));
       realVocalVoicingEvidence = {
         count: phrases.length,
         firstVoicedRun: phrases[0],
@@ -760,12 +780,18 @@ test(
           selectedBedSectionId: string | null;
           evaluations: Array<{
             donorSectionId: string;
+            vocalSourceSha256: string;
+            donorStartMs: number;
+            donorEndMs: number;
             status: string;
             selected: boolean;
             rankedBedCandidates?: Array<{
               rank: number;
               bedSourceSha256: string | null;
               bedSectionId: string;
+              bedStartMs: number;
+              bedEndMs: number;
+              plannedEntryMs: number;
               relativeScore: number;
               selected: boolean;
             }>;
@@ -833,6 +859,16 @@ test(
         assert.ok(rows.length > 0, "the section worker must persist real source sections");
         assert.ok(rows.every((row) => row.sourceChecksumSha256 === sourceAsset.checksumSha256),
           "every persisted section must remain bound to the original source checksum");
+        realSectionsBySourceChecksum[sourceAsset.checksumSha256] = rows.map((row) => ({
+          startMs: row.startMs,
+          endMs: row.endMs,
+          label: row.label,
+          labelConfidence: row.labelConfidence,
+          structuralConfidence: row.structuralConfidence,
+          analysisEngine: row.analysisEngine,
+          analysisEngineVersion: row.analysisEngineVersion,
+          sourceChecksumSha256: row.sourceChecksumSha256,
+        }));
         sectionResults.push({
           status: completed.status,
           sectionCount: rows.length,
@@ -1599,6 +1635,82 @@ test(
             storageKey: exportAsset.storageKey,
           },
         };
+        if (realFixture) {
+          const capturedAt = new Date().toISOString();
+          const passageEvaluations = planBody.plan?.passageSearch?.evaluations ?? [];
+          const predictionSnapshot = {
+            schemaVersion: 1,
+            producer: "Waveyard production mashup route",
+            producerRevision:
+              process.env.WAVEYARD_MASHUP_PRODUCER_REVISION?.trim() || null,
+            capturedAt,
+            recordings: {
+              "another-one-bites-the-dust": {
+                sourceSha256: sha256(vocalsOriginal),
+                vocalPhrases: realVocalPhrasePredictions,
+                sections:
+                  realSectionsBySourceChecksum[sha256(vocalsOriginal)] ?? [],
+                donorWindows: passageEvaluations.map((evaluation) => ({
+                  vocalSourceSha256: evaluation.vocalSourceSha256,
+                  startMs: evaluation.donorStartMs,
+                  endMs: evaluation.donorEndMs,
+                  rankedBedCandidates: (evaluation.rankedBedCandidates ?? []).map(
+                    (candidate) => ({
+                      rank: candidate.rank,
+                      bedSourceSha256: candidate.bedSourceSha256,
+                      bedStartMs: candidate.bedStartMs,
+                      bedEndMs: candidate.bedEndMs,
+                      relativeScore: candidate.relativeScore,
+                      selected: candidate.selected,
+                    }),
+                  ),
+                })),
+                measurementNote:
+                  "Full-track isolated-vocal pitch-continuity phrases; not words, syllables, or lyric meaning.",
+              },
+              september: {
+                sourceSha256: sha256(bedOriginal),
+                vocalPhrases: [],
+                sections: realSectionsBySourceChecksum[sha256(bedOriginal)] ?? [],
+                donorWindows: [],
+                measurementNote:
+                  "Section structure is captured from the original source. No isolated-vocal analysis was run for this bed in this route direction.",
+              },
+            },
+            sectionLabelLimit:
+              "Structural labels such as section, rhythm-repeat, and energy-change are not verse, chorus, bridge, or breakdown classifications.",
+          };
+          assert.equal(
+            predictionSnapshot.recordings["another-one-bites-the-dust"].sections.length,
+            realSectionPassageEvidence?.vocals.sectionCount,
+            "the snapshot must export every persisted donor section",
+          );
+          assert.equal(
+            predictionSnapshot.recordings.september.sections.length,
+            realSectionPassageEvidence?.bed.sectionCount,
+            "the snapshot must export every persisted bed section",
+          );
+          assert.equal(
+            predictionSnapshot.recordings["another-one-bites-the-dust"].vocalPhrases.length,
+            realVocalVoicingEvidence?.count,
+            "the snapshot must export all full-track persisted vocal-phrase intervals",
+          );
+          assert.equal(
+            predictionSnapshot.recordings["another-one-bites-the-dust"].donorWindows.length,
+            planBody.plan?.passageSearch?.evaluatedDonorPassageCount,
+            "the snapshot must retain every evaluated donor window, including those without candidates",
+          );
+          report.predictionSnapshot = predictionSnapshot;
+          const predictionPath = process.env.WAVEYARD_GROUND_TRUTH_PREDICTIONS_PATH?.trim();
+          if (predictionPath) {
+            const resolvedPredictionPath = realFixturePath(predictionPath);
+            await mkdir(path.dirname(resolvedPredictionPath), { recursive: true });
+            await writeFile(
+              resolvedPredictionPath,
+              `${JSON.stringify(predictionSnapshot, null, 2)}\n`,
+            );
+          }
+        }
         await writeFile(resolvedReportPath, `${JSON.stringify(report, null, 2)}\n`);
       }
     } else {
