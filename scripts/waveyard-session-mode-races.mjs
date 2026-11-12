@@ -110,18 +110,18 @@ export async function verifySessionModeRaces({ page, context, base, makePcmWav, 
         if (body.transition) track.transition = body.transition;
         if (body.stemMix) track.stemMix = body.stemMix;
         if (!body.playbackPreference) return json({ session });
-        assert(pending, "An unexpected preference PATCH escaped the test gate");
-        assert.equal(track.id, `${prefix}b`);
-        assert.deepEqual(body, { playbackPreference: pending.preference });
         track.playbackPreference = body.playbackPreference;
         track.playback = body.playbackPreference === "source"
           ? { kind: "source", assetIds: [track.sourceAssetId] }
           : { kind: "stems", assetIds: track.stems.map(stem => stem.id) };
+        const gate = pending && !pending.captured && track.id === `${prefix}b`
+          && body.playbackPreference === pending.preference ? pending : null;
+        if (!gate) return json({ session });
         // Persist now, but retain the entire old response (including its old
         // play pointer and queue) until the user has made a newer change.
         const snapshot = structuredClone(session);
-        const gate = pending;
         gate.snapshot = snapshot;
+        gate.captured = true;
         gate.started.resolve();
         await gate.release.promise;
         await json({ session: snapshot });
@@ -198,7 +198,7 @@ export async function verifySessionModeRaces({ page, context, base, makePcmWav, 
   }
 
   try {
-    for (const race of ["start", "transition", "remove", "navigate", "start-stems", "transition-stems"]) {
+    for (const race of ["start", "transition", "remove", "navigate", "revisit", "start-stems", "transition-stems"]) {
       console.log(`Mode-save race: ${race}`);
       const reversePreference = race.endsWith("-stems");
       const scenario = reversePreference ? race.slice(0, -"-stems".length) : race;
@@ -279,7 +279,7 @@ export async function verifySessionModeRaces({ page, context, base, makePcmWav, 
         await openOrder();
         await current("c").waitFor();
         assert.equal(await queueJump("b").count(), 0, "Removal must also survive a fresh load");
-      } else {
+      } else if (scenario === "navigate") {
         // Client-side links keep the same ListeningHost mounted so the pending
         // callback really runs against the OTHER session, not a dead document.
         await page.getByRole("link", { name: "All sessions", exact: true }).evaluate(element => element.click());
@@ -308,6 +308,61 @@ export async function verifySessionModeRaces({ page, context, base, makePcmWav, 
           await page.getByTestId("session-play").click();
         }
         await advancing([`${prefix}b-source`]);
+      } else {
+        // Return to the original session while the first save is still held.
+        // Its completed response must not replace a newer choice, pointer, or
+        // playing media from that same session.
+        await page.getByRole("link", { name: "All sessions", exact: true }).evaluate(element => element.click());
+        await page.locator(`a[href="/waveyard/session/${other.id}"]`).evaluate(element => element.click());
+        await page.getByTestId("listening-workspace").filter({ hasText: other.name }).waitFor();
+        await page.getByRole("link", { name: "All sessions", exact: true }).evaluate(element => element.click());
+        await page.locator(`a[href="/waveyard/session/${a.id}"]`).evaluate(element => element.click());
+        await page.getByTestId("listening-workspace").filter({ hasText: a.name }).waitFor();
+        await openOrder();
+        const newerChooser = page.getByTestId(`session-playback-mode-${prefix}c`);
+        await newerChooser.selectOption("source");
+        await page.getByTestId("session-status").filter({ hasText: "Full track saved for “Race song c”" }).waitFor();
+        assert.equal(await newerChooser.inputValue(), "source");
+
+        await queueJump("c").click();
+        await current("c").waitFor();
+        if (await page.getByTestId("session-play").getAttribute("aria-label") === "Pause") {
+          await page.getByTestId("session-play").click();
+        }
+        await page.getByTestId("session-play").click();
+        await advancing([`${prefix}c-source`]);
+        await markAudio([`${prefix}c-source`]);
+        assert.equal(a.currentSessionTrackId, `${prefix}c`);
+
+        await releaseSave();
+        await unchangedAudio();
+        assert.equal(await current("c").count(), 1,
+          "The older response must not reset the newer play pointer");
+        assert.equal(a.currentSessionTrackId, `${prefix}c`);
+        await queueJump("a").click();
+        await current("a").waitFor();
+        assert.equal(await newerChooser.inputValue(), "source",
+          "The older response must not overwrite a newer playback choice in the revisited session");
+
+        // The stale acknowledgement belongs only to A. Switching to B must
+        // reveal B's own queue and preference state, not A's old snapshot.
+        await page.getByRole("link", { name: "All sessions", exact: true }).evaluate(element => element.click());
+        await page.locator(`a[href="/waveyard/session/${other.id}"]`).evaluate(element => element.click());
+        await page.getByTestId("listening-workspace").filter({ hasText: other.name }).waitFor();
+        await openOrder();
+        assert.equal(await page.locator(".sess-queue-item").count(), 2);
+        assert.equal(await current("d").count(), 1);
+        assert.equal(await page.getByTestId(`session-playback-mode-${prefix}e`).inputValue(), "stems");
+        assert.equal(await page.getByTestId("session-status").filter({ hasText: "Full track saved" }).count(), 0,
+          "A's delayed acknowledgement must not leak into B");
+
+        await page.getByRole("link", { name: "All sessions", exact: true }).evaluate(element => element.click());
+        await page.locator(`a[href="/waveyard/session/${a.id}"]`).evaluate(element => element.click());
+        await page.getByTestId("listening-workspace").filter({ hasText: a.name }).waitFor();
+        await openOrder();
+        assert.equal(await page.getByTestId(`session-playback-mode-${prefix}c`).inputValue(), "source",
+          "The newer choice must remain saved after revisiting A");
+        assert.equal(a.tracks.find(track => track.id === `${prefix}c`).playbackPreference, "source");
       }
       assert.deepEqual(apiErrors, [], "Fixture requests must all complete successfully");
       reports.push(scenario === "remove"
