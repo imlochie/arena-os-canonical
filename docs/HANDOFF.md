@@ -18,6 +18,10 @@
   passed. The API-server package typecheck is currently blocked by an
   unrelated incomplete vocal-evidence object in
   `artifacts/api-server/src/imported/waveyard/projects/[id]/automatic-remixes/route.ts`.
+  The prescribed full project test chain also failed in the unrelated Arcade
+  smoke check at `scripts/arena-smoke.mjs:4374`: its revised multi-ball touch
+  action remained inactive. An isolated rerun exceeded the five-minute limit
+  after earlier audio checks had passed.
 * **Not proven:** a full WAV export after changing a saved chop pattern's tempo
   has not yet been run. Verify save, reopen, and rendered WAV output before
   claiming the complete export workflow.
