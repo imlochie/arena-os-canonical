@@ -2,14 +2,14 @@
 
 ## Status
 
-This is a reproducible evaluation protocol and a versioned annotation template—not a completed ground-truth dataset. The exact user-provided MP3s are present in the current Replit workspace under `attached_assets/` (ignored by Git), and their SHA-256s match the prior production route manifest. They are not bundled in the repository and may be absent in other checkouts. Rights evidence for third-party review, two independent reviews, adjudication, and a complete prediction snapshot are still missing. The evaluation command therefore emits a blocked report with null metrics rather than substituting algorithm-generated labels.
+This is a reproducible evaluation protocol and a versioned annotation template—not a completed ground-truth dataset. The exact user-provided MP3s are present in the current Replit workspace under `attached_assets/` (ignored by Git), and their SHA-256s match the production route manifest. They are not bundled in the repository and may be absent in other checkouts. The production route now exports a complete source-bound prediction snapshot in this workspace, and its producer/source provenance validates. Rights evidence for independent review, two independent reviews, and adjudication are still missing. The evaluation command therefore emits a blocked report with null metrics rather than substituting algorithm-generated labels.
 
-The target pair and expected durations follow the prior production handoff: _Another One Bites the Dust_ (222.67 s) and _September_ (215.14 s). The current workspace source identities are recorded in the template. A fresh production route run captures the full feasible bed rankings for all 17 voice-bearing donor windows in the ignored `generated-artifacts/waveyard-real-world-acceptance/full-track-ground-truth-predictions-capture.json`. Keep that algorithm output away from annotators until both independent annotation files are locked. The capture is not yet a complete evaluation snapshot: per-track vocal-phrase and section prediction arrays still need to be exported. Titles and durations alone do not establish licensing. Before any second reviewer receives or opens the audio, establish that the copies and review are authorized; do not redistribute the recordings or derived mixes.
+The target pair and expected durations follow the prior production handoff: _Another One Bites the Dust_ (222.67 s) and _September_ (215.14 s). The current workspace source identities are recorded in the template. A fresh database-backed production route run exports every persisted section for both sources, all 89 isolated-vocal pitch-continuity intervals for _Another One Bites the Dust_, and the complete feasible rankings for all 17 donor windows. The prediction snapshot is `generated-artifacts/waveyard-real-world-acceptance/predictions-v1-captured.json`; the full acceptance report is `generated-artifacts/waveyard-real-world-acceptance/full-track-ground-truth-predictions-capture.json`. These generated files are ignored by Git and are local to this workspace. The bed has no vocal-phrase analysis in this route direction, and the 89 donor intervals are pitch-continuity phrases, not word or syllable timing. The section engine emits structural windows/repeats, not verse/chorus/bridge/breakdown labels. Keep algorithm output away from annotators until their independent labels are locked. Titles and durations alone do not establish licensing. Before any second reviewer receives or opens the audio, establish that the copies and review are authorized; do not redistribute the recordings or derived mixes.
 
 ## What is versioned
 
 - `scripts/fixtures/waveyard-ground-truth/ground-truth-v1.template.json` stores source identity and rights fields, two independent blind-review slots per recording, and a separate adjudicated result. No source audio or fabricated annotations are included.
-- `scripts/fixtures/waveyard-ground-truth/predictions-v1.template.json` is the capture shape for a production run. The passage-search route now exposes every ranked bed candidate it already computed, plus the actual selected candidate, its source checksum, time window, relative score, and detector confidence. This is output instrumentation only: it does not change candidate scoring, compatibility gates, or selection behavior. The plan JSON remains the persisted record.
+- `scripts/fixtures/waveyard-ground-truth/predictions-v1.template.json` is the blank capture shape for a production run. The real route acceptance test can write a filled local snapshot with source-bound sections, persisted donor vocal intervals, and all ranked bed candidates. The passage-search route exposes candidates it already computed; this output instrumentation does not change candidate scoring, compatibility gates, or selection behavior. The plan JSON remains the persisted record.
 - `scripts/waveyard-ground-truth-evaluation.mjs` validates source/rights/reviewer provenance and calculates metrics only after the dataset is adjudicated and has at least 95% section-timeline coverage.
 - `scripts/waveyard-ground-truth-evaluation.test.mjs` checks evaluator behavior with synthetic fixtures only. Those tests are not real-song evidence.
 
@@ -37,11 +37,20 @@ The report does not measure perceived mix quality, vocal quality, transition smo
 
 ## Reproduce the current blocked report
 
+In this workspace, evaluate the real-route capture with:
+
 ```sh
 node scripts/waveyard-ground-truth-evaluation.mjs \
   scripts/fixtures/waveyard-ground-truth/ground-truth-v1.template.json \
-  scripts/fixtures/waveyard-ground-truth/predictions-v1.template.json \
-  scripts/fixtures/waveyard-ground-truth/pending-report-v1.json
+  generated-artifacts/waveyard-real-world-acceptance/predictions-v1-captured.json \
+  generated-artifacts/waveyard-real-world-acceptance/owner-review-pending-report.json
 ```
 
-The expected status is `blocked`, with no performance metrics. The template pins the exact source hashes observed in this Replit workspace; the prediction template remains empty because the route capture is not yet a complete per-track evaluation snapshot. Once review authorization, both blind reviews, adjudication, and a checksum-matched production snapshot are available, save completed inputs as new versioned files and pass those paths to the same evaluator. Do not overwrite the templates or represent this pending report as real-song validation.
+The expected status remains `blocked`, with null performance metrics because
+the ground-truth file has no rights basis, two locked independent reviews, or
+adjudication. On a clean checkout without the ignored source and generated
+artifacts, use the blank prediction template to reproduce the blocked baseline.
+Once review authorization, both blind reviews, and adjudication exist, save
+completed inputs as new versioned files and pass those paths to the evaluator.
+Do not overwrite templates or represent this pending report as real-song
+accuracy evidence.

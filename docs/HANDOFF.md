@@ -9,10 +9,16 @@
   is `blocked`; metrics are null. The exact audio files are present only as
   ignored user-uploaded attachments in this Replit workspace, not in Git. Their
   SHA-256s match the prior production manifest and are recorded in the
-  annotation and prediction templates. Rights evidence for independent review,
-  both reviewer annotations, adjudication, and a complete current prediction
-  capture are still absent. The historical 17-window result below remains
-  unannotated algorithm evidence, not ground truth.
+  annotation and prediction templates. A fresh database-backed production
+  acceptance run now exports a complete prediction snapshot to the ignored
+  `generated-artifacts/waveyard-real-world-acceptance/predictions-v1-captured.json`:
+  25 and 34 source-bound structural sections, 89 pitch-continuity vocal
+  intervals for the donor, and all 17 donor windows with their feasible ranked
+  bed candidates. Prediction provenance validates for producer revision
+  `7210442c4fc0b967441381cbe8c753807d9313d9`. The 89 intervals are not words,
+  syllables, or lyric meanings; the bed track has no vocal-phrase analysis in
+  this route direction. Rights evidence, two independent blind annotations,
+  and adjudication remain absent, so the current report remains blocked.
 * **Additional regression coverage:** the production route test now requires
   full feasible candidate rankings to survive API serialization, in consecutive
   rank order, with the selected candidate first and source-bound passage IDs. A
@@ -24,8 +30,8 @@
   checks evidence transport only; it does not change candidate scoring or
   selection. Do not provide the repository, handoff, or report to blind
   annotators until their independent labels are locked.
-* **Verification:** evaluator tests 8/8, Waveyard planner tests 24/24, repository typecheck, `git diff --check`, and Prettier checks on the new evaluation files passed.
-* **Next:** establish whether the user-provided recordings may be used for private independent review. Obtain and lock two blind annotations before sharing the ignored production capture; then export the complete per-track prediction arrays, adjudicate disagreements, and run the evaluator. The current code cannot supply independent human labels, so do not replace this step with algorithm output.
+* **Verification:** evaluator tests 9/9, Waveyard planner tests 24/24, real production route acceptance 1/1, API and library typechecks, `git diff --check`, and Prettier checks on the new evaluation files passed.
+* **Next:** establish review authorization, obtain and lock two independent blind section reviews, and adjudicate disagreements. The owner has supplied first-pass listening notes in chat; they are not a second review or a committed annotation file. The vocal detector produces pitch-continuity intervals, not lyric phrases, so do not claim lyric-timing accuracy from the 89 predictions.
 
 ## Current verification update — 2026-11-12, whole-track passage search
 
