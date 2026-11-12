@@ -92,9 +92,30 @@ export type MashupPlan = {
   vocalsPitchSemitones: number;
   keyRelationship: "same" | "fifth" | "relative" | "other" | "unknown";
   segments: MashupSegment[];
+  /** One best bed candidate for each voice-bearing donor section considered. */
+  passageSearch?: MashupPassageSearch;
   durationMs: number;
   rationale: string[];
   warnings: string[];
+};
+
+export type MashupPassageSearch = {
+  evaluatedDonorPassageCount: number;
+  rankableDonorPassageCount: number;
+  evaluations: Array<{
+    donorSectionId: string;
+    donorStartMs: number;
+    donorEndMs: number;
+    voicedPhraseCount: number;
+    status: "ranked" | "no-candidate";
+    selected: boolean;
+    bestBedSectionId: string | null;
+    plannedEntryMs: number | null;
+    relativeRank: number | null;
+    reason: string;
+  }>;
+  selectedDonorSectionId: string | null;
+  selectedBedSectionId: string | null;
 };
 
 export type MashupPlanResult =
@@ -423,9 +444,12 @@ function rankedPassageEntry(
   baselineEntryMs: number,
   masterBpm: number,
   stretchRatio: number,
-  vocalOnsetOffsetsMs: number[],
-): { match: { at: number; why: string; score: number } | null; reason: string } {
-  const firstVocalRun = (vocals.vocalPhrases ?? [])
+): {
+  match: { at: number; why: string; score: number; donorSectionId: string; bedSectionId: string } | null;
+  reason: string;
+  search: MashupPassageSearch;
+} {
+  const qualifiedPhrases = (vocals.vocalPhrases ?? [])
     .filter((phrase) => Number.isSafeInteger(phrase.startMs)
       && Number.isSafeInteger(phrase.endMs)
       && phrase.startMs >= body.fromMs
@@ -435,18 +459,9 @@ function rankedPassageEntry(
       && phrase.confidence >= 0.5
       && phrase.confidence <= 1)
     .sort((left, right) => left.startMs - right.startMs)[0];
-  if (!firstVocalRun) {
-    return { match: null, reason: "no confidence-qualified vocal run is available to anchor a cross-song passage comparison" };
-  }
-
-  const donorSection = vocals.sections.find((section) =>
-    section.passageFingerprint
-    && section.startMs <= firstVocalRun.startMs
-    && section.endMs > firstVocalRun.startMs);
-  const donorFingerprint = donorSection?.passageFingerprint;
-  if (!donorSection || !donorFingerprint) {
-    return { match: null, reason: "no checksum-current donor passage fingerprint covers the first confidence-qualified vocal run" };
-  }
+  const vocalPhrases = qualifiedPhrases.length
+    ? qualifiedPhrases
+    : [];
 
   const donorBpm = typeof vocals.bpm === "number" && Number.isFinite(vocals.bpm) && vocals.bpm > 0
     ? vocals.bpm : null;
@@ -460,64 +475,154 @@ function rankedPassageEntry(
   const bedKey = trustedAnalysisKey(bed.musicalKey, bed.keyConfidence);
   const expectedKeyShift = donorKey && bedKey ? semitoneShift(donorKey, bedKey) : null;
   const vocalSpanMs = Math.max(0, body.toMs - body.fromMs) * stretchRatio;
+  const baselineVocalCoverageMs = Math.min(vocalSpanMs, Math.max(0, bed.durationMs - baselineEntryMs));
 
   const bedPassages = bed.sections.filter((section) =>
     section.passageFingerprint
     && section.startMs >= baselineEntryMs - 20
-    && section.endMs > section.startMs
-    && !isIntro(section.label)
-    && !isOutro(section.label));
-  if (bedPassages.length === 0) {
-    return { match: null, reason: "no checksum-current bed passage fingerprints are available after the baseline entry" };
+    && section.endMs > section.startMs);
+  const donorPassages = vocals.sections
+    .filter((section) => Number.isSafeInteger(section.startMs)
+      && Number.isSafeInteger(section.endMs)
+      && section.startMs >= 0
+      && section.endMs > section.startMs)
+    .map((section) => ({
+      section,
+      phrases: vocalPhrases.filter((phrase) =>
+        phrase.startMs >= section.startMs && phrase.startMs < section.endMs),
+    }))
+    .filter((passage) => passage.phrases.length > 0);
+
+  const evaluations: MashupPassageSearch["evaluations"] = [];
+  const candidates: Array<{
+    at: number;
+    why: string;
+    musicalScore: number;
+    transientScore: number;
+    donorSectionId: string;
+    bedSectionId: string;
+  }> = [];
+  let phraseLengthMismatchCount = 0;
+  let missingCoreEvidenceCount = 0;
+  let contentLossCount = 0;
+
+  for (const donorPassage of donorPassages) {
+    const { section: donorSection, phrases } = donorPassage;
+    const donorSectionId = donorSection.id
+      ?? `${vocals.sourceAssetId ?? "vocals"}:${donorSection.startBeatIndex ?? donorSection.startMs}`;
+    const donorFingerprint = donorSection.passageFingerprint;
+    if (!donorFingerprint) {
+      evaluations.push({
+        donorSectionId,
+        donorStartMs: donorSection.startMs,
+        donorEndMs: donorSection.endMs,
+        voicedPhraseCount: phrases.length,
+        status: "no-candidate",
+        selected: false,
+        bestBedSectionId: null,
+        plannedEntryMs: null,
+        relativeRank: null,
+        reason: "this voice-bearing donor section has no current checksum-bound passage fingerprint",
+      });
+      continue;
+    }
+
+    const sectionCandidates: typeof candidates = [];
+    let passagePairCount = 0;
+    for (const bedSection of bedPassages) {
+      if (!bedSection.passageFingerprint
+        || bedSection.endMs <= bedSection.startMs) continue;
+      passagePairCount += 1;
+      const comparison = comparePassageCompatibility({
+        anchorSectionId: bedSection.id ?? `${bed.sourceAssetId ?? "bed"}:${bedSection.startBeatIndex ?? bedSection.startMs}`,
+        donorSectionId,
+        anchor: bedSection.passageFingerprint,
+        donor: donorFingerprint,
+        anchorBpm: comparisonBedBpm,
+        donorBpm: comparisonDonorBpm,
+        anchorBeatConfidence: bed.beatConfidence ?? 0,
+        donorBeatConfidence: vocals.beatConfidence ?? 0,
+        anchorKeyTrusted: bedKey !== null,
+        donorKeyTrusted: donorKey !== null,
+        expectedKeyShift,
+      });
+      const ranking = rankPassagePair(
+        comparison,
+        donorFingerprint,
+        bedSection.passageFingerprint,
+        donorBpm,
+        bedBpm,
+        tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
+      );
+      if (!ranking) {
+        if (comparison.dimensions.phraseAlignment.status !== "match") phraseLengthMismatchCount += 1;
+        else missingCoreEvidenceCount += 1;
+        continue;
+      }
+
+      // Align this whole-track offset to the bed passage, so later verses/hooks
+      // are evaluated without discarding the vocal material before them.
+      const donorPassageOffsetMs = (donorSection.startMs - body.fromMs) * stretchRatio;
+      const entryMs = Math.round(bedSection.startMs - donorPassageOffsetMs);
+      if (entryMs < baselineEntryMs - 20 || entryMs < 0) continue;
+      const candidateCoverageMs = Math.min(vocalSpanMs, Math.max(0, bed.durationMs - entryMs));
+      if (candidateCoverageMs < baselineVocalCoverageMs - 1) {
+        contentLossCount += 1;
+        continue;
+      }
+
+      const onsetOffsets = phrases.map((phrase) => phrase.startMs - body.fromMs);
+      const transientScore = onsetOffsets.length >= MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK
+        ? scoreEntryAgainstTransients(entryMs, onsetOffsets, stretchRatio, bed.drumEvents ?? [], bed.bassEvents ?? []).score
+        : 0;
+      const comparisonSummary = [
+        comparison.dimensions.phraseAlignment.detail,
+        comparison.dimensions.rhythm.detail,
+        comparison.dimensions.harmony.detail,
+        comparison.dimensions.beatPhase.detail,
+      ].join("; ");
+      sectionCandidates.push({
+        at: entryMs,
+        why: `aligned voice-bearing donor section ${donorSectionId} (${donorSection.startMs}–${donorSection.endMs}ms, ${phrases.length} voiced-run starts) with bed section ${bedSection.id ?? bedSection.startMs} (${bedSection.startMs}–${bedSection.endMs}ms); whole vocal material is retained; relative rank ${ranking.score.toFixed(3)} (${ranking.details.join(", ")}); ${comparisonSummary}; transient alignment only breaks near-ties`,
+        musicalScore: ranking.score,
+        transientScore,
+        donorSectionId,
+        bedSectionId: bedSection.id ?? `${bed.sourceAssetId ?? "bed"}:${bedSection.startMs}`,
+      });
+    }
+
+    const scoreSorted = sectionCandidates.sort((left, right) =>
+      right.musicalScore - left.musicalScore || left.at - right.at,
+    );
+    const highestMusicalScore = scoreSorted[0]?.musicalScore;
+    const best = highestMusicalScore === undefined
+      ? undefined
+      : scoreSorted
+        .filter((candidate) => highestMusicalScore - candidate.musicalScore <= PASSAGE_RANK_TIE_EPSILON)
+        .sort((left, right) => right.transientScore - left.transientScore || left.at - right.at)[0];
+    if (best) candidates.push(best);
+    evaluations.push({
+      donorSectionId,
+      donorStartMs: donorSection.startMs,
+      donorEndMs: donorSection.endMs,
+      voicedPhraseCount: phrases.length,
+      status: best ? "ranked" : "no-candidate",
+      selected: false,
+      bestBedSectionId: best?.bedSectionId ?? null,
+      plannedEntryMs: best?.at ?? null,
+      relativeRank: best?.musicalScore ?? null,
+      reason: best
+        ? `${passagePairCount} bed passage pairs evaluated; best candidate ranked ${best.musicalScore.toFixed(3)}`
+        : passagePairCount === 0
+          ? "no current checksum-bound bed passage fingerprints are available after the baseline entry"
+          : contentLossCount > 0 && phraseLengthMismatchCount === 0 && missingCoreEvidenceCount === 0
+            ? "all structurally ranked entries would reduce vocal coverage compared with the safe fallback"
+            : phraseLengthMismatchCount > 0 && missingCoreEvidenceCount === 0
+              ? "no equal 2+ bar phrase length across measured bed passages"
+              : "no bed passage pair had equal 2+ bar phrase lengths and all three measured rhythm, harmony, and beat-phase inputs",
+    });
   }
 
-  const candidates = bedPassages.flatMap((section) => {
-    if (!section.passageFingerprint
-      || section.startMs < baselineEntryMs - 20
-      || section.endMs <= section.startMs
-      || isIntro(section.label)
-      || isOutro(section.label)) return [];
-
-    const entry = alignBedEntryToMeasuredBeat(bed, section.startMs, masterBpm);
-    if (entry.at < baselineEntryMs - 20 || bed.durationMs - entry.at < vocalSpanMs * 0.75) return [];
-    const comparison = comparePassageCompatibility({
-      anchorSectionId: section.id ?? `${bed.sourceAssetId ?? "bed"}:${section.startBeatIndex ?? section.startMs}`,
-      donorSectionId: donorSection.id ?? `${vocals.sourceAssetId ?? "vocals"}:${donorSection.startBeatIndex ?? donorSection.startMs}`,
-      anchor: section.passageFingerprint,
-      donor: donorFingerprint,
-      anchorBpm: comparisonBedBpm,
-      donorBpm: comparisonDonorBpm,
-      anchorBeatConfidence: bed.beatConfidence ?? 0,
-      donorBeatConfidence: vocals.beatConfidence ?? 0,
-      anchorKeyTrusted: bedKey !== null,
-      donorKeyTrusted: donorKey !== null,
-      expectedKeyShift,
-    });
-    const ranking = rankPassagePair(
-      comparison,
-      donorFingerprint,
-      section.passageFingerprint,
-      donorBpm,
-      bedBpm,
-      tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
-    );
-    if (!ranking) return [];
-    const transientScore = vocalOnsetOffsetsMs.length >= MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK
-      ? scoreEntryAgainstTransients(entry.at, vocalOnsetOffsetsMs, stretchRatio, bed.drumEvents ?? [], bed.bassEvents ?? []).score
-      : 0;
-    const comparisonSummary = [
-      comparison.dimensions.phraseAlignment.detail,
-      comparison.dimensions.rhythm.detail,
-      comparison.dimensions.harmony.detail,
-      comparison.dimensions.beatPhase.detail,
-    ].join("; ");
-    return [{
-      at: entry.at,
-      why: `${entry.why ?? `the bed section begins at ${(entry.at / 1000).toFixed(2)}s`}; ranked this as the best available measured bed-passage candidate for the donor's first voiced section (relative rank ${ranking.score.toFixed(3)}; ${ranking.details.join(", ")}); ${comparisonSummary}; transient alignment only broke ties between equally ranked passage candidates`,
-      musicalScore: ranking.score,
-      transientScore,
-    }];
-  });
   const scoreSorted = candidates.sort((left, right) =>
     right.musicalScore - left.musicalScore || left.at - right.at,
   );
@@ -527,12 +632,38 @@ function rankedPassageEntry(
     : scoreSorted
       .filter((candidate) => highestMusicalScore - candidate.musicalScore <= PASSAGE_RANK_TIE_EPSILON)
       .sort((left, right) => right.transientScore - left.transientScore || left.at - right.at)[0];
-  return best
-    ? { match: { at: best.at, why: best.why, score: best.musicalScore }, reason: `the best available measured passage candidate ranked ${best.musicalScore.toFixed(3)} relative to the other current candidates` }
-    : {
-      match: null,
-      reason: "no checksum-current passage pair had equal 2+ bar phrase lengths plus measured rhythm, harmony, and beat-phase evidence",
-    };
+  const selectedEvaluation = best
+    ? evaluations.find((evaluation) => evaluation.donorSectionId === best.donorSectionId)
+    : undefined;
+  if (selectedEvaluation) selectedEvaluation.selected = true;
+
+  const search: MashupPassageSearch = {
+    evaluatedDonorPassageCount: donorPassages.length,
+    rankableDonorPassageCount: evaluations.filter((evaluation) => evaluation.status === "ranked").length,
+    evaluations,
+    selectedDonorSectionId: best?.donorSectionId ?? null,
+    selectedBedSectionId: best?.bedSectionId ?? null,
+  };
+  const reason = !vocalPhrases.length
+    ? "no confidence-qualified vocal runs are available for passage evaluation"
+    : !donorPassages.length
+      ? "no source section contains a confidence-qualified vocal run"
+      : best
+        ? `${search.rankableDonorPassageCount} of ${search.evaluatedDonorPassageCount} voice-bearing donor sections had a ranked bed passage; the best relative rank was ${best.musicalScore.toFixed(3)}`
+        : evaluations.some((evaluation) => evaluation.reason.includes("no current checksum-bound bed"))
+          ? "no checksum-current bed passage fingerprints are available after the baseline entry"
+          : contentLossCount > 0 && phraseLengthMismatchCount === 0 && missingCoreEvidenceCount === 0
+            ? "all ranked passage entries would reduce vocal coverage compared with the safe fallback"
+            : phraseLengthMismatchCount > 0 && missingCoreEvidenceCount === 0
+              ? "no voice-bearing donor passage had an equal 2+ bar bed phrase with measured evidence"
+              : "no voice-bearing donor passage pair had equal 2+ bar phrase lengths plus measured rhythm, harmony, and beat-phase evidence";
+  return {
+    match: best
+      ? { at: best.at, why: best.why, score: best.musicalScore, donorSectionId: best.donorSectionId, bedSectionId: best.bedSectionId }
+      : null,
+    reason,
+    search,
+  };
 }
 
 function grooveAwareBedEntry(
