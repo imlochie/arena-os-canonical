@@ -12,12 +12,13 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import { db as defaultDb } from "@workspace/db";
 import {
   bassAnalyses, bassEvents, drumAnalyses, drumEvents, harmonyAnalyses, harmonyEvents,
+  stemHarmonyAnalyses, stemHarmonyEvents,
   sourceAnalyses, sourceAssets, stemAssets,
   vocalAnalyses, vocalActivityIntervals, vocalPitchFrames, vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueSourceSectionAnalysis } from "@workspace/arena/lib/waveyard/queue";
-import type { BassAnalysisJobPayload, DrumAnalysisJobPayload, HarmonyAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
+import type { BassAnalysisJobPayload, DrumAnalysisJobPayload, HarmonyAnalysisJobPayload, StemHarmonyAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import {
   bassAnalysisProvenanceReason,
   LOCAL_BASS_ANALYSIS_ENGINE,
@@ -32,6 +33,12 @@ import {
   harmonyAnalysisProvenanceReason, LOCAL_HARMONY_ANALYSIS_ENGINE,
   LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION, normaliseHarmonyEvents,
 } from "@workspace/arena/lib/waveyard/types/harmony-analysis";
+import {
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+  normaliseStemHarmonyEvents,
+  stemHarmonyAnalysisProvenanceReason,
+} from "@workspace/arena/lib/waveyard/types/stem-harmony-analysis";
 import {
   LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
   normaliseVocalPitchFrames, segmentVocalPhrases, vocalAnalysisProvenanceReason,
@@ -50,7 +57,7 @@ type StemAnalysisDeps = {
 
 const active = (status: string) => status === "queued" || status === "failed";
 
-async function rejectPayload(db: AnalysisDb, table: typeof bassAnalyses | typeof drumAnalyses | typeof vocalAnalyses, id: string, checksum: string, message: string) {
+async function rejectPayload(db: AnalysisDb, table: typeof bassAnalyses | typeof drumAnalyses | typeof stemHarmonyAnalyses | typeof vocalAnalyses, id: string, checksum: string, message: string) {
   await db.update(table).set({
     status: "failed", stage: "invalid-payload", errorCode: "invalid_payload",
     errorMessage: message, completedAt: new Date(), updatedAt: new Date(),
@@ -331,6 +338,146 @@ export async function handleHarmonyAnalysisJob(payloadInput: Record<string, unkn
     }).where(and(eq(harmonyAnalyses.id, job.id), eq(harmonyAnalyses.status, "processing"), eq(harmonyAnalyses.sourceChecksumSha256, job.sourceChecksumSha256)));
     throw error;
   } finally { if (inputPath) await removeStemFile(inputPath); }
+}
+
+export async function handleStemHarmonyAnalysisJob(payloadInput: Record<string, unknown>, deps: StemAnalysisDeps = {}): Promise<void> {
+  const payload = payloadInput as unknown as StemHarmonyAnalysisJobPayload;
+  const database = deps.db ?? defaultDb;
+  const storage = deps.storage ?? getStorage();
+  const decode = deps.decode ?? decodeMonoPcm;
+  const [job] = await database.select().from(stemHarmonyAnalyses)
+    .where(eq(stemHarmonyAnalyses.id, payload.stemHarmonyAnalysisId)).limit(1);
+  if (!job || job.status === "complete" || job.status === "cancelled") return;
+  const valid = job.projectId === payload.projectId && job.sourceAssetId === payload.sourceAssetId
+    && job.stemAssetId === payload.stemAssetId && job.analysisEngine === payload.analysisEngine
+    && job.analysisEngineVersion === payload.analysisEngineVersion
+    && job.analysisEngine === LOCAL_STEM_HARMONY_ANALYSIS_ENGINE
+    && job.analysisEngineVersion === LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION;
+  if (!valid) {
+    await rejectPayload(
+      database,
+      stemHarmonyAnalyses,
+      job.id,
+      job.sourceChecksumSha256,
+      "Stem-harmony analysis payload does not match its versioned target.",
+    );
+    throw new Error("Stem-harmony analysis payload does not match its durable target.");
+  }
+  const [source] = await database.select().from(sourceAssets)
+    .where(and(eq(sourceAssets.id, job.sourceAssetId), eq(sourceAssets.projectId, job.projectId))).limit(1);
+  const [stem] = await database.select().from(stemAssets)
+    .where(and(eq(stemAssets.id, job.stemAssetId), eq(stemAssets.projectId, job.projectId))).limit(1);
+  const provenance = source && stem ? stemHarmonyAnalysisProvenanceReason({
+    sourceAssetId: job.sourceAssetId,
+    expectedSourceAssetId: source.id,
+    stemAssetId: job.stemAssetId,
+    expectedStemAssetId: stem.id,
+    stemType: stem.stemType,
+    sourceChecksumSha256: job.sourceChecksumSha256,
+    expectedSourceChecksumSha256: source.checksumSha256,
+    stemChecksumSha256: job.stemChecksumSha256,
+    expectedStemChecksumSha256: stem.checksumSha256,
+    analysisEngine: job.analysisEngine,
+    analysisEngineVersion: job.analysisEngineVersion,
+  }) : "source_stem_mismatch";
+  if (!source || !stem || provenance) {
+    await database.update(stemHarmonyAnalyses).set({
+      status: "failed",
+      stage: "provenance-failed",
+      errorCode: "analysis_stale",
+      errorMessage: "The source or isolated harmonic stem changed before analysis.",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(eq(stemHarmonyAnalyses.id, job.id), eq(stemHarmonyAnalyses.status, job.status)));
+    throw new Error("The source or isolated harmonic stem changed before analysis.");
+  }
+  const [claimed] = await database.update(stemHarmonyAnalyses).set({
+    status: "preparing",
+    stage: "preparing",
+    attempts: job.attempts + 1,
+    errorCode: null,
+    errorMessage: null,
+    startedAt: new Date(),
+    completedAt: null,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(stemHarmonyAnalyses.id, job.id),
+    eq(stemHarmonyAnalyses.status, job.status),
+  )).returning({ id: stemHarmonyAnalyses.id });
+  if (!claimed || !active(job.status)) return;
+  const [processing] = await database.update(stemHarmonyAnalyses)
+    .set({ status: "processing", stage: "analyzing", updatedAt: new Date() })
+    .where(and(eq(stemHarmonyAnalyses.id, job.id), eq(stemHarmonyAnalyses.status, "preparing")))
+    .returning({ id: stemHarmonyAnalyses.id });
+  if (!processing) return;
+
+  let inputPath: string | undefined;
+  try {
+    inputPath = await prepareStemFile(storage, stem.storageKey);
+    if (await fileSha256(inputPath) !== job.stemChecksumSha256) {
+      throw new Error("The stored harmonic stem bytes do not match their saved checksum.");
+    }
+    const pcm = await decode(inputPath);
+    if (pcm.length < 2_205) throw new Error("The separated harmonic stem is too short for chord analysis.");
+    const events = normaliseStemHarmonyEvents(detectHarmonyTimeline(pcm), Math.round(source.durationSeconds * 1000));
+    if (events === null) throw new Error("The local DSP engine returned invalid stem-harmony events.");
+    const analyzedAt = new Date();
+    await database.transaction(async (tx) => {
+      const [currentSource] = await tx.select().from(sourceAssets)
+        .where(eq(sourceAssets.id, source.id)).for("update").limit(1);
+      const [currentStem] = await tx.select().from(stemAssets)
+        .where(eq(stemAssets.id, stem.id)).for("update").limit(1);
+      if (!currentSource || !currentStem
+        || currentSource.checksumSha256 !== job.sourceChecksumSha256
+        || currentStem.checksumSha256 !== job.stemChecksumSha256) {
+        throw new Error("The source or isolated harmonic stem changed while it was being analyzed.");
+      }
+      await tx.delete(stemHarmonyEvents).where(eq(stemHarmonyEvents.stemHarmonyAnalysisId, job.id));
+      if (events.length) {
+        await tx.insert(stemHarmonyEvents).values(events.map((event, eventIndex) => ({
+          stemHarmonyAnalysisId: job.id,
+          eventIndex,
+          ...event,
+        })));
+      }
+      const [completed] = await tx.update(stemHarmonyAnalyses).set({
+        status: "complete",
+        stage: "complete",
+        analysisEngine: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+        errorCode: null,
+        errorMessage: null,
+        analyzedAt,
+        completedAt: analyzedAt,
+        updatedAt: analyzedAt,
+      }).where(and(
+        eq(stemHarmonyAnalyses.id, job.id),
+        eq(stemHarmonyAnalyses.status, "processing"),
+        eq(stemHarmonyAnalyses.sourceChecksumSha256, job.sourceChecksumSha256),
+        eq(stemHarmonyAnalyses.stemChecksumSha256, job.stemChecksumSha256),
+      )).returning({ id: stemHarmonyAnalyses.id });
+      if (!completed) throw new Error("Stem-harmony analysis lost its active durable claim before completion.");
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Local stem-harmony analysis failed.";
+    const stale = /checksum|changed while/i.test(message);
+    await database.update(stemHarmonyAnalyses).set({
+      status: "failed",
+      stage: stale ? "provenance-failed" : "failed",
+      errorCode: stale ? "analysis_stale" : "analysis_failed",
+      errorMessage: message.slice(0, 1000),
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(stemHarmonyAnalyses.id, job.id),
+      eq(stemHarmonyAnalyses.status, "processing"),
+      eq(stemHarmonyAnalyses.sourceChecksumSha256, job.sourceChecksumSha256),
+      eq(stemHarmonyAnalyses.stemChecksumSha256, job.stemChecksumSha256),
+    ));
+    throw error;
+  } finally {
+    if (inputPath) await removeStemFile(inputPath);
+  }
 }
 
 export async function handleVocalAnalysisJob(payloadInput: Record<string, unknown>, deps: StemAnalysisDeps = {}): Promise<void> {

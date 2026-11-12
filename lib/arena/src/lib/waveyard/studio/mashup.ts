@@ -66,6 +66,9 @@ export type MashupSourceProfile = {
   vocalPitchFrames?: VocalPitchFrame[];
   /** Checksum-current source-relative chord timeline. */
   harmonyEvents?: HarmonyEvent[];
+  /** Identifies whether chord evidence came from an isolated bed stem or the full source mix. */
+  harmonyEvidenceSource?: "separated-stem" | "source-mix";
+  harmonyEvidenceStemType?: string;
   /** Measured from the current isolated bed stems; classes are intentionally absent. */
   drumEvents?: MashupTransientEvent[];
   /** Low-band attacks measured from the current isolated bass stem, not note labels. */
@@ -1161,6 +1164,13 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   bed = profileFromCurrentEvidence(bed);
   const rationale: string[] = [];
   const warnings: string[] = [];
+  if (bed.harmonyEvidenceSource === "source-mix") {
+    warnings.push("Harmony evidence comes from the full source mix because no current separated bed-stem chord analysis was available.");
+  } else if (bed.harmonyEvidenceSource === "separated-stem"
+    && bed.harmonyEvidenceStemType
+    && bed.harmonyEvidenceStemType !== "instrumental") {
+    warnings.push(`Harmony evidence is measured on the separated ${bed.harmonyEvidenceStemType} stem, not the complete summed instrumental bed.`);
+  }
 
   let masterBpm: number;
   let estimatedBed = false;

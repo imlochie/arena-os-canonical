@@ -40,6 +40,7 @@ import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
+import { chooseStemForHarmony, ensureStemHarmonyAnalysis } from "@workspace/arena/lib/waveyard/stem-harmony-analysis";
 import { provisionDesktopSectionAnalysis, provisionDesktopVocalAnalysis } from "./analysis";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@workspace/arena/lib/waveyard/types";
@@ -86,6 +87,7 @@ export type SeparationHandlerDeps = {
   enqueueWaveform?: typeof enqueueWaveform;
   enqueueSectionAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueSourceSectionAnalysis;
   enqueueVocalAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueVocalAnalysis;
+  enqueueStemHarmonyAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueStemHarmonyAnalysis;
   /** The deep pass (owner-prepared Demucs, separation/deep.ts). Injectable
    *  so the e2e test drives the FULL pipeline with a stub engine. */
   runDeep?: typeof runDeepSeparation;
@@ -936,6 +938,16 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         // Separation is already committed; vocal timing can be retried through
         // its own durable row without making valid stems appear to have failed.
         console.warn("could not provision Waveyard vocal timing analysis", vocalQueueError);
+      }
+    }
+    const harmonyStem = chooseStemForHarmony(durableWork.stems);
+    if (harmonyStem) {
+      try {
+        await ensureStemHarmonyAnalysis(database, source, harmonyStem, deps.enqueueStemHarmonyAnalysis);
+      } catch (harmonyQueueError) {
+        // Stem chord analysis is optional evidence; never roll back valid stems
+        // or the completed separation when its own queue is unavailable.
+        console.warn("could not provision Waveyard separated-stem harmony analysis", harmonyQueueError);
       }
     }
     completed = true;

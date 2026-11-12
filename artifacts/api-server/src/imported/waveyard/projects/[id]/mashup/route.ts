@@ -550,8 +550,8 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
  * undecodable, or their provenance or exact alignment cannot be established —
  * those must not be silently replaced with the original file.
  */
-async function loadInstrumentalBed(projectId: string, bedId: string): Promise<BedLoadResult> {
-  const { info, stems } = await findBedSource(projectId, bedId);
+async function loadInstrumentalBed(projectId: string, bedId: string, resolvedSource?: BedSource): Promise<BedLoadResult> {
+  const { info, stems } = resolvedSource ?? await findBedSource(projectId, bedId);
   if (info.source === "original-fallback" || stems.length === 0) {
     return { ok: false, info };
   }
@@ -665,9 +665,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: "Pick two different tracks — the mashup needs a vocal source and an instrumental source." }, { status: 400 });
       }
 
+      const resolvedBedSource = await findBedSource(projectId, bedId);
       const [vocals, bed] = await Promise.all([
         loadSourceProfile(projectId, vocalsId, "vocals"),
-        loadSourceProfile(projectId, bedId, "instrumental"),
+        loadSourceProfile(projectId, bedId, "instrumental", db, {
+          separationJobId: resolvedBedSource.info.separationJobId,
+        }),
       ]);
       if (vocals === null || bed === null) {
         return Response.json({ error: "One of the tracks is not in this project." }, { status: 404 });
@@ -780,7 +783,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
       if (action === "save") {
         const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
-        const bedSource = await findBedSource(projectId, bedId);
+        const bedSource = resolvedBedSource;
         const bedStems = bedSource.stems;
 
         if (!vocalsStem || bedStems.length === 0) {
@@ -974,7 +977,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         );
       }
 
-      const bedResult = await loadInstrumentalBed(projectId, bedId);
+      const bedResult = await loadInstrumentalBed(projectId, bedId, resolvedBedSource);
       let bedPcm: Float32Array;
       let bedInfo: BedSourceInfo;
       if (bedResult.ok) {

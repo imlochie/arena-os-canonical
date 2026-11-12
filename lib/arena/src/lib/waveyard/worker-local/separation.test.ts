@@ -31,6 +31,7 @@ import {
   sourceAnalyses,
   sourceAssets,
   sourceSectionAnalyses,
+  stemHarmonyAnalyses,
   stemAssets,
   vocalAnalyses,
   tracks,
@@ -2726,6 +2727,7 @@ test("the local broker registers its implemented Waveyard queues", async () => {
     assert.ok(broker!.hasHandler("waveyard-source-section-analysis"));
     assert.ok(broker!.hasHandler("waveyard-drum-analysis"));
     assert.ok(broker!.hasHandler("waveyard-harmony-analysis"));
+    assert.ok(broker!.hasHandler("waveyard-stem-harmony-analysis"));
     assert.ok(broker!.hasHandler("waveyard-vocal-analysis"));
   } finally {
     if (prevDesktop === undefined) delete process.env.ARENA_DESKTOP_MODE;
@@ -2885,6 +2887,7 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
     const opened: string[] = [];
     const sectionDispatches: { dispatchKey?: string }[] = [];
     const vocalDispatches: unknown[] = [];
+    const stemHarmonyDispatches: unknown[] = [];
     let liveEngines = 0;
     const engine: (spec: MdxModelSpec) => Promise<OpenedEngine> = async (spec) => {
       assert.equal(liveEngines, 0, "the previous model must be released before opening another");
@@ -2908,6 +2911,7 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
       openEngine: engine,
       enqueueSectionAnalysis: async (payload) => { sectionDispatches.push(payload); },
       enqueueVocalAnalysis: async (payload) => { vocalDispatches.push(payload); },
+      enqueueStemHarmonyAnalysis: async (payload) => { stemHarmonyDispatches.push(payload); },
     });
     assert.equal(liveEngines, 0, "the final model is released too");
 
@@ -2936,6 +2940,16 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
     assert.equal(vocalAnalysis.sourceChecksumSha256, f.source.checksumSha256);
     assert.equal(vocalAnalysis.stemChecksumSha256, vocalStem.checksumSha256);
     assert.equal((vocalDispatches[0] as { vocalAnalysisId?: string } | undefined)?.vocalAnalysisId, vocalAnalysis.id);
+    assert.equal(stemHarmonyDispatches.length, 1, "the published non-vocal bed stem starts isolated chord analysis");
+    const [stemHarmonyAnalysis] = await f.database.select().from(stemHarmonyAnalyses)
+      .where(eq(stemHarmonyAnalyses.stemAssetId, byType.get("other")!.id));
+    assert.equal(stemHarmonyAnalysis.status, "queued");
+    assert.equal(stemHarmonyAnalysis.sourceChecksumSha256, f.source.checksumSha256);
+    assert.equal(stemHarmonyAnalysis.stemChecksumSha256, byType.get("other")!.checksumSha256);
+    assert.equal(
+      (stemHarmonyDispatches[0] as { stemAssetId?: string } | undefined)?.stemAssetId,
+      byType.get("other")!.id,
+    );
     assert.equal(byType.get("vocals")?.model, "kim_vocal_2");
     assert.equal(byType.get("drums")?.model, "kuielab_b_drums");
     assert.equal(byType.get("bass")?.model, "kuielab_b_bass");

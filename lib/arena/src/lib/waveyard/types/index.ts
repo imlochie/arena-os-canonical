@@ -13,6 +13,7 @@ export * from "./vocal-analysis";
 export * from "./drum-analysis";
 export * from "./bass-analysis";
 export * from "./harmony-analysis";
+export * from "./stem-harmony-analysis";
 export * from "./midi";
 export * from "./automatic-remix";
 export * from "./musical-meeting-points";

@@ -330,6 +330,49 @@ export const harmonyEvents = pgTable("harmony_events", {
   index("harmony_events_analysis_start_idx").on(table.harmonyAnalysisId, table.startMs),
 ]);
 
+// Chords measured on one separated non-vocal stem. Keep this distinct from
+// source-level harmony so mashup ranking can prefer backing-specific evidence.
+export const stemHarmonyAnalyses = pgTable("stem_harmony_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("stem_harmony_analyses_stem_asset_unique").on(table.stemAssetId),
+  uniqueIndex("stem_harmony_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("stem_harmony_analyses_project_id_idx").on(table.projectId),
+  index("stem_harmony_analyses_source_stem_idx").on(table.sourceAssetId, table.stemAssetId),
+]);
+
+export const stemHarmonyEvents = pgTable("stem_harmony_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  stemHarmonyAnalysisId: uuid("stem_harmony_analysis_id").notNull().references(() => stemHarmonyAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  root: text("root"),
+  quality: text("quality").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("stem_harmony_events_analysis_index_unique").on(table.stemHarmonyAnalysisId, table.eventIndex),
+  index("stem_harmony_events_analysis_start_idx").on(table.stemHarmonyAnalysisId, table.startMs),
+]);
+
 // Stem-scoped V1 vocal evidence never claims that the original mixed source is vocal.
 // Stem-scoped deterministic drum/percussion transient evidence. This preserves
 // generic source events while enforcing the exact separated stem provenance.

@@ -20,6 +20,8 @@ import {
   vocalAnalyses,
   vocalPitchFrames,
   vocalPhrases,
+  stemHarmonyAnalyses,
+  stemHarmonyEvents,
   remixSessions,
   remixTracks,
   remixClips,
@@ -37,6 +39,11 @@ import {
   DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION,
 } from "../types/analysis-provenance";
 import { PASSAGE_FINGERPRINT_ENGINE, PASSAGE_FINGERPRINT_ENGINE_VERSION, unavailablePassageEvidence } from "../types/passage-compatibility";
+import {
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+  stemHarmonyAnalysisIdempotencyKey,
+} from "../types/stem-harmony-analysis";
 
 function testPassageFingerprint(
   sourceChecksumSha256: string,
@@ -548,7 +555,6 @@ test("deterministic analysis selection and beat snapping gating across competing
       codec: "pcm_s16le",
       fileSizeBytes: 120 * 44100 * 4,
     }).returning();
-
     // Insert initial analysis
     const initialGrid = Array.from({ length: 17 }, (_, index) => index * 500);
     const [currentAnalysis] = await db.insert(sourceAnalyses).values({
@@ -617,6 +623,23 @@ test("deterministic analysis selection and beat snapping gating across competing
       model: "demucs",
       requestedDevice: "cpu",
       completedAt: new Date(),
+    }).returning();
+    const [otherStem] = await db.insert(stemAssets).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      separationJobId: separationJob.id,
+      stemType: "other",
+      engine: "demucs",
+      model: "htdemucs",
+      modelVersion: "v4",
+      storageKey: `projects/${project.id}/current-other.wav`,
+      checksumSha256: "e".repeat(64),
+      durationSeconds: 120,
+      sampleRate: 44_100,
+      channels: 2,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: 120 * 44100 * 4,
     }).returning();
     const [vocalStem] = await db.insert(stemAssets).values({
       projectId: project.id,
@@ -696,6 +719,28 @@ test("deterministic analysis selection and beat snapping gating across competing
         confidence: 0.85,
       },
     ]);
+    const [stemHarmonyAnalysis] = await db.insert(stemHarmonyAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      stemAssetId: otherStem.id,
+      status: "complete",
+      stage: "complete",
+      idempotencyKey: stemHarmonyAnalysisIdempotencyKey(otherStem.id),
+      analysisEngine: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256,
+      stemChecksumSha256: otherStem.checksumSha256,
+      completedAt: new Date(),
+    }).returning();
+    await db.insert(stemHarmonyEvents).values([{
+      stemHarmonyAnalysisId: stemHarmonyAnalysis.id,
+      eventIndex: 0,
+      startMs: 0,
+      endMs: 8_000,
+      root: "D",
+      quality: "minor",
+      confidence: 0.92,
+    }]);
 
     // Query analysis using loadSourceProfile
     const profile = await loadSourceProfile(project.id, source.id, "instrumental", db);
@@ -713,7 +758,29 @@ test("deterministic analysis selection and beat snapping gating across competing
     assert.equal(profile.sections[0]?.passageFingerprint?.sourceChecksumSha256, source.checksumSha256);
     assert.equal(profile.evidence?.features.sections.status, "measured");
     assert.equal(profile.evidence?.features.harmony.status, "measured");
+    assert.equal(profile.harmonyEvidenceSource, "source-mix");
     assert.equal(profile.harmonyEvents?.length, 2);
+    const separatedBedProfile = await loadSourceProfile(project.id, source.id, "instrumental", db, {
+      separationJobId: separationJob.id,
+    });
+    assert.equal(separatedBedProfile?.harmonyEvidenceSource, "separated-stem");
+    assert.equal(separatedBedProfile?.harmonyEvidenceStemType, "other");
+    assert.equal(separatedBedProfile?.harmonyEvents?.length, 1);
+    assert.equal(separatedBedProfile?.harmonyEvents?.[0]?.root, "D",
+      "the mashup bed uses chord evidence from its exact separated non-vocal stem");
+    if (separatedBedProfile?.evidence?.features.harmony.status === "measured") {
+      assert.equal(separatedBedProfile.evidence.features.harmony.provenance.stemAssetId, otherStem.id);
+      assert.equal(separatedBedProfile.evidence.features.harmony.provenance.stemType, "other");
+      assert.equal(separatedBedProfile.evidence.features.harmony.provenance.stemChecksumSha256, otherStem.checksumSha256);
+    }
+    await db.update(stemHarmonyAnalyses).set({ stemChecksumSha256: "f".repeat(64) })
+      .where(eq(stemHarmonyAnalyses.id, stemHarmonyAnalysis.id));
+    const staleSeparatedBedProfile = await loadSourceProfile(project.id, source.id, "instrumental", db, {
+      separationJobId: separationJob.id,
+    });
+    assert.equal(staleSeparatedBedProfile?.harmonyEvidenceSource, "source-mix",
+      "a stale stem result falls back to clearly labelled source-mix evidence instead of being trusted");
+    assert.equal(staleSeparatedBedProfile?.harmonyEvents?.[0]?.root, "C");
     if (profile.evidence?.features.sections.status === "measured") {
       assert.equal(profile.evidence.features.sections.provenance.sourceChecksumSha256, source.checksumSha256);
       assert.equal(profile.evidence.features.sections.provenance.analysisId, sectionAnalysis.id);
@@ -735,6 +802,9 @@ test("deterministic analysis selection and beat snapping gating across competing
       assert.equal(vocalProfile.evidence.features.vocalPitchFrames.provenance.stemChecksumSha256, stemChecksum,
         "only pitch frames tied to the current separated-vocal checksum may reach the planner");
     }
+    const separatedPlan = planMashup(vocalProfile, separatedBedProfile!);
+    assert.ok(separatedPlan.plan.warnings.some((warning) => warning.includes("separated other stem")),
+      "the persisted mashup plan uses the isolated-stem profile and discloses its narrower scope");
     await db.update(vocalAnalyses)
       .set({ stemChecksumSha256: "d".repeat(64) })
       .where(eq(vocalAnalyses.id, vocalAnalysis.id));

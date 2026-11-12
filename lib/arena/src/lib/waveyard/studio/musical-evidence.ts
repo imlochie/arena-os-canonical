@@ -15,7 +15,9 @@ export type MusicalEvidenceProvenance = {
   analysisEngine: string;
   analysisEngineVersion: string;
   sourceChecksumSha256: string;
+  subject?: "source-mix" | "separated-stem";
   stemAssetId?: string;
+  stemType?: string;
   stemChecksumSha256?: string;
   persistence: "database" | "request";
   contributors?: MusicalEvidenceProvenance[];

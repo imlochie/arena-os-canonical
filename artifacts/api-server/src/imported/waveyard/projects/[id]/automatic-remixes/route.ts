@@ -13,6 +13,7 @@ import {
   sourceSectionAnalyses,
   sourceSections,
   stemAssets,
+  vocalActivityIntervals,
   vocalAnalyses,
   vocalPhrases,
 } from "@workspace/db/waveyardSchema";
@@ -101,7 +102,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     const sourceById = new Map(sources.map((source) => [source.id, source]));
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
-    const currentVocalBySource = new Map<string, { analysis: (typeof vocalAnalysisRows)[number]; stem: (typeof stems)[number]; phrases: Array<{ startMs: number; endMs: number; confidence: number }> }>();
+    const currentVocalBySource = new Map<string, {
+      analysis: (typeof vocalAnalysisRows)[number];
+      stem: (typeof stems)[number];
+      phrases: Array<{ startMs: number; endMs: number; confidence: number }>;
+      activityIntervals: Array<{ startMs: number; endMs: number; confidence: number }>;
+    }>();
     for (const vocalAnalysis of [...vocalAnalysisRows].reverse()) {
       if (vocalAnalysis.status !== "complete"
         || vocalAnalysis.analysisEngine !== LOCAL_VOCAL_ANALYSIS_ENGINE
@@ -122,24 +128,42 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         analysisEngineVersion: vocalAnalysis.analysisEngineVersion,
       }, { engine: LOCAL_VOCAL_ANALYSIS_ENGINE, version: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION })) continue;
       if (!currentVocalBySource.has(source.id))
-        currentVocalBySource.set(source.id, { analysis: vocalAnalysis, stem, phrases: [] });
+        currentVocalBySource.set(source.id, { analysis: vocalAnalysis, stem, phrases: [], activityIntervals: [] });
     }
     const vocalAnalysisIds = [...new Set([...currentVocalBySource.values()].map(({ analysis }) => analysis.id))];
     if (vocalAnalysisIds.length) {
-      const persistedPhrases = await db.select({
-        vocalAnalysisId: vocalPhrases.vocalAnalysisId,
-        startMs: vocalPhrases.startMs,
-        endMs: vocalPhrases.endMs,
-        confidence: vocalPhrases.confidence,
-      }).from(vocalPhrases).where(inArray(vocalPhrases.vocalAnalysisId, vocalAnalysisIds));
+      const [persistedPhrases, persistedActivity] = await Promise.all([
+        db.select({
+          vocalAnalysisId: vocalPhrases.vocalAnalysisId,
+          startMs: vocalPhrases.startMs,
+          endMs: vocalPhrases.endMs,
+          confidence: vocalPhrases.confidence,
+        }).from(vocalPhrases).where(inArray(vocalPhrases.vocalAnalysisId, vocalAnalysisIds)),
+        db.select({
+          vocalAnalysisId: vocalActivityIntervals.vocalAnalysisId,
+          startMs: vocalActivityIntervals.startMs,
+          endMs: vocalActivityIntervals.endMs,
+          confidence: vocalActivityIntervals.confidence,
+        }).from(vocalActivityIntervals).where(inArray(vocalActivityIntervals.vocalAnalysisId, vocalAnalysisIds)),
+      ]);
       const phrasesByAnalysis = new Map<string, typeof persistedPhrases>();
       for (const phrase of persistedPhrases) {
         const existing = phrasesByAnalysis.get(phrase.vocalAnalysisId) ?? [];
         existing.push(phrase);
         phrasesByAnalysis.set(phrase.vocalAnalysisId, existing);
       }
+      const activityByAnalysis = new Map<string, typeof persistedActivity>();
+      for (const interval of persistedActivity) {
+        const existing = activityByAnalysis.get(interval.vocalAnalysisId) ?? [];
+        existing.push(interval);
+        activityByAnalysis.set(interval.vocalAnalysisId, existing);
+      }
       for (const [sourceId, current] of currentVocalBySource)
-        currentVocalBySource.set(sourceId, { ...current, phrases: phrasesByAnalysis.get(current.analysis.id) ?? [] });
+        currentVocalBySource.set(sourceId, {
+          ...current,
+          phrases: phrasesByAnalysis.get(current.analysis.id) ?? [],
+          activityIntervals: activityByAnalysis.get(current.analysis.id) ?? [],
+        });
     }
     const fingerprintUpdates: Array<{
       id: string;
@@ -157,24 +181,41 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (!fingerprint) return null;
       const vocal = currentVocalBySource.get(sourceId);
       if (!vocal) return fingerprint;
-      const coverage = vocalCoverage(vocal.phrases, section.startMs, section.endMs);
+      const activityCoverage = vocalCoverage(vocal.activityIntervals, section.startMs, section.endMs);
+      const pitchCoverage = vocalCoverage(vocal.phrases, section.startMs, section.endMs);
+      const activityIntervals = vocal.activityIntervals
+        .filter((interval) => interval.endMs > section.startMs && interval.startMs < section.endMs)
+        .slice(0, 256)
+        .map((interval) => ({
+          startMs: Math.max(section.startMs, interval.startMs),
+          endMs: Math.min(section.endMs, interval.endMs),
+          confidence: interval.confidence,
+        }));
       const pitchContinuityRuns = vocal.phrases
         .filter((phrase) => phrase.endMs > section.startMs && phrase.startMs < section.endMs)
         .slice(0, 256)
-        .map(({ startMs, endMs, confidence }) => ({ startMs, endMs, confidence }));
+        .map((phrase) => ({
+          startMs: Math.max(section.startMs, phrase.startMs),
+          endMs: Math.min(section.endMs, phrase.endMs),
+          confidence: phrase.confidence,
+        }));
       const enriched: PassageFingerprint = {
         ...fingerprint,
         vocalActivity: {
           status: "measured",
           value: {
-            ...coverage,
+            activityCoverage: activityCoverage.voicedCoverage,
+            meanActivityStrength: activityCoverage.meanConfidence,
+            pitchCoverage: pitchCoverage.voicedCoverage,
+            meanPitchConfidence: pitchCoverage.meanConfidence,
             analysisId: vocal.analysis.id,
             stemAssetId: vocal.stem.id,
             stemChecksumSha256: vocal.stem.checksumSha256,
+            activityIntervals,
             pitchContinuityRuns,
           },
-          method: "checksum-current isolated-vocal pitch-continuity runs; not lyric transcription",
-          confidence: coverage.meanConfidence,
+          method: "checksum-current separated-vocal activity confidence and pitch-continuity runs; neither is lyric transcription",
+          confidence: Math.min(activityCoverage.meanConfidence, pitchCoverage.meanConfidence || activityCoverage.meanConfidence),
         },
       };
       fingerprintUpdates.push({

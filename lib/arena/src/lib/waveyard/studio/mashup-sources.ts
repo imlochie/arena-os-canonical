@@ -8,6 +8,8 @@ import { and, asc, desc, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
 import {
+  stemHarmonyAnalyses,
+  stemHarmonyEvents,
   harmonyAnalyses,
   harmonyEvents,
   processingJobs,
@@ -33,6 +35,13 @@ import {
   LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION,
   normaliseHarmonyEvents,
 } from "../types/harmony-analysis";
+import {
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+  normaliseStemHarmonyEvents,
+  stemHarmonyAnalysisProvenanceReason,
+} from "../types/stem-harmony-analysis";
+import { chooseStemForHarmony } from "../stem-harmony-analysis";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
 import { usableBeatGrid } from "../types/beat-grid";
 import {
@@ -50,6 +59,7 @@ export async function loadSourceProfile(
   sourceAssetId: string,
   role: "vocals" | "instrumental",
   database: any = db,
+  options: { separationJobId?: string } = {},
 ): Promise<MashupSourceProfile | null> {
   const [asset] = await database
     .select({
@@ -229,15 +239,35 @@ export async function loadSourceProfile(
       .orderBy(asc(harmonyEvents.startMs))
     : [];
   const persistedHarmony = normaliseHarmonyEvents(harmonyRows, Math.round(asset.durationSeconds * 1000));
-  const harmony = harmonyAnalysis && persistedHarmony
-    ? measuredEvidence(persistedHarmony, {
+  let harmonyValue = harmonyAnalysis && persistedHarmony ? persistedHarmony : null;
+  let harmonyProvenance: MusicalEvidenceProvenance | null = harmonyValue && harmonyAnalysis ? {
       analysisId: harmonyAnalysis.id,
       analysisEngine: harmonyAnalysis.analysisEngine,
       analysisEngineVersion: harmonyAnalysis.analysisEngineVersion,
       sourceChecksumSha256: harmonyAnalysis.sourceChecksumSha256,
       persistence: "database",
+      subject: "source-mix",
+    } : null;
+  let harmonyEvidenceSource: MashupSourceProfile["harmonyEvidenceSource"] = harmonyValue ? "source-mix" : undefined;
+  let harmonyEvidenceStemType: string | undefined;
+  const separatedHarmony = role === "instrumental" && options.separationJobId
+    ? await loadCurrentStemHarmonyEvidence(database, {
+      projectId,
+      sourceAssetId,
+      sourceChecksumSha256: asset.checksumSha256,
+      durationMs: Math.round(asset.durationSeconds * 1000),
+      separationJobId: options.separationJobId,
     })
-    : unavailableEvidence<MusicalEvidenceChord[]>("No complete, valid harmony analysis matches the current source and engine version.");
+    : null;
+  if (separatedHarmony) {
+    harmonyValue = separatedHarmony.events;
+    harmonyProvenance = separatedHarmony.provenance;
+    harmonyEvidenceSource = "separated-stem";
+    harmonyEvidenceStemType = separatedHarmony.provenance.stemType;
+  }
+  const harmony = harmonyValue && harmonyProvenance
+    ? measuredEvidence(harmonyValue, harmonyProvenance)
+    : unavailableEvidence<MusicalEvidenceChord[]>("No complete, valid source or separated-stem harmony analysis matches the current audio checksums and engine version.");
 
   const evidence: MusicalEvidencePacket = {
     format: MUSICAL_EVIDENCE_PACKET_FORMAT,
@@ -269,6 +299,9 @@ export async function loadSourceProfile(
     },
   };
 
+  const measuredVocalPitchFrames = evidence.features.vocalPitchFrames?.status === "measured"
+    ? evidence.features.vocalPitchFrames.value
+    : null;
   return {
     role,
     sourceAssetId: asset.id,
@@ -282,13 +315,101 @@ export async function loadSourceProfile(
     durationMs: evidence.source.durationMs,
     sections,
     vocalPhrases: vocalEvidence?.phrases ?? [],
-    ...(evidence.features.vocalPitchFrames.status === "measured"
-      ? { vocalPitchFrames: evidence.features.vocalPitchFrames.value }
-      : {}),
+    ...(measuredVocalPitchFrames !== null ? { vocalPitchFrames: measuredVocalPitchFrames } : {}),
     ...(evidence.features.harmony.status === "measured"
       ? { harmonyEvents: evidence.features.harmony.value }
       : {}),
+    ...(harmonyEvidenceSource ? { harmonyEvidenceSource } : {}),
+    ...(harmonyEvidenceStemType ? { harmonyEvidenceStemType } : {}),
     evidence,
+  };
+}
+
+async function loadCurrentStemHarmonyEvidence(
+  database: any,
+  input: {
+    projectId: string;
+    sourceAssetId: string;
+    sourceChecksumSha256: string;
+    durationMs: number;
+    separationJobId: string;
+  },
+): Promise<{ events: MusicalEvidenceChord[]; provenance: MusicalEvidenceProvenance } | null> {
+  const [separation] = await database.select({ id: processingJobs.id }).from(processingJobs).where(and(
+    eq(processingJobs.id, input.separationJobId),
+    eq(processingJobs.projectId, input.projectId),
+    eq(processingJobs.sourceAssetId, input.sourceAssetId),
+    eq(processingJobs.type, "separation"),
+    eq(processingJobs.status, "complete"),
+  )).limit(1);
+  if (!separation) return null;
+
+  const stemRows: Array<{
+    id: string;
+    projectId: string;
+    sourceAssetId: string;
+    stemType: string;
+    checksumSha256: string;
+  }> = await database.select({
+    id: stemAssets.id,
+    projectId: stemAssets.projectId,
+    sourceAssetId: stemAssets.sourceAssetId,
+    stemType: stemAssets.stemType,
+    checksumSha256: stemAssets.checksumSha256,
+  }).from(stemAssets).where(and(
+    eq(stemAssets.projectId, input.projectId),
+    eq(stemAssets.sourceAssetId, input.sourceAssetId),
+    eq(stemAssets.separationJobId, input.separationJobId),
+  ));
+  const stem = chooseStemForHarmony(stemRows);
+  if (!stem) return null;
+
+  const [analysis] = await database.select().from(stemHarmonyAnalyses).where(and(
+    eq(stemHarmonyAnalyses.projectId, input.projectId),
+    eq(stemHarmonyAnalyses.sourceAssetId, input.sourceAssetId),
+    eq(stemHarmonyAnalyses.stemAssetId, stem.id),
+    eq(stemHarmonyAnalyses.status, "complete"),
+    eq(stemHarmonyAnalyses.analysisEngine, LOCAL_STEM_HARMONY_ANALYSIS_ENGINE),
+    eq(stemHarmonyAnalyses.analysisEngineVersion, LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION),
+  )).orderBy(desc(stemHarmonyAnalyses.completedAt), desc(stemHarmonyAnalyses.createdAt), desc(stemHarmonyAnalyses.id)).limit(1);
+  if (!analysis || stemHarmonyAnalysisProvenanceReason({
+    sourceAssetId: analysis.sourceAssetId,
+    expectedSourceAssetId: input.sourceAssetId,
+    stemAssetId: analysis.stemAssetId,
+    expectedStemAssetId: stem.id,
+    stemType: stem.stemType,
+    sourceChecksumSha256: analysis.sourceChecksumSha256,
+    expectedSourceChecksumSha256: input.sourceChecksumSha256,
+    stemChecksumSha256: analysis.stemChecksumSha256,
+    expectedStemChecksumSha256: stem.checksumSha256,
+    analysisEngine: analysis.analysisEngine,
+    analysisEngineVersion: analysis.analysisEngineVersion,
+  })) return null;
+
+  const eventRows = await database.select({
+    startMs: stemHarmonyEvents.startMs,
+    endMs: stemHarmonyEvents.endMs,
+    root: stemHarmonyEvents.root,
+    quality: stemHarmonyEvents.quality,
+    confidence: stemHarmonyEvents.confidence,
+  }).from(stemHarmonyEvents)
+    .where(eq(stemHarmonyEvents.stemHarmonyAnalysisId, analysis.id))
+    .orderBy(asc(stemHarmonyEvents.startMs));
+  const events = normaliseStemHarmonyEvents(eventRows, input.durationMs);
+  if (!events) return null;
+  return {
+    events,
+    provenance: {
+      analysisId: analysis.id,
+      analysisEngine: analysis.analysisEngine,
+      analysisEngineVersion: analysis.analysisEngineVersion,
+      sourceChecksumSha256: analysis.sourceChecksumSha256,
+      persistence: "database",
+      subject: "separated-stem",
+      stemAssetId: stem.id,
+      stemType: stem.stemType,
+      stemChecksumSha256: stem.checksumSha256,
+    },
   };
 }
 

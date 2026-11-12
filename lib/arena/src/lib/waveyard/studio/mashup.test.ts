@@ -151,6 +151,29 @@ test("plan: bed owns the tempo, vocal stretch + entry are explained", () => {
   assert.ok(plan.rationale.some((line) => line.includes("master tempo")));
 });
 
+test("plan labels source-mix harmony fallback instead of implying isolated-bed analysis", () => {
+  const result = planMashup(
+    profile({ role: "vocals", bpm: 120, musicalKey: "C major" }),
+    profile({ role: "instrumental", bpm: 120, musicalKey: "C major", harmonyEvidenceSource: "source-mix" }),
+  );
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("full source mix")
+    && warning.includes("separated bed-stem chord analysis")));
+});
+
+test("plan discloses when chord fit comes from one isolated layer rather than a summed bed", () => {
+  const result = planMashup(
+    profile({ role: "vocals", bpm: 120 }),
+    profile({
+      role: "instrumental",
+      bpm: 120,
+      harmonyEvidenceSource: "separated-stem",
+      harmonyEvidenceStemType: "other",
+    }),
+  );
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("separated other stem")
+    && warning.includes("complete summed instrumental bed")));
+});
+
 test("plan: voiced-run timing keeps safety padding and aligns the entrance to a measured bed beat", () => {
   const result = planMashup(
     profile({

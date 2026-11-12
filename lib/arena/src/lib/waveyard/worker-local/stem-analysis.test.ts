@@ -14,7 +14,7 @@ import { encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { LocalStorageProvider, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import {
   projects, processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, stemAssets, bassAnalyses, bassEvents, drumAnalyses, drumEvents,
-  harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalActivityIntervals, vocalPitchFrames, vocalPhrases,
+  harmonyAnalyses, harmonyEvents, stemHarmonyAnalyses, stemHarmonyEvents, vocalAnalyses, vocalActivityIntervals, vocalPitchFrames, vocalPhrases,
   remixSessions, remixVersions, exportJobs, exportAssets,
 } from "@workspace/db/waveyardSchema";
 import {
@@ -27,9 +27,12 @@ import {
   LOCAL_HARMONY_ANALYSIS_ENGINE, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION, harmonyAnalysisIdempotencyKey,
 } from "@workspace/arena/lib/waveyard/types/harmony-analysis";
 import {
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE, LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION, stemHarmonyAnalysisIdempotencyKey,
+} from "@workspace/arena/lib/waveyard/types/stem-harmony-analysis";
+import {
   LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION, vocalAnalysisIdempotencyKey,
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
-import { handleBassAnalysisJob, handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
+import { handleBassAnalysisJob, handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleStemHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
 import { handleMidiExportJob } from "./export";
 import { provisionDesktopVocalAnalysis } from "./analysis";
 import { parseStandardMidiFile } from "../midi-file";
@@ -37,6 +40,7 @@ import {
   recoverPendingLocalDrumAnalyses,
   recoverPendingLocalBassAnalyses,
   recoverPendingLocalHarmonyAnalyses,
+  recoverPendingLocalStemHarmonyAnalyses,
   recoverPendingLocalVocalAnalyses,
 } from "./recovery";
 
@@ -298,14 +302,6 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
         midiSourceChecksumSha256: source.checksumSha256, midiAnalysisEngine: target.engine,
         midiAnalysisEngineVersion: target.engineVersion, sampleRate: 0, channels: 0,
       }).returning();
-      if (target.kind === "harmony") {
-        await assert.rejects(handleMidiExportJob(midiJob, version, exportDb, storage), /No confident note events/);
-        const [emptyResult] = await db.select().from(exportJobs).where(eq(exportJobs.id, midiJob.id));
-        assert.equal(emptyResult.status, "failed");
-        assert.equal(emptyResult.errorCode, "midi_no_notes");
-        assert.equal((await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, midiJob.id))).length, 0);
-        continue;
-      }
       await handleMidiExportJob(midiJob, version, exportDb, storage);
       const [completed] = await db.select().from(exportJobs).where(eq(exportJobs.id, midiJob.id));
       assert.equal(completed.status, "complete", completed.errorMessage ?? target.kind + " MIDI export completes");
@@ -316,7 +312,7 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
       assert.equal(createHash("sha256").update(bytes).digest("hex"), asset.checksumSha256);
       const parsed = parseStandardMidiFile(bytes);
       assert.ok(parsed, "persisted bytes round-trip through the Standard MIDI reader");
-      assert.ok(parsed.notes.length > 0, "local vocal analysis produces notes without a remote worker");
+       assert.ok(parsed.notes.length > 0, `local ${target.kind} analysis produces notes without a remote worker`);
     }
 
     await db.update(vocalAnalyses).set({
@@ -363,6 +359,105 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     assert.equal(staleResult.status, "failed");
     assert.equal(staleResult.errorCode, "analysis_stale");
     assert.equal((await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, staleMidiJob.id))).length, 0);
+  } finally {
+    await client.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test("separated backing harmony is computed from persisted stem PCM and restart-recoverable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arena-stem-harmony-"));
+  const client = new PGlite();
+  try {
+    const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+    await applyDesktopMigrationsToPGlite(client, join(repoRoot, "desktop-migrations"));
+    const db = drizzle(client) as unknown as NonNullable<Parameters<typeof handleStemHarmonyAnalysisJob>[1]>["db"];
+    const storage = new LocalStorageProvider(join(root, "storage"));
+    const [project] = await db.insert(projects).values({ ownerId: randomUUID(), title: "Stem harmony" }).returning();
+    const audio = stereoWav(chordSource());
+    const audioPath = join(root, "other.wav");
+    await writeFile(audioPath, audio);
+    const checksum = createHash("sha256").update(audio).digest("hex");
+    const sourceKey = privateObjectKey(project.id, "source", "wav");
+    const stemKey = privateObjectKey(project.id, "stem", "wav");
+    await storage.putFile(sourceKey, audioPath, "audio/wav");
+    await storage.putFile(stemKey, audioPath, "audio/wav");
+    const [source] = await db.insert(sourceAssets).values({
+      projectId: project.id,
+      originalFilename: "mix.wav",
+      mimeType: "audio/wav",
+      storageKey: sourceKey,
+      checksumSha256: checksum,
+      durationSeconds: 4,
+      sampleRate: RATE,
+      channels: 2,
+      codec: "pcm_s16le",
+      fileSizeBytes: audio.length,
+    }).returning();
+    const [separation] = await db.insert(processingJobs).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      type: "separation",
+      status: "complete",
+      stage: "complete",
+      idempotencyKey: `separation:${source.id}`,
+      model: "test",
+      requestedDevice: "cpu",
+      completedAt: new Date(),
+    }).returning();
+    const [stem] = await db.insert(stemAssets).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      separationJobId: separation.id,
+      stemType: "other",
+      engine: "test",
+      model: "test",
+      modelVersion: "1",
+      storageKey: stemKey,
+      checksumSha256: checksum,
+      durationSeconds: 4,
+      sampleRate: RATE,
+      channels: 2,
+      codec: "pcm_s16le",
+      format: "wav",
+      fileSizeBytes: audio.length,
+    }).returning();
+    const [analysis] = await db.insert(stemHarmonyAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      stemAssetId: stem.id,
+      idempotencyKey: stemHarmonyAnalysisIdempotencyKey(stem.id),
+      analysisEngine: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256,
+      stemChecksumSha256: stem.checksumSha256,
+    }).returning();
+
+    const deps = { db, storage };
+    const payload = {
+      stemHarmonyAnalysisId: analysis.id,
+      projectId: project.id,
+      sourceAssetId: source.id,
+      stemAssetId: stem.id,
+      analysisEngine: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+    };
+    await handleStemHarmonyAnalysisJob(payload, deps);
+    const [completed] = await db.select().from(stemHarmonyAnalyses).where(eq(stemHarmonyAnalyses.id, analysis.id));
+    const events = await db.select().from(stemHarmonyEvents).where(eq(stemHarmonyEvents.stemHarmonyAnalysisId, analysis.id));
+    assert.equal(completed.status, "complete");
+    assert.equal(completed.sourceChecksumSha256, source.checksumSha256);
+    assert.equal(completed.stemChecksumSha256, stem.checksumSha256);
+    assert.ok(events.length > 0, "actual decoded isolated PCM produced persisted chord events");
+    assert.ok(events.every((event) => event.endMs <= 4_000), "event timing remains within the source and stem duration");
+
+    await db.update(stemHarmonyAnalyses).set({ status: "processing", stage: "analyzing" })
+      .where(eq(stemHarmonyAnalyses.id, analysis.id));
+    const recoveredPayloads: Array<Record<string, unknown>> = [];
+    const recovered = await recoverPendingLocalStemHarmonyAnalyses(db, async (job) => { recoveredPayloads.push(job); });
+    assert.deepEqual(recovered.requeuedJobIds, [analysis.id]);
+    assert.equal(recoveredPayloads.length, 1);
+    assert.equal(recoveredPayloads[0]?.stemAssetId, stem.id);
   } finally {
     await client.close();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

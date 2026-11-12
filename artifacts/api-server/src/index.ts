@@ -10,6 +10,7 @@ import {
   recoverPendingLocalDrumAnalyses,
   recoverPendingLocalBassAnalyses,
   recoverPendingLocalHarmonyAnalyses,
+  recoverPendingLocalStemHarmonyAnalyses,
   recoverPendingLocalVocalAnalyses,
   cleanupOrphanedSourceObjects,
   cleanupAbandonedAudioRestoreUploadDirectories,
@@ -50,7 +51,7 @@ if (worker) {
   // The in-memory broker and worker threads belonged to the previous API
   // process. Mark its jobs retryable and remove only their abandoned temp dirs.
   const { recovery, waveformRecovery, sourceAnalysisRecovery, sectionAnalysisRecovery,
-    drumAnalysisRecovery, bassAnalysisRecovery, harmonyAnalysisRecovery, vocalAnalysisRecovery } = await runWaveyardStartupRecovery(
+    drumAnalysisRecovery, bassAnalysisRecovery, harmonyAnalysisRecovery, stemHarmonyAnalysisRecovery, vocalAnalysisRecovery } = await runWaveyardStartupRecovery(
     async () => {
       const recovery = await recoverInterruptedLocalSeparationJobs(db);
       const waveformRecovery = await recoverPendingLocalWaveformJobs(db);
@@ -59,9 +60,10 @@ if (worker) {
       const drumAnalysisRecovery = await recoverPendingLocalDrumAnalyses(db);
       const bassAnalysisRecovery = await recoverPendingLocalBassAnalyses(db);
       const harmonyAnalysisRecovery = await recoverPendingLocalHarmonyAnalyses(db);
+      const stemHarmonyAnalysisRecovery = await recoverPendingLocalStemHarmonyAnalyses(db);
       const vocalAnalysisRecovery = await recoverPendingLocalVocalAnalyses(db);
       return { recovery, waveformRecovery, sourceAnalysisRecovery, sectionAnalysisRecovery,
-        drumAnalysisRecovery, bassAnalysisRecovery, harmonyAnalysisRecovery, vocalAnalysisRecovery };
+        drumAnalysisRecovery, bassAnalysisRecovery, harmonyAnalysisRecovery, stemHarmonyAnalysisRecovery, vocalAnalysisRecovery };
     },
     {
       onRetry: (error, attempt, delayMs) => logger.warn({
@@ -90,6 +92,8 @@ if (worker) {
     failedBassAnalysisRequeues: bassAnalysisRecovery.failedJobIds.length,
     requeuedHarmonyAnalyses: harmonyAnalysisRecovery.requeuedJobIds.length,
     failedHarmonyAnalysisRequeues: harmonyAnalysisRecovery.failedJobIds.length,
+    requeuedStemHarmonyAnalyses: stemHarmonyAnalysisRecovery.requeuedJobIds.length,
+    failedStemHarmonyAnalysisRequeues: stemHarmonyAnalysisRecovery.failedJobIds.length,
     requeuedVocalAnalyses: vocalAnalysisRecovery.requeuedJobIds.length,
     failedVocalAnalysisRequeues: vocalAnalysisRecovery.failedJobIds.length,
   }, "Waveyard local processors ready");
