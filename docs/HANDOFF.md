@@ -16,9 +16,9 @@
 * **Persistence:** desktop migration `0029_stem_harmony_analysis.sql` and
   Drizzle migration `0028_stem_harmony_analysis.sql` add stem-scoped analysis
   and event tables. Re-separation deletes its old stem-linked evidence through
-  the existing stem foreign-key cascade. These migration files are added but
-  were not applied to the shared workspace or production database; apply them
-  through the repository's normal migration process before deploying this path.
+  the existing stem foreign-key cascade. The schema is applied to the Replit
+  development database with `pnpm --filter @workspace/db run push`; production
+  remains untouched and receives schema changes through the normal publish flow.
 * **Planning behavior:** for a candidate passage, measured vocal pitch classes
   are mapped through the planned stretch and pitch shift onto the bed's measured
   chord timeline. Their chord-tone share is a soft ranking feature (12% before
