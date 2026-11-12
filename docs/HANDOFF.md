@@ -1,47 +1,49 @@
 # Arena handoff — read this first
 
-## Current verification update — 2026-11-12, cross-song passage evidence
+## Current verification update — 2026-11-12, whole-track passage search
 
-* **Existing data path extended:** Mashup source loading now carries the
-  checksum-bound beat range and passage fingerprint already stored with each
-  source section. The existing `source_sections` storage is reused; no table,
-  migration, or second evidence store was added.
-* **Planner decision:** the planner compares the first confidence-qualified
-  vocal section with later bed passages. It ranks candidates using measured
-  rhythm, chroma, beat phase, phrase length, and tempo fit when tempo is trusted.
-  It only changes the entry when phrase lengths match and all three core
-  fingerprints are present. Similarity values rank candidates but do not need
-  to cross the former 0.92 match threshold; drum and bass timing only break
-  near-ties (within 0.005). A relative rank is explicitly not a quality score.
-  If required evidence is missing, the mix still plans at the safe measured-beat
-  fallback and explains why.
-* **Persisted-database proof:** `mashup-db-acceptance.test.ts` persists a
-  passage fingerprint, reloads it through the production source-profile loader,
-  and verifies that the production planner uses it. The stale-checksum case
-  still removes the section evidence.
-* **Real full-track proof:** the acceptance route processed the complete
-  September bed and Another One Bites the Dust donor, ran the existing local
-  section worker against both original files, persisted 25/25 donor and 34/34
-  bed section fingerprints, then reloaded them in the production mashup route.
-  No passage covering the first qualified vocal run had both an equal 2+ bar
-  phrase length and measured rhythm, harmony, and beat-phase inputs. The planner
-  therefore retained its 104 ms measured-beat entry; it did not move the vocal
-  to a weak or unrelated section. At that entry, 3/8 early voiced-run starts
-  overlapped detected drum transients and 7/8 overlapped low-band bass attacks.
-  The 215-second session was still saved, reopened, edited, restored, and
-  exported; the WAV is stereo 44.1 kHz, has zero clipped frames, and its SHA-256
-  is recorded in
-  `generated-artifacts/waveyard-real-world-acceptance/stage3-cross-song-entry-acceptance.json`.
-* **What this proves—and does not:** persisted section fingerprints now reach a
-  real full-length plan, and unqualified attack coincidences cannot move an
-  entry. This pair did not produce a cross-song section match. The analysis
-  still lacks lyric/word timing, validated verse/chorus labels, human listening
-  evaluation, and arbitrary-song evidence. The report therefore does not claim
-  an intelligent or listenable mashup.
-* **Verification:** mashup planner tests 21/21; mashup database acceptance
-  2/2; synthetic route/Arena handoff acceptance 1/1; real full-track route and
-  persisted section workflow 1/1; API-server and library typechecks and
-  `git diff --check` passed.
+* **Whole-track search:** the planner now evaluates every confidence-qualified,
+  voice-bearing donor section against every checksum-current bed passage,
+  including bed passages before the safe fallback entry. It records each
+  section's measured time window, voiced-run count, candidate bed window,
+  proposed entry, relative score, feature-detector confidence, and reason.
+  A candidate is used only when phrase lengths match and rhythm, chroma, and
+  beat-phase evidence are present. Transients only break near-ties. The chosen
+  passage shifts the complete vocal body; it does not crop away earlier
+  material. Incomplete evidence or loss of vocal coverage retains the fallback.
+* **User-visible and persisted result:** Mashup Studio lists every evaluated
+  donor passage and clearly says that the time windows are not verified
+  verse/chorus labels, relative score is not a probability of musical fit, and
+  feature confidence is detector confidence rather than predicted sound
+  quality. The initial saved remix version records the plan and passage
+  evaluations; subsequent named versions carry that provenance. Saved clip
+  placement and donor source offsets are covered by the database round-trip
+  acceptance test.
+* **Real full-track result:** the production route evaluated all 17
+  voice-bearing sections from *Another One Bites the Dust* (222.67 s) against
+  *September* (215.14 s). Ten donor windows had at least one rankable bed
+  candidate; seven had none. The top relative score was 0.567 (not a calibrated
+  match probability), selecting donor window 67.860–72.226 s against bed
+  window 43.897–47.705 s and proposing a 1.020 s bed entry. The full detected
+  vocal body from 24.983–206.960 s remained in the plan. Its minimum reported
+  feature confidence was 0.907, which is not confidence that the mashup sounds
+  good. The complete 215 s session saved, reopened, edited, restored, and
+  exported as stereo 44.1 kHz WAV; the acceptance run passed.
+* **Ground-truth boundary:** no manually labelled section boundaries were
+  supplied for these recordings. Therefore this run cannot report passage
+  detection accuracy, missed/incorrect labels, or timing error against human
+  references. Analyzer windows do not prove verse/chorus understanding, and no
+  listener-rated mashup quality was measured.
+* **Next missing capability:** the fingerprint worker currently gives chroma
+  the beat-grid confidence; it does not independently quantify whether a
+  passage's harmonic evidence is ambiguous or distinctive. The analysis also
+  has no lyric/word timestamps or human-validated form labels. Do not tune
+  ranking thresholds or call the selection musically intelligent until those
+  missing measurements and listening evidence are evaluated.
+* **Verification:** mashup planner tests 24/24, mashup database acceptance
+  2/2, synthetic production-route acceptance 1/1, and real full-track
+  save/reopen/edit/restore/export route acceptance 1/1 passed. Library,
+  API-server, and frontend typechecks and `git diff --check` passed.
 
 ## Historical Stage 2 verification — 2026-11-12, durable bass-attack evidence
 

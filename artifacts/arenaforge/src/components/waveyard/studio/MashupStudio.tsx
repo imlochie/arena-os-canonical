@@ -23,6 +23,27 @@ type Plan = {
   vocalsPitchSemitones: number;
   keyRelationship: string;
   segments: Array<{ mashupStartMs: number; mashupEndMs: number; rationale: string }>;
+  passageSearch?: {
+    evaluatedDonorPassageCount: number;
+    rankableDonorPassageCount: number;
+    selectedDonorSectionId: string | null;
+    selectedBedSectionId: string | null;
+    evaluations: Array<{
+      donorSectionId: string;
+      donorStartMs: number;
+      donorEndMs: number;
+      voicedPhraseCount: number;
+      status: "ranked" | "no-candidate";
+      selected: boolean;
+      bestBedSectionId: string | null;
+      bedStartMs: number | null;
+      bedEndMs: number | null;
+      plannedEntryMs: number | null;
+      relativeScore: number | null;
+      minimumFeatureConfidence: number | null;
+      reason: string;
+    }>;
+  };
   durationMs: number;
   rationale: string[];
   warnings: string[];
@@ -47,6 +68,11 @@ const EVIDENCE_FEATURE_LABELS: Record<string, string> = {
   drumEvents: "Drum events",
   bassAttacks: "Bass attacks",
 };
+
+function formatPassageTime(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
 
 export function MashupStudio({ projectId, sources, canEdit }: { projectId: string; sources: Source[]; canEdit: boolean }) {
   const [vocalsId, setVocalsId] = useState(sources[0]?.id ?? "");
@@ -239,6 +265,50 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
               {plan.segments.map((segment, index) => <li key={`s${index}`}>{segment.rationale}.</li>)}
             </ul>
           </details>
+          {plan.passageSearch && (
+            <details className="mashup-passage-search" data-testid="details-passage-search">
+              <summary data-testid="summary-passage-search">
+                Whole-song passage search · {plan.passageSearch.rankableDonorPassageCount}/
+                {plan.passageSearch.evaluatedDonorPassageCount} donor sections ranked
+              </summary>
+              <p>
+                These are analyzer-defined time windows, not human-verified verse/chorus labels.
+                Relative score compares available passages; it is not a probability of musical fit.
+                Feature confidence is detector confidence, not a prediction that the mashup will sound good.
+              </p>
+              {plan.passageSearch.evaluations.length === 0
+                ? <p>No confidence-qualified vocal runs were assigned to a measured section.</p>
+                : (
+                  <ol>
+                    {plan.passageSearch.evaluations.map((evaluation) => (
+                      <li key={evaluation.donorSectionId} data-testid={`passage-evaluation-${evaluation.donorSectionId}`}>
+                        <b>
+                          Donor passage {formatPassageTime(evaluation.donorStartMs)}–
+                          {formatPassageTime(evaluation.donorEndMs)}
+                          {evaluation.selected ? " · selected" : ""}
+                        </b>
+                        <small>
+                          {evaluation.voicedPhraseCount} measured voiced-run starts · {evaluation.status}
+                          {evaluation.bestBedSectionId && evaluation.bedStartMs !== null && evaluation.bedEndMs !== null
+                            ? ` · bed passage ${formatPassageTime(evaluation.bedStartMs)}–${formatPassageTime(evaluation.bedEndMs)}`
+                            : ""}
+                          {evaluation.plannedEntryMs !== null
+                            ? ` · proposed entry ${formatPassageTime(evaluation.plannedEntryMs)}`
+                            : ""}
+                          {evaluation.relativeScore !== null
+                            ? ` · relative score ${evaluation.relativeScore.toFixed(3)}`
+                            : ""}
+                          {evaluation.minimumFeatureConfidence !== null
+                            ? ` · minimum feature confidence ${evaluation.minimumFeatureConfidence.toFixed(2)}`
+                            : ""}
+                        </small>
+                        <small>{evaluation.reason}</small>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+            </details>
+          )}
           {evidence && (
             <details className="mashup-evidence">
               <summary>Analysis evidence used</summary>

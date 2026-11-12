@@ -27,18 +27,28 @@ import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 import { PASSAGE_FINGERPRINT_ENGINE, PASSAGE_FINGERPRINT_ENGINE_VERSION, unavailablePassageEvidence } from "../types/passage-compatibility";
 
-function testPassageFingerprint(sourceChecksumSha256: string) {
+function testPassageFingerprint(
+  sourceChecksumSha256: string,
+  startBeatIndex = 0,
+  endBeatIndex = 16,
+  kind: "compatible" | "different" = "compatible",
+) {
+  const compatible = kind === "compatible";
   const measured = <T>(value: T) => ({ status: "measured" as const, value, method: "database acceptance fixture", confidence: 0.95 });
   return {
     schemaVersion: 1 as const,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256,
-    startBeatIndex: 0,
-    endBeatIndex: 16,
-    rhythm: measured(Array.from({ length: 32 }, (_, index) => Number(index % 4 === 0))),
+    startBeatIndex,
+    endBeatIndex,
+    rhythm: measured(Array.from({ length: 32 }, (_, index) =>
+      Number(index % 4 === (compatible ? 0 : 1)))),
     chroma: measured(Array.from({ length: 48 }, (_, index) => index % 12 === 0 ? 1 : 0.05)),
-    beatPhase: measured({ subdivisionProfile: [0.9, 0.05, 0.03, 0.02], beatPeriodMs: 500 }),
+    beatPhase: measured({
+      subdivisionProfile: compatible ? [0.9, 0.05, 0.03, 0.02] : [0.03, 0.9, 0.05, 0.02],
+      beatPeriodMs: 500,
+    }),
     energy: measured({ rmsDb: -12 }),
     downbeatConfidence: measured(0.95),
     vocalActivity: unavailablePassageEvidence("not available in this fixture"),
@@ -170,28 +180,82 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
     // Mashup source profiles
     const vocalProfile: MashupSourceProfile = {
       role: "vocals",
+      sourceAssetId: vocalSource.id,
+      sourceChecksumSha256: vocalSource.checksumSha256,
       bpm: 120,
+      bpmConfidence: 0.95,
       musicalKey: "A minor",
+      keyConfidence: 0.9,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 61 }, (_, index) => index * 500),
       durationMs: 30_000,
-      sections: [{ label: "verse", startMs: 0, endMs: 30_000 }],
+      sections: [
+        {
+          id: "donor-verse",
+          label: "section",
+          startMs: 0,
+          endMs: 8_000,
+          startBeatIndex: 0,
+          endBeatIndex: 16,
+          passageFingerprint: testPassageFingerprint(vocalSource.checksumSha256, 0, 16, "different"),
+        },
+        {
+          id: "donor-chorus",
+          label: "section",
+          startMs: 16_000,
+          endMs: 24_000,
+          startBeatIndex: 32,
+          endBeatIndex: 48,
+          passageFingerprint: testPassageFingerprint(vocalSource.checksumSha256, 32, 48),
+        },
+      ],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 2_000, confidence: 0.95 },
+        { startMs: 17_000, endMs: 18_000, confidence: 0.95 },
+      ],
     };
 
     const bedProfile: MashupSourceProfile = {
       role: "instrumental",
+      sourceAssetId: bedSource.id,
+      sourceChecksumSha256: bedSource.checksumSha256,
       bpm: 120,
+      bpmConfidence: 0.95,
       musicalKey: "C major",
+      keyConfidence: 0.9,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
       durationMs: 60_000,
       sections: [
         { label: "intro", startMs: 0, endMs: 8_000 },
-        { label: "verse", startMs: 8_000, endMs: 32_000 },
-        { label: "breakdown", startMs: 32_000, endMs: 40_000 },
-        { label: "chorus", startMs: 40_000, endMs: 60_000 },
+        {
+          id: "bed-verse",
+          label: "verse",
+          startMs: 8_000,
+          endMs: 16_000,
+          startBeatIndex: 16,
+          endBeatIndex: 32,
+          passageFingerprint: testPassageFingerprint(bedSource.checksumSha256, 16, 32),
+        },
+        { label: "breakdown", startMs: 16_000, endMs: 40_000 },
+        {
+          id: "bed-chorus",
+          label: "chorus",
+          startMs: 40_000,
+          endMs: 48_000,
+          startBeatIndex: 80,
+          endBeatIndex: 96,
+          passageFingerprint: testPassageFingerprint(bedSource.checksumSha256, 80, 96),
+        },
       ],
     };
 
     const planned = planMashup(vocalProfile, bedProfile);
     assert.ok(planned.ok);
     const plan = planned.plan;
+    assert.equal(plan.passageSearch?.selectedDonorSectionId, "donor-chorus");
+    assert.equal(plan.passageSearch?.selectedBedSectionId, "bed-chorus");
+    assert.ok(Math.abs(plan.segments[0]!.mashupStartMs - 24_750) <= 1);
 
     // Execute save transaction (same pattern as POST /mashup route action: "save")
     const saveResult = await db.transaction(async (tx) => {
@@ -275,6 +339,18 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
         name: remix.name,
         masterVolume: remix.masterVolume,
         tempoBpm: remix.tempoBpm,
+        mashupPlan: {
+          engine: plan.engine,
+          masterBpm: plan.masterBpm,
+          vocalsStretchRatio: plan.vocalsStretchRatio,
+          vocalsPitchSemitones: plan.vocalsPitchSemitones,
+          keyRelationship: plan.keyRelationship,
+          durationMs: plan.durationMs,
+          segments: plan.segments,
+          passageSearch: plan.passageSearch,
+          rationale: plan.rationale,
+          warnings: plan.warnings,
+        },
         tracks: insertedTracks.map((track) => ({
           ...track,
           clips: insertedClips.filter((c) => c.remixTrackId === track.id),
@@ -294,6 +370,12 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
     assert.ok(saveResult.remix.id);
     assert.equal(saveResult.tracks.length, 3);
     assert.ok(saveResult.clips.length >= 3);
+    const initialSnapshot = JSON.parse(saveResult.version.snapshot) as {
+      mashupPlan?: { passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } };
+    };
+    assert.equal(initialSnapshot.mashupPlan?.passageSearch?.selectedDonorSectionId, "donor-chorus",
+      "the version snapshot retains why and where the whole-track planner selected its later section");
+    assert.equal(initialSnapshot.mashupPlan?.passageSearch?.selectedBedSectionId, "bed-chorus");
 
     // Reopen from database: query remixSessions, remixTracks, and remixClips
     const [reloadedSession] = await db
@@ -323,6 +405,11 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
       assert.ok(clip.durationMs > 0);
       assert.ok(clip.gain > 0 && clip.gain <= 1);
     }
+    const reopenedVocalClip = reloadedClips.find((clip) => clip.stemAssetId === vocalStem.id)!;
+    assert.equal(reopenedVocalClip.timelineStartMs, plan.segments[0]!.mashupStartMs,
+      "the full-track passage selection must survive the database save/reopen round-trip");
+    assert.equal(reopenedVocalClip.sourceOffsetMs, plan.segments[0]!.vocalsFromMs,
+      "the earlier vocal material remains attached instead of being cut to the selected later passage");
 
     // Studio Editing & Re-saving: simulate user adjusting track volume & clip gain
     const trackToEdit = reloadedTracks[0];
@@ -495,7 +582,7 @@ test("deterministic analysis selection and beat snapping gating across competing
       vocalPhrases: [{ startMs: 1_000, endMs: 2_000, confidence: 0.9 }],
     }, profile);
     assert.ok(matchedPlan.ok);
-    assert.ok(matchedPlan.plan.rationale.some((line) => line.includes("ranked this as the best available measured bed-passage candidate")),
+    assert.ok(matchedPlan.plan.rationale.some((line) => line.includes("aligned voice-bearing donor section donor-section")),
       "the production planner must consume passage fingerprints reloaded from the database-backed profile");
 
     // Stale section rows must not leak back into the source profile.

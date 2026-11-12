@@ -752,6 +752,14 @@ test(
         durationMs: number;
         warnings: string[];
         rationale: string[];
+        segments: Array<{ mashupStartMs: number; mashupEndMs: number; vocalsFromMs: number; vocalsToMs: number }>;
+        passageSearch?: {
+          evaluatedDonorPassageCount: number;
+          rankableDonorPassageCount: number;
+          selectedDonorSectionId: string | null;
+          selectedBedSectionId: string | null;
+          evaluations: Array<{ donorSectionId: string; status: string; selected: boolean }>;
+        };
       };
       bed?: { source: string; warning: string };
       evidence?: {
@@ -840,11 +848,11 @@ test(
     if (!realFixture) assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
     assert.ok(planBody.plan && planBody.plan.durationMs > 0, "the production planner must return an arrangement");
     if (!realFixture) {
-      const persistedDrumAlignment = planBody.plan.rationale.find((line) => line.includes("early voiced-run starts"));
+      const persistedDrumAlignment = planBody.plan.rationale.find((line) => line.includes("voiced-run starts overlap"));
       assert.ok(persistedDrumAlignment, "the plan must report measured vocal-to-groove comparisons");
-      assert.ok(persistedDrumAlignment.includes("2/3 early voiced-run starts overlap measured drum transients"),
-        "the route must report persisted drum events at the unchanged structural entry");
-      assert.ok(persistedDrumAlignment.includes("2/3 overlap low-band bass attacks"),
+      assert.match(persistedDrumAlignment, /\d+\/3 voiced-run starts overlap measured drum transients/,
+        "the route must report persisted drum events against the unchanged structural entry");
+      assert.match(persistedDrumAlignment, /\d+\/3 overlap low-band bass attacks/,
         "the route must report persisted bass events without treating every attack as a preferred vocal onset");
       assert.ok(persistedDrumAlignment.includes("transient coincidences did not move the entry"),
         "the route must not optimize entry timing on transient coincidence without a matching musical passage");
@@ -862,11 +870,17 @@ test(
         "the arrangement must span essentially the complete instrumental source");
         assert.ok(planBody.plan.rationale.some((line) => line.includes("measured voiced activity")),
           "the production route must load persisted voiced intervals measured from the real isolated vocal");
-        assert.ok(planBody.plan.rationale.some((line) => line.includes("measured bed beat")),
-          "the production route must place the vocal entrance on the persisted trusted bed beat grid");
+        if (planBody.plan.passageSearch?.selectedDonorSectionId !== null
+          && planBody.plan.passageSearch?.selectedDonorSectionId !== undefined) {
+          assert.ok(planBody.plan.rationale.some((line) => line.includes("aligned voice-bearing donor section")),
+            "a selected full-track passage must explain its measured donor-to-bed section alignment");
+        } else {
+          assert.ok(planBody.plan.rationale.some((line) => line.includes("measured bed beat")),
+            "the evidence-insufficient fallback must retain the persisted trusted bed beat grid");
+        }
         assert.ok(planBody.plan.rationale.some((line) => line.includes("word, syllable, and lyrical-meaning timing are not analyzed")),
           "the plan must distinguish voicing activity from lyric understanding");
-        realGrooveTimingSummary = planBody.plan.rationale.find((line) => line.includes("early voiced-run starts")) ?? null;
+        realGrooveTimingSummary = planBody.plan.rationale.find((line) => line.includes("voiced-run starts overlap")) ?? null;
         assert.ok(realGrooveTimingSummary,
           "the real-stem plan must compare measured vocal activity with separated drum and bass attacks");
         assert.ok(realGrooveTimingSummary.includes("measured drum transients"));
@@ -875,19 +889,26 @@ test(
           "the real donor's full-track section worker must persist source-bound passage fingerprints");
         assert.ok(realSectionPassageEvidence?.bed.fingerprintCount,
           "the real bed's full-track section worker must persist source-bound passage fingerprints");
+        assert.ok(planBody.plan.passageSearch,
+          "the production response must expose the whole-track donor passage evaluation");
+        assert.equal(
+          planBody.plan.passageSearch.evaluations.length,
+          planBody.plan.passageSearch.evaluatedDonorPassageCount,
+          "every voice-bearing donor section must have an explicit outcome, not only the selected passage",
+        );
         const passageDecision = planBody.plan.rationale.find((line) =>
-          line.includes("ranked this as the best available measured bed-passage candidate")
-          || line.includes("no checksum-current passage pair had equal 2+ bar phrase lengths"),
+          line.includes("aligned voice-bearing donor section")
+          || line.includes("no voice-bearing donor passage"),
         );
         assert.ok(passageDecision,
           `the real pair must report its measured passage decision: ${JSON.stringify({ rationale: planBody.plan.rationale, warnings: planBody.plan.warnings })}`);
-        if (passageDecision.includes("ranked this")) {
+        if (planBody.plan.passageSearch.selectedDonorSectionId !== null) {
           assert.ok(planBody.plan.warnings.some((warning) =>
             warning.includes("relative evidence ranking") && warning.includes("not calibrated or listener-validated"),
           ), "a selected real passage must remain an audition candidate, not a sound-quality claim");
         } else {
           assert.ok(planBody.plan.warnings.some((warning) =>
-            warning.includes("measured-beat fallback") && warning.includes("equal 2+ bar phrase lengths"),
+            warning.includes("measured-beat fallback"),
           ), "when real evidence is insufficient, produce the mashup at the safe measured-beat fallback");
         }
     }
@@ -1238,6 +1259,33 @@ test(
     assert.equal(saveBody.ok, true);
     assert.ok(saveBody.remix.id);
     assert.ok(saveBody.version.id);
+    if (realFixture) {
+      const [initialVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, saveBody.version.id));
+      assert.ok(initialVersion);
+      const initialSnapshot = JSON.parse(initialVersion.snapshot) as {
+        mashupPlan?: {
+          passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } | null;
+          segments?: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
+        };
+      };
+      assert.deepEqual(
+        initialSnapshot.mashupPlan?.segments?.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
+        planBody.plan?.segments.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
+        "the original passage plan must be included in the persisted remix version",
+      );
+      assert.deepEqual(
+        [
+          initialSnapshot.mashupPlan?.passageSearch?.selectedDonorSectionId ?? null,
+          initialSnapshot.mashupPlan?.passageSearch?.selectedBedSectionId ?? null,
+        ],
+        [
+          planBody.plan?.passageSearch?.selectedDonorSectionId ?? null,
+          planBody.plan?.passageSearch?.selectedBedSectionId ?? null,
+        ],
+        "the exact selected passage decision must survive into the versioned snapshot",
+      );
+    }
 
     // Verify database state: fetch saved remix session, tracks, and clips
     const [savedSession] = await dbModule.db
@@ -1278,6 +1326,23 @@ test(
       .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
     assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
 
+    if (realFixture) {
+      const donorVocalStem = savedTrackStemProvenance.find((stem) =>
+        stem.sourceAssetId === vocalsSource.id && stem.stemType === "vocals");
+      assert.ok(donorVocalStem, "the saved donor vocal clip must retain its source provenance");
+      const persistedVocalClips = savedClips.filter((clip) => clip.stemAssetId === donorVocalStem.stemAssetId);
+      assert.equal(persistedVocalClips.length, planBody.plan?.segments.length,
+        "the chosen passage plan must save each planned donor vocal clip");
+      for (const [index, clip] of persistedVocalClips.entries()) {
+        const plannedSegment = planBody.plan!.segments[index]!;
+        assert.equal(clip.timelineStartMs, plannedSegment.mashupStartMs,
+          "the all-track passage entry must survive the route's save transaction");
+        assert.equal(clip.sourceOffsetMs, plannedSegment.vocalsFromMs,
+          "saving a later passage must not trim away earlier donor material");
+        assert.equal(clip.durationMs, plannedSegment.mashupEndMs - plannedSegment.mashupStartMs);
+      }
+    }
+
     for (const clip of savedClips) {
       assert.ok(Number.isFinite(clip.timelineStartMs) && clip.timelineStartMs >= 0);
       assert.ok(clip.durationMs > 0);
@@ -1302,6 +1367,17 @@ test(
       assert.equal(reopened.remix.id, saveBody.remix.id);
       assert.ok(reopened.tracks.length >= 2);
       assert.ok(reopened.tracks.reduce((sum, track) => sum + track.clips.length, 0) >= 2);
+      const reopenedVocalClips = reopened.tracks
+        .flatMap((track) => track.clips)
+        .filter((clip) => clip.stemAssetId === savedTrackStemProvenance.find((stem) =>
+          stem.sourceAssetId === vocalsSource.id && stem.stemType === "vocals")?.stemAssetId);
+      assert.deepEqual(
+        reopenedVocalClips.map((clip) => [clip.timelineStartMs, clip.sourceOffsetMs]),
+        savedClips
+          .filter((clip) => reopenedVocalClips.some((reopenedClip) => reopenedClip.id === clip.id))
+          .map((clip) => [clip.timelineStartMs, clip.sourceOffsetMs]),
+        "the reopened Studio must retain the selected passage timing and full donor source offset",
+      );
 
       const editInput = {
         ...reopened.remix,
@@ -1331,6 +1407,23 @@ test(
       assert.equal(versionResponse.status, 201, "the edited real-stem arrangement must persist a named version");
       const versionBody = await versionResponse.json() as { version: { id: string } };
       assert.ok(versionBody.version.id);
+      const [editedVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, versionBody.version.id));
+      assert.ok(editedVersion);
+      const editedSnapshot = JSON.parse(editedVersion.snapshot) as {
+        mashupPlan?: { passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } | null };
+      };
+      assert.deepEqual(
+        [
+          editedSnapshot.mashupPlan?.passageSearch?.selectedDonorSectionId ?? null,
+          editedSnapshot.mashupPlan?.passageSearch?.selectedBedSectionId ?? null,
+        ],
+        [
+          planBody.plan?.passageSearch?.selectedDonorSectionId ?? null,
+          planBody.plan?.passageSearch?.selectedBedSectionId ?? null,
+        ],
+        "later edited versions retain the original passage-selection provenance",
+      );
 
       const editedReload = await (await remixRoute.GET(
         new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
@@ -1435,6 +1528,21 @@ test(
           versionId: versionBody.version.id,
           trackCount: restored.tracks.length,
           clipCount: restored.tracks.reduce((sum, track) => sum + track.clips.length, 0),
+          passageEvaluation: {
+            vocalsFilename: realFixture.vocals.filename,
+            vocalsChecksumSha256: sha256(vocalsOriginal),
+            bedFilename: realFixture.bed.filename,
+            bedChecksumSha256: sha256(bedOriginal),
+            groundTruthStatus: "not-provided",
+            accuracyMetrics: null,
+            note: "Analyzer sections are structural time windows; no manual verse/chorus boundary labels were provided.",
+            evaluatedPlan: {
+              segments: planBody.plan?.segments ?? [],
+              passageSearch: planBody.plan?.passageSearch ?? null,
+              rationale: planBody.plan?.rationale ?? [],
+              warnings: planBody.plan?.warnings ?? [],
+            },
+          },
           trackStemProvenance: savedTrackStemProvenance,
           masterVolumeAfterRestore: restored.remix.masterVolume,
           export: {

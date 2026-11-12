@@ -916,6 +916,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             gridDivision: remix.gridDivision,
             snapEnabled: remix.snapEnabled,
             targetKey: remix.targetKey,
+            mashupPlan: {
+              engine: planned.plan.engine,
+              masterBpm: planned.plan.masterBpm,
+              vocalsStretchRatio: planned.plan.vocalsStretchRatio,
+              vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
+              keyRelationship: planned.plan.keyRelationship,
+              durationMs: planned.plan.durationMs,
+              segments: planned.plan.segments,
+              passageSearch: planned.plan.passageSearch ?? null,
+              rationale: planned.plan.rationale,
+              warnings: planned.plan.warnings,
+            },
             tracks: insertedTracks.map((track) => ({
               ...track,
               clips: insertedClips.filter((clip) => clip.remixTrackId === track.id),

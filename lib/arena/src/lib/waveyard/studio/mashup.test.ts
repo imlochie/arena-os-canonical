@@ -197,7 +197,7 @@ test("plan: isolated transient coincidence cannot move the entry without a compa
   assert.equal(result.plan.segments[0]!.mashupStartMs, 0,
     "without checksum-current cross-song passage fingerprints, keep the measured structural entry instead of chasing attack coincidence");
   assert.ok(result.plan.rationale.some((line) =>
-    line.includes("0/3 early voiced-run starts overlap measured drum transients")
+    line.includes("0/3 voiced-run starts overlap measured drum transients")
     && line.includes("0/3 overlap low-band bass attacks")
     && line.includes("transient coincidences did not move the entry"),
   ));
@@ -263,7 +263,7 @@ test("plan: complete fingerprints with unequal phrase lengths keep the safe entr
   assert.equal(result.plan.segments[0]!.mashupStartMs, 8_000,
     "strong transient coincidences cannot substitute for unequal 2+ bar phrase structure");
   assert.ok(result.plan.rationale.some((line) =>
-    line.includes("no checksum-current passage pair had equal 2+ bar phrase lengths")
+    line.includes("no voice-bearing donor passage had an equal 2+ bar bed phrase")
     && line.includes("transient coincidences did not move the entry"),
   ));
 });
@@ -350,12 +350,12 @@ test("plan: a strong cross-song passage match chooses the bed section; bass atta
   assert.ok(result.ok);
   assert.ok(Math.abs(result.plan.vocalsStretchRatio - (100 / 120)) < 1e-9,
     "trusted different tempos are adapted rather than rejected when passage-level rhythm, chroma, and phase match");
-  assert.equal(result.plan.segments[0]!.mashupStartMs, 16_000,
-    "the incompatible first passage is rejected, then bass timing breaks the tie between equally compatible bed passages");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_625,
+    "the whole donor passage offset maps the section start while retaining the vocal safety pad");
   assert.ok(result.plan.rationale.some((line) =>
-    line.includes("ranked this as the best available measured bed-passage candidate")
+    line.includes("aligned voice-bearing donor section donor-vocal-section")
     && line.includes("Onset-pattern cosine")
-    && line.includes("transient alignment only broke ties"),
+    && line.includes("transient alignment only breaks near-ties"),
   ), JSON.stringify({ rationale: result.plan.rationale, warnings: result.plan.warnings }));
   assert.ok(result.plan.warnings.some((line) =>
     line.includes("relative evidence ranking")
@@ -426,10 +426,10 @@ test("plan: weak measured passage candidates are ranked rather than treated as a
     }),
   );
   assert.ok(result.ok, "an imperfect measured passage comparison must not block mashup creation");
-  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_000,
-    "the best relative passage evidence changes the selected entry even when one or more dimensions remain below the match threshold");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_750,
+    "the selected bed section is aligned to the donor passage while retaining the vocal safety pad");
   assert.ok(result.plan.rationale.some((line) =>
-    line.includes("ranked this as the best available measured bed-passage candidate")
+    line.includes("aligned voice-bearing donor section weak-donor-section")
     && line.includes("Onset-pattern cosine")
     && line.includes("required ≥ 0.92"),
   ));
@@ -437,6 +437,261 @@ test("plan: weak measured passage candidates are ranked rather than treated as a
     line.includes("relative evidence ranking")
     && line.includes("not calibrated or listener-validated"),
   ));
+});
+
+test("plan: evaluates every full-track vocal passage and can select a later repeated hook without trimming earlier vocals", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceAssetId: "whole-track-donor",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [
+        {
+          id: "donor-verse",
+          label: "section",
+          startMs: 0,
+          endMs: 8_000,
+          startBeatIndex: 0,
+          endBeatIndex: 16,
+          passageFingerprint: passageFingerprint(checksumDonor, 0, 16, "different"),
+        },
+        {
+          id: "donor-chorus-repeat-1",
+          label: "section",
+          startMs: 20_000,
+          endMs: 28_000,
+          startBeatIndex: 40,
+          endBeatIndex: 56,
+          passageFingerprint: passageFingerprint(checksumDonor, 40, 56),
+        },
+        {
+          id: "donor-chorus-repeat-2",
+          label: "section",
+          startMs: 40_000,
+          endMs: 48_000,
+          startBeatIndex: 80,
+          endBeatIndex: 96,
+          passageFingerprint: passageFingerprint(checksumDonor, 80, 96, "different"),
+        },
+      ],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 1_800, confidence: 0.95 },
+        { startMs: 21_000, endMs: 21_800, confidence: 0.95 },
+        { startMs: 41_000, endMs: 41_800, confidence: 0.95 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      sourceAssetId: "whole-track-bed",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [
+        {
+          id: "bed-verse",
+          label: "section",
+          startMs: 8_000,
+          endMs: 16_000,
+          startBeatIndex: 16,
+          endBeatIndex: 32,
+          passageFingerprint: passageFingerprint(checksumBed, 16, 32),
+        },
+        {
+          id: "bed-hook",
+          label: "section",
+          startMs: 30_000,
+          endMs: 38_000,
+          startBeatIndex: 60,
+          endBeatIndex: 76,
+          passageFingerprint: passageFingerprint(checksumBed, 60, 76),
+        },
+        {
+          id: "bed-later-hook",
+          label: "section",
+          startMs: 50_000,
+          endMs: 58_000,
+          startBeatIndex: 100,
+          endBeatIndex: 116,
+          passageFingerprint: passageFingerprint(checksumBed, 100, 116),
+        },
+      ],
+    }),
+  );
+
+  assert.ok(result.ok);
+  const search = result.plan.passageSearch!;
+  assert.equal(search.evaluatedDonorPassageCount, 3);
+  assert.equal(search.rankableDonorPassageCount, 3);
+  assert.deepEqual(search.evaluations.map((evaluation) => evaluation.donorSectionId), [
+    "donor-verse",
+    "donor-chorus-repeat-1",
+    "donor-chorus-repeat-2",
+  ], "repeated hooks remain separate donor candidates");
+  assert.equal(search.selectedDonorSectionId, "donor-chorus-repeat-1");
+  assert.equal(search.selectedBedSectionId, "bed-hook");
+  assert.ok(Math.abs(result.plan.segments[0]!.mashupStartMs - 10_750) <= 1);
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 750,
+    "selecting a later musical passage does not cut off the earlier verse");
+  assert.equal(search.evaluations.filter((evaluation) => evaluation.selected).length, 1);
+  assert.ok(result.plan.warnings.some((warning) =>
+    warning.includes("not calibrated or listener-validated"),
+  ), "a relative structural rank is not presented as proven arrangement quality");
+});
+
+test("plan: missing passage fingerprints and sparse measured features keep the safe fallback", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const sparse = passageFingerprint(checksumBed, 16, 32);
+  sparse.rhythm = unavailablePassageEvidence("sparse percussion: rhythm could not be measured");
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [
+        {
+          id: "missing-fingerprint",
+          label: "section",
+          startMs: 0,
+          endMs: 8_000,
+          startBeatIndex: 0,
+          endBeatIndex: 16,
+        },
+        {
+          id: "sparse-donor",
+          label: "section",
+          startMs: 20_000,
+          endMs: 28_000,
+          startBeatIndex: 40,
+          endBeatIndex: 56,
+          passageFingerprint: passageFingerprint(checksumDonor, 40, 56),
+        },
+      ],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 1_500, confidence: 0.95 },
+        { startMs: 21_000, endMs: 21_500, confidence: 0.95 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [
+        { id: "safe-fallback", label: "section", startMs: 8_000, endMs: 16_000 },
+        {
+          id: "sparse-bed",
+          label: "section",
+          startMs: 30_000,
+          endMs: 38_000,
+          startBeatIndex: 60,
+          endBeatIndex: 76,
+          passageFingerprint: sparse,
+        },
+      ],
+    }),
+  );
+
+  assert.ok(result.ok);
+  assert.equal(result.plan.passageSearch?.evaluatedDonorPassageCount, 2);
+  assert.equal(result.plan.passageSearch?.rankableDonorPassageCount, 0);
+  assert.match(result.plan.passageSearch!.evaluations[0]!.reason, /no current checksum-bound passage fingerprint/);
+  assert.match(result.plan.passageSearch!.evaluations[1]!.reason, /measured rhythm, harmony, and beat-phase inputs/);
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_000,
+    "incomplete passage evidence leaves mashup creation on the existing fallback");
+});
+
+test("plan: a valid early-bed match is not discarded just because it precedes the fallback entry", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [
+        {
+          id: "donor-opening",
+          label: "section",
+          startMs: 0,
+          endMs: 4_000,
+          startBeatIndex: 0,
+          endBeatIndex: 8,
+          passageFingerprint: passageFingerprint(checksumDonor, 0, 16, "different"),
+        },
+        {
+          id: "donor-later",
+          label: "section",
+          startMs: 4_000,
+          endMs: 12_000,
+          startBeatIndex: 8,
+          endBeatIndex: 24,
+          passageFingerprint: passageFingerprint(checksumDonor, 8, 24),
+        },
+      ],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 1_500, confidence: 0.95 },
+        { startMs: 5_000, endMs: 5_500, confidence: 0.95 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [
+        {
+          id: "bed-intro-match",
+          label: "intro",
+          startMs: 8_000,
+          endMs: 16_000,
+          startBeatIndex: 16,
+          endBeatIndex: 32,
+          passageFingerprint: passageFingerprint(checksumBed, 16, 32),
+        },
+        {
+          id: "bed-body",
+          label: "verse",
+          startMs: 16_000,
+          endMs: 24_000,
+          startBeatIndex: 32,
+          endBeatIndex: 48,
+          passageFingerprint: passageFingerprint(checksumBed, 32, 48, "different"),
+        },
+      ],
+    }),
+  );
+
+  assert.ok(result.ok);
+  assert.equal(result.plan.passageSearch?.selectedDonorSectionId, "donor-later");
+  assert.equal(result.plan.passageSearch?.selectedBedSectionId, "bed-intro-match");
+  assert.ok(result.plan.segments[0]!.mashupStartMs < 16_000,
+    "a measured earlier bed passage can be selected instead of the heuristic first-body fallback");
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 750);
 });
 
 test("plan: low-confidence vocal phrases are not used as lyric timing evidence", () => {

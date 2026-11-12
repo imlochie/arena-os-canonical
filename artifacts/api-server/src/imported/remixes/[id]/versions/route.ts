@@ -1,6 +1,6 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   remixAutomationPoints,
@@ -21,14 +21,35 @@ async function access(userId: string, id: string, minimum: "viewer" | "editor") 
   return remix;
 }
 
+async function priorMashupPlan(remixSessionId: string): Promise<unknown | null> {
+  const [latest] = await db.select({ snapshot: remixVersions.snapshot })
+    .from(remixVersions)
+    .where(eq(remixVersions.remixSessionId, remixSessionId))
+    .orderBy(desc(remixVersions.createdAt))
+    .limit(1);
+  if (!latest) return null;
+  try {
+    const parsed = JSON.parse(latest.snapshot) as { mashupPlan?: unknown } | null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed.mashupPlan ?? null
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 // The snapshot mapping lives in lib (remix-versioning) so its persistence
-// contract — including insert chains — is covered by regression tests.
+// contract — including insert chains — is covered by regression tests. Mashup
+// provenance is carried forward from the initial plan version when the user
+// saves later edits, so the selected passages remain auditable.
 function snapshot(remix: typeof remixSessions.$inferSelect) {
   return (async () => {
     const tracks = await db.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id)).orderBy(asc(remixTracks.sortOrder));
     const clips = tracks.length ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id))) : [];
     const automation = await db.select().from(remixAutomationPoints).where(eq(remixAutomationPoints.remixSessionId, remix.id)).orderBy(asc(remixAutomationPoints.timelineMs));
-    return buildVersionSnapshot({ remix, tracks, clips, automation });
+    const state = buildVersionSnapshot({ remix, tracks, clips, automation });
+    const mashupPlan = await priorMashupPlan(remix.id);
+    return mashupPlan === null ? state : { ...state, mashupPlan };
   })();
 }
 
