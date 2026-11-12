@@ -25,6 +25,7 @@ import {
   vocalAnalysisProvenanceReason,
   type VocalPhrase,
 } from "../types/vocal-analysis";
+import { parsePassageFingerprint } from "../types/passage-compatibility";
 import { usableBeatGrid } from "../types/beat-grid";
 import {
   measuredEvidence,
@@ -103,9 +104,13 @@ export async function loadSourceProfile(
   const sectionRows = sectionAnalysis
     ? await database
       .select({
+        id: sourceSections.id,
         label: sourceSections.label,
         startMs: sourceSections.startMs,
         endMs: sourceSections.endMs,
+        startBeatIndex: sourceSections.startBeatIndex,
+        endBeatIndex: sourceSections.endBeatIndex,
+        passageFingerprint: sourceSections.passageFingerprint,
         labelConfidence: sourceSections.labelConfidence,
         structuralConfidence: sourceSections.structuralConfidence,
         sourceAnalysisId: sourceSections.sourceAnalysisId,
@@ -140,9 +145,17 @@ export async function loadSourceProfile(
     && section.structuralConfidence >= 0
     && section.structuralConfidence <= 1,
   ).map((section: typeof sectionRows[number]) => ({
+    id: section.id,
     label: section.label,
     startMs: section.startMs,
     endMs: section.endMs,
+    startBeatIndex: section.startBeatIndex,
+    endBeatIndex: section.endBeatIndex,
+    passageFingerprint: parsePassageFingerprint(section.passageFingerprint, {
+      sourceChecksumSha256: asset.checksumSha256,
+      startBeatIndex: section.startBeatIndex,
+      endBeatIndex: section.endBeatIndex,
+    }),
   }));
 
   const vocalEvidence = role === "vocals"

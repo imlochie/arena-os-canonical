@@ -25,6 +25,26 @@ import { planMashup, renderMashup, type MashupSourceProfile } from "./mashup";
 import { loadSourceProfile } from "./mashup-sources";
 import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
+import { PASSAGE_FINGERPRINT_ENGINE, PASSAGE_FINGERPRINT_ENGINE_VERSION, unavailablePassageEvidence } from "../types/passage-compatibility";
+
+function testPassageFingerprint(sourceChecksumSha256: string) {
+  const measured = <T>(value: T) => ({ status: "measured" as const, value, method: "database acceptance fixture", confidence: 0.95 });
+  return {
+    schemaVersion: 1 as const,
+    engine: PASSAGE_FINGERPRINT_ENGINE,
+    engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
+    sourceChecksumSha256,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    rhythm: measured(Array.from({ length: 32 }, (_, index) => Number(index % 4 === 0))),
+    chroma: measured(Array.from({ length: 48 }, (_, index) => index % 12 === 0 ? 1 : 0.05)),
+    beatPhase: measured({ subdivisionProfile: [0.9, 0.05, 0.03, 0.02], beatPeriodMs: 500 }),
+    energy: measured({ rmsDb: -12 }),
+    downbeatConfidence: measured(0.95),
+    vocalActivity: unavailablePassageEvidence("not available in this fixture"),
+    instrumentalDensity: unavailablePassageEvidence("not available in this fixture"),
+  };
+}
 
 test("Genuine database round-trip acceptance: plan -> save remix -> query tracks/clips -> edit -> update version", async () => {
   const client = new PGlite();
@@ -378,7 +398,7 @@ test("deterministic analysis selection and beat snapping gating across competing
     }).returning();
 
     // Insert initial analysis
-    const initialGrid = [0, 500, 1000, 1500, 2000];
+    const initialGrid = Array.from({ length: 17 }, (_, index) => index * 500);
     const [currentAnalysis] = await db.insert(sourceAnalyses).values({
       projectId: project.id,
       sourceAssetId: source.id,
@@ -420,17 +440,18 @@ test("deterministic analysis selection and beat snapping gating across competing
       sourceSectionAnalysisId: sectionAnalysis.id,
       sectionIndex: 0,
       startMs: 0,
-      endMs: 2_000,
+      endMs: 8_000,
       startBeatIndex: 0,
-      endBeatIndex: 4,
+      endBeatIndex: 16,
       startBar: 1,
-      endBar: 1,
+      endBar: 4,
       label: "chorus",
       labelConfidence: 0.8,
       structuralConfidence: 0.8,
       analysisEngine: DESKTOP_SECTION_ENGINE,
       analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
       sourceChecksumSha256: source.checksumSha256,
+      passageFingerprint: testPassageFingerprint(source.checksumSha256),
     });
 
     // Query analysis using loadSourceProfile
@@ -442,12 +463,40 @@ test("deterministic analysis selection and beat snapping gating across competing
     assert.equal(profile.bpmConfidence, 0.95);
     assert.equal(profile.beatConfidence, 0.92);
     assert.deepEqual(profile.beatGridMs, initialGrid);
-    assert.deepEqual(profile.sections, [{ label: "chorus", startMs: 0, endMs: 2_000 }]);
+    assert.equal(profile.sections.length, 1);
+    assert.equal(profile.sections[0]?.label, "chorus");
+    assert.equal(profile.sections[0]?.startMs, 0);
+    assert.equal(profile.sections[0]?.endMs, 8_000);
+    assert.equal(profile.sections[0]?.passageFingerprint?.sourceChecksumSha256, source.checksumSha256);
     assert.equal(profile.evidence?.features.sections.status, "measured");
     if (profile.evidence?.features.sections.status === "measured") {
       assert.equal(profile.evidence.features.sections.provenance.sourceChecksumSha256, source.checksumSha256);
       assert.equal(profile.evidence.features.sections.provenance.analysisId, sectionAnalysis.id);
+      assert.equal(profile.evidence.features.sections.value[0]?.passageFingerprint?.sourceChecksumSha256, source.checksumSha256,
+        "source-checksum-verified passage fingerprints must survive in the shared evidence packet");
     }
+    const matchedPlan = planMashup({
+      role: "vocals",
+      bpm: 128,
+      bpmConfidence: 0.95,
+      musicalKey: "A minor",
+      keyConfidence: 0.88,
+      beatConfidence: 0.92,
+      durationMs: 120_000,
+      sections: [{
+        id: "donor-section",
+        label: "section",
+        startMs: 0,
+        endMs: 8_000,
+        startBeatIndex: 0,
+        endBeatIndex: 16,
+        passageFingerprint: testPassageFingerprint("c".repeat(64)),
+      }],
+      vocalPhrases: [{ startMs: 1_000, endMs: 2_000, confidence: 0.9 }],
+    }, profile);
+    assert.ok(matchedPlan.ok);
+    assert.ok(matchedPlan.plan.rationale.some((line) => line.includes("ranked this as the best available measured bed-passage candidate")),
+      "the production planner must consume passage fingerprints reloaded from the database-backed profile");
 
     // Stale section rows must not leak back into the source profile.
     await db.update(sourceSections)

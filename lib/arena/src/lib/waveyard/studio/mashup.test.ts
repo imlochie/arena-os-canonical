@@ -19,6 +19,12 @@ import {
   type MashupSourceProfile,
   type MashupSection,
 } from "./mashup";
+import {
+  PASSAGE_FINGERPRINT_ENGINE,
+  PASSAGE_FINGERPRINT_ENGINE_VERSION,
+  unavailablePassageEvidence,
+  type PassageFingerprint,
+} from "../types/passage-compatibility";
 
 const RATE = 44_100;
 
@@ -36,6 +42,40 @@ function profile(overrides: Partial<MashupSourceProfile>): MashupSourceProfile {
     durationMs: 60_000,
     sections: [],
     ...overrides,
+  };
+}
+
+function passageFingerprint(
+  sourceChecksumSha256: string,
+  startBeatIndex: number,
+  endBeatIndex: number,
+  kind: "compatible" | "different" | "near" = "compatible",
+  beatPeriodMs = 500,
+): PassageFingerprint {
+  const compatible = kind === "compatible";
+  const measure = <T>(value: T) => ({ status: "measured" as const, value, method: "fixture", confidence: 0.95 });
+  return {
+    schemaVersion: 1,
+    engine: PASSAGE_FINGERPRINT_ENGINE,
+    engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
+    sourceChecksumSha256,
+    startBeatIndex,
+    endBeatIndex,
+    rhythm: measure(Array.from({ length: 32 }, (_, index) =>
+      kind === "near" && index % 4 === 1 ? 0.5 : Number(index % 4 === (compatible ? 0 : 1)))),
+    chroma: measure(Array.from({ length: 48 }, (_, index) => {
+      const pitch = index % 12;
+      return pitch === 0 ? 1 : pitch === 4 ? 0.75 : pitch === 7 ? 0.5 : 0.02;
+    })),
+    beatPhase: measure({
+      subdivisionProfile: compatible ? [0.9, 0.05, 0.03, 0.02]
+        : kind === "near" ? [0.7, 0.65, 0.03, 0.02] : [0.03, 0.9, 0.05, 0.02],
+      beatPeriodMs,
+    }),
+    energy: measure({ rmsDb: -12 }),
+    downbeatConfidence: measure(0.95),
+    vocalActivity: unavailablePassageEvidence("not available in this fixture"),
+    instrumentalDensity: unavailablePassageEvidence("not available in this fixture"),
   };
 }
 
@@ -125,7 +165,7 @@ test("plan: voiced-run timing keeps safety padding and aligns the entrance to a 
   assert.ok(!result.plan.warnings.some((line) => line.includes("No current isolated-vocal voicing intervals")));
 });
 
-test("plan: measured drum and bass attacks can improve voiced-run entry timing", () => {
+test("plan: isolated transient coincidence cannot move the entry without a compatible passage match", () => {
   const attacks = [750, 1_750, 2_750].map((timestampMs) => ({
     timestampMs,
     strength: 0.8,
@@ -154,15 +194,248 @@ test("plan: measured drum and bass attacks can improve voiced-run entry timing",
   );
 
   assert.ok(result.ok);
-  assert.equal(result.plan.segments[0]!.mashupStartMs, 500,
-    "the planner should select the nearby beat with stronger measured transient overlap");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 0,
+    "without checksum-current cross-song passage fingerprints, keep the measured structural entry instead of chasing attack coincidence");
   assert.ok(result.plan.rationale.some((line) =>
-    line.includes("3/3 fall within 90ms of measured drum transients")
-    && line.includes("3/3 within 90ms of low-band bass attacks")
-    && line.includes("timing-overlap score improved"),
+    line.includes("0/3 early voiced-run starts overlap measured drum transients")
+    && line.includes("0/3 overlap low-band bass attacks")
+    && line.includes("transient coincidences did not move the entry"),
   ));
   assert.ok(result.plan.warnings.some((line) =>
-    line.includes("does not identify kick/snare, bass notes, meter, lyrics, or listening quality"),
+    line.includes("measured-beat fallback"),
+  ));
+});
+
+test("plan: complete fingerprints with unequal phrase lengths keep the safe entry", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const attacks = [9_050, 10_050, 11_050].map((timestampMs) => ({
+    timestampMs,
+    strength: 0.8,
+    confidence: 0.9,
+  }));
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [{
+        id: "donor-16-beats",
+        label: "section",
+        startMs: 0,
+        endMs: 8_000,
+        startBeatIndex: 0,
+        endBeatIndex: 16,
+        passageFingerprint: passageFingerprint(checksumDonor, 0, 16),
+      }],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 1_500, confidence: 0.95 },
+        { startMs: 2_000, endMs: 2_500, confidence: 0.95 },
+        { startMs: 3_000, endMs: 3_500, confidence: 0.95 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [{
+        id: "bed-12-beats",
+        label: "section",
+        startMs: 8_000,
+        endMs: 14_000,
+        startBeatIndex: 16,
+        endBeatIndex: 28,
+        passageFingerprint: passageFingerprint(checksumBed, 16, 28),
+      }],
+      bassEvents: attacks,
+    }),
+  );
+
+  assert.ok(result.ok);
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_000,
+    "strong transient coincidences cannot substitute for unequal 2+ bar phrase structure");
+  assert.ok(result.plan.rationale.some((line) =>
+    line.includes("no checksum-current passage pair had equal 2+ bar phrase lengths")
+    && line.includes("transient coincidences did not move the entry"),
+  ));
+});
+
+test("plan: a strong cross-song passage match chooses the bed section; bass attacks only break a musical-score tie", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const donorFingerprint = passageFingerprint(checksumDonor, 0, 16, "compatible", 600);
+  const vocalSection: MashupSection = {
+    id: "donor-vocal-section",
+    label: "section",
+    startMs: 0,
+    endMs: 9_600,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    passageFingerprint: donorFingerprint,
+  };
+  const bedSections: MashupSection[] = [
+    {
+      id: "bed-conflict",
+      label: "section",
+      startMs: 0,
+      endMs: 8_000,
+      startBeatIndex: 0,
+      endBeatIndex: 16,
+      passageFingerprint: passageFingerprint(checksumBed, 0, 16, "different"),
+    },
+    {
+      id: "bed-compatible-quiet",
+      label: "section",
+      startMs: 8_000,
+      endMs: 16_000,
+      startBeatIndex: 16,
+      endBeatIndex: 32,
+      passageFingerprint: passageFingerprint(checksumBed, 16, 32),
+    },
+    {
+      id: "bed-compatible-groove",
+      label: "section",
+      startMs: 16_000,
+      endMs: 24_000,
+      startBeatIndex: 32,
+      endBeatIndex: 48,
+      passageFingerprint: passageFingerprint(checksumBed, 32, 48),
+    },
+  ];
+  const attacks = [16_250, 17_250, 18_250].map((timestampMs) => ({
+    timestampMs, strength: 0.8, confidence: 0.9,
+  }));
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceAssetId: "donor-source",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 100,
+      bpmConfidence: 0.95,
+      musicalKey: "C major",
+      keyConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 101 }, (_, index) => index * 600),
+      durationMs: 60_000,
+      sections: [vocalSection],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 1_500, confidence: 0.95 },
+        { startMs: 2_000, endMs: 2_500, confidence: 0.95 },
+        { startMs: 3_000, endMs: 3_500, confidence: 0.95 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      sourceAssetId: "bed-source",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      musicalKey: "C major",
+      keyConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: bedSections,
+      bassEvents: attacks,
+    }),
+  );
+  assert.ok(result.ok);
+  assert.ok(Math.abs(result.plan.vocalsStretchRatio - (100 / 120)) < 1e-9,
+    "trusted different tempos are adapted rather than rejected when passage-level rhythm, chroma, and phase match");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 16_000,
+    "the incompatible first passage is rejected, then bass timing breaks the tie between equally compatible bed passages");
+  assert.ok(result.plan.rationale.some((line) =>
+    line.includes("ranked this as the best available measured bed-passage candidate")
+    && line.includes("Onset-pattern cosine")
+    && line.includes("transient alignment only broke ties"),
+  ), JSON.stringify({ rationale: result.plan.rationale, warnings: result.plan.warnings }));
+  assert.ok(result.plan.warnings.some((line) =>
+    line.includes("relative evidence ranking")
+    && line.includes("does not establish a good-sounding arrangement"),
+  ));
+});
+
+test("plan: weak measured passage candidates are ranked rather than treated as a mashup gate", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceAssetId: "weak-donor",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      musicalKey: "C major",
+      keyConfidence: 0.95,
+      beatConfidence: 0.95,
+      durationMs: 60_000,
+      sections: [{
+        id: "weak-donor-section",
+        label: "section",
+        startMs: 0,
+        endMs: 8_000,
+        startBeatIndex: 0,
+        endBeatIndex: 16,
+        passageFingerprint: passageFingerprint(checksumDonor, 0, 16),
+      }],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 1_500, confidence: 0.95 },
+        { startMs: 2_000, endMs: 2_500, confidence: 0.95 },
+        { startMs: 3_000, endMs: 3_500, confidence: 0.95 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      sourceAssetId: "weak-bed",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      musicalKey: "C major",
+      keyConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [
+        {
+          id: "weak-bed-lower-ranked",
+          label: "section",
+          startMs: 0,
+          endMs: 8_000,
+          startBeatIndex: 0,
+          endBeatIndex: 16,
+          passageFingerprint: passageFingerprint(checksumBed, 0, 16, "different"),
+        },
+        {
+          id: "weak-bed-best-available",
+          label: "section",
+          startMs: 8_000,
+          endMs: 16_000,
+          startBeatIndex: 16,
+          endBeatIndex: 32,
+          passageFingerprint: passageFingerprint(checksumBed, 16, 32, "near"),
+        },
+      ],
+    }),
+  );
+  assert.ok(result.ok, "an imperfect measured passage comparison must not block mashup creation");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_000,
+    "the best relative passage evidence changes the selected entry even when one or more dimensions remain below the match threshold");
+  assert.ok(result.plan.rationale.some((line) =>
+    line.includes("ranked this as the best available measured bed-passage candidate")
+    && line.includes("Onset-pattern cosine")
+    && line.includes("required ≥ 0.92"),
+  ));
+  assert.ok(result.plan.warnings.some((line) =>
+    line.includes("relative evidence ranking")
+    && line.includes("not calibrated or listener-validated"),
   ));
 });
 

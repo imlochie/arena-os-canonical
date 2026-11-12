@@ -4,6 +4,8 @@
  * stale feature cannot be mistaken for a confident value.
  */
 
+import type { PassageFingerprint } from "../types/passage-compatibility";
+
 export const MUSICAL_EVIDENCE_PACKET_FORMAT = "waveyard-musical-evidence-v1" as const;
 
 export type MusicalEvidenceProvenance = {
@@ -22,9 +24,13 @@ export type MusicalEvidenceValue<T> =
   | { status: "unavailable"; reason: string };
 
 export type MusicalEvidenceSection = {
+  id?: string;
   label: string;
   startMs: number;
   endMs: number;
+  startBeatIndex?: number;
+  endBeatIndex?: number;
+  passageFingerprint?: PassageFingerprint | null;
 };
 
 export type MusicalEvidencePhrase = {

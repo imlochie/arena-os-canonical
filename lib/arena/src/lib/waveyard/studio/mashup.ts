@@ -19,13 +19,22 @@ import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
 import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
 import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
+import { comparePassageCompatibility, type PassageFingerprint } from "../types/passage-compatibility";
 import type { VocalPhrase } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v2";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
-export type MashupSection = { label: string; startMs: number; endMs: number };
+export type MashupSection = {
+  id?: string;
+  label: string;
+  startMs: number;
+  endMs: number;
+  startBeatIndex?: number;
+  endBeatIndex?: number;
+  passageFingerprint?: PassageFingerprint | null;
+};
 
 export type MashupTransientEvent = {
   timestampMs: number;
@@ -282,8 +291,9 @@ function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: num
 }
 
 const GROOVE_MATCH_TOLERANCE_MS = 90;
-const GROOVE_ENTRY_SEARCH_BEATS = 4;
 const GROOVE_VOICE_LOOKAHEAD_MS = 16_000;
+const MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK = 3;
+const PASSAGE_RANK_TIE_EPSILON = 0.005;
 
 function nearestTransientScore(timestampMs: number, events: MashupTransientEvent[]): number {
   let low = 0;
@@ -334,6 +344,197 @@ function scoreEntryAgainstTransients(
   };
 }
 
+function passageFeatureConfidence(
+  fingerprint: PassageFingerprint,
+  feature: "rhythm" | "chroma" | "beatPhase",
+): number | null {
+  const evidence = fingerprint[feature];
+  if (evidence.status !== "measured" || evidence.confidence === null || !Number.isFinite(evidence.confidence)) return null;
+  return Math.max(0, Math.min(1, evidence.confidence));
+}
+
+function rankPassagePair(
+  comparison: ReturnType<typeof comparePassageCompatibility>,
+  donor: PassageFingerprint,
+  bed: PassageFingerprint,
+  donorBpm: number | null,
+  bedBpm: number | null,
+  tempoTrusted: boolean,
+): { score: number; details: string[] } | null {
+  const dimensions = comparison.dimensions;
+  if (dimensions.phraseAlignment.status !== "match") return null;
+  const features: Array<{ label: string; score: number; weight: number }> = [];
+  const addSimilarity = (
+    label: string,
+    similarity: number | null,
+    confidence: number | null,
+    weight: number,
+  ) => {
+    if (similarity === null || !Number.isFinite(similarity) || confidence === null || confidence <= 0) return;
+    features.push({
+      label,
+      score: Math.max(0, Math.min(1, similarity)),
+      weight: weight * confidence,
+    });
+  };
+  addSimilarity("rhythm", dimensions.rhythm.similarity, Math.min(
+    passageFeatureConfidence(donor, "rhythm") ?? 0,
+    passageFeatureConfidence(bed, "rhythm") ?? 0,
+  ), 0.32);
+  addSimilarity("harmony", dimensions.harmony.similarity, Math.min(
+    passageFeatureConfidence(donor, "chroma") ?? 0,
+    passageFeatureConfidence(bed, "chroma") ?? 0,
+  ), 0.32);
+  addSimilarity("beat phase", dimensions.beatPhase.similarity, Math.min(
+    passageFeatureConfidence(donor, "beatPhase") ?? 0,
+    passageFeatureConfidence(bed, "beatPhase") ?? 0,
+  ), 0.20);
+
+  const donorBeats = donor.endBeatIndex - donor.startBeatIndex;
+  const bedBeats = bed.endBeatIndex - bed.startBeatIndex;
+  if (donorBeats > 0 && bedBeats > 0) {
+    features.push({
+      label: "phrase length",
+      score: Math.min(donorBeats, bedBeats) / Math.max(donorBeats, bedBeats),
+      weight: 0.10,
+    });
+  }
+  if (tempoTrusted && donorBpm && bedBpm && donorBpm > 0 && bedBpm > 0) {
+    features.push({
+      label: "tempo",
+      score: Math.exp(-Math.abs(Math.log(donorBpm / bedBpm))),
+      weight: 0.06,
+    });
+  }
+  const musicalFeatures = features.filter((feature) => ["rhythm", "harmony", "beat phase"].includes(feature.label));
+  if (musicalFeatures.length < 3) return null;
+  const totalWeight = features.reduce((total, feature) => total + feature.weight, 0);
+  const score = features.reduce((total, feature) => total + feature.score * feature.weight, 0) / totalWeight;
+  return {
+    score,
+    details: features.map((feature) => `${feature.label} similarity ${feature.score.toFixed(3)}`),
+  };
+}
+
+function rankedPassageEntry(
+  vocals: MashupSourceProfile,
+  bed: MashupSourceProfile,
+  body: ReturnType<typeof vocalBodySpan>,
+  baselineEntryMs: number,
+  masterBpm: number,
+  stretchRatio: number,
+  vocalOnsetOffsetsMs: number[],
+): { match: { at: number; why: string; score: number } | null; reason: string } {
+  const firstVocalRun = (vocals.vocalPhrases ?? [])
+    .filter((phrase) => Number.isSafeInteger(phrase.startMs)
+      && Number.isSafeInteger(phrase.endMs)
+      && phrase.startMs >= body.fromMs
+      && phrase.endMs > phrase.startMs
+      && phrase.endMs <= body.toMs
+      && Number.isFinite(phrase.confidence)
+      && phrase.confidence >= 0.5
+      && phrase.confidence <= 1)
+    .sort((left, right) => left.startMs - right.startMs)[0];
+  if (!firstVocalRun) {
+    return { match: null, reason: "no confidence-qualified vocal run is available to anchor a cross-song passage comparison" };
+  }
+
+  const donorSection = vocals.sections.find((section) =>
+    section.passageFingerprint
+    && section.startMs <= firstVocalRun.startMs
+    && section.endMs > firstVocalRun.startMs);
+  const donorFingerprint = donorSection?.passageFingerprint;
+  if (!donorSection || !donorFingerprint) {
+    return { match: null, reason: "no checksum-current donor passage fingerprint covers the first confidence-qualified vocal run" };
+  }
+
+  const donorBpm = typeof vocals.bpm === "number" && Number.isFinite(vocals.bpm) && vocals.bpm > 0
+    ? vocals.bpm : null;
+  const bedBpm = typeof bed.bpm === "number" && Number.isFinite(bed.bpm) && bed.bpm > 0
+    ? bed.bpm : null;
+  const comparisonDonorBpm = donorBpm ?? masterBpm;
+  const comparisonBedBpm = bedBpm ?? masterBpm;
+  const tempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null
+    && trustedAnalysisBpm(bed.bpm, bed.bpmConfidence) !== null;
+  const donorKey = trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence);
+  const bedKey = trustedAnalysisKey(bed.musicalKey, bed.keyConfidence);
+  const expectedKeyShift = donorKey && bedKey ? semitoneShift(donorKey, bedKey) : null;
+  const vocalSpanMs = Math.max(0, body.toMs - body.fromMs) * stretchRatio;
+
+  const bedPassages = bed.sections.filter((section) =>
+    section.passageFingerprint
+    && section.startMs >= baselineEntryMs - 20
+    && section.endMs > section.startMs
+    && !isIntro(section.label)
+    && !isOutro(section.label));
+  if (bedPassages.length === 0) {
+    return { match: null, reason: "no checksum-current bed passage fingerprints are available after the baseline entry" };
+  }
+
+  const candidates = bedPassages.flatMap((section) => {
+    if (!section.passageFingerprint
+      || section.startMs < baselineEntryMs - 20
+      || section.endMs <= section.startMs
+      || isIntro(section.label)
+      || isOutro(section.label)) return [];
+
+    const entry = alignBedEntryToMeasuredBeat(bed, section.startMs, masterBpm);
+    if (entry.at < baselineEntryMs - 20 || bed.durationMs - entry.at < vocalSpanMs * 0.75) return [];
+    const comparison = comparePassageCompatibility({
+      anchorSectionId: section.id ?? `${bed.sourceAssetId ?? "bed"}:${section.startBeatIndex ?? section.startMs}`,
+      donorSectionId: donorSection.id ?? `${vocals.sourceAssetId ?? "vocals"}:${donorSection.startBeatIndex ?? donorSection.startMs}`,
+      anchor: section.passageFingerprint,
+      donor: donorFingerprint,
+      anchorBpm: comparisonBedBpm,
+      donorBpm: comparisonDonorBpm,
+      anchorBeatConfidence: bed.beatConfidence ?? 0,
+      donorBeatConfidence: vocals.beatConfidence ?? 0,
+      anchorKeyTrusted: bedKey !== null,
+      donorKeyTrusted: donorKey !== null,
+      expectedKeyShift,
+    });
+    const ranking = rankPassagePair(
+      comparison,
+      donorFingerprint,
+      section.passageFingerprint,
+      donorBpm,
+      bedBpm,
+      tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
+    );
+    if (!ranking) return [];
+    const transientScore = vocalOnsetOffsetsMs.length >= MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK
+      ? scoreEntryAgainstTransients(entry.at, vocalOnsetOffsetsMs, stretchRatio, bed.drumEvents ?? [], bed.bassEvents ?? []).score
+      : 0;
+    const comparisonSummary = [
+      comparison.dimensions.phraseAlignment.detail,
+      comparison.dimensions.rhythm.detail,
+      comparison.dimensions.harmony.detail,
+      comparison.dimensions.beatPhase.detail,
+    ].join("; ");
+    return [{
+      at: entry.at,
+      why: `${entry.why ?? `the bed section begins at ${(entry.at / 1000).toFixed(2)}s`}; ranked this as the best available measured bed-passage candidate for the donor's first voiced section (relative rank ${ranking.score.toFixed(3)}; ${ranking.details.join(", ")}); ${comparisonSummary}; transient alignment only broke ties between equally ranked passage candidates`,
+      musicalScore: ranking.score,
+      transientScore,
+    }];
+  });
+  const scoreSorted = candidates.sort((left, right) =>
+    right.musicalScore - left.musicalScore || left.at - right.at,
+  );
+  const highestMusicalScore = scoreSorted[0]?.musicalScore;
+  const best = highestMusicalScore === undefined
+    ? undefined
+    : scoreSorted
+      .filter((candidate) => highestMusicalScore - candidate.musicalScore <= PASSAGE_RANK_TIE_EPSILON)
+      .sort((left, right) => right.transientScore - left.transientScore || left.at - right.at)[0];
+  return best
+    ? { match: { at: best.at, why: best.why, score: best.musicalScore }, reason: `the best available measured passage candidate ranked ${best.musicalScore.toFixed(3)} relative to the other current candidates` }
+    : {
+      match: null,
+      reason: "no checksum-current passage pair had equal 2+ bar phrase lengths plus measured rhythm, harmony, and beat-phase evidence",
+    };
+}
+
 function grooveAwareBedEntry(
   vocals: MashupSourceProfile,
   bed: MashupSourceProfile,
@@ -361,65 +562,43 @@ function grooveAwareBedEntry(
       && Number.isFinite(event.confidence) && event.confidence > 0 && event.confidence <= 1)
     .slice()
     .sort((left, right) => left.timestampMs - right.timestampMs);
-  const availableSourceCount = Number(drumEvents.length > 0) + Number(bassEvents.length > 0);
-  if (availableSourceCount === 0) {
-    return {
-      ...base,
-      warning: "Groove-aware entry was not applied: no current transient evidence was measured from the separated drum or bass stems.",
-    };
-  }
-
   const vocalOnsetOffsetsMs = (vocals.vocalPhrases ?? [])
     .filter((phrase) => phrase.startMs >= body.fromMs
       && phrase.startMs < Math.min(body.toMs, body.fromMs + GROOVE_VOICE_LOOKAHEAD_MS)
       && Number.isFinite(phrase.confidence) && phrase.confidence >= 0.5 && phrase.confidence <= 1)
     .map((phrase) => phrase.startMs - body.fromMs);
-  if (vocalOnsetOffsetsMs.length < 3) {
-    return {
-      ...base,
-      warning: "Groove-aware entry was not applied: fewer than three confidence-qualified voiced-run starts are available in the opening 16 seconds.",
-    };
-  }
-
-  const beatMs = 60_000 / masterBpm;
-  const candidates = grid.filter((beatMsOnGrid) =>
-    beatMsOnGrid >= base.at - 20
-    && beatMsOnGrid <= base.at + beatMs * GROOVE_ENTRY_SEARCH_BEATS
-    && beatMsOnGrid < bed.durationMs,
+  const passageDecision = rankedPassageEntry(
+    vocals, bed, body, base.at, masterBpm, stretchRatio, vocalOnsetOffsetsMs,
   );
-  if (candidates.length < 2) {
+  const passageEntry = passageDecision.match;
+  if (passageEntry) {
+    const selectedTiming = scoreEntryAgainstTransients(
+      passageEntry.at, vocalOnsetOffsetsMs, stretchRatio, drumEvents, bassEvents,
+    );
+    const drumLabel = drumEvents.length > 0 ? `${selectedTiming.drumMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
+    const bassLabel = bassEvents.length > 0 ? `${selectedTiming.bassMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
     return {
-      ...base,
-      warning: "Groove-aware entry was not applied: the trusted bed grid has no nearby alternative beat to compare.",
+      at: passageEntry.at,
+      why: [
+        passageEntry.why,
+        `at the selected passage, ${drumLabel} early voiced-run starts overlap measured drum transients and ${bassLabel} overlap low-band bass attacks`,
+      ].filter(Boolean).join("; "),
+      warning: `The passage choice is only the highest relative evidence ranking among current candidates (${passageEntry.score.toFixed(3)}); it is not calibrated or listener-validated. It does not establish a good-sounding arrangement; transient matches are only a tie-breaker.`,
     };
   }
 
-  const scores = candidates.map((at) => ({
-    at: Math.round(at),
-    ...scoreEntryAgainstTransients(at, vocalOnsetOffsetsMs, stretchRatio, drumEvents, bassEvents),
-  }));
-  const baseline = scores.find((candidate) => candidate.at === base.at) ?? scores[0]!;
-  const best = scores.reduce((current, candidate) =>
-    candidate.score > current.score + 1e-9 ? candidate : current,
-  baseline);
-  const drumLabel = drumEvents.length > 0 ? `${best.drumMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
-  const bassLabel = bassEvents.length > 0 ? `${best.bassMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
-  const measurement = `among ${vocalOnsetOffsetsMs.length} early voiced-run starts, ${drumLabel} fall within 90ms of measured drum transients and ${bassLabel} within 90ms of low-band bass attacks`;
-  if (best.at !== baseline.at && best.score > baseline.score + 1e-9) {
-    const improvement = (best.score - baseline.score).toFixed(3);
-    return {
-      at: best.at,
-      why: [
-        base.why,
-        `entry moved ${(best.at - baseline.at).toFixed(0)}ms within the next four measured beats; ${measurement} (timing-overlap score improved by ${improvement})`,
-      ].filter(Boolean).join("; "),
-      warning: "This compares voiced activity to unlabeled transients and low-band attacks; it does not identify kick/snare, bass notes, meter, lyrics, or listening quality.",
-    };
-  }
+  const baselineTiming = scoreEntryAgainstTransients(
+    base.at, vocalOnsetOffsetsMs, stretchRatio, drumEvents, bassEvents,
+  );
+  const drumLabel = drumEvents.length > 0 ? `${baselineTiming.drumMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
+  const bassLabel = bassEvents.length > 0 ? `${baselineTiming.bassMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
+  const phraseTiming = vocalOnsetOffsetsMs.length
+    ? `at the unchanged entry, ${drumLabel} early voiced-run starts overlap measured drum transients and ${bassLabel} overlap low-band bass attacks`
+    : "no confidence-qualified early voiced-run starts were available for transient comparison";
   return {
-    at: baseline.at,
-    why: `${measurement}; no nearby beat scored higher`,
-    warning: "This compares voiced activity to unlabeled transients and low-band attacks; it does not identify kick/snare, bass notes, meter, lyrics, or listening quality.",
+    at: base.at,
+    why: `${base.why}; ${phraseTiming}; ${passageDecision.reason}, so transient coincidences did not move the entry`,
+    warning: `The entry remains a measured-beat fallback because ${passageDecision.reason}. Voiced runs are not lyric phrases, and event timing does not establish musical fit or listening quality.`,
   };
 }
 

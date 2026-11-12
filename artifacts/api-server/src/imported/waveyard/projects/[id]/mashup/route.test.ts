@@ -185,6 +185,10 @@ test(
   let realVocalAnalysisId: string | null = null;
   let realGrooveTimingSummary: string | null = null;
   let realPersistedBassAttackCount: number | null = null;
+  let realSectionPassageEvidence: {
+    vocals: { status: string; sectionCount: number; fingerprintCount: number };
+    bed: { status: string; sectionCount: number; fingerprintCount: number };
+  } | null = null;
   let realVocalVoicingEvidence: {
     count: number;
     firstVoicedRun: { startMs: number; endMs: number; confidence: number };
@@ -726,8 +730,7 @@ test(
     });
 
     // Plan path reports the authoritative bed source before rendering.
-    const planResponse = await routeModule.POST(
-      new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const planRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -735,11 +738,13 @@ test(
           vocalsSourceId: vocalsSource.id,
           instrumentalSourceId: bedSource.id,
         }),
-      }),
+      });
+    let planResponse = await routeModule.POST(
+      planRequest(),
       { params: Promise.resolve({ id: project.id }) },
     );
     assert.equal(planResponse.status, 200);
-    const planBody = await planResponse.json() as {
+    let planBody = await planResponse.json() as {
       plan?: {
         masterBpm: number;
         vocalsStretchRatio: number;
@@ -754,6 +759,75 @@ test(
         bed: Record<string, { status: string; persistence?: string }>;
       };
     };
+    if (realFixture) {
+      // The first plan decodes and persists full-track analysis. Run the
+      // existing durable section worker on those exact original files, then
+      // plan again so the production loader and planner consume the persisted
+      // source-checksum-bound passage fingerprints.
+      const [{ handleSectionAnalysisJob }, analysisTypes] = await Promise.all([
+        import("@workspace/arena/lib/waveyard/worker-local/sections"),
+        import("@workspace/arena/lib/waveyard/types/analysis-provenance"),
+      ]);
+      const sectionResults: Array<{ status: string; sectionCount: number; fingerprintCount: number }> = [];
+      for (const sourceAssetId of [vocalsSource.id, bedSource.id]) {
+        const [sourceAsset] = await dbModule.db.select().from(schema.sourceAssets)
+          .where(and(eq(schema.sourceAssets.id, sourceAssetId), eq(schema.sourceAssets.projectId, project.id)));
+        const [sourceAnalysis] = await dbModule.db.select().from(schema.sourceAnalyses)
+          .where(and(
+            eq(schema.sourceAnalyses.sourceAssetId, sourceAssetId),
+            eq(schema.sourceAnalyses.projectId, project.id),
+            eq(schema.sourceAnalyses.status, "complete"),
+          ));
+        assert.ok(sourceAsset && sourceAnalysis?.beatGrid,
+          "the first production plan must persist a usable source beat grid before section analysis");
+        const [sectionAnalysis] = await dbModule.db.insert(schema.sourceSectionAnalyses).values({
+          projectId: project.id,
+          sourceAssetId,
+          sourceAnalysisId: sourceAnalysis.id,
+          status: "queued",
+          stage: "queued",
+          attempts: 0,
+          idempotencyKey: `real-stage3-sections-${sourceAssetId}`,
+          analysisEngine: analysisTypes.DESKTOP_SECTION_ENGINE,
+          analysisEngineVersion: analysisTypes.DESKTOP_SECTION_ENGINE_VERSION,
+          sourceChecksumSha256: sourceAsset.checksumSha256,
+        }).returning();
+        assert.ok(sectionAnalysis);
+        await handleSectionAnalysisJob({
+          sourceSectionAnalysisId: sectionAnalysis.id,
+          projectId: project.id,
+          sourceAssetId,
+          sourceAnalysisId: sourceAnalysis.id,
+          analysisEngine: analysisTypes.DESKTOP_SECTION_ENGINE,
+          analysisEngineVersion: analysisTypes.DESKTOP_SECTION_ENGINE_VERSION,
+        });
+        const [completed] = await dbModule.db.select().from(schema.sourceSectionAnalyses)
+          .where(eq(schema.sourceSectionAnalyses.id, sectionAnalysis.id));
+        const rows = await dbModule.db.select().from(schema.sourceSections)
+          .where(and(
+            eq(schema.sourceSections.projectId, project.id),
+            eq(schema.sourceSections.sourceAssetId, sourceAssetId),
+            eq(schema.sourceSections.sourceSectionAnalysisId, sectionAnalysis.id),
+          ));
+        assert.equal(completed?.status, "complete",
+          "full-track real audio should produce current persisted section fingerprints for the acceptance pair");
+        assert.ok(rows.length > 0, "the section worker must persist real source sections");
+        assert.ok(rows.every((row) => row.sourceChecksumSha256 === sourceAsset.checksumSha256),
+          "every persisted section must remain bound to the original source checksum");
+        sectionResults.push({
+          status: completed.status,
+          sectionCount: rows.length,
+          fingerprintCount: rows.filter((row) => row.passageFingerprint !== null).length,
+        });
+      }
+      realSectionPassageEvidence = {
+        vocals: sectionResults[0]!,
+        bed: sectionResults[1]!,
+      };
+      planResponse = await routeModule.POST(planRequest(), { params: Promise.resolve({ id: project.id }) });
+      assert.equal(planResponse.status, 200);
+      planBody = await planResponse.json() as typeof planBody;
+    }
     assert.equal(planBody.bed?.source, "separated", "the plan must report the separated bed");
     assert.equal(planBody.evidence?.vocals.vocalPhrases.status, "measured",
       "the plan response must expose the current persisted vocal activity used by the planner");
@@ -768,11 +842,12 @@ test(
     if (!realFixture) {
       const persistedDrumAlignment = planBody.plan.rationale.find((line) => line.includes("early voiced-run starts"));
       assert.ok(persistedDrumAlignment, "the plan must report measured vocal-to-groove comparisons");
-      assert.ok(persistedDrumAlignment.includes("3/3"), "the route must use persisted drum event timestamps, not just re-detect the stem");
-      assert.ok(persistedDrumAlignment.includes("entry moved 500ms"),
-        "the saved drum events must move the donor entry to the best matching beat");
-      assert.ok(persistedDrumAlignment.includes("3/3 within 90ms of low-band bass attacks"),
-        "the saved bass events must also inform the planner's vocal-entry choice");
+      assert.ok(persistedDrumAlignment.includes("2/3 early voiced-run starts overlap measured drum transients"),
+        "the route must report persisted drum events at the unchanged structural entry");
+      assert.ok(persistedDrumAlignment.includes("2/3 overlap low-band bass attacks"),
+        "the route must report persisted bass events without treating every attack as a preferred vocal onset");
+      assert.ok(persistedDrumAlignment.includes("transient coincidences did not move the entry"),
+        "the route must not optimize entry timing on transient coincidence without a matching musical passage");
     } else {
       assert.equal(planBody.evidence?.bed.bassAttacks.persistence, "database",
         "the real-track plan must use events persisted by the local bass-analysis worker");
@@ -796,6 +871,25 @@ test(
           "the real-stem plan must compare measured vocal activity with separated drum and bass attacks");
         assert.ok(realGrooveTimingSummary.includes("measured drum transients"));
         assert.ok(realGrooveTimingSummary.includes("low-band bass attacks"));
+        assert.ok(realSectionPassageEvidence?.vocals.fingerprintCount,
+          "the real donor's full-track section worker must persist source-bound passage fingerprints");
+        assert.ok(realSectionPassageEvidence?.bed.fingerprintCount,
+          "the real bed's full-track section worker must persist source-bound passage fingerprints");
+        const passageDecision = planBody.plan.rationale.find((line) =>
+          line.includes("ranked this as the best available measured bed-passage candidate")
+          || line.includes("no checksum-current passage pair had equal 2+ bar phrase lengths"),
+        );
+        assert.ok(passageDecision,
+          `the real pair must report its measured passage decision: ${JSON.stringify({ rationale: planBody.plan.rationale, warnings: planBody.plan.warnings })}`);
+        if (passageDecision.includes("ranked this")) {
+          assert.ok(planBody.plan.warnings.some((warning) =>
+            warning.includes("relative evidence ranking") && warning.includes("not calibrated or listener-validated"),
+          ), "a selected real passage must remain an audition candidate, not a sound-quality claim");
+        } else {
+          assert.ok(planBody.plan.warnings.some((warning) =>
+            warning.includes("measured-beat fallback") && warning.includes("equal 2+ bar phrase lengths"),
+          ), "when real evidence is insufficient, produce the mashup at the safe measured-beat fallback");
+        }
     }
     const realSourceAnalyses = realFixture
       ? await dbModule.db.select({
@@ -874,7 +968,7 @@ test(
       };
       assert.ok(staleBassPlan.plan?.warnings.some((warning) => warning.includes("bass stem checksum does not match")),
         "bass attack evidence must fail closed when its saved checksum no longer matches the file");
-      assert.ok(staleBassPlan.plan?.rationale.some((line) => line.includes("unavailable within 90ms of low-band bass attacks")),
+      assert.ok(staleBassPlan.plan?.rationale.some((line) => line.includes("unavailable overlap low-band bass attacks")),
         "a stale bass stem must not contribute event matches");
       await dbModule.db.update(schema.stemAssets)
         .set({ checksumSha256: sha256(bassFixture.wav) })
@@ -1047,6 +1141,7 @@ test(
           persistedSourceAnalyses: realSourceAnalyses,
           persistedVocalVoicingIntervals: realVocalVoicingEvidence,
           persistedBassAttackCount: realPersistedBassAttackCount,
+          persistedSectionPassageEvidence: realSectionPassageEvidence,
           measuredGrooveTimingSummary: realGrooveTimingSummary,
           sources: {
             vocals: {

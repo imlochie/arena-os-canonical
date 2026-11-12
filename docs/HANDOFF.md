@@ -1,7 +1,52 @@
 # Arena handoff — read this first
 
-## Current verification update — 2026-11-12, durable bass-attack evidence
+## Current verification update — 2026-11-12, cross-song passage evidence
 
+* **Existing data path extended:** Mashup source loading now carries the
+  checksum-bound beat range and passage fingerprint already stored with each
+  source section. The existing `source_sections` storage is reused; no table,
+  migration, or second evidence store was added.
+* **Planner decision:** the planner compares the first confidence-qualified
+  vocal section with later bed passages. It ranks candidates using measured
+  rhythm, chroma, beat phase, phrase length, and tempo fit when tempo is trusted.
+  It only changes the entry when phrase lengths match and all three core
+  fingerprints are present. Similarity values rank candidates but do not need
+  to cross the former 0.92 match threshold; drum and bass timing only break
+  near-ties (within 0.005). A relative rank is explicitly not a quality score.
+  If required evidence is missing, the mix still plans at the safe measured-beat
+  fallback and explains why.
+* **Persisted-database proof:** `mashup-db-acceptance.test.ts` persists a
+  passage fingerprint, reloads it through the production source-profile loader,
+  and verifies that the production planner uses it. The stale-checksum case
+  still removes the section evidence.
+* **Real full-track proof:** the acceptance route processed the complete
+  September bed and Another One Bites the Dust donor, ran the existing local
+  section worker against both original files, persisted 25/25 donor and 34/34
+  bed section fingerprints, then reloaded them in the production mashup route.
+  No passage covering the first qualified vocal run had both an equal 2+ bar
+  phrase length and measured rhythm, harmony, and beat-phase inputs. The planner
+  therefore retained its 104 ms measured-beat entry; it did not move the vocal
+  to a weak or unrelated section. At that entry, 3/8 early voiced-run starts
+  overlapped detected drum transients and 7/8 overlapped low-band bass attacks.
+  The 215-second session was still saved, reopened, edited, restored, and
+  exported; the WAV is stereo 44.1 kHz, has zero clipped frames, and its SHA-256
+  is recorded in
+  `generated-artifacts/waveyard-real-world-acceptance/stage3-cross-song-entry-acceptance.json`.
+* **What this proves—and does not:** persisted section fingerprints now reach a
+  real full-length plan, and unqualified attack coincidences cannot move an
+  entry. This pair did not produce a cross-song section match. The analysis
+  still lacks lyric/word timing, validated verse/chorus labels, human listening
+  evaluation, and arbitrary-song evidence. The report therefore does not claim
+  an intelligent or listenable mashup.
+* **Verification:** mashup planner tests 21/21; mashup database acceptance
+  2/2; synthetic route/Arena handoff acceptance 1/1; real full-track route and
+  persisted section workflow 1/1; API-server and library typechecks and
+  `git diff --check` passed.
+
+## Historical Stage 2 verification — 2026-11-12, durable bass-attack evidence
+
+* **Status:** durable bass analysis and persistence remain current; only the
+  transient-driven entry movement documented here is superseded by Stage 3.
 * **Durable measurement:** Waveyard now has separate `bass_analyses` and
   `bass_events` records for low-band attacks measured from an isolated bass
   stem. Results are versioned (`arena-js-dsp-bass-lowband` 1.0.0) and bound to
@@ -18,17 +63,18 @@
 * **Schema deployment:** additive migration `0026_bass_stem_analysis.sql` is
   applied to the development database. Production schema application was not
   performed; it remains a separate publish-time step.
-* **Real-track acceptance:** the production mashup route test processed the
+* **Historical algorithm result (superseded above):** the production mashup route test processed the
   full 215-second separated bass stem from *September* and persisted 1,833
   low-band attack events. The route then loaded those database events while
   planning the full-length *Another One Bites the Dust* vocal over the
   instrumental bed. Eight of eight early voiced-run starts fell within 90 ms
-  of a measured bass attack; the chosen entry moved 952 ms from the initial
-  grid candidate, and the measured timing-overlap score improved by 0.094.
+  of a measured bass attack; the earlier transient-only planner moved the
+  entry 952 ms from the initial grid candidate. Stage 3 above removes that
+  transient-only objective and is the current behavior.
   The 215-second mashup was saved, reopened, edited, restored and exported by
   the same production acceptance test. Report:
   `generated-artifacts/waveyard-real-world-acceptance/stage2-durable-bass-acceptance.json`.
-* **Verification:** the local stem-analysis database test passed 1/1, including
+* **Historical verification:** the local stem-analysis database test passed 1/1, including
   durable event writes, startup recovery, changed-checksum rejection and
   corrupted stored-byte rejection. The synthetic route acceptance passed 1/1,
   proving seeded persisted drum and bass events affect planning. The real-track
@@ -43,7 +89,7 @@
   or listenability. There was no human listening evaluation, and this is one
   song pair, not arbitrary-song proof.
 
-## Current verification update — 2026-11-12, provenance-backed mashup evidence
+## Historical Stage 1 verification — 2026-11-12, provenance-backed mashup evidence
 
 * **Shared evidence packet:** Waveyard mashup planning now carries one
   versioned, per-source evidence packet for tempo, key, beat grid, sections,
@@ -65,21 +111,24 @@
   unavailable inputs, including the engine/version and saved-versus-current-run
   provenance. This reports measurements; it does not label a track's verse,
   chorus, lyrics, or musical quality.
-* **Evidence limits:** the route test seeds three deterministic drum events and
+* **Historical evidence limits (superseded by Stage 3 above):** the route test seeds three deterministic drum events and
   three vocal-activity intervals; the resulting plan moves entry by 500 ms and
   reports 3/3 timestamp matches. This verifies that persisted events drive the
-  planner, not that a generated or real mashup is listenable. Harmony is loaded
-  into the evidence packet but is not yet a cross-song decision input. Lyric
-  timing, bass-note identity, structural form understanding, and human listening
-  quality remain unverified.
+  earlier planner, not that a generated or real mashup is listenable. Stage 3
+  now uses checksum-current harmony and passage fingerprints for relative
+  cross-song ranking, but did not find an eligible passage for the tested first
+  vocal section. Lyric timing, bass-note identity, structural form understanding,
+  and human listening quality remain unverified.
 * **Verification:** `mashup-db-acceptance.test.ts` 2/2; production route and
   Arena handoff acceptance 1/1; musical evidence provenance tests 2/2; API
   server and ArenaForge typechecks passed; library typecheck and `git diff
   --check` passed. No migration or dependency change was made. Windows and
   human listening were not tested in this pass.
-## Current verification update — 2026-11-12, vocal entry compared with drum and bass attacks
+## Historical Stage 2 verification — 2026-11-12, transient-alignment entry comparison
 
-* **What changed:** mashup planning now measures transient events from the
+* **Status:** this earlier planner behavior is superseded by the cross-song
+  passage decision documented above.
+* **Historical behavior:** mashup planning measured transient events from the
   exact latest completed separated bed stems. It verifies each stem file's
   checksum against its saved asset record and accepts only 44.1 kHz stereo
   WAV. The drum detector reports unlabeled full-band transients; the bass
