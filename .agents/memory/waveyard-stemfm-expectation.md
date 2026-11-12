@@ -50,3 +50,9 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 **Why:** The user asked for a long vocal phrase to find a suitable part inside a longer backing passage, better beat detection, and a smart sampler that selects useful note-specific chops for chopping, pitching, and sampling. A detected passage or synthetic test does not prove a real mix sounds good.
 
 **How to apply:** Keep the rolling comparison source-checksum-bound, beat-grid-aware, bounded in cost, and subordinate to a safe fallback. Validate phrase timing and full rendered mixes separately on complete real tracks; do not call pitch-continuity runs lyrics. Keep the sampler’s note/key filters and style selection visible and connected to actual render behavior, and describe quality claims only at the level supported by listening evidence.
+
+**Full mashup workflow:** Analyze complete songs first; find rhythm, downbeats, repeated structures, arrangement changes, and vocal activity/phrase-entry candidates; let the user audition and adjust a donor entry with evidence-based snapping; arrange and transform the layers together; render the complete mashup; then save, reopen, edit, and export the same arrangement.
+
+**Why:** The user’s multi-step prompt makes whole-song, arbitrary-pair mashup production the goal. Analysis, section labels, phrase timing, swaps, arrangement, and exports are successive parts of that workflow—not independent endpoints or prerequisites that can block creation.
+
+**How to apply:** Keep semantic labels, measured structural events, and vocal timing as separate evidence. A snap may use real phrase/activity points or measured beat/section boundaries, but must say what signal it used and fall back honestly when evidence is missing. Judge progress by whether the complete rendered result is more useful and remains editable after reopening, not by added labels or passing synthetic tests alone.

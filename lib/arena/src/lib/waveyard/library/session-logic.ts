@@ -329,6 +329,40 @@ export function liveStemSectionOffsetSeconds(
   return (donor.startMs * stretchRatio - recipient.startMs) / 1000;
 }
 
+/** Snaps an editable donor time to the closest measured vocal/section start.
+ * This does not claim that activity is a lyric boundary or that a section is a chorus. */
+export function nearestEntryEvidenceMs(
+  targetMs: number,
+  points: readonly { startMs: number }[] | null | undefined,
+): number | null {
+  if (!Number.isSafeInteger(targetMs) || targetMs < 0 || !Array.isArray(points)) return null;
+  let nearest: number | null = null;
+  let distance = Number.POSITIVE_INFINITY;
+  for (const point of points) {
+    if (!Number.isSafeInteger(point.startMs) || point.startMs < 0) continue;
+    const candidateDistance = Math.abs(point.startMs - targetMs);
+    if (candidateDistance < distance) {
+      nearest = point.startMs;
+      distance = candidateDistance;
+    }
+  }
+  return nearest;
+}
+
+/** Maps a persisted donor-clock source start to the transport's playback offset.
+ * A null tempo ratio means native pace; the user's chosen source entry still applies. */
+export function liveStemDonorEntryOffsetSeconds(
+  donorEntryOffsetMs: number | null | undefined,
+  recipientPositionSeconds: number,
+  stretchRatio: number | null,
+): number | null {
+  if (donorEntryOffsetMs === null || donorEntryOffsetMs === undefined) return null;
+  if (!Number.isSafeInteger(donorEntryOffsetMs) || donorEntryOffsetMs < 0
+    || !Number.isFinite(recipientPositionSeconds) || recipientPositionSeconds < 0
+    || (stretchRatio !== null && (!Number.isFinite(stretchRatio) || stretchRatio <= 0))) return null;
+  return (donorEntryOffsetMs / 1000) * (stretchRatio ?? 1) - recipientPositionSeconds;
+}
+
 export interface KeyCompatibility {
   aKey: string | null;
   bKey: string | null;

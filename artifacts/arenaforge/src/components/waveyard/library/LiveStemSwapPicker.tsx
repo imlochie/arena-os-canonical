@@ -8,8 +8,10 @@ import {
   isHalfDoubleTempoPair,
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
+  nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
+import { displaySourceSectionLabel, type SourceSection } from "@workspace/arena/lib/waveyard/types/source-sections";
 
 export interface LiveStemDonorOption {
   id: string;
@@ -57,11 +59,17 @@ interface LiveStemSwapPickerProps {
   busy: boolean;
   onToggle: () => void;
   onClose: () => void;
-  onChoose: (donorId: string) => void;
+  onChoose: (donorId: string, donorEntryOffsetMs?: number | null) => void;
   onWarm: (donorId: string) => void;
   onPrefetch: (donorId: string) => void;
   onPrepare: (trackId: string) => void;
   onTempoCorrection: (trackId: string, bpm: number | null) => void;
+  selectedDonorDurationSeconds: number | null;
+  selectedDonorEntryOffsetMs: number | null;
+  selectedDonorSections: Pick<SourceSection, "sectionIndex" | "startMs" | "label" | "labelConfidence">[] | null;
+  selectedDonorVocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+  selectedDonorVoicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
+  onApplyDonorEntryOffset: (offsetMs: number | null) => void;
   onRestore: () => void;
 }
 
@@ -159,6 +167,128 @@ function usesCompactPickerViewport() {
   ).matches;
 }
 
+function formatEntryTime(ms: number): string {
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function VocalEntryTimeControl({
+  donorId,
+  donorTitle,
+  durationSeconds,
+  entryOffsetMs,
+  sections,
+  vocalActivityStartsMs,
+  voicedPhraseStartsMs,
+  disabled,
+  onApply,
+}: {
+  donorId: string;
+  donorTitle: string;
+  durationSeconds: number | null;
+  entryOffsetMs: number | null;
+  sections: Pick<SourceSection, "sectionIndex" | "startMs" | "label" | "labelConfidence">[] | null;
+  vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+  voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
+  disabled: boolean;
+  onApply: (offsetMs: number | null) => void;
+}) {
+  const durationMs = durationSeconds !== null && Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? Math.max(1, Math.floor(durationSeconds * 1000) - 1)
+    : null;
+  const [draftMs, setDraftMs] = useState(entryOffsetMs ?? 0);
+  const [snapMessage, setSnapMessage] = useState("");
+
+  useEffect(() => {
+    setDraftMs(entryOffsetMs ?? 0);
+    setSnapMessage("");
+  }, [donorId, donorTitle, entryOffsetMs]);
+
+  const snapTo = (points: readonly { startMs: number }[] | null | undefined, description: string) => {
+    const nearest = nearestEntryEvidenceMs(draftMs, points);
+    if (nearest === null) {
+      setSnapMessage(`No measured ${description.toLowerCase()} is available.`);
+      return;
+    }
+    setDraftMs(nearest);
+    setSnapMessage(`Snapped to ${description.toLowerCase()} at ${formatEntryTime(nearest)}.`);
+  };
+
+  const activityPoints = vocalActivityStartsMs ?? [];
+  const phrasePoints = voicedPhraseStartsMs ?? [];
+  const sectionPoints = sections ?? [];
+  const boundedDraftMs = durationMs === null ? Math.max(0, Math.round(draftMs))
+    : Math.min(durationMs, Math.max(0, Math.round(draftMs)));
+  const canApply = durationMs !== null && !disabled && entryOffsetMs !== boundedDraftMs;
+  const exactSection = sections?.find((section) => section.startMs === boundedDraftMs);
+
+  return (
+    <section className="wy-vocal-entry-control" aria-label={`Vocal entry timing for ${donorTitle}`} data-testid="vocal-entry-timing">
+      <div className="wy-vocal-entry-heading">
+        <strong>Vocal start in {donorTitle}</strong>
+        <span>{entryOffsetMs === null ? "Automatic alignment" : `Manual · ${formatEntryTime(entryOffsetMs)}`}</span>
+      </div>
+      {durationMs !== null ? (
+        <>
+          <label className="wy-vocal-entry-time">
+            <span>Choose donor start</span>
+            <input
+              type="range"
+              min={0}
+              max={durationMs}
+              step={50}
+              value={boundedDraftMs}
+              disabled={disabled}
+              aria-label={`Donor vocal start time for ${donorTitle}`}
+              data-testid="vocal-entry-time-slider"
+              onChange={(event) => setDraftMs(Number(event.target.value))}
+            />
+            <output data-testid="text-vocal-entry-time">{formatEntryTime(boundedDraftMs)}</output>
+          </label>
+          <div className="wy-vocal-entry-snaps" aria-label="Snap donor start to analyzed evidence">
+            <button type="button" disabled={disabled || activityPoints.length === 0}
+              data-testid="button-snap-vocal-activity"
+              onClick={() => snapTo(activityPoints, "vocal activity")}>
+              Snap to vocal activity
+            </button>
+            <button type="button" disabled={disabled || phrasePoints.length === 0}
+              data-testid="button-snap-voiced-phrase"
+              onClick={() => snapTo(phrasePoints, "voiced phrase candidate")}>
+              Snap to voiced phrase
+            </button>
+            <button type="button" disabled={disabled || sectionPoints.length === 0}
+              data-testid="button-snap-donor-section"
+              onClick={() => snapTo(sectionPoints, "detected section boundary")}>
+              Snap to section
+            </button>
+          </div>
+          <div className="wy-vocal-entry-actions">
+            <button type="button" disabled={!canApply} data-testid="button-apply-vocal-entry" onClick={() => onApply(boundedDraftMs)}>
+              Apply entry
+            </button>
+            <button type="button" disabled={disabled || entryOffsetMs === null} data-testid="button-auto-vocal-entry" onClick={() => onApply(null)}>
+              Automatic alignment
+            </button>
+          </div>
+          <small className="wy-vocal-entry-evidence" role="note" data-testid="text-vocal-entry-limitations">
+            Vocal activity is not lyric transcription. Pitch-phrase starts can miss unvoiced consonants; section labels are not guaranteed to mean verse or chorus.
+          </small>
+          {exactSection && (
+            <small className="wy-vocal-entry-section" data-testid="text-vocal-entry-section">
+              At {displaySourceSectionLabel(exactSection)}
+            </small>
+          )}
+          {snapMessage && <small className="wy-vocal-entry-snap-status" role="status" data-testid="status-vocal-entry-snap">{snapMessage}</small>}
+        </>
+      ) : (
+        <small className="wy-vocal-entry-evidence" role="note" data-testid="text-vocal-entry-limitations">
+          Donor duration is unavailable, so manual entry timing cannot be applied.
+        </small>
+      )}
+    </section>
+  );
+}
+
 export default function LiveStemSwapPicker({
   stemType,
   currentTrackId,
@@ -188,6 +318,12 @@ export default function LiveStemSwapPicker({
   onPrefetch,
   onPrepare,
   onTempoCorrection,
+  selectedDonorDurationSeconds,
+  selectedDonorEntryOffsetMs,
+  selectedDonorSections,
+  selectedDonorVocalActivityStartsMs,
+  selectedDonorVoicedPhraseStartsMs,
+  onApplyDonorEntryOffset,
   onRestore,
 }: LiveStemSwapPickerProps) {
   const [query, setQuery] = useState("");
@@ -478,12 +614,27 @@ export default function LiveStemSwapPicker({
             onApply={onTempoCorrection}
           />
           {selectedDonorId && (
-            <div className="wy-swap-original-row">
-              <span>Using {selectedDonorTitle ?? "another source"}</span>
-              <button type="button" disabled={busy} onClick={() => { onRestore(); closeAndReturnFocus(); }}>
-                Restore original
-              </button>
-            </div>
+            <>
+              <div className="wy-swap-original-row">
+                <span>Using {selectedDonorTitle ?? "another source"}</span>
+                <button type="button" disabled={busy} onClick={() => { onRestore(); closeAndReturnFocus(); }}>
+                  Restore original
+                </button>
+              </div>
+              {stemType === "vocals" && (
+                <VocalEntryTimeControl
+                  donorId={selectedDonorId}
+                  donorTitle={selectedDonorTitle ?? "another source"}
+                  durationSeconds={selectedDonorDurationSeconds}
+                  entryOffsetMs={selectedDonorEntryOffsetMs}
+                  sections={selectedDonorSections}
+                  vocalActivityStartsMs={selectedDonorVocalActivityStartsMs}
+                  voicedPhraseStartsMs={selectedDonorVoicedPhraseStartsMs}
+                  disabled={busy || pending}
+                  onApply={onApplyDonorEntryOffset}
+                />
+              )}
+            </>
           )}
           {sourceCount > 4 && (
             <label className="wy-swap-search">

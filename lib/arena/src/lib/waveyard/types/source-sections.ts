@@ -36,6 +36,7 @@ export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionI
   if (section.label === "section") return `Section ${section.sectionIndex + 1}`;
   const repeatedPattern = /^pattern-repeat-([a-z]+)$/i.exec(section.label);
   const repeatedRhythm = /^rhythm-repeat-([a-z]+)$/i.exec(section.label);
+  const repeatedVocalPattern = /^vocal-pattern-repeat-([a-z]+)$/i.exec(section.label);
   const energyChange = /^energy-(rise|drop)$/i.exec(section.label);
   const similarityPercent = `${Math.round(clampUnit(section.labelConfidence) * 100)}%`;
   if (section.label === "stem-change")
@@ -45,6 +46,10 @@ export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionI
   if (repeatedPattern) {
     const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";
     return `${prefix} audio pattern ${repeatedPattern[1].toUpperCase()} · ${similarityPercent} rhythm+chroma similarity`;
+  }
+  if (repeatedVocalPattern) {
+    const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";
+    return `${prefix} audio pattern ${repeatedVocalPattern[1].toUpperCase()} · ${similarityPercent} rhythm+chroma and vocal-activity agreement`;
   }
   if (repeatedRhythm) {
     const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";

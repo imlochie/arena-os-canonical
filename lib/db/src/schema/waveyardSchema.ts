@@ -1017,6 +1017,8 @@ export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
   fromStemAssetId: uuid("from_stem_asset_id").references(() => stemAssets.id, { onDelete: "set null" }),
   toStemAssetId: uuid("to_stem_asset_id").references(() => stemAssets.id, { onDelete: "set null" }),
   atSeconds: real("at_seconds").notNull().default(0),
+  /** Optional donor-clock vocal entry chosen from measured activity/phrase evidence. */
+  donorEntryOffsetMs: integer("donor_entry_offset_ms"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("wy_listen_session_swaps_session_idx").on(table.sessionId, table.createdAt),

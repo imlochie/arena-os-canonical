@@ -91,6 +91,60 @@ test("combined rhythm and harmonic evidence labels a repeated audio pattern, not
   assert.doesNotMatch(result[0].label, /verse|chorus/i);
 });
 
+test("repeated vocal activity strengthens an audio-pattern label without claiming repeated lyrics or chorus", () => {
+  const envelope = new Float32Array(1_700);
+  for (const startBeat of [0, 8, 16]) {
+    for (let beat = 0; beat < 8; beat += 1) addPulse(envelope, startBeat + beat, beat % 2 === 0 ? 0 : 2);
+  }
+  const repeatedContour = [
+    { startMs: 100, endMs: 480, confidence: 0.9 },
+    { startMs: 2_100, endMs: 2_480, confidence: 0.9 },
+    { startMs: 8_100, endMs: 8_480, confidence: 0.9 },
+    { startMs: 10_100, endMs: 10_480, confidence: 0.9 },
+  ];
+
+  const result = labelRepeatedRhythmSections(
+    candidates(),
+    beatGridMs,
+    envelope,
+    frameMs,
+    chordTrack(),
+    repeatedContour,
+  );
+
+  assert.equal(result[0].label, "vocal-pattern-repeat-a");
+  assert.equal(result[2].label, "vocal-pattern-repeat-a");
+  assert.equal(result[1].label, "section");
+  assert.doesNotMatch(result[0].label, /lyrics|verse|chorus/i);
+});
+
+test("different vocal activity keeps the measured rhythm-and-chroma pattern label", () => {
+  const envelope = new Float32Array(1_700);
+  for (const startBeat of [0, 8, 16]) {
+    for (let beat = 0; beat < 8; beat += 1) addPulse(envelope, startBeat + beat, beat % 2 === 0 ? 0 : 2);
+  }
+  const result = labelRepeatedRhythmSections(
+    candidates(),
+    beatGridMs,
+    envelope,
+    frameMs,
+    chordTrack(),
+    [
+      { startMs: 100, endMs: 480, confidence: 0.9 },
+      { startMs: 2_100, endMs: 2_480, confidence: 0.9 },
+      { startMs: 8_100, endMs: 8_480, confidence: 0.9 },
+      { startMs: 10_100, endMs: 10_480, confidence: 0.9 },
+      { startMs: 8_600, endMs: 9_000, confidence: 0.9 },
+      { startMs: 9_100, endMs: 9_480, confidence: 0.9 },
+      { startMs: 10_600, endMs: 11_000, confidence: 0.9 },
+      { startMs: 11_100, endMs: 11_480, confidence: 0.9 },
+    ],
+  );
+
+  assert.equal(result[0].label, "pattern-repeat-a");
+  assert.equal(result[2].label, "pattern-repeat-a");
+});
+
 test("passage fingerprint persists measured source features and marks unsupported claims unavailable", () => {
   const envelope = new Float32Array(1_700);
   for (let beat = 0; beat < 16; beat += 1) addPulse(envelope, beat, beat % 2 === 0 ? 0 : 2);

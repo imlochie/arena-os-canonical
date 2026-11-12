@@ -202,7 +202,14 @@ export function desktopSectionCandidates(
     ),
   );
   const phraseAwareSections = applyRepeatedPhraseMatches(candidates, phraseMatches);
-  const withRepeats = labelRepeatedRhythmSections(phraseAwareSections, beatGridMs, envelope, frameMs, pcm);
+  const withRepeats = labelRepeatedRhythmSections(
+    phraseAwareSections,
+    beatGridMs,
+    envelope,
+    frameMs,
+    pcm,
+    vocalActivityIntervals,
+  );
   const withEnergy = pcm ? labelSectionEnergyChanges(withRepeats, beatGridMs, pcm) : withRepeats;
   return withEnergy.map((candidate) => {
     const stemChange = stemChangesByBeat.get(candidate.startBeatIndex);
@@ -721,7 +728,7 @@ export function sectionEnergyChangeDb(
   return currentDb - previousDb;
 }
 
-function repeatLabel(index: number, kind: "rhythm" | "pattern"): string {
+function repeatLabel(index: number, kind: "rhythm" | "pattern" | "vocal-pattern"): string {
   let value = index;
   let label = "";
   do {
@@ -729,6 +736,63 @@ function repeatLabel(index: number, kind: "rhythm" | "pattern"): string {
     value = Math.floor(value / 26) - 1;
   } while (value >= 0);
   return `${kind}-repeat-${label}`;
+}
+
+function vocalActivityMask(
+  candidate: Pick<SourceSectionCandidate, "startBeatIndex" | "endBeatIndex">,
+  beatGridMs: number[],
+  intervals: readonly PassageVocalRun[],
+): number[] | null {
+  const beatCount = candidate.endBeatIndex - candidate.startBeatIndex;
+  const binCount = beatCount * SUBDIVISIONS_PER_BEAT;
+  if (beatCount < MINIMUM_PHRASE_BEATS || binCount > 512 || !intervals.length) return null;
+  const rangeStartMs = beatBoundaryMs(candidate.startBeatIndex, beatGridMs);
+  const rangeEndMs = beatBoundaryMs(candidate.endBeatIndex, beatGridMs);
+  if (rangeStartMs === null || rangeEndMs === null || rangeEndMs <= rangeStartMs) return null;
+  const clipped = intervals
+    .filter((interval) => Number.isFinite(interval.startMs) && Number.isFinite(interval.endMs)
+      && Number.isFinite(interval.confidence) && interval.confidence >= 0.5
+      && interval.endMs > interval.startMs && interval.endMs > rangeStartMs && interval.startMs < rangeEndMs)
+    .map((interval) => ({
+      startMs: Math.max(rangeStartMs, interval.startMs),
+      endMs: Math.min(rangeEndMs, interval.endMs),
+    }))
+    .sort((left, right) => left.startMs - right.startMs);
+  const merged: { startMs: number; endMs: number }[] = [];
+  for (const interval of clipped) {
+    const previous = merged.at(-1);
+    if (previous && interval.startMs <= previous.endMs) previous.endMs = Math.max(previous.endMs, interval.endMs);
+    else merged.push({ ...interval });
+  }
+  const pointAtBeat = (beat: number): number | null => {
+    const lowerBeat = Math.floor(beat);
+    const fraction = beat - lowerBeat;
+    const start = beatBoundaryMs(lowerBeat, beatGridMs);
+    const end = beatBoundaryMs(lowerBeat + 1, beatGridMs);
+    return start === null || end === null || end <= start ? null : start + (end - start) * fraction;
+  };
+  const mask: number[] = [];
+  let intervalIndex = 0;
+  for (let bin = 0; bin < binCount; bin += 1) {
+    const startMs = pointAtBeat(candidate.startBeatIndex + bin / SUBDIVISIONS_PER_BEAT);
+    const endMs = pointAtBeat(candidate.startBeatIndex + (bin + 1) / SUBDIVISIONS_PER_BEAT);
+    if (startMs === null || endMs === null || endMs <= startMs) return null;
+    while (intervalIndex < merged.length && merged[intervalIndex]!.endMs <= startMs) intervalIndex += 1;
+    let coveredMs = 0;
+    for (let index = intervalIndex; index < merged.length && merged[index]!.startMs < endMs; index += 1) {
+      coveredMs += Math.max(0, Math.min(endMs, merged[index]!.endMs) - Math.max(startMs, merged[index]!.startMs));
+    }
+    mask.push(coveredMs / (endMs - startMs) >= 0.12 ? 1 : 0);
+  }
+  return mask;
+}
+
+function vocalMaskAgreement(left: readonly number[], right: readonly number[]): number {
+  if (left.length === 0 || left.length !== right.length) return -1;
+  const activeCount = (mask: readonly number[]) => mask.reduce((sum, active) => sum + active, 0);
+  if (activeCount(left) < 4 || activeCount(right) < 4) return -1;
+  const mismatched = left.reduce((sum, active, index) => sum + Number(active !== right[index]), 0);
+  return 1 - mismatched / left.length;
 }
 
 function similarityMatrix(signatures: readonly (number[] | null)[]): number[][] {
@@ -969,6 +1033,7 @@ export function labelRepeatedRhythmSections(
   envelope: Float32Array,
   frameMs: number,
   pcm?: Float32Array,
+  vocalActivityIntervals: readonly PassageVocalRun[] = [],
 ): SourceSectionCandidate[] {
   if (candidates.length < 2) return candidates.map((candidate) => ({ ...candidate }));
 
@@ -1012,6 +1077,24 @@ export function labelRepeatedRhythmSections(
       };
     }
   });
+  if (vocalActivityIntervals.length > 0 && repeatedPatternGroups.length > 0) {
+    repeatedPatternGroups.forEach(({ indices, score }, groupIndex) => {
+      const masks = indices.map((index) => vocalActivityMask(labeled[index]!, beatGridMs, vocalActivityIntervals));
+      if (masks.some((mask) => mask === null)) return;
+      const reference = masks[0]!;
+      const agreement = Math.min(...masks.slice(1).map((mask) => vocalMaskAgreement(reference, mask!)));
+      // A repeated activity contour is additional evidence about arrangement, not
+      // transcript similarity or a semantic chorus/verse decision.
+      if (agreement < 0.9) return;
+      for (const index of indices) {
+        labeled[index] = {
+          ...labeled[index],
+          label: repeatLabel(groupIndex, "vocal-pattern"),
+          labelConfidence: Math.round(Math.min(score, agreement) * 1000) / 1000,
+        };
+      }
+    });
+  }
 
   const rhythmOnlyIndices = eligibleIndices.filter((index) => !patternIndices.has(index) && rhythmSignatures[index]);
   const repeatedRhythmGroups = findCliqueGroups(rhythmSimilarities, rhythmOnlyIndices, MINIMUM_REPEAT_SIMILARITY);

@@ -8,7 +8,27 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { liveStemBeatOffsetSeconds, liveStemSectionOffsetSeconds } from "./session-logic";
+import {
+  liveStemBeatOffsetSeconds,
+  liveStemDonorEntryOffsetSeconds,
+  liveStemSectionOffsetSeconds,
+  nearestEntryEvidenceMs,
+} from "./session-logic";
+
+test("vocal-entry snap selects the nearest valid measured start and leaves missing evidence alone", () => {
+  assert.equal(nearestEntryEvidenceMs(1_420, [{ startMs: 1_000 }, { startMs: 1_500 }, { startMs: -1 }]), 1_500);
+  assert.equal(nearestEntryEvidenceMs(1_250, [{ startMs: 1_000 }, { startMs: 1_500 }]), 1_000);
+  assert.equal(nearestEntryEvidenceMs(500, []), null);
+  assert.equal(nearestEntryEvidenceMs(-1, [{ startMs: 0 }]), null);
+  assert.equal(nearestEntryEvidenceMs(500, [{ startMs: Number.NaN }]), null);
+});
+
+test("manual donor vocal entry survives native or measured tempo alignment", () => {
+  assert.equal(liveStemDonorEntryOffsetSeconds(20_000, 12.5, 1.1), 9.5);
+  assert.equal(liveStemDonorEntryOffsetSeconds(20_000, 12.5, null), 7.5);
+  assert.equal(liveStemDonorEntryOffsetSeconds(null, 12.5, 1.1), null);
+  assert.equal(liveStemDonorEntryOffsetSeconds(-1, 12.5, 1.1), null);
+});
 
 test("live stem phase projects measured donor beats into tempo-stretched recipient time", () => {
   // 120 BPM recipient begins at 100ms; 100 BPM donor begins at 420ms.

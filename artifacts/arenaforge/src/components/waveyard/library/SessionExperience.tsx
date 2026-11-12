@@ -55,7 +55,9 @@ import {
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
+  liveStemDonorEntryOffsetSeconds,
   liveStemSectionOffsetSeconds,
+  nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
   nextSessionTrack,
   scaleCrossfadeStemVolumes,
@@ -138,6 +140,8 @@ interface SessionTrackItem {
       labelConfidence: number;
       structuralConfidence: number;
     }> | null;
+    vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+    voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
   } | null;
 }
 
@@ -158,10 +162,12 @@ interface SessionDetail {
     fromStemAssetId: string | null;
     toStemAssetId: string | null;
     atSeconds: number;
+    donorEntryOffsetMs: number | null;
     createdAt: string;
     donorTrack?: {
       id: string;
       title: string;
+      durationSeconds: number;
       stems: Array<{ id: string; stemType: string; durationSeconds: number }>;
       analysis?: SessionTrackItem["analysis"];
     } | null;
@@ -242,6 +248,7 @@ interface PendingLiveSwap {
     bpm?: number | null;
     bpmConfidence?: number | null;
     beatConfidence?: number | null;
+    donorEntryOffsetMs?: number | null;
   };
   previousSwap?: SessionDetail["swaps"][number];
   failed?: boolean;
@@ -335,9 +342,14 @@ function getPersistedSwapSetup(
       donorAnalysis?.beatGridMs,
       ratio,
     );
-    const offset = sectionOffset ?? beatOffset;
+    const explicitDonorEntryOffset = liveStemDonorEntryOffsetSeconds(
+      swap.donorEntryOffsetMs,
+      swap.atSeconds,
+      ratio,
+    );
+    const offset = explicitDonorEntryOffset ?? sectionOffset ?? beatOffset;
     if (offset !== null) beatOffsets[swap.stemType] = offset;
-    if (sectionOffset !== null) sectionPositionMatches[swap.stemType] = true;
+    if (sectionOffset !== null && explicitDonorEntryOffset === null) sectionPositionMatches[swap.stemType] = true;
     const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
     const donorKeyConfidence = donor?.analysis?.keyConfidence ?? swap.donorTrack?.analysis?.keyConfidence
@@ -3283,7 +3295,7 @@ export default function SessionExperience({
       bpm?: number | null;
       bpmConfidence?: number | null;
       beatConfidence?: number | null;
-    }) => {
+    }, donorEntryOffsetMs: number | null = null) => {
       if (session === null || currentItem === null) return;
       const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
       if (validation && !validation.ok) {
@@ -3324,6 +3336,7 @@ export default function SessionExperience({
           bpm: donor.bpm,
           bpmConfidence: donor.bpmConfidence,
           beatConfidence: donor.beatConfidence,
+          donorEntryOffsetMs,
         },
         previousSwap,
         savePending: true,
@@ -3344,6 +3357,7 @@ export default function SessionExperience({
             stemType,
             toTrackId: donor.id,
             atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
+            donorEntryOffsetMs,
           }),
         }, scope);
         if (detail) {
@@ -3594,7 +3608,9 @@ export default function SessionExperience({
 
   const retryFailedLiveSwaps = useCallback(async (sessionTrackId: string) => {
     const failures = failedLiveSwaps.filter((failed) => failed.sessionTrackId === sessionTrackId);
-    for (const failure of failures) await requestSwap(failure.stemType, failure.donor);
+    for (const failure of failures) {
+      await requestSwap(failure.stemType, failure.donor, failure.donor.donorEntryOffsetMs ?? null);
+    }
   }, [failedLiveSwaps, requestSwap]);
 
   useEffect(() => {
@@ -4440,7 +4456,6 @@ export default function SessionExperience({
     const selectedDonorAnalysis = swap === undefined ? null
       : session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis
         ?? swap.donorTrack?.analysis
-        ?? library.find((item) => item.id === swap.toTrackId)?.analysis
         ?? null;
     const recipientTempo = tempoForTrack(currentItem.track.id, currentItem.analysis, manualTempoCorrections);
     const selectedDonorTempo = swap === undefined ? null
@@ -4512,10 +4527,22 @@ export default function SessionExperience({
       }),
     ];
     const selectedDonor = session.tracks.find((item) => item.track.id === swap?.toTrackId);
+    const selectedDonorLibraryTrack = library.find((item) => item.id === swap?.toTrackId);
     const selectedDonorTitle = selectedDonor?.track.title
-      ?? library.find((item) => item.id === swap?.toTrackId)?.title
+      ?? selectedDonorLibraryTrack?.title
       ?? swap?.donorTrack?.title
       ?? null;
+    const selectedDonorDurationSeconds = selectedDonor?.track.durationSeconds
+      ?? swap?.donorTrack?.durationSeconds
+      ?? null;
+    const selectedDonorSwapChoice = swap && selectedDonorTitle ? {
+      id: swap.toTrackId,
+      title: selectedDonorTitle,
+      stems: selectedDonor?.stems,
+      bpm: selectedDonorTempo?.bpm ?? selectedDonorAnalysis?.bpm ?? null,
+      bpmConfidence: selectedDonorTempo?.confidence ?? selectedDonorAnalysis?.bpmConfidence ?? null,
+      beatConfidence: selectedDonorAnalysis?.beatConfidence ?? null,
+    } : null;
     const recipientBpm = recipientTempo.bpm;
     const lowTempoConfidence = recipientBpm !== null && selectedDonorBpm !== null && !reliableTempoEvidence;
     const lowBeatConfidence = recipientBpm !== null && selectedDonorBpm !== null
@@ -4527,6 +4554,10 @@ export default function SessionExperience({
     const tempoStatus = swap === undefined ? null
       : pendingSwap
         ? "Preparing live layer…"
+        : swap.donorEntryOffsetMs !== null
+          ? `Manual donor start ${formatClock(swap.donorEntryOffsetMs / 1000)} · ${activeTempoStretchRatio !== undefined
+            ? `tempo ${activeTempoStretchRatio.toFixed(3)}×`
+            : "native pace"}${lowTempoConfidence ? " · tempo uncertain" : ""}`
         : lowTempoConfidence
           ? "Low tempo confidence · native pace; no beat sync"
         : halfDoubleTempo
@@ -4624,7 +4655,7 @@ export default function SessionExperience({
           });
         }}
         onPrefetch={(donorId) => prefetchLiveSwapAsset(stemType, donorId)}
-        onChoose={(donorId) => {
+        onChoose={(donorId, donorEntryOffsetMs = null) => {
           if (stemType === "vocals") {
             setRecipientVocalHealth({
               sessionTrackId: currentItem.id,
@@ -4641,7 +4672,7 @@ export default function SessionExperience({
               bpm: tempo?.bpm ?? donor.analysis?.bpm ?? null,
               bpmConfidence: tempo?.bpmConfidence ?? donor.analysis?.bpmConfidence ?? null,
               beatConfidence: donor.analysis?.beatConfidence ?? null,
-            });
+            }, donorEntryOffsetMs);
             return;
           }
           const source = libraryDonors.find((item) => item.id === donorId);
@@ -4651,9 +4682,18 @@ export default function SessionExperience({
             bpm: tempo?.bpm ?? source.analysis?.bpm ?? null,
             bpmConfidence: tempo?.bpmConfidence ?? source.analysis?.bpmConfidence ?? null,
             beatConfidence: source.analysis?.beatConfidence ?? null,
-          });
+          }, donorEntryOffsetMs);
         }}
         onTempoCorrection={correctTrackTempo}
+        selectedDonorDurationSeconds={selectedDonorDurationSeconds}
+        selectedDonorEntryOffsetMs={swap?.donorEntryOffsetMs ?? null}
+        selectedDonorSections={selectedDonorAnalysis?.sections ?? null}
+        selectedDonorVocalActivityStartsMs={selectedDonorAnalysis?.vocalActivityStartsMs ?? null}
+        selectedDonorVoicedPhraseStartsMs={selectedDonorAnalysis?.voicedPhraseStartsMs ?? null}
+        onApplyDonorEntryOffset={(offsetMs) => {
+          if (stemType !== "vocals" || selectedDonorSwapChoice === null) return;
+          void requestSwap(stemType, selectedDonorSwapChoice, offsetMs);
+        }}
         onPrepare={(trackId) => { void startSessionTrackSeparation(trackId); }}
         onRestore={() => {
           if (swap) void revertSwap(swap.id);

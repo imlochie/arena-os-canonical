@@ -1,5 +1,46 @@
 # Arena handoff — read this first
 
+## Current implementation — editable vocal entry points and repeated vocal-activity evidence
+
+* **Live vocal swaps:** the session picker now keeps open after choosing a vocal
+  donor and exposes a donor-time slider. Users can select an exact source start
+  or snap to checksum-current isolated vocal activity, pitch-continuity phrase
+  candidates, or detected section boundaries. Applying a start persists it
+  separately from the recipient's swap time in
+  `wy_listen_session_swaps.donor_entry_offset_ms`; playback maps the selected
+  donor time through any supported tempo stretch. “Automatic alignment” clears
+  the manual choice and restores the existing section/beat fallback.
+  The development schema was pushed and the nullable integer column was
+  verified in PostgreSQL; production was not changed.
+* **Evidence boundaries:** only completed vocal analysis tied to the current
+  source/stem IDs, checksums, engine, and version is offered. Starts beyond the
+  decoded source or vocal stem are excluded. The interface distinguishes coarse
+  voice activity from pitch-continuity phrase candidates and explicitly says
+  neither is word-level transcription; generic section labels are not promised
+  to be verses or choruses. Desktop migration
+  `0030_live_swap_vocal_entry_offset.sql` adds the nullable donor-time field.
+* **Structure evidence:** when repeated audio sections already agree in
+  beat-subdivision rhythm and four-bin chroma, matching isolated-vocal activity
+  contours can strengthen their label to “repeated audio pattern … vocal-activity
+  agreement.” The activity mask requires at least four active bins and at least
+  90% contour agreement across occurrences. It does not identify repeated
+  lyrics, infer chorus/verse meaning, or establish that a vocal donor will sound
+  good over a different track.
+* **Verification:** the real PostgreSQL service test checks persisted donor
+  entry round-tripping and current-checksum activity/phrase evidence in a donor
+  session response. Pure tests cover nearest-point snapping, native/stretch
+  donor-clock offsets, matching and mismatching repeated vocal contours, and
+  honest labels. These checks do not demonstrate lyric recognition or prove
+  that a rendered mashup sounds musically right. Focused typechecks passed;
+  relevant pure tests passed 73/73; the PostgreSQL service suite passed 53 with
+  5 optional heavy-separation tests skipped. The focused live-donor recovery
+  browser check passed. The broader `arena-smoke.mjs --waveyard-mobile-only`
+  run did not finish cleanly: one attempt timed out waiting for the pending
+  vocal-swap DELETE response; a retry stopped before completing the remaining
+  stages. The empty-library preview loaded, but no signed-in live-session UI
+  was available for visual verification. Treat the pending-cancel UI and
+  real-device behavior as unverified.
+
 ## Current implementation — uncertain BPM correction before live stem swaps
 
 * The session live-swap picker labels low-confidence BPM as approximate and

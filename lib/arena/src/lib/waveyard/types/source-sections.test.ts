@@ -80,6 +80,10 @@ test("source section repeats show their measured similarity instead of probabili
     displaySourceSectionLabel({ sectionIndex: 3, label: "pattern-repeat-a", labelConfidence: 0.94 }),
     "Repeated audio pattern A · 94% rhythm+chroma similarity",
   );
+  assert.equal(
+    displaySourceSectionLabel({ sectionIndex: 3, label: "vocal-pattern-repeat-a", labelConfidence: 0.94 }),
+    "Repeated audio pattern A · 94% rhythm+chroma and vocal-activity agreement",
+  );
   assert.equal(displaySourceSectionLabel({ sectionIndex: 4, label: "energy-rise", labelConfidence: 0.6 }), "Possible Dynamic rise");
 });
 
