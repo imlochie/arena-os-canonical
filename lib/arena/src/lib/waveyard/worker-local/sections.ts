@@ -1,9 +1,8 @@
 /**
  * Local section-analysis job handler — a faithful port of the worker's
  * processSourceSectionAnalysis, with the structure engine reimplemented in
- * JS: conservative bar-aligned boundaries chosen at onset-novelty peaks,
- * supplemented by beat-grid-aligned repeated two-bar phrases when the source
- * supports them.
+ * JS: conservative boundaries use source onset novelty plus sustained changes
+ * from checksum-matched separated stems; repeated phrases remain supported.
  * Repetition is not mislabeled as verse/chorus or used to align other songs.
  * Candidates flow through the app's own normalizeSourceSections/
  * sourceSectionsAreValid validators, so rows are indistinguishable in shape
