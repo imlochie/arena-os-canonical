@@ -1,5 +1,29 @@
 # Arena handoff — read this first
 
+## Current verification — AAC/M4A library import
+
+* **Acceptance command:** `WAVEYARD_RUN_REAL_LIBRARY_M4A=1 pnpm --filter @workspace/scripts exec node --import tsx --test --test-isolation=none "$(pwd)/lib/arena/src/lib/waveyard/library/service.test.ts"`.
+* **Codec/import evidence:** FFmpeg generated a disposable one-second, stereo,
+  44.1 kHz AAC stream in an M4A/MP4 container. `ffprobe` identified `aac`,
+  `mov,mp4,m4a,3gp,3g2,mj2`, 44.1 kHz, and two channels. Library intake used no
+  model override and persisted `audio/mp4`, the codec, sample rate, channels,
+  and `.m4a` filename; the source checksum remained unchanged.
+* **Separation/mixer evidence:** the default four-model CPU recipe completed
+  (`kim_vocal_2`, `kuielab_b_drums`, `kuielab_b_bass`, `kuielab_b_other`). Four
+  private WAV outputs were decoded, loaded by the live mixer through the private
+  asset route, and played. Each isolation control left its matching stem
+  audible and muted the other three. The full service suite reported 54 passed,
+  4 skipped; the opt-in AAC/M4A acceptance itself passed.
+* **Quality/performance boundary:** the fixture is synthetic, so this proves
+  codec intake, processing, persistence, and mixer routing—not musical
+  separation quality. The whole acceptance took about 45 seconds on Linux CPU;
+  it is not Windows throughput evidence. The optional vocal-timing queue logged
+  that no local executor was registered, but separation completed successfully.
+* **Transition regression:** the existing two-track MP3 acceptance now uses
+  four-second synthetic controls so playback does not reach end-of-file during
+  the live transition/isolation checks. The filtered regression passed (1/1),
+  completing both tracks through the pinned CPU models.
+
 ## Current implementation — checksum-bound stem activity and vocal timing
 
 * **Behavior:** after a completed separation publishes its stems, Waveyard records

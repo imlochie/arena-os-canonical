@@ -28,6 +28,7 @@ import { DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 import { getStorage } from "../storage";
 import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
 import { restoreVerifiedAudioBackupZip } from "./audio-restore";
+import { FOUR_STEM_MODELS } from "../worker-local/pinned-models.test-helper";
 
 // The route handlers under test resolve the desktop/local owner from
 // NODE_ENV. Establish the test mode before any route module is imported
@@ -3414,7 +3415,7 @@ test("library retry action completes its original job through the real stem work
   const result = await verifyLibraryRetryWithRealWorker({
     database: db.db, client, directory: root, addTrack: service.addTrackFromAudioFile,
   });
-  t.diagnostic(`Real library retry: ${result.stemCount} stems on ${result.device} in ${result.elapsedMs} ms; one-second synthetic input, not Windows or separation-quality evidence.`);
+  t.diagnostic(`Real library retry: ${result.separation.privateOutputCount} stems on ${result.separation.resolvedDevice} in ${result.performance.elapsedMs} ms; one-second synthetic input, not Windows or separation-quality evidence.`);
 });
 
 test("library default four-stem retry reaches real live-mixing controls", {
@@ -3433,7 +3434,44 @@ test("library default four-stem retry reaches real live-mixing controls", {
     audioInputPath: process.env.WAVEYARD_REAL_LIBRARY_AUDIO_INPUT?.trim() || undefined,
     incomingAudioInputPath: process.env.WAVEYARD_REAL_LIBRARY_INCOMING_AUDIO_INPUT?.trim() || undefined,
   });
-  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. ${realInputs.length}/2 source files were supplied as real audio; remaining files are one-second synthetic controls. Pinned CPU execution and UI routing do not establish subjective separation quality or Windows performance.`);
+  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. ${realInputs.length}/2 source files were supplied as real audio; remaining files are four-second synthetic controls. Pinned CPU execution and UI routing do not establish subjective separation quality or Windows performance.`);
+});
+
+// Exercises a generated, non-DRM AAC stream in an M4A container through the
+// same default four-model CPU path, persisted outputs, and real mixer controls.
+// Opt in separately so this does not run two long four-model jobs by default.
+test("AAC/M4A library import creates a playable isolated four-stem mix", {
+  skip: process.env.WAVEYARD_RUN_REAL_LIBRARY_M4A !== "1",
+  timeout: 720_000,
+}, async t => {
+  assert.ok(client && root);
+  const { verifyLibraryRetryWithRealWorker } = await import("./retry-worker-acceptance.test-helper");
+  const result = await verifyLibraryRetryWithRealWorker({
+    database: db.db,
+    client,
+    directory: root,
+    addTrack: service.addTrackFromAudioFile,
+    recipe: "default-four-stem",
+    inputFormat: "m4a",
+    withIncomingTrack: false,
+  });
+  assert.match(result.codecImport.container ?? "", /mov,mp4,m4a/i);
+  assert.equal(result.codecImport.codec, "aac");
+  assert.equal(result.codecImport.mimeType, "audio/mp4");
+  assert.equal(result.codecImport.originalFilename, "Fixture - Library AAC acceptance.m4a");
+  assert.equal(result.codecImport.sampleRate, 44_100);
+  assert.equal(result.codecImport.channels, 2);
+  assert.equal(result.codecImport.inputUnchanged, true);
+  assert.deepEqual(result.separation.outputStemTypes, ["bass", "drums", "other", "vocals"]);
+  assert.equal(result.separation.resolvedDevice, "cpu");
+  assert.deepEqual(result.separation.completedModelPasses, FOUR_STEM_MODELS.map(model => model.id));
+  assert.equal(result.separation.privateOutputCount, 4);
+  assert.deepEqual(result.separation.isolatedStemTypes, ["bass", "drums", "other", "vocals"]);
+  assert.equal(result.separation.subjectiveQualityAssessed, false);
+  assert.equal(result.performance.windowsPerformanceMeasured, false);
+  t.diagnostic(`Codec/import evidence: ${JSON.stringify(result.codecImport)}. FFmpeg generated a disposable non-DRM AAC/M4A; the imported metadata matches ffprobe.`);
+  t.diagnostic(`Separation/mixer evidence: ${JSON.stringify(result.separation)}. Four pinned CPU outputs were persisted, served privately, decoded by the live mixer, and each isolation control muted the other three. Subjective separation quality was not assessed.`);
+  t.diagnostic(`Performance evidence: ${JSON.stringify(result.performance)}. This Linux CPU duration is not Windows performance evidence.`);
 });
 
 // Opt-in real CPU load and HTTP latency measurement, using this suite's private
