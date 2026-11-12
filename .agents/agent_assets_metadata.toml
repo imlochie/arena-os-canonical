@@ -238,3 +238,31 @@ mtime_ms = 1794405335444
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/da948470-8de6-4f41-8ca8-4817137ca124/01b17abc-1315-4c4b-b701-694e0716f5de"
 storage_version_token = "1794405917444562"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "mUNfICAZgxnAuhwB3s6oT"
+uri = "file://attached_assets/0_another_one_bites_the_dust_1793860743093.mp3"
+type = "audio"
+title = "Another One Bites the Dust — original audio"
+description = "Full-length source recording for the blind section and vocal-phrase review."
+logical_id = "5ba940bf-1037-4a8c-b36a-8379385751e6"
+content_hash = "sha256:30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c"
+size = 3563565
+mtime_ms = 1793860746335
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5ba940bf-1037-4a8c-b36a-8379385751e6/3067ed0e-83d9-4ec8-95a3-93127f8c3164"
+storage_version_token = "1794449915163747"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "m7LVvPYkrCzMb7N6mo7XK"
+uri = "file://attached_assets/0_ytmp3free.cc_earth-wind-fire-september-official-hd-video-you_1793303155539.mp3"
+type = "audio"
+title = "September — original audio"
+description = "Full-length source recording for the blind section and vocal-phrase review."
+logical_id = "5b96a4d3-3a23-4b96-ba18-2a0c53f91be0"
+content_hash = "sha256:6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1"
+size = 3442989
+mtime_ms = 1793303159856
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5b96a4d3-3a23-4b96-ba18-2a0c53f91be0/efdde6a8-97ef-4867-a878-5b471598e778"
+storage_version_token = "1794449916005628"
+content_type = "audio/mpeg"
