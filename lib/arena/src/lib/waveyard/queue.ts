@@ -223,7 +223,8 @@ export async function enqueueHarmonyAnalysis(payload: HarmonyAnalysisJobPayload)
 }
 
 export async function enqueueVocalAnalysis(payload: VocalAnalysisJobPayload) {
-  return enqueue(VOCAL_ANALYSIS_QUEUE, "analyze-vocal", payload as unknown as Record<string, unknown>, payload.vocalAnalysisId);
+  const versionedJobId = `${payload.vocalAnalysisId}:${payload.analysisEngine}:${payload.analysisEngineVersion}`;
+  return enqueue(VOCAL_ANALYSIS_QUEUE, "analyze-vocal", payload as unknown as Record<string, unknown>, versionedJobId);
 }
 
 export async function enqueueExport(payload: ExportJobPayload) {

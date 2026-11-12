@@ -24,6 +24,7 @@ import {
   detectBassAttacks,
   detectDrumTransients,
   detectHarmonyTimeline,
+  detectVocalActivityIntervals,
   detectVocalPitchFrames,
 } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
@@ -296,6 +297,27 @@ test("local vocal analysis tracks voiced pitch and leaves silence unvoiced", () 
   assert.ok(voiced.every((frame) => Math.abs((frame.frequencyHz ?? 0) - 220) < 8));
   assert.ok(unvoiced.length > 10);
   assert.ok(unvoiced.every((frame) => frame.frequencyHz === null && frame.midiFloat === null));
+});
+
+test("vocal activity finds unpitched passages independently of pitch tracking", () => {
+  const pcm = new Float32Array(RATE * 4);
+  let state = 0x12345678;
+  for (let index = 0; index < pcm.length; index += 1) {
+    state = (1664525 * state + 1013904223) >>> 0;
+    const noise = (state / 0x1_0000_0000) * 2 - 1;
+    const seconds = index / RATE;
+    const active = (seconds >= 0.5 && seconds < 1.5) || (seconds >= 2 && seconds < 3.25);
+    pcm[index] = noise * (active ? 0.05 : 0.0003);
+  }
+  const intervals = detectVocalActivityIntervals(pcm);
+  assert.equal(intervals.length, 2, JSON.stringify(intervals));
+  assert.ok(Math.abs(intervals[0]!.startMs - 500) <= 30);
+  assert.ok(Math.abs(intervals[0]!.endMs - 1_500) <= 40);
+  assert.ok(Math.abs(intervals[1]!.startMs - 2_000) <= 30);
+  assert.ok(Math.abs(intervals[1]!.endMs - 3_250) <= 40);
+  assert.ok(intervals.every((interval) => interval.confidence >= 0 && interval.confidence <= 1));
+  assert.equal(detectVocalPitchFrames(pcm).filter((frame) => frame.voiced).length, 0,
+    "the fixture must remain unpitched so pitch tracking cannot explain the activity result");
 });
 
 test("key confidence separates clear tonal evidence from ambiguous chords", () => {

@@ -32,6 +32,7 @@ export type PassageVocalActivityEvidence = {
   analysisId: string;
   stemAssetId: string;
   stemChecksumSha256: string;
+  activityIntervals: readonly PassageVocalRun[];
   pitchContinuityRuns: readonly PassageVocalRun[];
 };
 
@@ -42,7 +43,86 @@ export type StemActivityBoundaryChange = {
   evidenceStrength: number;
 };
 
-/** Creates conservative bar-aligned sections and adds sustained stem-change candidates. */
+export type VocalActivityBoundaryChange = {
+  beatIndex: number;
+  deltaCoverage: number;
+  evidenceStrength: number;
+};
+
+/** Detect only sustained vocal-entry/dropout changes across two-bar windows.
+ * This is an arrangement event, never a verse/chorus classifier. */
+export function detectVocalActivityBoundaryChanges(
+  intervals: readonly PassageVocalRun[],
+  beatGridMs: readonly number[],
+): VocalActivityBoundaryChange[] {
+  if (beatGridMs.length < 20 || beatGridMs.some((time) => !Number.isFinite(time) || time < 0)) return [];
+  const bars = Math.floor(beatGridMs.length / 4);
+  const finalBeatInterval = beatGridMs.length > 1
+    ? beatGridMs[beatGridMs.length - 1]! - beatGridMs[beatGridMs.length - 2]!
+    : 0;
+  const beatBoundaryMs = (index: number) => index < beatGridMs.length
+    ? beatGridMs[index]
+    : index === beatGridMs.length && finalBeatInterval > 0
+      ? beatGridMs[beatGridMs.length - 1]! + finalBeatInterval
+      : undefined;
+  const sortedIntervals = intervals
+    .filter((interval) => Number.isFinite(interval.startMs) && Number.isFinite(interval.endMs)
+      && interval.endMs > interval.startMs)
+    .slice()
+    .sort((left, right) => left.startMs - right.startMs);
+  let intervalCursor = 0;
+  const activityByBar: number[] = [];
+  for (let bar = 0; bar < bars; bar += 1) {
+    const startMs = beatBoundaryMs(bar * 4);
+    const endMs = beatBoundaryMs((bar + 1) * 4);
+    if (startMs === undefined || endMs === undefined || endMs <= startMs) return [];
+    let coveredMs = 0;
+    let rangeStartMs = -1;
+    let rangeEndMs = -1;
+    while (intervalCursor < sortedIntervals.length && sortedIntervals[intervalCursor]!.endMs <= startMs) {
+      intervalCursor += 1;
+    }
+    for (let index = intervalCursor; index < sortedIntervals.length; index += 1) {
+      const interval = sortedIntervals[index]!;
+      if (interval.startMs >= endMs) break;
+      if (interval.endMs <= startMs) continue;
+      const range = {
+        startMs: Math.max(startMs, interval.startMs),
+        endMs: Math.min(endMs, interval.endMs),
+      };
+      if (rangeStartMs < 0) {
+        rangeStartMs = range.startMs;
+        rangeEndMs = range.endMs;
+      } else if (range.startMs <= rangeEndMs) {
+        rangeEndMs = Math.max(rangeEndMs, range.endMs);
+      } else {
+        coveredMs += rangeEndMs - rangeStartMs;
+        rangeStartMs = range.startMs;
+        rangeEndMs = range.endMs;
+      }
+    }
+    if (rangeStartMs >= 0) coveredMs += rangeEndMs - rangeStartMs;
+    activityByBar.push(Math.max(0, Math.min(1, coveredMs / (endMs - startMs))));
+  }
+
+  const changes: VocalActivityBoundaryChange[] = [];
+  for (let bar = 2; bar <= bars - 2; bar += 1) {
+    const before = (activityByBar[bar - 2]! + activityByBar[bar - 1]!) / 2;
+    const after = (activityByBar[bar]! + activityByBar[bar + 1]!) / 2;
+    const deltaCoverage = after - before;
+    const sustainedEntry = before <= 0.25 && after >= 0.6;
+    const sustainedDropout = before >= 0.65 && after <= 0.25;
+    if (!sustainedEntry && !sustainedDropout) continue;
+    changes.push({
+      beatIndex: bar * 4,
+      deltaCoverage: Number(deltaCoverage.toFixed(3)),
+      evidenceStrength: Number(Math.min(0.9, Math.abs(deltaCoverage)).toFixed(3)),
+    });
+  }
+  return changes;
+}
+
+/** Creates conservative bar-aligned sections and adds sustained stem/vocal-change events. */
 export function desktopSectionCandidates(
   beatGridMs: number[],
   envelope: Float32Array,
@@ -50,6 +130,7 @@ export function desktopSectionCandidates(
   pcm?: Float32Array,
   precomputedPhraseMatches?: readonly RepeatedPhraseMatch[],
   stemActivityBoundaryChanges: readonly StemActivityBoundaryChange[] = [],
+  vocalActivityIntervals?: readonly PassageVocalRun[],
 ): SourceSectionCandidate[] | null {
   if (beatGridMs.length < 8) return null;
   const noveltyAt = (ms: number) => {
@@ -80,13 +161,17 @@ export function desktopSectionCandidates(
     if (!existing || Math.abs(change.deltaDb) > Math.abs(existing.deltaDb))
       stemChangesByBeat.set(change.beatIndex, change);
   }
+  const vocalChangesByBeat = new Map(
+    detectVocalActivityBoundaryChanges(vocalActivityIntervals ?? [], beatGridMs)
+      .map((change) => [change.beatIndex, change] as const),
+  );
   const onsetBoundaries = [...boundaries];
-  for (const change of stemActivityBoundaryChanges) {
-    const bar = change.beatIndex / barLength;
-    if (!Number.isInteger(bar) || bar <= 1 || bar >= barCount - 1 || boundaries.includes(change.beatIndex)) continue;
+  for (const beatIndex of [...stemChangesByBeat.keys(), ...vocalChangesByBeat.keys()]) {
+    const bar = beatIndex / barLength;
+    if (!Number.isInteger(bar) || bar <= 1 || bar >= barCount - 1 || boundaries.includes(beatIndex)) continue;
     // Avoid creating one-bar fragments beside already-supported boundaries.
-    if (onsetBoundaries.some((boundary) => Math.abs(boundary - change.beatIndex) < 2 * barLength)) continue;
-    boundaries.push(change.beatIndex);
+    if (onsetBoundaries.some((boundary) => Math.abs(boundary - beatIndex) < 2 * barLength)) continue;
+    boundaries.push(beatIndex);
   }
   boundaries.push(barCount * barLength);
   const orderedBoundaries = [...new Set(boundaries)].sort((left, right) => left - right);
@@ -97,21 +182,22 @@ export function desktopSectionCandidates(
     const startBeatIndex = orderedBoundaries[index]!;
     const endBeatIndex = orderedBoundaries[index + 1]!;
     const stemChange = stemChangesByBeat.get(startBeatIndex);
+    const vocalChange = vocalChangesByBeat.get(startBeatIndex);
     const onsetStrength = meanScore > 0
       ? Math.min(1, edgeScore(startBeatIndex / barLength) / (meanScore * 2.5))
       : 0.25;
     candidates.push({
       startBeatIndex,
       endBeatIndex,
-      label: stemChange ? "stem-change" : "section",
-      labelConfidence: stemChange?.evidenceStrength ?? 0,
-      structuralConfidence: Math.round(Math.max(0.05, Math.min(1, Math.max(onsetStrength, stemChange?.evidenceStrength ?? 0))) * 1000) / 1000,
+      label: stemChange ? "stem-change" : vocalChange ? "vocal-change" : "section",
+      labelConfidence: stemChange?.evidenceStrength ?? vocalChange?.evidenceStrength ?? 0,
+      structuralConfidence: Math.round(Math.max(0.05, Math.min(1, Math.max(onsetStrength, stemChange?.evidenceStrength ?? 0, vocalChange?.evidenceStrength ?? 0))) * 1000) / 1000,
     });
   }
   const detectedPhraseMatches = precomputedPhraseMatches
     ?? detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, pcm);
   const phraseMatches = detectedPhraseMatches.filter((match) =>
-    ![...stemChangesByBeat.keys()].some((boundary) =>
+    ![...stemChangesByBeat.keys(), ...vocalChangesByBeat.keys()].some((boundary) =>
       boundary > match.startBeatIndex && boundary < match.endBeatIndex,
     ),
   );
@@ -120,8 +206,10 @@ export function desktopSectionCandidates(
   const withEnergy = pcm ? labelSectionEnergyChanges(withRepeats, beatGridMs, pcm) : withRepeats;
   return withEnergy.map((candidate) => {
     const stemChange = stemChangesByBeat.get(candidate.startBeatIndex);
-    return stemChange
-      ? { ...candidate, label: "stem-change", labelConfidence: stemChange.evidenceStrength }
+    const vocalChange = vocalChangesByBeat.get(candidate.startBeatIndex);
+    if (stemChange) return { ...candidate, label: "stem-change", labelConfidence: stemChange.evidenceStrength };
+    return vocalChange
+      ? { ...candidate, label: "vocal-change", labelConfidence: vocalChange.evidenceStrength }
       : candidate;
   });
 }
@@ -463,47 +551,63 @@ export function passageVocalActivityEvidence(
   endMs: number | null,
 ): PassageFingerprint["vocalActivity"] {
   if (!input || startMs === null || endMs === null || endMs <= startMs) {
-    return unavailablePassageEvidence("No current-checksum-matched isolated-vocal pitch-continuity analysis was available.");
+    return unavailablePassageEvidence("No current-checksum-matched isolated-vocal activity analysis was available.");
   }
-  const runs = input.pitchContinuityRuns
+  const clipRuns = (source: readonly PassageVocalRun[]) => source
     .filter((run) => run.endMs > startMs && run.startMs < endMs)
     .slice(0, 256)
-    .map((run) => ({ ...run }));
-  const clipped = runs
+    .map((run) => ({
+      startMs: Math.max(startMs, run.startMs),
+      endMs: Math.min(endMs, run.endMs),
+      confidence: run.confidence,
+    }))
+    .filter((run) => run.endMs > run.startMs)
+    .sort((left, right) => left.startMs - right.startMs);
+  const measureCoverage = (runs: readonly PassageVocalRun[]) => {
+    const clipped = runs
     .map((run) => ({ startMs: Math.max(startMs, run.startMs), endMs: Math.min(endMs, run.endMs) }))
     .filter((run) => run.endMs > run.startMs)
     .sort((left, right) => left.startMs - right.startMs);
-  let coveredMs = 0;
-  let rangeStartMs = -1;
-  let rangeEndMs = -1;
-  for (const range of clipped) {
-    if (rangeStartMs < 0) {
-      rangeStartMs = range.startMs;
-      rangeEndMs = range.endMs;
-    } else if (range.startMs <= rangeEndMs) {
-      rangeEndMs = Math.max(rangeEndMs, range.endMs);
-    } else {
-      coveredMs += rangeEndMs - rangeStartMs;
-      rangeStartMs = range.startMs;
-      rangeEndMs = range.endMs;
+    let coveredMs = 0;
+    let rangeStartMs = -1;
+    let rangeEndMs = -1;
+    for (const range of clipped) {
+      if (rangeStartMs < 0) {
+        rangeStartMs = range.startMs;
+        rangeEndMs = range.endMs;
+      } else if (range.startMs <= rangeEndMs) {
+        rangeEndMs = Math.max(rangeEndMs, range.endMs);
+      } else {
+        coveredMs += rangeEndMs - rangeStartMs;
+        rangeStartMs = range.startMs;
+        rangeEndMs = range.endMs;
+      }
     }
-  }
-  if (rangeStartMs >= 0) coveredMs += rangeEndMs - rangeStartMs;
-  const meanConfidence = runs.length
-    ? runs.reduce((total, run) => total + run.confidence, 0) / runs.length
+    if (rangeStartMs >= 0) coveredMs += rangeEndMs - rangeStartMs;
+    return Math.max(0, Math.min(1, coveredMs / (endMs - startMs)));
+  };
+  const activityIntervals = clipRuns(input.activityIntervals);
+  const pitchContinuityRuns = clipRuns(input.pitchContinuityRuns);
+  const meanOf = (runs: readonly PassageVocalRun[]) => runs.length
+    ? Number((runs.reduce((total, run) => total + run.confidence, 0) / runs.length).toFixed(6))
     : 0;
+  const meanActivityStrength = meanOf(activityIntervals);
+  const meanPitchConfidence = meanOf(pitchContinuityRuns);
   return {
     status: "measured",
     value: {
-      voicedCoverage: Math.max(0, Math.min(1, coveredMs / (endMs - startMs))),
-      meanConfidence: Number(meanConfidence.toFixed(6)),
+      activityCoverage: measureCoverage(activityIntervals),
+      meanActivityStrength,
+      pitchCoverage: measureCoverage(pitchContinuityRuns),
+      meanPitchConfidence,
       analysisId: input.analysisId,
       stemAssetId: input.stemAssetId,
       stemChecksumSha256: input.stemChecksumSha256,
-      pitchContinuityRuns: runs,
+      activityIntervals,
+      pitchContinuityRuns,
     },
-    method: "source/stem-checksum-current isolated-vocal pitch-continuity runs; not lyric transcription",
-    confidence: Number(meanConfidence.toFixed(6)),
+    method: "Source/stem-checksum-current vocal RMS activity and pitch continuity; neither denotes lyrics",
+    confidence: null,
   };
 }
 
@@ -561,7 +665,7 @@ export function buildPassageFingerprint(input: {
   }
   const unavailable = "Not measured by this source-only structural pass.";
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256: input.sourceChecksumSha256,

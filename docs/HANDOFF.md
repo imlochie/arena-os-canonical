@@ -36,6 +36,14 @@
   before running the real-ORT acceptance; a stale `dist` worker can report an
   obsolete sampling interval.
 
+## Current verification — full-track vocal activity
+
+* **Implementation:** isolated vocal analysis now persists coarse acoustic activity intervals separately from pitch-continuity runs. Source-linked section fingerprints preserve both signals; sustained two-bar activity entry/dropout can add a `vocal-change` structural event. Repeated-window matching may not erase a measured vocal or stem boundary. This does not detect lyrics or semantic musical form.
+* **Persistence and refresh:** migration `0027_vocal_activity_intervals.sql` stores the new evidence in both desktop and Drizzle migration trees. Older local vocal-analysis rows refresh in place when a matching separated stem is provisioned again. Queue identity includes analysis engine/version, and an old queued payload cannot fail a refreshed current-version row.
+* **Real-track check:** the full 215.14-second _September_ vocal stem yielded 36 activity intervals and a first sustained-entry boundary at 19.145 s, versus the owner’s approximate ~20 s marker. The full 222.67-second _Another One Bites the Dust_ vocal stem yielded 40 intervals and an entry boundary at 26.389 s, versus ~27 s. These two timing comparisons are within 0.86 s and 0.61 s, respectively, but they are only approximate single-listener checks—not independent accuracy metrics. Interval confidence/strength values are heuristic signal scores, not calibrated probabilities; event strength is a coverage difference.
+* **Verification:** 89 focused Waveyard tests passed across vocal activity, section detection, version refresh, stale-job protection, fingerprint persistence/parser, mashup planner, and persisted remix acceptance. `pnpm run typecheck:libs` and `git diff --check` passed.
+* **Not proven:** the commercial full-track stem check was offline; the complete current separation-to-database route was not rerun on those tracks. Musical form, phrase/word timing, chorus recurrence accuracy, rendered mashup quality, and independent-review accuracy remain unverified. See [`waveyard-ground-truth-evaluation.md`](./waveyard-ground-truth-evaluation.md) for the evidence boundary and review protocol.
+
 ## Current implementation — rolling mashup windows and pitch-aware chops
 
 * **Passage evidence:** current source analysis persists checksum-bound local

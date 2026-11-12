@@ -473,6 +473,21 @@ export const vocalPhrases = pgTable("vocal_phrases", {
   index("vocal_phrases_analysis_start_idx").on(table.vocalAnalysisId, table.startMs),
 ]);
 
+/** Coarse isolated-stem activity is deliberately separate from pitch-derived
+ * phrase candidates; an energy window is not a lyric or word boundary. */
+export const vocalActivityIntervals = pgTable("vocal_activity_intervals", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  vocalAnalysisId: uuid("vocal_analysis_id").notNull().references(() => vocalAnalyses.id, { onDelete: "cascade" }),
+  intervalIndex: integer("interval_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_activity_intervals_analysis_index_unique").on(table.vocalAnalysisId, table.intervalIndex),
+  index("vocal_activity_intervals_analysis_start_idx").on(table.vocalAnalysisId, table.startMs),
+]);
+
 // A remix is non-destructive arrangement metadata over existing stems. No clip
 // operation copies or mutates original separated audio.
 

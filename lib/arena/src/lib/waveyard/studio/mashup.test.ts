@@ -57,7 +57,7 @@ function passageFingerprint(
   const compatible = kind === "compatible";
   const measure = <T>(value: T) => ({ status: "measured" as const, value, method: "fixture", confidence: 0.95 });
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256,

@@ -147,7 +147,7 @@ export async function provisionDesktopSectionAnalysis(
   return row;
 }
 
-/** Queue source- and stem-bound vocal pitch continuity after stem publication. */
+/** Queue source- and stem-bound vocal activity and pitch analysis after publication. */
 export async function provisionDesktopVocalAnalysis(
   source: typeof sourceAssets.$inferSelect,
   stem: typeof stemAssets.$inferSelect,
@@ -175,18 +175,55 @@ export async function provisionDesktopVocalAnalysis(
     sourceChecksumSha256: source.checksumSha256,
     stemChecksumSha256: stem.checksumSha256,
   }).onConflictDoNothing({ target: vocalAnalyses.stemAssetId }).returning();
-  const [analysis] = created
+  let [analysis] = created
     ? [created]
     : await database.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
   if (!analysis
     || analysis.projectId !== source.projectId
     || analysis.sourceAssetId !== source.id
     || analysis.sourceChecksumSha256 !== source.checksumSha256
-    || analysis.stemChecksumSha256 !== stem.checksumSha256
-    || analysis.analysisEngine !== LOCAL_VOCAL_ANALYSIS_ENGINE
-    || analysis.analysisEngineVersion !== LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION) return analysis ?? null;
+    || analysis.stemChecksumSha256 !== stem.checksumSha256) return analysis ?? null;
 
   let shouldQueue = Boolean(created);
+  if (!created && analysis.analysisEngine === LOCAL_VOCAL_ANALYSIS_ENGINE
+    && analysis.analysisEngineVersion !== LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION
+    && analysis.status !== "cancelled") {
+    const previousVersion = analysis.analysisEngineVersion;
+    const previousStatus = analysis.status;
+    const [upgraded] = await database.update(vocalAnalyses).set({
+      status: "queued",
+      stage: "queued",
+      attempts: 0,
+      idempotencyKey: vocalAnalysisIdempotencyKey(
+        stem.id,
+        LOCAL_VOCAL_ANALYSIS_ENGINE,
+        LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      ),
+      analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      errorCode: null,
+      errorMessage: null,
+      startedAt: null,
+      analyzedAt: null,
+      completedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(vocalAnalyses.id, analysis.id),
+      eq(vocalAnalyses.status, previousStatus),
+      eq(vocalAnalyses.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE),
+      eq(vocalAnalyses.analysisEngineVersion, previousVersion),
+      eq(vocalAnalyses.sourceChecksumSha256, source.checksumSha256),
+      eq(vocalAnalyses.stemChecksumSha256, stem.checksumSha256),
+    )).returning();
+    if (upgraded) {
+      analysis = upgraded;
+      shouldQueue = true;
+    } else {
+      [analysis] = await database.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
+    }
+  }
+  if (!analysis
+    || analysis.analysisEngine !== LOCAL_VOCAL_ANALYSIS_ENGINE
+    || analysis.analysisEngineVersion !== LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION) return analysis ?? null;
   if (!created && analysis.status === "failed") {
     const [requeued] = await database.update(vocalAnalyses).set({
       status: "queued",

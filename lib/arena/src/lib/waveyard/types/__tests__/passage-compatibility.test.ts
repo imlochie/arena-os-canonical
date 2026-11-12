@@ -20,7 +20,7 @@ function missing(reason: string) {
 
 function fingerprint(checksum: string, startBeatIndex = 0, endBeatIndex = 16, overrides: Partial<PassageFingerprint> = {}): PassageFingerprint {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256: checksum,
@@ -88,9 +88,34 @@ test("fingerprint parser binds every persisted feature to its exact source passa
   assert.equal(parsePassageFingerprint({ ...value, stemActivity: { status: "measured", value: [{ stemType: "vocals", sectionRmsDb: -10 }], method: "bad", confidence: null } }), null);
 });
 
-test("fingerprint parser validates checksum-bound rolling beat windows and keeps old fingerprints readable", () => {
-  const legacy = fingerprint("sha-a");
-  assert.deepEqual(parsePassageFingerprint(legacy), legacy, "pre-rolling persisted fingerprints remain readable");
+test("fingerprint parser preserves distinct vocal activity and pitch evidence", () => {
+  const evidence = {
+    status: "measured" as const,
+    value: {
+      activityCoverage: 0.42,
+      meanActivityStrength: 0.81,
+      pitchCoverage: 0.31,
+      meanPitchConfidence: 0.77,
+      analysisId: "analysis",
+      stemAssetId: "vocal-stem",
+      stemChecksumSha256: "b".repeat(64),
+      activityIntervals: [{ startMs: 1_000, endMs: 2_000, confidence: 0.81 }],
+      pitchContinuityRuns: [{ startMs: 1_200, endMs: 1_800, confidence: 0.77 }],
+    },
+    method: "Source/stem-checksum-current vocal RMS activity and pitch continuity; neither denotes lyrics",
+    confidence: null,
+  };
+  const value = fingerprint("sha-a", 0, 16, { vocalActivity: evidence });
+  assert.deepEqual(parsePassageFingerprint(value), value);
+  assert.equal(parsePassageFingerprint({
+    ...value,
+    vocalActivity: { ...evidence, method: "x".repeat(121) },
+  }), null, "oversized method metadata is rejected before persistence");
+});
+
+test("fingerprint parser validates checksum-bound rolling beat windows and rejects stale schemas", () => {
+  const legacy = { ...fingerprint("sha-a"), schemaVersion: 2 };
+  assert.equal(parsePassageFingerprint(legacy), null, "old pitch-only fingerprints must be rebuilt before use");
   const rolling = fingerprint("sha-a", 0, 16, {
     rollingWindows: measured([{
       startBeatIndex: 4,
@@ -137,19 +162,23 @@ test("per-stem shifts are visible as context but never decide cross-song eligibi
 
 test("isolated vocal pitch-continuity runs remain visible context, not lyric claims or eligibility gates", () => {
   const vocalActivity = measured({
-    voicedCoverage: 0.31,
-    meanConfidence: 0.8,
+    activityCoverage: 0.38,
+    meanActivityStrength: 0.81,
+    pitchCoverage: 0.31,
+    meanPitchConfidence: 0.8,
     analysisId: "vocal-analysis",
     stemAssetId: "vocal-stem",
     stemChecksumSha256: "d".repeat(64),
+    activityIntervals: [{ startMs: 8_800, endMs: 10_600, confidence: 0.81 }],
     pitchContinuityRuns: [{ startMs: 9_000, endMs: 10_500, confidence: 0.8 }],
   });
   const donor = fingerprint("sha-b", 0, 16, { vocalActivity });
   const result = compatibility(fingerprint("sha-a"), donor);
   assert.equal(result.eligible, true);
   assert.equal(result.dimensions.vocalActivity.status, "context");
-  assert.match(result.dimensions.vocalActivity.detail, /1 pitch-continuity run/);
-  assert.match(result.dimensions.vocalActivity.detail, /9\.0–10\.5 s/);
+  assert.match(result.dimensions.vocalActivity.detail, /38% vocal-stem activity across 1 coarse interval/);
+  assert.match(result.dimensions.vocalActivity.detail, /8\.8–10\.6 s/);
+  assert.match(result.dimensions.vocalActivity.detail, /1 separate pitch-continuity run/);
   assert.match(result.dimensions.vocalActivity.detail, /not lyric or word boundaries/);
   assert.deepEqual(parsePassageFingerprint(donor, { sourceChecksumSha256: "sha-b" }), donor);
   assert.equal(parsePassageFingerprint({
@@ -159,6 +188,16 @@ test("isolated vocal pitch-continuity runs remain visible context, not lyric cla
       pitchContinuityRuns: [{ startMs: 12_000, endMs: 11_000, confidence: 0.8 }],
     }),
   }), null);
+  assert.equal(parsePassageFingerprint({
+    ...donor,
+    vocalActivity: measured({
+      ...vocalActivity.value,
+      activityIntervals: [
+        { startMs: 10_000, endMs: 11_000, confidence: 0.8 },
+        { startMs: 9_000, endMs: 9_500, confidence: 0.8 },
+      ],
+    }),
+  }), null, "activity windows must remain ordered and bounded");
 });
 
 test("compatibility requires separate rhythm, chroma, beat-phase, tempo and beat-confidence evidence", () => {

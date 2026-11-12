@@ -17,6 +17,7 @@ import {
   sourceSections,
   stemAssets,
   vocalAnalyses,
+  vocalActivityIntervals,
   vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import type { StorageProvider } from "@workspace/arena/lib/waveyard/storage";
@@ -226,6 +227,10 @@ test("persisted vocal pitch-continuity runs appear in the exact source passages 
       { vocalAnalysisId: vocalAnalysis.id, phraseIndex: 0, startMs: 9_000, endMs: 10_500, confidence: 0.87 },
       { vocalAnalysisId: vocalAnalysis.id, phraseIndex: 1, startMs: 10_800, endMs: 11_500, confidence: 0.74 },
     ]);
+    await fixture.database.insert(vocalActivityIntervals).values([
+      { vocalAnalysisId: vocalAnalysis.id, intervalIndex: 0, startMs: 8_500, endMs: 10_600, confidence: 0.83 },
+      { vocalAnalysisId: vocalAnalysis.id, intervalIndex: 1, startMs: 10_900, endMs: 11_900, confidence: 0.79 },
+    ]);
 
     await runSectionAnalysis(fixture);
     const sections = await fixture.database.select().from(sourceSections)
@@ -234,6 +239,10 @@ test("persisted vocal pitch-continuity runs appear in the exact source passages 
     const expectedRuns = [
       { startMs: 9_000, endMs: 10_500, confidence: 0.87 },
       { startMs: 10_800, endMs: 11_500, confidence: 0.74 },
+    ];
+    const expectedActivityIntervals = [
+      { startMs: 8_500, endMs: 10_600, confidence: 0.83 },
+      { startMs: 10_900, endMs: 11_900, confidence: 0.79 },
     ];
     let persistedRunCount = 0;
     for (const section of sections) {
@@ -247,9 +256,20 @@ test("persisted vocal pitch-continuity runs appear in the exact source passages 
       assert.equal(fingerprint.vocalActivity.value.analysisId, vocalAnalysis.id);
       assert.equal(fingerprint.vocalActivity.value.stemAssetId, vocalStem.id);
       const expectedForSection = expectedRuns.filter((run) => run.endMs > section.startMs && run.startMs < section.endMs);
-      assert.deepEqual(fingerprint.vocalActivity.value.pitchContinuityRuns, expectedForSection);
+      const expectedActivityForSection = expectedActivityIntervals.filter((run) => run.endMs > section.startMs && run.startMs < section.endMs);
+      assert.deepEqual(fingerprint.vocalActivity.value.pitchContinuityRuns, expectedForSection.map((run) => ({
+        ...run,
+        startMs: Math.max(section.startMs, run.startMs),
+        endMs: Math.min(section.endMs, run.endMs),
+      })));
+      assert.deepEqual(fingerprint.vocalActivity.value.activityIntervals, expectedActivityForSection.map((run) => ({
+        ...run,
+        startMs: Math.max(section.startMs, run.startMs),
+        endMs: Math.min(section.endMs, run.endMs),
+      })));
+      assert.ok(fingerprint.vocalActivity.value.activityCoverage >= 0);
+      assert.ok(fingerprint.vocalActivity.value.pitchCoverage >= 0);
       persistedRunCount += fingerprint.vocalActivity.value.pitchContinuityRuns.length;
-      assert.ok(fingerprint.vocalActivity.value.voicedCoverage >= 0);
     }
     assert.ok(persistedRunCount >= expectedRuns.length, "each source-bound run is assigned to the passage or passages it overlaps");
 

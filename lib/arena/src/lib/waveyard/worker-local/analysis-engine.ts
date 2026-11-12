@@ -823,19 +823,31 @@ export function detectVocalActivityIntervals(
   }
 
   const roundedDurationMs = Math.floor(pcm.length * 1000 / ANALYSIS_PCM_RATE);
+  let energyFrameIndex = 0;
+  let pitchFrameIndex = 0;
   return mergedIntervals
     .map((interval) => {
       const start = Math.max(0, Math.min(roundedDurationMs, interval.startMs));
       const end = Math.max(start, Math.min(roundedDurationMs, interval.endMs));
-      const voicedFrames = pitchFrames.filter((frame) =>
-        frame.voiced && frame.timestampMs >= start && frame.timestampMs <= end);
+      while (energyFrameIndex < energyFrames.length && energyFrames[energyFrameIndex]!.endMs <= start) energyFrameIndex += 1;
+      let activeLevelSum = 0;
+      let activeLevelCount = 0;
+      for (let index = energyFrameIndex; index < energyFrames.length && energyFrames[index]!.startMs < end; index += 1) {
+        const frame = energyFrames[index]!;
+        if (frame.endMs > start && frame.levelDb >= closeThresholdDb) {
+          activeLevelSum += frame.levelDb;
+          activeLevelCount += 1;
+        }
+      }
+      while (pitchFrameIndex < pitchFrames.length && pitchFrames[pitchFrameIndex]!.timestampMs < start) pitchFrameIndex += 1;
+      let voicedFrameCount = 0;
+      for (let index = pitchFrameIndex; index < pitchFrames.length && pitchFrames[index]!.timestampMs <= end; index += 1) {
+        if (pitchFrames[index]!.voiced) voicedFrameCount += 1;
+      }
       const expectedFrameCount = Math.max(1, Math.ceil((end - start) / 30));
-      const pitchSupport = Math.min(1, voicedFrames.length / expectedFrameCount);
-      const activeLevels = energyFrames
-        .filter((frame) => frame.endMs > start && frame.startMs < end && frame.levelDb >= closeThresholdDb)
-        .map((frame) => frame.levelDb);
-      const meanActiveDb = activeLevels.length
-        ? activeLevels.reduce((total, level) => total + level, 0) / activeLevels.length
+      const pitchSupport = Math.min(1, voicedFrameCount / expectedFrameCount);
+      const meanActiveDb = activeLevelCount
+        ? activeLevelSum / activeLevelCount
         : openThresholdDb;
       const contrast = Math.max(0, Math.min(1,
         (meanActiveDb - noiseFloorDb) / Math.max(12, dynamicRangeDb)));

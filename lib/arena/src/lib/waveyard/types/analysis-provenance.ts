@@ -4,9 +4,11 @@ export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.4.0";
  * NumPy worker provenance persisted by remote Python workers. */
 export const DESKTOP_STEM_ANALYSIS_ENGINE = "arena-js-stem-analysis";
 export const DESKTOP_STEM_ANALYSIS_ENGINE_VERSION = "1.0.0";
+/** Versioned separately because vocal activity is persisted independently from pitch runs. */
+export const DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION = "1.1.0";
 export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
-// 1.5 persists source-bound passage fingerprints for cross-track comparison.
-export const DESKTOP_SECTION_ENGINE_VERSION = "1.6.0";
+// 1.7 adds source-bound vocal-activity evidence alongside pitch continuity.
+export const DESKTOP_SECTION_ENGINE_VERSION = "1.7.0";
 
 export function isStaleDesktopAnalysis(analysis: {
   analysisEngine: string | null;

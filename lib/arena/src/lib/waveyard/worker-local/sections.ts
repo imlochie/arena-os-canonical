@@ -2,7 +2,8 @@
  * Local section-analysis job handler — a faithful port of the worker's
  * processSourceSectionAnalysis, with the structure engine reimplemented in
  * JS: conservative boundaries use source onset novelty plus sustained changes
- * from checksum-matched separated stems; repeated phrases remain supported.
+ * from checksum-matched separated-stem and vocal-activity evidence; repeated
+ * phrases remain supported.
  * Repetition is not mislabeled as verse/chorus or used to align other songs.
  * Candidates flow through the app's own normalizeSourceSections/
  * sourceSectionsAreValid validators, so rows are indistinguishable in shape
@@ -20,7 +21,7 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import { db as defaultDb } from "@workspace/db";
 import {
   processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections, stemAssets,
-  vocalAnalyses, vocalPhrases,
+  vocalAnalyses, vocalActivityIntervals, vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { normalizeSourceSections, sourceSectionsAreValid } from "@workspace/arena/lib/waveyard/types/source-sections";
@@ -196,19 +197,30 @@ async function loadStemActivityProfiles(input: {
           .where(eq(vocalPhrases.vocalAnalysisId, analysis.id))
           .orderBy(vocalPhrases.startMs)
           .limit(10_000);
+        const activityIntervals = await input.database.select({
+          startMs: vocalActivityIntervals.startMs,
+          endMs: vocalActivityIntervals.endMs,
+          confidence: vocalActivityIntervals.confidence,
+        }).from(vocalActivityIntervals)
+          .where(eq(vocalActivityIntervals.vocalAnalysisId, analysis.id))
+          .orderBy(vocalActivityIntervals.startMs)
+          .limit(10_000);
+        const validInterval = (interval: { startMs: number; endMs: number; confidence: number }) =>
+          Number.isSafeInteger(interval.startMs)
+          && Number.isSafeInteger(interval.endMs)
+          && interval.startMs >= 0
+          && interval.endMs > interval.startMs
+          && interval.endMs <= sourceDurationMs
+          && Number.isFinite(interval.confidence)
+          && interval.confidence >= 0
+          && interval.confidence <= 1;
         vocalActivity = {
           analysisId: analysis.id,
           stemAssetId: vocalStem.id,
           stemChecksumSha256: vocalStem.checksumSha256,
+          activityIntervals: activityIntervals.filter(validInterval),
           pitchContinuityRuns: phrases.filter((phrase) =>
-            Number.isSafeInteger(phrase.startMs)
-            && Number.isSafeInteger(phrase.endMs)
-            && phrase.startMs >= 0
-            && phrase.endMs > phrase.startMs
-            && phrase.endMs <= sourceDurationMs
-            && Number.isFinite(phrase.confidence)
-            && phrase.confidence >= 0
-            && phrase.confidence <= 1,
+            validInterval(phrase),
           ),
         };
       }
@@ -302,7 +314,15 @@ export async function handleSectionAnalysisJob(
       beatGridMs: beatGrid,
       sourcePcm: pcm,
     });
-    const candidates = desktopSectionCandidates(beatGrid, envelope, frameMs, pcm, undefined, stemActivity.changes);
+    const candidates = desktopSectionCandidates(
+      beatGrid,
+      envelope,
+      frameMs,
+      pcm,
+      undefined,
+      stemActivity.changes,
+      stemActivity.vocalActivity?.activityIntervals,
+    );
     if (!candidates) {
       await updateSectionAnalysis(database, job.id, {
         status: "unavailable",

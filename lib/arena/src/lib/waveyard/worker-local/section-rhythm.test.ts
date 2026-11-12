@@ -10,6 +10,7 @@ import {
   buildPassageFingerprint,
   buildStemActivityProfile,
   detectStemActivityBoundaryChanges,
+  detectVocalActivityBoundaryChanges,
   desktopSectionCandidates,
   sectionEnergyChangeDb,
 } from "./section-rhythm";
@@ -311,6 +312,38 @@ test("per-stem PCM adds a boundary only for a sustained activity change, not a o
   });
   assert.ok(transientProfile);
   assert.deepEqual(detectStemActivityBoundaryChanges([transientProfile]), []);
+});
+
+test("sustained vocal entrances and dropouts add explicit event boundaries without semantic section labels", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const intervals = [{ startMs: 8_000, endMs: 20_000, confidence: 0.8 }];
+  const changes = detectVocalActivityBoundaryChanges(intervals, longGrid);
+  assert.deepEqual(changes.map((change) => change.beatIndex), [16, 40]);
+  assert.ok(changes.every((change) => Math.abs(change.deltaCoverage) >= 0.65));
+
+  const candidates = desktopSectionCandidates(
+    longGrid,
+    new Float32Array(3_300),
+    frameMs,
+    new Float32Array(ANALYSIS_PCM_RATE * 32),
+    [],
+    [],
+    intervals,
+  );
+  assert.equal(candidates?.find((candidate) => candidate.startBeatIndex === 16)?.label, "vocal-change");
+  assert.equal(candidates?.find((candidate) => candidate.startBeatIndex === 40)?.label, "vocal-change");
+  assert.ok(candidates?.every((candidate) => !/verse|chorus|bridge|breakdown/i.test(candidate.label)));
+});
+
+test("vocal event coverage sorts intervals once and closes the final full bar when the beat endpoint is exclusive", () => {
+  const grid = Array.from({ length: 20 }, (_, index) => index * 500);
+  const changes = detectVocalActivityBoundaryChanges([
+    { startMs: 7_000, endMs: 8_000, confidence: 0.8 },
+    { startMs: 4_000, endMs: 7_000, confidence: 0.7 },
+    { startMs: Number.NaN, endMs: 12_000, confidence: 1 },
+  ], grid);
+  assert.deepEqual(changes.map((change) => change.beatIndex), [8]);
+  assert.equal(changes[0]?.deltaCoverage, 1);
 });
 
 test("stem activity is persisted as source-linked signal evidence, not a semantic label", () => {

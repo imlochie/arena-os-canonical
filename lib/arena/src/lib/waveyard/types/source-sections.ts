@@ -40,6 +40,8 @@ export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionI
   const similarityPercent = `${Math.round(clampUnit(section.labelConfidence) * 100)}%`;
   if (section.label === "stem-change")
     return `Stem activity shift · normalized signal strength ${similarityPercent}`;
+  if (section.label === "vocal-change")
+    return `Vocal activity shift · sustained presence change ${similarityPercent}`;
   if (repeatedPattern) {
     const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";
     return `${prefix} audio pattern ${repeatedPattern[1].toUpperCase()} · ${similarityPercent} rhythm+chroma similarity`;

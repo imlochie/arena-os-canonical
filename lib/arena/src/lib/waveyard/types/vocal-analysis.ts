@@ -1,6 +1,6 @@
 export const VOCAL_ANALYSIS_ENGINE = "waveyard-numpy-monophonic-pitch";
 export const VOCAL_ANALYSIS_ENGINE_VERSION = "1.0.0";
-export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_VOCAL_ANALYSIS_ENGINE, DESKTOP_STEM_ANALYSIS_ENGINE_VERSION as LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
+export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_VOCAL_ANALYSIS_ENGINE, DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION as LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
 
 export function vocalAnalysisIdempotencyKey(stemAssetId: string, engine = VOCAL_ANALYSIS_ENGINE, version = VOCAL_ANALYSIS_ENGINE_VERSION) {
   return `vocal:${stemAssetId}:${engine}:${version}`;

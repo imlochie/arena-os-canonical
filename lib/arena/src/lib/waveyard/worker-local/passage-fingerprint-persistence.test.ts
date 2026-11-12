@@ -18,7 +18,7 @@ import {
 } from "../types/passage-compatibility";
 
 const fingerprint: PassageFingerprint = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   engine: PASSAGE_FINGERPRINT_ENGINE,
   engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
   sourceChecksumSha256: "a".repeat(64),

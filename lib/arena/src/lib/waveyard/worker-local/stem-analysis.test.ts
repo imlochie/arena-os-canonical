@@ -14,7 +14,7 @@ import { encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { LocalStorageProvider, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import {
   projects, processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, stemAssets, bassAnalyses, bassEvents, drumAnalyses, drumEvents,
-  harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalPitchFrames, vocalPhrases,
+  harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalActivityIntervals, vocalPitchFrames, vocalPhrases,
   remixSessions, remixVersions, exportJobs, exportAssets,
 } from "@workspace/db/waveyardSchema";
 import {
@@ -31,6 +31,7 @@ import {
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { handleBassAnalysisJob, handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
 import { handleMidiExportJob } from "./export";
+import { provisionDesktopVocalAnalysis } from "./analysis";
 import { parseStandardMidiFile } from "../midi-file";
 import {
   recoverPendingLocalDrumAnalyses,
@@ -48,6 +49,15 @@ function stereoWav(mono: Float32Array) {
 function tone(frequency: number, seconds: number) {
   const mono = new Float32Array(RATE * seconds);
   for (let i = 0; i < mono.length; i += 1) mono[i] = 0.3 * Math.sin((2 * Math.PI * frequency * i) / RATE);
+  return mono;
+}
+function vocalPulseTone(frequency: number, seconds: number) {
+  const mono = new Float32Array(RATE * seconds);
+  for (let i = 0; i < mono.length; i += 1) {
+    const time = i / RATE;
+    const active = (time >= 0.4 && time < 1.45) || (time >= 1.9 && time < 3.45);
+    if (active) mono[i] = 0.3 * Math.sin((2 * Math.PI * frequency * i) / RATE);
+  }
   return mono;
 }
 function clickStem() {
@@ -74,7 +84,7 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     const db = drizzle(client) as unknown as NonNullable<Parameters<typeof handleDrumAnalysisJob>[1]>["db"];
     const storage = new LocalStorageProvider(join(root, "storage"));
     const [project] = await db.insert(projects).values({ ownerId: randomUUID(), title: "Local analysis execution" }).returning();
-    const files = [stereoWav(chordSource()), stereoWav(clickStem()), stereoWav(tone(220, 4))];
+    const files = [stereoWav(chordSource()), stereoWav(clickStem()), stereoWav(vocalPulseTone(220, 4))];
     const paths = files.map((_, index) => join(root, `${index}.wav`));
     await Promise.all(files.map((bytes, index) => writeFile(paths[index]!, bytes)));
     const sourceKey = privateObjectKey(project.id, "source", "wav");
@@ -151,6 +161,12 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     const finalVocalFrameMs = Math.max(...persistedVocalFrames.map((frame) => frame.timestampMs));
     assert.ok(finalVocalFrameMs <= 4_000, "persisted vocal pitch timing stays inside the decoded PCM");
     assert.ok((await db.select().from(vocalPhrases).where(eq(vocalPhrases.vocalAnalysisId, vocal.id))).length > 0);
+    const persistedActivity = await db.select().from(vocalActivityIntervals).where(eq(vocalActivityIntervals.vocalAnalysisId, vocal.id));
+    assert.equal(persistedActivity.length, 2, "separate vocal activity intervals persist through the local analysis route");
+    assert.ok(persistedActivity[0]!.startMs >= 350 && persistedActivity[0]!.startMs <= 450);
+    assert.ok(persistedActivity[0]!.endMs >= 1_400 && persistedActivity[0]!.endMs <= 1_500);
+    assert.ok(persistedActivity[1]!.startMs >= 1_850 && persistedActivity[1]!.startMs <= 1_950);
+    assert.ok(persistedActivity[1]!.endMs >= 3_400 && persistedActivity[1]!.endMs <= 3_500);
     assert.ok((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, bass.id))).length > 0);
     assert.equal(refreshedSections.length, 1, "completed vocal timing refreshes structural fingerprints");
     assert.equal(
@@ -302,6 +318,38 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
       assert.ok(parsed, "persisted bytes round-trip through the Standard MIDI reader");
       assert.ok(parsed.notes.length > 0, "local vocal analysis produces notes without a remote worker");
     }
+
+    await db.update(vocalAnalyses).set({
+      status: "complete",
+      stage: "complete",
+      analysisEngineVersion: "1.0.0",
+      idempotencyKey: vocalAnalysisIdempotencyKey(vocalStem.id, LOCAL_VOCAL_ANALYSIS_ENGINE, "1.0.0"),
+    }).where(eq(vocalAnalyses.id, vocal.id));
+    const upgradePayloads: Array<Record<string, unknown>> = [];
+    const upgradedVocal = await provisionDesktopVocalAnalysis(source, vocalStem, {
+      database: db,
+      enqueue: async (payload) => { upgradePayloads.push(payload); },
+    });
+    assert.equal(upgradedVocal?.analysisEngineVersion, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION);
+    assert.equal(upgradedVocal?.status, "queued", "old local vocal evidence is reanalyzed in place for the new activity signal");
+    assert.equal(upgradePayloads.length, 1);
+    const currentPayload = upgradePayloads[0]!;
+    await assert.rejects(handleVocalAnalysisJob({
+      ...currentPayload,
+      analysisEngineVersion: "1.0.0",
+    }, deps), /does not match its durable target/);
+    assert.equal(
+      (await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.id, vocal.id)))[0]?.status,
+      "queued",
+      "a late stale-version job cannot fail the upgraded row",
+    );
+    await handleVocalAnalysisJob(currentPayload, deps);
+    assert.equal((await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.id, vocal.id)))[0]?.status, "complete");
+    assert.equal(
+      (await db.select().from(vocalActivityIntervals).where(eq(vocalActivityIntervals.vocalAnalysisId, vocal.id))).length,
+      2,
+      "the upgraded full route replaces old evidence with current activity intervals",
+    );
 
     const [staleMidiJob] = await db.insert(exportJobs).values({
       projectId: project.id, remixSessionId: session.id, remixVersionId: version.id, requestedById: project.ownerId,

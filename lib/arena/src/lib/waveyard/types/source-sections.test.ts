@@ -73,6 +73,10 @@ test("source section repeats show their measured similarity instead of probabili
     "Stem activity shift · normalized signal strength 75%",
   );
   assert.equal(
+    displaySourceSectionLabel({ sectionIndex: 3, label: "vocal-change", labelConfidence: 0.65 }),
+    "Vocal activity shift · sustained presence change 65%",
+  );
+  assert.equal(
     displaySourceSectionLabel({ sectionIndex: 3, label: "pattern-repeat-a", labelConfidence: 0.94 }),
     "Repeated audio pattern A · 94% rhythm+chroma similarity",
   );

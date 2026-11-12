@@ -13,7 +13,7 @@ import { db as defaultDb } from "@workspace/db";
 import {
   bassAnalyses, bassEvents, drumAnalyses, drumEvents, harmonyAnalyses, harmonyEvents,
   sourceAnalyses, sourceAssets, stemAssets,
-  vocalAnalyses, vocalPitchFrames, vocalPhrases,
+  vocalAnalyses, vocalActivityIntervals, vocalPitchFrames, vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueSourceSectionAnalysis } from "@workspace/arena/lib/waveyard/queue";
@@ -38,7 +38,7 @@ import {
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { provisionDesktopSectionAnalysis } from "./analysis";
-import { ANALYSIS_PCM_RATE, decodeMonoPcm, detectBassAttacks, detectDrumTransients, detectHarmonyTimeline, detectVocalPitchFrames } from "./analysis-engine";
+import { ANALYSIS_PCM_RATE, decodeMonoPcm, detectBassAttacks, detectDrumTransients, detectHarmonyTimeline, detectVocalActivityIntervals, detectVocalPitchFrames } from "./analysis-engine";
 
 type AnalysisDb = ReturnType<typeof drizzle>;
 type StemAnalysisDeps = {
@@ -344,7 +344,22 @@ export async function handleVocalAnalysisJob(payloadInput: Record<string, unknow
     && job.analysisEngine === payload.analysisEngine && job.analysisEngineVersion === payload.analysisEngineVersion
     && job.analysisEngine === LOCAL_VOCAL_ANALYSIS_ENGINE && job.analysisEngineVersion === LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION;
   if (!valid) {
-    await database.update(vocalAnalyses).set({ status: "failed", stage: "invalid-payload", errorCode: "invalid_payload", errorMessage: "Local vocal analysis payload does not match its versioned target.", completedAt: new Date(), updatedAt: new Date() }).where(eq(vocalAnalyses.id, job.id));
+    await database.update(vocalAnalyses).set({
+      status: "failed",
+      stage: "invalid-payload",
+      errorCode: "invalid_payload",
+      errorMessage: "Local vocal analysis payload does not match its versioned target.",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(vocalAnalyses.id, job.id),
+      eq(vocalAnalyses.status, job.status),
+      eq(vocalAnalyses.projectId, payload.projectId),
+      eq(vocalAnalyses.sourceAssetId, payload.sourceAssetId),
+      eq(vocalAnalyses.stemAssetId, payload.stemAssetId),
+      eq(vocalAnalyses.analysisEngine, payload.analysisEngine),
+      eq(vocalAnalyses.analysisEngineVersion, payload.analysisEngineVersion),
+    ));
     throw new Error("Local vocal analysis payload does not match its durable target.");
   }
   const [source] = await database.select().from(sourceAssets).where(and(eq(sourceAssets.id, job.sourceAssetId), eq(sourceAssets.projectId, job.projectId))).limit(1);
@@ -375,7 +390,11 @@ export async function handleVocalAnalysisJob(payloadInput: Record<string, unknow
     const decodedDurationMs = Math.floor((pcm.length * 1000) / ANALYSIS_PCM_RATE);
     const frames = normaliseVocalPitchFrames(detectVocalPitchFrames(pcm), decodedDurationMs);
     if (frames === null) throw new Error("The local DSP engine returned invalid vocal pitch frames.");
+    // Keep voiced pitch-continuity candidates and acoustic vocal-stem activity
+    // as separate signals. The latter captures unvoiced consonants and
+    // pitchless/breathy material; it is never presented as lyric segmentation.
     const phrases = segmentVocalPhrases(frames);
+    const activityIntervals = detectVocalActivityIntervals(pcm, frames);
     const analyzedAt = new Date();
     await database.transaction(async (tx) => {
       const [currentSource] = await tx.select().from(sourceAssets).where(eq(sourceAssets.id, source.id)).for("update").limit(1);
@@ -384,8 +403,12 @@ export async function handleVocalAnalysisJob(payloadInput: Record<string, unknow
         throw new Error("The source or isolated vocal stem changed while it was being analyzed.");
       await tx.delete(vocalPitchFrames).where(eq(vocalPitchFrames.vocalAnalysisId, job.id));
       await tx.delete(vocalPhrases).where(eq(vocalPhrases.vocalAnalysisId, job.id));
+      await tx.delete(vocalActivityIntervals).where(eq(vocalActivityIntervals.vocalAnalysisId, job.id));
       if (frames.length) await tx.insert(vocalPitchFrames).values(frames.map((frame, frameIndex) => ({ vocalAnalysisId: job.id, frameIndex, ...frame })));
       if (phrases.length) await tx.insert(vocalPhrases).values(phrases.map((phrase, phraseIndex) => ({ vocalAnalysisId: job.id, phraseIndex, ...phrase })));
+      if (activityIntervals.length) await tx.insert(vocalActivityIntervals).values(activityIntervals.map((interval, intervalIndex) => ({
+        vocalAnalysisId: job.id, intervalIndex, ...interval,
+      })));
       const [completed] = await tx.update(vocalAnalyses).set({ status: "complete", stage: "complete", analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
         analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION, errorCode: null, errorMessage: null,
         analyzedAt, completedAt: analyzedAt, updatedAt: analyzedAt,
