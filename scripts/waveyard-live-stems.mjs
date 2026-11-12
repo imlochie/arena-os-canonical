@@ -2881,33 +2881,85 @@ try {
       "2 selected of 3 selectable tracks", "a newly added ready entry is visible but does not silently join an explicit selection");
     assert.equal(await addedChoice.isChecked(), false);
 
+    exposeSeparatedSource = true;
+    libraryRows[0] = {
+      ...libraryRows[0],
+      stemAvailability: { status: "separated", stemCount: tracks[0].stems.length, stemTypes: types },
+    };
+    await page.evaluate(() => {
+      const channel = new BroadcastChannel("waveyard:queue-sync");
+      channel.postMessage({
+        id: "studio-readiness-separated",
+        sender: "studio-readiness-test",
+        affectedSessionIds: [],
+        affectedTrackIds: ["a"],
+      });
+      channel.close();
+    });
+    await page.waitForFunction(() =>
+      document.querySelector("#studio-readiness-a")?.textContent?.includes("Ready · 4 stems"),
+    undefined, { timeout: 2_000 });
+    assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(),
+      "2 selected of 3 selectable tracks", "separation completion refreshes the open picker without waiting for its fallback poll");
+    assert.equal(await sourceOnlyChoice.isChecked(), true, "the previously selected source entry stays selected when its stems become ready");
+
     const nowUnavailable = session.tracks.find(item => item.id === "a");
     assert.ok(nowUnavailable, "the selected original-source entry remains in the server session");
+    exposeSeparatedSource = false;
     nowUnavailable.sourceAssetId = null;
+    nowUnavailable.stems = [];
     nowUnavailable.playback = { kind: "source", assetIds: [] };
     libraryRows[0] = {
       ...libraryRows[0],
       stemAvailability: { status: "unavailable", reason: "The original source was removed." },
     };
+    // Do not send a change notification here: this exercises the submit-time
+    // revalidation window before the picker has heard about the source loss.
+    studioHandoffRequests = 0;
+    lastStudioHandoffSelection = [];
+    await page.getByTestId("session-handoff").click();
     await page.waitForFunction(() => {
       const count = document.querySelector('[data-testid="studio-track-selection-count"]')?.textContent?.trim();
       const source = [...document.querySelectorAll('input[aria-label^="Include session entry"]')]
         .find(input => input.getAttribute("aria-label")?.includes("Test a"));
       return count === "1 selected of 2 selectable tracks" && source?.disabled && !source.checked;
-    }, undefined, { timeout: 15_000 });
+    }, undefined, { timeout: 2_000 });
+    await page.getByRole("link", { name: "Open in Studio" }).waitFor();
     const currentReadyChoice = page.getByRole("checkbox", { name: /Include session entry 2, Test c/ });
     assert.equal(await currentReadyChoice.isChecked(), true, "the surviving ready selection remains selected");
     assert.equal(await addedChoice.isChecked(), false, "the newly added session entry stays unselected");
     assert.equal(await sourceOnlyChoice.isDisabled(), true, "source readiness loss disables the stale selection");
-
-    studioHandoffRequests = 0;
-    lastStudioHandoffSelection = [];
-    await page.getByTestId("session-handoff").click();
-    await page.getByRole("link", { name: "Open in Studio" }).waitFor();
     assert.deepEqual(lastStudioHandoffSelection, ["c"],
       "the handoff contains only the selected entry still present and selectable");
     assert.equal(studioRemixData.tracks.length, 4,
       "the derived Studio project contains only the surviving selected entry");
+
+    const vanishedReadyEntry = session.tracks.find(item => item.id === "c");
+    assert.ok(vanishedReadyEntry, "the remaining ready entry exists before its source is removed");
+    vanishedReadyEntry.sourceAssetId = null;
+    vanishedReadyEntry.stems = [];
+    vanishedReadyEntry.playback = { kind: "source", assetIds: [] };
+    const vanishedLibraryRow = libraryRows.find(row => row.id === "c");
+    assert.ok(vanishedLibraryRow, "the matching library row exists before its source is removed");
+    vanishedLibraryRow.stemAvailability = { status: "unavailable", reason: "The source and stems were removed." };
+    await page.evaluate(() => {
+      const channel = new BroadcastChannel("waveyard:queue-sync");
+      channel.postMessage({
+        id: "studio-readiness-source-removed",
+        sender: "studio-readiness-test",
+        affectedSessionIds: [],
+        affectedTrackIds: ["c"],
+      });
+      channel.close();
+    });
+    await page.waitForFunction(() => {
+      const count = document.querySelector('[data-testid="studio-track-selection-count"]')?.textContent?.trim();
+      const choice = [...document.querySelectorAll('input[aria-label^="Include session entry"]')]
+        .find(input => input.getAttribute("aria-label")?.includes("Test c"));
+      return count === "0 selected of 1 selectable track" && choice?.disabled && !choice.checked;
+    }, undefined, { timeout: 2_000 });
+    assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
+      "a source-loss event clears the stale selection before the next handoff");
     console.log("PASS: Studio handoff choices track session removal/addition and source-readiness changes");
   } else if (process.argv.includes("--studio-persistence-only")) {
     tracks[0].stemMix = { vocals: 0.42 };

@@ -3496,6 +3496,48 @@ export default function SessionExperience({
     });
   }, [session?.swaps]);
 
+  const refreshSessionFromOtherTab = useCallback(async () => {
+    if (sessionRef.current?.id !== sessionId) return null;
+    const requestId = ++sessionRequestVersion.current;
+    try {
+      const [sessionResponse, libraryResponse] = await Promise.all([
+        fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" }),
+        fetch("/api/library/tracks", { cache: "no-store" }),
+      ]);
+      if (!sessionResponse.ok || !libraryResponse.ok) return null;
+      const [sessionPayload, libraryPayload] = await Promise.all([
+        sessionResponse.json(),
+        libraryResponse.json(),
+      ]);
+      const fresh = sessionPayload.session as SessionDetail;
+      const tracks = (Array.isArray(libraryPayload.tracks) ? libraryPayload.tracks : []) as LibraryTrackOption[];
+      if (requestId !== sessionRequestVersion.current || fresh.id !== sessionId) return null;
+      const previous = sessionRef.current;
+      if (previous === null || previous.id !== sessionId) return null;
+      const audible = new Set<string>();
+      for (const [index, deck] of decksRef.current.entries()) {
+        const item = deckItems[index as 0 | 1];
+        if (deck?.transport.playing && item) audible.add(item.id);
+      }
+      const merged = fresh.tracks.map((item) => {
+        const old = previous.tracks.find((candidate) => candidate.id === item.id);
+        // A refresh must retain the saved preference while keeping any
+        // currently audible deck on its existing media until a later load.
+        return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id)
+          ? { ...item, playback: old.playback }
+          : item;
+      });
+      const next = { ...previous, ...fresh, tracks: merged };
+      sessionRef.current = next;
+      setSession(next);
+      setLibrary(tracks);
+      return { session: next, library: tracks };
+    } catch {
+      /* The next queue update or tab resume will retry the refresh. */
+      return null;
+    }
+  }, [sessionId, deckItems]);
+
   // -------------------------------------------------------- studio handoff
   const sendToStudio = useCallback(() => {
     if (session === null || studioHandoffInFlight.current) return;
@@ -3507,17 +3549,48 @@ export default function SessionExperience({
       setStatus("Wait for the selected live stem swap to finish saving before sending it to Studio.");
       return;
     }
-    const selectedFullSourceEntries = session.tracks.filter((item) => {
-      if (!selectedStudioTrackIds.includes(item.id)) return false;
-      const readiness = getStudioTrackReadiness(item, library);
-      return !readiness.ready && readiness.canUseFullSource;
-    });
+    const selectedAtClick = [...selectedStudioTrackIds];
     studioHandoffInFlight.current = true;
     setSendingToStudio(true);
     setHandoff(null);
-    setStatus(selectedFullSourceEntries.length > 0 ? "Preparing selected full-source audio for Studio…" : null);
+    setStatus("Checking the selected audio before sending it to Studio…");
     void (async () => {
       try {
+        // Revalidate against the latest session and library snapshot. A choice
+        // can become unavailable after the picker rendered but before handoff.
+        const latest = await refreshSessionFromOtherTab();
+        if (latest === null) {
+          setStatus("Could not confirm the latest audio readiness. Check the connection and try again.");
+          return;
+        }
+        const currentById = new Map(latest.session.tracks.map((item) => [item.id, item]));
+        const unavailableSelections: Array<{ title: string; reason: string }> = [];
+        const selectedEntries = selectedAtClick.flatMap((id) => {
+          const item = currentById.get(id);
+          if (item === undefined) {
+            const previous = session.tracks.find((candidate) => candidate.id === id);
+            unavailableSelections.push({
+              title: previous?.track.title ?? "Removed session entry",
+              reason: "This entry is no longer in the session.",
+            });
+            return [];
+          }
+          const readiness = getStudioTrackReadiness(item, latest.library);
+          if (!readiness.ready && !readiness.canUseFullSource) {
+            unavailableSelections.push({ title: item.track.title, reason: readiness.label });
+            return [];
+          }
+          return [item];
+        });
+        if (selectedEntries.length === 0) {
+          setStatus(unavailableSelections.map((item) => `${item.title}: ${item.reason}`).join("; ")
+            || "No selected track is currently available for Studio.");
+          return;
+        }
+        const selectedFullSourceEntries = selectedEntries.filter((item) => {
+          const readiness = getStudioTrackReadiness(item, latest.library);
+          return !readiness.ready && readiness.canUseFullSource;
+        });
         const fullSourceFailures: Array<{ title: string; reason: string }> = [];
         const failedFullSourceIds = new Set<string>();
         const preparedFullSourceIds: string[] = [];
@@ -3554,18 +3627,20 @@ export default function SessionExperience({
             });
           }
         }
-        const handoffTrackIds = selectedStudioTrackIds.filter((id) => !failedFullSourceIds.has(id));
+        const handoffTrackIds = selectedEntries
+          .map((item) => item.id)
+          .filter((id) => !failedFullSourceIds.has(id));
         if (handoffTrackIds.length === 0) {
           setStatus(fullSourceFailures.map((item) => `${item.title}: ${item.reason}`).join("; ")
             || "No selected track could be prepared for Studio.");
           return;
         }
-        const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
+        const response = await fetch(`/api/library/sessions/${latest.session.id}/studio-handoff`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sessionTrackIds: handoffTrackIds,
-            trackEdits: session.tracks
+            trackEdits: latest.session.tracks
               .filter((item) => handoffTrackIds.includes(item.id))
               .map((item) => ({
                 sessionTrackId: item.id,
@@ -3591,7 +3666,7 @@ export default function SessionExperience({
             refused?: Array<{ title: string; reason: string }>;
           };
         };
-        const refused = [...(body.handoff.refused ?? []), ...fullSourceFailures];
+        const refused = [...(body.handoff.refused ?? []), ...unavailableSelections, ...fullSourceFailures];
         setHandoff({
           ...body.handoff,
           fullSourceCount: preparedFullSourceIds.length,
@@ -3607,7 +3682,7 @@ export default function SessionExperience({
         setSendingToStudio(false);
       }
     })();
-  }, [session, selectedStudioTrackIds, library, savingSwap, mixes]);
+  }, [session, selectedStudioTrackIds, savingSwap, mixes, refreshSessionFromOtherTab]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -3627,40 +3702,15 @@ export default function SessionExperience({
     },
   });
 
-  const refreshSessionFromOtherTab = useCallback(async () => {
-    if (sessionRef.current?.id !== sessionId) return;
-    const requestId = ++sessionRequestVersion.current;
-    try {
-      const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
-      if (!response.ok) return;
-      const fresh = (await response.json()).session as SessionDetail;
-      if (requestId !== sessionRequestVersion.current || fresh.id !== sessionId) return;
-      const previous = sessionRef.current;
-      if (previous === null || previous.id !== sessionId) return;
-      const audible = new Set<string>();
-      for (const [index, deck] of decksRef.current.entries()) {
-        const item = deckItems[index as 0 | 1];
-        if (deck?.transport.playing && item) audible.add(item.id);
-      }
-      const merged = fresh.tracks.map((item) => {
-        const old = previous.tracks.find((candidate) => candidate.id === item.id);
-        // A refresh must retain the saved preference while keeping any
-        // currently audible deck on its existing media until a later load.
-        return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id)
-          ? { ...item, playback: old.playback }
-          : item;
-      });
-      const next = { ...previous, ...fresh, tracks: merged };
-      sessionRef.current = next;
-      setSession(next);
-    } catch {
-      /* The next queue update or tab resume will retry the refresh. */
-    }
-  }, [sessionId, deckItems]);
-
-  useEffect(() => subscribeToWaveyardQueueChanges(({ affectedSessionIds, transport }) => {
+  useEffect(() => subscribeToWaveyardQueueChanges(({ affectedSessionIds, affectedTrackIds, transport }) => {
     if (transport !== undefined) receiveRemoteTransport(transport);
-    else if (affectedSessionIds.includes(sessionId)) void refreshSessionFromOtherTab();
+    else if (
+      affectedSessionIds.includes(sessionId)
+      || (affectedTrackIds.length > 0
+        && (sessionRef.current?.tracks.some((item) => affectedTrackIds.includes(item.track.id)) ?? false))
+    ) {
+      void refreshSessionFromOtherTab();
+    }
   }), [sessionId, receiveRemoteTransport, refreshSessionFromOtherTab]);
 
   useEffect(() => subscribeToWaveyardResume(() => {
@@ -3669,7 +3719,6 @@ export default function SessionExperience({
 
   // Background refresh: picks up finished separations and new library tracks.
   // A deck that is AUDIBLE keeps its source until the user switches.
-  const pending = session?.tracks.some((item) => item.playback?.kind !== "stems") ?? false;
   const sessionSeparationProgress = useMemo(() => {
     if (session === null) return [];
     return session.tracks.flatMap((item) => {
@@ -3690,12 +3739,15 @@ export default function SessionExperience({
   useEffect(() => {
     if (session === null) return;
     let cancelled = false;
+    let tickInFlight = false;
     const id = session.id;
     const tick = async () => {
-      const requestId = pending ? ++sessionRequestVersion.current : null;
+      if (tickInFlight) return;
+      tickInFlight = true;
+      const requestId = ++sessionRequestVersion.current;
       try {
         const [sessionResponse, libraryResponse] = await Promise.all([
-          pending ? fetch(`/api/library/sessions/${id}`, { cache: "no-store" }) : Promise.resolve(null),
+          fetch(`/api/library/sessions/${id}`, { cache: "no-store" }),
           fetch("/api/library/tracks", { cache: "no-store" }),
         ]);
         if (cancelled || sessionRef.current?.id !== id) return;
@@ -3703,7 +3755,7 @@ export default function SessionExperience({
           const tracks = ((await libraryResponse.json()).tracks ?? []) as LibraryTrackOption[];
           if (!cancelled) setLibrary(tracks);
         }
-        if (sessionResponse === null || !sessionResponse.ok) return;
+        if (!sessionResponse.ok) return;
         const fresh = (await sessionResponse.json()).session as SessionDetail;
         const prev = sessionRef.current;
         if (cancelled || requestId !== sessionRequestVersion.current || prev === null || prev.id !== id) return;
@@ -3769,15 +3821,22 @@ export default function SessionExperience({
         });
       } catch {
         /* polling is opportunistic; the next tick retries */
+      } finally {
+        tickInFlight = false;
       }
     };
-    const interval = window.setInterval(() => void tick(), pending ? 8000 : 30000);
+    // Track/library events normally refresh immediately. This short visible-
+    // tab poll is the recovery path for missed broadcasts and external changes.
+    void tick();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void tick();
+    }, 3000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- interval per session + pending state
-  }, [session?.id, pending]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- interval per active session
+  }, [session?.id]);
 
   const switchToStems = useCallback(async (itemId: string) => {
     const ready = stemsReady[itemId];
