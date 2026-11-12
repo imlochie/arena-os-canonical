@@ -89,6 +89,7 @@ import {
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   nextSessionTrack,
+  normalizeManualTempoBpm,
   normalizeTransitionConfig,
   tempoCompatibility,
   validateStemSwap,
@@ -315,6 +316,42 @@ test("live stem tempo sync only stretches compatible analyzed tempos", () => {
   assert.equal(liveStemTempoStretchRatio(0, 120), null);
   assert.equal(liveStemTempoStretchRatio(120, NaN), null);
   assert.equal(liveStemTempoStretchRatio(120, null), null, "missing donor analysis is not guessed");
+});
+
+test("manual tempo corrections are range checked and can resolve an uncertain half-time reading", () => {
+  assert.equal(normalizeManualTempoBpm("126.1"), 126.1);
+  assert.equal(normalizeManualTempoBpm("40"), 40);
+  assert.equal(normalizeManualTempoBpm("300"), 300);
+  assert.equal(normalizeManualTempoBpm(""), null);
+  assert.equal(normalizeManualTempoBpm("39.9"), null);
+  assert.equal(normalizeManualTempoBpm("300.1"), null);
+  assert.equal(normalizeManualTempoBpm(Number.NaN), null);
+
+  const uncertainAutoEvidence = {
+    recipientBpmConfidence: 0.296,
+    donorBpmConfidence: 0.8,
+    recipientBeatConfidence: 0.2,
+    donorBeatConfidence: 0.8,
+  };
+  assert.equal(
+    liveStemTempoStretchRatio(71.777, 126, uncertainAutoEvidence),
+    1,
+    "an uncertain half-time-like automatic reading must not authorize stretching",
+  );
+  const userConfirmedTempoEvidence = {
+    ...uncertainAutoEvidence,
+    recipientBpmConfidence: 1,
+  };
+  assert.equal(
+    liveStemTempoStretchRatio(normalizeManualTempoBpm("143.554"), 126, userConfirmedTempoEvidence),
+    126 / 143.554,
+    "a confirmed BPM can enable tempo matching without pretending the beat grid is reliable",
+  );
+  assert.equal(
+    hasReliableLiveStemBeatEvidence(userConfirmedTempoEvidence),
+    false,
+    "manual BPM correction must not promote the independently measured beat grid",
+  );
 });
 
 test("low-confidence timing analysis keeps swaps at native pace", () => {

@@ -8,6 +8,7 @@ import {
   isHalfDoubleTempoPair,
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
+  normalizeManualTempoBpm,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 
 export interface LiveStemDonorOption {
@@ -16,6 +17,8 @@ export interface LiveStemDonorOption {
   artist: string;
   bpm: number | null;
   bpmConfidence: number | null;
+  automaticBpm: number | null;
+  tempoCorrected: boolean;
   beatConfidence: number | null;
   musicalKey: string | null;
   keyConfidence: number | null;
@@ -32,7 +35,11 @@ export interface LiveStemPreparationOption {
 
 interface LiveStemSwapPickerProps {
   stemType: string;
+  currentTrackId: string;
+  currentTrackTitle: string;
   currentBpm: number | null;
+  currentAutomaticBpm: number | null;
+  currentTempoCorrected: boolean;
   currentBpmConfidence: number | null;
   currentBeatConfidence: number | null;
   currentKey: string | null;
@@ -53,7 +60,89 @@ interface LiveStemSwapPickerProps {
   onWarm: (donorId: string) => void;
   onPrefetch: (donorId: string) => void;
   onPrepare: (trackId: string) => void;
+  onTempoCorrection: (trackId: string, bpm: number | null) => void;
   onRestore: () => void;
+}
+
+function TempoCorrectionControl({
+  trackId,
+  trackTitle,
+  automaticBpm,
+  correctedBpm,
+  confidence,
+  onApply,
+}: {
+  trackId: string;
+  trackTitle: string;
+  automaticBpm: number | null;
+  correctedBpm: number | null;
+  confidence: number | null;
+  onApply: (trackId: string, bpm: number | null) => void;
+}) {
+  const [draft, setDraft] = useState(correctedBpm?.toString() ?? automaticBpm?.toString() ?? "");
+  const uncertain = confidence === null || confidence < 0.5;
+  const hasManualTempo = correctedBpm !== null;
+
+  useEffect(() => {
+    setDraft(correctedBpm?.toString() ?? automaticBpm?.toString() ?? "");
+  }, [automaticBpm, correctedBpm]);
+
+  const normalizedDraft = normalizeManualTempoBpm(draft);
+  return (
+    <details
+      className="wy-tempo-correction"
+      open={hasManualTempo || uncertain}
+      data-testid={`tempo-correction-${trackId}`}
+    >
+      <summary>
+        {hasManualTempo ? `Manual BPM · ${correctedBpm} · edit` : uncertain ? "Tempo uncertain · correct BPM" : "Correct BPM"}
+      </summary>
+      <div className="wy-tempo-correction-controls">
+        <label>
+          <span>{trackTitle} BPM</span>
+          <input
+            type="number"
+            min="40"
+            max="300"
+            step="0.1"
+            inputMode="decimal"
+            value={draft}
+            aria-label={`Confirmed tempo for ${trackTitle} in BPM`}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          disabled={normalizedDraft === null || (hasManualTempo && normalizedDraft === correctedBpm)}
+          onClick={() => {
+            if (normalizedDraft === null) return;
+            setDraft(String(normalizedDraft));
+            onApply(trackId, normalizedDraft);
+          }}
+        >
+          Apply
+        </button>
+        {hasManualTempo && (
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(automaticBpm?.toString() ?? "");
+              onApply(trackId, null);
+            }}
+          >
+            Use analysis
+          </button>
+        )}
+        <small>
+          {hasManualTempo
+            ? "This local correction can enable tempo matching. Beat alignment still needs a confident analyzed grid."
+            : automaticBpm === null
+              ? "No BPM was measured. Enter a tempo from 40–300; beat alignment remains unavailable."
+              : `Measured ${Math.round(automaticBpm)} BPM${uncertain ? " · low confidence" : ""}. A correction is local to this session and device.`}
+        </small>
+      </div>
+    </details>
+  );
 }
 
 function matchLabel(label: string, known: boolean, compatible: boolean) {
@@ -69,7 +158,11 @@ function usesCompactPickerViewport() {
 
 export default function LiveStemSwapPicker({
   stemType,
+  currentTrackId,
+  currentTrackTitle,
   currentBpm,
+  currentAutomaticBpm,
+  currentTempoCorrected,
   currentBpmConfidence,
   currentBeatConfidence,
   currentKey,
@@ -90,6 +183,7 @@ export default function LiveStemSwapPicker({
   onWarm,
   onPrefetch,
   onPrepare,
+  onTempoCorrection,
   onRestore,
 }: LiveStemSwapPickerProps) {
   const [query, setQuery] = useState("");
@@ -251,47 +345,62 @@ export default function LiveStemSwapPicker({
       ? "Preparing tempo match…"
       : "Preparing stem audio…";
     return (
-      <button
-        key={candidate.id}
-        ref={index === 0 ? firstCandidateRef : undefined}
-        className={`wy-swap-candidate${selected ? " selected" : ""}`}
-        type="button"
-        disabled={tempoMatchUnavailable}
-        title={tempoMatchUnavailable ? "Live swap is disabled because matching would require an extreme tempo change." : undefined}
-        aria-pressed={selected}
-        aria-busy={isWarming}
-        aria-label={`${tempoMatchUnavailable ? "Unavailable; " : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${lowBeatConfidence ? "; beat sync unavailable because analysis confidence is low" : ""}${isWarming ? `; ${warmStatus}` : ""}`}
-        data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
-        onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
-        onPointerEnter={() => scheduleHoverWarm(candidate.id)}
-        onPointerLeave={clearHoverWarm}
-        onPointerDown={() => { clearHoverWarm(); onWarm(candidate.id); }}
-        onClick={() => {
-          onChoose(candidate.id);
-          closeAndReturnFocus();
-        }}
-      >
-        <span className="wy-swap-candidate-copy">
-          <strong>{candidate.title}</strong>
-          <small>
-            {candidate.artist || "Unknown artist"}
-            {candidate.bpm !== null ? ` · ${Math.round(candidate.bpm)} BPM` : " · BPM unavailable"}
-            {candidate.musicalKey ? ` · ${candidate.musicalKey}` : " · key unavailable"}
-          </small>
-        </span>
-        <span className="wy-swap-fit">
-          <span className={`wy-swap-fit-chip ${!tempoKnown || lowTempoConfidence ? "unknown" : (stretchRatio !== null ? "match" : "different")}`}>
-            {tempoLabel}
+      <div className="wy-swap-candidate-card" key={candidate.id}>
+        <button
+          ref={index === 0 ? firstCandidateRef : undefined}
+          className={`wy-swap-candidate${selected ? " selected" : ""}`}
+          type="button"
+          disabled={tempoMatchUnavailable}
+          title={tempoMatchUnavailable ? "Live swap is disabled because matching would require an extreme tempo change." : undefined}
+          aria-pressed={selected}
+          aria-busy={isWarming}
+          aria-label={`${tempoMatchUnavailable ? "Unavailable; " : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${lowBeatConfidence ? "; beat sync unavailable because analysis confidence is low" : ""}${isWarming ? `; ${warmStatus}` : ""}`}
+          data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
+          onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
+          onPointerEnter={() => scheduleHoverWarm(candidate.id)}
+          onPointerLeave={clearHoverWarm}
+          onPointerDown={() => { clearHoverWarm(); onWarm(candidate.id); }}
+          onClick={() => {
+            onChoose(candidate.id);
+            closeAndReturnFocus();
+          }}
+        >
+          <span className="wy-swap-candidate-copy">
+            <strong>{candidate.title}</strong>
+            <small>
+              {candidate.artist || "Unknown artist"}
+              {candidate.tempoCorrected
+                ? ` · Manual ${Math.round(candidate.bpm ?? 0)} BPM`
+                : candidate.bpm !== null
+                  ? candidate.bpmConfidence === null || candidate.bpmConfidence < 0.5
+                    ? ` · ~${Math.round(candidate.bpm)} BPM (uncertain)`
+                    : ` · ${Math.round(candidate.bpm)} BPM`
+                  : " · BPM unavailable"}
+              {candidate.musicalKey ? ` · ${candidate.musicalKey}` : " · key unavailable"}
+            </small>
           </span>
-          <span className={`wy-swap-fit-chip ${keyKnown ? (key.compatible ? "match" : "different") : "unknown"}`}>
-            {keyLabel}
+          <span className="wy-swap-fit">
+            <span className={`wy-swap-fit-chip ${!tempoKnown || lowTempoConfidence ? "unknown" : (stretchRatio !== null ? "match" : "different")}`}>
+              {tempoLabel}
+            </span>
+            <span className={`wy-swap-fit-chip ${keyKnown ? (key.compatible ? "match" : "different") : "unknown"}`}>
+              {keyLabel}
+            </span>
+            {lowBeatConfidence && (
+              <span className="wy-swap-fit-chip unknown">Beat sync unavailable</span>
+            )}
+            {isWarming && <span className="wy-swap-fit-chip unknown" role="status">{warmStatus}</span>}
           </span>
-          {lowBeatConfidence && (
-            <span className="wy-swap-fit-chip unknown">Beat sync unavailable</span>
-          )}
-          {isWarming && <span className="wy-swap-fit-chip unknown" role="status">{warmStatus}</span>}
-        </span>
-      </button>
+        </button>
+        <TempoCorrectionControl
+          trackId={candidate.id}
+          trackTitle={candidate.title}
+          automaticBpm={candidate.automaticBpm}
+          correctedBpm={candidate.tempoCorrected ? candidate.bpm : null}
+          confidence={candidate.tempoCorrected ? 1 : candidate.bpmConfidence}
+          onApply={onTempoCorrection}
+        />
+      </div>
     );
   };
 
@@ -346,6 +455,17 @@ export default function LiveStemSwapPicker({
             </div>
             <button type="button" className="wy-swap-close" aria-label="Close source picker" onClick={closeAndReturnFocus}>×</button>
           </header>
+          <div className="wy-swap-current-tempo">
+            <strong>Current track: {currentTrackTitle}</strong>
+            <TempoCorrectionControl
+              trackId={currentTrackId}
+              trackTitle={currentTrackTitle}
+              automaticBpm={currentAutomaticBpm}
+              correctedBpm={currentTempoCorrected ? currentBpm : null}
+              confidence={currentTempoCorrected ? 1 : currentBpmConfidence}
+              onApply={onTempoCorrection}
+            />
+          </div>
           {selectedDonorId && (
             <div className="wy-swap-original-row">
               <span>Using {selectedDonorTitle ?? "another source"}</span>

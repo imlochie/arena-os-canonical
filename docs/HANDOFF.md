@@ -1,5 +1,30 @@
 # Arena handoff — read this first
 
+## Current implementation — uncertain BPM correction before live stem swaps
+
+* The session live-swap picker labels low-confidence BPM as approximate and
+  uncertain instead of presenting it as an exact tempo. The same uncertainty
+  is visible in the session deck and library player.
+* Users can set or clear a 40–300 BPM correction for the current track or a
+  donor before swapping. Corrections are saved only in browser local storage,
+  scoped to that session and device; they do not change the shared analysis row.
+  A correction can authorize the modest tempo stretch, but it does not increase
+  beat-grid confidence or enable beat alignment. The picker says this directly,
+  and swap status identifies when a manual BPM was used.
+* A full-file local analysis of the supplied 215.1-second September recording
+  measured 126.048 BPM at 0.697 confidence. The supplied 222.7-second Another
+  One Bites the Dust recording measured 109.957 BPM at 0.426 confidence; given
+  the currently used 0.5 tempo-evidence threshold, the latter stays visibly
+  uncertain and will not authorize automatic tempo stretching without a
+  correction. This comparison is evidence about these two recordings, not a
+  general accuracy benchmark or proof of reliable beat-grid alignment.
+* Focused verification: `session-logic.test.ts` passes 46/46 tests, including
+  correction range checks, a low-confidence half-time-like estimate that stays
+  at native pace, a user-confirmed correction that enables a modest tempo ratio,
+  and a check that the correction does not promote weak beat-grid evidence.
+  ArenaForge typecheck passes. No separated-stem listening comparison was
+  performed in this pass.
+
 ## Current implementation — separated-bed chord evidence for mashup ranking
 
 * **Production path:** a completed separation now provisions checksum-bound

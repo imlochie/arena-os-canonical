@@ -134,6 +134,20 @@ const RATIO_LOCK_TOLERANCE = 0.03;
 const LIVE_STEM_AUTO_STRETCH_MIN_RATIO = 0.8;
 const LIVE_STEM_AUTO_STRETCH_MAX_RATIO = 1.25;
 
+export const MANUAL_TEMPO_BPM_MIN = 40;
+export const MANUAL_TEMPO_BPM_MAX = 300;
+
+/** A user-confirmed tempo is accepted only inside the detector's supported range. */
+export function normalizeManualTempoBpm(value: unknown): number | null {
+  const bpm = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim() !== ""
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isFinite(bpm) || bpm < MANUAL_TEMPO_BPM_MIN || bpm > MANUAL_TEMPO_BPM_MAX) return null;
+  return Math.round(bpm * 1000) / 1000;
+}
+
 /** Deterministic tempo compatibility: near-equal BPMs, or a 0.5×/1×/2× lock. */
 export function tempoCompatibility(aBpm: number | null, bBpm: number | null): TempoCompatibility {
   if (aBpm === null || bBpm === null) {
