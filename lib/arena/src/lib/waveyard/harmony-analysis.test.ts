@@ -3,6 +3,7 @@ import { expect } from "./test-shim";
 import {
   chordLabel,
   harmonyAnalysisProvenanceReason,
+  harmonyPitchClasses,
   normaliseChordRoot,
   normaliseHarmonyEvents,
   harmonyAnalysisIdempotencyKey,
@@ -16,6 +17,9 @@ describe("deterministic source-relative harmony analysis", () => {
     expect(normaliseChordRoot("H")).toBeNull();
     expect(chordLabel({ root: "A", quality: "minor" })).toBe("Am");
     expect(chordLabel({ root: null, quality: "unknown" })).toBe("Unknown");
+    expect(harmonyPitchClasses({ root: "C", quality: "major" })).toEqual([0, 4, 7]);
+    expect(harmonyPitchClasses({ root: "F#", quality: "minor7" })).toEqual([6, 9, 1, 4]);
+    expect(harmonyPitchClasses({ root: null, quality: "unknown" })).toBeNull();
   });
 
   it("keeps ordered non-overlapping source windows and unknown uncertainty", () => {

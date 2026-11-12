@@ -15,6 +15,7 @@ import {
   planSongExtension,
   renderMashup,
   renderSongExtension,
+  scoreVocalChordToneFit,
   warpRatioForTempos,
   type MashupSourceProfile,
   type MashupSection,
@@ -731,6 +732,121 @@ test("plan: compares a voiced-activity window with a later beat-window inside a 
     line.includes("eight-beat local voiced-activity window")
     && line.includes("not lyric timing"),
   ));
+  assert.equal(selected?.rankedBedCandidates?.[0]?.similarities.vocalChordFit, null,
+    "without current isolated-vocal pitch and bed chord evidence, the extra ranking cue stays unavailable");
+});
+
+test("plan: measured vocal notes rank the chord-fitting local bed window without making evidence a gate", () => {
+  const checksumDonor = "d".repeat(64);
+  const checksumBed = "b".repeat(64);
+  const vocalFrames = Array.from({ length: 32 }, (_, index) => {
+    const nearestMidiNote = [60, 64, 67][index % 3]!;
+    return {
+      timestampMs: 250 + index * 100,
+      frequencyHz: 440 * 2 ** ((nearestMidiNote - 69) / 12),
+      midiFloat: nearestMidiNote,
+      nearestMidiNote,
+      confidence: 0.95,
+      voiced: true,
+    };
+  });
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [{
+        id: "donor-vocal",
+        label: "section",
+        startMs: 0,
+        endMs: 4_000,
+        startBeatIndex: 0,
+        endBeatIndex: 8,
+        passageFingerprint: passageFingerprint(
+          checksumDonor,
+          0,
+          8,
+          "compatible",
+          500,
+          [rollingWindow(0, 8)],
+        ),
+      }],
+      vocalPhrases: [{ startMs: 250, endMs: 3_450, confidence: 0.95 }],
+      vocalPitchFrames: vocalFrames,
+    }),
+    profile({
+      role: "instrumental",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [{
+        id: "bed-two-windows",
+        label: "section",
+        startMs: 0,
+        endMs: 8_000,
+        startBeatIndex: 0,
+        endBeatIndex: 16,
+        passageFingerprint: passageFingerprint(
+          checksumBed,
+          0,
+          16,
+          "compatible",
+          500,
+          [rollingWindow(0, 8), rollingWindow(8, 16)],
+        ),
+      }],
+      harmonyEvents: [
+        // Current local harmony rows store the accepted top-two template margin;
+        // this is deliberately not a calibrated probability.
+        { startMs: 0, endMs: 4_000, root: "C", quality: "major", confidence: 0.05 },
+        { startMs: 4_000, endMs: 8_000, root: "F#", quality: "major", confidence: 0.05 },
+      ],
+    }),
+  );
+
+  assert.ok(result.ok);
+  const selected = result.plan.passageSearch?.evaluations.find((evaluation) => evaluation.selected);
+  const ranked = selected?.rankedBedCandidates;
+  assert.equal(ranked?.[0]?.bedStartMs, 0,
+    "equally rhythmic/chromatic windows prefer the one whose measured chord supports the vocal notes");
+  assert.equal(ranked?.[0]?.similarities.vocalChordFit, 1);
+  assert.equal(ranked?.[0]?.similarities.vocalChordCoverage, 1);
+  assert.equal(ranked?.[1]?.bedStartMs, 4_000);
+  assert.equal(ranked?.[1]?.similarities.vocalChordFit, 0);
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("not calibrated or listener-validated")),
+    "the new relative cue must not be described as verified arrangement quality");
+});
+
+test("vocal-to-chord fit applies the planned transposition before comparing pitch classes", () => {
+  const vocalFrames = Array.from({ length: 10 }, (_, index) => {
+    const nearestMidiNote = [60, 64, 67][index % 3]!;
+    return {
+      timestampMs: index * 100,
+      frequencyHz: 440 * 2 ** ((nearestMidiNote - 69) / 12),
+      midiFloat: nearestMidiNote,
+      nearestMidiNote,
+      confidence: 0.95,
+      voiced: true,
+    };
+  });
+  const bedChords = [{ startMs: 0, endMs: 1_000, root: "D", quality: "major" as const, confidence: 0.05 }];
+  const base = scoreVocalChordToneFit({
+    vocalFrames, bedChords, donorStartMs: 0, donorEndMs: 1_000, bedStartMs: 0, bedEndMs: 1_000,
+    stretchRatio: 1, pitchShiftSemitones: 0,
+  });
+  const transposed = scoreVocalChordToneFit({
+    vocalFrames, bedChords, donorStartMs: 0, donorEndMs: 1_000, bedStartMs: 0, bedEndMs: 1_000,
+    stretchRatio: 1, pitchShiftSemitones: 2,
+  });
+  assert.equal(base?.similarity, 0);
+  assert.equal(transposed?.similarity, 1);
 });
 
 test("plan: missing passage fingerprints and sparse measured features keep the safe fallback", () => {

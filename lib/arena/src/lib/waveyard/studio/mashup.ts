@@ -20,10 +20,15 @@ import { semitoneShift } from "../types/musical-key";
 import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
 import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
 import { comparePassageCompatibility, type PassageFingerprint, type PassageRollingWindow } from "../types/passage-compatibility";
-import type { VocalPhrase } from "../types/vocal-analysis";
+import {
+  HARMONY_TEMPLATE_MIN_MARGIN,
+  harmonyPitchClasses,
+  type HarmonyEvent,
+} from "../types/harmony-analysis";
+import type { VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v3";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v4";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -57,6 +62,10 @@ export type MashupSourceProfile = {
   stems?: Array<{ id: string; stemType: string }>;
   /** Checksum-current isolated-vocal phrase intervals; not lyric transcription. */
   vocalPhrases?: VocalPhrase[];
+  /** Checksum-current monophonic pitch observations from the isolated vocal stem. */
+  vocalPitchFrames?: VocalPitchFrame[];
+  /** Checksum-current source-relative chord timeline. */
+  harmonyEvents?: HarmonyEvent[];
   /** Measured from the current isolated bed stems; classes are intentionally absent. */
   drumEvents?: MashupTransientEvent[];
   /** Low-band attacks measured from the current isolated bass stem, not note labels. */
@@ -132,6 +141,8 @@ export type MashupPassageSearch = {
         rhythm: number | null;
         harmony: number | null;
         beatPhase: number | null;
+        vocalChordFit: number | null;
+        vocalChordCoverage: number | null;
       };
       selected: boolean;
     }>;
@@ -403,6 +414,99 @@ function passageFeatureConfidence(
   return Math.max(0, Math.min(1, evidence.confidence));
 }
 
+type VocalChordToneFit = {
+  similarity: number;
+  coverage: number;
+  confidence: number;
+  matchedFrames: number;
+};
+
+function lowerBoundPitchFrame(frames: readonly VocalPitchFrame[], timestampMs: number): number {
+  let low = 0;
+  let high = frames.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (frames[middle]!.timestampMs < timestampMs) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function chordAt(events: readonly HarmonyEvent[], timestampMs: number): HarmonyEvent | null {
+  let low = 0;
+  let high = events.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (events[middle]!.startMs <= timestampMs) low = middle + 1;
+    else high = middle;
+  }
+  const event = events[low - 1];
+  return event && timestampMs < event.endMs ? event : null;
+}
+
+/**
+ * Compare measured isolated-vocal notes with the bed's current chord timeline
+ * after the plan's pitch shift and local tempo mapping. This is a ranking cue,
+ * not a dissonance classifier: passing tones and intentionally unresolved notes
+ * are not declared wrong.
+ */
+export function scoreVocalChordToneFit(input: {
+  vocalFrames: readonly VocalPitchFrame[] | undefined;
+  bedChords: readonly HarmonyEvent[] | undefined;
+  donorStartMs: number;
+  donorEndMs: number;
+  bedStartMs: number;
+  bedEndMs: number;
+  stretchRatio: number;
+  pitchShiftSemitones: number;
+}): VocalChordToneFit | null {
+  const { vocalFrames, bedChords, donorStartMs, donorEndMs, bedStartMs, bedEndMs, stretchRatio, pitchShiftSemitones } = input;
+  if (!vocalFrames?.length || !bedChords?.length
+    || !Number.isSafeInteger(donorStartMs) || !Number.isSafeInteger(donorEndMs) || donorEndMs <= donorStartMs
+    || !Number.isSafeInteger(bedStartMs) || !Number.isSafeInteger(bedEndMs) || bedEndMs <= bedStartMs
+    || !Number.isFinite(stretchRatio) || stretchRatio <= 0
+    || !Number.isInteger(pitchShiftSemitones)) return null;
+
+  const selected: VocalPitchFrame[] = [];
+  for (let index = lowerBoundPitchFrame(vocalFrames, donorStartMs);
+    index < vocalFrames.length && vocalFrames[index]!.timestampMs < donorEndMs;
+    index += 1) {
+    const frame = vocalFrames[index]!;
+    if (frame.voiced && frame.nearestMidiNote !== null && frame.confidence >= 0.6 && frame.confidence <= 1) selected.push(frame);
+  }
+  if (selected.length < 6) return null;
+
+  let eligibleWeight = 0;
+  let chordToneWeight = 0;
+  let matchedFrames = 0;
+  let matchedConfidenceWeight = 0;
+  for (let index = 0; index < selected.length; index += 1) {
+    const frame = selected[index]!;
+    const bedTime = bedStartMs + (frame.timestampMs - donorStartMs) * stretchRatio;
+    if (bedTime >= bedEndMs) continue;
+    const chord = chordAt(bedChords, bedTime);
+    const chordPitchClasses = chord && chord.confidence >= HARMONY_TEMPLATE_MIN_MARGIN
+      ? harmonyPitchClasses(chord)
+      : null;
+    if (!chord || !chordPitchClasses) continue;
+    const weight = frame.confidence;
+    const pitchClass = ((frame.nearestMidiNote! + pitchShiftSemitones) % 12 + 12) % 12;
+    eligibleWeight += weight;
+    if (chordPitchClasses.includes(pitchClass)) chordToneWeight += weight;
+    matchedConfidenceWeight += weight;
+    matchedFrames += 1;
+  }
+
+  const coverage = matchedFrames / selected.length;
+  if (matchedFrames < 6 || coverage < 0.5 || eligibleWeight <= 0) return null;
+  return {
+    similarity: chordToneWeight / eligibleWeight,
+    coverage,
+    confidence: coverage * (matchedConfidenceWeight / matchedFrames),
+    matchedFrames,
+  };
+}
+
 function rankPassagePair(
   comparison: ReturnType<typeof comparePassageCompatibility>,
   donor: PassageFingerprint,
@@ -410,11 +514,19 @@ function rankPassagePair(
   donorBpm: number | null,
   bedBpm: number | null,
   tempoTrusted: boolean,
+  vocalChordFit: VocalChordToneFit | null,
 ): {
   score: number;
   details: string[];
   minimumFeatureConfidence: number;
-  similarities: { duration: number; rhythm: number | null; harmony: number | null; beatPhase: number | null };
+  similarities: {
+    duration: number;
+    rhythm: number | null;
+    harmony: number | null;
+    beatPhase: number | null;
+    vocalChordFit: number | null;
+    vocalChordCoverage: number | null;
+  };
 } | null {
   const dimensions = comparison.dimensions;
   if (dimensions.phraseAlignment.status !== "match" && dimensions.phraseAlignment.status !== "context") return null;
@@ -459,6 +571,12 @@ function rankPassagePair(
     passageFeatureConfidence(donor, "beatPhase") ?? 0,
     passageFeatureConfidence(bed, "beatPhase") ?? 0,
   ), 0.20);
+  if (vocalChordFit) addSimilarity(
+    "vocal chord-tone agreement",
+    vocalChordFit.similarity,
+    vocalChordFit.confidence,
+    0.12,
+  );
 
   const donorBeats = donor.endBeatIndex - donor.startBeatIndex;
   const bedBeats = bed.endBeatIndex - bed.startBeatIndex;
@@ -480,15 +598,23 @@ function rankPassagePair(
   if (musicalFeatures.length < 3) return null;
   const totalWeight = features.reduce((total, feature) => total + feature.weight, 0);
   const score = features.reduce((total, feature) => total + feature.score * feature.weight, 0) / totalWeight;
+  const details = features.map((feature) => `${feature.label} similarity ${feature.score.toFixed(3)}`);
+  if (vocalChordFit) {
+    details.push(
+      `${vocalChordFit.matchedFrames} voiced pitch frames covered ${Math.round(vocalChordFit.coverage * 100)}% by measured bed chords`,
+    );
+  }
   return {
     score,
-    details: features.map((feature) => `${feature.label} similarity ${feature.score.toFixed(3)}`),
+    details,
     minimumFeatureConfidence: Math.min(...measuredFeatureConfidences),
     similarities: {
       duration: dimensions.phraseAlignment.similarity ?? 0,
       rhythm: dimensions.rhythm.similarity,
       harmony: dimensions.harmony.similarity,
       beatPhase: dimensions.beatPhase.similarity,
+      vocalChordFit: vocalChordFit?.similarity ?? null,
+      vocalChordCoverage: vocalChordFit?.coverage ?? null,
     },
   };
 }
@@ -533,11 +659,24 @@ function rankedPassageEntry(
   baselineEntryMs: number,
   masterBpm: number,
   stretchRatio: number,
+  vocalPitchShiftSemitones: number,
 ): {
   match: { at: number; why: string; score: number; donorSectionId: string; bedSectionId: string } | null;
   reason: string;
   search: MashupPassageSearch;
 } {
+  const vocalPitchFrames = [...(vocals.vocalPitchFrames ?? [])]
+    .filter((frame) => Number.isSafeInteger(frame.timestampMs))
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+  const bedHarmonyEvents = [...(bed.harmonyEvents ?? [])]
+    .filter((event) => Number.isSafeInteger(event.startMs)
+      && Number.isSafeInteger(event.endMs)
+      && event.startMs >= 0
+      && event.endMs > event.startMs
+      && Number.isFinite(event.confidence)
+      && event.confidence >= 0
+      && event.confidence <= 1)
+    .sort((left, right) => left.startMs - right.startMs);
   const qualifiedPhrases = (vocals.vocalPhrases ?? [])
     .filter((phrase) => Number.isSafeInteger(phrase.startMs)
       && Number.isSafeInteger(phrase.endMs)
@@ -588,7 +727,14 @@ function rankedPassageEntry(
     why: string;
     musicalScore: number;
     minimumFeatureConfidence: number;
-    similarities: { duration: number; rhythm: number | null; harmony: number | null; beatPhase: number | null };
+    similarities: {
+      duration: number;
+      rhythm: number | null;
+      harmony: number | null;
+      beatPhase: number | null;
+      vocalChordFit: number | null;
+      vocalChordCoverage: number | null;
+    };
     transientScore: number;
     donorSectionId: string;
     bedSectionId: string;
@@ -679,6 +825,16 @@ function rankedPassageEntry(
               donorKeyTrusted: donorKey !== null,
               expectedKeyShift,
             });
+            const vocalChordFit = scoreVocalChordToneFit({
+              vocalFrames: vocalPitchFrames,
+              bedChords: bedHarmonyEvents,
+              donorStartMs: donorWindowStartMs,
+              donorEndMs: donorWindowEndMs,
+              bedStartMs: bedWindowStartMs,
+              bedEndMs: bedWindowEndMs,
+              stretchRatio,
+              pitchShiftSemitones: vocalPitchShiftSemitones,
+            });
             const ranking = rankPassagePair(
               comparison,
               localDonorFingerprint,
@@ -686,6 +842,7 @@ function rankedPassageEntry(
               donorBpm,
               bedBpm,
               tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
+              vocalChordFit,
             );
             if (!ranking) continue;
             const donorWindowOffsetMs = (donorWindowStartMs - body.fromMs) * stretchRatio;
@@ -749,6 +906,16 @@ function rankedPassageEntry(
         donorKeyTrusted: donorKey !== null,
         expectedKeyShift,
       });
+      const vocalChordFit = scoreVocalChordToneFit({
+        vocalFrames: vocalPitchFrames,
+        bedChords: bedHarmonyEvents,
+        donorStartMs: donorSection.startMs,
+        donorEndMs: donorSection.endMs,
+        bedStartMs: bedSection.startMs,
+        bedEndMs: bedSection.endMs,
+        stretchRatio,
+        pitchShiftSemitones: vocalPitchShiftSemitones,
+      });
       const ranking = rankPassagePair(
         comparison,
         donorFingerprint,
@@ -756,6 +923,7 @@ function rankedPassageEntry(
         donorBpm,
         bedBpm,
         tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
+        vocalChordFit,
       );
       if (!ranking) {
         if (comparison.dimensions.phraseAlignment.status === "conflict") {
@@ -915,6 +1083,7 @@ function grooveAwareBedEntry(
   requestedEntryMs: number,
   masterBpm: number,
   stretchRatio: number,
+  vocalPitchShiftSemitones: number,
 ): { at: number; why: string | null; warning: string | null; passageSearch: MashupPassageSearch } {
   const base = alignBedEntryToMeasuredBeat(bed, requestedEntryMs, masterBpm);
   const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
@@ -941,7 +1110,7 @@ function grooveAwareBedEntry(
       && phrase.confidence <= 1);
   const vocalOnsetOffsetsMs = qualifiedPhrases.map((phrase) => phrase.startMs - body.fromMs);
   const passageDecision = rankedPassageEntry(
-    vocals, bed, body, base.at, masterBpm, stretchRatio,
+    vocals, bed, body, base.at, masterBpm, stretchRatio, vocalPitchShiftSemitones,
   );
   const passageEntry = passageDecision.match;
   if (passageEntry) {
@@ -1081,7 +1250,15 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   const barMs = beatMs * 4;
   const body = vocalBodySpan(vocals);
   const requestedEntry = bedEntryMs(bed, barMs);
-  const alignedEntry = grooveAwareBedEntry(vocals, bed, body, requestedEntry.at, masterBpm, stretchRatio);
+  const alignedEntry = grooveAwareBedEntry(
+    vocals,
+    bed,
+    body,
+    requestedEntry.at,
+    masterBpm,
+    stretchRatio,
+    pitchMove.semitones,
+  );
   const entry = {
     at: alignedEntry.at,
     why: [requestedEntry.why, alignedEntry.why].filter(Boolean).join("; "),
@@ -1207,6 +1384,10 @@ function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceP
   const beatGrid = currentEvidenceValue(packet.features.beatGrid, sourceChecksum);
   const sections = currentEvidenceValue(packet.features.sections, sourceChecksum);
   const vocalPhrases = currentEvidenceValue(packet.features.vocalPhrases, sourceChecksum);
+  const vocalPitchFrames = packet.features.vocalPitchFrames
+    ? currentEvidenceValue(packet.features.vocalPitchFrames, sourceChecksum)
+    : null;
+  const harmonyEvents = currentEvidenceValue(packet.features.harmony, sourceChecksum);
   const drumEvents = currentEvidenceValue(packet.features.drumEvents, sourceChecksum);
   const bassAttacks = currentEvidenceValue(packet.features.bassAttacks, sourceChecksum);
   return {
@@ -1221,6 +1402,8 @@ function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceP
     beatConfidence: beatGrid?.confidence ?? profile.beatConfidence ?? null,
     sections: sections ?? profile.sections,
     vocalPhrases: vocalPhrases ?? profile.vocalPhrases ?? [],
+    vocalPitchFrames: vocalPitchFrames ?? undefined,
+    harmonyEvents: harmonyEvents ?? undefined,
     drumEvents: drumEvents ?? profile.drumEvents ?? [],
     bassEvents: bassAttacks ?? profile.bassEvents ?? [],
   };

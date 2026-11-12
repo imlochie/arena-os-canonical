@@ -17,14 +17,22 @@ import {
   sourceSections,
   stemAssets,
   vocalAnalyses,
+  vocalPitchFrames,
   vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import {
   LOCAL_VOCAL_ANALYSIS_ENGINE,
   LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+  normaliseVocalPitchFrames,
   vocalAnalysisProvenanceReason,
+  type VocalPitchFrame,
   type VocalPhrase,
 } from "../types/vocal-analysis";
+import {
+  LOCAL_HARMONY_ANALYSIS_ENGINE,
+  LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION,
+  normaliseHarmonyEvents,
+} from "../types/harmony-analysis";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
 import { usableBeatGrid } from "../types/beat-grid";
 import {
@@ -32,6 +40,7 @@ import {
   MUSICAL_EVIDENCE_PACKET_FORMAT,
   unavailableEvidence,
   type MusicalEvidencePacket,
+  type MusicalEvidenceChord,
   type MusicalEvidenceProvenance,
 } from "./musical-evidence";
 import type { MashupSourceProfile } from "./mashup";
@@ -201,6 +210,8 @@ export async function loadSourceProfile(
       eq(harmonyAnalyses.sourceAssetId, sourceAssetId),
       eq(harmonyAnalyses.sourceChecksumSha256, asset.checksumSha256),
       eq(harmonyAnalyses.status, "complete"),
+      eq(harmonyAnalyses.analysisEngine, LOCAL_HARMONY_ANALYSIS_ENGINE),
+      eq(harmonyAnalyses.analysisEngineVersion, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION),
     ))
     .orderBy(desc(harmonyAnalyses.completedAt), desc(harmonyAnalyses.createdAt), desc(harmonyAnalyses.id))
     .limit(1);
@@ -217,19 +228,8 @@ export async function loadSourceProfile(
       .where(eq(harmonyEvents.harmonyAnalysisId, harmonyAnalysis.id))
       .orderBy(asc(harmonyEvents.startMs))
     : [];
-  const persistedHarmony = harmonyRows.filter((event: typeof harmonyRows[number]) =>
-    Number.isSafeInteger(event.startMs)
-    && Number.isSafeInteger(event.endMs)
-    && event.startMs >= 0
-    && event.endMs > event.startMs
-    && event.endMs <= Math.round(asset.durationSeconds * 1000)
-    && (event.root === null || typeof event.root === "string")
-    && typeof event.quality === "string"
-    && Number.isFinite(event.confidence)
-    && event.confidence >= 0
-    && event.confidence <= 1,
-  );
-  const harmony = harmonyAnalysis
+  const persistedHarmony = normaliseHarmonyEvents(harmonyRows, Math.round(asset.durationSeconds * 1000));
+  const harmony = harmonyAnalysis && persistedHarmony
     ? measuredEvidence(persistedHarmony, {
       analysisId: harmonyAnalysis.id,
       analysisEngine: harmonyAnalysis.analysisEngine,
@@ -237,7 +237,7 @@ export async function loadSourceProfile(
       sourceChecksumSha256: harmonyAnalysis.sourceChecksumSha256,
       persistence: "database",
     })
-    : unavailableEvidence<typeof persistedHarmony>("No complete harmony analysis matches the current source checksum.");
+    : unavailableEvidence<MusicalEvidenceChord[]>("No complete, valid harmony analysis matches the current source and engine version.");
 
   const evidence: MusicalEvidencePacket = {
     format: MUSICAL_EVIDENCE_PACKET_FORMAT,
@@ -260,6 +260,9 @@ export async function loadSourceProfile(
       vocalPhrases: vocalEvidence
         ? measuredEvidence(vocalEvidence.phrases, vocalEvidence.provenance)
         : unavailableEvidence("No current isolated-vocal phrase analysis is available for this source."),
+      vocalPitchFrames: vocalEvidence && vocalEvidence.pitchFrames !== null
+        ? measuredEvidence(vocalEvidence.pitchFrames, vocalEvidence.provenance)
+        : unavailableEvidence("No current isolated-vocal pitch frames are available for this source."),
       harmony,
       drumEvents: unavailableEvidence("No current isolated drum event evidence was loaded."),
       bassAttacks: unavailableEvidence("No persisted isolated bass attack analysis exists yet."),
@@ -279,6 +282,12 @@ export async function loadSourceProfile(
     durationMs: evidence.source.durationMs,
     sections,
     vocalPhrases: vocalEvidence?.phrases ?? [],
+    ...(evidence.features.vocalPitchFrames.status === "measured"
+      ? { vocalPitchFrames: evidence.features.vocalPitchFrames.value }
+      : {}),
+    ...(evidence.features.harmony.status === "measured"
+      ? { harmonyEvents: evidence.features.harmony.value }
+      : {}),
     evidence,
   };
 }
@@ -296,6 +305,7 @@ async function loadCurrentVocalEvidence(
   durationMs: number,
 ): Promise<{
   phrases: VocalPhrase[];
+  pitchFrames: VocalPitchFrame[] | null;
   provenance: MusicalEvidenceProvenance;
 } | null> {
   const [stem] = await database
@@ -373,8 +383,22 @@ async function loadCurrentVocalEvidence(
     && phrase.confidence >= 0
     && phrase.confidence <= 1,
   );
+  const pitchFrameRows = await database
+    .select({
+      timestampMs: vocalPitchFrames.timestampMs,
+      frequencyHz: vocalPitchFrames.frequencyHz,
+      midiFloat: vocalPitchFrames.midiFloat,
+      nearestMidiNote: vocalPitchFrames.nearestMidiNote,
+      confidence: vocalPitchFrames.confidence,
+      voiced: vocalPitchFrames.voiced,
+    })
+    .from(vocalPitchFrames)
+    .where(eq(vocalPitchFrames.vocalAnalysisId, analysis.id))
+    .orderBy(asc(vocalPitchFrames.timestampMs));
+  const pitchFrames = normaliseVocalPitchFrames(pitchFrameRows, durationMs);
   return {
     phrases,
+    pitchFrames,
     provenance: {
       analysisId: analysis.id,
       analysisEngine: analysis.analysisEngine,

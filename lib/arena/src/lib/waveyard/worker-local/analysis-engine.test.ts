@@ -35,6 +35,7 @@ import {
   DESKTOP_ANALYSIS_ENGINE_VERSION,
 } from "../types/analysis-provenance";
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import { HARMONY_TEMPLATE_MIN_MARGIN } from "../types/harmony-analysis";
 
 const RATE = 22_050;
 
@@ -284,6 +285,8 @@ test("local harmony analysis returns timed chord evidence and unknowns for silen
   const events = detectHarmonyTimeline(pcm, 2);
   assert.equal(events.length, 2);
   assert.ok(events.every((event) => event.root && event.quality !== "unknown"), JSON.stringify(events));
+  assert.ok(events.every((event) => event.confidence >= HARMONY_TEMPLATE_MIN_MARGIN),
+    "the persisted confidence value is the accepted template margin, not a calibrated 0–1 probability");
   assert.deepEqual(detectHarmonyTimeline(new Float32Array(RATE * 2), 2).map((event) => event.quality), ["unknown"]);
 });
 

@@ -97,10 +97,18 @@ test("harmonyEventsToMidiNotes expands chords from the root", () => {
   assert.deepEqual(notes.map((n) => n.midiNote), [48, 52, 55], "C major from C3");
   const minor = harmonyEventsToMidiNotes([harmony({ root: "A", quality: "minor" })], 0.6);
   assert.deepEqual(minor.map((n) => n.midiNote), [57, 60, 64], "A minor from A3");
-  // Unknown roots/qualities and low confidence never emit.
+  // The local matcher stores top-two template margin, not a 0–1 probability.
+  assert.equal(harmonyEventsToMidiNotes([harmony({ confidence: 0.1 })]).length, 3,
+    "accepted local chord margins are not discarded by a mismatched 0.6 default");
+  assert.ok(harmonyEventsToMidiNotes([harmony({ confidence: 0.05 })]).every((note) => note.velocity === 80),
+    "the detector's margin is not incorrectly mapped to near-silent MIDI velocity");
+  assert.equal(harmonyEventsToMidiNotes([harmony({ confidence: 0.039 })]).length, 0,
+    "a chord below the detector's own margin threshold remains excluded");
+  assert.equal(harmonyEventsToMidiNotes([harmony({ confidence: 0.1 })], 0.6).length, 0,
+    "callers may still request a stricter explicit minimum");
+  // Unknown roots and qualities never emit.
   assert.equal(harmonyEventsToMidiNotes([harmony({ root: null })]).length, 0);
   assert.equal(harmonyEventsToMidiNotes([harmony({ quality: "unknown" })]).length, 0);
-  assert.equal(harmonyEventsToMidiNotes([harmony({ confidence: 0.1 })]).length, 0);
 });
 
 test("normaliseMidiNoteEvents validates strictly and sorts chronologically", () => {

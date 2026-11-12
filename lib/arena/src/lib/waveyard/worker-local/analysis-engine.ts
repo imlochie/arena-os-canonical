@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import { HARMONY_CHORD_TEMPLATES, HARMONY_TEMPLATE_MIN_MARGIN } from "../types/harmony-analysis";
 
 export { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 
@@ -608,18 +609,9 @@ export type LocalHarmonyEvent = {
   endMs: number;
   root: string | null;
   quality: "major" | "minor" | "dominant7" | "minor7" | "major7" | "diminished" | "augmented" | "unknown";
+  /** Top-two chord-template score margin; deliberately not called a probability. */
   confidence: number;
 };
-
-const CHORD_TEMPLATES: ReadonlyArray<{ quality: LocalHarmonyEvent["quality"]; intervals: readonly number[] }> = [
-  { quality: "major", intervals: [0, 4, 7] },
-  { quality: "minor", intervals: [0, 3, 7] },
-  { quality: "dominant7", intervals: [0, 4, 7, 10] },
-  { quality: "minor7", intervals: [0, 3, 7, 10] },
-  { quality: "major7", intervals: [0, 4, 7, 11] },
-  { quality: "diminished", intervals: [0, 3, 6] },
-  { quality: "augmented", intervals: [0, 4, 8] },
-];
 
 /** Conservative, source-relative chord windows using the same harmonic
  * salience chroma as the local BPM/key engine. Weak/ambiguous windows remain
@@ -638,7 +630,7 @@ export function detectHarmonyTimeline(pcm: Float32Array, windowSeconds = 2): Loc
     if (total > 1e-8) {
       const normalized = chroma.map((value) => value / total);
       for (let root = 0; root < 12; root += 1) {
-        for (const template of CHORD_TEMPLATES) {
+        for (const template of HARMONY_CHORD_TEMPLATES) {
           let score = 0;
           for (let pitch = 0; pitch < 12; pitch += 1) {
             const interval = (pitch - root + 12) % 12;
@@ -653,7 +645,7 @@ export function detectHarmonyTimeline(pcm: Float32Array, windowSeconds = 2): Loc
       }
     }
     const margin = best ? Math.max(0, (best.score - runner) / Math.max(best.score, 1e-9)) : 0;
-    const confident = best !== null && best.score >= 0.28 && margin >= 0.04;
+    const confident = best !== null && best.score >= 0.28 && margin >= HARMONY_TEMPLATE_MIN_MARGIN;
     const startMs = Math.round((start / ANALYSIS_PCM_RATE) * 1000);
     const endMs = Math.min(durationMs, Math.round((end / ANALYSIS_PCM_RATE) * 1000));
     if (endMs > startMs) events.push({

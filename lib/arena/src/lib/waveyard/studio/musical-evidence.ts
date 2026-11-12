@@ -5,6 +5,8 @@
  */
 
 import type { PassageFingerprint } from "../types/passage-compatibility";
+import type { ChordQuality } from "../types/harmony-analysis";
+import type { VocalPitchFrame } from "../types/vocal-analysis";
 
 export const MUSICAL_EVIDENCE_PACKET_FORMAT = "waveyard-musical-evidence-v1" as const;
 
@@ -49,7 +51,7 @@ export type MusicalEvidenceChord = {
   startMs: number;
   endMs: number;
   root: string | null;
-  quality: string;
+  quality: ChordQuality;
   confidence: number;
 };
 
@@ -66,6 +68,8 @@ export type MusicalEvidencePacket = {
     beatGrid: MusicalEvidenceValue<{ beatsMs: number[]; confidence: number | null }>;
     sections: MusicalEvidenceValue<MusicalEvidenceSection[]>;
     vocalPhrases: MusicalEvidenceValue<MusicalEvidencePhrase[]>;
+    /** Monophonic pitch observations from the current isolated vocal stem; not transcription. */
+    vocalPitchFrames?: MusicalEvidenceValue<VocalPitchFrame[]>;
     harmony: MusicalEvidenceValue<MusicalEvidenceChord[]>;
     drumEvents: MusicalEvidenceValue<MusicalEvidenceEvent[]>;
     bassAttacks: MusicalEvidenceValue<MusicalEvidenceEvent[]>;

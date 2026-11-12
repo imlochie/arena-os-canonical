@@ -1,11 +1,15 @@
-import { normaliseMusicalKey } from "./musical-key";
+import { CANONICAL_PITCH_CLASSES, normaliseMusicalKey } from "./musical-key";
 import type { DrumEvent } from "./drum-analysis";
-import type { HarmonyEvent } from "./harmony-analysis";
+import {
+  HARMONY_TEMPLATE_MIN_MARGIN,
+  harmonyPitchClasses,
+  type HarmonyEvent,
+} from "./harmony-analysis";
 import type { VocalPitchFrame } from "./vocal-analysis";
 
 /** Fixed SMF resolution. Milliseconds remain Waveyard's authoritative timing. */
 export const MIDI_PPQ = 480;
-export const MIDI_CONVERSION_VERSION = "1.0.0";
+export const MIDI_CONVERSION_VERSION = "1.1.0";
 export type MidiExportKind = "vocal" | "drums" | "harmony";
 export type MidiNoteEvent = {
   startMs: number;
@@ -82,18 +86,24 @@ export function vocalFramesToMidiNotes(frames: readonly VocalPitchFrame[], optio
   return normaliseMidiNoteEvents(notes) ?? [];
 }
 
-const chordIntervals: Record<Exclude<HarmonyEvent["quality"], "unknown">, number[]> = {
-  major: [0, 4, 7], minor: [0, 3, 7], dominant7: [0, 4, 7, 10], minor7: [0, 3, 7, 10], major7: [0, 4, 7, 11], diminished: [0, 3, 6], augmented: [0, 4, 8],
-};
-export function harmonyEventsToMidiNotes(events: readonly HarmonyEvent[], minimumConfidence = 0.6): MidiNoteEvent[] {
+export function harmonyEventsToMidiNotes(
+  events: readonly HarmonyEvent[],
+  minimumConfidence = HARMONY_TEMPLATE_MIN_MARGIN,
+): MidiNoteEvent[] {
   if (!Number.isFinite(minimumConfidence) || minimumConfidence < 0 || minimumConfidence > 1) return [];
   const notes = events.flatMap((event) => {
     if (!event.root || event.quality === "unknown" || event.confidence < minimumConfidence) return [];
     const key = normaliseMusicalKey(`${event.root} major`);
-    const root = key ? ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"].indexOf(key.replace(" major", "")) : -1;
-    if (root < 0) return [];
-    const velocity = Math.max(1, Math.min(127, Math.round(event.confidence * 127)));
-    return chordIntervals[event.quality].map((interval) => ({ startMs: event.startMs, durationMs: event.endMs - event.startMs, midiNote: 48 + root + interval, velocity, channel: 1 }));
+    const root = key ? CANONICAL_PITCH_CLASSES.indexOf(key.replace(" major", "") as (typeof CANONICAL_PITCH_CLASSES)[number]) : -1;
+    const chordPitches = harmonyPitchClasses(event);
+    if (root < 0 || !chordPitches) return [];
+    // Harmony confidence is the detector's template margin, not loudness. A
+    // margin near 0.04 would otherwise become an almost inaudible MIDI velocity.
+    const velocity = 80;
+    return chordPitches.map((pitchClass) => {
+      const interval = (pitchClass - root + 12) % 12;
+      return { startMs: event.startMs, durationMs: event.endMs - event.startMs, midiNote: 48 + root + interval, velocity, channel: 1 };
+    });
   });
   return normaliseMidiNoteEvents(notes) ?? [];
 }

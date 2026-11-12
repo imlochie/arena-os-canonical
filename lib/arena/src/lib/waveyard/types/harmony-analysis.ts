@@ -1,10 +1,12 @@
-import { normaliseMusicalKey } from "./musical-key";
+import { CANONICAL_PITCH_CLASSES, normaliseMusicalKey } from "./musical-key";
 
 export const HARMONY_ANALYSIS_ENGINE = "waveyard-numpy-chroma-chords";
 export const HARMONY_ANALYSIS_ENGINE_VERSION = "1.0.0";
 export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_HARMONY_ANALYSIS_ENGINE, DESKTOP_STEM_ANALYSIS_ENGINE_VERSION as LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
 export const CHORD_QUALITIES = ["major", "minor", "dominant7", "minor7", "major7", "diminished", "augmented", "unknown"] as const;
 export type ChordQuality = (typeof CHORD_QUALITIES)[number];
+/** The local template matcher emits a named chord only when its top-two margin reaches this value. */
+export const HARMONY_TEMPLATE_MIN_MARGIN = 0.04;
 
 export function harmonyAnalysisIdempotencyKey(sourceAssetId: string, engine = HARMONY_ANALYSIS_ENGINE, version = HARMONY_ANALYSIS_ENGINE_VERSION) {
   return `harmony:${sourceAssetId}:${engine}:${version}`;
@@ -15,8 +17,35 @@ export type HarmonyEvent = {
   endMs: number;
   root: string | null;
   quality: ChordQuality;
+  /** For the local matcher, this is top-two template separation, not a probability. */
   confidence: number;
 };
+
+export const HARMONY_CHORD_TEMPLATES: ReadonlyArray<{
+  quality: Exclude<ChordQuality, "unknown">;
+  intervals: readonly number[];
+}> = [
+  { quality: "major", intervals: [0, 4, 7] },
+  { quality: "minor", intervals: [0, 3, 7] },
+  { quality: "dominant7", intervals: [0, 4, 7, 10] },
+  { quality: "minor7", intervals: [0, 3, 7, 10] },
+  { quality: "major7", intervals: [0, 4, 7, 11] },
+  { quality: "diminished", intervals: [0, 3, 6] },
+  { quality: "augmented", intervals: [0, 4, 8] },
+];
+
+/** Return the chord's measured pitch classes; unknown chords have no guessed notes. */
+export function harmonyPitchClasses(event: Pick<HarmonyEvent, "root" | "quality">): number[] | null {
+  if (!event.root || event.quality === "unknown") return null;
+  const key = normaliseMusicalKey(`${event.root} major`);
+  if (!key) return null;
+  const root = CANONICAL_PITCH_CLASSES.indexOf(
+    key.split(" ")[0] as (typeof CANONICAL_PITCH_CLASSES)[number],
+  );
+  const template = HARMONY_CHORD_TEMPLATES.find((candidate) => candidate.quality === event.quality);
+  if (root < 0 || !template) return null;
+  return template.intervals.map((interval) => (root + interval) % 12);
+}
 
 export function normaliseChordRoot(value: unknown) {
   if (typeof value !== "string") return null;

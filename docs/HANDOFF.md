@@ -1,5 +1,44 @@
 # Arena handoff — read this first
 
+## Current implementation — vocal-to-bed chord-tone passage ranking
+
+* **Production path:** Waveyard now loads isolated vocal pitch frames only from
+  the completed analysis for the current source checksum, vocal-stem checksum,
+  and local engine version. Bed chord timelines are limited to valid,
+  current-source/current-engine analysis. The current persistence model stores
+  those chord timelines against the full source, not a separated bed stem. The
+  shared evidence packet carries both features into the mashup planner.
+* **Planning behavior:** for a candidate passage, measured vocal pitch classes
+  are mapped through the planned stretch and pitch shift onto the bed's measured
+  chord timeline. Their chord-tone share is a soft ranking feature (12% before
+  evidence weighting), not a gate. It needs at least six voiced frames and
+  coverage of at least half of those frames; absent, stale, sparse, or unknown
+  evidence leaves the previous ranking/fallback intact. This is not lyric
+  transcription, a dissonance classifier, or proof of a good-sounding mix.
+* **Harmony/MIDI correction:** the local chord detector stores a top-two
+  template-score margin, not a calibrated probability. The shared minimum
+  accepted margin is 0.04. Harmony MIDI export previously compared this value
+  against 0.6 and then converted it into near-silent note velocity; its default
+  now matches the detector's gate and uses a neutral velocity of 80. Callers
+  can still set a stricter explicit threshold.
+* **Verification:** 58 focused tests passed across mashup ranking, current and
+  stale database evidence, chord templates, harmony analysis, MIDI export, and
+  the persisted remix route. `pnpm exec tsc --build --pretty false` passed.
+  The current local detector was also run on the full 222.67-second _Another
+  One Bites the Dust_ vocal stem and 215.14-second _September_ non-vocal stem:
+  7,438 pitch frames (1,107 voiced), 108 two-second chord windows (36 named),
+  and 59 candidates with chord-fit measurements among the planner's returned
+  top-eight rankings. The strongest displayed chord-tone share was 0.689.
+* **Not proven:** those offline features used previously captured structural
+  boundaries, not human-verified musical sections. The offline chord timeline
+  came from the separated non-vocal stem, while the production database loader
+  currently provides source-level chord analysis; this real-stem comparison
+  therefore does not verify the persisted production path. The planner
+  selected the same bed window with and without the optional chord feature;
+  its selected window had no sufficiently covered chord evidence. No
+  listener-rated compatibility, lyric timing, semantic form,
+  rendered-mashup quality, or Stem.fm parity is established.
+
 ## Current implementation — tempo-locked vocal-chop patterns
 
 * **Musical position:** generated pad hits now retain their sixteenth-step
