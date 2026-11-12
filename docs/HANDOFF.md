@@ -1,5 +1,14 @@
 # Arena handoff — read this first
 
+## Independent full-track ground-truth baseline — 2026-11-12
+
+* **Implementation:** commit `a347f8615d65b8ae4b9d8f912ef79d7ba8c8e522` on `v0/independent-waveyard-eval`, based on `9ac6c612bd8809afb80353c126b494e2ad2b244d`. Adds a versioned two-reviewer annotation template, a provenance-gated evaluator, a blocked report, and protocol documentation; no audio was added to Git.
+* **Non-interference:** the production passage-search result now serializes the full feasible bed-candidate list for each donor window, with source checksum, time bounds, existing relative score, detector confidence, transient tie-break score, and the currently selected candidate. The selected candidate remains rank 1. Candidate scoring, filters, thresholds, and selection behavior are unchanged. The new field is optional for compatibility with older saved plans.
+* **Evaluation contract:** confident passage/section intervals use IoU 0.5; ambiguous references are not negatives. Full-track metrics require two independent blind reviews, adjudication, exact source identity and documented rights, a 40-character producer revision, capture time, and at least 95% section coverage. Ranking metrics are scoped to the declared adjudicated bed-window pool.
+* **Current evidence:** `scripts/fixtures/waveyard-ground-truth/pending-report-v1.json` is `blocked`; metrics are null. Exact source files/hashes and rights evidence, both reviewer annotations, adjudication, and a production prediction capture are absent. The historical 17-window result below remains unannotated algorithm evidence, not ground truth. No source WAV/MP3 files are present under `generated-artifacts/` in this checkout.
+* **Verification:** evaluator tests 8/8, Waveyard planner tests 24/24, repository typecheck, `git diff --check`, and Prettier checks on the new evaluation files passed.
+* **Next:** provide the exact authorized full-length source copies outside Git, capture their hashes and rights, obtain both blind annotations, adjudicate disagreements, then capture a checksum-matched production plan and rerun the command in `docs/waveyard-ground-truth-evaluation.md`.
+
 ## Current verification update — 2026-11-12, whole-track passage search
 
 * **Whole-track search:** the planner now evaluates every confidence-qualified,
