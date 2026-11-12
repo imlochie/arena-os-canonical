@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "studyId": "waveyard-queen-earth-wind-fire-full-track-v1",
+  "schemaVersion": 2,
+  "studyId": "waveyard-queen-earth-wind-fire-full-track-v2",
   "sourceManifest": [
     {
       "id": "another-one-bites-the-dust",
@@ -46,7 +46,8 @@
     ]
   },
   "thresholds": {
-    "intervalIoU": 0.5,
+    "candidateWindowIoU": 0.5,
+    "sectionBoundaryToleranceMs": 2000,
     "recallAtK": 5
   },
   "tracks": [
@@ -61,5 +62,5 @@
       "metrics": null
     }
   ],
-  "interpretation": "Section detection/classification and candidate rankings are separate measurements. Neither establishes harmonic compatibility or perceived mashup quality. Null metrics mean evidence is missing, not zero performance."
+  "interpretation": "Structural boundary detection and semantic section classification are separate: semantic classification is unavailable until the producer emits semantic labels. Pitch-continuity runs are not lyric phrases and are not scored as such. Candidate rankings do not establish harmonic compatibility or perceived mashup quality. Null metrics mean evidence is missing, not zero performance."
 }

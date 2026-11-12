@@ -199,7 +199,7 @@ test(
     analysisEngineVersion: string;
     sourceChecksumSha256: string;
   }>> = {};
-  let realVocalPhrasePredictions: Array<{
+  let realPitchContinuityRuns: Array<{
     startMs: number;
     endMs: number;
     confidence: number;
@@ -485,7 +485,7 @@ test(
       const phrases = vocalTypes.segmentVocalPhrases(detectVocalPitchFrames(analysisPcm))
         .filter((phrase) => phrase.endMs > phrase.startMs && phrase.confidence >= 0.5);
       assert.ok(phrases.length > 0, "real separated vocals must yield at least one confidence-qualified voiced phrase");
-      realVocalPhrasePredictions = phrases.map(({ startMs, endMs, confidence }) => ({
+      realPitchContinuityRuns = phrases.map(({ startMs, endMs, confidence }) => ({
         startMs,
         endMs,
         confidence,
@@ -1639,7 +1639,7 @@ test(
           const capturedAt = new Date().toISOString();
           const passageEvaluations = planBody.plan?.passageSearch?.evaluations ?? [];
           const predictionSnapshot = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             producer: "Waveyard production mashup route",
             producerRevision:
               process.env.WAVEYARD_MASHUP_PRODUCER_REVISION?.trim() || null,
@@ -1647,9 +1647,16 @@ test(
             recordings: {
               "another-one-bites-the-dust": {
                 sourceSha256: sha256(vocalsOriginal),
-                vocalPhrases: realVocalPhrasePredictions,
-                sections:
-                  realSectionsBySourceChecksum[sha256(vocalsOriginal)] ?? [],
+                sourceDurationMs: Math.round(
+                  realFixture.vocals.durationSeconds * 1000,
+                ),
+                pitchContinuityRuns: realPitchContinuityRuns,
+                sections: realSectionsBySourceChecksum[sha256(vocalsOriginal)] ?? [],
+                sectionBoundaries: (
+                  realSectionsBySourceChecksum[sha256(vocalsOriginal)] ?? []
+                )
+                  .slice(1)
+                  .map((section) => section.startMs),
                 donorWindows: passageEvaluations.map((evaluation) => ({
                   vocalSourceSha256: evaluation.vocalSourceSha256,
                   startMs: evaluation.donorStartMs,
@@ -1666,15 +1673,23 @@ test(
                   ),
                 })),
                 measurementNote:
-                  "Full-track isolated-vocal pitch-continuity phrases; not words, syllables, or lyric meaning.",
+                  "Full-track isolated-vocal pitch-continuity runs; not words, syllables, or lyric meaning.",
               },
               september: {
                 sourceSha256: sha256(bedOriginal),
-                vocalPhrases: [],
+                sourceDurationMs: Math.round(
+                  realFixture.bed.durationSeconds * 1000,
+                ),
+                pitchContinuityRuns: [],
                 sections: realSectionsBySourceChecksum[sha256(bedOriginal)] ?? [],
+                sectionBoundaries: (
+                  realSectionsBySourceChecksum[sha256(bedOriginal)] ?? []
+                )
+                  .slice(1)
+                  .map((section) => section.startMs),
                 donorWindows: [],
                 measurementNote:
-                  "Section structure is captured from the original source. No isolated-vocal analysis was run for this bed in this route direction.",
+                  "Section structure is captured from the original source. No isolated-vocal pitch-continuity analysis was run for this bed in this route direction.",
               },
             },
             sectionLabelLimit:
@@ -1691,10 +1706,39 @@ test(
             "the snapshot must export every persisted bed section",
           );
           assert.equal(
-            predictionSnapshot.recordings["another-one-bites-the-dust"].vocalPhrases.length,
+            predictionSnapshot.recordings["another-one-bites-the-dust"].pitchContinuityRuns.length,
             realVocalVoicingEvidence?.count,
-            "the snapshot must export all full-track persisted vocal-phrase intervals",
+            "the snapshot must export all full-track persisted pitch-continuity intervals",
           );
+          assert.deepEqual(
+            predictionSnapshot.recordings["another-one-bites-the-dust"].sectionBoundaries,
+            predictionSnapshot.recordings["another-one-bites-the-dust"].sections
+              .slice(1)
+              .map((section) => section.startMs),
+            "donor boundary timestamps must be the persisted starts of the next sections",
+          );
+          assert.deepEqual(
+            predictionSnapshot.recordings.september.sectionBoundaries,
+            predictionSnapshot.recordings.september.sections
+              .slice(1)
+              .map((section) => section.startMs),
+            "bed boundary timestamps must be the persisted starts of the next sections",
+          );
+          for (const recording of Object.values(
+            predictionSnapshot.recordings,
+          )) {
+            assert.ok(
+              recording.sections.every((section, index, sections) => {
+                const allowedPaddingMs =
+                  index === sections.length - 1 ? 250 : 50;
+                return (
+                  section.endMs <=
+                  recording.sourceDurationMs + allowedPaddingMs
+                );
+              }),
+              "only the final bar-aligned structural section may exceed source duration, by at most 250 ms",
+            );
+          }
           assert.equal(
             predictionSnapshot.recordings["another-one-bites-the-dust"].donorWindows.length,
             planBody.plan?.passageSearch?.evaluatedDonorPassageCount,

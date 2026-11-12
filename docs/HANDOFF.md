@@ -4,21 +4,34 @@
 
 * **Implementation:** commit `a347f8615d65b8ae4b9d8f912ef79d7ba8c8e522` on `v0/independent-waveyard-eval`, based on `9ac6c612bd8809afb80353c126b494e2ad2b244d`. Adds a versioned two-reviewer annotation template, a provenance-gated evaluator, a blocked report, and protocol documentation; no audio was added to Git.
 * **Non-interference:** the production passage-search result now serializes the full feasible bed-candidate list for each donor window, with source checksum, time bounds, existing relative score, detector confidence, transient tie-break score, and the currently selected candidate. The selected candidate remains rank 1. Candidate scoring, filters, thresholds, and selection behavior are unchanged. The new field is optional for compatibility with older saved plans.
-* **Evaluation contract:** confident passage/section intervals use IoU 0.5; ambiguous references are not negatives. Full-track metrics require two independent blind reviews, adjudication, exact source identity and documented rights, a 40-character producer revision, capture time, and at least 95% section coverage. Ranking metrics are scoped to the declared adjudicated bed-window pool.
-* **Current evidence:** `scripts/fixtures/waveyard-ground-truth/pending-report-v1.json`
+* **Evaluation contract:** schema v2 separates semantic section labels from
+  structural transition timestamps. Boundary detection uses one-to-one matching
+  within a declared 2-second tolerance; candidate-window judgments use IoU 0.5.
+  Semantic section accuracy and lyric-phrase timing remain unavailable until
+  production predictors emit those respective outputs. Pitch-continuity runs
+  are retained as evidence but never scored as lyrics. Full-track metrics require
+  two independent blind reviews, adjudication, exact source identity, documented
+  rights, producer revision and capture time, and at least 95% section coverage.
+* **Current evidence:** `scripts/fixtures/waveyard-ground-truth/pending-report-v2.json`
   is `blocked`; metrics are null. The exact audio files are present only as
   ignored user-uploaded attachments in this Replit workspace, not in Git. Their
   SHA-256s match the prior production manifest and are recorded in the
   annotation and prediction templates. A fresh database-backed production
   acceptance run now exports a complete prediction snapshot to the ignored
-  `generated-artifacts/waveyard-real-world-acceptance/predictions-v1-captured.json`:
-  25 and 34 source-bound structural sections, 89 pitch-continuity vocal
-  intervals for the donor, and all 17 donor windows with their feasible ranked
-  bed candidates. Prediction provenance validates for producer revision
-  `7210442c4fc0b967441381cbe8c753807d9313d9`. The 89 intervals are not words,
-  syllables, or lyric meanings; the bed track has no vocal-phrase analysis in
-  this route direction. Rights evidence, two independent blind annotations,
-  and adjudication remain absent, so the current report remains blocked.
+  `generated-artifacts/waveyard-real-world-acceptance/predictions-v2-captured.json`:
+  25 and 34 source-bound structural sections, 24 and 33 internal boundary
+  timestamps, 89 pitch-continuity runs for the donor, and all 17 donor windows
+  with feasible ranked bed candidates. Prediction provenance validates for
+  producer revision `d92d676f5f964f15da738ad0792aec2d1db6ab7f`. The 89 runs are
+  not words, syllables, or lyric meanings; the bed track has no pitch-continuity
+  analysis in this route direction. The captured report
+  `generated-artifacts/waveyard-real-world-acceptance/owner-review-pending-report-v2.json`
+  has complete prediction provenance but remains blocked because rights
+  evidence, two independent reviews, adjudicated status, and review timestamps
+  are absent. An exploratory check against 18 approximate owner-marked starts
+  found nearest structural boundaries within 2 seconds for 6/18 and within 1
+  second for 1/18. This is not a formal accuracy score or evidence of semantic
+  section recognition.
 * **Additional regression coverage:** the production route test now requires
   full feasible candidate rankings to survive API serialization, in consecutive
   rank order, with the selected candidate first and source-bound passage IDs. A
@@ -30,7 +43,7 @@
   checks evidence transport only; it does not change candidate scoring or
   selection. Do not provide the repository, handoff, or report to blind
   annotators until their independent labels are locked.
-* **Verification:** evaluator tests 9/9, Waveyard planner tests 24/24, real production route acceptance 1/1, API and library typechecks, `git diff --check`, and Prettier checks on the new evaluation files passed.
+* **Verification:** evaluator tests 11/11, Waveyard planner tests 24/24, real production route acceptance 1/1, API and library typechecks, `git diff --check`, and Prettier checks on the evaluation files passed.
 * **Next:** establish review authorization, obtain and lock two independent blind section reviews, and adjudicate disagreements. The owner has supplied first-pass listening notes in chat; they are not a second review or a committed annotation file. The vocal detector produces pitch-continuity intervals, not lyric phrases, so do not claim lyric-timing accuracy from the 89 predictions.
 
 ## Current verification update — 2026-11-12, whole-track passage search

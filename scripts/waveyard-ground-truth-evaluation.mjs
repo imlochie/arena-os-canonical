@@ -3,8 +3,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const GROUND_TRUTH_SCHEMA_VERSION = 1;
-const INTERVAL_IOU_THRESHOLD = 0.5;
+export const GROUND_TRUTH_SCHEMA_VERSION = 2;
+const CANDIDATE_WINDOW_IOU_THRESHOLD = 0.5;
+const SECTION_BOUNDARY_TOLERANCE_MS = 2_000;
+const SOURCE_DURATION_METADATA_TOLERANCE_MS = 50;
+const STRUCTURAL_SECTION_END_PADDING_MS = 250;
 const SECTION_COVERAGE_FRACTION = 0.95;
 const REQUIRED_REVIEWER_COUNT = 2;
 export const EXPECTED_RECORDINGS = [
@@ -44,6 +47,21 @@ function interval(value, label, maxDurationMs) {
   );
 }
 
+function sectionBoundary(value, label, maxDurationMs) {
+  assert.ok(
+    value && Number.isSafeInteger(value.timeMs),
+    `${label} needs an integer millisecond timestamp.`,
+  );
+  assert.ok(
+    value.timeMs > 0 && value.timeMs < maxDurationMs,
+    `${label} must be an internal boundary inside its recording.`,
+  );
+  assert.ok(
+    ["confident", "ambiguous"].includes(value.certainty),
+    `${label}: certainty must be explicit.`,
+  );
+}
+
 export function validateGroundTruth(dataset) {
   assert.equal(
     dataset?.schemaVersion,
@@ -52,7 +70,7 @@ export function validateGroundTruth(dataset) {
   );
   assert.equal(
     dataset?.studyId,
-    "waveyard-queen-earth-wind-fire-full-track-v1",
+    "waveyard-queen-earth-wind-fire-full-track-v2",
   );
   assert.ok(Array.isArray(dataset.recordings), "recordings must be an array.");
   const issues = [];
@@ -86,10 +104,18 @@ export function validateGroundTruth(dataset) {
       "the dataset must declare two independent blind reviewers before adjudication",
     );
   if (
-    dataset.annotationProtocol?.intervalIoUThreshold !== INTERVAL_IOU_THRESHOLD
+    dataset.annotationProtocol?.candidateWindowIoUThreshold !==
+    CANDIDATE_WINDOW_IOU_THRESHOLD
   )
     issues.push(
-      `annotation interval IoU threshold must be ${INTERVAL_IOU_THRESHOLD}`,
+      `candidate-window IoU threshold must be ${CANDIDATE_WINDOW_IOU_THRESHOLD}`,
+    );
+  if (
+    dataset.annotationProtocol?.sectionBoundaryToleranceMs !==
+    SECTION_BOUNDARY_TOLERANCE_MS
+  )
+    issues.push(
+      `structural boundary tolerance must be ${SECTION_BOUNDARY_TOLERANCE_MS} ms`,
     );
   if (
     dataset.annotationProtocol?.minimumSectionCoverageFraction !==
@@ -144,8 +170,8 @@ export function validateGroundTruth(dataset) {
       `${expected.id}: sectionSegments must be an array.`,
     );
     assert.ok(
-      Array.isArray(adjudicated.vocalPhrases),
-      `${expected.id}: vocalPhrases must be an array.`,
+      Array.isArray(adjudicated.sectionBoundaries),
+      `${expected.id}: sectionBoundaries must be an array.`,
     );
     assert.ok(
       Array.isArray(adjudicated.bedPairJudgments),
@@ -153,38 +179,34 @@ export function validateGroundTruth(dataset) {
     );
     if (
       !adjudicated.sectionSegments.length ||
-      !adjudicated.vocalPhrases.length
+      !adjudicated.sectionBoundaries.length
     ) {
       issues.push(
-        `${expected.id}: adjudicated section and vocal annotations must contain reviewed intervals`,
+        `${expected.id}: adjudicated section segments and structural boundaries must be reviewed`,
       );
     }
     for (const [index, section] of adjudicated.sectionSegments.entries()) {
       interval(
         section,
         `${expected.id} section ${index}`,
-        expected.durationSeconds * 1000,
+        expected.durationSeconds * 1000 + SOURCE_DURATION_METADATA_TOLERANCE_MS,
       );
       assert.ok(
         SECTION_LABELS.has(section.label),
         `${expected.id} section ${index}: unsupported or fabricated section label.`,
       );
       assert.ok(
-        ["confident", "ambiguous"].includes(section.certainty),
-        `${expected.id} section ${index}: certainty must be explicit.`,
+        ["confident", "ambiguous"].includes(section.labelCertainty),
+        `${expected.id} section ${index}: labelCertainty must be explicit.`,
       );
       if (section.label === "unknown")
-        assert.equal(section.certainty, "ambiguous");
+        assert.equal(section.labelCertainty, "ambiguous");
     }
-    for (const [index, phrase] of adjudicated.vocalPhrases.entries()) {
-      interval(
-        phrase,
-        `${expected.id} vocal phrase ${index}`,
-        expected.durationSeconds * 1000,
-      );
-      assert.ok(
-        ["confident", "ambiguous"].includes(phrase.certainty),
-        `${expected.id} vocal phrase ${index}: certainty must be explicit.`,
+    for (const [index, boundary] of adjudicated.sectionBoundaries.entries()) {
+      sectionBoundary(
+        boundary,
+        `${expected.id} section boundary ${index}`,
+        expected.durationSeconds * 1000 + SOURCE_DURATION_METADATA_TOLERANCE_MS,
       );
     }
     if (
@@ -207,12 +229,13 @@ export function validateGroundTruth(dataset) {
       interval(
         judgment.vocal,
         `${expected.id} bed judgment ${index} vocal`,
-        vocalTrack.durationSeconds * 1000,
+        vocalTrack.durationSeconds * 1000 +
+          SOURCE_DURATION_METADATA_TOLERANCE_MS,
       );
       interval(
         judgment.bed,
         `${expected.id} bed judgment ${index} bed`,
-        bedTrack.durationSeconds * 1000,
+        bedTrack.durationSeconds * 1000 + SOURCE_DURATION_METADATA_TOLERANCE_MS,
       );
       assert.ok(
         BED_VERDICTS.has(judgment.verdict),
@@ -233,45 +256,46 @@ export function validateGroundTruth(dataset) {
           !review.reviewedAt ||
           Number.isNaN(Date.parse(review.reviewedAt)) ||
           !Array.isArray(review.sectionSegments) ||
-          !Array.isArray(review.vocalPhrases) ||
+          !Array.isArray(review.sectionBoundaries) ||
           !Array.isArray(review.bedPairJudgments)
         ) {
           issues.push(
-            `${expected.id}: each independent reviewer must submit all three annotation sets`,
+            `${expected.id}: each reviewer must submit section segments, structural boundaries, and bed-pair judgments`,
           );
           continue;
         }
-        if (!review.sectionSegments.length || !review.vocalPhrases.length) {
+        if (
+          !review.sectionSegments.length ||
+          !review.sectionBoundaries.length
+        ) {
           issues.push(
-            `${expected.id}: each independent reviewer must annotate sections and vocal phrases`,
+            `${expected.id}: each reviewer must annotate section segments and structural boundaries`,
           );
         }
         for (const [index, section] of review.sectionSegments.entries()) {
           interval(
             section,
             `${expected.id} reviewer section ${index}`,
-            expected.durationSeconds * 1000,
+            expected.durationSeconds * 1000 +
+              SOURCE_DURATION_METADATA_TOLERANCE_MS,
           );
           assert.ok(
             SECTION_LABELS.has(section.label),
             `${expected.id} reviewer section ${index}: unsupported label.`,
           );
           assert.ok(
-            ["confident", "ambiguous"].includes(section.certainty),
-            `${expected.id} reviewer section ${index}: certainty must be explicit.`,
+            ["confident", "ambiguous"].includes(section.labelCertainty),
+            `${expected.id} reviewer section ${index}: labelCertainty must be explicit.`,
           );
           if (section.label === "unknown")
-            assert.equal(section.certainty, "ambiguous");
+            assert.equal(section.labelCertainty, "ambiguous");
         }
-        for (const [index, phrase] of review.vocalPhrases.entries()) {
-          interval(
-            phrase,
-            `${expected.id} reviewer vocal phrase ${index}`,
-            expected.durationSeconds * 1000,
-          );
-          assert.ok(
-            ["confident", "ambiguous"].includes(phrase.certainty),
-            `${expected.id} reviewer vocal phrase ${index}: certainty must be explicit.`,
+        for (const [index, boundary] of review.sectionBoundaries.entries()) {
+          sectionBoundary(
+            boundary,
+            `${expected.id} reviewer section boundary ${index}`,
+            expected.durationSeconds * 1000 +
+              SOURCE_DURATION_METADATA_TOLERANCE_MS,
           );
         }
         if (
@@ -294,12 +318,14 @@ export function validateGroundTruth(dataset) {
           interval(
             judgment.vocal,
             `${expected.id} reviewer bed judgment ${index} vocal`,
-            vocalTrack.durationSeconds * 1000,
+            vocalTrack.durationSeconds * 1000 +
+              SOURCE_DURATION_METADATA_TOLERANCE_MS,
           );
           interval(
             judgment.bed,
             `${expected.id} reviewer bed judgment ${index} bed`,
-            bedTrack.durationSeconds * 1000,
+            bedTrack.durationSeconds * 1000 +
+              SOURCE_DURATION_METADATA_TOLERANCE_MS,
           );
           assert.ok(
             BED_VERDICTS.has(judgment.verdict),
@@ -328,133 +354,145 @@ function intersectionOverUnion(left, right) {
   return union > 0 ? intersection / union : 0;
 }
 
-function maximumOverlapMatches(predictions, references, threshold) {
-  const edges = predictions.map((prediction) =>
-    references
-      .map((reference, index) => ({
-        index,
-        overlap: intersectionOverUnion(prediction, reference),
-      }))
-      .filter((edge) => edge.overlap >= threshold)
-      .sort(
-        (left, right) =>
-          right.overlap - left.overlap || left.index - right.index,
-      ),
-  );
-  const referenceToPrediction = new Map();
-  function augment(predictionIndex, visited) {
-    for (const edge of edges[predictionIndex]) {
-      if (visited.has(edge.index)) continue;
-      visited.add(edge.index);
-      const previous = referenceToPrediction.get(edge.index);
-      if (previous === undefined || augment(previous, visited)) {
-        referenceToPrediction.set(edge.index, predictionIndex);
-        return true;
-      }
-    }
-    return false;
-  }
-  for (let index = 0; index < predictions.length; index += 1)
-    augment(index, new Set());
-  return [...referenceToPrediction.entries()].map(
-    ([referenceIndex, predictionIndex]) => ({
-      prediction: predictions[predictionIndex],
-      reference: references[referenceIndex],
-      overlap: intersectionOverUnion(
-        predictions[predictionIndex],
-        references[referenceIndex],
-      ),
-    }),
-  );
-}
-
 function safeRatio(numerator, denominator) {
   return denominator ? numerator / denominator : null;
 }
 
-function detectionMetrics(
-  predictions,
-  references,
-  threshold,
-  ambiguousReferences = [],
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function maximumBoundaryMatches(predictedTimes, referenceTimes, toleranceMs) {
+  const predictions = predictedTimes
+    .map((timeMs, index) => ({ timeMs, index }))
+    .sort((left, right) => left.timeMs - right.timeMs);
+  const references = referenceTimes
+    .map((reference, index) => ({ ...reference, index }))
+    .sort((left, right) => left.timeMs - right.timeMs);
+  const memo = new Map();
+
+  function solve(predictionIndex, referenceIndex) {
+    if (
+      predictionIndex >= predictions.length ||
+      referenceIndex >= references.length
+    ) {
+      return { pairs: [], totalAbsoluteErrorMs: 0 };
+    }
+    const key = `${predictionIndex}:${referenceIndex}`;
+    if (memo.has(key)) return memo.get(key);
+
+    const options = [
+      solve(predictionIndex + 1, referenceIndex),
+      solve(predictionIndex, referenceIndex + 1),
+    ];
+    const prediction = predictions[predictionIndex];
+    const reference = references[referenceIndex];
+    const absoluteErrorMs = Math.abs(prediction.timeMs - reference.timeMs);
+    if (absoluteErrorMs <= toleranceMs) {
+      const matched = solve(predictionIndex + 1, referenceIndex + 1);
+      options.push({
+        pairs: [
+          {
+            predictionIndex: prediction.index,
+            referenceIndex: reference.index,
+            predictedMs: prediction.timeMs,
+            referenceMs: reference.timeMs,
+            signedErrorMs: prediction.timeMs - reference.timeMs,
+          },
+          ...matched.pairs,
+        ],
+        totalAbsoluteErrorMs: absoluteErrorMs + matched.totalAbsoluteErrorMs,
+      });
+    }
+    options.sort(
+      (left, right) =>
+        right.pairs.length - left.pairs.length ||
+        left.totalAbsoluteErrorMs - right.totalAbsoluteErrorMs,
+    );
+    memo.set(key, options[0]);
+    return options[0];
+  }
+
+  return solve(0, 0).pairs;
+}
+
+function structuralBoundaryMetrics(
+  predictedTimes,
+  confidentReferences,
+  ambiguousReferences,
+  toleranceMs,
 ) {
-  const matches = maximumOverlapMatches(predictions, references, threshold);
-  const ambiguousPredictionIndexes = predictions
-    .map((prediction, index) => ({ prediction, index }))
-    .filter(
-      ({ prediction }) =>
-        !matches.some((match) => match.prediction === prediction) &&
-        ambiguousReferences.some(
-          (reference) =>
-            intersectionOverUnion(prediction, reference) >= threshold,
-        ),
-    )
-    .map(({ index }) => index);
-  const ignoredPredictionIndexes = new Set(ambiguousPredictionIndexes);
-  const unmatchedPredictionIndexes = predictions
+  const matches = maximumBoundaryMatches(
+    predictedTimes,
+    confidentReferences,
+    toleranceMs,
+  );
+  const matchedPredictionIndexes = new Set(
+    matches.map((match) => match.predictionIndex),
+  );
+  const ambiguousExcludedPredictionIndexes = predictedTimes
     .map((_, index) => index)
     .filter(
       (index) =>
-        !matches.some((match) => match.prediction === predictions[index]) &&
+        !matchedPredictionIndexes.has(index) &&
+        ambiguousReferences.some(
+          (reference) =>
+            Math.abs(predictedTimes[index] - reference.timeMs) <= toleranceMs,
+        ),
+    );
+  const ignoredPredictionIndexes = new Set(ambiguousExcludedPredictionIndexes);
+  const falsePositiveIndexes = predictedTimes
+    .map((_, index) => index)
+    .filter(
+      (index) =>
+        !matchedPredictionIndexes.has(index) &&
         !ignoredPredictionIndexes.has(index),
     );
-  const falsePositives = unmatchedPredictionIndexes.length;
+  const falsePositives = falsePositiveIndexes.length;
   const precision = safeRatio(matches.length, matches.length + falsePositives);
-  const recall = safeRatio(matches.length, references.length);
+  const recall = safeRatio(matches.length, confidentReferences.length);
+  const absoluteErrorsMs = matches.map((match) =>
+    Math.abs(match.signedErrorMs),
+  );
+
   return {
+    toleranceMs,
+    predictedBoundaryCount: predictedTimes.length,
+    confidentReferenceBoundaryCount: confidentReferences.length,
     truePositives: matches.length,
     falsePositives,
-    falseNegatives: references.length - matches.length,
+    falseNegatives: confidentReferences.length - matches.length,
     precision,
     recall,
     f1:
       precision === null || recall === null || precision + recall === 0
         ? null
         : (2 * precision * recall) / (precision + recall),
-    ambiguousExcludedPredictionCount: ambiguousPredictionIndexes.length,
-    boundaryErrorMs: matches.length
+    ambiguousExcludedPredictionCount: ambiguousExcludedPredictionIndexes.length,
+    timingErrorMs: matches.length
       ? {
-          meanAbsoluteStartMs:
-            matches.reduce(
-              (sum, match) =>
-                sum +
-                Math.abs(match.prediction.startMs - match.reference.startMs),
-              0,
-            ) / matches.length,
-          medianAbsoluteStartMs: median(
-            matches.map((match) =>
-              Math.abs(match.prediction.startMs - match.reference.startMs),
-            ),
-          ),
-          meanAbsoluteEndMs:
-            matches.reduce(
-              (sum, match) =>
-                sum + Math.abs(match.prediction.endMs - match.reference.endMs),
-              0,
-            ) / matches.length,
-          medianAbsoluteEndMs: median(
-            matches.map((match) =>
-              Math.abs(match.prediction.endMs - match.reference.endMs),
-            ),
-          ),
+          meanAbsoluteMs:
+            absoluteErrorsMs.reduce((sum, value) => sum + value, 0) /
+            matches.length,
+          medianAbsoluteMs: median(absoluteErrorsMs),
+          meanSignedMs:
+            matches.reduce((sum, match) => sum + match.signedErrorMs, 0) /
+            matches.length,
         }
       : null,
-    unmatchedPredictionIndexes,
-    unmatchedReferenceIndexes: references
+    matches,
+    falsePositiveIndexes,
+    unmatchedReferenceIndexes: confidentReferences
       .map((_, index) => index)
       .filter(
-        (index) =>
-          !matches.some((match) => match.reference === references[index]),
+        (index) => !matches.some((match) => match.referenceIndex === index),
       ),
   };
-}
-
-function median(values) {
-  const sorted = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2
-    ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
 function coveredDurationMs(intervals) {
@@ -477,24 +515,6 @@ function coveredDurationMs(intervals) {
     }
   }
   return total + (start === null ? 0 : end - start);
-}
-
-function sectionClassification(predictions, references, threshold) {
-  const eligible = references.filter(
-    (reference) =>
-      reference.certainty === "confident" && reference.label !== "unknown",
-  );
-  const matches = maximumOverlapMatches(predictions, eligible, threshold);
-  const correct = matches.filter(
-    (match) => match.prediction.label === match.reference.label,
-  ).length;
-  return {
-    evaluated: matches.length,
-    correct,
-    accuracy: safeRatio(correct, matches.length),
-    unmatchedConfidentReferences: eligible.length - matches.length,
-    note: "Ambiguous/unknown references are excluded; this measures labels only, not musical compatibility.",
-  };
 }
 
 function candidateRanking(
@@ -606,7 +626,7 @@ function candidateRanking(
 
 export function validatePredictionProvenance(predictions) {
   const issues = [];
-  if (predictions?.schemaVersion !== 1)
+  if (predictions?.schemaVersion !== 2)
     issues.push("prediction schema version missing or unsupported");
   if (predictions?.producer !== "Waveyard production mashup route")
     issues.push(
@@ -632,9 +652,94 @@ export function validatePredictionProvenance(predictions) {
     }
     if (!sha256Pattern.test(recording.sourceSha256 ?? ""))
       issues.push(`${expected.id}: prediction source SHA-256 missing`);
-    for (const key of ["vocalPhrases", "sections", "donorWindows"]) {
+    const expectedDurationMs = expected.durationSeconds * 1000;
+    if (!Number.isSafeInteger(recording.sourceDurationMs)) {
+      issues.push(`${expected.id}: source duration metadata is missing`);
+    } else if (
+      Math.abs(recording.sourceDurationMs - expectedDurationMs) >
+      SOURCE_DURATION_METADATA_TOLERANCE_MS
+    ) {
+      issues.push(
+        `${expected.id}: source duration differs from the pinned duration by more than ${SOURCE_DURATION_METADATA_TOLERANCE_MS} ms`,
+      );
+    }
+    const sourceDurationMs = Number.isSafeInteger(recording.sourceDurationMs)
+      ? recording.sourceDurationMs
+      : expectedDurationMs;
+    const maxEventTimeMs =
+      sourceDurationMs + SOURCE_DURATION_METADATA_TOLERANCE_MS;
+    for (const key of [
+      "pitchContinuityRuns",
+      "sectionBoundaries",
+      "sections",
+      "donorWindows",
+    ]) {
       if (!Array.isArray(recording[key]))
         issues.push(`${expected.id}: prediction ${key} must be an array`);
+    }
+    for (const [runIndex, run] of (
+      recording.pitchContinuityRuns ?? []
+    ).entries()) {
+      interval(
+        run,
+        `${expected.id} pitch-continuity run ${runIndex}`,
+        maxEventTimeMs,
+      );
+    }
+    const predictedSectionBoundaries = recording.sectionBoundaries ?? [];
+    const predictedSections = recording.sections ?? [];
+    for (const [
+      boundaryIndex,
+      timeMs,
+    ] of predictedSectionBoundaries.entries()) {
+      sectionBoundary(
+        { timeMs, certainty: "confident" },
+        `${expected.id} predicted section boundary ${boundaryIndex}`,
+        sourceDurationMs,
+      );
+      if (
+        boundaryIndex > 0 &&
+        timeMs <= predictedSectionBoundaries[boundaryIndex - 1]
+      ) {
+        issues.push(
+          `${expected.id}: structural boundary timestamps must be strictly increasing`,
+        );
+      }
+      if (timeMs !== predictedSections[boundaryIndex + 1]?.startMs) {
+        issues.push(
+          `${expected.id}: structural boundary ${boundaryIndex} must equal the next section start`,
+        );
+      }
+    }
+    if (
+      predictedSectionBoundaries.length !==
+      Math.max(0, predictedSections.length - 1)
+    ) {
+      issues.push(
+        `${expected.id}: each structural section transition must have exactly one boundary timestamp`,
+      );
+    }
+    for (const [sectionIndex, section] of predictedSections.entries()) {
+      const isLastSection = sectionIndex === predictedSections.length - 1;
+      const maximumEndMs =
+        sourceDurationMs +
+        (isLastSection
+          ? STRUCTURAL_SECTION_END_PADDING_MS
+          : SOURCE_DURATION_METADATA_TOLERANCE_MS);
+      if (
+        !Number.isSafeInteger(section.startMs) ||
+        section.startMs >=
+          sourceDurationMs + SOURCE_DURATION_METADATA_TOLERANCE_MS
+      ) {
+        issues.push(
+          `${expected.id} structural section ${sectionIndex}: start must be within the source duration`,
+        );
+      }
+      interval(
+        section,
+        `${expected.id} structural section ${sectionIndex}`,
+        maximumEndMs,
+      );
     }
     for (const [windowIndex, window] of (
       recording.donorWindows ?? []
@@ -656,7 +761,7 @@ export function validatePredictionProvenance(predictions) {
           endMs: window.endMs ?? window.donorEndMs,
         },
         `${expected.id} donor window ${windowIndex}`,
-        expected.durationSeconds * 1000,
+        maxEventTimeMs,
       );
       for (const [
         candidateIndex,
@@ -678,13 +783,21 @@ export function validatePredictionProvenance(predictions) {
           );
           continue;
         }
+        const bedSourceDurationMs =
+          predictions.recordings[bedTrack.id].sourceDurationMs;
+        if (!Number.isSafeInteger(bedSourceDurationMs)) {
+          issues.push(
+            `${expected.id} donor window ${windowIndex} candidate ${candidateIndex}: analyzed bed duration missing`,
+          );
+          continue;
+        }
         interval(
           {
             startMs: candidate.startMs ?? candidate.bedStartMs,
             endMs: candidate.endMs ?? candidate.bedEndMs,
           },
           `${expected.id} bed candidate ${candidateIndex}`,
-          bedTrack.durationSeconds * 1000,
+          bedSourceDurationMs + SOURCE_DURATION_METADATA_TOLERANCE_MS,
         );
       }
     }
@@ -693,24 +806,32 @@ export function validatePredictionProvenance(predictions) {
 }
 
 export function evaluateTrack(recording, predictions, options = {}) {
-  const iouThreshold = options.iouThreshold ?? 0.5;
+  const candidateIouThreshold =
+    options.candidateIntervalIoU ?? CANDIDATE_WINDOW_IOU_THRESHOLD;
+  const boundaryToleranceMs =
+    options.sectionBoundaryToleranceMs ?? SECTION_BOUNDARY_TOLERANCE_MS;
   const topK = options.topK ?? 5;
   const adjudicated = recording.adjudicated;
   if (!adjudicated)
     return { status: "pending-independent-annotation", metrics: null };
-  const predictedVocalPhrases = predictions.vocalPhrases ?? [];
-  const predictedSections = predictions.sections ?? [];
-  const vocalReferences = adjudicated.vocalPhrases ?? [];
   const sections = adjudicated.sectionSegments ?? [];
   const confidentlyLabeled = sections.filter(
     (section) =>
-      section.label !== "unknown" && section.certainty === "confident",
+      section.label !== "unknown" && section.labelCertainty === "confident",
   );
-  const confidentVocalPhrases = vocalReferences.filter(
-    (phrase) => phrase.certainty === "confident",
-  );
-  const confidentSectionBoundaries = sections.filter(
-    (section) => section.certainty === "confident",
+  const confidentSectionBoundaries = (
+    adjudicated.sectionBoundaries ?? []
+  ).filter((boundary) => boundary.certainty === "confident");
+  const ambiguousSectionBoundaries = (
+    adjudicated.sectionBoundaries ?? []
+  ).filter((boundary) => boundary.certainty === "ambiguous");
+  const predictedSectionBoundaries = predictions.sectionBoundaries ?? [];
+  const pitchContinuityRuns = predictions.pitchContinuityRuns ?? [];
+  const structuralBoundaryDetection = structuralBoundaryMetrics(
+    predictedSectionBoundaries,
+    confidentSectionBoundaries,
+    ambiguousSectionBoundaries,
+    boundaryToleranceMs,
   );
   return {
     status: "evaluated",
@@ -718,32 +839,27 @@ export function evaluateTrack(recording, predictions, options = {}) {
       sourceSha256: recording.sourceSha256,
       durationSeconds: recording.durationSeconds,
     },
-    vocalPassageDetection: detectionMetrics(
-      predictedVocalPhrases,
-      confidentVocalPhrases,
-      iouThreshold,
-      vocalReferences.filter((phrase) => phrase.certainty === "ambiguous"),
-    ),
-    excludedAmbiguousVocalPhrases:
-      vocalReferences.length - confidentVocalPhrases.length,
-    sectionBoundaryDetection: detectionMetrics(
-      predictedSections,
-      confidentSectionBoundaries,
-      iouThreshold,
-      sections.filter((section) => section.certainty === "ambiguous"),
-    ),
-    excludedAmbiguousSectionBoundaries:
-      sections.length - confidentSectionBoundaries.length,
-    sectionClassification: sectionClassification(
-      predictedSections,
-      confidentlyLabeled,
-      iouThreshold,
-    ),
+    structuralBoundaryDetection,
+    semanticSectionClassification: {
+      status: "unavailable",
+      accuracy: null,
+      evaluated: 0,
+      reason:
+        "The production section engine emits structural windows and repetition labels, not semantic verse, chorus, bridge, or breakdown predictions.",
+    },
+    lyricPhraseTiming: {
+      status: "unavailable",
+      metrics: null,
+      pitchContinuityRunCount: pitchContinuityRuns.length,
+      reason:
+        "Pitch-continuity runs are not lyric-phrase boundaries; the current pipeline does not produce word- or lyric-phrase timing predictions.",
+    },
+    excludedAmbiguousSectionBoundaries: ambiguousSectionBoundaries.length,
     bedCandidateRanking: candidateRanking(
       predictions.donorWindows ?? [],
       adjudicated.bedPairJudgments ?? [],
       topK,
-      iouThreshold,
+      candidateIouThreshold,
     ),
     coverage: {
       annotatedSectionSeconds: coveredDurationMs(sections) / 1000,
@@ -790,7 +906,7 @@ export function buildEvaluationReport(dataset, predictions, options = {}) {
     };
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     studyId: dataset.studyId,
     sourceManifest: EXPECTED_RECORDINGS.map((expected) => {
       const recording = dataset.recordings.find(
@@ -831,12 +947,15 @@ export function buildEvaluationReport(dataset, predictions, options = {}) {
     validation,
     predictionValidation,
     thresholds: {
-      intervalIoU: options.iouThreshold ?? 0.5,
+      candidateWindowIoU:
+        options.candidateIntervalIoU ?? CANDIDATE_WINDOW_IOU_THRESHOLD,
+      sectionBoundaryToleranceMs:
+        options.sectionBoundaryToleranceMs ?? SECTION_BOUNDARY_TOLERANCE_MS,
       recallAtK: options.topK ?? 5,
     },
     tracks,
     interpretation:
-      "Section detection/classification and candidate rankings are separate measurements. Neither establishes harmonic compatibility or perceived mashup quality. Null metrics mean evidence is missing, not zero performance.",
+      "Structural boundary detection and semantic section classification are separate: semantic classification is unavailable until the producer emits semantic labels. Pitch-continuity runs are not lyric phrases and are not scored as such. Candidate rankings do not establish harmonic compatibility or perceived mashup quality. Null metrics mean evidence is missing, not zero performance.",
   };
 }
 

@@ -1,13 +1,14 @@
 {
-  "schemaVersion": 1,
-  "studyId": "waveyard-queen-earth-wind-fire-full-track-v1",
+  "schemaVersion": 2,
+  "studyId": "waveyard-queen-earth-wind-fire-full-track-v2",
   "status": "awaiting_independent_annotation",
   "createdAt": null,
-  "sourceFilesNote": "No audio files, source hashes, or license evidence are bundled. Populate these only from the exact authorized recordings used by both reviewers.",
+  "sourceFilesNote": "No audio files or license evidence are bundled. Verify the exact authorized recordings used by both reviewers before completing source and rights fields.",
   "annotationProtocol": {
     "reviewMode": "independent-blind-then-adjudicated",
     "reviewerCount": 2,
-    "intervalIoUThreshold": 0.5,
+    "candidateWindowIoUThreshold": 0.5,
+    "sectionBoundaryToleranceMs": 2000,
     "minimumSectionCoverageFraction": 0.95,
     "sectionLabels": [
       "intro",
@@ -24,8 +25,9 @@
     "bedPairVerdicts": ["useful", "not-useful", "ambiguous"],
     "rules": [
       "Annotators work from the exact original recording, not analyzer output or candidate rankings.",
-      "Use unknown/ambiguous rather than guessing a semantic section label or precise boundary.",
-      "Record vocal phrase boundaries independently; do not infer lyrics or musical quality from detector output.",
+      "Record section segments and internal transition timestamps separately; label certainty is not boundary-time certainty.",
+      "Use unknown/ambiguous rather than guessing a semantic section label; mark uncertain boundary timestamps as ambiguous independently.",
+      "Do not annotate lyric phrases in this study: current pitch-continuity runs are not lyric-phrase boundaries and are not a proxy for them.",
       "Bed-pair usefulness requires listening to the specified vocal and bed windows together; rhythm resemblance alone is not harmonic evidence.",
       "Resolve disagreements after both independent reviews are locked, preserving the original annotations and resolution rationale."
     ]
@@ -47,14 +49,14 @@
           "reviewerId": null,
           "reviewedAt": null,
           "sectionSegments": [],
-          "vocalPhrases": [],
+          "sectionBoundaries": [],
           "bedPairJudgments": []
         },
         {
           "reviewerId": null,
           "reviewedAt": null,
           "sectionSegments": [],
-          "vocalPhrases": [],
+          "sectionBoundaries": [],
           "bedPairJudgments": []
         }
       ],
@@ -76,14 +78,14 @@
           "reviewerId": null,
           "reviewedAt": null,
           "sectionSegments": [],
-          "vocalPhrases": [],
+          "sectionBoundaries": [],
           "bedPairJudgments": []
         },
         {
           "reviewerId": null,
           "reviewedAt": null,
           "sectionSegments": [],
-          "vocalPhrases": [],
+          "sectionBoundaries": [],
           "bedPairJudgments": []
         }
       ],
