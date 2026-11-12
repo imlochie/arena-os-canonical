@@ -66,6 +66,7 @@ import {
   verifyModelFile,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { DependencyMissingError } from "@workspace/arena/lib/waveyard/measure/pcm";
+import type { SeparationActiveMemoryPeak } from "./separation-memory";
 
 /** Everything the handler needs from the outside world, injectable so the
  *  e2e test runs the FULL pipeline (decode → demix → encode → persist)
@@ -84,7 +85,7 @@ export type SeparationHandlerDeps = {
    *  so the e2e test drives the FULL pipeline with a stub engine. */
   runDeep?: typeof runDeepSeparation;
   /** Measurement seam for worker-side inference stage timings. */
-  onInferenceTiming?: (modelId: string, timings: MdxStageTimings) => void;
+  onInferenceTiming?: (modelId: string, timings: MdxStageTimings, activeMemoryPeak?: SeparationActiveMemoryPeak) => void;
 };
 
 export type OpenedEngine = {
@@ -138,6 +139,7 @@ type WorkerDemixResult = {
   separated: SeparatedStems;
   resolvedDevice: string;
   timings: MdxStageTimings;
+  activeMemoryPeak: SeparationActiveMemoryPeak;
 };
 
 export class SeparationCancelledError extends Error {
@@ -224,6 +226,7 @@ export function demixMdxInWorker(
           separated: message.separated as SeparatedStems,
           resolvedDevice: String(message.resolvedDevice),
           timings: message.timings as MdxStageTimings,
+          activeMemoryPeak: message.activeMemoryPeak as SeparationActiveMemoryPeak,
         };
       }
     });
@@ -704,7 +707,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
               });
             }, deps.signal);
             await assertSeparationNotCancelled(database, job.id, deps.signal);
-            deps.onInferenceTiming?.(modelRun.spec.id, separated.timings);
+            deps.onInferenceTiming?.(modelRun.spec.id, separated.timings, separated.activeMemoryPeak);
             resolvedDevice = separated.resolvedDevice;
             for (const run of modelRun.outputs) {
               orderedOutputs.push({

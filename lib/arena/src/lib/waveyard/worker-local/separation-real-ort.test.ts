@@ -74,6 +74,8 @@ import {
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
+import type { SeparationActiveMemoryPeak } from "./separation-memory";
+import { SEPARATION_ACTIVE_MEMORY_SAMPLE_INTERVAL_MS } from "./separation-memory";
 import { FOUR_STEM_MODELS, stagePinnedModels } from "./pinned-models.test-helper";
 
 const KIM = findMdxModel("kim_vocal_2")!;
@@ -200,9 +202,40 @@ async function createMemoryMeasurementSource(realWavPath?: string) {
   };
 }
 
+function assertActiveMemoryPeaks(
+  passes: readonly { model: string; activeMemoryPeak?: SeparationActiveMemoryPeak }[],
+) {
+  assert.deepEqual(
+    passes.map(({ model }) => model),
+    FOUR_STEM_MODELS.map(({ id }) => id),
+    "each pinned pass returns one active-memory summary in recipe order",
+  );
+  for (const { model, activeMemoryPeak } of passes) {
+    assert.ok(activeMemoryPeak, `${model} reports active worker memory`);
+    assert.equal(activeMemoryPeak.sampleIntervalMs, SEPARATION_ACTIVE_MEMORY_SAMPLE_INTERVAL_MS);
+    assert.ok(activeMemoryPeak.sampleCount >= 2, `${model} is sampled at pass start and stop`);
+    assert.ok(activeMemoryPeak.elapsedMs >= 0);
+    for (const field of ["rss", "heapUsed", "external", "arrayBuffers"] as const) {
+      assert.ok(
+        Number.isSafeInteger(activeMemoryPeak.peak[field]) && activeMemoryPeak.peak[field] >= 0,
+        `${model} reports a valid active peak for ${field}`,
+      );
+    }
+  }
+}
+
+function modelPassMemoryPeaks(
+  passes: readonly { model: string; activeMemoryPeak?: SeparationActiveMemoryPeak }[],
+) {
+  return passes.map(({ model, activeMemoryPeak }) => {
+    assert.ok(activeMemoryPeak, `${model} has an active-memory summary`);
+    return { model, activeMemoryPeak };
+  });
+}
+
 function createLocalRetryHarness(
   database: SeparationFixture["database"],
-  onInferenceTiming?: (modelId: string, timings: MdxStageTimings) => void,
+  onInferenceTiming?: (modelId: string, timings: MdxStageTimings, activeMemoryPeak?: SeparationActiveMemoryPeak) => void,
 ) {
   const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
   const previousRedisUrl = process.env.REDIS_URL;
@@ -742,12 +775,12 @@ test("the pinned four-model recipe completes through the production worker on re
     let retryPromise: Promise<{ queued: boolean }> | undefined;
     let elapsedMs = 0;
     try {
-      harness = createLocalRetryHarness(f.database, (model, timings) => {
+      harness = createLocalRetryHarness(f.database, (model, timings, activeMemoryPeak) => {
         // Production-worker timing is emitted only after its inference worker
         // exits; that worker awaits session.release() before posting results.
         // Therefore each callback proves that pass released before the next
         // model session could be opened.
-        completedModelPasses.push({ model, chunkCount: timings.chunkCount });
+        completedModelPasses.push({ model, chunkCount: timings.chunkCount, activeMemoryPeak });
       });
       const startedAt = Date.now();
       retryPromise = retrySeparationJob(f.database, f.job.id);
@@ -792,6 +825,7 @@ test("the pinned four-model recipe completes through the production worker on re
       completedModelPasses.every(({ chunkCount }) => chunkCount > 1),
       `all four pinned model passes process multiple chunks: ${completedModelPasses.map(({ model, chunkCount }) => `${model}=${chunkCount}`).join(", ")}`,
     );
+    assertActiveMemoryPeaks(completedModelPasses);
     assert.ok(
       FOUR_STEM_MODELS.every(({ id }) => requestSamples.some(({ phase }) => phase === `${FOUR_STEM_MODELS.findIndex((model) => model.id === id) + 1}/4`)),
       "library and live-session reads remain active in every model phase",
