@@ -713,6 +713,82 @@ test("parallel donor failures preserve every other stem across cancel, reject, a
   }
 });
 
+test("a tempo-match rejection preserves its exact prior layer while another stem becomes audible", async () => {
+  const retainedBuffer = { duration: 17, length: 816_000, numberOfChannels: 2 } as AudioBuffer;
+  const failedDecodeBuffer = { duration: 6, length: 288_000, numberOfChannels: 2 } as AudioBuffer;
+  const successBuffer = { duration: 11, length: 528_000, numberOfChannels: 2 } as AudioBuffer;
+  const decodedBuffers = [retainedBuffer, failedDecodeBuffer, successBuffer];
+  let releaseTempoMatch!: (error: Error) => void;
+  let notifyTempoMatchStarted!: () => void;
+  const tempoMatchStarted = new Promise<void>(resolve => { notifyTempoMatchStarted = resolve; });
+  const f = fixture(
+    (_context, _buffer, ratio) => ratio === 0.8
+      ? new Promise<AudioBuffer>((_resolve, reject) => {
+        releaseTempoMatch = reject;
+        notifyTempoMatchStarted();
+      })
+      : Promise.resolve({ duration: 3 } as AudioBuffer),
+    undefined,
+    () => decodedBuffers.shift()!,
+    ["vocals", "drums"],
+  );
+  const failedChannel = f.channels.get("vocals")!;
+  const successChannel = f.channels.get("drums")!;
+  failedChannel.source.mediaElement.currentTime = 8.75;
+  successChannel.source.mediaElement.currentTime = 23.5;
+  globalThis.fetch = async () => response();
+
+  try {
+    await f.layers.replace("vocals", "/retained-vocal-donor");
+    const retainedLayer = lifecycleState(f.layers).layers.get("vocals");
+    const retainedSource = f.sources[0];
+    assert.ok(retainedLayer);
+    assert.equal(retainedSource.offset, 8.75 % retainedBuffer.duration);
+
+    const failingTempoSwap = f.layers.replace("vocals", "/tempo-match-fails", 0.8);
+    const failure = assert.rejects(failingTempoSwap, /Tempo matching failed/);
+    await tempoMatchStarted;
+    assert.equal(lifecycleState(f.layers).pending.has("vocals"), true,
+      "the vocal selection remains pending inside its separate tempo preparation");
+
+    await f.layers.replace("drums", "/new-drum-donor");
+    const successSource = f.sources.at(-1)!;
+    const successInput = f.gains.at(-1)!;
+    assert.equal(successSource.buffer, successBuffer);
+    assert.equal(successSource.connectedTo, successInput);
+    assert.equal(successInput.connectedTo, successChannel.gain,
+      "the completed donor routes only to the drum channel");
+    assert.equal(successSource.offset, 23.5 % successBuffer.duration,
+      "the completed donor follows the peer's independent playback clock");
+    assert.equal(successChannel.inputGain.gain.value, 0,
+      "the successful donor is audible after the original drum layer fades");
+    assert.equal(successSource.stopped, false);
+
+    releaseTempoMatch(new Error("Tempo matching failed."));
+    await failure;
+
+    assert.equal(lifecycleState(f.layers).layers.get("vocals"), retainedLayer,
+      "tempo rejection leaves the exact prior vocal layer selected");
+    assert.equal(retainedSource.stopped, false,
+      "tempo rejection does not retire the previously audible vocal donor");
+    assert.equal(retainedSource.offset, 8.75 % retainedBuffer.duration);
+    assert.equal(failedChannel.inputGain.gain.value, 0,
+      "the retained vocal donor remains routed instead of unmuting/replacing it");
+    assert.equal(failedChannel.source.mediaElement.currentTime, 8.75,
+      "the failed channel's playback clock is unchanged");
+    assert.equal(failedChannel.source.mediaElement.paused, false);
+    assert.equal(successSource.stopped, false,
+      "failure on vocals does not retire the newly installed drum donor");
+    assert.equal(successChannel.source.mediaElement.currentTime, 23.5);
+    assert.equal(successChannel.source.mediaElement.paused, false);
+    assert.equal(f.sources.length, 2,
+      "the rejected tempo output never creates a source; only the retained and successful donors exist");
+    assert.equal(lifecycleState(f.layers).pending.size, 0);
+  } finally {
+    f.layers.dispose();
+  }
+});
+
 test("tempo-matched donor audio is prepared before the original layer fades out", async () => {
   const ratios: number[] = [];
   const f = fixture(async (_context, _buffer, ratio, signal) => {
