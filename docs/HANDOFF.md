@@ -1596,6 +1596,11 @@ median-of-five is specifically intended to tolerate isolated runner stalls
 while still failing when the majority of swaps slow down. Pure budget tests
 cover both that noise case and an injected sustained slowdown.
 
+The first repeated three-engine run (commit `c16b3d54`, run
+`43201302988`) passed with five samples per mode. Its observed medians were
+203.9/498.4 ms for Chromium, 164/495 ms for WebKit, and 121/384 ms for Firefox
+(native/tempo-matched), all below the respective budgets.
+
 ### Why the cause is not being quoted from CI logs
 
 Job logs are unreachable from the environment this work ran in:
