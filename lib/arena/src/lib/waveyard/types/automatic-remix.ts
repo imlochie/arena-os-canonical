@@ -12,7 +12,7 @@ import {
 } from "./analysis-confidence";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
-export const AUTOMATIC_REMIX_ENGINE_VERSION = "2";
+export const AUTOMATIC_REMIX_ENGINE_VERSION = "3";
 export const AUTOMATIC_REMIX_VARIANTS = ["original", "hybrid"] as const;
 export type AutomaticRemixVariant = (typeof AUTOMATIC_REMIX_VARIANTS)[number];
 

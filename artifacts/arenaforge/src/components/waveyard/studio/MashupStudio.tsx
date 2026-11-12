@@ -41,6 +41,22 @@ type Plan = {
       plannedEntryMs: number | null;
       relativeScore: number | null;
       minimumFeatureConfidence: number | null;
+      rankedBedCandidates?: Array<{
+        rank: number;
+        bedSectionId: string;
+        bedStartMs: number;
+        bedEndMs: number;
+        plannedEntryMs: number;
+        relativeScore: number;
+        minimumFeatureConfidence: number;
+        similarities: {
+          duration: number;
+          rhythm: number | null;
+          harmony: number | null;
+          beatPhase: number | null;
+        };
+        selected: boolean;
+      }>;
       reason: string;
     }>;
   };
@@ -303,6 +319,30 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                             : ""}
                         </small>
                         <small>{evaluation.reason}</small>
+                        {evaluation.rankedBedCandidates && evaluation.rankedBedCandidates.length > 0 && (
+                          <details className="mashup-bed-alternatives">
+                            <summary>Compare {evaluation.rankedBedCandidates.length} measured bed options</summary>
+                            <ol>
+                              {evaluation.rankedBedCandidates.map((candidate) => (
+                                <li key={candidate.bedSectionId}>
+                                  <b>
+                                    {candidate.selected ? "Selected · " : `Option ${candidate.rank} · `}
+                                    bed passage {formatPassageTime(candidate.bedStartMs)}–
+                                    {formatPassageTime(candidate.bedEndMs)}
+                                  </b>
+                                  <small>
+                                    Entry {formatPassageTime(candidate.plannedEntryMs)} · relative score {candidate.relativeScore.toFixed(3)}
+                                    {" · duration"} {candidate.similarities.duration.toFixed(3)}
+                                    {" · rhythm"} {candidate.similarities.rhythm?.toFixed(3) ?? "unavailable"}
+                                    {" · harmony"} {candidate.similarities.harmony?.toFixed(3) ?? "unavailable"}
+                                    {" · beat phase"} {candidate.similarities.beatPhase?.toFixed(3) ?? "unavailable"}
+                                  </small>
+                                </li>
+                              ))}
+                            </ol>
+                            <small>Scores are relative rankings, not probabilities or a guarantee of a good-sounding mix. These are analyzer-defined windows, not verified verse or chorus labels.</small>
+                          </details>
+                        )}
                       </li>
                     ))}
                   </ol>

@@ -222,6 +222,39 @@ function cosineSimilarity(left: readonly number[], right: readonly number[]): nu
   return Math.max(-1, Math.min(1, dot / Math.sqrt(leftMagnitude * rightMagnitude)));
 }
 
+function resampleNormalisedSequence(values: readonly number[], length: number): number[] {
+  if (length <= 0 || values.length === 0) return [];
+  if (values.length === 1) return Array.from({ length }, () => values[0]!);
+  return Array.from({ length }, (_, index) => {
+    const position = length === 1 ? 0 : (index * (values.length - 1)) / (length - 1);
+    const lower = Math.floor(position);
+    const upper = Math.min(values.length - 1, lower + 1);
+    const fraction = position - lower;
+    return values[lower]! * (1 - fraction) + values[upper]! * fraction;
+  });
+}
+
+/**
+ * Rhythm vectors have four samples per beat. When two whole-bar passages have
+ * different lengths, compare their time-normalised shapes for ranking while
+ * retaining their actual duration mismatch as separate evidence.
+ */
+function normalisedRhythmSimilarity(
+  left: readonly number[],
+  right: readonly number[],
+  leftBeats: number,
+  rightBeats: number,
+): number | null {
+  if (leftBeats < 8 || rightBeats < 8
+    || leftBeats % 4 !== 0 || rightBeats % 4 !== 0
+    || left.length !== leftBeats * 4 || right.length !== rightBeats * 4) return null;
+  const length = Math.max(left.length, right.length);
+  return cosineSimilarity(
+    resampleNormalisedSequence(left, length),
+    resampleNormalisedSequence(right, length),
+  );
+}
+
 function shiftedChroma(left: readonly number[], right: readonly number[], semitones: number): number | null {
   if (left.length !== 48 || right.length !== 48) return null;
   const shifted = Array.from({ length: 48 }, (_, index) => {
@@ -260,6 +293,9 @@ export function comparePassageCompatibility(input: {
   const anchorBeats = input.anchor.endBeatIndex - input.anchor.startBeatIndex;
   const donorBeats = input.donor.endBeatIndex - input.donor.startBeatIndex;
   const beatCount = Math.min(anchorBeats, donorBeats);
+  const phraseLengthSimilarity = Math.max(anchorBeats, donorBeats) > 0
+    ? Math.min(anchorBeats, donorBeats) / Math.max(anchorBeats, donorBeats)
+    : null;
   const tempoRatio = Number.isFinite(input.donorBpm) && input.donorBpm > 0 && Number.isFinite(input.anchorBpm)
     ? input.anchorBpm / input.donorBpm : 0;
   const bpmEvidenceAvailable = Number.isFinite(input.anchorBpm) && input.anchorBpm > 0
@@ -269,11 +305,16 @@ export function comparePassageCompatibility(input: {
     ? dimension("unavailable", null, "Trusted BPM and beat-confidence evidence is required for both tracks.")
     : dimension(tempoRatio >= 0.92 && tempoRatio <= 1.08 ? "match" : "conflict", null,
       `Tempo ratio ${tempoRatio.toFixed(3)} (${input.anchorBpm.toFixed(1)} / ${input.donorBpm.toFixed(1)} BPM); allowed range 0.92–1.08.`);
-  const phraseAlignment = anchorBeats === donorBeats && anchorBeats >= 8 && anchorBeats % 4 === 0
-    ? dimension("match", null, `${anchorBeats} measured beats (${anchorBeats / 4} bars) in each passage; no semantic role is inferred.`)
-    : dimension("conflict", null, `Passage lengths are ${anchorBeats} and ${donorBeats} beats; exact 2+ bar phrase lengths must match.`);
+  const validBarWindows = anchorBeats >= 8 && donorBeats >= 8
+    && anchorBeats % 4 === 0 && donorBeats % 4 === 0;
+  const phraseAlignment = !validBarWindows
+    ? dimension("conflict", phraseLengthSimilarity, `Passage lengths are ${anchorBeats} and ${donorBeats} beats; both need at least 2 complete bars for normalized comparison.`)
+    : anchorBeats === donorBeats
+      ? dimension("match", 1, `${anchorBeats} measured beats (${anchorBeats / 4} bars) in each passage; no semantic role is inferred.`)
+      : dimension("context", phraseLengthSimilarity,
+        `Passage lengths differ (${anchorBeats} vs ${donorBeats} beats; ${phraseLengthSimilarity?.toFixed(3)} duration similarity). Rhythm shapes are time-normalized for relative ranking; this is not an exact phrase match.`);
   const rhythmScore = input.anchor.rhythm.status === "measured" && input.donor.rhythm.status === "measured"
-    ? cosineSimilarity(input.anchor.rhythm.value, input.donor.rhythm.value) : null;
+    ? normalisedRhythmSimilarity(input.anchor.rhythm.value, input.donor.rhythm.value, anchorBeats, donorBeats) : null;
   const rhythm = rhythmScore === null
     ? dimension("unavailable", null, "One or both passages have no usable rhythm fingerprint.")
     : dimension(rhythmScore >= PASSAGE_MATCH_SIMILARITY_THRESHOLD ? "match" : "conflict", rhythmScore,

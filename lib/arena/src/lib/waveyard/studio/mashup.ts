@@ -23,7 +23,7 @@ import { comparePassageCompatibility, type PassageFingerprint } from "../types/p
 import type { VocalPhrase } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v2";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v3";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -127,6 +127,12 @@ export type MashupPassageSearch = {
       relativeScore: number;
       minimumFeatureConfidence: number;
       transientTiebreakScore: number;
+      similarities: {
+        duration: number;
+        rhythm: number | null;
+        harmony: number | null;
+        beatPhase: number | null;
+      };
       selected: boolean;
     }>;
     reason: string;
@@ -404,9 +410,14 @@ function rankPassagePair(
   donorBpm: number | null,
   bedBpm: number | null,
   tempoTrusted: boolean,
-): { score: number; details: string[]; minimumFeatureConfidence: number } | null {
+): {
+  score: number;
+  details: string[];
+  minimumFeatureConfidence: number;
+  similarities: { duration: number; rhythm: number | null; harmony: number | null; beatPhase: number | null };
+} | null {
   const dimensions = comparison.dimensions;
-  if (dimensions.phraseAlignment.status !== "match") return null;
+  if (dimensions.phraseAlignment.status !== "match" && dimensions.phraseAlignment.status !== "context") return null;
   const measuredFeatureConfidences = [
     Math.min(
       passageFeatureConfidence(donor, "rhythm") ?? 0,
@@ -451,10 +462,10 @@ function rankPassagePair(
 
   const donorBeats = donor.endBeatIndex - donor.startBeatIndex;
   const bedBeats = bed.endBeatIndex - bed.startBeatIndex;
-  if (donorBeats > 0 && bedBeats > 0) {
+  if (donorBeats > 0 && bedBeats > 0 && dimensions.phraseAlignment.similarity !== null) {
     features.push({
-      label: "phrase length",
-      score: Math.min(donorBeats, bedBeats) / Math.max(donorBeats, bedBeats),
+      label: "duration similarity",
+      score: dimensions.phraseAlignment.similarity,
       weight: 0.10,
     });
   }
@@ -473,6 +484,12 @@ function rankPassagePair(
     score,
     details: features.map((feature) => `${feature.label} similarity ${feature.score.toFixed(3)}`),
     minimumFeatureConfidence: Math.min(...measuredFeatureConfidences),
+    similarities: {
+      duration: dimensions.phraseAlignment.similarity ?? 0,
+      rhythm: dimensions.rhythm.similarity,
+      harmony: dimensions.harmony.similarity,
+      beatPhase: dimensions.beatPhase.similarity,
+    },
   };
 }
 
@@ -538,6 +555,7 @@ function rankedPassageEntry(
     why: string;
     musicalScore: number;
     minimumFeatureConfidence: number;
+    similarities: { duration: number; rhythm: number | null; harmony: number | null; beatPhase: number | null };
     transientScore: number;
     donorSectionId: string;
     bedSectionId: string;
@@ -608,7 +626,7 @@ function rankedPassageEntry(
         tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
       );
       if (!ranking) {
-        if (comparison.dimensions.phraseAlignment.status !== "match") {
+        if (comparison.dimensions.phraseAlignment.status === "conflict") {
           phraseLengthMismatchCount += 1;
           sectionPhraseLengthMismatchCount += 1;
         } else {
@@ -649,6 +667,7 @@ function rankedPassageEntry(
         why: `aligned voice-bearing donor section ${donorSectionId} (${donorSection.startMs}–${donorSection.endMs}ms, ${phrases.length} voiced-run starts) with bed section ${bedSection.id ?? bedSection.startMs} (${bedSection.startMs}–${bedSection.endMs}ms); whole vocal material is retained; relative score ${ranking.score.toFixed(3)} (${ranking.details.join(", ")}); ${comparisonSummary}; transient alignment only breaks near-ties`,
         musicalScore: ranking.score,
         minimumFeatureConfidence: ranking.minimumFeatureConfidence,
+        similarities: ranking.similarities,
         transientScore,
         donorSectionId,
         bedSectionId: bedSection.id ?? `${bed.sourceAssetId ?? "bed"}:${bedSection.startMs}`,
@@ -695,6 +714,7 @@ function rankedPassageEntry(
         relativeScore: candidate.musicalScore,
         minimumFeatureConfidence: candidate.minimumFeatureConfidence,
         transientTiebreakScore: candidate.transientScore,
+        similarities: candidate.similarities,
         selected: candidate === best,
       })),
       reason: best
@@ -706,8 +726,8 @@ function rankedPassageEntry(
           : sectionContentLossCount > 0 && sectionPhraseLengthMismatchCount === 0 && sectionMissingCoreEvidenceCount === 0
             ? "all structurally ranked entries would reduce vocal coverage compared with the safe fallback"
             : sectionPhraseLengthMismatchCount > 0 && sectionMissingCoreEvidenceCount === 0
-              ? "no equal 2+ bar phrase length across measured bed passages"
-              : "no bed passage pair had equal 2+ bar phrase lengths and all three measured rhythm, harmony, and beat-phase inputs",
+              ? "no whole-bar passage pair could be compared across measured bed passages"
+              : "no bed passage pair had comparable whole-bar durations and all three measured rhythm, harmony, and beat-phase inputs",
     });
   }
 
@@ -745,8 +765,8 @@ function rankedPassageEntry(
           : contentLossCount > 0 && phraseLengthMismatchCount === 0 && missingCoreEvidenceCount === 0
             ? "all ranked passage entries would reduce vocal coverage compared with the safe fallback"
             : phraseLengthMismatchCount > 0 && missingCoreEvidenceCount === 0
-              ? "no voice-bearing donor passage had an equal 2+ bar bed phrase with measured evidence"
-              : "no voice-bearing donor passage pair had equal 2+ bar phrase lengths plus measured rhythm, harmony, and beat-phase evidence";
+              ? "no voice-bearing donor passage had a whole-bar bed window with measured evidence"
+              : "no voice-bearing donor passage pair had comparable whole-bar durations plus measured rhythm, harmony, and beat-phase evidence";
   return {
     match: best
       ? { at: best.at, why: best.why, score: best.musicalScore, donorSectionId: best.donorSectionId, bedSectionId: best.bedSectionId }

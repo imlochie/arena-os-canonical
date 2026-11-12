@@ -150,6 +150,24 @@ test("compatibility requires separate rhythm, chroma, beat-phase, tempo and beat
   assert.deepEqual(result.missingEvidence, ["donor vocal activity", "anchor non-vocal stem activity", "downbeat confidence"]);
 });
 
+test("different whole-bar durations compare normalized rhythm shape without claiming an exact phrase match", () => {
+  const rhythmShape = (beats: number) => Array.from({ length: beats * 4 }, (_, index) => {
+    const position = index / (beats * 4);
+    return Math.sin(position * Math.PI * 8) + Math.cos(position * Math.PI * 4) * 0.4;
+  });
+  const result = compatibility(
+    fingerprint("sha-a", 0, 20, { rhythm: measured(rhythmShape(20)) }),
+    fingerprint("sha-b", 0, 16, { rhythm: measured(rhythmShape(16)) }),
+  );
+
+  assert.equal(result.dimensions.phraseAlignment.status, "context");
+  assert.equal(result.dimensions.phraseAlignment.similarity, 0.8);
+  assert.match(result.dimensions.phraseAlignment.detail, /time-normalized for relative ranking/);
+  assert.equal(result.dimensions.rhythm.status, "match");
+  assert.ok((result.dimensions.rhythm.similarity ?? 0) > 0.99);
+  assert.equal(result.eligible, false, "different durations remain a ranked comparison, not a core exact match");
+});
+
 test("a rhythm-only recurrence is never enough when the chroma sequence conflicts", () => {
   const chroma = Array.from({ length: 48 }, (_, index) => index % 12 === 7 ? 1 : -1 / 11);
   const result = compatibility(fingerprint("a"), fingerprint("b", 0, 16, { chroma: measured(chroma) }));

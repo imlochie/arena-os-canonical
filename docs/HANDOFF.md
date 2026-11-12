@@ -64,6 +64,39 @@
   tune thresholds or call this lyric, verse/chorus, or mashup-quality
   recognition until those evaluations exist.
 
+## Current implementation — relative-duration vocal-layer candidates
+
+* **Behavior:** the mashup planner now compares whole-bar passages with
+  different durations by resampling their per-beat onset shapes to a common
+  normalized timeline. It reports duration similarity separately and includes
+  it in the uncalibrated relative ranking; exact core-compatibility still
+  requires equal phrase lengths and the existing tempo, rhythm, chroma, and
+  beat-phase evidence. A mismatch is a ranked context candidate, not an
+  equivalence or quality claim. Planner provenance is now version 3 so saved
+  arrangements distinguish the revised ranking behavior.
+* **User-facing result:** Mashup Studio exposes each donor passage's ranked bed
+  alternatives with their proposed entry and separate duration, rhythm,
+  harmony, and beat-phase comparisons. The UI continues to call these
+  analyzer-defined windows, not verified verse or chorus labels.
+* **Verification:** fixtures prove a 16-beat passage can be compared with
+  20-beat and 12-beat whole-bar windows, that duration remains visible, and
+  that exact-core eligibility is not fabricated. The mashup and compatibility
+  suites passed (35/35) before the database fixture was brought in line; the
+  final mashup, database round-trip, compatibility, and stem-evidence run passed
+  (55/55), and full typecheck passed.
+* **Archived-track probe:** re-scoring the existing full-track *Another One
+  Bites the Dust* → *September* fingerprints found 533 non-identical whole-bar
+  pairs with measured rhythm, chroma, and beat-phase inputs among 850 pairs.
+  The best minimum across those three similarities was still low (rhythm 0.346,
+  chroma 0.402, phase 0.795; 8 vs 16 beats). This was an exploratory in-memory
+  comparison on an older report with absent stem-activity evidence treated as
+  unavailable; it is not a new persisted run or a mashup-quality result.
+* **Limit:** normalization compares each section's overall shape. It does not
+  find a shorter repeated subsection inside a longer section, transcribe lyrics,
+  or guarantee syllable-to-beat alignment. Run it against the real September /
+  Queen pair and listen to full renders before treating the candidates as
+  musically useful.
+
 ## Independent full-track ground-truth baseline — 2026-11-12
 
 * **Implementation:** commit `a347f8615d65b8ae4b9d8f912ef79d7ba8c8e522` on `v0/independent-waveyard-eval`, based on `9ac6c612bd8809afb80353c126b494e2ad2b244d`. Adds a versioned two-reviewer annotation template, a provenance-gated evaluator, a blocked report, and protocol documentation; no audio was added to Git.

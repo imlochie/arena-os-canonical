@@ -42,7 +42,7 @@ function testPassageFingerprint(
     sourceChecksumSha256,
     startBeatIndex,
     endBeatIndex,
-    rhythm: measured(Array.from({ length: 32 }, (_, index) =>
+    rhythm: measured(Array.from({ length: (endBeatIndex - startBeatIndex) * 4 }, (_, index) =>
       Number(index % 4 === (compatible ? 0 : 1)))),
     chroma: measured(Array.from({ length: 48 }, (_, index) => index % 12 === 0 ? 1 : 0.05)),
     beatPhase: measured({
@@ -257,6 +257,9 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
     assert.equal(plan.passageSearch?.selectedDonorSectionId, "donor-chorus");
     assert.equal(plan.passageSearch?.selectedBedSectionId, "bed-chorus");
     assert.ok(Math.abs(plan.segments[0]!.mashupStartMs - 24_750) <= 1);
+    const selectedPassage = plan.passageSearch?.evaluations.find((item) => item.selected);
+    assert.equal(selectedPassage?.rankedBedCandidates?.[0]?.similarities.duration, 1);
+    assert.equal(selectedPassage?.rankedBedCandidates?.[0]?.similarities.rhythm, 1);
 
     // Execute save transaction (same pattern as POST /mashup route action: "save")
     const saveResult = await db.transaction(async (tx) => {
@@ -372,11 +375,25 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
     assert.equal(saveResult.tracks.length, 3);
     assert.ok(saveResult.clips.length >= 3);
     const initialSnapshot = JSON.parse(saveResult.version.snapshot) as {
-      mashupPlan?: { passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } };
+      mashupPlan?: {
+        passageSearch?: {
+          selectedDonorSectionId?: string | null;
+          selectedBedSectionId?: string | null;
+          evaluations?: Array<{
+            donorSectionId: string;
+            rankedBedCandidates?: Array<{ bedSectionId: string; similarities: { duration: number; rhythm: number | null } }>;
+          }>;
+        };
+      };
     };
     assert.equal(initialSnapshot.mashupPlan?.passageSearch?.selectedDonorSectionId, "donor-chorus",
       "the version snapshot retains why and where the whole-track planner selected its later section");
     assert.equal(initialSnapshot.mashupPlan?.passageSearch?.selectedBedSectionId, "bed-chorus");
+    const reopenedCandidates = initialSnapshot.mashupPlan?.passageSearch?.evaluations
+      ?.find((item) => item.donorSectionId === "donor-chorus")?.rankedBedCandidates;
+    assert.equal(reopenedCandidates?.[0]?.bedSectionId, "bed-chorus");
+    assert.equal(reopenedCandidates?.[0]?.similarities.duration, 1,
+      "the score breakdown needed to compare bed options survives a saved-version round trip");
 
     // Reopen from database: query remixSessions, remixTracks, and remixClips
     const [reloadedSession] = await db

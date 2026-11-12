@@ -61,7 +61,7 @@ function passageFingerprint(
     sourceChecksumSha256,
     startBeatIndex,
     endBeatIndex,
-    rhythm: measure(Array.from({ length: 32 }, (_, index) =>
+    rhythm: measure(Array.from({ length: (endBeatIndex - startBeatIndex) * 4 }, (_, index) =>
       kind === "near" && index % 4 === 1 ? 0.5 : Number(index % 4 === (compatible ? 0 : 1)))),
     chroma: measure(Array.from({ length: 48 }, (_, index) => {
       const pitch = index % 12;
@@ -207,7 +207,7 @@ test("plan: isolated transient coincidence cannot move the entry without a compa
   ));
 });
 
-test("plan: complete fingerprints with unequal phrase lengths keep the safe entry", () => {
+test("plan: different complete whole-bar lengths are ranked as contextual layering candidates", () => {
   const checksumDonor = "d".repeat(64);
   const checksumBed = "b".repeat(64);
   const attacks = [9_050, 10_050, 11_050].map((timestampMs) => ({
@@ -261,11 +261,16 @@ test("plan: complete fingerprints with unequal phrase lengths keep the safe entr
   );
 
   assert.ok(result.ok);
-  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_000,
-    "strong transient coincidences cannot substitute for unequal 2+ bar phrase structure");
+  const evaluation = result.plan.passageSearch?.evaluations[0];
+  assert.equal(evaluation?.status, "ranked");
+  assert.equal(evaluation?.bestBedSectionId, "bed-12-beats");
+  assert.ok((evaluation?.relativeScore ?? 0) > 0);
   assert.ok(result.plan.rationale.some((line) =>
-    line.includes("no voice-bearing donor passage had an equal 2+ bar bed phrase")
-    && line.includes("transient coincidences did not move the entry"),
+    line.includes("duration similarity") && line.includes("0.750"),
+  ));
+  assert.ok(result.plan.warnings.some((line) =>
+    line.includes("relative evidence ranking")
+    && line.includes("not calibrated or listener-validated"),
   ));
 });
 
@@ -437,6 +442,87 @@ test("plan: weak measured passage candidates are ranked rather than treated as a
   assert.ok(result.plan.warnings.some((line) =>
     line.includes("relative evidence ranking")
     && line.includes("not calibrated or listener-validated"),
+  ));
+});
+
+test("plan: time-normalized shape evidence can rank a 4-bar vocal passage against a different-length bed section", () => {
+  const checksumDonor = "e".repeat(64);
+  const checksumBed = "f".repeat(64);
+  const rhythmShape = (beats: number) => Array.from({ length: beats * 4 }, (_, index) => {
+    const position = index / (beats * 4);
+    return Math.sin(position * Math.PI * 8) + Math.cos(position * Math.PI * 4) * 0.4;
+  });
+  const donorFingerprint = passageFingerprint(checksumDonor, 0, 16);
+  const bedFingerprint = passageFingerprint(checksumBed, 16, 36);
+  donorFingerprint.rhythm = {
+    status: "measured",
+    value: rhythmShape(16),
+    method: "normalized fixture shape",
+    confidence: 0.95,
+  };
+  bedFingerprint.rhythm = {
+    status: "measured",
+    value: rhythmShape(20),
+    method: "normalized fixture shape",
+    confidence: 0.95,
+  };
+
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      sourceAssetId: "variable-donor",
+      sourceChecksumSha256: checksumDonor,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      musicalKey: "C major",
+      keyConfidence: 0.95,
+      beatConfidence: 0.95,
+      durationMs: 60_000,
+      sections: [{
+        id: "donor-four-bars",
+        label: "section",
+        startMs: 0,
+        endMs: 8_000,
+        startBeatIndex: 0,
+        endBeatIndex: 16,
+        passageFingerprint: donorFingerprint,
+      }],
+      vocalPhrases: [
+        { startMs: 1_000, endMs: 1_500, confidence: 0.95 },
+        { startMs: 3_000, endMs: 3_500, confidence: 0.95 },
+        { startMs: 5_000, endMs: 5_500, confidence: 0.95 },
+      ],
+    }),
+    profile({
+      role: "instrumental",
+      sourceAssetId: "variable-bed",
+      sourceChecksumSha256: checksumBed,
+      bpm: 120,
+      bpmConfidence: 0.95,
+      musicalKey: "C major",
+      keyConfidence: 0.95,
+      beatConfidence: 0.95,
+      beatGridMs: Array.from({ length: 121 }, (_, index) => index * 500),
+      durationMs: 60_000,
+      sections: [{
+        id: "bed-five-bars",
+        label: "section",
+        startMs: 8_000,
+        endMs: 18_000,
+        startBeatIndex: 16,
+        endBeatIndex: 36,
+        passageFingerprint: bedFingerprint,
+      }],
+    }),
+  );
+
+  assert.ok(result.ok);
+  assert.equal(result.plan.passageSearch?.selectedDonorSectionId, "donor-four-bars");
+  assert.equal(result.plan.passageSearch?.selectedBedSectionId, "bed-five-bars");
+  assert.ok(result.plan.passageSearch?.evaluations[0]?.rankedBedCandidates[0]?.relativeScore,
+    "a non-identical but measured window should receive a relative score");
+  assert.ok(result.plan.rationale.some((line) =>
+    line.includes("duration similarity") && line.includes("0.800"),
   ));
 });
 
