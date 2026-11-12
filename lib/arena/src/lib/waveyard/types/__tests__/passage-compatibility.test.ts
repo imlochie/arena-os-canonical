@@ -20,7 +20,7 @@ function missing(reason: string) {
 
 function fingerprint(checksum: string, startBeatIndex = 0, endBeatIndex = 16, overrides: Partial<PassageFingerprint> = {}): PassageFingerprint {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256: checksum,
@@ -33,6 +33,7 @@ function fingerprint(checksum: string, startBeatIndex = 0, endBeatIndex = 16, ov
     downbeatConfidence: missing("No independent downbeat analysis."),
     vocalActivity: missing("No isolated-vocal analysis."),
     instrumentalDensity: missing("No non-vocal stem activity envelope."),
+    stemActivity: missing("No current separated-stem activity evidence."),
     ...overrides,
   };
 }
@@ -84,6 +85,31 @@ test("fingerprint parser binds every persisted feature to its exact source passa
   assert.equal(parsePassageFingerprint(value, { sourceChecksumSha256: "sha-b" }), null);
   assert.equal(parsePassageFingerprint({ ...value, rhythm: measured([1, 0]) }), null);
   assert.equal(parsePassageFingerprint({ ...value, downbeatConfidence: { status: "unavailable", reason: 8 } }), null);
+  assert.equal(parsePassageFingerprint({ ...value, stemActivity: { status: "measured", value: [{ stemType: "vocals", sectionRmsDb: -10 }], method: "bad", confidence: null } }), null);
+});
+
+test("per-stem shifts are visible as context but never decide cross-song eligibility", () => {
+  const stemActivity = {
+    status: "measured" as const,
+    method: "isolated-stem PCM RMS",
+    confidence: null,
+    value: [{
+      stemType: "vocals",
+      stemAssetId: "vocal-stem",
+      separationJobId: "separation-job",
+      stemChecksumSha256: "d".repeat(64),
+      sectionRmsDb: -18,
+      boundaryChanges: [{ beatIndex: 4, deltaDb: -9.2 }],
+    }],
+  };
+  const result = compatibility(
+    fingerprint("sha-a", 0, 16, { stemActivity }),
+    fingerprint("sha-b", 0, 16, { stemActivity: missing("No matched stem audio.") }),
+  );
+  assert.equal(result.eligible, true);
+  assert.equal(result.dimensions.stemActivity.status, "context");
+  assert.match(result.dimensions.stemActivity.detail, /Anchor: vocals at beat 4 -9\.2 dB/);
+  assert.match(result.dimensions.stemActivity.detail, /not a semantic role or compatibility gate/);
 });
 
 test("compatibility requires separate rhythm, chroma, beat-phase, tempo and beat-confidence evidence", () => {

@@ -28,7 +28,9 @@ import {
   listenSessions,
   processingJobs,
   projects,
+  sourceAnalyses,
   sourceAssets,
+  sourceSectionAnalyses,
   stemAssets,
   tracks,
   waveformAssets,
@@ -2880,6 +2882,7 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
   const f = await fixture({ model: "stems_4" });
   try {
     const opened: string[] = [];
+    const sectionDispatches: { dispatchKey?: string }[] = [];
     let liveEngines = 0;
     const engine: (spec: MdxModelSpec) => Promise<OpenedEngine> = async (spec) => {
       assert.equal(liveEngines, 0, "the previous model must be released before opening another");
@@ -2887,7 +2890,22 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
       opened.push(spec.id);
       return { infer: (async (spek: Float32Array) => spek) as MdxInfer, release: async () => { liveEngines -= 1; }, resolvedDevice: "cpu" };
     };
-    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: engine });
+    await f.database.insert(sourceAnalyses).values({
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      status: "complete",
+      idempotencyKey: `analysis:${f.source.id}:${randomUUID()}`,
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: "1.4.0",
+      sourceChecksumSha256: f.source.checksumSha256,
+      beatGrid: JSON.stringify([0, 250, 500, 750, 1_000]),
+      beatConfidence: 0.8,
+    });
+    await handleSeparationJob(payloadOf(f), {
+      db: f.database,
+      openEngine: engine,
+      enqueueSectionAnalysis: async (payload) => { sectionDispatches.push(payload); },
+    });
     assert.equal(liveEngines, 0, "the final model is released too");
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
@@ -2897,6 +2915,12 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
     assert.deepEqual(metadata.stems, ["vocals", "drums", "bass", "other"]);
     assert.equal(metadata.outputCount, 4);
     assert.deepEqual(metadata.models, ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]);
+    assert.equal(metadata.sourceChecksumSha256, f.source.checksumSha256, "completed stems are bound to the exact source bytes");
+    assert.equal(sectionDispatches.length, 1, "new stems re-run section analysis");
+    assert.equal(typeof sectionDispatches[0]?.dispatchKey, "string", "refresh uses a distinct queue job identity");
+    const [refreshedSections] = await f.database.select().from(sourceSectionAnalyses)
+      .where(eq(sourceSectionAnalyses.sourceAssetId, f.source.id));
+    assert.equal(refreshedSections.status, "queued");
 
     const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
     assert.equal(stems.length, 4, "the stem.fm set: vocals, drums, bass, melody");

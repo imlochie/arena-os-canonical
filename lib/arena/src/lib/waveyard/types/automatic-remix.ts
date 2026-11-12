@@ -317,7 +317,7 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
   const missingEvidence = [...new Set([
     ...ranked.flatMap((pair) => pair.missingEvidence),
     ...(fingerprintCount < anchorSections.length + donorSections.length
-      ? ["current passage fingerprints for every section; rerun section analysis with engine 1.5.0"] : []),
+      ? ["current passage fingerprints for every section; rerun section analysis with engine 1.6.0"] : []),
     ...(anchorBpm <= 0 || candidateBpm <= 0 ? ["trusted BPM analysis for both sources"] : []),
   ])];
   return {
@@ -340,7 +340,7 @@ function unavailablePassageReport(candidate: AutomaticRemixSource): AutomaticRem
   const missingEvidence = [
     ...(!hasCurrentAnalysis ? [`current checksum-verified source analysis for ${candidate.originalFilename}`] : []),
     ...(!trustedBpm(candidate) ? [`trusted tempo and beat analysis for ${candidate.originalFilename}`] : []),
-    ...(!hasFingerprint ? [`current passage fingerprints for ${candidate.originalFilename}; rerun section analysis with engine 1.5.0`] : []),
+    ...(!hasFingerprint ? [`current passage fingerprints for ${candidate.originalFilename}; rerun section analysis with engine 1.6.0`] : []),
   ];
   return {
     evaluatedPairs: 0,

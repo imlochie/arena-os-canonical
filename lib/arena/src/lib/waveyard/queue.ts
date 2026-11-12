@@ -197,7 +197,10 @@ export async function enqueueSourceAnalysis(payload: SourceAnalysisJobPayload) {
 }
 
 export async function enqueueSourceSectionAnalysis(payload: SourceSectionAnalysisJobPayload) {
-  return enqueue(SOURCE_SECTION_ANALYSIS_QUEUE, "analyze-sections", payload as unknown as Record<string, unknown>, payload.sourceSectionAnalysisId);
+  const jobId = payload.dispatchKey
+    ? `${payload.sourceSectionAnalysisId}:refresh:${payload.dispatchKey}`
+    : payload.sourceSectionAnalysisId;
+  return enqueue(SOURCE_SECTION_ANALYSIS_QUEUE, "analyze-sections", payload as unknown as Record<string, unknown>, jobId);
 }
 
 export async function enqueueSourceEventAnalysis(payload: SourceEventAnalysisJobPayload) {

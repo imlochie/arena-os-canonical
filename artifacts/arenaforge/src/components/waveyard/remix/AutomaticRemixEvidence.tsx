@@ -10,6 +10,7 @@ const dimensions = [
   ["beatPhase", "Beat phase"],
   ["vocalActivity", "Vocal activity"],
   ["instrumentalDensity", "Instrument activity"],
+  ["stemActivity", "Per-stem changes"],
   ["downbeatConfidence", "Downbeat"],
 ] as const;
 

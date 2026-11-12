@@ -80,6 +80,8 @@ export type SourceSectionAnalysisJobPayload = {
   sourceAnalysisId: string;
   analysisEngine: string;
   analysisEngineVersion: string;
+  /** Unique redispatch when a completed separation adds structural evidence. */
+  dispatchKey?: string;
 };
 
 export type SourceEventAnalysisJobPayload = {

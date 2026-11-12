@@ -69,6 +69,10 @@ test("source section repeats show their measured similarity instead of probabili
   );
   assert.equal(displaySourceSectionLabel({ sectionIndex: 2, label: "section", labelConfidence: 0 }), "Section 3");
   assert.equal(
+    displaySourceSectionLabel({ sectionIndex: 3, label: "stem-change", labelConfidence: 0.75 }),
+    "Stem activity shift · normalized signal strength 75%",
+  );
+  assert.equal(
     displaySourceSectionLabel({ sectionIndex: 3, label: "pattern-repeat-a", labelConfidence: 0.94 }),
     "Repeated audio pattern A · 94% rhythm+chroma similarity",
   );

@@ -8,8 +8,12 @@ import {
   labelRepeatedRhythmSections,
   labelSectionEnergyChanges,
   buildPassageFingerprint,
+  buildStemActivityProfile,
+  detectStemActivityBoundaryChanges,
+  desktopSectionCandidates,
   sectionEnergyChangeDb,
 } from "./section-rhythm";
+import type { StemActivityProfile } from "./section-rhythm";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
 
 const beatGridMs = Array.from({ length: 33 }, (_, index) => index * 500);
@@ -244,4 +248,87 @@ test("flat or too-short audio evidence never creates a repeated-rhythm claim", (
   assert.equal(short[0].label, "section");
   assert.ok(labelSectionEnergyChanges(candidates(), beatGridMs, new Float32Array(ANALYSIS_PCM_RATE * 12))
     .every((section) => section.label === "section"));
+});
+
+test("per-stem PCM adds a boundary only for a sustained activity change, not a one-bar fill", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const pcm = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  for (let sample = 0; sample < pcm.length; sample += 1) {
+    const bar = Math.floor(sample / (ANALYSIS_PCM_RATE * 2));
+    const amplitude = bar < 4 ? 0.02 : 0.16;
+    pcm[sample] = amplitude * Math.sin((2 * Math.PI * 110 * sample) / ANALYSIS_PCM_RATE);
+  }
+  const profile = buildStemActivityProfile(pcm, longGrid, {
+    stemType: "bass",
+    stemAssetId: "stem-bass",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "b".repeat(64),
+  });
+  assert.ok(profile);
+  const changes = detectStemActivityBoundaryChanges([profile]);
+  assert.deepEqual(changes.map((change) => change.beatIndex), [16]);
+  assert.ok(Math.abs(changes[0]!.deltaDb) >= 6);
+  const simultaneous = detectStemActivityBoundaryChanges([
+    profile,
+    { ...profile, stemType: "drums", stemAssetId: "stem-drums" },
+  ]);
+  assert.deepEqual(simultaneous.map((change) => change.stemType), ["bass", "drums"]);
+
+  const envelope = new Float32Array(3_300);
+  const sourcePcm = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  const candidatesWithStemEvidence = desktopSectionCandidates(longGrid, envelope, frameMs, sourcePcm, [], changes);
+  assert.equal(candidatesWithStemEvidence?.find((candidate) => candidate.startBeatIndex === 16)?.label, "stem-change");
+  assert.ok(candidatesWithStemEvidence?.some((candidate) => candidate.startBeatIndex === 0));
+
+  const transient = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  for (let sample = 0; sample < transient.length; sample += 1) {
+    const bar = Math.floor(sample / (ANALYSIS_PCM_RATE * 2));
+    const amplitude = bar === 4 ? 0.16 : 0.02;
+    transient[sample] = amplitude * Math.sin((2 * Math.PI * 110 * sample) / ANALYSIS_PCM_RATE);
+  }
+  const transientProfile = buildStemActivityProfile(transient, longGrid, {
+    stemType: "drums",
+    stemAssetId: "stem-drums",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "c".repeat(64),
+  });
+  assert.ok(transientProfile);
+  assert.deepEqual(detectStemActivityBoundaryChanges([transientProfile]), []);
+});
+
+test("stem activity is persisted as source-linked signal evidence, not a semantic label", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const pcm = new Float32Array(ANALYSIS_PCM_RATE * 32).fill(0.1);
+  const profile = buildStemActivityProfile(pcm, longGrid, {
+    stemType: "vocals",
+    stemAssetId: "stem-vocals",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "d".repeat(64),
+  }) as StemActivityProfile;
+  const envelope = new Float32Array(3_300);
+  const fingerprint = buildPassageFingerprint({
+    sourceChecksumSha256: "a".repeat(64),
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    beatGridMs: longGrid,
+    beatConfidence: 0.8,
+    envelope,
+    frameMs,
+    pcm,
+    stemActivityProfiles: [profile],
+    stemActivityBoundaryChanges: [{
+      beatIndex: 4,
+      stemType: "vocals",
+      deltaDb: -9.2,
+      evidenceStrength: 0.511,
+    }],
+  });
+  assert.equal(fingerprint.stemActivity.status, "measured");
+  if (fingerprint.stemActivity.status === "measured") {
+    assert.equal(fingerprint.stemActivity.value[0]?.stemType, "vocals");
+    assert.equal(fingerprint.stemActivity.value[0]?.stemAssetId, "stem-vocals");
+    assert.equal(fingerprint.stemActivity.value[0]?.separationJobId, "separation-current");
+    assert.deepEqual(fingerprint.stemActivity.value[0]?.boundaryChanges, [{ beatIndex: 4, deltaDb: -9.2 }]);
+  }
+  assert.doesNotMatch(JSON.stringify(fingerprint), /chorus|verse/i);
 });

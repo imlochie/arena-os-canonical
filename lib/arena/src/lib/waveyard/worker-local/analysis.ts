@@ -11,6 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
+import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db } from "@workspace/db";
 import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections } from "@workspace/db/waveyardSchema";
@@ -67,11 +68,17 @@ export function desktopSectionIdempotencyKey(sourceAssetId: string) {
 export async function provisionDesktopSectionAnalysis(
   analysis: typeof sourceAnalyses.$inferSelect,
   source: typeof sourceAssets.$inferSelect,
+  options: {
+    database?: ReturnType<typeof drizzle>;
+    dispatchKey?: string;
+    enqueue?: typeof enqueueSourceSectionAnalysis;
+  } = {},
 ) {
+  const database = options.database ?? db;
   const beatGrid = parseBeatGrid(analysis.beatGrid);
   const unavailable = analysis.status !== "complete" || !beatGrid;
   const now = new Date();
-  const [row] = await db
+  const [row] = await database
     .insert(sourceSectionAnalyses)
     .values({
       projectId: source.projectId,
@@ -95,6 +102,7 @@ export async function provisionDesktopSectionAnalysis(
       target: sourceSectionAnalyses.sourceAssetId,
       set: {
         sourceAnalysisId: analysis.id,
+        idempotencyKey: desktopSectionIdempotencyKey(source.id),
         status: unavailable ? "unavailable" : "queued",
         stage: unavailable ? "insufficient-analysis" : "queued",
         attempts: 0,
@@ -110,19 +118,20 @@ export async function provisionDesktopSectionAnalysis(
       },
     })
     .returning();
-  await db.delete(sourceSections).where(eq(sourceSections.sourceAssetId, source.id));
+  await database.delete(sourceSections).where(eq(sourceSections.sourceAssetId, source.id));
   if (unavailable) return row;
   try {
-    await enqueueSourceSectionAnalysis({
+    await (options.enqueue ?? enqueueSourceSectionAnalysis)({
       sourceSectionAnalysisId: row.id,
       projectId: source.projectId,
       sourceAssetId: source.id,
       sourceAnalysisId: analysis.id,
       analysisEngine: DESKTOP_SECTION_ENGINE,
       analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+      ...(options.dispatchKey ? { dispatchKey: options.dispatchKey } : {}),
     });
   } catch (error) {
-    await db
+    await database
       .update(sourceSectionAnalyses)
       .set({
         status: "failed",

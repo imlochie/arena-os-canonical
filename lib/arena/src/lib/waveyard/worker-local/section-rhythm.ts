@@ -2,6 +2,8 @@ import type { SourceSectionCandidate } from "@workspace/arena/lib/waveyard/types
 import {
   PASSAGE_FINGERPRINT_ENGINE,
   PASSAGE_FINGERPRINT_ENGINE_VERSION,
+  MINIMUM_PERSISTENT_STEM_CHANGE_DB,
+  type PassageStemActivity,
   type PassageFingerprint,
   unavailablePassageEvidence,
 } from "../types/passage-compatibility";
@@ -14,6 +16,221 @@ const PHRASE_WINDOW_LENGTHS = [32, 16, 8] as const;
 const HARMONIC_BINS_PER_SECTION = 4;
 const MINIMUM_CHROMA_VARIATION = 1e-5;
 const MINIMUM_SECTION_ENERGY_CHANGE_DB = 3;
+const PERSISTENT_STEM_BAR_CHANGE_DB = 3;
+const MAXIMUM_STABLE_WINDOW_VARIATION_DB = 3;
+
+export type StemActivityProfile = Pick<
+  PassageStemActivity,
+  "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256"
+> & {
+  rmsDbByBar: (number | null)[];
+};
+
+export type StemActivityBoundaryChange = {
+  beatIndex: number;
+  stemType: string;
+  deltaDb: number;
+  evidenceStrength: number;
+};
+
+/** Creates conservative bar-aligned sections and adds sustained stem-change candidates. */
+export function desktopSectionCandidates(
+  beatGridMs: number[],
+  envelope: Float32Array,
+  frameMs: number,
+  pcm?: Float32Array,
+  precomputedPhraseMatches?: readonly RepeatedPhraseMatch[],
+  stemActivityBoundaryChanges: readonly StemActivityBoundaryChange[] = [],
+): SourceSectionCandidate[] | null {
+  if (beatGridMs.length < 8) return null;
+  const noveltyAt = (ms: number) => {
+    const frame = Math.min(envelope.length - 1, Math.max(0, Math.round(ms / frameMs)));
+    return envelope[frame] ?? 0;
+  };
+  const barLength = 4;
+  const barCount = Math.floor(beatGridMs.length / barLength);
+  if (barCount < 2) return null;
+  const edgeScore = (barIndex: number) => {
+    const beat = barIndex * barLength;
+    const at = beatGridMs[beat];
+    if (at === undefined) return 0;
+    const halfBeat = beat + 1 < beatGridMs.length ? (beatGridMs[beat + 1]! - at) / 2 : 250;
+    return noveltyAt(Math.max(0, at - halfBeat)) + noveltyAt(at) + noveltyAt(at + halfBeat);
+  };
+  const meanScore = Array.from({ length: barCount - 1 }, (_, index) => edgeScore(index + 1))
+    .reduce((total, value) => total + value, 0) / Math.max(1, barCount - 1);
+  const boundaries: number[] = [0];
+  for (let bar = 1; bar < barCount; bar += 1) {
+    const score = edgeScore(bar);
+    if (score >= edgeScore(bar - 1) && score >= edgeScore(bar + 1) && score > meanScore)
+      boundaries.push(bar * barLength);
+  }
+  const stemChangesByBeat = new Map<number, StemActivityBoundaryChange>();
+  for (const change of stemActivityBoundaryChanges) {
+    const existing = stemChangesByBeat.get(change.beatIndex);
+    if (!existing || Math.abs(change.deltaDb) > Math.abs(existing.deltaDb))
+      stemChangesByBeat.set(change.beatIndex, change);
+  }
+  const onsetBoundaries = [...boundaries];
+  for (const change of stemActivityBoundaryChanges) {
+    const bar = change.beatIndex / barLength;
+    if (!Number.isInteger(bar) || bar <= 1 || bar >= barCount - 1 || boundaries.includes(change.beatIndex)) continue;
+    // Avoid creating one-bar fragments beside already-supported boundaries.
+    if (onsetBoundaries.some((boundary) => Math.abs(boundary - change.beatIndex) < 2 * barLength)) continue;
+    boundaries.push(change.beatIndex);
+  }
+  boundaries.push(barCount * barLength);
+  const orderedBoundaries = [...new Set(boundaries)].sort((left, right) => left - right);
+  if (orderedBoundaries.length < 2) return null;
+
+  const candidates: SourceSectionCandidate[] = [];
+  for (let index = 0; index < orderedBoundaries.length - 1; index += 1) {
+    const startBeatIndex = orderedBoundaries[index]!;
+    const endBeatIndex = orderedBoundaries[index + 1]!;
+    const stemChange = stemChangesByBeat.get(startBeatIndex);
+    const onsetStrength = meanScore > 0
+      ? Math.min(1, edgeScore(startBeatIndex / barLength) / (meanScore * 2.5))
+      : 0.25;
+    candidates.push({
+      startBeatIndex,
+      endBeatIndex,
+      label: stemChange ? "stem-change" : "section",
+      labelConfidence: stemChange?.evidenceStrength ?? 0,
+      structuralConfidence: Math.round(Math.max(0.05, Math.min(1, Math.max(onsetStrength, stemChange?.evidenceStrength ?? 0))) * 1000) / 1000,
+    });
+  }
+  const phraseMatches = precomputedPhraseMatches ?? detectRepeatedPhraseMatches(beatGridMs, envelope, frameMs, pcm);
+  const phraseAwareSections = applyRepeatedPhraseMatches(candidates, phraseMatches);
+  const withRepeats = labelRepeatedRhythmSections(phraseAwareSections, beatGridMs, envelope, frameMs, pcm);
+  const withEnergy = pcm ? labelSectionEnergyChanges(withRepeats, beatGridMs, pcm) : withRepeats;
+  return withEnergy.map((candidate) => {
+    const stemChange = stemChangesByBeat.get(candidate.startBeatIndex);
+    return stemChange
+      ? { ...candidate, label: "stem-change", labelConfidence: stemChange.evidenceStrength }
+      : candidate;
+  });
+}
+
+function rmsToDb(squaredEnergy: number, sampleCount: number): number | null {
+  if (sampleCount < 1 || !Number.isFinite(squaredEnergy) || squaredEnergy < 0) return null;
+  const rms = Math.sqrt(squaredEnergy / sampleCount);
+  return Number.isFinite(rms) ? Math.max(-120, 20 * Math.log10(Math.max(rms, 1e-6))) : null;
+}
+
+/** Measures each full bar from one decoded, source-provenance-matched stem. */
+export function buildStemActivityProfile(
+  pcm: Float32Array,
+  beatGridMs: number[],
+  metadata: Pick<StemActivityProfile, "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256">,
+): StemActivityProfile | null {
+  if (!pcm.length || beatGridMs.length < 8 || beatGridMs.some((beat) => !Number.isFinite(beat) || beat < 0)) return null;
+  const barCount = Math.floor(beatGridMs.length / 4);
+  const rmsDbByBar: (number | null)[] = [];
+  for (let bar = 0; bar < barCount; bar += 1) {
+    const startMs = beatGridMs[bar * 4];
+    const endMs = beatGridMs[(bar + 1) * 4];
+    if (startMs === undefined || endMs === undefined || endMs <= startMs) {
+      rmsDbByBar.push(null);
+      continue;
+    }
+    const startSample = Math.max(0, Math.floor((startMs * ANALYSIS_PCM_RATE) / 1000));
+    const endSample = Math.min(pcm.length, Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000));
+    if (endSample <= startSample || endSample < Math.floor((endMs * ANALYSIS_PCM_RATE) / 1000)) {
+      rmsDbByBar.push(null);
+      continue;
+    }
+    let squaredEnergy = 0;
+    for (let sample = startSample; sample < endSample; sample += 1) {
+      const value = pcm[sample] ?? 0;
+      squaredEnergy += value * value;
+    }
+    rmsDbByBar.push(rmsToDb(squaredEnergy, endSample - startSample));
+  }
+  return { ...metadata, rmsDbByBar };
+}
+
+function meanRmsDb(values: readonly (number | null)[]): number | null {
+  const measured = values.filter((value): value is number => value !== null && Number.isFinite(value));
+  if (!measured.length) return null;
+  const meanPower = measured.reduce((total, value) => total + 10 ** (value / 10), 0) / measured.length;
+  return Number.isFinite(meanPower) && meanPower > 0 ? 10 * Math.log10(meanPower) : null;
+}
+
+/**
+ * Finds only sustained bar-aligned stem changes: the two bars after a boundary
+ * must both remain at least 3 dB away from the two-bar pre-boundary level, and
+ * their combined shift must reach 6 dB. This is arrangement evidence, never a
+ * verse/chorus label or proof of cross-song compatibility.
+ */
+export function detectStemActivityBoundaryChanges(
+  profiles: readonly StemActivityProfile[],
+): StemActivityBoundaryChange[] {
+  const changes: StemActivityBoundaryChange[] = [];
+  for (const profile of profiles) {
+    for (let bar = 2; bar + 1 < profile.rmsDbByBar.length; bar += 1) {
+      const firstBeforeDb = profile.rmsDbByBar[bar - 2];
+      const lastBeforeDb = profile.rmsDbByBar[bar - 1];
+      const beforeDb = meanRmsDb(profile.rmsDbByBar.slice(bar - 2, bar));
+      const firstAfterDb = profile.rmsDbByBar[bar];
+      const secondAfterDb = profile.rmsDbByBar[bar + 1];
+      if (firstBeforeDb === null || lastBeforeDb === null || beforeDb === null || firstAfterDb === null || secondAfterDb === null) continue;
+      // A one-bar fill makes the preceding baseline unstable; do not mistake
+      // the return from that fill for a lasting arrangement transition.
+      if (Math.abs(lastBeforeDb - firstBeforeDb) > MAXIMUM_STABLE_WINDOW_VARIATION_DB
+        || Math.abs(secondAfterDb - firstAfterDb) > MAXIMUM_STABLE_WINDOW_VARIATION_DB) continue;
+      const deltaDb = meanRmsDb([firstAfterDb, secondAfterDb]);
+      if (deltaDb === null) continue;
+      const netChangeDb = deltaDb - beforeDb;
+      if (Math.abs(netChangeDb) < MINIMUM_PERSISTENT_STEM_CHANGE_DB) continue;
+      const direction = Math.sign(netChangeDb);
+      if ((firstAfterDb - beforeDb) * direction < PERSISTENT_STEM_BAR_CHANGE_DB
+        || (secondAfterDb - beforeDb) * direction < PERSISTENT_STEM_BAR_CHANGE_DB) continue;
+      const beatIndex = bar * 4;
+      const change = {
+        beatIndex,
+        stemType: profile.stemType,
+        deltaDb: Number(netChangeDb.toFixed(2)),
+        evidenceStrength: Number(Math.min(1, Math.abs(netChangeDb) / 18).toFixed(3)),
+      };
+      changes.push(change);
+    }
+  }
+  return changes.sort((left, right) => left.beatIndex - right.beatIndex || left.stemType.localeCompare(right.stemType));
+}
+
+/** Keeps the measured stem context alongside a persisted source passage. */
+export function passageStemActivityEvidence(
+  profiles: readonly StemActivityProfile[],
+  startBeatIndex: number,
+  endBeatIndex: number,
+  boundaryChanges: readonly StemActivityBoundaryChange[],
+): PassageFingerprint["stemActivity"] {
+  const firstBar = Math.floor(startBeatIndex / 4);
+  const afterLastBar = Math.floor(endBeatIndex / 4);
+  const measurements: PassageStemActivity[] = profiles.flatMap((profile) => {
+    const sectionRmsDb = meanRmsDb(profile.rmsDbByBar.slice(firstBar, afterLastBar));
+    return sectionRmsDb === null ? [] : [{
+      stemType: profile.stemType,
+      stemAssetId: profile.stemAssetId,
+      separationJobId: profile.separationJobId,
+      stemChecksumSha256: profile.stemChecksumSha256,
+      sectionRmsDb: Number(sectionRmsDb.toFixed(2)),
+      boundaryChanges: boundaryChanges
+        .filter((change) => change.stemType === profile.stemType
+          && change.beatIndex >= startBeatIndex && change.beatIndex < endBeatIndex)
+        .slice(0, 32)
+        .map(({ beatIndex, deltaDb }) => ({ beatIndex, deltaDb })),
+    }];
+  });
+  return measurements.length
+    ? {
+      status: "measured",
+      value: measurements,
+      method: "isolated-stem PCM RMS by source beat-grid bar; boundary change compares sustained two-bar windows",
+      confidence: null,
+    }
+    : unavailablePassageEvidence("No complete, source-checksum-matched separated-stem PCM was available for this passage.");
+}
 
 function median(values: number[]): number {
   if (!values.length) return 500;
@@ -160,6 +377,8 @@ export function buildPassageFingerprint(input: {
   envelope: Float32Array;
   frameMs: number;
   pcm: Float32Array;
+  stemActivityProfiles?: readonly StemActivityProfile[];
+  stemActivityBoundaryChanges?: readonly StemActivityBoundaryChange[];
 }): PassageFingerprint {
   const { startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs, pcm } = input;
   const rhythmSignature = sectionRhythmSignature(startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs);
@@ -192,7 +411,7 @@ export function buildPassageFingerprint(input: {
   }
   const unavailable = "Not measured by this source-only structural pass.";
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256: input.sourceChecksumSha256,
@@ -213,6 +432,12 @@ export function buildPassageFingerprint(input: {
     downbeatConfidence: unavailablePassageEvidence("The persisted beat grid does not independently identify downbeats."),
     vocalActivity: unavailablePassageEvidence(unavailable),
     instrumentalDensity: unavailablePassageEvidence("Separated non-vocal stem activity is not part of source-only structural analysis."),
+    stemActivity: passageStemActivityEvidence(
+      input.stemActivityProfiles ?? [],
+      startBeatIndex,
+      endBeatIndex,
+      input.stemActivityBoundaryChanges ?? [],
+    ),
   };
 }
 

@@ -1,13 +1,23 @@
 export const PASSAGE_FINGERPRINT_ENGINE = "waveyard-passage-fingerprint";
-export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "1.0.0";
+export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "2.0.0";
 export const PASSAGE_MATCH_SIMILARITY_THRESHOLD = 0.92;
+export const MINIMUM_PERSISTENT_STEM_CHANGE_DB = 6;
+
+export type PassageStemActivity = {
+  stemType: string;
+  stemAssetId: string;
+  separationJobId: string;
+  stemChecksumSha256: string;
+  sectionRmsDb: number;
+  boundaryChanges: { beatIndex: number; deltaDb: number }[];
+};
 
 export type PassageEvidence<T> =
   | { status: "measured"; value: T; method: string; confidence: number | null }
   | { status: "unavailable"; reason: string };
 
 export type PassageFingerprint = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   engine: typeof PASSAGE_FINGERPRINT_ENGINE;
   engineVersion: typeof PASSAGE_FINGERPRINT_ENGINE_VERSION;
   sourceChecksumSha256: string;
@@ -20,6 +30,8 @@ export type PassageFingerprint = {
   downbeatConfidence: PassageEvidence<number>;
   vocalActivity: PassageEvidence<{ voicedCoverage: number; meanConfidence: number; analysisId: string; stemAssetId: string; stemChecksumSha256: string }>;
   instrumentalDensity: PassageEvidence<{ activeCoverage: number; stemTypes: string[]; analysisIds: string[] }>;
+  /** Per-stem PCM evidence; this is structural context, not semantic form. */
+  stemActivity: PassageEvidence<PassageStemActivity[]>;
 };
 
 export type PassageCompatibilityDimension = {
@@ -45,6 +57,7 @@ export type PassageCompatibility = {
     energy: PassageCompatibilityDimension;
     vocalActivity: PassageCompatibilityDimension;
     instrumentalDensity: PassageCompatibilityDimension;
+    stemActivity: PassageCompatibilityDimension;
     downbeatConfidence: PassageCompatibilityDimension;
   };
   missingEvidence: string[];
@@ -61,7 +74,7 @@ export function parsePassageFingerprint(
 ): PassageFingerprint | null {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const value = input as Record<string, unknown>;
-  if (value.schemaVersion !== 1 || value.engine !== PASSAGE_FINGERPRINT_ENGINE
+  if (value.schemaVersion !== 2 || value.engine !== PASSAGE_FINGERPRINT_ENGINE
     || value.engineVersion !== PASSAGE_FINGERPRINT_ENGINE_VERSION
     || typeof value.sourceChecksumSha256 !== "string"
     || !Number.isInteger(value.startBeatIndex) || !Number.isInteger(value.endBeatIndex)
@@ -114,16 +127,50 @@ export function parsePassageFingerprint(
       ? { activeCoverage: item.activeCoverage as number, stemTypes: item.stemTypes as string[], analysisIds: item.analysisIds as string[] }
       : null;
   });
+  const stemActivity = parseEvidence(value.stemActivity, (raw) => {
+    if (!Array.isArray(raw) || raw.length < 1 || raw.length > 8) return null;
+    const measurements: PassageStemActivity[] = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const item = entry as Record<string, unknown>;
+      if (!Array.isArray(item.boundaryChanges) || item.boundaryChanges.length > 32) return null;
+      const boundaryChanges: PassageStemActivity["boundaryChanges"] = [];
+      for (const rawChange of item.boundaryChanges) {
+        if (!rawChange || typeof rawChange !== "object" || Array.isArray(rawChange)) return null;
+        const change = rawChange as Record<string, unknown>;
+        if (!Number.isInteger(change.beatIndex)
+          || (change.beatIndex as number) < (value.startBeatIndex as number)
+          || (change.beatIndex as number) >= (value.endBeatIndex as number)
+          || typeof change.deltaDb !== "number" || !Number.isFinite(change.deltaDb)
+          || change.deltaDb < -120 || change.deltaDb > 120) return null;
+        boundaryChanges.push({ beatIndex: change.beatIndex as number, deltaDb: change.deltaDb });
+      }
+      if (typeof item.stemType !== "string" || item.stemType.length < 1 || item.stemType.length > 128
+        || typeof item.stemAssetId !== "string" || item.stemAssetId.length < 1 || item.stemAssetId.length > 128
+        || typeof item.separationJobId !== "string" || item.separationJobId.length < 1 || item.separationJobId.length > 128
+        || typeof item.stemChecksumSha256 !== "string" || !/^[a-f\d]{64}$/i.test(item.stemChecksumSha256)
+        || typeof item.sectionRmsDb !== "number" || !Number.isFinite(item.sectionRmsDb) || item.sectionRmsDb < -120 || item.sectionRmsDb > 6) return null;
+      measurements.push({
+        stemType: item.stemType,
+        stemAssetId: item.stemAssetId,
+        separationJobId: item.separationJobId,
+        stemChecksumSha256: item.stemChecksumSha256,
+        sectionRmsDb: item.sectionRmsDb,
+        boundaryChanges,
+      });
+    }
+    return measurements;
+  });
   const downbeatConfidence = parseEvidence(value.downbeatConfidence, scalar);
-  if (!rhythm || !chroma || !beatPhase || !energy || !vocalActivity || !instrumentalDensity || !downbeatConfidence) return null;
+  if (!rhythm || !chroma || !beatPhase || !energy || !vocalActivity || !instrumentalDensity || !downbeatConfidence || !stemActivity) return null;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256: value.sourceChecksumSha256,
     startBeatIndex: value.startBeatIndex as number,
     endBeatIndex: value.endBeatIndex as number,
-    rhythm, chroma, beatPhase, energy, downbeatConfidence, vocalActivity, instrumentalDensity,
+    rhythm, chroma, beatPhase, energy, downbeatConfidence, vocalActivity, instrumentalDensity, stemActivity,
   };
 }
 
@@ -241,6 +288,22 @@ export function comparePassageCompatibility(input: {
     ? dimension("context", input.anchor.instrumentalDensity.value.activeCoverage,
       `Verified non-vocal stem activity covers ${(input.anchor.instrumentalDensity.value.activeCoverage * 100).toFixed(0)}% of the anchor passage; coverage is shown without an unvalidated suitability threshold.`)
     : dimension("unavailable", null, input.anchor.instrumentalDensity.reason);
+  const describeStemActivity = (fingerprint: PassageFingerprint, side: string) => {
+    if (fingerprint.stemActivity.status !== "measured") return null;
+    const changes = fingerprint.stemActivity.value
+      .flatMap((stem) => stem.boundaryChanges.map((change) =>
+        `${stem.stemType} at beat ${change.beatIndex} ${change.deltaDb > 0 ? "+" : ""}${change.deltaDb.toFixed(1)} dB`));
+    return changes.length
+      ? `${side}: ${changes.join(", ")}`
+      : `${side}: ${fingerprint.stemActivity.value.length} isolated stem(s) measured; none had a sustained ≥${MINIMUM_PERSISTENT_STEM_CHANGE_DB} dB shift at this boundary`;
+  };
+  const stemActivityEvidence = [
+    describeStemActivity(input.anchor, "Anchor"),
+    describeStemActivity(input.donor, "Donor"),
+  ].filter((value): value is string => value !== null);
+  const stemActivity = stemActivityEvidence.length
+    ? dimension("context", null, `${stemActivityEvidence.join("; ")}. PCM change is structural context, not a semantic role or compatibility gate.`)
+    : dimension("unavailable", null, "No current-checksum-matched separated-stem PCM activity is available for these passages.");
   const downbeat = input.anchor.downbeatConfidence.status === "measured" && input.donor.downbeatConfidence.status === "measured"
     ? dimension("context", Math.min(input.anchor.downbeatConfidence.value, input.donor.downbeatConfidence.value), "Downbeat confidence is available but is not used to invent a semantic section role.")
     : dimension("unavailable", null, "The stored beat grids do not carry a separately measured downbeat.")
@@ -262,7 +325,7 @@ export function comparePassageCompatibility(input: {
     tempoRatio: Number(tempoRatio.toFixed(4)),
     transpositionSemitones: bestHarmony < -1 ? null : bestShift,
     eligible,
-    dimensions: { tempo, phraseAlignment, rhythm, harmony, beatPhase: phase, energy, vocalActivity: vocal, instrumentalDensity: instruments, downbeatConfidence: downbeat },
+    dimensions: { tempo, phraseAlignment, rhythm, harmony, beatPhase: phase, energy, vocalActivity: vocal, instrumentalDensity: instruments, stemActivity, downbeatConfidence: downbeat },
     missingEvidence,
   };
 }

@@ -36,7 +36,7 @@ function testPassageFingerprint(
   const compatible = kind === "compatible";
   const measured = <T>(value: T) => ({ status: "measured" as const, value, method: "database acceptance fixture", confidence: 0.95 });
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     engine: PASSAGE_FINGERPRINT_ENGINE,
     engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
     sourceChecksumSha256,
@@ -53,6 +53,7 @@ function testPassageFingerprint(
     downbeatConfidence: measured(0.95),
     vocalActivity: unavailablePassageEvidence("not available in this fixture"),
     instrumentalDensity: unavailablePassageEvidence("not available in this fixture"),
+    stemActivity: unavailablePassageEvidence("not available in this fixture"),
   };
 }
 

@@ -18,14 +18,15 @@
  *    Kim Vocal 2), not Demucs' four.
  *  - modelVersion records the model file's sha256 — the exact bits that
  *    produced the stems.
- *  - Separation does not auto-create analysis rows. The Studio's explicit
- *    analysis requests use the local drum/harmony/vocal executors registered
- *    by worker-local/index.ts.
+ *  - Separation does not auto-create stem-specific analysis rows. Once a
+ *    completed separation publishes checksum-bound stems, any completed
+ *    source analysis is structurally refreshed against those stems.
  *  - Real progress: chunk-level progress is written into the durable job's
  *    metadata while separating, so the UI polls one honest number.
  */
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
@@ -35,11 +36,12 @@ import { and, eq, ne } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
 
-import { processingJobs, sourceAssets, stemAssets, waveformJobs } from "@workspace/db/waveyardSchema";
+import { processingJobs, sourceAnalyses, sourceAssets, stemAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
+import { provisionDesktopSectionAnalysis } from "./analysis";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@workspace/arena/lib/waveyard/types";
 import {
@@ -77,6 +79,7 @@ export type SeparationHandlerDeps = {
   openEngine?: (spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda") => Promise<OpenedEngine>;
   decode?: typeof decodeSourceToStereoPcm;
   enqueueWaveform?: typeof enqueueWaveform;
+  enqueueSectionAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueSourceSectionAnalysis;
   /** The deep pass (owner-prepared Demucs, separation/deep.ts). Injectable
    *  so the e2e test drives the FULL pipeline with a stub engine. */
   runDeep?: typeof runDeepSeparation;
@@ -802,6 +805,13 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
 
     const durableWork = await database.transaction(async (tx) => {
+      const [currentSource] = await tx.select({ checksumSha256: sourceAssets.checksumSha256 })
+        .from(sourceAssets)
+        .where(and(eq(sourceAssets.id, source.id), eq(sourceAssets.projectId, source.projectId)))
+        .for("update")
+        .limit(1);
+      if (!currentSource || currentSource.checksumSha256 !== source.checksumSha256)
+        throw new Error("Source audio changed during separation; output stems were not published.");
       const [claimed] = await tx
         .update(processingJobs)
         .set({
@@ -814,6 +824,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
             model: job.model,
             models: runModels,
             resolvedDevice,
+            sourceChecksumSha256: source.checksumSha256,
             outputCount: values.length,
             stems: stemOutputs.map((stem) => stem.stemType),
           }),
@@ -868,6 +879,32 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           })
           .where(eq(waveformJobs.id, waveformJob.id));
       }
+    }
+    // Re-run structure after the new stem files are durably published. The
+    // refreshed section job has a distinct queue ID, so it cannot be lost
+    // behind an earlier source-only analysis that is still in flight.
+    try {
+      const [sourceAnalysis] = await database.select().from(sourceAnalyses).where(and(
+        eq(sourceAnalyses.projectId, source.projectId),
+        eq(sourceAnalyses.sourceAssetId, source.id),
+        eq(sourceAnalyses.sourceChecksumSha256, source.checksumSha256),
+        eq(sourceAnalyses.status, "complete"),
+      )).limit(1);
+      if (sourceAnalysis) {
+        const stemDispatchKey = createHash("sha256")
+          .update(`${job.id}\n${values.map((stem) => `${stem.stemType}:${stem.checksumSha256}`).sort().join("\n")}`)
+          .digest("hex")
+          .slice(0, 24);
+        await provisionDesktopSectionAnalysis(sourceAnalysis, source, {
+          database,
+          dispatchKey: stemDispatchKey,
+          enqueue: deps.enqueueSectionAnalysis,
+        });
+      }
+    } catch (sectionRefreshError) {
+      // Separation remains complete; the durable section row records its own
+      // failure boundary, and source-only structure remains an honest fallback.
+      console.error("could not refresh Waveyard sections after stem publication", sectionRefreshError);
     }
     completed = true;
   } catch (error) {
