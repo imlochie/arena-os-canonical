@@ -16,6 +16,11 @@ import {
   type SessionAudioMediaLease,
 } from "@workspace/arena/lib/waveyard/useStemTransport";
 import {
+  assessRecipientVocalLayerEnergy,
+  recipientVocalLayerEnergyMessage,
+  type RecipientVocalLayerEnergyCheck,
+} from "@workspace/arena/lib/waveyard/live-stem-layers";
+import {
   hasReliableSessionBeatEvidence,
   nextSessionBeatLoop,
   SESSION_DJ_LOOP_LENGTHS,
@@ -1346,7 +1351,14 @@ function SessionDeck({
                 const peak = meters?.[stem.id]?.peak ?? 0;
                 return (
                   <div key={stem.id} className={`wy-stem wy-stem-${stem.stemType}${silent ? " silent" : ""}`}>
-                    <span className="wy-stem-name">{stem.stemType}{swaps[stem.stemType] ? " · swapped" : ""}</span>
+                    <span
+                      className="wy-stem-name"
+                      title={stem.stemType === "vocals" && swaps[stem.stemType]
+                        ? "Donor vocal layer selected; source-voice leakage in other stems is unverified."
+                        : undefined}
+                    >
+                      {stem.stemType}{swaps[stem.stemType] ? stem.stemType === "vocals" ? " · donor" : " · swapped" : ""}
+                    </span>
                     <span className="wy-stem-meter" aria-hidden="true">
                       <i style={{ transform: `scaleX(${Math.min(1, peak)})` }} />
                     </span>
@@ -1547,6 +1559,10 @@ export default function SessionExperience({
   const swapMutationRequestVersionsRef = useRef(new Map<string, number>());
   const pendingSwapCancelRequestsRef = useRef(new Set<string>());
   const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
+  const [recipientVocalHealth, setRecipientVocalHealth] = useState<{
+    sessionTrackId: string;
+    check: RecipientVocalLayerEnergyCheck;
+  } | null>(null);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
   const [pendingPerformance, setPendingPerformance] = useState<PendingPerformance | null>(null);
@@ -1585,6 +1601,25 @@ export default function SessionExperience({
   const [resumeAt, setResumeAt] = useState<{ itemId: string; seconds: number } | null>(null);
 
   const decksRef = useRef<Array<DeckApi | null>>([null, null]);
+
+  const checkRecipientVocalLayer = useCallback((item: SessionTrackItem, deckIndex: 0 | 1) => {
+    const deck = decksRef.current[deckIndex];
+    const vocalStem = item.stems.find((stem) => stem.stemType === "vocals");
+    if (
+      !deck || deck.itemId !== item.id || !deck.hasStemChannels || !deck.transport.playing || !vocalStem
+    ) {
+      return assessRecipientVocalLayerEnergy(null, null);
+    }
+    const sourceMeters = deck.transport.readSourceMeters();
+    const vocalRms = sourceMeters[vocalStem.id]?.rms;
+    const bedRms = Math.sqrt(item.stems
+      .filter((stem) => stem.stemType !== "vocals")
+      .reduce((sum, stem) => {
+        const rms = sourceMeters[stem.id]?.rms ?? 0;
+        return sum + rms * rms;
+      }, 0));
+    return assessRecipientVocalLayerEnergy(vocalRms, bedRms);
+  }, []);
 
   const reportKeyShiftFailure = useCallback((_itemId: string | null, message: string) => {
     setKeyMatchError(`${message} The current mix and playhead were kept.`);
@@ -4521,8 +4556,17 @@ export default function SessionExperience({
     const statusWithKey = tempoStatus === null ? null
       : keyMatchStatus ? `${tempoStatus} · ${keyMatchStatus}` : tempoStatus;
     const manualTempoUsed = recipientTempo.corrected || selectedDonorTempo?.corrected === true;
+    const currentVocalHealth = recipientVocalHealth?.sessionTrackId === currentItem.id
+      ? recipientVocalHealth.check
+      : null;
+    const vocalHealthMessage = currentVocalHealth === null
+      ? "Clean vocal removal is unverified; source voice may remain in other stems."
+      : recipientVocalLayerEnergyMessage(currentVocalHealth);
     const swapStatus = statusWithKey === null ? null
-      : manualTempoUsed ? `${statusWithKey} · manual BPM correction` : statusWithKey;
+      : [
+        manualTempoUsed ? `${statusWithKey} · manual BPM correction` : statusWithKey,
+        stemType === "vocals" ? "vocal leakage unverified" : null,
+      ].filter((part): part is string => part !== null).join(" · ");
     return (
       <LiveStemSwapPicker
         stemType={stemType}
@@ -4544,10 +4588,19 @@ export default function SessionExperience({
           ? warmingLiveSwap.donorId
           : null}
         swapStatus={swapStatus}
+        vocalHealthMessage={stemType === "vocals" ? vocalHealthMessage : null}
         isOpen={openSwapStem === stemType}
         pending={pendingSwap !== undefined}
         busy={savingSwapKeys.has(`${currentItem.id}:${stemType}`)}
-        onToggle={() => setOpenSwapStem((current) => current === stemType ? null : stemType)}
+        onToggle={() => {
+          if (openSwapStem !== stemType && stemType === "vocals") {
+            setRecipientVocalHealth({
+              sessionTrackId: currentItem.id,
+              check: checkRecipientVocalLayer(currentItem, activeDeck),
+            });
+          }
+          setOpenSwapStem((current) => current === stemType ? null : stemType);
+        }}
         onClose={() => setOpenSwapStem(null)}
         onWarm={(donorId) => {
           const tempo = candidates.find((candidate) => candidate.id === donorId);
@@ -4572,6 +4625,12 @@ export default function SessionExperience({
         }}
         onPrefetch={(donorId) => prefetchLiveSwapAsset(stemType, donorId)}
         onChoose={(donorId) => {
+          if (stemType === "vocals") {
+            setRecipientVocalHealth({
+              sessionTrackId: currentItem.id,
+              check: checkRecipientVocalLayer(currentItem, activeDeck),
+            });
+          }
           const tempo = candidates.find((candidate) => candidate.id === donorId);
           const donor = donors.find((item) => item.track.id === donorId);
           if (donor) {
@@ -4676,7 +4735,15 @@ export default function SessionExperience({
       onReset: () => { if (item) resetMix(item); },
       stemExtra: isActive ? swapExtra : undefined,
       openSwapPickerStem: openSwapStem,
-      onOpenSwapPicker: isActive ? (stemType: string) => setOpenSwapStem(stemType) : undefined,
+      onOpenSwapPicker: isActive ? (stemType: string) => {
+        if (stemType === "vocals" && item) {
+          setRecipientVocalHealth({
+            sessionTrackId: item.id,
+            check: checkRecipientVocalLayer(item, deckIndex),
+          });
+        }
+        setOpenSwapStem(stemType);
+      } : undefined,
       onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
       onLiveLayerFailed: isActive ? markLiveLayerFailed : undefined,
       liveSwapFailure: isActive && liveSwapFailures.length > 0

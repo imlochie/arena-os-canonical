@@ -1,15 +1,42 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
 import {
+  assessRecipientVocalLayerEnergy,
   LIVE_STEM_MIN_DONOR_RMS_DBFS,
   LIVE_STEM_PITCH_LOCK_SESSION_BUDGET_BYTES,
   LIVE_STEM_SWITCH_TIMEOUT_MS,
   LiveStemLayers,
+  recipientVocalLayerEnergyMessage,
 } from "./live-stem-layers";
 import { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
+
+test("a quiet recipient vocal layer under an active backing produces a cautious leakage warning", () => {
+  const check = assessRecipientVocalLayerEnergy(0.0002, 0.08);
+  assert.equal(check.state, "quiet-over-active-bed");
+  assert.match(recipientVocalLayerEnergyMessage(check), /voice may remain/i);
+});
+
+test("sparse or instrumental moments stay inconclusive instead of being called failed separation", () => {
+  const check = assessRecipientVocalLayerEnergy(0.0002, 0.004);
+  assert.equal(check.state, "no-vocal-activity");
+  assert.match(recipientVocalLayerEnergyMessage(check), /sparse or instrumental/i);
+  assert.match(recipientVocalLayerEnergyMessage(check), /cannot be assessed/i);
+});
+
+test("audible recipient vocals are not treated as proof that other stems are clean", () => {
+  const check = assessRecipientVocalLayerEnergy(0.04, 0.08);
+  assert.equal(check.state, "audible");
+  assert.match(recipientVocalLayerEnergyMessage(check), /cannot prove other stems/i);
+});
+
+test("unavailable vocal measurements stay nonblocking and do not claim a clean replacement", () => {
+  const check = assessRecipientVocalLayerEnergy(undefined, 0.08);
+  assert.equal(check.state, "unavailable");
+  assert.match(recipientVocalLayerEnergyMessage(check), /not assured/i);
+});
 
 type DecodedAudioFixture = {
   duration: number;

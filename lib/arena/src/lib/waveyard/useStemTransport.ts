@@ -34,6 +34,9 @@ type AudioGraph = {
   /** Explicit-channel-count downmix node: 1 = mono monitor, 2 = stereo. */
   mono: GainNode;
   analyser: AnalyserNode;
+  /** Pre-fader tap so source-layer health is not confused by user mix controls. */
+  sourceAnalyser: AnalyserNode;
+  sourceMonitorSilence: GainNode;
   /** Live insert subgraph between pan and mono; rebuilt on chain change. */
   inserts: InsertSubgraph | null;
   /** The tail node feeding mono (pan or gain). */
@@ -47,6 +50,8 @@ type AudioGraph = {
 function disconnectGraph(graph: AudioGraph) {
   graph.source.mediaElement.pause();
   graph.source.disconnect();
+  graph.sourceAnalyser.disconnect();
+  graph.sourceMonitorSilence.disconnect();
   graph.inputGain.disconnect();
   graph.gain.disconnect();
   graph.pan?.disconnect();
@@ -425,12 +430,19 @@ export function useStemTransport(
       mono.channelInterpretation = "speakers";
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
+      const sourceAnalyser = ctx.createAnalyser();
+      sourceAnalyser.fftSize = 2048;
+      const sourceMonitorSilence = ctx.createGain();
+      sourceMonitorSilence.gain.value = 0;
       const inputGain = ctx.createGain();
       const keyShiftDry = ctx.createGain();
       const keyShiftWet = ctx.createGain();
       keyShiftDry.gain.value = 1;
       keyShiftWet.gain.value = 0;
       source.connect(inputGain);
+      source.connect(sourceAnalyser);
+      sourceAnalyser.connect(sourceMonitorSilence);
+      sourceMonitorSilence.connect(masterGain.current!);
       inputGain.connect(gain);
       const tail: AudioNode = pan ?? gain;
       if (pan) gain.connect(pan);
@@ -449,7 +461,7 @@ export function useStemTransport(
       mono.connect(analyser);
       analyser.connect(masterGain.current!);
       graphs.current[id] = {
-        source, inputGain, gain, pan, mono, analyser, inserts: insertSubgraph, tail,
+        source, inputGain, gain, pan, mono, analyser, sourceAnalyser, sourceMonitorSilence, inserts: insertSubgraph, tail,
         keyShiftDry, keyShiftWet, keyShiftNode: null,
       };
     }
@@ -1144,6 +1156,28 @@ export function useStemTransport(
     };
   }, []);
 
+  /** Source-level RMS before faders, isolation, inserts, or live donor layers. */
+  const readSourceMeters = useCallback((): Record<string, ChannelMeter> => {
+    const channels: Record<string, ChannelMeter> = {};
+    for (const [id, graph] of Object.entries(graphs.current)) {
+      const samples = new Float32Array(graph.sourceAnalyser.fftSize);
+      graph.sourceAnalyser.getFloatTimeDomainData(samples);
+      let peak = 0;
+      let sumSquares = 0;
+      for (const sample of samples) {
+        const magnitude = Math.abs(sample);
+        if (magnitude > peak) peak = magnitude;
+        sumSquares += sample * sample;
+      }
+      channels[id] = {
+        peak,
+        rms: Math.sqrt(sumSquares / Math.max(1, samples.length)),
+        clipped: peak >= CLIP_LEVEL,
+      };
+    }
+    return channels;
+  }, []);
+
   return {
     register,
     replaceStem,
@@ -1159,6 +1193,7 @@ export function useStemTransport(
     /** The audio context's actual rate (bin→Hz math for spectrum consumers). */
     contextSampleRate: () => context.current?.sampleRate ?? 44_100,
     readMeters,
+    readSourceMeters,
     applyInserts,
     playing,
     position,

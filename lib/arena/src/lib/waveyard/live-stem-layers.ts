@@ -2,8 +2,53 @@ import type { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
 export const LIVE_STEM_MIN_DONOR_RMS_DBFS = -55;
+export const LIVE_STEM_RECIPIENT_VOCAL_QUIET_RMS = 0.001;
+export const LIVE_STEM_RECIPIENT_BED_ACTIVE_RMS = 0.01;
 export const SESSION_PLAYBACK_RATE_MIN = 0.8;
 export const SESSION_PLAYBACK_RATE_MAX = 1.2;
+
+export type RecipientVocalLayerEnergyCheck =
+  | { state: "quiet-over-active-bed"; vocalRms: number; bedRms: number }
+  | { state: "no-vocal-activity"; vocalRms: number; bedRms: number }
+  | { state: "audible"; vocalRms: number; bedRms: number }
+  | { state: "unavailable"; vocalRms: null; bedRms: null };
+
+/**
+ * A live meter can identify a quiet recipient vocal stem, but cannot prove
+ * voice leakage or semantic vocal presence. Keep low-vocal/active-bed readings
+ * as a warning, not a rejection; sparse or instrumental moments remain
+ * explicitly inconclusive.
+ */
+export function assessRecipientVocalLayerEnergy(
+  vocalRms: number | null | undefined,
+  bedRms: number | null | undefined,
+): RecipientVocalLayerEnergyCheck {
+  if (
+    typeof vocalRms !== "number" || !Number.isFinite(vocalRms) || vocalRms < 0
+    || typeof bedRms !== "number" || !Number.isFinite(bedRms) || bedRms < 0
+  ) {
+    return { state: "unavailable", vocalRms: null, bedRms: null };
+  }
+  if (vocalRms < LIVE_STEM_RECIPIENT_VOCAL_QUIET_RMS) {
+    return bedRms >= LIVE_STEM_RECIPIENT_BED_ACTIVE_RMS
+      ? { state: "quiet-over-active-bed", vocalRms, bedRms }
+      : { state: "no-vocal-activity", vocalRms, bedRms };
+  }
+  return { state: "audible", vocalRms, bedRms };
+}
+
+export function recipientVocalLayerEnergyMessage(check: RecipientVocalLayerEnergyCheck) {
+  switch (check.state) {
+    case "quiet-over-active-bed":
+      return "Vocal stem is very quiet under active backing; the original voice may remain in other stems beneath a donor.";
+    case "no-vocal-activity":
+      return "No vocal energy at this playhead; this may be sparse or instrumental, so voice leakage cannot be assessed.";
+    case "audible":
+      return "Vocal signal is present, but this check cannot prove other stems are clean; vocals may still double.";
+    case "unavailable":
+      return "Vocal isolation could not be checked; clean replacement is not assured.";
+  }
+}
 
 function measureAudioBufferRmsDbfs(buffer: {
   numberOfChannels: number;

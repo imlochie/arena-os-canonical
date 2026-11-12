@@ -51,6 +51,7 @@ interface LiveStemSwapPickerProps {
   selectedDonorTitle: string | null;
   warmingDonorId: string | null;
   swapStatus: string | null;
+  vocalHealthMessage: string | null;
   isOpen: boolean;
   pending: boolean;
   busy: boolean;
@@ -176,6 +177,7 @@ export default function LiveStemSwapPicker({
   selectedDonorTitle,
   warmingDonorId,
   swapStatus,
+  vocalHealthMessage,
   isOpen,
   pending,
   busy,
@@ -422,7 +424,9 @@ export default function LiveStemSwapPicker({
         >
           <span className="wy-swap-trigger-icon" aria-hidden="true">⇄</span>
           <span className="wy-swap-trigger-copy">
-            <strong>{pending ? "Preparing layer…" : selectedDonorId ? "Layer swapped" : "Choose a source"}</strong>
+            <strong>{pending ? "Preparing layer…" : selectedDonorId
+              ? stemType === "vocals" ? "Donor vocal selected" : "Layer swapped"
+              : "Choose a source"}</strong>
             <small>{selectedDonorTitle ?? `Replace only the ${stemType} layer`}</small>
           </span>
           <span className="wy-swap-trigger-chevron" aria-hidden="true">{isOpen ? "−" : "+"}</span>
@@ -453,7 +457,15 @@ export default function LiveStemSwapPicker({
           <header className="wy-swap-picker-head">
             <div>
               <strong id={`${pickerId}-title`}>Swap {stemType}</strong>
-              <small>Playback keeps running while the new layer loads.</small>
+              <small
+                className={stemType === "vocals" ? "wy-vocal-health-note" : undefined}
+                role={stemType === "vocals" ? "note" : undefined}
+                data-testid={stemType === "vocals" ? "live-vocal-health-warning" : undefined}
+              >
+                {stemType === "vocals"
+                  ? vocalHealthMessage ?? "Clean vocal removal is unverified; source voice may remain in other stems."
+                  : "Playback keeps running while the new layer loads."}
+              </small>
             </div>
             <button type="button" className="wy-swap-close" aria-label="Close source picker" onClick={closeAndReturnFocus}>×</button>
           </header>

@@ -1362,6 +1362,7 @@
 .wy-swap-picker-head>div{display:grid;gap:4px}
 .wy-swap-picker-head strong{font-size:13px;color:var(--ink);text-transform:capitalize}
 .wy-swap-picker-head small{font-size:10px;color:var(--muted)}
+.wy-swap-picker-head .wy-vocal-health-note{max-width:420px;color:#f0c978;line-height:1.35}
 .wy-swap-close{display:grid;place-items:center;flex:0 0 30px;width:30px;height:30px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:18px}
 .wy-swap-close:hover{border-color:var(--wy-a);color:var(--wy-a)}
 .wy-swap-search input{width:100%;min-height:38px;padding:8px 10px;border:1px solid var(--line);background:#11130e;color:var(--ink);font:inherit;font-size:12px}

@@ -2226,6 +2226,13 @@ let liveDrumDonorResponseBodyLength = 0;
   await mobileSwapTrigger.click();
   const mobileSwapPicker = page.getByTestId("live-swap-picker-vocals");
   await mobileSwapPicker.waitFor({ state: "visible", timeout: 5_000 });
+  const vocalHealthWarning = mobileSwapPicker.getByTestId("live-vocal-health-warning");
+  await vocalHealthWarning.waitFor({ state: "visible", timeout: 3_000 });
+  assert.match(
+    await vocalHealthWarning.innerText(),
+    /cannot|unverified|may remain|not assured/i,
+    "the vocal picker must disclose that a donor only replaces the vocal stem and cannot guarantee source-voice removal",
+  );
   const mobilePickerBounds = await mobileSwapPicker.evaluate((picker) => {
     const rect = picker.getBoundingClientRect();
     return {
