@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "producer": "Waveyard production mashup route",
+  "captureContract": "Copy the full production plan's source-bound passage evaluations; do not recalculate, reorder, or truncate rankedBedCandidates.",
+  "producerRevision": null,
+  "capturedAt": null,
+  "recordings": {
+    "another-one-bites-the-dust": {
+      "sourceSha256": null,
+      "vocalPhrases": [],
+      "sections": [],
+      "donorWindows": []
+    },
+    "september": {
+      "sourceSha256": null,
+      "vocalPhrases": [],
+      "sections": [],
+      "donorWindows": []
+    }
+  }
+}

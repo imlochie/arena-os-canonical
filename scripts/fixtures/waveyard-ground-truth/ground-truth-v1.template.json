@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "studyId": "waveyard-queen-earth-wind-fire-full-track-v1",
+  "status": "awaiting_independent_annotation",
+  "createdAt": null,
+  "sourceFilesNote": "No audio files, source hashes, or license evidence are bundled. Populate these only from the exact authorized recordings used by both reviewers.",
+  "annotationProtocol": {
+    "reviewMode": "independent-blind-then-adjudicated",
+    "reviewerCount": 2,
+    "intervalIoUThreshold": 0.5,
+    "minimumSectionCoverageFraction": 0.95,
+    "sectionLabels": [
+      "intro",
+      "verse",
+      "pre-chorus",
+      "chorus",
+      "bridge",
+      "outro",
+      "instrumental",
+      "unknown"
+    ],
+    "certaintyLabels": ["confident", "ambiguous"],
+    "bedPairVerdicts": ["useful", "not-useful", "ambiguous"],
+    "rules": [
+      "Annotators work from the exact original recording, not analyzer output or candidate rankings.",
+      "Use unknown/ambiguous rather than guessing a semantic section label or precise boundary.",
+      "Record vocal phrase boundaries independently; do not infer lyrics or musical quality from detector output.",
+      "Bed-pair usefulness requires listening to the specified vocal and bed windows together; rhythm resemblance alone is not harmonic evidence.",
+      "Resolve disagreements after both independent reviews are locked, preserving the original annotations and resolution rationale."
+    ]
+  },
+  "recordings": [
+    {
+      "id": "another-one-bites-the-dust",
+      "title": "Another One Bites the Dust",
+      "durationSeconds": 222.67,
+      "sourceSha256": null,
+      "sourceFileName": null,
+      "license": {
+        "licenseName": null,
+        "sourceUrl": null,
+        "rightsBasis": null
+      },
+      "independentReviews": [
+        {
+          "reviewerId": null,
+          "reviewedAt": null,
+          "sectionSegments": [],
+          "vocalPhrases": [],
+          "bedPairJudgments": []
+        },
+        {
+          "reviewerId": null,
+          "reviewedAt": null,
+          "sectionSegments": [],
+          "vocalPhrases": [],
+          "bedPairJudgments": []
+        }
+      ],
+      "adjudicated": null
+    },
+    {
+      "id": "september",
+      "title": "September",
+      "durationSeconds": 215.14,
+      "sourceSha256": null,
+      "sourceFileName": null,
+      "license": {
+        "licenseName": null,
+        "sourceUrl": null,
+        "rightsBasis": null
+      },
+      "independentReviews": [
+        {
+          "reviewerId": null,
+          "reviewedAt": null,
+          "sectionSegments": [],
+          "vocalPhrases": [],
+          "bedPairJudgments": []
+        },
+        {
+          "reviewerId": null,
+          "reviewedAt": null,
+          "sectionSegments": [],
+          "vocalPhrases": [],
+          "bedPairJudgments": []
+        }
+      ],
+      "adjudicated": null
+    }
+  ]
+}

@@ -539,6 +539,20 @@ test("plan: evaluates every full-track vocal passage and can select a later repe
   ], "repeated hooks remain separate donor candidates");
   assert.equal(search.selectedDonorSectionId, "donor-chorus-repeat-1");
   assert.equal(search.selectedBedSectionId, "bed-hook");
+  const selectedPassage = search.evaluations.find((evaluation) => evaluation.selected)!;
+  assert.equal(
+    selectedPassage.rankedBedCandidates?.[0]?.bedSectionId,
+    selectedPassage.bestBedSectionId,
+  );
+  assert.equal(selectedPassage.rankedBedCandidates?.[0]?.selected, true);
+  assert.equal(
+    selectedPassage.rankedBedCandidates?.[0]?.bedSourceSha256,
+    checksumBed,
+  );
+  assert.deepEqual(
+    selectedPassage.rankedBedCandidates?.map((candidate) => candidate.rank),
+    selectedPassage.rankedBedCandidates?.map((_, index) => index + 1),
+  );
   assert.ok(Math.abs(result.plan.segments[0]!.mashupStartMs - 10_750) <= 1);
   assert.equal(result.plan.segments[0]!.vocalsFromMs, 750,
     "selecting a later musical passage does not cut off the earlier verse");

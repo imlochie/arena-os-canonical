@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "studyId": "waveyard-queen-earth-wind-fire-full-track-v1",
+  "sourceManifest": [
+    {
+      "id": "another-one-bites-the-dust",
+      "title": "Another One Bites the Dust",
+      "expectedDurationSeconds": 222.67,
+      "sourceFileName": null,
+      "durationSeconds": 222.67,
+      "sourceSha256": null,
+      "rightsEvidencePresent": false
+    },
+    {
+      "id": "september",
+      "title": "September",
+      "expectedDurationSeconds": 215.14,
+      "sourceFileName": null,
+      "durationSeconds": 215.14,
+      "sourceSha256": null,
+      "rightsEvidencePresent": false
+    }
+  ],
+  "producerCapture": {
+    "producer": "Waveyard production mashup route",
+    "producerRevision": null,
+    "capturedAt": null
+  },
+  "status": "blocked",
+  "validation": {
+    "complete": false,
+    "issues": [
+      "both distinct source files must have unique SHA-256 identities",
+      "dataset status must be adjudicated after both blind reviews are locked",
+      "dataset creation/adjudication timestamp missing or invalid",
+      "another-one-bites-the-dust: exact source filename missing",
+      "another-one-bites-the-dust: exact source SHA-256 missing",
+      "another-one-bites-the-dust: source attribution and documented rights basis missing",
+      "another-one-bites-the-dust: independent adjudication missing",
+      "september: exact source filename missing",
+      "september: exact source SHA-256 missing",
+      "september: source attribution and documented rights basis missing",
+      "september: independent adjudication missing"
+    ]
+  },
+  "predictionValidation": {
+    "complete": false,
+    "issues": [
+      "exact 40-character producer revision missing",
+      "prediction capture timestamp missing or invalid",
+      "another-one-bites-the-dust: prediction source SHA-256 missing",
+      "september: prediction source SHA-256 missing"
+    ]
+  },
+  "thresholds": {
+    "intervalIoU": 0.5,
+    "recallAtK": 5
+  },
+  "tracks": [
+    {
+      "id": "another-one-bites-the-dust",
+      "status": "blocked-ground-truth",
+      "metrics": null
+    },
+    {
+      "id": "september",
+      "status": "blocked-ground-truth",
+      "metrics": null
+    }
+  ],
+  "interpretation": "Section detection/classification and candidate rankings are separate measurements. Neither establishes harmonic compatibility or perceived mashup quality. Null metrics mean evidence is missing, not zero performance."
+}

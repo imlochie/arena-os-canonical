@@ -92,7 +92,7 @@ export type MashupPlan = {
   vocalsPitchSemitones: number;
   keyRelationship: "same" | "fifth" | "relative" | "other" | "unknown";
   segments: MashupSegment[];
-  /** One best bed candidate for each voice-bearing donor section considered. */
+  /** Candidate evaluation per voice-bearing donor section, including its selected bed and full feasible ranking. */
   passageSearch?: MashupPassageSearch;
   durationMs: number;
   rationale: string[];
@@ -104,6 +104,7 @@ export type MashupPassageSearch = {
   rankableDonorPassageCount: number;
   evaluations: Array<{
     donorSectionId: string;
+    vocalSourceSha256: string | null;
     donorStartMs: number;
     donorEndMs: number;
     voicedPhraseCount: number;
@@ -115,6 +116,19 @@ export type MashupPassageSearch = {
     plannedEntryMs: number | null;
     relativeScore: number | null;
     minimumFeatureConfidence: number | null;
+    /** Full feasible bed ranking in the existing selection order; no scoring behavior changes. */
+    rankedBedCandidates?: Array<{
+      rank: number;
+      bedSourceSha256: string | null;
+      bedSectionId: string;
+      bedStartMs: number;
+      bedEndMs: number;
+      plannedEntryMs: number;
+      relativeScore: number;
+      minimumFeatureConfidence: number;
+      transientTiebreakScore: number;
+      selected: boolean;
+    }>;
     reason: string;
   }>;
   selectedDonorSectionId: string | null;
@@ -527,6 +541,7 @@ function rankedPassageEntry(
     transientScore: number;
     donorSectionId: string;
     bedSectionId: string;
+    bedSourceSha256: string | null;
     bedStartMs: number;
     bedEndMs: number;
   }> = [];
@@ -543,6 +558,7 @@ function rankedPassageEntry(
     if (!donorFingerprint) {
       evaluations.push({
         donorSectionId,
+        vocalSourceSha256: vocals.sourceChecksumSha256 ?? null,
         donorStartMs: donorSection.startMs,
         donorEndMs: donorSection.endMs,
         voicedPhraseCount: phrases.length,
@@ -554,6 +570,7 @@ function rankedPassageEntry(
         plannedEntryMs: null,
         relativeScore: null,
         minimumFeatureConfidence: null,
+        rankedBedCandidates: [],
         reason: "this voice-bearing donor section has no current checksum-bound passage fingerprint",
       });
       continue;
@@ -635,6 +652,7 @@ function rankedPassageEntry(
         transientScore,
         donorSectionId,
         bedSectionId: bedSection.id ?? `${bed.sourceAssetId ?? "bed"}:${bedSection.startMs}`,
+        bedSourceSha256: bedSection.passageFingerprint.sourceChecksumSha256 ?? null,
         bedStartMs: bedSection.startMs,
         bedEndMs: bedSection.endMs,
       });
@@ -650,8 +668,12 @@ function rankedPassageEntry(
         .filter((candidate) => highestMusicalScore - candidate.musicalScore <= PASSAGE_RANK_TIE_EPSILON)
         .sort((left, right) => right.transientScore - left.transientScore || left.at - right.at)[0];
     if (best) candidates.push(best);
+    const rankedCandidates = best
+      ? [best, ...scoreSorted.filter((candidate) => candidate !== best)]
+      : scoreSorted;
     evaluations.push({
       donorSectionId,
+      vocalSourceSha256: donorFingerprint.sourceChecksumSha256 ?? null,
       donorStartMs: donorSection.startMs,
       donorEndMs: donorSection.endMs,
       voicedPhraseCount: phrases.length,
@@ -663,6 +685,18 @@ function rankedPassageEntry(
       plannedEntryMs: best?.at ?? null,
       relativeScore: best?.musicalScore ?? null,
       minimumFeatureConfidence: best?.minimumFeatureConfidence ?? null,
+      rankedBedCandidates: rankedCandidates.map((candidate, index) => ({
+        rank: index + 1,
+        bedSourceSha256: candidate.bedSourceSha256,
+        bedSectionId: candidate.bedSectionId,
+        bedStartMs: candidate.bedStartMs,
+        bedEndMs: candidate.bedEndMs,
+        plannedEntryMs: candidate.at,
+        relativeScore: candidate.musicalScore,
+        minimumFeatureConfidence: candidate.minimumFeatureConfidence,
+        transientTiebreakScore: candidate.transientScore,
+        selected: candidate === best,
+      })),
       reason: best
         ? `${passagePairCount} bed passage pairs evaluated; best candidate scored ${best.musicalScore.toFixed(3)}`
         : passagePairCount === 0
