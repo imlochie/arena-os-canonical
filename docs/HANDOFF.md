@@ -22,6 +22,8 @@
   correction range checks, a low-confidence half-time-like estimate that stays
   at native pace, a user-confirmed correction that enables a modest tempo ratio,
   and a check that the correction does not promote weak beat-grid evidence.
+  `node scripts/arena-smoke.mjs --waveyard-mobile-only` passes, including the
+  portrait keyboard-safe live-swap picker and compact landscape layout.
   ArenaForge typecheck passes. No separated-stem listening comparison was
   performed in this pass.
 
