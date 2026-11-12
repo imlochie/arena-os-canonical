@@ -5,6 +5,7 @@ import {
   MINIMUM_PERSISTENT_STEM_CHANGE_DB,
   type PassageStemActivity,
   type PassageFingerprint,
+  type PassageVocalRun,
   unavailablePassageEvidence,
 } from "../types/passage-compatibility";
 import { ANALYSIS_PCM_RATE, chromaFromPcm } from "./analysis-engine";
@@ -24,6 +25,13 @@ export type StemActivityProfile = Pick<
   "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256"
 > & {
   rmsDbByBar: (number | null)[];
+};
+
+export type PassageVocalActivityEvidence = {
+  analysisId: string;
+  stemAssetId: string;
+  stemChecksumSha256: string;
+  pitchContinuityRuns: readonly PassageVocalRun[];
 };
 
 export type StemActivityBoundaryChange = {
@@ -367,6 +375,56 @@ export function sectionRmsDb(
   return Number.isFinite(rms) && rms > 1e-8 ? 20 * Math.log10(rms) : null;
 }
 
+export function passageVocalActivityEvidence(
+  input: PassageVocalActivityEvidence | undefined,
+  startMs: number | null,
+  endMs: number | null,
+): PassageFingerprint["vocalActivity"] {
+  if (!input || startMs === null || endMs === null || endMs <= startMs) {
+    return unavailablePassageEvidence("No current-checksum-matched isolated-vocal pitch-continuity analysis was available.");
+  }
+  const runs = input.pitchContinuityRuns
+    .filter((run) => run.endMs > startMs && run.startMs < endMs)
+    .slice(0, 256)
+    .map((run) => ({ ...run }));
+  const clipped = runs
+    .map((run) => ({ startMs: Math.max(startMs, run.startMs), endMs: Math.min(endMs, run.endMs) }))
+    .filter((run) => run.endMs > run.startMs)
+    .sort((left, right) => left.startMs - right.startMs);
+  let coveredMs = 0;
+  let rangeStartMs = -1;
+  let rangeEndMs = -1;
+  for (const range of clipped) {
+    if (rangeStartMs < 0) {
+      rangeStartMs = range.startMs;
+      rangeEndMs = range.endMs;
+    } else if (range.startMs <= rangeEndMs) {
+      rangeEndMs = Math.max(rangeEndMs, range.endMs);
+    } else {
+      coveredMs += rangeEndMs - rangeStartMs;
+      rangeStartMs = range.startMs;
+      rangeEndMs = range.endMs;
+    }
+  }
+  if (rangeStartMs >= 0) coveredMs += rangeEndMs - rangeStartMs;
+  const meanConfidence = runs.length
+    ? runs.reduce((total, run) => total + run.confidence, 0) / runs.length
+    : 0;
+  return {
+    status: "measured",
+    value: {
+      voicedCoverage: Math.max(0, Math.min(1, coveredMs / (endMs - startMs))),
+      meanConfidence: Number(meanConfidence.toFixed(6)),
+      analysisId: input.analysisId,
+      stemAssetId: input.stemAssetId,
+      stemChecksumSha256: input.stemChecksumSha256,
+      pitchContinuityRuns: runs,
+    },
+    method: "source/stem-checksum-current isolated-vocal pitch-continuity runs; not lyric transcription",
+    confidence: Number(meanConfidence.toFixed(6)),
+  };
+}
+
 /** Builds only features measured from the source PCM and versioned beat grid. */
 export function buildPassageFingerprint(input: {
   sourceChecksumSha256: string;
@@ -379,6 +437,7 @@ export function buildPassageFingerprint(input: {
   pcm: Float32Array;
   stemActivityProfiles?: readonly StemActivityProfile[];
   stemActivityBoundaryChanges?: readonly StemActivityBoundaryChange[];
+  vocalActivity?: PassageVocalActivityEvidence;
 }): PassageFingerprint {
   const { startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs, pcm } = input;
   const rhythmSignature = sectionRhythmSignature(startBeatIndex, endBeatIndex, beatGridMs, envelope, frameMs);
@@ -430,7 +489,11 @@ export function buildPassageFingerprint(input: {
       ? unavailablePassageEvidence("Source passage RMS is unavailable (empty or effectively silent audio).")
       : { status: "measured", value: { rmsDb }, method: "source PCM section RMS", confidence: null },
     downbeatConfidence: unavailablePassageEvidence("The persisted beat grid does not independently identify downbeats."),
-    vocalActivity: unavailablePassageEvidence(unavailable),
+    vocalActivity: passageVocalActivityEvidence(
+      input.vocalActivity,
+      beatBoundaryMs(startBeatIndex, beatGridMs),
+      beatBoundaryMs(endBeatIndex, beatGridMs),
+    ),
     instrumentalDensity: unavailablePassageEvidence("Separated non-vocal stem activity is not part of source-only structural analysis."),
     stemActivity: passageStemActivityEvidence(
       input.stemActivityProfiles ?? [],

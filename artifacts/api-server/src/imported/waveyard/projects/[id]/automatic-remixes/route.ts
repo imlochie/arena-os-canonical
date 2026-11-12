@@ -158,12 +158,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const vocal = currentVocalBySource.get(sourceId);
       if (!vocal) return fingerprint;
       const coverage = vocalCoverage(vocal.phrases, section.startMs, section.endMs);
+      const pitchContinuityRuns = vocal.phrases
+        .filter((phrase) => phrase.endMs > section.startMs && phrase.startMs < section.endMs)
+        .slice(0, 256)
+        .map(({ startMs, endMs, confidence }) => ({ startMs, endMs, confidence }));
       const enriched: PassageFingerprint = {
         ...fingerprint,
         vocalActivity: {
           status: "measured",
-          value: { ...coverage, analysisId: vocal.analysis.id, stemAssetId: vocal.stem.id, stemChecksumSha256: vocal.stem.checksumSha256 },
-          method: "checksum-current isolated vocal pitch phrases",
+          value: {
+            ...coverage,
+            analysisId: vocal.analysis.id,
+            stemAssetId: vocal.stem.id,
+            stemChecksumSha256: vocal.stem.checksumSha256,
+            pitchContinuityRuns,
+          },
+          method: "checksum-current isolated-vocal pitch-continuity runs; not lyric transcription",
           confidence: coverage.meanConfidence,
         },
       };

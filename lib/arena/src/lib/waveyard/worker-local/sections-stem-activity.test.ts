@@ -16,11 +16,18 @@ import {
   sourceSectionAnalyses,
   sourceSections,
   stemAssets,
+  vocalAnalyses,
+  vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import type { StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
+import {
+  LOCAL_VOCAL_ANALYSIS_ENGINE,
+  LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+  vocalAnalysisIdempotencyKey,
+} from "../types/vocal-analysis";
 import { ANALYSIS_PCM_RATE } from "./analysis-engine";
 import { handleSectionAnalysisJob } from "./sections";
 import { provisionDesktopSectionAnalysis } from "./analysis";
@@ -141,9 +148,10 @@ async function runSectionAnalysis(
 ) {
   const sourcePcm = signal(() => 0.08);
   const changedStemPcm = signal((bar) => bar < 4 ? 0.02 : 0.16);
+  const vocalPcm = signal((bar) => bar % 2 === 0 ? 0.04 : 0.1);
   const decode = async (path: string) => {
     const key = await readFile(path, "utf8");
-    return key === "stem-key" ? changedStemPcm : sourcePcm;
+    return key === "stem-key" ? changedStemPcm : key === "voice-key" ? vocalPcm : sourcePcm;
   };
   await handleSectionAnalysisJob(fixture.payload as unknown as Record<string, unknown>, {
     db: fixture.database as unknown as NonNullable<Parameters<typeof handleSectionAnalysisJob>[1]>["db"],
@@ -173,6 +181,93 @@ test("persisted section job uses only source-matched completed stems and records
       assert.ok((fingerprint.stemActivity.value[0]?.boundaryChanges[0]?.deltaDb ?? 0) >= 6);
       assert.equal(fingerprint.stemActivity.value[0]?.boundaryChanges[0]?.beatIndex, 16);
     }
+  } finally {
+    await fixture.client.close();
+  }
+});
+
+test("persisted vocal pitch-continuity runs appear in the exact source passages they overlap", async () => {
+  const fixture = await createFixture(true);
+  try {
+    const [vocalStem] = await fixture.database.insert(stemAssets).values({
+      projectId: fixture.source.projectId,
+      sourceAssetId: fixture.source.id,
+      separationJobId: fixture.stem.separationJobId,
+      stemType: "vocals",
+      engine: "test",
+      model: "test-separation",
+      modelVersion: "test",
+      storageKey: "voice-key",
+      checksumSha256: "d".repeat(64),
+      durationSeconds: 32,
+      sampleRate: 44_100,
+      channels: 2,
+      codec: "pcm_s16le",
+      format: "wav",
+      fileSizeBytes: ANALYSIS_PCM_RATE * 32 * 2,
+    }).returning();
+    const [vocalAnalysis] = await fixture.database.insert(vocalAnalyses).values({
+      projectId: fixture.source.projectId,
+      sourceAssetId: fixture.source.id,
+      stemAssetId: vocalStem.id,
+      status: "complete",
+      stage: "complete",
+      idempotencyKey: vocalAnalysisIdempotencyKey(
+        vocalStem.id,
+        LOCAL_VOCAL_ANALYSIS_ENGINE,
+        LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      ),
+      analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: fixture.source.checksumSha256,
+      stemChecksumSha256: vocalStem.checksumSha256,
+    }).returning();
+    await fixture.database.insert(vocalPhrases).values([
+      { vocalAnalysisId: vocalAnalysis.id, phraseIndex: 0, startMs: 9_000, endMs: 10_500, confidence: 0.87 },
+      { vocalAnalysisId: vocalAnalysis.id, phraseIndex: 1, startMs: 10_800, endMs: 11_500, confidence: 0.74 },
+    ]);
+
+    await runSectionAnalysis(fixture);
+    const sections = await fixture.database.select().from(sourceSections)
+      .where(eq(sourceSections.sourceAssetId, fixture.source.id))
+      .orderBy(sourceSections.sectionIndex);
+    const expectedRuns = [
+      { startMs: 9_000, endMs: 10_500, confidence: 0.87 },
+      { startMs: 10_800, endMs: 11_500, confidence: 0.74 },
+    ];
+    let persistedRunCount = 0;
+    for (const section of sections) {
+      const fingerprint = parsePassageFingerprint(section.passageFingerprint, {
+        sourceChecksumSha256: sourceChecksum,
+        startBeatIndex: section.startBeatIndex,
+        endBeatIndex: section.endBeatIndex,
+      });
+      assert.equal(fingerprint?.vocalActivity.status, "measured");
+      if (fingerprint?.vocalActivity.status !== "measured") continue;
+      assert.equal(fingerprint.vocalActivity.value.analysisId, vocalAnalysis.id);
+      assert.equal(fingerprint.vocalActivity.value.stemAssetId, vocalStem.id);
+      const expectedForSection = expectedRuns.filter((run) => run.endMs > section.startMs && run.startMs < section.endMs);
+      assert.deepEqual(fingerprint.vocalActivity.value.pitchContinuityRuns, expectedForSection);
+      persistedRunCount += fingerprint.vocalActivity.value.pitchContinuityRuns.length;
+      assert.ok(fingerprint.vocalActivity.value.voicedCoverage >= 0);
+    }
+    assert.ok(persistedRunCount >= expectedRuns.length, "each source-bound run is assigned to the passage or passages it overlaps");
+
+    await fixture.database.update(vocalAnalyses).set({ stemChecksumSha256: "e".repeat(64) })
+      .where(eq(vocalAnalyses.id, vocalAnalysis.id));
+    await fixture.database.update(sourceSectionAnalyses).set({
+      status: "queued",
+      stage: "queued",
+      completedAt: null,
+    }).where(eq(sourceSectionAnalyses.id, fixture.sectionAnalysis.id));
+    await runSectionAnalysis(fixture);
+    const staleFingerprint = parsePassageFingerprint(
+      (await fixture.database.select().from(sourceSections)
+        .where(eq(sourceSections.sourceAssetId, fixture.source.id))
+        .orderBy(sourceSections.sectionIndex))[0]?.passageFingerprint,
+      { sourceChecksumSha256: sourceChecksum },
+    );
+    assert.equal(staleFingerprint?.vocalActivity.status, "unavailable", "changed stem provenance cannot survive into a new section pass");
   } finally {
     await fixture.client.close();
   }

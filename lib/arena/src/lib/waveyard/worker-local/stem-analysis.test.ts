@@ -13,8 +13,8 @@ import { applyDesktopMigrationsToPGlite } from "./pglite-migrations.test-helper"
 import { encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { LocalStorageProvider, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import {
-  projects, processingJobs, sourceAssets, stemAssets, bassAnalyses, bassEvents, drumAnalyses, drumEvents,
-  harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalPitchFrames,
+  projects, processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, stemAssets, bassAnalyses, bassEvents, drumAnalyses, drumEvents,
+  harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalPitchFrames, vocalPhrases,
   remixSessions, remixVersions, exportJobs, exportAssets,
 } from "@workspace/db/waveyardSchema";
 import {
@@ -83,6 +83,17 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     const [source] = await db.insert(sourceAssets).values({ projectId: project.id, originalFilename: "source.wav", mimeType: "audio/wav",
       storageKey: sourceKey, checksumSha256: checksum(files[0]!), durationSeconds: 4, sampleRate: RATE, channels: 2,
       codec: "pcm_s16le", fileSizeBytes: files[0]!.length }).returning();
+    await db.insert(sourceAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: source.id,
+      status: "complete",
+      idempotencyKey: `analysis:${source.id}:${randomUUID()}`,
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: "1.4.0",
+      sourceChecksumSha256: source.checksumSha256,
+      beatGrid: JSON.stringify([0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000]),
+      beatConfidence: 0.8,
+    });
     const [separation] = await db.insert(processingJobs).values({ projectId: project.id, sourceAssetId: source.id, type: "separation",
       model: "test-local", requestedDevice: "cpu", idempotencyKey: `separation:${source.id}` }).returning();
     const createStem = async (stemType: "drums" | "vocals" | "bass", fileIndex: number, separationJobId = separation.id) => {
@@ -111,7 +122,12 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
       idempotencyKey: bassAnalysisIdempotencyKey(bassStem.id),
       analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
       sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: bassStem.checksumSha256 }).returning();
-    const deps = { db, storage };
+    const refreshedSections: unknown[] = [];
+    const deps = {
+      db,
+      storage,
+      enqueueSectionAnalysis: async (payload: unknown) => { refreshedSections.push(payload); },
+    };
     await handleDrumAnalysisJob({ drumAnalysisId: drum.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: drumStem.id,
       analysisEngine: LOCAL_DRUM_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION }, deps);
     await handleBassAnalysisJob({ bassAnalysisId: bass.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: bassStem.id,
@@ -130,8 +146,22 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     assert.equal(bassDone.status, "complete"); assert.equal(bassDone.analysisEngine, LOCAL_BASS_ANALYSIS_ENGINE);
     assert.ok((await db.select().from(drumEvents).where(eq(drumEvents.drumAnalysisId, drum.id))).length > 0);
     assert.ok((await db.select().from(harmonyEvents).where(eq(harmonyEvents.harmonyAnalysisId, harmony.id))).length > 0);
-    assert.ok((await db.select().from(vocalPitchFrames).where(eq(vocalPitchFrames.vocalAnalysisId, vocal.id))).length > 0);
+    const persistedVocalFrames = await db.select().from(vocalPitchFrames).where(eq(vocalPitchFrames.vocalAnalysisId, vocal.id));
+    assert.ok(persistedVocalFrames.length > 0);
+    const finalVocalFrameMs = Math.max(...persistedVocalFrames.map((frame) => frame.timestampMs));
+    assert.ok(finalVocalFrameMs <= 4_000, "persisted vocal pitch timing stays inside the decoded PCM");
+    assert.ok((await db.select().from(vocalPhrases).where(eq(vocalPhrases.vocalAnalysisId, vocal.id))).length > 0);
     assert.ok((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, bass.id))).length > 0);
+    assert.equal(refreshedSections.length, 1, "completed vocal timing refreshes structural fingerprints");
+    assert.equal(
+      typeof (refreshedSections[0] as { dispatchKey?: string } | undefined)?.dispatchKey,
+      "string",
+      "vocal evidence uses a distinct refresh dispatch identity",
+    );
+    assert.equal(
+      (await db.select().from(sourceSectionAnalyses).where(eq(sourceSectionAnalyses.sourceAssetId, source.id)))[0]?.status,
+      "queued",
+    );
 
     await db.update(drumAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(drumAnalyses.id, drum.id));
     await db.update(bassAnalyses).set({ status: "processing", stage: "analyzing" }).where(eq(bassAnalyses.id, bass.id));

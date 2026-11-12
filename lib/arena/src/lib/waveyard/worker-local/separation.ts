@@ -18,9 +18,8 @@
  *    Kim Vocal 2), not Demucs' four.
  *  - modelVersion records the model file's sha256 — the exact bits that
  *    produced the stems.
- *  - Separation does not auto-create stem-specific analysis rows. Once a
- *    completed separation publishes checksum-bound stems, any completed
- *    source analysis is structurally refreshed against those stems.
+ *  - A completed separation queues local vocal pitch-continuity analysis and
+ *    refreshes structural analysis against the checksum-bound stems.
  *  - Real progress: chunk-level progress is written into the durable job's
  *    metadata while separating, so the UI polls one honest number.
  */
@@ -41,7 +40,7 @@ import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
-import { provisionDesktopSectionAnalysis } from "./analysis";
+import { provisionDesktopSectionAnalysis, provisionDesktopVocalAnalysis } from "./analysis";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@workspace/arena/lib/waveyard/types";
 import {
@@ -80,6 +79,7 @@ export type SeparationHandlerDeps = {
   decode?: typeof decodeSourceToStereoPcm;
   enqueueWaveform?: typeof enqueueWaveform;
   enqueueSectionAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueSourceSectionAnalysis;
+  enqueueVocalAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueVocalAnalysis;
   /** The deep pass (owner-prepared Demucs, separation/deep.ts). Injectable
    *  so the e2e test drives the FULL pipeline with a stub engine. */
   runDeep?: typeof runDeepSeparation;
@@ -842,7 +842,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       const storedStems = await tx
         .insert(stemAssets)
         .values(values)
-        .returning({ id: stemAssets.id });
+        .returning();
       const waveformWork = await tx
         .insert(waveformJobs)
         .values(
@@ -855,11 +855,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           })),
         )
         .returning({ id: waveformJobs.id, stemAssetId: waveformJobs.stemAssetId });
-      return waveformWork;
+      return { waveformJobs: waveformWork, stems: storedStems };
     });
     // Separation is complete even if a later derived-artifact queue needs
     // a retry. Each durable job records its own failure boundary.
-    for (const waveformJob of durableWork) {
+    for (const waveformJob of durableWork.waveformJobs) {
       try {
         await (deps.enqueueWaveform ?? enqueueWaveform)({
           waveformJobId: waveformJob.id,
@@ -905,6 +905,19 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       // Separation remains complete; the durable section row records its own
       // failure boundary, and source-only structure remains an honest fallback.
       console.error("could not refresh Waveyard sections after stem publication", sectionRefreshError);
+    }
+    const vocalStem = durableWork.stems.find((stem) => stem.stemType === "vocals");
+    if (vocalStem) {
+      try {
+        await provisionDesktopVocalAnalysis(source, vocalStem, {
+          database,
+          enqueue: deps.enqueueVocalAnalysis,
+        });
+      } catch (vocalQueueError) {
+        // Separation is already committed; vocal timing can be retried through
+        // its own durable row without making valid stems appear to have failed.
+        console.warn("could not provision Waveyard vocal timing analysis", vocalQueueError);
+      }
     }
     completed = true;
   } catch (error) {

@@ -18,11 +18,19 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db as defaultDb } from "@workspace/db";
-import { processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections, stemAssets } from "@workspace/db/waveyardSchema";
+import {
+  processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections, stemAssets,
+  vocalAnalyses, vocalPhrases,
+} from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { normalizeSourceSections, sourceSectionsAreValid } from "@workspace/arena/lib/waveyard/types/source-sections";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { currentBeatConfidence } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
+import {
+  LOCAL_VOCAL_ANALYSIS_ENGINE,
+  LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+  vocalAnalysisProvenanceReason,
+} from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
 import { ANALYSIS_PCM_RATE, decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
@@ -33,6 +41,7 @@ import {
   detectStemActivityBoundaryChanges,
   type StemActivityBoundaryChange,
   type StemActivityProfile,
+  type PassageVocalActivityEvidence,
 } from "./section-rhythm";
 
 type SectionAnalysisDeps = {
@@ -94,7 +103,11 @@ async function loadStemActivityProfiles(input: {
   source: typeof sourceAssets.$inferSelect;
   beatGridMs: number[];
   sourcePcm: Float32Array;
-}): Promise<{ profiles: StemActivityProfile[]; changes: StemActivityBoundaryChange[] }> {
+}): Promise<{
+  profiles: StemActivityProfile[];
+  changes: StemActivityBoundaryChange[];
+  vocalActivity: PassageVocalActivityEvidence | undefined;
+}> {
   const rows = await input.database
     .select({ stem: stemAssets, job: processingJobs })
     .from(stemAssets)
@@ -109,7 +122,7 @@ async function loadStemActivityProfiles(input: {
     ))
     .orderBy(desc(processingJobs.completedAt), desc(stemAssets.createdAt));
   const latestCurrentJob = rows.find((row) => separationSourceChecksum(row.job.metadata) === input.source.checksumSha256)?.job;
-  if (!latestCurrentJob) return { profiles: [], changes: [] };
+  if (!latestCurrentJob) return { profiles: [], changes: [], vocalActivity: undefined };
 
   const selected = new Map<string, typeof rows[number]["stem"]>();
   for (const row of rows) {
@@ -148,7 +161,65 @@ async function loadStemActivityProfiles(input: {
     }
   }
   const changes = detectStemActivityBoundaryChanges(profiles);
-  return { profiles, changes };
+  let vocalActivity: PassageVocalActivityEvidence | undefined;
+  const vocalStem = selected.get("vocals");
+  if (vocalStem) {
+    try {
+      const [analysis] = await input.database.select().from(vocalAnalyses).where(and(
+        eq(vocalAnalyses.projectId, input.source.projectId),
+        eq(vocalAnalyses.sourceAssetId, input.source.id),
+        eq(vocalAnalyses.stemAssetId, vocalStem.id),
+        eq(vocalAnalyses.status, "complete"),
+        eq(vocalAnalyses.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE),
+        eq(vocalAnalyses.analysisEngineVersion, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION),
+        eq(vocalAnalyses.sourceChecksumSha256, input.source.checksumSha256),
+        eq(vocalAnalyses.stemChecksumSha256, vocalStem.checksumSha256),
+      )).orderBy(desc(vocalAnalyses.createdAt)).limit(1);
+      const provenanceReason = analysis ? vocalAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId,
+        expectedSourceAssetId: input.source.id,
+        stemAssetId: analysis.stemAssetId,
+        expectedStemAssetId: vocalStem.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: input.source.checksumSha256,
+        stemChecksumSha256: analysis.stemChecksumSha256,
+        expectedStemChecksumSha256: vocalStem.checksumSha256,
+        analysisEngine: analysis.analysisEngine,
+        analysisEngineVersion: analysis.analysisEngineVersion,
+      }, { engine: LOCAL_VOCAL_ANALYSIS_ENGINE, version: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION }) : "source_stem_mismatch";
+      if (analysis && !provenanceReason) {
+        const phrases = await input.database.select({
+          startMs: vocalPhrases.startMs,
+          endMs: vocalPhrases.endMs,
+          confidence: vocalPhrases.confidence,
+        }).from(vocalPhrases)
+          .where(eq(vocalPhrases.vocalAnalysisId, analysis.id))
+          .orderBy(vocalPhrases.startMs)
+          .limit(10_000);
+        vocalActivity = {
+          analysisId: analysis.id,
+          stemAssetId: vocalStem.id,
+          stemChecksumSha256: vocalStem.checksumSha256,
+          pitchContinuityRuns: phrases.filter((phrase) =>
+            Number.isSafeInteger(phrase.startMs)
+            && Number.isSafeInteger(phrase.endMs)
+            && phrase.startMs >= 0
+            && phrase.endMs > phrase.startMs
+            && phrase.endMs <= sourceDurationMs
+            && Number.isFinite(phrase.confidence)
+            && phrase.confidence >= 0
+            && phrase.confidence <= 1,
+          ),
+        };
+      }
+    } catch (error) {
+      console.warn("Waveyard skipped unavailable isolated-vocal timing evidence", {
+        sourceAssetId: input.source.id,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { profiles, changes, vocalActivity };
 }
 
 /** Local structural analysis uses source audio and optional verified stem PCM. */
@@ -256,6 +327,7 @@ export async function handleSectionAnalysisJob(
         pcm,
         stemActivityProfiles: stemActivity.profiles,
         stemActivityBoundaryChanges: stemActivity.changes,
+        vocalActivity: stemActivity.vocalActivity,
       }),
     }));
     const sections = normalizeSourceSections(

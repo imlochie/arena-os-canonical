@@ -32,6 +32,7 @@ import {
   sourceAssets,
   sourceSectionAnalyses,
   stemAssets,
+  vocalAnalyses,
   tracks,
   waveformAssets,
   waveformJobs,
@@ -2883,6 +2884,7 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
   try {
     const opened: string[] = [];
     const sectionDispatches: { dispatchKey?: string }[] = [];
+    const vocalDispatches: unknown[] = [];
     let liveEngines = 0;
     const engine: (spec: MdxModelSpec) => Promise<OpenedEngine> = async (spec) => {
       assert.equal(liveEngines, 0, "the previous model must be released before opening another");
@@ -2905,6 +2907,7 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
       db: f.database,
       openEngine: engine,
       enqueueSectionAnalysis: async (payload) => { sectionDispatches.push(payload); },
+      enqueueVocalAnalysis: async (payload) => { vocalDispatches.push(payload); },
     });
     assert.equal(liveEngines, 0, "the final model is released too");
 
@@ -2925,6 +2928,14 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
     const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
     assert.equal(stems.length, 4, "the stem.fm set: vocals, drums, bass, melody");
     const byType = new Map(stems.map((stem) => [stem.stemType, stem]));
+    const vocalStem = byType.get("vocals")!;
+    assert.equal(vocalDispatches.length, 1, "the published vocal stem starts local pitch-continuity analysis");
+    const [vocalAnalysis] = await f.database.select().from(vocalAnalyses)
+      .where(eq(vocalAnalyses.stemAssetId, vocalStem.id));
+    assert.equal(vocalAnalysis.status, "queued");
+    assert.equal(vocalAnalysis.sourceChecksumSha256, f.source.checksumSha256);
+    assert.equal(vocalAnalysis.stemChecksumSha256, vocalStem.checksumSha256);
+    assert.equal((vocalDispatches[0] as { vocalAnalysisId?: string } | undefined)?.vocalAnalysisId, vocalAnalysis.id);
     assert.equal(byType.get("vocals")?.model, "kim_vocal_2");
     assert.equal(byType.get("drums")?.model, "kuielab_b_drums");
     assert.equal(byType.get("bass")?.model, "kuielab_b_bass");

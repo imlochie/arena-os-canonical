@@ -16,6 +16,7 @@ import {
   vocalAnalyses, vocalPitchFrames, vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import { getStorage, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
+import { enqueueSourceSectionAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import type { BassAnalysisJobPayload, DrumAnalysisJobPayload, HarmonyAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import {
   bassAnalysisProvenanceReason,
@@ -36,13 +37,15 @@ import {
   normaliseVocalPitchFrames, segmentVocalPhrases, vocalAnalysisProvenanceReason,
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
-import { decodeMonoPcm, detectBassAttacks, detectDrumTransients, detectHarmonyTimeline, detectVocalPitchFrames } from "./analysis-engine";
+import { provisionDesktopSectionAnalysis } from "./analysis";
+import { ANALYSIS_PCM_RATE, decodeMonoPcm, detectBassAttacks, detectDrumTransients, detectHarmonyTimeline, detectVocalPitchFrames } from "./analysis-engine";
 
 type AnalysisDb = ReturnType<typeof drizzle>;
 type StemAnalysisDeps = {
   db?: AnalysisDb;
   storage?: StorageProvider;
   decode?: typeof decodeMonoPcm;
+  enqueueSectionAnalysis?: typeof enqueueSourceSectionAnalysis;
 };
 
 const active = (status: string) => status === "queued" || status === "failed";
@@ -369,7 +372,8 @@ export async function handleVocalAnalysisJob(payloadInput: Record<string, unknow
     inputPath = await prepareStemFile(storage, stem.storageKey);
     const pcm = await decode(inputPath);
     if (pcm.length < 2_205) throw new Error("The isolated vocal stem is too short for pitch analysis.");
-    const frames = normaliseVocalPitchFrames(detectVocalPitchFrames(pcm), Math.round(source.durationSeconds * 1000));
+    const decodedDurationMs = Math.floor((pcm.length * 1000) / ANALYSIS_PCM_RATE);
+    const frames = normaliseVocalPitchFrames(detectVocalPitchFrames(pcm), decodedDurationMs);
     if (frames === null) throw new Error("The local DSP engine returned invalid vocal pitch frames.");
     const phrases = segmentVocalPhrases(frames);
     const analyzedAt = new Date();
@@ -388,6 +392,28 @@ export async function handleVocalAnalysisJob(payloadInput: Record<string, unknow
       }).where(and(eq(vocalAnalyses.id, job.id), eq(vocalAnalyses.status, "processing"), eq(vocalAnalyses.sourceChecksumSha256, job.sourceChecksumSha256), eq(vocalAnalyses.stemChecksumSha256, job.stemChecksumSha256))).returning({ id: vocalAnalyses.id });
       if (!completed) throw new Error("Vocal analysis lost its active durable claim before completion.");
     });
+    try {
+      const [sourceAnalysis] = await database.select().from(sourceAnalyses).where(and(
+        eq(sourceAnalyses.sourceAssetId, source.id),
+        eq(sourceAnalyses.status, "complete"),
+        eq(sourceAnalyses.sourceChecksumSha256, job.sourceChecksumSha256),
+      )).limit(1);
+      if (sourceAnalysis) {
+        const dispatchKey = createHash("sha256")
+          .update(`vocal-section:${job.id}:${job.sourceChecksumSha256}:${job.stemChecksumSha256}`)
+          .digest("hex")
+          .slice(0, 24);
+        await provisionDesktopSectionAnalysis(sourceAnalysis, source, {
+          database,
+          dispatchKey,
+          enqueue: deps.enqueueSectionAnalysis,
+        });
+      }
+    } catch (sectionRefreshError) {
+      // Keep the completed vocal evidence even if its optional structural
+      // refresh cannot be queued. A later source analysis consumes it.
+      console.warn("could not refresh Waveyard sections after vocal analysis", sectionRefreshError);
+    }
   } catch (error) {
     await database.update(vocalAnalyses).set({ status: "failed", stage: "failed", errorCode: "analysis_failed",
       errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Local vocal analysis failed.", completedAt: new Date(), updatedAt: new Date(),

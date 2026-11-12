@@ -1,7 +1,9 @@
 export const PASSAGE_FINGERPRINT_ENGINE = "waveyard-passage-fingerprint";
-export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "2.0.0";
+export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "2.1.0";
 export const PASSAGE_MATCH_SIMILARITY_THRESHOLD = 0.92;
 export const MINIMUM_PERSISTENT_STEM_CHANGE_DB = 6;
+
+export type PassageVocalRun = { startMs: number; endMs: number; confidence: number };
 
 export type PassageStemActivity = {
   stemType: string;
@@ -28,7 +30,14 @@ export type PassageFingerprint = {
   beatPhase: PassageEvidence<{ subdivisionProfile: number[]; beatPeriodMs: number }>;
   energy: PassageEvidence<{ rmsDb: number }>;
   downbeatConfidence: PassageEvidence<number>;
-  vocalActivity: PassageEvidence<{ voicedCoverage: number; meanConfidence: number; analysisId: string; stemAssetId: string; stemChecksumSha256: string }>;
+  vocalActivity: PassageEvidence<{
+    voicedCoverage: number;
+    meanConfidence: number;
+    analysisId: string;
+    stemAssetId: string;
+    stemChecksumSha256: string;
+    pitchContinuityRuns: PassageVocalRun[];
+  }>;
   instrumentalDensity: PassageEvidence<{ activeCoverage: number; stemTypes: string[]; analysisIds: string[] }>;
   /** Per-stem PCM evidence; this is structural context, not semantic form. */
   stemActivity: PassageEvidence<PassageStemActivity[]>;
@@ -114,9 +123,32 @@ export function parsePassageFingerprint(
   const vocalActivity = parseEvidence(value.vocalActivity, (raw) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const item = raw as Record<string, unknown>;
+    if (!Array.isArray(item.pitchContinuityRuns) || item.pitchContinuityRuns.length > 256) return null;
+    const pitchContinuityRuns: PassageVocalRun[] = [];
+    for (const rawRun of item.pitchContinuityRuns) {
+      if (!rawRun || typeof rawRun !== "object" || Array.isArray(rawRun)) return null;
+      const run = rawRun as Record<string, unknown>;
+      if (!Number.isSafeInteger(run.startMs) || (run.startMs as number) < 0
+        || !Number.isSafeInteger(run.endMs) || (run.endMs as number) <= (run.startMs as number)
+        || (run.endMs as number) > 86_400_000
+        || scalar(run.confidence) === null) return null;
+      pitchContinuityRuns.push({
+        startMs: run.startMs as number,
+        endMs: run.endMs as number,
+        confidence: run.confidence as number,
+      });
+    }
+    if (pitchContinuityRuns.some((run, index) => index > 0 && run.startMs < pitchContinuityRuns[index - 1]!.startMs)) return null;
     return scalar(item.voicedCoverage) !== null && scalar(item.meanConfidence) !== null
       && typeof item.analysisId === "string" && typeof item.stemAssetId === "string" && typeof item.stemChecksumSha256 === "string"
-      ? { voicedCoverage: item.voicedCoverage as number, meanConfidence: item.meanConfidence as number, analysisId: item.analysisId, stemAssetId: item.stemAssetId, stemChecksumSha256: item.stemChecksumSha256 }
+      ? {
+        voicedCoverage: item.voicedCoverage as number,
+        meanConfidence: item.meanConfidence as number,
+        analysisId: item.analysisId,
+        stemAssetId: item.stemAssetId,
+        stemChecksumSha256: item.stemChecksumSha256,
+        pitchContinuityRuns,
+      }
       : null;
   });
   const instrumentalDensity = parseEvidence(value.instrumentalDensity, (raw) => {
@@ -281,8 +313,15 @@ export function comparePassageCompatibility(input: {
     : dimension("context", null, `Source-level RMS differs by ${energyDeltaDb.toFixed(1)} dB; this is context, not a match gate.`);
 
   const vocal = input.donor.vocalActivity.status === "measured"
-    ? dimension("context", input.donor.vocalActivity.value.voicedCoverage,
-      `Verified isolated-vocal pitch frames cover ${(input.donor.vocalActivity.value.voicedCoverage * 100).toFixed(0)}% of the donor passage; coverage is shown without an unvalidated suitability threshold.`)
+    ? (() => {
+      const runs = input.donor.vocalActivity.value.pitchContinuityRuns;
+      const times = runs.slice(0, 3).map((run) =>
+        `${(run.startMs / 1000).toFixed(1)}–${(run.endMs / 1000).toFixed(1)} s`,
+      );
+      const timing = times.length ? ` First runs: ${times.join(", ")}${runs.length > times.length ? ", …" : ""}.` : " No voiced pitch-continuity run was detected in this passage.";
+      return dimension("context", input.donor.vocalActivity.value.voicedCoverage,
+        `Verified isolated-vocal analysis measured ${(input.donor.vocalActivity.value.voicedCoverage * 100).toFixed(0)}% voiced coverage and ${runs.length} pitch-continuity runs.${timing} These are not lyric or word boundaries; coverage is context, not a suitability threshold.`);
+    })()
     : dimension("unavailable", null, input.donor.vocalActivity.reason);
   const instruments = input.anchor.instrumentalDensity.status === "measured"
     ? dimension("context", input.anchor.instrumentalDensity.value.activeCoverage,

@@ -112,6 +112,32 @@ test("per-stem shifts are visible as context but never decide cross-song eligibi
   assert.match(result.dimensions.stemActivity.detail, /not a semantic role or compatibility gate/);
 });
 
+test("isolated vocal pitch-continuity runs remain visible context, not lyric claims or eligibility gates", () => {
+  const vocalActivity = measured({
+    voicedCoverage: 0.31,
+    meanConfidence: 0.8,
+    analysisId: "vocal-analysis",
+    stemAssetId: "vocal-stem",
+    stemChecksumSha256: "d".repeat(64),
+    pitchContinuityRuns: [{ startMs: 9_000, endMs: 10_500, confidence: 0.8 }],
+  });
+  const donor = fingerprint("sha-b", 0, 16, { vocalActivity });
+  const result = compatibility(fingerprint("sha-a"), donor);
+  assert.equal(result.eligible, true);
+  assert.equal(result.dimensions.vocalActivity.status, "context");
+  assert.match(result.dimensions.vocalActivity.detail, /1 pitch-continuity run/);
+  assert.match(result.dimensions.vocalActivity.detail, /9\.0–10\.5 s/);
+  assert.match(result.dimensions.vocalActivity.detail, /not lyric or word boundaries/);
+  assert.deepEqual(parsePassageFingerprint(donor, { sourceChecksumSha256: "sha-b" }), donor);
+  assert.equal(parsePassageFingerprint({
+    ...donor,
+    vocalActivity: measured({
+      ...vocalActivity.value,
+      pitchContinuityRuns: [{ startMs: 12_000, endMs: 11_000, confidence: 0.8 }],
+    }),
+  }), null);
+});
+
 test("compatibility requires separate rhythm, chroma, beat-phase, tempo and beat-confidence evidence", () => {
   const result = compatibility(fingerprint("a"), fingerprint("b"));
   assert.equal(result.eligible, true);

@@ -14,12 +14,13 @@ import { and, eq } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db } from "@workspace/db";
-import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections } from "@workspace/db/waveyardSchema";
+import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses } from "@workspace/db/waveyardSchema";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
-import { enqueueSourceSectionAnalysis } from "@workspace/arena/lib/waveyard/queue";
-import type { SourceAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
+import { enqueueSourceSectionAnalysis, enqueueVocalAnalysis } from "@workspace/arena/lib/waveyard/queue";
+import type { SourceAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
+import { LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION, vocalAnalysisIdempotencyKey } from "../types/vocal-analysis";
 import {
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
@@ -144,6 +145,93 @@ export async function provisionDesktopSectionAnalysis(
       .where(eq(sourceSectionAnalyses.id, row.id));
   }
   return row;
+}
+
+/** Queue source- and stem-bound vocal pitch continuity after stem publication. */
+export async function provisionDesktopVocalAnalysis(
+  source: typeof sourceAssets.$inferSelect,
+  stem: typeof stemAssets.$inferSelect,
+  options: {
+    database?: ReturnType<typeof drizzle>;
+    enqueue?: (payload: VocalAnalysisJobPayload) => Promise<unknown>;
+  } = {},
+) {
+  const database = options.database ?? db;
+  if (stem.projectId !== source.projectId || stem.sourceAssetId !== source.id || stem.stemType !== "vocals") return null;
+
+  const [created] = await database.insert(vocalAnalyses).values({
+    projectId: source.projectId,
+    sourceAssetId: source.id,
+    stemAssetId: stem.id,
+    status: "queued",
+    stage: "queued",
+    idempotencyKey: vocalAnalysisIdempotencyKey(
+      stem.id,
+      LOCAL_VOCAL_ANALYSIS_ENGINE,
+      LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+    ),
+    analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+    analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256: source.checksumSha256,
+    stemChecksumSha256: stem.checksumSha256,
+  }).onConflictDoNothing({ target: vocalAnalyses.stemAssetId }).returning();
+  const [analysis] = created
+    ? [created]
+    : await database.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
+  if (!analysis
+    || analysis.projectId !== source.projectId
+    || analysis.sourceAssetId !== source.id
+    || analysis.sourceChecksumSha256 !== source.checksumSha256
+    || analysis.stemChecksumSha256 !== stem.checksumSha256
+    || analysis.analysisEngine !== LOCAL_VOCAL_ANALYSIS_ENGINE
+    || analysis.analysisEngineVersion !== LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION) return analysis ?? null;
+
+  let shouldQueue = Boolean(created);
+  if (!created && analysis.status === "failed") {
+    const [requeued] = await database.update(vocalAnalyses).set({
+      status: "queued",
+      stage: "queued",
+      errorCode: null,
+      errorMessage: null,
+      completedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(vocalAnalyses.id, analysis.id),
+      eq(vocalAnalyses.status, "failed"),
+      eq(vocalAnalyses.sourceChecksumSha256, source.checksumSha256),
+      eq(vocalAnalyses.stemChecksumSha256, stem.checksumSha256),
+    )).returning({ id: vocalAnalyses.id });
+    shouldQueue = Boolean(requeued);
+  }
+  if (!shouldQueue) return analysis;
+
+  try {
+    await (options.enqueue ?? enqueueVocalAnalysis)({
+      vocalAnalysisId: analysis.id,
+      projectId: analysis.projectId,
+      sourceAssetId: analysis.sourceAssetId,
+      stemAssetId: analysis.stemAssetId,
+      analysisEngine: analysis.analysisEngine,
+      analysisEngineVersion: analysis.analysisEngineVersion,
+    });
+    return analysis;
+  } catch (error) {
+    await database.update(vocalAnalyses).set({
+      status: "failed",
+      stage: "queue-unavailable",
+      errorCode: "queue_unavailable",
+      errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Vocal-analysis queue is unavailable.",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(vocalAnalyses.id, analysis.id),
+      eq(vocalAnalyses.status, "queued"),
+      eq(vocalAnalyses.sourceChecksumSha256, source.checksumSha256),
+      eq(vocalAnalyses.stemChecksumSha256, stem.checksumSha256),
+    ));
+    console.warn("could not queue Waveyard vocal timing analysis", error);
+    return null;
+  }
 }
 
 /** Local musical analysis over the original source audio. */
