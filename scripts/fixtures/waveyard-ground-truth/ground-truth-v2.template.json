@@ -27,7 +27,9 @@
       "Annotators work from the exact original recording, not analyzer output or candidate rankings.",
       "Record section segments and internal transition timestamps separately; label certainty is not boundary-time certainty.",
       "Use unknown/ambiguous rather than guessing a semantic section label; mark uncertain boundary timestamps as ambiguous independently.",
-      "Do not annotate lyric phrases in this study: current pitch-continuity runs are not lyric-phrase boundaries and are not a proxy for them.",
+      "Annotate listener-heard structural events separately from section labels: transitions, repetitions, and arrangement changes.",
+      "Mark each lead-vocal phrase's start and end in milliseconds; do not transcribe lyrics. Mark vocal phrase review complete only after checking the full recording.",
+      "Current pitch-continuity runs are not lyric-phrase boundaries and are not a proxy for them.",
       "Bed-pair usefulness requires listening to the specified vocal and bed windows together; rhythm resemblance alone is not harmonic evidence.",
       "Resolve disagreements after both independent reviews are locked, preserving the original annotations and resolution rationale."
     ]
@@ -50,6 +52,10 @@
           "reviewedAt": null,
           "sectionSegments": [],
           "sectionBoundaries": [],
+          "structuralEvents": [],
+          "structuralEventReviewComplete": false,
+          "vocalPhraseIntervals": [],
+          "vocalPhraseReviewComplete": false,
           "bedPairJudgments": []
         },
         {
@@ -57,6 +63,10 @@
           "reviewedAt": null,
           "sectionSegments": [],
           "sectionBoundaries": [],
+          "structuralEvents": [],
+          "structuralEventReviewComplete": false,
+          "vocalPhraseIntervals": [],
+          "vocalPhraseReviewComplete": false,
           "bedPairJudgments": []
         }
       ],
@@ -79,6 +89,10 @@
           "reviewedAt": null,
           "sectionSegments": [],
           "sectionBoundaries": [],
+          "structuralEvents": [],
+          "structuralEventReviewComplete": false,
+          "vocalPhraseIntervals": [],
+          "vocalPhraseReviewComplete": false,
           "bedPairJudgments": []
         },
         {
@@ -86,6 +100,10 @@
           "reviewedAt": null,
           "sectionSegments": [],
           "sectionBoundaries": [],
+          "structuralEvents": [],
+          "structuralEventReviewComplete": false,
+          "vocalPhraseIntervals": [],
+          "vocalPhraseReviewComplete": false,
           "bedPairJudgments": []
         }
       ],

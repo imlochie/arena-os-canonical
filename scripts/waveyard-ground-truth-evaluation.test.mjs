@@ -22,6 +22,12 @@ function recording(id, title, durationSeconds, adjudicated) {
       },
     ],
     sectionBoundaries: [{ timeMs: 1000, certainty: "ambiguous" }],
+    structuralEvents: [],
+    structuralEventReviewComplete: true,
+    vocalPhraseIntervals: [
+      { startMs: 2000, endMs: 3000, certainty: "confident" },
+    ],
+    vocalPhraseReviewComplete: true,
     bedPairJudgments: [],
     disagreements: [],
     resolutionMethod:
@@ -33,6 +39,10 @@ function recording(id, title, durationSeconds, adjudicated) {
     reviewedAt: "2026-11-12T11:00:00.000Z",
     sectionSegments: structuredClone(resolved.sectionSegments),
     sectionBoundaries: structuredClone(resolved.sectionBoundaries),
+    structuralEvents: structuredClone(resolved.structuralEvents),
+    structuralEventReviewComplete: resolved.structuralEventReviewComplete,
+    vocalPhraseIntervals: structuredClone(resolved.vocalPhraseIntervals),
+    vocalPhraseReviewComplete: resolved.vocalPhraseReviewComplete,
     bedPairJudgments: structuredClone(resolved.bedPairJudgments),
   });
   return {
@@ -66,6 +76,19 @@ function dataset({ queen = {}, september = {} } = {}) {
       candidateWindowIoUThreshold: 0.5,
       sectionBoundaryToleranceMs: 2000,
       minimumSectionCoverageFraction: 0.95,
+      sectionLabels: [
+        "intro",
+        "verse",
+        "pre-chorus",
+        "chorus",
+        "bridge",
+        "breakdown",
+        "outro",
+        "instrumental",
+        "unknown",
+      ],
+      certaintyLabels: ["confident", "ambiguous"],
+      bedPairVerdicts: ["useful", "not-useful", "ambiguous"],
     },
     recordings: [
       recording(
@@ -98,6 +121,17 @@ const queen = {
   sectionBoundaries: [
     { timeMs: 5000, certainty: "confident" },
     { timeMs: 10000, certainty: "ambiguous" },
+  ],
+  structuralEvents: [
+    {
+      timeMs: 5000,
+      kind: "arrangement-change",
+      description: "Bass drops out; claps and vocals remain.",
+      certainty: "confident",
+    },
+  ],
+  vocalPhraseIntervals: [
+    { startMs: 1200, endMs: 3400, certainty: "confident" },
   ],
   bedPairJudgments: [
     {
@@ -187,6 +221,17 @@ test("independent ground truth computes structural boundaries, coverage, and adj
   assert.equal(result.tracks[0].lyricPhraseTiming.status, "unavailable");
   assert.equal(result.tracks[0].lyricPhraseTiming.metrics, null);
   assert.equal(result.tracks[0].lyricPhraseTiming.pitchContinuityRunCount, 2);
+  assert.equal(result.tracks[0].lyricPhraseTiming.humanReferencePhraseCount, 1);
+  assert.equal(
+    result.tracks[0].humanAnnotationReference.structuralEventCounts[
+      "arrangement-change"
+    ],
+    1,
+  );
+  assert.equal(
+    result.tracks[0].humanAnnotationReference.vocalPhraseIntervalCount,
+    1,
+  );
   assert.equal(result.tracks[0].coverage.annotatedSectionSeconds, 222.67);
   assert.equal(result.tracks[0].bedCandidateRanking.top1Accuracy, 1);
   assert.equal(result.tracks[0].bedCandidateRanking.recallAtK, 1);
@@ -299,6 +344,38 @@ test("breakdown is an accepted section label distinct from bridge and instrument
   assert.equal(
     data.recordings[0].adjudicated.sectionSegments[1].label,
     "breakdown",
+  );
+});
+
+test("human phrase and structural-event annotations are validated as separate evidence", () => {
+  const data = dataset({ queen, september: {} });
+  const reviewer = data.recordings[0].independentReviews[0];
+  reviewer.vocalPhraseIntervals = [
+    { startMs: 1500, endMs: 3300, certainty: "confident" },
+  ];
+  reviewer.structuralEvents = [
+    {
+      timeMs: 22000,
+      kind: "repetition",
+      description: "The same vocal hook returns.",
+      certainty: "ambiguous",
+    },
+  ];
+  assert.doesNotThrow(() => validateGroundTruth(data));
+
+  reviewer.vocalPhraseReviewComplete = false;
+  const incomplete = validateGroundTruth(data);
+  assert.equal(incomplete.complete, false);
+  assert.ok(
+    incomplete.issues.some((issue) =>
+      issue.includes("vocal phrase intervals, explicit completion flags"),
+    ),
+  );
+  reviewer.vocalPhraseReviewComplete = true;
+  reviewer.vocalPhraseIntervals[0].endMs = 300000;
+  assert.throws(
+    () => validateGroundTruth(data),
+    /reviewer vocal phrase 0 is outside its recording/,
   );
 });
 

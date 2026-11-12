@@ -29,6 +29,11 @@ const SECTION_LABELS = new Set([
   "unknown",
 ]);
 const BED_VERDICTS = new Set(["useful", "not-useful", "ambiguous"]);
+const STRUCTURAL_EVENT_KINDS = new Set([
+  "transition",
+  "repetition",
+  "arrangement-change",
+]);
 const sha256Pattern = /^[a-f0-9]{64}$/i;
 
 function interval(value, label, maxDurationMs) {
@@ -54,6 +59,29 @@ function sectionBoundary(value, label, maxDurationMs) {
   assert.ok(
     value.timeMs > 0 && value.timeMs < maxDurationMs,
     `${label} must be an internal boundary inside its recording.`,
+  );
+  assert.ok(
+    ["confident", "ambiguous"].includes(value.certainty),
+    `${label}: certainty must be explicit.`,
+  );
+}
+
+function structuralEvent(value, label, maxDurationMs) {
+  assert.ok(
+    value && Number.isSafeInteger(value.timeMs),
+    `${label} needs an integer millisecond timestamp.`,
+  );
+  assert.ok(
+    value.timeMs > 0 && value.timeMs < maxDurationMs,
+    `${label} must be inside its recording.`,
+  );
+  assert.ok(
+    STRUCTURAL_EVENT_KINDS.has(value.kind),
+    `${label} needs a supported structural event kind.`,
+  );
+  assert.ok(
+    typeof value.description === "string" && value.description.trim(),
+    `${label} needs a short listener-observed description.`,
   );
   assert.ok(
     ["confident", "ambiguous"].includes(value.certainty),
@@ -173,6 +201,28 @@ export function validateGroundTruth(dataset) {
       `${expected.id}: sectionBoundaries must be an array.`,
     );
     assert.ok(
+      Array.isArray(adjudicated.structuralEvents),
+      `${expected.id}: structuralEvents must be an array.`,
+    );
+    assert.ok(
+      Array.isArray(adjudicated.vocalPhraseIntervals),
+      `${expected.id}: vocalPhraseIntervals must be an array.`,
+    );
+    assert.equal(
+      adjudicated.structuralEventReviewComplete,
+      true,
+      `${expected.id}: adjudicated structural-event review must be marked complete.`,
+    );
+    assert.equal(
+      adjudicated.vocalPhraseReviewComplete,
+      true,
+      `${expected.id}: adjudicated vocal-phrase review must be marked complete.`,
+    );
+    assert.ok(
+      adjudicated.vocalPhraseIntervals.length > 0,
+      `${expected.id}: at least one vocal phrase must be annotated for this vocal recording.`,
+    );
+    assert.ok(
       Array.isArray(adjudicated.bedPairJudgments),
       `${expected.id}: bedPairJudgments must be an array.`,
     );
@@ -206,6 +256,24 @@ export function validateGroundTruth(dataset) {
         boundary,
         `${expected.id} section boundary ${index}`,
         expected.durationSeconds * 1000 + SOURCE_DURATION_METADATA_TOLERANCE_MS,
+      );
+    }
+    for (const [index, event] of adjudicated.structuralEvents.entries()) {
+      structuralEvent(
+        event,
+        `${expected.id} structural event ${index}`,
+        expected.durationSeconds * 1000 + SOURCE_DURATION_METADATA_TOLERANCE_MS,
+      );
+    }
+    for (const [index, phrase] of adjudicated.vocalPhraseIntervals.entries()) {
+      interval(
+        phrase,
+        `${expected.id} vocal phrase ${index}`,
+        expected.durationSeconds * 1000 + SOURCE_DURATION_METADATA_TOLERANCE_MS,
+      );
+      assert.ok(
+        ["confident", "ambiguous"].includes(phrase.certainty),
+        `${expected.id} vocal phrase ${index}: certainty must be explicit.`,
       );
     }
     if (
@@ -256,19 +324,24 @@ export function validateGroundTruth(dataset) {
           Number.isNaN(Date.parse(review.reviewedAt)) ||
           !Array.isArray(review.sectionSegments) ||
           !Array.isArray(review.sectionBoundaries) ||
+          !Array.isArray(review.structuralEvents) ||
+          !Array.isArray(review.vocalPhraseIntervals) ||
+          review.structuralEventReviewComplete !== true ||
+          review.vocalPhraseReviewComplete !== true ||
           !Array.isArray(review.bedPairJudgments)
         ) {
           issues.push(
-            `${expected.id}: each reviewer must submit section segments, structural boundaries, and bed-pair judgments`,
+            `${expected.id}: each reviewer must submit section segments, structural events, vocal phrase intervals, explicit completion flags, and bed-pair judgments`,
           );
           continue;
         }
         if (
           !review.sectionSegments.length ||
-          !review.sectionBoundaries.length
+          !review.sectionBoundaries.length ||
+          !review.vocalPhraseIntervals.length
         ) {
           issues.push(
-            `${expected.id}: each reviewer must annotate section segments and structural boundaries`,
+            `${expected.id}: each reviewer must annotate section segments, structural boundaries, and vocal phrases`,
           );
         }
         for (const [index, section] of review.sectionSegments.entries()) {
@@ -295,6 +368,26 @@ export function validateGroundTruth(dataset) {
             `${expected.id} reviewer section boundary ${index}`,
             expected.durationSeconds * 1000 +
               SOURCE_DURATION_METADATA_TOLERANCE_MS,
+          );
+        }
+        for (const [index, event] of review.structuralEvents.entries()) {
+          structuralEvent(
+            event,
+            `${expected.id} reviewer structural event ${index}`,
+            expected.durationSeconds * 1000 +
+              SOURCE_DURATION_METADATA_TOLERANCE_MS,
+          );
+        }
+        for (const [index, phrase] of review.vocalPhraseIntervals.entries()) {
+          interval(
+            phrase,
+            `${expected.id} reviewer vocal phrase ${index}`,
+            expected.durationSeconds * 1000 +
+              SOURCE_DURATION_METADATA_TOLERANCE_MS,
+          );
+          assert.ok(
+            ["confident", "ambiguous"].includes(phrase.certainty),
+            `${expected.id} reviewer vocal phrase ${index}: certainty must be explicit.`,
           );
         }
         if (
@@ -846,8 +939,24 @@ export function evaluateTrack(recording, predictions, options = {}) {
       status: "unavailable",
       metrics: null,
       pitchContinuityRunCount: pitchContinuityRuns.length,
+      humanReferencePhraseCount: (adjudicated.vocalPhraseIntervals ?? [])
+        .length,
       reason:
         "Pitch-continuity runs are not lyric-phrase boundaries; the current pipeline does not produce word- or lyric-phrase timing predictions.",
+    },
+    humanAnnotationReference: {
+      sectionSegmentCount: sections.length,
+      structuralEventCount: (adjudicated.structuralEvents ?? []).length,
+      structuralEventCounts: Object.fromEntries(
+        [...STRUCTURAL_EVENT_KINDS].map((kind) => [
+          kind,
+          (adjudicated.structuralEvents ?? []).filter(
+            (event) => event.kind === kind,
+          ).length,
+        ]),
+      ),
+      vocalPhraseIntervalCount: (adjudicated.vocalPhraseIntervals ?? []).length,
+      note: "Human annotations are retained as reference data. They are not model metrics unless the production pipeline emits corresponding predictions.",
     },
     excludedAmbiguousSectionBoundaries: ambiguousSectionBoundaries.length,
     bedCandidateRanking: candidateRanking(
