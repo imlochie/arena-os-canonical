@@ -362,7 +362,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             <details className="mashup-arrangement" data-testid="details-mashup-arrangement">
               <summary>
                 Whole-track placement · {plan.arrangement.selected === "coherent-overlay" ? "moved as one flow" : "kept continuous"}
-                {" · "}{plan.arrangement.unitsPlaced}/{plan.arrangement.unitsTotal} vocal units
+                {" · "}{plan.arrangement.unitsPlaced}/{plan.arrangement.unitsTotal} activity windows
               </summary>
               <p>
                 Relative placement evidence, not a quality prediction or verse/chorus label.
@@ -372,11 +372,11 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                   : ` · difference ${(plan.arrangement.improvementRatio * 100).toFixed(1)}%`}
               </p>
               <p>
-                Units placed: coherent {plan.arrangement.coherentUnitsPlaced}/{plan.arrangement.unitsTotal}
+                Activity windows placed: coherent {plan.arrangement.coherentUnitsPlaced}/{plan.arrangement.unitsTotal}
                 {" · "}continuous {plan.arrangement.continuousUnitsPlaced}/{plan.arrangement.unitsTotal}
               </p>
               {plan.arrangement.selected === "coherent-overlay" && (
-                <p>Whole vocal body starts at {(plan.arrangement.coherentEntryMs / 1000).toFixed(1)}s; all internal pauses stay in their original order.</p>
+                <p>The vocal body stays in one continuous clip from {(plan.arrangement.coherentEntryMs / 1000).toFixed(1)}s; its internal pauses keep their original timing.</p>
               )}
               {plan.arrangement.warnings.map((warning, index) => <p key={`${warning}-${index}`} role="status">{warning}</p>)}
               <p>
