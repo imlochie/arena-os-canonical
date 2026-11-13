@@ -882,7 +882,11 @@ try {
           window.audioProbe.outputAnalyzers.sort((a, b) => (a.master.probeDeckIndex ?? 9) - (b.master.probeDeckIndex ?? 9));
         }
         const node = super.createMediaElementSource(media), connect = node.connect.bind(node);
-        node.connect = (target, ...args) => { node.inputNode = target; return connect(target, ...args); };
+        node.connect = (target, ...args) => {
+          node.inputNode = target;
+          (node.probeConnections ??= []).push(target);
+          return connect(target, ...args);
+        };
         window.audioProbe.sources.push(node); return node;
       }
       createBufferSource() {
@@ -2562,10 +2566,35 @@ try {
         console.error(`RESTORE_CLICK_FAILED ${scenarioLabel} ${JSON.stringify(probe)}`);
         throw error;
       }
-      await page.waitForFunction(() => {
-        const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-vocals"));
-        return source?.inputNode?.gain?.value > 0.9;
-      });
+      try {
+        await page.waitForFunction(() => {
+          const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-vocals"));
+          const stemGain = source?.probeConnections?.find(node => node instanceof GainNode);
+          return stemGain?.gain?.value > 0.9;
+        });
+      } catch (error) {
+        const state = await page.evaluate(() => {
+          const sources = window.audioProbe.sources
+            .filter(item => item.mediaElement.src.endsWith("/a-vocals"))
+            .map(item => ({
+              gain: item.probeConnections?.find(node => node instanceof GainNode)?.gain?.value ?? null,
+              paused: item.mediaElement.paused,
+              currentTime: item.mediaElement.currentTime,
+              readyState: item.mediaElement.readyState,
+              ended: item.mediaElement.ended,
+            }));
+          return {
+            sources,
+            restoreVisible: Boolean(document.querySelector('[data-testid="restore-live-swap-vocals"]')),
+            alerts: [...document.querySelectorAll('[role="alert"]')]
+              .map(node => (node.textContent ?? "").trim().slice(0, 160)).slice(0, 4),
+            status: (document.querySelector('[data-testid="session-status"]')?.textContent ?? "").trim().slice(0, 240),
+            pageErrors: window.audioProbe.pageErrors.slice(-6),
+          };
+        }).catch(() => "page unavailable");
+        console.error(`RESTORE_GAIN_TIMEOUT ${scenarioLabel} ${JSON.stringify(state)}`);
+        throw error;
+      }
     }
     const latencyBudget = assertLiveStemTimingBudget(engineName, timings);
     console.log("LIVE_STEM_SWAP_TIMINGS", JSON.stringify({ browserEngine: engineName, timings, latencyBudget }));
