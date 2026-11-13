@@ -51,6 +51,12 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **How to apply:** Keep the rolling comparison source-checksum-bound, beat-grid-aware, bounded in cost, and subordinate to a safe fallback. Validate phrase timing and full rendered mixes separately on complete real tracks; do not call pitch-continuity runs lyrics. Keep the sampler’s note/key filters and style selection visible and connected to actual render behavior, and describe quality claims only at the level supported by listening evidence.
 
+**Timestamped transcript evidence:** Waveyard should be able to generate or import a transcript with timing and use those timestamps as optional vocal phrase/word timing evidence for mashup placement and snapping. This is not a semantic-form label or a substitute for measured audio.
+
+**Why:** The user proposed an embedded-timestamp transcript generator so the planner can better time lyrics in a mashup.
+
+**How to apply:** Make transcription explicitly user-triggered, disclose when audio will be sent to an external provider, and bind editable timestamps to the source/stem checksum and transcription engine. Prefer the isolated vocal stem. Keep mashup creation available when transcription is unavailable or declined; do not represent coarse ASR segments as word-level forced alignment.
+
 **Full mashup workflow:** Analyze complete songs first; find rhythm, downbeats, repeated structures, arrangement changes, and vocal activity/phrase-entry candidates; let the user audition and adjust a donor entry with evidence-based snapping; arrange and transform the layers together; render the complete mashup; then save, reopen, edit, and export the same arrangement.
 
 **Why:** The user’s multi-step prompt makes whole-song, arbitrary-pair mashup production the goal. Analysis, section labels, phrase timing, swaps, arrangement, and exports are successive parts of that workflow—not independent endpoints or prerequisites that can block creation.
