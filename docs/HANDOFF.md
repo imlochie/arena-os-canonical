@@ -1,5 +1,22 @@
 # Arena handoff — read this first
 
+## Current verification — pitch lock with multiple live donors
+
+* The browser acceptance fixture now loads two different swapped stems on each
+  deck, then toggles pitch lock during a 1.10× crossfade. It measures each
+  donor's actual worklet output separately, verifies the old buffer sources
+  stopped, checks alignment to each deck clock, disables pitch lock to confirm
+  all donors follow varispeed, then re-locks and completes the handoff.
+* **Chromium 155 evidence:** donor sources at 230, 410, 370 and 130 Hz measured
+  233.33, 408.33, 370.59 and 130.09 Hz with pitch lock; at 1.10× pitch-follow
+  they measured 253.45, 450, 408.33 and 143.18 Hz. Re-lock returned them to
+  229.69, 408.33, 370.59 and 130.09 Hz. Both incoming-deck donors remained
+  audible and pitch-locked after handoff.
+* **Verification:** `node scripts/waveyard-live-stems.mjs --pitch-transition-only`
+  passes and emits `MULTI_DONOR_PITCH_LOCK_EVIDENCE`; the live stem layer suite
+  passes 132/132. These are synthetic sine fixtures measured in Chromium, not
+  separated music, cross-browser coverage, or physical-device evidence.
+
 ## Current implementation — bar actions require stable downbeat evidence
 
 * Source analysis now compares onset-envelope accents across the four phases of
