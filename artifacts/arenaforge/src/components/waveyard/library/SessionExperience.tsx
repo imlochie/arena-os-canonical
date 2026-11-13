@@ -324,7 +324,7 @@ function getPersistedSwapSetup(
     const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
     const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, tempoEvidence);
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
-    const sectionAlignment = ratio === null || !reliableBeatEvidence ? null : liveStemSectionAlignment(
+    const sectionAlignment = ratio === null ? null : liveStemSectionAlignment(
       item.analysis?.sections,
       donorAnalysis?.sections,
       swap.atSeconds,

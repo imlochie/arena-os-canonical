@@ -10,6 +10,7 @@
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playback without a second engine; merge changed stem keys and keep master output volume device-local.
 - [Waveyard private device sync](waveyard-private-device-sync.md) — prefer QR pairing and encrypted laptop-hosted sync; keep audio and library files private and avoid paid-cloud dependency.
 - [Waveyard live-swap recovery](waveyard-live-swap-recovery.md) — keep the last audible layer playing while retaining the failed donor choice for an explicit retry.
+- [Waveyard local phrase alignment](waveyard-live-section-confidence.md) — gate confidence per active/candidate passage; weak unrelated sections must not disable a whole track, and weak BPM never authorizes stretch.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
 - [Windows build resource limits](windows-build-resources.md) — user has seen Windows builds exhaust laptop disk; distinguish RAM, dependencies, staging, installers, and downloaded models.
 - [Windows validation timing](windows-validation-timing.md) — keep preparing Windows checks, but defer asking for user runs until product gaps are nearly cleared.

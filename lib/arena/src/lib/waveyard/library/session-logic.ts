@@ -274,6 +274,7 @@ const COMPARABLE_SECTION_LABELS = new Set([
 const LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN = 0.9;
 const LIVE_STEM_TRUSTED_KEY_CONFIDENCE_MIN = 0.75;
 const LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN = 0.75;
+const LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN = 0.6;
 
 function comparableSectionLabel(label: string): string | null {
   const normalized = label.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+\d+$/, "").trim();
@@ -319,6 +320,15 @@ function measuredRollingWindows(section: LiveStemSection): PassageRollingWindow[
     : null;
 }
 
+function hasReliableLocalPassageBeatEvidence(evidence: LiveStemSectionEvidence): boolean {
+  const confidentGrid = (confidence: number | null | undefined) =>
+    typeof confidence === "number" && Number.isFinite(confidence) && confidence >= 0.6;
+  return Number.isFinite(evidence.recipientBpm) && (evidence.recipientBpm ?? 0) > 0
+    && Number.isFinite(evidence.donorBpm) && (evidence.donorBpm ?? 0) > 0
+    && confidentGrid(evidence.recipientBeatConfidence)
+    && confidentGrid(evidence.donorBeatConfidence);
+}
+
 function livePhraseSectionOffsetSeconds(
   recipientSections: readonly LiveStemSection[],
   donorSections: readonly LiveStemSection[],
@@ -327,9 +337,11 @@ function livePhraseSectionOffsetSeconds(
   stretchRatio: number,
   evidence: LiveStemSectionEvidence,
 ): number | null {
-  if (!hasReliableLiveStemBeatEvidence(evidence)
-    || !Number.isFinite(evidence.recipientBpm) || (evidence.recipientBpm ?? 0) <= 0
-    || !Number.isFinite(evidence.donorBpm) || (evidence.donorBpm ?? 0) <= 0) return null;
+  // A low whole-track BPM score must keep the donor at native pace, but it
+  // need not discard checksum-bound local phrase evidence when both measured
+  // beat grids are independently strong. Duration similarity still rejects
+  // windows that would drift too far at native pace.
+  if (!hasReliableLocalPassageBeatEvidence(evidence)) return null;
   const recipientGrid = orderedBeatGrid(evidence.recipientBeatGridMs);
   const donorGrid = orderedBeatGrid(evidence.donorBeatGridMs);
   if (!recipientGrid || !donorGrid) return null;
@@ -362,6 +374,7 @@ function livePhraseSectionOffsetSeconds(
     const donorWindows = measuredRollingWindows(donorSection);
     if (!donorWindows) continue;
     for (const donorWindow of donorWindows) {
+      if (donorSection.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) continue;
       if (donorWindow.rhythm.status !== "measured" || donorWindow.chroma.status !== "measured") continue;
       const donorWindowStartMs = beatBoundaryMs(donorGrid, donorWindow.startBeatIndex);
       const donorWindowEndMs = beatBoundaryMs(donorGrid, donorWindow.endBeatIndex);
@@ -430,6 +443,9 @@ export function liveStemSectionAlignment(
     || stretchRatio <= 0
   ) return null;
 
+  // Validate the track's section map structurally, but assess confidence only
+  // for the active recipient section and donor sections considered below. A
+  // weak unrelated boundary must not disable phrase matching for the whole song.
   const validSections = (sections: readonly LiveStemSection[]) => sections.every((section, index) =>
     section.sectionIndex === index
     && Number.isSafeInteger(section.startMs)
@@ -444,7 +460,7 @@ export function liveStemSectionAlignment(
     && section.labelConfidence >= 0
     && section.labelConfidence <= 1
     && Number.isFinite(section.structuralConfidence)
-    && section.structuralConfidence >= 0.6
+    && section.structuralConfidence >= 0
     && section.structuralConfidence <= 1
     && (index === 0 || section.startMs >= sections[index - 1].endMs),
   );
@@ -454,7 +470,7 @@ export function liveStemSectionAlignment(
   const recipient = recipientSections.find((section) =>
     recipientMs >= section.startMs && recipientMs < section.endMs,
   );
-  if (!recipient) return null;
+  if (!recipient || recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return null;
   const anyFingerprint = [...recipientSections, ...donorSections]
     .some((section) => section.passageFingerprint !== undefined && section.passageFingerprint !== null);
   if (anyFingerprint) {
@@ -481,6 +497,7 @@ export function liveStemSectionAlignment(
   const donor = donorSections
     .filter((candidate) => comparableSectionLabel(candidate.label) === role
       && candidate.labelConfidence >= LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN
+      && candidate.structuralConfidence >= LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN
       && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 4)
     .sort((left, right) => {
       const leftDistance = Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase);

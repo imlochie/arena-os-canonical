@@ -13,6 +13,7 @@ import {
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionOffsetSeconds,
+  liveStemTempoStretchRatio,
   nearestEntryEvidenceMs,
 } from "./session-logic";
 import {
@@ -230,6 +231,76 @@ test("live stem mapping selects the strongest checksum-bound local rhythm and ha
   const offset = liveStemSectionOffsetSeconds([recipient], [donor], 5, stretchRatio, evidence);
   assert.ok(offset !== null && Math.abs(offset - 2) < 0.001);
   assert.equal(liveStemSectionAlignment([recipient], [donor], 5, stretchRatio, evidence)?.basis, "rhythm-harmony-phrase");
+});
+
+test("one weak section elsewhere does not block a confident live phrase match", () => {
+  const recipientChecksum = "a".repeat(64);
+  const donorChecksum = "b".repeat(64);
+  const recipient = testSourceSection(0, recipientChecksum, [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const donor = testSourceSection(0, donorChecksum, [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0),
+  ]);
+  const weakSection = (sectionIndex: number, checksum: string) => ({
+    ...testSourceSection(sectionIndex, checksum, []),
+    sectionIndex,
+    startMs: 8_000,
+    endMs: 16_000,
+    startBeatIndex: 16,
+    endBeatIndex: 32,
+    labelConfidence: 0,
+    structuralConfidence: 0.2,
+  });
+  const recipientSections = [recipient, weakSection(1, recipientChecksum)];
+  const donorSections = [donor, weakSection(1, donorChecksum)];
+  const ratio = 109.0909090909 / 120;
+  const evidence = testLiveStemEvidence({
+    donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 550),
+    donorBpm: 109.0909090909,
+  });
+
+  const confidentMatch = liveStemSectionAlignment(recipientSections, donorSections, 5, ratio, evidence);
+  assert.equal(confidentMatch?.basis, "rhythm-harmony-phrase");
+  assert.ok(confidentMatch !== null && Math.abs(confidentMatch.offsetSeconds - 2) < 0.001);
+  assert.equal(
+    liveStemSectionAlignment(recipientSections, donorSections, 10, ratio, evidence),
+    null,
+    "a weak section at the current recipient position must still use the safe fallback",
+  );
+});
+
+test("strong local phrase evidence can align at native pace when global BPM confidence is weak", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const donor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0),
+  ]);
+  const donorBpm = 60_000 / 505;
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+    donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 505),
+    donorBpm,
+    recipientBpmConfidence: 0.42,
+    donorBpmConfidence: 0.38,
+    recipientBeatConfidence: 0.81,
+    donorBeatConfidence: 0.67,
+  });
+
+  const ratio = liveStemTempoStretchRatio(120, donorBpm, evidence);
+  assert.equal(ratio, 1, "uncertain global tempo must not authorize stretching");
+  const alignment = liveStemSectionAlignment([recipient], [donor], 5, ratio!, evidence);
+  assert.equal(alignment?.basis, "rhythm-harmony-phrase");
+  assert.ok(alignment !== null && Math.abs(alignment.offsetSeconds - 2.04) < 0.001);
 });
 
 test("live stem phrase mapping rejects conflicting fingerprints and stale provenance", () => {

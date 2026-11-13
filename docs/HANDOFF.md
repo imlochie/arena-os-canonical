@@ -1,5 +1,35 @@
 # Arena handoff — read this first
 
+## Current implementation — live phrase alignment tolerates weak unrelated sections
+
+* Live phrase matching no longer fails for an entire track because some
+  unrelated section boundaries have low structural confidence. The active
+  recipient section and each donor candidate are still individually gated at
+  0.6; weak active passages keep the beat-phase/manual fallback.
+* Checksum-current rolling rhythm/chroma windows may be compared at native pace
+  when both beat grids have confidence of at least 0.6, even if whole-track BPM
+  confidence is lower. This does not authorize tempo stretching: uncertain BPM
+  keeps the donor at 1×, and candidate windows must still meet the existing
+  duration and rhythm/harmony similarity thresholds.
+* **Real-track evidence:** the current full-track analyses of the supplied
+  September and Another One Bites the Dust recordings contain 34 and 25
+  sections; 11 and 14 sections, respectively, have structural confidence below
+  0.6. The previous whole-list confidence check therefore rejected both tracks
+  before it could consider a strong local passage. Their beat-grid confidences
+  are 0.833 and 0.642, while the latter's whole-track BPM confidence is 0.426.
+  The existing real mashup-route capture found no strong cross-song candidate:
+  its selected relative score was 0.567, with 0.497 onset-rhythm similarity and
+  0.246 harmony similarity. The new behavior permits evidence checks where
+  locally justified, but these recordings do not demonstrate a successful
+  automatic live match or a listenable mashup.
+* **Verification:** `session-logic.test.ts` passes 53/53, including regressions
+  for weak sections elsewhere in either track and for native-pace matching with
+  uncertain global BPM. ArenaForge typecheck and
+  `node scripts/arena-smoke.mjs --waveyard-mobile-only` pass. Listening quality
+  and a real cross-song window match remain unverified. The full configured test
+  workflow separately timed out waiting for a live-stem browser response; it
+  did not report a failure in section-matching logic.
+
 ## Current implementation — editable vocal entry points and repeated vocal-activity evidence
 
 * **Live vocal swaps:** the session picker now keeps open after choosing a vocal
