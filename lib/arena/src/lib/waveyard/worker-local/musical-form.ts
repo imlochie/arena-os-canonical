@@ -6,6 +6,8 @@ export type FormWindow = {
   /** Time-ordered, track-centred vocal and original source pitch-class observations. */
   vocal: number[];
   backing: number[];
+  /** Beat-relative monophonic voicing-continuity evidence, not words/lyrics. */
+  vocalPhraseTiming?: number[];
   vocalCoverage: number;
   energyDb: number;
 };
@@ -21,6 +23,7 @@ export type FormPrediction = {
 const WINDOW_BARS = 8;
 const MAX_BARS = 512;
 const MIN_REPEAT_SIMILARITY = 0.78;
+const PHRASE_RUN_CONFIDENCE = 0.6;
 
 function cosine(a: readonly number[], b: readonly number[]): number | null {
   let dot = 0, aa = 0, bb = 0;
@@ -50,7 +53,13 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
   const similarity = (a: FormWindow, b: FormWindow) => {
     const voice = cosine(a.vocal, b.vocal);
     const music = cosine(a.backing, b.backing);
-    return voice === null || music === null ? -1 : 0.7 * voice + 0.3 * music;
+    if (voice === null || music === null) return -1;
+    const phraseTiming = cosine(a.vocalPhraseTiming ?? [], b.vocalPhraseTiming ?? []);
+    // Older/unavailable pitch analysis remains a supported fallback. When
+    // both windows have measured runs, their beat-relative timing is an
+    // additional, explicitly non-lexical recurrence signal.
+    return phraseTiming === null ? 0.7 * voice + 0.3 * music
+      : 0.55 * voice + 0.15 * phraseTiming + 0.3 * music;
   };
   // Star groups are pairwise checked, not transitive similarity chains.
   const groups = usable.map(seed => {
@@ -110,9 +119,15 @@ export function measureFormWindows(
   sourcePcm: Float32Array,
   vocalPcm: Float32Array,
   beats: readonly number[],
+  vocalPitchContinuityRuns: readonly { startMs: number; endMs: number; confidence: number }[] = [],
 ): FormWindow[] {
   if (!beats.every((t, i) => Number.isFinite(t) && t >= 0 && (i === 0 || t > beats[i - 1]!))) return [];
   if (Math.abs(sourcePcm.length - vocalPcm.length) / ANALYSIS_PCM_RATE > 0.5) return [];
+  if (vocalPitchContinuityRuns.length > 10_000 || vocalPitchContinuityRuns.some((run, i) =>
+    !Number.isSafeInteger(run.startMs) || !Number.isSafeInteger(run.endMs)
+    || run.startMs < 0 || run.endMs <= run.startMs || !Number.isFinite(run.confidence)
+    || run.confidence < 0 || run.confidence > 1
+    || (i > 0 && run.startMs < vocalPitchContinuityRuns[i - 1]!.startMs))) return [];
   const bars = Math.min(MAX_BARS, Math.floor((beats.length - 1) / 4));
   if (bars < 16) return [];
   const measurements = Array.from({ length: bars }, (_, bar) => {
@@ -142,10 +157,43 @@ export function measureFormWindows(
     backing: m.backing,
     active: m.vocalDb >= Math.max(-65, loudVoice - 20),
   }));
+  const beatCount = bars * 4;
+  const binsPerBeat = 2;
+  const binsPerWindow = WINDOW_BARS * 4 * binsPerBeat;
+  const phraseActivityBins = new Float64Array(beatCount * binsPerBeat);
+  const phraseOnsetBins = new Float64Array(beatCount * binsPerBeat);
+  for (const run of vocalPitchContinuityRuns) {
+    if (run.confidence < PHRASE_RUN_CONFIDENCE || run.startMs >= beats[beatCount]!) continue;
+    let low = 0, high = beatCount;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (beats[middle]! <= run.startMs) low = middle + 1;
+      else high = middle;
+    }
+    for (let beat = Math.max(0, low - 1); beat < beatCount && beats[beat]! < run.endMs; beat += 1) {
+      const beatStartMs = beats[beat]!;
+      const beatEndMs = beats[beat + 1]!;
+      for (let half = 0; half < binsPerBeat; half += 1) {
+        const bin = beat * binsPerBeat + half;
+        const startMs = beatStartMs + (beatEndMs - beatStartMs) * half / binsPerBeat;
+        const endMs = beatStartMs + (beatEndMs - beatStartMs) * (half + 1) / binsPerBeat;
+        const overlap = Math.max(0, Math.min(endMs, run.endMs) - Math.max(startMs, run.startMs));
+        phraseActivityBins[bin] = Math.max(phraseActivityBins[bin]!, overlap / (endMs - startMs) * run.confidence);
+        if (run.startMs >= startMs && run.startMs < endMs) {
+          phraseOnsetBins[bin] = Math.max(phraseOnsetBins[bin]!, run.confidence);
+        }
+      }
+    }
+  }
   return Array.from({ length: bars - WINDOW_BARS + 1 }, (_, startBar) => {
     const window = centred.slice(startBar, startBar + WINDOW_BARS);
+    const firstBin = startBar * 4 * binsPerBeat;
     return { startBar, vocal: window.flatMap(m => m.active ? m.vocal : m.vocal.map(() => 0)),
       backing: window.flatMap(m => m.backing),
+      ...(vocalPitchContinuityRuns.length ? { vocalPhraseTiming: [
+        ...phraseActivityBins.slice(firstBin, firstBin + binsPerWindow),
+        ...phraseOnsetBins.slice(firstBin, firstBin + binsPerWindow),
+      ] } : {}),
       vocalCoverage: window.filter(m => m.active).length / WINDOW_BARS,
       energyDb: mean(window.map(m => m.energyDb)) };
   });

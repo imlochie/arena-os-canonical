@@ -6,11 +6,14 @@ The local source-section worker now uses **checksum-verified isolated vocal PCM*
 and the original full-track PCM. It compares eight-bar vocal/harmonic contours
 across distant passages and requires two distinct recurring vocal arrangements,
 an alternating verse/chorus context and a measured dynamic lift before assigning
-either role. Repetition or energy alone does not count. Source-only/corrupt/missing
-stems and ambiguous songs retain their structural labels; no trained semantic
-model, third-party download or confidence-as-probability claim is involved.
+either role. The 1.9 engine also compares confidence-qualified, beat-relative
+monophonic vocal-pitch-continuity timing when current stored voicing runs exist.
+Those runs are supporting audio evidence, **not** words or lyric boundaries.
+Repetition or energy alone does not count. Source-only/corrupt/missing stems
+and ambiguous songs retain their structural labels; no trained semantic model,
+third-party download or confidence-as-probability claim is involved.
 Section IDs and coordinates are not changed by this labeling pass. New roles
-are persisted through the existing section worker (engine 1.8), consumed by
+are persisted through the existing section worker (engine 1.9), consumed by
 the existing label display/source-profile and selected-section paths, and
 displayed as **inferred, unverified hypotheses**, not certain form labels.
 
@@ -26,9 +29,29 @@ the Queen sections abstained. No structurally inferred label was renamed
 simply because it was repeated. The 215-second render still had zero clipped
 frames; no improved audible mashup quality was demonstrated.
 
+**Second full-track result:** the 1.9 route repeated the complete persisted
+analysis-to-export run with pitch-continuity timing attached. It produced the
+same seven September labels, zero Queen labels, and exactly the same provisional
+role-time metrics below. The added timing feature did **not** fix Queen's
+abstention or improve measured coverage on this pair.
+
+The failure was measured rather than patched by lowering the threshold.
+Queen had 95 full-track eight-bar windows, 78 with sufficient vocal coverage,
+and **no** repeated-vocal groups met the existing 0.78 similarity requirement.
+The strongest distant pair (around 55 and 190 seconds) scored 0.604 overall:
+vocal chroma 0.461, stored pitch-run timing 0.365, backing 0.984, and only
+0.96 dB of lift. In other words, the backing riff repeats strongly while the
+isolated vocal evidence does not; lowering the combined threshold risks
+mistaking the repetitive bass for a repeated chorus.
+The monophonic pitch detector voiced only **1,107 of 7,438 frames (14.9%)** on
+that separated vocal stem. An offline four-bar contour probe found its best
+match (0.754) between roughly 26 and 52 seconds—across the owner's annotated
+verse-to-chorus change. That is not enough evidence to shorten windows or
+lower gates safely.
+
 **Before/after versus the owner's approximate notes:** v2 production capture
-from the prior section engine assigned zero roles to both songs. The new
-current-worktree capture's provisional role comparison finds:
+from the prior section engine assigned zero roles to both songs. The newer
+engine's provisional role comparison finds:
 
 | Source | Correct verse ms / reference | Correct chorus ms / reference | Extra claimed ms | Role-time overlap |
 | --- | ---: | ---: | ---: | ---: |

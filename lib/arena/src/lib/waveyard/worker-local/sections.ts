@@ -345,7 +345,12 @@ export async function handleSectionAnalysisJob(
       return;
     }
     const formCandidates = stemActivity.vocalPcm
-      ? applyFormPredictions(candidates, inferFormFromWindows(measureFormWindows(pcm, stemActivity.vocalPcm, beatGrid)))
+      ? applyFormPredictions(candidates, inferFormFromWindows(measureFormWindows(
+        pcm,
+        stemActivity.vocalPcm,
+        beatGrid,
+        stemActivity.vocalActivity?.pitchContinuityRuns ?? [],
+      )))
       : candidates;
     const fingerprintedCandidates = formCandidates.map((candidate) => ({
       ...candidate,
