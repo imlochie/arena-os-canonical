@@ -322,3 +322,17 @@ mtime_ms = 1794577089668
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/1e41dcc3-92ed-49f4-992b-3c5096468cca/469d5f63-c262-4e60-8351-5dc2e937b834"
 storage_version_token = "1794577107911950"
 content_type = "audio/mpeg"
+
+[[outputs]]
+id = "CQXmYf8pdZl__Sa1eOBqX"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/local-tempo-warp-route-render.wav"
+type = "audio"
+title = "Queen vocals over September — local beat-aligned mix"
+description = "215-second full-track route render. Measured corresponding-beat fit improved from 7/335 to 174/335 within 90 ms; this does not certify listening quality, and 161 beats remain outside the window."
+logical_id = "654ad616-cc46-41da-84c3-39cd5f8a41d6"
+content_hash = "sha256:6ec585eeb6681035aa27115985ecdb955da116f0bd3a451ff5d4020dd57496f5"
+size = 37926044
+mtime_ms = 1794606054814
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/654ad616-cc46-41da-84c3-39cd5f8a41d6/bd9f45f7-62ca-498c-a177-60c98ee6e4f0"
+storage_version_token = "1794606273056281"
+content_type = "audio/wav"
