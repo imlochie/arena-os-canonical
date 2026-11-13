@@ -1385,6 +1385,8 @@ test("plan: full-track arrangement re-maps voiced units and records the segmente
   assert.equal(arrangement.unitsTotal, 2);
   assert.equal(arrangement.unitsPlaced, 2);
   assert.equal(arrangement.unitsSkipped, 0);
+  assert.equal(arrangement.segmentedUnitsPlaced, 2);
+  assert.equal(arrangement.continuousUnitsPlaced, 2);
   assert.ok(arrangement.segmentedScore > arrangement.overlayScore);
   assert.equal(arrangement.placements.length, 2);
   // Vocal order is preserved: units are never reordered, duplicated, or cropped.
@@ -1423,6 +1425,8 @@ test("plan: full-track arrangement keeps the continuous overlay when no re-place
   const arrangement = result.plan.arrangement;
   assert.ok(arrangement, "the comparison is recorded even when the overlay wins");
   assert.equal(arrangement.selected, "continuous-overlay");
+  assert.equal(arrangement.segmentedUnitsPlaced, arrangement.unitsTotal);
+  assert.equal(arrangement.continuousUnitsPlaced, arrangement.unitsTotal);
   assert.ok(arrangement.segmentedScore - arrangement.overlayScore <= Math.max(0.5, 0.03 * Math.abs(arrangement.overlayScore)) + 1e-9);
   assert.equal(result.plan.segments.length, 1);
   assert.equal(result.plan.segments[0]!.vocalsFromMs, 250, "the padded overlay body is kept intact");
@@ -1472,6 +1476,7 @@ test("plan: a unit that cannot fit before the bed ends is reported, not silently
   assert.ok(arrangement, "the arrangement comparison is recorded");
   assert.equal(arrangement.unitsPlaced, 1, "the first unit is placed; the second cannot fit before the bed ends");
   assert.equal(arrangement.unitsSkipped, 1, "the unplaceable unit is counted as skipped, never silently re-placed");
+  assert.equal(arrangement.segmentedUnitsPlaced, 1);
   assert.ok(result.plan.warnings.some((warning) => warning.includes("did not fit")));
   // The unplaceable unit's donor range never appears in the output — nothing
   // is faked to cover it, and the bed's end is respected.

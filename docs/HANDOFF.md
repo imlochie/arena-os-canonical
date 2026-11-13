@@ -1,8 +1,8 @@
 # Arena handoff — read this first
 
-## Current: full-track mashup arrangement (planner v7)
+## Current: real full-track mashup route (planner v8)
 
-Mashup planner v7 replaces the two things that made a whole-track result
+Mashup planner v8 replaces the two things that made a whole-track result
 impossible when no cross-song passage candidate existed: the continuous
 single-offset overlay and the unconditional "replay the opening as a reprise"
 after an instrumental pocket. Both remain in the code only when they are the
@@ -18,20 +18,24 @@ honest outcome. Concretely:
   duplicated, re-cropped, or overlapping**. Per unit, a feature score combines
   measured vocal-to-bed chord-tone agreement (0.5), measured drum/bass onset
   overlap (0.35), and a section-role hypothesis (0.15, explicitly not a
-  semantic label). A monotone dynamic program maximises the shared objective
-  and subtracts a small penalty for instrumental gaps longer than 1.5 s
-  (0.03 per bar, capped at 0.6). The final unit is never penalised for "gap
-  after the end of the chain".
-* The segmented arrangement is selected only when it places at least as many
-  units as the continuous overlay **and** beats the overlay's score by an
+  semantic label). The monotone dynamic program maximizes the number of placed
+  voiced units first; musical score and the existing small long-gap penalty
+  break ties. It no longer drops a feasible lyric unit merely to improve the
+  relative score. The final unit is not penalized for "gap after the end of the
+  chain".
+* The segmented arrangement is selected only when it preserves every unit
+  placed by the continuous overlay **and** beats that overlay's score by an
   absolute 0.5 (or 3%, whichever is larger). Otherwise the continuous overlay
-  is kept and the comparison (`segmentedScore`, `overlayScore`,
-  `improvementRatio`) is recorded in `plan.arrangement` — either way the
-  decision, evidence availability flags, and per-unit placements are included
-  in the initial saved remix-version snapshot. Later version snapshots carry
-  that provenance forward. Mashup Studio also displays the chosen mode, scores,
-  available evidence channels, and donor-to-bed placements; the plan is no
-  longer hidden in a transient API response.
+  is kept. The comparison (`segmentedScore`, `overlayScore`,
+  `improvementRatio`), both candidate unit counts, evidence availability flags,
+  and per-unit placements are included in the initial saved remix-version
+  snapshot and carried into later versions. Mashup Studio displays the chosen
+  mode and that evidence; the relative score is not presented as a quality
+  prediction.
+* Each segment's fade is capped at half its own timeline duration. Without
+  that bound, short real vocal units could request fades whose combined
+  duration exceeded the clip and the Studio's strict state validator rejected
+  the first edit.
 * The renderer receives ordinary segments in both modes, so save/reopen/
   edit/restore/export and every existing render path are unchanged. Segmented
   placements that are contiguous in both donor and bed time are merged into
@@ -58,28 +62,57 @@ honest outcome. Concretely:
   Recurrence labels are still unverified hypotheses about structure; words or
   lyric meaning are still not analyzed.
 
-Verification after the persistence/UI integration: **36/36** mashup planner
-tests, **2/2** isolated PGlite database round-trip tests, and **1/1** synthetic
-production-route acceptance test pass. Full `pnpm run typecheck` and
-`git diff --check` pass. The route acceptance exercises a disposable local
-PostgreSQL database; no user or production database was modified.
+Real acceptance used the actual full-length separated sources: Queen's
+*Another One Bites the Dust* vocal stem (222.67 s) over the September drums,
+bass, and other stems (215.14 s), with source and stem checksums recorded.
+The production route generated a segmented plan with **44/44 voiced units
+placed, zero skipped**, and no reordering or duplication. Its relative score
+was 29.7926 against 17.8199 for the continuous overlay (+67.2%); that score is
+only the planner's uncalibrated evidence ranking. The persisted Studio session
+contained 4 correctly-provenanced tracks and 47 clips (44 vocal placements
+plus 3 bed stems). The route then completed plan → save → reopen → versioned
+edit → restore → WAV export. The saved 44.1 kHz stereo export was 214.858 s,
+37,901,026 bytes, checksum
+`b29385bf2d8dd5f5e3936b6f91e6974c5564b9e8030b90b7aa1500bd7413d648`.
+The independent PCM inspection found peak 0.2441, RMS 0.02225 and no clipped
+samples. This proves the real persisted route works; it does **not** certify
+that the arrangement sounds musical. The reproducible evidence report is
+`generated-artifacts/waveyard-real-world-acceptance/full-song-route-planner-v10-d80a6e9.json`.
+Full local artifacts are kept out of Git. The `listen-ab/` folder contains
+the previous continuous overlay and new segmented candidate as separate MP3s
+for listening comparison.
 
-**Not proven:** no real-pair acceptance was re-measured — the planner/render
-fixtures are synthetic and the arrangement objective is a relative evidence
-ranking, not a calibrated or listener-validated quality model. The segmented
-mode proves that ordered units *can* be re-mapped across the bed with measured
-evidence and full disclosure; it does not prove the result sounds good, that
-reprise material is a chorus, or that any live session benefits. The
-pre-existing real-pair diagnosis stands: the September/Queen route still has
-no calibrated cross-song candidate; this change removes the structural
-dependency on one (the plan no longer requires a selected `passageSearch`
-match to place a complete vocal body across a bed). Word/lyric recognition and
-verse/chorus semantics remain unimplemented. The production route can now
-persist and surface the arrangement object. The default route test's plan had
-no non-null placement decision, so positive non-null route persistence still
-needs a dedicated integration fixture. The UI code is typechecked but was not
-browser-verified here. No real-song sound quality or listener approval was
-established.
+Verification: **36/36** mashup planner tests, **2/2** persisted database
+round-trip tests, **1/1** full real-stem production-route acceptance, full
+`pnpm run typecheck`, and `git diff --check` pass. Tests used disposable local
+databases; no user or production database was modified.
+
+**Still unproven:** no human listening judgment has been recorded. The +67.2%
+ranking is not a quality metric; some individual placements lack harmonic
+frames, and any score is only evidence for where units might fit. The
+arrangement changes the gaps between vocal units while preserving each unit's
+internal time, so an A/B listen must decide whether the phrases feel natural.
+The route test does not establish verse/chorus detection, lyric timing,
+transcription accuracy, or a cross-song semantic understanding. The existing
+analysis has no word-level transcript/forced-alignment feature. The live
+preview screenshot reached Waveyard's empty library page; the changed
+arrangement detail panel was typechecked and covered by API assertions, but not
+visually exercised in its signed-in Studio state.
+
+## Timestamped transcript opportunity
+
+Creative already has a BYOK transcription primitive in
+`lib/arena/src/lib/creative/captions.ts`: Groq Whisper or OpenAI Whisper can
+return timestamped caption segments. This is an external upload, requires a
+user-provided key, and currently returns coarse segments rather than
+word-level forced alignment. Waveyard does not yet consume or persist this
+transcript evidence. A future integration should be explicit opt-in, operate
+on the isolated vocal stem where possible, bind timing to the source checksum
+and transcription engine, and let users correct the timestamps. Do not upload
+audio implicitly or treat ASR text as ground truth or as a verse/chorus label.
+Its real value is supplying phrase/word timing that can be compared with
+measured vocal activity and used to suggest beat/section snaps; the existing
+audio-only fallback must keep mashup planning available.
 
 ## Previous: mashup planning consumes persisted vocal activity
 

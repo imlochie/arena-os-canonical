@@ -372,6 +372,11 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                   : ` · difference ${(plan.arrangement.improvementRatio * 100).toFixed(1)}%`}
               </p>
               <p>
+                Units placed: segmented {plan.arrangement.segmentedUnitsPlaced}/{plan.arrangement.unitsTotal}
+                {" · "}continuous {plan.arrangement.continuousUnitsPlaced}/{plan.arrangement.unitsTotal}
+              </p>
+              {plan.arrangement.warnings.map((warning, index) => <p key={`${warning}-${index}`} role="status">{warning}</p>)}
+              <p>
                 Available: {[
                   plan.arrangement.evidence.chordTimeline ? "vocal/chord fit" : null,
                   plan.arrangement.evidence.drumTransients ? "drum transients" : null,

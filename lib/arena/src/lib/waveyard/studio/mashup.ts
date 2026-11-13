@@ -28,7 +28,7 @@ import {
 import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v7";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v8";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -214,6 +214,10 @@ export type MashupPlanResult =
 
 const LOCK_TOLERANCE = 0.03;
 const CROSSFADE_MS = 250;
+
+function crossfadeForSegment(startMs: number, endMs: number): number {
+  return Math.max(0, Math.min(CROSSFADE_MS, Math.floor((endMs - startMs) / 2)));
+}
 /** Bed attenuation while vocals are active (the classic mashup pocket). */
 const DUCK_DEPTH = 0.28;
 
@@ -1442,10 +1446,10 @@ function assignmentIsBetter(
 }
 
 /**
- * Monotone assignment of voiced units to bed slots, maximising the shared
- * per-unit objective with a small penalty for long instrumental gaps. Units
- * are never reordered. A unit may be dropped (value 0) only when no feasible
- * placement exists before the end of the bed.
+ * Monotone assignment of voiced units to bed slots, maximizing placed-unit
+ * count before the shared per-unit objective. Units are never reordered. A
+ * unit may be dropped only when no feasible placement exists before the bed
+ * ends; score breaks ties between assignments with the same count.
  */
 function solveArrangementMonotonic(
   units: Array<{ unit: ArrangementUnit; spanStretchedMs: number }>,
@@ -2076,7 +2080,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
             mashupEndMs: segmentEndMs,
             vocalsFromMs: placement.donorFromMs,
             vocalsToMs: placement.donorToMs,
-            crossfadeMs: CROSSFADE_MS,
+            crossfadeMs: crossfadeForSegment(placement.bedStartMs, segmentEndMs),
             rationale: `voiced unit ${index + 1}/${mergedPlacements.length} placed at ${(placement.bedStartMs / 1000).toFixed(1)}s on measured bed evidence (${placement.evidence[0] ?? "placement evidence"})`,
             stemType: "vocals",
             sourceRole: "vocals",
@@ -2092,7 +2096,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
           mashupEndMs: segEndMs,
           vocalsFromMs: body.fromMs,
           vocalsToMs: body.toMs,
-          crossfadeMs: CROSSFADE_MS,
+          crossfadeMs: crossfadeForSegment(entry.at, segEndMs),
           rationale: `primary vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s`,
           stemType: "vocals",
           sourceRole: "vocals",
@@ -2115,7 +2119,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
         mashupEndMs: firstSegmentEnd,
         vocalsFromMs: body.fromMs,
         vocalsToMs: body.toMs,
-        crossfadeMs: CROSSFADE_MS,
+        crossfadeMs: crossfadeForSegment(entry.at, firstSegmentEnd),
         rationale: `first vocal passage runs ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
         stemType: "vocals",
         sourceRole: "vocals",
@@ -2137,7 +2141,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
             mashupEndMs: Math.min(bed.durationMs, secondStart + vocalPortionMs * stretchRatio),
             vocalsFromMs: reprise.fromMs,
             vocalsToMs: reprise.fromMs + vocalPortionMs,
-            crossfadeMs: CROSSFADE_MS,
+            crossfadeMs: crossfadeForSegment(secondStart, Math.min(bed.durationMs, secondStart + vocalPortionMs * stretchRatio)),
             rationale: `${reprise.rationale} — placed at ${(secondStart / 1000).toFixed(1)}s after a ${(breakdownMs / 1000).toFixed(1)}s instrumental pocket, extending the vocal to the late bed`,
             stemType: "vocals",
             sourceRole: "vocals",
@@ -2158,7 +2162,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
       mashupEndMs: Math.min(bed.durationMs, entry.at + stretchedMs),
       vocalsFromMs: body.fromMs,
       vocalsToMs: body.toMs,
-      crossfadeMs: CROSSFADE_MS,
+      crossfadeMs: crossfadeForSegment(entry.at, Math.min(bed.durationMs, entry.at + stretchedMs)),
       rationale: `vocals run ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
       stemType: "vocals",
       sourceRole: "vocals",

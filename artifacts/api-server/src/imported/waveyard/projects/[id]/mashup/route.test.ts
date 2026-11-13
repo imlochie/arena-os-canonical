@@ -828,13 +828,25 @@ test(
         durationMs: number;
         warnings: string[];
         rationale: string[];
-        segments: Array<{ mashupStartMs: number; mashupEndMs: number; vocalsFromMs: number; vocalsToMs: number }>;
+        segments: Array<{
+          mashupStartMs: number;
+          mashupEndMs: number;
+          vocalsFromMs: number;
+          vocalsToMs: number;
+          crossfadeMs: number;
+        }>;
         arrangement?: {
           selected: "continuous-overlay" | "segmented";
           unitsTotal: number;
           unitsPlaced: number;
           unitsSkipped: number;
+          segmentedUnitsPlaced: number;
+          continuousUnitsPlaced: number;
+          segmentedScore: number;
+          overlayScore: number;
           placements: Array<{ donorFromMs: number; donorToMs: number; bedStartMs: number }>;
+          rationale: string[];
+          warnings: string[];
         } | null;
         passageSearch?: {
           evaluatedDonorPassageCount: number;
@@ -1019,6 +1031,19 @@ test(
       assert.equal(planBody.evidence?.bed.bassAttacks.persistence, "database",
         "the real-track plan must use events persisted by the local bass-analysis worker");
       assert.equal(typeof realPersistedBassAttackCount, "number");
+      const realArrangement = planBody.plan.arrangement;
+      assert.ok(realArrangement, "the real separated-stem route must produce a full-track placement decision");
+      assert.equal(realArrangement.continuousUnitsPlaced, realArrangement.unitsTotal,
+        "the continuous baseline must retain every eligible vocal unit");
+      assert.equal(realArrangement.segmentedUnitsPlaced, realArrangement.unitsTotal,
+        "the segmented candidate must retain every eligible vocal unit instead of dropping a phrase for score");
+      assert.equal(realArrangement.unitsSkipped, 0,
+        "no voice-bearing unit may be silently lost when a full placement fits");
+      assert.equal(realArrangement.selected, "segmented",
+        "the real measured evidence favors a full-track segmented candidate once all vocal units are preserved");
+      assert.ok(planBody.plan.segments.every((segment) =>
+        segment.crossfadeMs * 2 <= segment.mashupEndMs - segment.mashupStartMs),
+      "every planned clip's two fades must fit within its own timeline span so the real Studio can save it");
       assert.equal(planBody.plan.vocalsStretchRatio, 1,
         "low-confidence donor tempo must not be presented as verified beat synchronization");
       assert.equal(planBody.plan.vocalsPitchSemitones, 0,
