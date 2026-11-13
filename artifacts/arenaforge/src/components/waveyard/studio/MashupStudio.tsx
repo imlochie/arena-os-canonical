@@ -378,6 +378,17 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
               {plan.arrangement.selected === "coherent-overlay" && (
                 <p>The vocal body stays in one continuous clip from {(plan.arrangement.coherentEntryMs / 1000).toFixed(1)}s; its internal pauses keep their original timing.</p>
               )}
+              {plan.arrangement.pairedBeatPhaseFit && plan.arrangement.baselineBeatPhaseFit && (
+                <p>
+                  Donor-to-bed beat phase: {plan.arrangement.pairedBeatPhaseFit.matchedBeats}/
+                  {plan.arrangement.pairedBeatPhaseFit.comparedBeats} donor beats within{" "}
+                  {plan.arrangement.pairedBeatPhaseFit.toleranceMs} ms
+                  {" · "}current entry {plan.arrangement.baselineBeatPhaseFit.matchedBeats}/
+                  {plan.arrangement.baselineBeatPhaseFit.comparedBeats}
+                  {" · "}mean error {plan.arrangement.pairedBeatPhaseFit.meanErrorMs.toFixed(1)} ms.
+                  {" "}This measures grid alignment only, not mix quality.
+                </p>
+              )}
               {plan.arrangement.warnings.map((warning, index) => <p key={`${warning}-${index}`} role="status">{warning}</p>)}
               <p>
                 Available: {[
@@ -385,6 +396,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                   plan.arrangement.evidence.drumTransients ? "drum transients" : null,
                   plan.arrangement.evidence.bassAttacks ? "bass attacks" : null,
                   plan.arrangement.evidence.beatGrid ? "trusted beat grid" : null,
+                  plan.arrangement.evidence.pairedBeatGrids ? "paired donor/bed beat grids" : null,
                   plan.arrangement.evidence.sectionRoles ? "unverified section-role hints" : null,
                 ].filter(Boolean).join(", ") || "no independent placement channels"}
               </p>

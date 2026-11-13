@@ -1341,7 +1341,7 @@ test("extension: no sections → no plan (honest null)", () => {
   assert.equal(planSongExtension(profile({ bpm: 120, durationMs: 10_000, sections: [] })), null);
 });
 
-// --- full-track arrangement regressions (planner v9) -----------------------
+// --- full-track arrangement regressions (planner v10) ----------------------
 
 test("plan: whole-body placement preserves phrase gaps instead of snapping fragments independently", () => {
   const vocalFrames = Array.from({ length: 111 }, (_, index) => ({
@@ -1528,4 +1528,52 @@ test("plan: a longer bed may improve the fit only by shifting the whole vocal bo
   assert.equal(result.plan.segments[0]!.mashupStartMs, arrangement.coherentEntryMs);
   assert.equal(arrangement.placements[1]!.bedStartMs - arrangement.placements[0]!.bedStartMs, 6_000,
     "the donor's verse phrase spacing remains unchanged");
+});
+
+test("plan: donor vocal phase is preserved against both tracks' drum grids", () => {
+  const donorBeats = Array.from({ length: 80 }, (_, index) => 200 + index * 500);
+  const bedBeats = Array.from({ length: 121 }, (_, index) => index * 500);
+  const vocals = profile({
+    role: "vocals",
+    durationMs: 40_000,
+    bpm: 120,
+    bpmConfidence: 0.95,
+    beatConfidence: 0.95,
+    beatGridMs: donorBeats,
+    vocalActivityIntervals: Array.from({ length: 8 }, (_, index) => ({
+      startMs: 300 + index * 4_000,
+      endMs: 1_000 + index * 4_000,
+      confidence: 0.95,
+    })),
+  });
+  const bed = profile({
+    role: "instrumental",
+    durationMs: 60_000,
+    bpm: 120,
+    bpmConfidence: 0.95,
+    beatConfidence: 0.95,
+    beatGridMs: bedBeats,
+    drumEvents: Array.from({ length: 8 }, (_, index) => ({
+      timestampMs: 650 + index * 4_000,
+      strength: 0.8,
+      confidence: 0.95,
+    })),
+  });
+
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  const arrangement = result.plan.arrangement;
+  assert.ok(arrangement);
+  assert.equal(arrangement.evidence.pairedBeatGrids, true);
+  assert.ok(arrangement.pairedBeatPhaseFit);
+  assert.ok(arrangement.baselineBeatPhaseFit);
+  assert.equal(arrangement.baselineBeatPhaseFit.score, 0,
+    "the old entry puts the donor drums out of phase with the bed grid");
+  assert.equal(arrangement.pairedBeatPhaseFit.score, 1,
+    "the chosen offset aligns the donor drum beats to bed beats within tolerance");
+  assert.equal(arrangement.selected, "coherent-overlay");
+  assert.equal(arrangement.coherentEntryMs, 350,
+    "aligning the donor beat preserves the vocal's original 100 ms offbeat entry");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 350);
+  assert.ok(arrangement.rationale.some((line) => line.includes("donor drum beats are mapped to the bed drum grid")));
 });

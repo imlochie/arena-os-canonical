@@ -28,7 +28,7 @@ import {
 import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v9";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v10";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -127,6 +127,10 @@ export type MashupArrangement = {
   coherentScore: number;
   /** Objective score of the continuous overlay starting at the chosen entry. */
   overlayScore: number;
+  /** Donor beat-grid beats landing within tolerance of bed beats at the chosen entry. */
+  pairedBeatPhaseFit: { score: number; matchedBeats: number; comparedBeats: number; meanErrorMs: number; toleranceMs: number } | null;
+  /** The same paired beat-grid check at the original continuous entry. */
+  baselineBeatPhaseFit: { score: number; matchedBeats: number; comparedBeats: number; meanErrorMs: number; toleranceMs: number } | null;
   /** (coherent - overlay) / max(1, |overlay|); null when no arrangement evidence existed. */
   improvementRatio: number | null;
   unitsTotal: number;
@@ -139,6 +143,7 @@ export type MashupArrangement = {
     drumTransients: boolean;
     bassAttacks: boolean;
     beatGrid: boolean;
+    pairedBeatGrids: boolean;
     sectionRoles: boolean;
   };
   rationale: string[];
@@ -1210,21 +1215,17 @@ function rankedPassageEntry(
 }
 
 // ------------------------------------------------------------------
-// Full-track arrangement — the arrangement decision must use the whole
-// recording, not only the opening passage or a single global offset. The
-// optimizer combines only evidence the app already persists: voiced
-// activity/pitch intervals from the isolated vocal stem, the bed's measured
-// chord timeline, measured bed drum/bass onsets, the bed's beat grid, and
-// the bed's unverified section-role labels. No new analysis system and no
-// semantic (verse/chorus/lyric) claims are introduced.
+// Full-track arrangement — compare the donor and bed across the whole vocal
+// body. When both tracks have trusted drum grids, map donor beats onto bed
+// beats before ranking one coherent global offset; then check harmonic,
+// transient and section context. Without paired grids, keep the measured
+// first-activity fallback. No semantic verse/chorus/lyric claims are made.
 //
 // Voiced material is merged into units separated by at least
 // ARRANGEMENT_UNIT_MERGE_GAP_MS of silence. Unit ORDER IS ALWAYS PRESERVED,
 // units are never reordered, duplicated or cropped, and the renderer
 // receives ordinary segments — the save/reopen/edit/restore/export paths are
-// unchanged. The segmented plan is selected only when it beats the
-// continuous overlay on the shared per-unit objective by a clear margin;
-// otherwise the overlay is kept and the comparison is recorded in the plan.
+// unchanged. A move is rejected when paired donor/bed beat phase gets worse.
 // ------------------------------------------------------------------
 
 const ARRANGEMENT_MAX_UNITS = 120;
@@ -1355,6 +1356,72 @@ function arrangementSlotEvidence(bed: MashupSourceProfile): { slots: number[]; g
   return { slots: ticks, gridTrusted: false };
 }
 
+type PairedBeatPhaseFit = {
+  score: number;
+  matchedBeats: number;
+  comparedBeats: number;
+  meanErrorMs: number;
+  toleranceMs: number;
+};
+
+function nearestBeatErrorMs(timestampMs: number, beatGridMs: readonly number[]): number {
+  let low = 0;
+  let high = beatGridMs.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (beatGridMs[middle]! < timestampMs) low = middle + 1;
+    else high = middle;
+  }
+  return Math.min(
+    Math.abs((beatGridMs[low - 1] ?? Number.POSITIVE_INFINITY) - timestampMs),
+    Math.abs((beatGridMs[low] ?? Number.POSITIVE_INFINITY) - timestampMs),
+  );
+}
+
+/**
+ * Compares both songs' measured beat grids after the planned tempo transform.
+ * A hit is a donor drum beat landing within the existing 90 ms groove tolerance
+ * of a bed drum beat. It is phase evidence, not a judgement of mix quality.
+ */
+function scorePairedBeatPhase(
+  donorBeatGridMs: readonly number[],
+  bedBeatGridMs: readonly number[],
+  donorStartMs: number,
+  donorEndMs: number,
+  bedStartMs: number,
+  stretchRatio: number,
+): PairedBeatPhaseFit | null {
+  if (donorBeatGridMs.length < 8 || bedBeatGridMs.length < 8
+    || !Number.isFinite(stretchRatio) || stretchRatio <= 0) return null;
+  const donorBeats = donorBeatGridMs.filter((beat) => beat >= donorStartMs && beat <= donorEndMs);
+  if (donorBeats.length < 8) return null;
+
+  let score = 0;
+  let matchedBeats = 0;
+  let errorTotal = 0;
+  let comparedBeats = 0;
+  for (const donorBeatMs of donorBeats) {
+    const bedBeatMs = bedStartMs + (donorBeatMs - donorStartMs) * stretchRatio;
+    if (bedBeatMs < 0 || bedBeatMs > bedBeatGridMs[bedBeatGridMs.length - 1]!) continue;
+    const errorMs = nearestBeatErrorMs(bedBeatMs, bedBeatGridMs);
+    if (!Number.isFinite(errorMs)) continue;
+    comparedBeats += 1;
+    errorTotal += errorMs;
+    if (errorMs <= GROOVE_MATCH_TOLERANCE_MS) {
+      matchedBeats += 1;
+      score += 1 - errorMs / GROOVE_MATCH_TOLERANCE_MS;
+    }
+  }
+  if (comparedBeats < 8) return null;
+  return {
+    score: score / comparedBeats,
+    matchedBeats,
+    comparedBeats,
+    meanErrorMs: errorTotal / comparedBeats,
+    toleranceMs: GROOVE_MATCH_TOLERANCE_MS,
+  };
+}
+
 function arrangementFeatureScore(
   unit: ArrangementUnit,
   bedStartMs: number,
@@ -1447,11 +1514,22 @@ function planArrangement(
   const bassEvents = sanitizeTransientEvents(bed.bassEvents);
   const { slots, gridTrusted } = arrangementSlotEvidence(bed);
   if (slots.length < 3) return null;
+  const donorBeatGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
+  const bedBeatGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  const donorBeatsInBody = donorBeatGrid?.filter((beat) => beat >= body.fromMs && beat <= body.toMs) ?? [];
+  const canComparePairedBeatGrids = gridTrusted
+    && bedBeatGrid !== null
+    && donorBeatGrid !== null
+    && donorBeatsInBody.length >= 8;
+  const baselineBeatPhaseFit = canComparePairedBeatGrids
+    ? scorePairedBeatPhase(donorBeatGrid, bedBeatGrid, body.fromMs, body.toMs, overlayEntryMs, stretchRatio)
+    : null;
   const evidence = {
     chordTimeline: harmonyEvents.length >= 4 && vocalPitchFrames.length >= 12,
     drumTransients: drumEvents.length >= 8,
     bassAttacks: bassEvents.length >= 8,
     beatGrid: gridTrusted,
+    pairedBeatGrids: baselineBeatPhaseFit !== null,
     sectionRoles: bed.sections.length >= 2,
   };
   const informative = evidence.chordTimeline || evidence.drumTransients || evidence.bassAttacks;
@@ -1487,11 +1565,18 @@ function planArrangement(
   // the whole body; later units are never independently snapped or reordered.
   const firstUnit = unitTimings[0]!;
   const bodySpanMs = Math.round((body.toMs - body.fromMs) * stretchRatio);
+  const sourceAnchorMs = canComparePairedBeatGrids
+    ? donorBeatsInBody[0]!
+    : firstUnit.fromMs;
   let coherentEntryMs: number | null = null;
   let coherentScore = Number.NEGATIVE_INFINITY;
   let coherentPlaced = 0;
+  let coherentBeatPhaseFit: PairedBeatPhaseFit | null = null;
+  let coherentPhaseSafe = false;
   for (const anchorMs of slots) {
-    const candidateEntryMs = Math.round(anchorMs - (firstUnit.fromMs - body.fromMs) * stretchRatio);
+    // When both tracks have a trusted drum grid, align a donor drum beat to a
+    // bed drum beat. Otherwise preserve the old first-vocal-activity anchor.
+    const candidateEntryMs = Math.round(anchorMs - (sourceAnchorMs - body.fromMs) * stretchRatio);
     if (candidateEntryMs < 0 || candidateEntryMs + bodySpanMs > bed.durationMs + 1) continue;
     let candidateScore = 0;
     let candidatePlaced = 0;
@@ -1502,26 +1587,56 @@ function planArrangement(
       candidateScore += arrangementFeatureScore(unit, startMs, context).score;
       candidatePlaced += 1;
     }
+    const candidateBeatPhaseFit = canComparePairedBeatGrids && donorBeatGrid && bedBeatGrid
+      ? scorePairedBeatPhase(donorBeatGrid, bedBeatGrid, body.fromMs, body.toMs, candidateEntryMs, stretchRatio)
+      : null;
+    const candidatePhaseSafe = baselineBeatPhaseFit === null
+      || (candidateBeatPhaseFit !== null
+        && candidateBeatPhaseFit.score >= baselineBeatPhaseFit.score - 0.01);
+    const phasePreferred = candidateBeatPhaseFit !== null
+      && coherentBeatPhaseFit !== null
+      && candidateBeatPhaseFit.score > coherentBeatPhaseFit.score + 1e-6;
+    const phaseTied = candidateBeatPhaseFit === null
+      || coherentBeatPhaseFit === null
+      || Math.abs(candidateBeatPhaseFit.score - coherentBeatPhaseFit.score) <= 1e-6;
+    const scorePreferred = candidateScore > coherentScore + 1e-9
+      || (Math.abs(candidateScore - coherentScore) <= 1e-9
+        && Math.abs(candidateEntryMs - overlayEntryMs) < Math.abs((coherentEntryMs ?? Infinity) - overlayEntryMs));
     if (candidatePlaced > coherentPlaced
-      || (candidatePlaced === coherentPlaced
-        && (candidateScore > coherentScore + 1e-9
-          || (Math.abs(candidateScore - coherentScore) <= 1e-9
-            && Math.abs(candidateEntryMs - overlayEntryMs) < Math.abs((coherentEntryMs ?? Infinity) - overlayEntryMs))))) {
+      || (candidatePlaced === coherentPlaced && (
+        (candidatePhaseSafe && !coherentPhaseSafe)
+        || (candidatePhaseSafe === coherentPhaseSafe
+          && (phasePreferred || (phaseTied && scorePreferred)))
+      ))) {
       coherentEntryMs = candidateEntryMs;
       coherentScore = candidateScore;
       coherentPlaced = candidatePlaced;
+      coherentBeatPhaseFit = candidateBeatPhaseFit;
+      coherentPhaseSafe = candidatePhaseSafe;
     }
   }
   if (coherentPlaced === 0) coherentScore = 0;
 
+  const contextImprovementThreshold = Math.max(0.5, 0.03 * Math.abs(overlayScore));
+  const contextImproved = coherentScore - overlayScore > contextImprovementThreshold;
+  const pairedPhaseImproved = baselineBeatPhaseFit !== null
+    && coherentBeatPhaseFit !== null
+    && coherentBeatPhaseFit.score > baselineBeatPhaseFit.score + 0.01;
+  const contextNotMateriallyWorse = coherentScore - overlayScore >= -contextImprovementThreshold;
+  const alignmentAccepted = baselineBeatPhaseFit === null
+    ? contextImproved
+    : coherentBeatPhaseFit !== null && coherentPhaseSafe && (
+      contextImproved || (pairedPhaseImproved && contextNotMateriallyWorse)
+    );
   const coherentBetter = coherentEntryMs !== null
     && coherentPlaced >= overlayPlaced
     && Math.abs(coherentEntryMs - overlayEntryMs) > 1
-    && coherentScore - overlayScore > Math.max(0.5, 0.03 * Math.abs(overlayScore));
+    && alignmentAccepted;
   const selected: "coherent-overlay" | "continuous-overlay" =
     coherentBetter ? "coherent-overlay" : "continuous-overlay";
   const selectedEntryMs = coherentBetter ? coherentEntryMs! : overlayEntryMs;
   const selectedPlaced = coherentBetter ? coherentPlaced : overlayPlaced;
+  const selectedBeatPhaseFit = coherentBetter ? coherentBeatPhaseFit : baselineBeatPhaseFit;
   const improvementRatio = coherentEntryMs !== null && Number.isFinite(coherentScore)
     ? (coherentScore - overlayScore) / Math.max(1, Math.abs(overlayScore))
     : null;
@@ -1551,12 +1666,18 @@ function planArrangement(
     evidence.chordTimeline ? "the bed's measured chord timeline" : null,
     evidence.drumTransients ? "measured drum transients" : null,
     evidence.bassAttacks ? "measured bass attacks" : null,
+    evidence.pairedBeatGrids ? "paired donor/bed beat grids" : null,
     evidence.sectionRoles ? "inferred bed section roles (unverified hypotheses)" : null,
   ].filter(Boolean).join(", ");
   if (coherentBetter) {
     rationale.push(
-      `whole vocal body repositioned as one unit: the first activity window is anchored to a measured ${gridTrusted ? "beat-grid" : "structural"} slot, then every later window keeps its source-relative timing at the same ${stretchRatio.toFixed(3)}× tempo ratio (${evidenceSources})`,
+      `${evidence.pairedBeatGrids ? "donor drum beats are mapped to the bed drum grid" : "the first activity window is anchored to a measured beat"}; the whole vocal body keeps its source-relative timing at the same ${stretchRatio.toFixed(3)}× tempo ratio (${evidenceSources})`,
     );
+    if (coherentBeatPhaseFit && baselineBeatPhaseFit) {
+      rationale.push(
+        `paired beat-grid fit: ${coherentBeatPhaseFit.matchedBeats}/${coherentBeatPhaseFit.comparedBeats} donor beats land within ${coherentBeatPhaseFit.toleranceMs} ms of bed beats (current entry: ${baselineBeatPhaseFit.matchedBeats}/${baselineBeatPhaseFit.comparedBeats})`,
+      );
+    }
     rationale.push(
       `coherent placement scored ${coherentScore.toFixed(2)} against the current continuous entry's ${overlayScore.toFixed(2)}; the entire body moved by ${((selectedEntryMs - overlayEntryMs) / 1000).toFixed(1)}s without independently moving or cutting its voice-active windows`,
     );
@@ -1569,7 +1690,12 @@ function planArrangement(
     );
     warnings.push(coherentEntryMs === null
       ? "No measured global anchor can fit the complete vocal body in the bed; the current continuous entry is retained."
-      : "No whole-body move beat the current entry by the required margin; the current continuous vocal placement is retained. Individual activity windows are never moved separately.");
+      : baselineBeatPhaseFit !== null && coherentBeatPhaseFit !== null && !coherentPhaseSafe
+        ? "The candidate whole-body move would worsen the paired donor-to-bed beat-grid fit; the current entry is retained. Individual activity windows are never moved separately."
+        : "No whole-body move beat the current entry by the required margin; the current continuous vocal placement is retained. Individual activity windows are never moved separately.");
+  }
+  if (!evidence.pairedBeatGrids) {
+    warnings.push("A paired donor-and-bed beat-grid check was unavailable; this plan cannot verify both tracks' beat phase.");
   }
   const unitsSkipped = unitTimings.length - selectedPlaced;
   if (unitsSkipped > 0) {
@@ -1583,6 +1709,8 @@ function planArrangement(
     coherentEntryMs: selectedEntryMs,
     coherentScore: Number((coherentEntryMs === null ? 0 : coherentScore).toFixed(4)),
     overlayScore: Number(overlayScore.toFixed(4)),
+    pairedBeatPhaseFit: selectedBeatPhaseFit,
+    baselineBeatPhaseFit,
     improvementRatio: improvementRatio === null ? null : Number(improvementRatio.toFixed(4)),
     unitsTotal: unitTimings.length,
     unitsPlaced: placements.length,
@@ -1594,6 +1722,7 @@ function planArrangement(
       drumTransients: evidence.drumTransients,
       bassAttacks: evidence.bassAttacks,
       beatGrid: gridTrusted,
+      pairedBeatGrids: evidence.pairedBeatGrids,
       sectionRoles: evidence.sectionRoles,
     },
     rationale,

@@ -875,6 +875,9 @@ test(
           coherentScore: number;
           coherentEntryMs: number;
           overlayScore: number;
+          pairedBeatPhaseFit: { score: number; matchedBeats: number; comparedBeats: number; meanErrorMs: number; toleranceMs: number } | null;
+          baselineBeatPhaseFit: { score: number; matchedBeats: number; comparedBeats: number; meanErrorMs: number; toleranceMs: number } | null;
+          evidence: { pairedBeatGrids: boolean };
           placements: Array<{ donorFromMs: number; donorToMs: number; bedStartMs: number }>;
           rationale: string[];
           warnings: string[];
@@ -1094,12 +1097,23 @@ test(
         "the donor's isolated drums, rather than a low-confidence full mix, establish its pulse");
       assert.equal(planBody.evidence?.bed.tempo.subject, "separated-stem");
       assert.equal(planBody.evidence?.bed.tempo.stemType, "drums",
-        "the bed tempo also comes from its isolated drums when that measurement is more confident");
+        "the bed tempo also comes from its isolated drums");
       for (const timingEvidence of [planBody.evidence.vocals.tempo, planBody.evidence.bed.tempo]) {
         assert.ok(timingEvidence.stemAssetId, "the timing source identifies the exact separated stem asset");
         assert.match(timingEvidence.stemChecksumSha256 ?? "", /^[a-f0-9]{64}$/,
           "the request-time timing evidence carries the validated stem checksum");
       }
+      for (const timingEvidence of [planBody.evidence.vocals.beatGrid, planBody.evidence.bed.beatGrid]) {
+        assert.equal(timingEvidence.subject, "separated-stem",
+          "paired beat alignment uses both tracks' isolated drum grids");
+        assert.equal(timingEvidence.stemType, "drums");
+      }
+      assert.equal(realArrangement.evidence.pairedBeatGrids, true);
+      assert.ok(realArrangement.pairedBeatPhaseFit);
+      assert.ok(realArrangement.baselineBeatPhaseFit);
+      assert.ok(realArrangement.pairedBeatPhaseFit.score >= realArrangement.baselineBeatPhaseFit.score - 0.01,
+        "the chosen full-body alignment must not worsen paired donor/bed beat phase");
+      assert.ok(planBody.plan.rationale.some((line) => line.includes("paired beat-grid fit")));
       assert.ok(planBody.plan.vocalsStretchRatio > 0.84 && planBody.plan.vocalsStretchRatio < 0.91,
         "the actual approximately 110 BPM donor is time-matched to the approximately 126 BPM bed");
       assert.equal(planBody.plan.segments.length, 1,

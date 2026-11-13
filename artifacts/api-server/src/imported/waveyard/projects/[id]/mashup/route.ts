@@ -741,27 +741,47 @@ async function applySeparatedDrumTiming(
     persistence: "request",
   };
   const currentBpmConfidence = profile.bpmConfidence ?? 0;
-  if (stemBpm !== null && (trustedAnalysisBpm(profile.bpm, profile.bpmConfidence) === null
-    || (analysis.bpmConfidence ?? 0) > currentBpmConfidence)) {
+  if (stemBpm !== null && stemBeatGrid !== null) {
+    // Keep the tempo and beat grid from the same isolated drum signal. Mixing
+    // full-mix BPM with a different stem's beat phase can produce an
+    // internally inconsistent alignment map.
     profile.bpm = stemBpm;
     profile.bpmConfidence = analysis.bpmConfidence;
+    profile.beatGridMs = stemBeatGrid;
+    profile.beatConfidence = analysis.beatConfidence;
     if (profile.evidence) {
       profile.evidence.features.tempo = measuredEvidence({
         bpm: stemBpm,
         confidence: analysis.bpmConfidence,
       }, provenance);
-    }
-  }
-  const currentBeatGrid = trustedAnalysisBeatGrid(profile.beatGridMs, profile.bpmConfidence, profile.beatConfidence);
-  if (stemBeatGrid !== null && (currentBeatGrid === null
-    || (analysis.beatConfidence ?? 0) > (profile.beatConfidence ?? 0))) {
-    profile.beatGridMs = stemBeatGrid;
-    profile.beatConfidence = analysis.beatConfidence;
-    if (profile.evidence) {
       profile.evidence.features.beatGrid = measuredEvidence({
         beatsMs: stemBeatGrid,
         confidence: analysis.beatConfidence,
       }, provenance);
+    }
+  } else {
+    if (stemBpm !== null && (trustedAnalysisBpm(profile.bpm, profile.bpmConfidence) === null
+      || (analysis.bpmConfidence ?? 0) > currentBpmConfidence)) {
+      profile.bpm = stemBpm;
+      profile.bpmConfidence = analysis.bpmConfidence;
+      if (profile.evidence) {
+        profile.evidence.features.tempo = measuredEvidence({
+          bpm: stemBpm,
+          confidence: analysis.bpmConfidence,
+        }, provenance);
+      }
+    }
+    const currentBeatGrid = trustedAnalysisBeatGrid(profile.beatGridMs, profile.bpmConfidence, profile.beatConfidence);
+    if (stemBeatGrid !== null && (currentBeatGrid === null
+      || (analysis.beatConfidence ?? 0) > (profile.beatConfidence ?? 0))) {
+      profile.beatGridMs = stemBeatGrid;
+      profile.beatConfidence = analysis.beatConfidence;
+      if (profile.evidence) {
+        profile.evidence.features.beatGrid = measuredEvidence({
+          beatsMs: stemBeatGrid,
+          confidence: analysis.beatConfidence,
+        }, provenance);
+      }
     }
   }
   profile.grooveWarnings = [
