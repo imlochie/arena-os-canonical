@@ -490,9 +490,17 @@ export function useStemTransport(
     }
   }
   liveLayers.current.setAssetPool(assetPool);
-  const replaceStem = useCallback((id: string, url: string | null, tempoStretchRatio = 1, selectedAt?: number, beatOffsetSeconds = 0, keyShiftSemitones = 0) => {
+  const replaceStem = useCallback((
+    id: string,
+    url: string | null,
+    tempoStretchRatio = 1,
+    selectedAt?: number,
+    beatOffsetSeconds = 0,
+    keyShiftSemitones = 0,
+    options?: Parameters<LiveStemLayers["replace"]>[6],
+  ) => {
     if (url) ensureGraph(id);
-    return liveLayers.current!.replace(id, url, tempoStretchRatio, selectedAt, beatOffsetSeconds, keyShiftSemitones);
+    return liveLayers.current!.replace(id, url, tempoStretchRatio, selectedAt, beatOffsetSeconds, keyShiftSemitones, options);
   }, [ensureGraph]);
   const preloadStem = useCallback((id: string, url: string, tempoStretchRatio = 1, selectedAt?: number) => {
     if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
@@ -713,6 +721,24 @@ export function useStemTransport(
       return current;
     }
     return positionRef.current;
+  }, [playbackIds]);
+
+  const contextTimeAtPosition = useCallback((targetPosition: number) => {
+    const ctx = context.current;
+    const anchor = playbackIds
+      .map((id) => media.current[id])
+      .find((element) => element && !element.paused && !element.ended);
+    if (
+      !ctx
+      || ctx.state !== "running"
+      || !anchor
+      || !Number.isFinite(targetPosition)
+      || targetPosition < anchor.currentTime
+    ) return null;
+    const rate = Number.isFinite(anchor.playbackRate) && anchor.playbackRate > 0
+      ? anchor.playbackRate
+      : 1;
+    return ctx.currentTime + (targetPosition - anchor.currentTime) / rate;
   }, [playbackIds]);
 
   /** Apply insert chains (live): rebuilds the subgraph of every playing graph. */
@@ -1198,6 +1224,7 @@ export function useStemTransport(
     playing,
     position,
     currentPosition,
+    contextTimeAtPosition,
     duration,
     masterVolume,
     setMasterVolume,

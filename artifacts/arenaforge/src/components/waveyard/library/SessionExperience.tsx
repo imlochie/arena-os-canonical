@@ -18,6 +18,7 @@ import {
 import {
   assessRecipientVocalLayerEnergy,
   recipientVocalLayerEnergyMessage,
+  type LiveStemSwapResult,
   type RecipientVocalLayerEnergyCheck,
 } from "@workspace/arena/lib/waveyard/live-stem-layers";
 import {
@@ -80,6 +81,7 @@ import {
   defaultPerformance,
   PERFORMANCE_MINIMUM_LEAD_SECONDS,
   nextPerformanceBoundary,
+  planLiveStemSwapBoundary,
   performMix,
   performanceTick,
   type PerformanceAction,
@@ -595,7 +597,12 @@ function SessionDeck({
   stemExtra?: (stemType: string) => ReactNode;
   openSwapPickerStem?: string | null;
   onOpenSwapPicker?: (stemType: string) => void;
-  onLiveLayerReady?: (sessionTrackId: string, stemType: string, selectedAt: number | null) => void;
+  onLiveLayerReady?: (
+    sessionTrackId: string,
+    stemType: string,
+    selectedAt: number | null,
+    result?: LiveStemSwapResult | null,
+  ) => void;
   onLiveLayerFailed?: (sessionTrackId: string, stemType: string, message: string, selectedAt: number | null) => void;
   liveSwapFailure?: string | null;
   onRetryLiveSwap?: () => void;
@@ -763,12 +770,37 @@ function SessionDeck({
   useEffect(() => {
     let stale = false;
     const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null, number, number]>;
+    const plan = planLiveStemSwapBoundary({
+      snap: performanceSettings.snap,
+      playing: active && transport.playing,
+      beatEvidenceReliable: hasReliableSessionBeatEvidence(item?.analysis?.beatConfidence),
+      positionSeconds: transport.currentPosition(),
+      beatGridMs: item?.analysis?.beatGridMs ?? null,
+      contextTimeAtPosition: transport.contextTimeAtPosition,
+      minimumLeadSeconds: PERFORMANCE_MINIMUM_LEAD_SECONDS,
+    });
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
     const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt, beatOffset, keyCorrection]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
-      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined, beatOffset, keyCorrection).then((installed) => {
+      return transport.replaceStem(
+        id,
+        donor ? `/api/assets/${donor}` : null,
+        tempoStretchRatio,
+        selectedAt ?? undefined,
+        beatOffset,
+        keyCorrection,
+        {
+          snapRequested: donor !== null && plan.requested,
+          activationTime: plan.activationTime,
+        },
+      ).then((installed) => {
         if (!stale && installed !== false && donor !== null && item !== null) {
-          onLiveLayerReady?.(item.id, stemType, selectedAt);
+          onLiveLayerReady?.(
+            item.id,
+            stemType,
+            selectedAt,
+            typeof installed === "object" ? installed : null,
+          );
         }
       }).catch((error: unknown) => {
         if (!stale && donor !== null && item !== null) {
@@ -791,7 +823,23 @@ function SessionDeck({
       setLoadingLayers(false);
     });
     return () => { stale = true; };
-  }, [swapKey, stemTypeByAsset, tempoStretchRatios, transport.replaceStem, onLiveLayerReady, onLiveLayerFailed, item?.id, swapRetry]);
+  }, [
+    swapKey,
+    stemTypeByAsset,
+    tempoStretchRatios,
+    transport.replaceStem,
+    transport.currentPosition,
+    transport.contextTimeAtPosition,
+    transport.playing,
+    onLiveLayerReady,
+    onLiveLayerFailed,
+    item?.id,
+    item?.analysis?.beatConfidence,
+    item?.analysis?.beatGridMs,
+    active,
+    performanceSettings.snap,
+    swapRetry,
+  ]);
 
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
@@ -3598,11 +3646,18 @@ export default function SessionExperience({
     liveLayerFailureRef.current(sessionTrackId, stemType, message, selectedAt);
   }, []);
 
-  const markLiveLayerReady = useCallback((sessionTrackId: string, stemType: string, selectedAt: number | null) => {
+  const markLiveLayerReady = useCallback((
+    sessionTrackId: string,
+    stemType: string,
+    selectedAt: number | null,
+    result?: LiveStemSwapResult | null,
+  ) => {
     const activeSessionId = sessionRef.current?.id;
+    let matchedPending = false;
     if (activeSessionId) {
       const key = swapMutationKey({ sessionId: activeSessionId, sessionTrackId, stemType });
       if (pendingLiveSwapRef.current.get(key)?.selectedAt === selectedAt) {
+        matchedPending = true;
         pendingLiveSwapRef.current.delete(key);
       }
     }
@@ -3613,6 +3668,18 @@ export default function SessionExperience({
       (failed) => failed.sessionTrackId !== sessionTrackId || failed.stemType !== stemType ||
         failed.selectedAt !== selectedAt,
     ));
+    if (matchedPending && result) {
+      const label = stemType === "vocals" ? "Vocal" : stemType[0]?.toUpperCase() + stemType.slice(1);
+      if (result.snap === "scheduled") {
+        setStatus(`${label} donor activated on the next verified beat boundary.`);
+      } else if (result.snap === "missed") {
+        setStatus(`${label} donor switched immediately; preparation missed the beat boundary, so no snapped swap was claimed.`);
+      } else if (result.snap === "paused") {
+        setStatus(`${label} donor is prepared, but playback paused before the beat. It will be used when playback resumes; no snapped swap was claimed.`);
+      } else {
+        setStatus(`${label} donor switched immediately; snap was unavailable because a reliable beat boundary or running audio clock was not available.`);
+      }
+    }
   }, []);
 
   const retryFailedLiveSwaps = useCallback(async (sessionTrackId: string) => {

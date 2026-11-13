@@ -1,5 +1,27 @@
 # Arena handoff — read this first
 
+## Current implementation — live stem swaps honor beat snap
+
+* When Snap is enabled on a playing active deck with a reliable measured beat
+  grid, a saved donor replacement is scheduled on the next verified receiving
+  track boundary. The donor buffer, the pitch-preserving AudioWorklet path and
+  the base/donor gain crossfade all use the AudioContext clock; the UI timer is
+  not responsible for the audible start.
+* Preparation that reaches the boundary late falls back to an immediate ready
+  swap and reports that the beat was missed. Missing/weak beat evidence reports
+  that snap was unavailable. If playback pauses during preparation, the donor
+  is prepared for resume without claiming a snapped activation. Cancellation
+  before the boundary stops the future source and retains the currently audible
+  layer.
+* A configured bar snap currently falls back to a measured beat because the
+  session analysis does not provide verified downbeats; it does not claim a bar
+  downbeat. Snap-off replacements remain immediate.
+* **Verification:** focused live-stem and session-logic tests pass 187/187;
+  ArenaForge typecheck and `git diff --check` pass. The Waveyard mobile smoke
+  passes, including its existing browser audio and layout acceptance cases.
+  Those browser audio fixtures use deterministic PCM and do not prove that a
+  real-song swap sounds musically correct or sample-locked on a physical device.
+
 ## Current implementation — live phrase alignment tolerates weak unrelated sections
 
 * Live phrase matching no longer fails for an entire track because some

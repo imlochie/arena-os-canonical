@@ -151,6 +151,62 @@ export function nextPerformanceBoundary(
   return (start + subdivision * step) / 1000;
 }
 
+export type LiveStemSwapBoundaryPlan = {
+  requested: boolean;
+  status: "off" | "unavailable" | "scheduled";
+  targetPositionSeconds: number | null;
+  activationTime: number | null;
+  usedBeatFallback: boolean;
+};
+
+/**
+ * Plan a live donor activation against the receiving track's measured clock.
+ * The callback maps that media position to the AudioContext clock so the audio
+ * source and its crossfade can be scheduled by Web Audio, not a UI timer.
+ */
+export function planLiveStemSwapBoundary(input: {
+  snap: PerformanceSnap;
+  playing: boolean;
+  beatEvidenceReliable: boolean;
+  positionSeconds: number;
+  beatGridMs: unknown;
+  contextTimeAtPosition: (positionSeconds: number) => number | null;
+  minimumLeadSeconds?: number;
+}): LiveStemSwapBoundaryPlan {
+  const requested = input.playing && input.snap !== "off";
+  const base = {
+    requested,
+    targetPositionSeconds: null,
+    activationTime: null,
+    usedBeatFallback: false,
+  } as const;
+  if (!requested) return { ...base, status: "off" };
+  if (!input.beatEvidenceReliable) return { ...base, status: "unavailable" };
+
+  const lead = input.minimumLeadSeconds ?? PERFORMANCE_MINIMUM_LEAD_SECONDS;
+  let target = nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, input.snap, undefined, lead);
+  let usedBeatFallback = false;
+  // The current analysis model does not establish bar downbeats. A configured
+  // bar snap therefore uses a measured beat only, and must not claim a downbeat.
+  if (target === null && input.snap === "bar") {
+    target = nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, "beat", undefined, lead);
+    usedBeatFallback = target !== null;
+  }
+  if (target === null) return { ...base, status: "unavailable" };
+
+  const activationTime = input.contextTimeAtPosition(target);
+  if (activationTime === null || !Number.isFinite(activationTime)) {
+    return { ...base, status: "unavailable" };
+  }
+  return {
+    requested,
+    status: "scheduled",
+    targetPositionSeconds: target,
+    activationTime,
+    usedBeatFallback,
+  };
+}
+
 /** A delayed/backgrounded callback is rejected rather than applied late. */
 export function performanceTick(
   target: number,

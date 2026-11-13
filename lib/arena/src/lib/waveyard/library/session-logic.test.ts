@@ -387,6 +387,7 @@ import {
   defaultPerformance,
   normalizePerformance,
   nextPerformanceBoundary,
+  planLiveStemSwapBoundary,
   performMix,
   performanceTick,
 } from "./performance";
@@ -467,6 +468,56 @@ test("performance snap leaves enough lead for the scheduled audio callback", () 
   assert.equal(nextPerformanceBoundary(0.9, grid, "beat", undefined, 0.18), 2);
   assert.equal(nextPerformanceBoundary(0.75, grid, "beat", undefined, 0.18), 1);
   assert.equal(nextPerformanceBoundary(0.41, grid, "half", undefined, 0.12), 1);
+});
+
+test("live donor snap plans against the verified receiving beat and leaves snap-off immediate", () => {
+  const off = planLiveStemSwapBoundary({
+    snap: "off",
+    playing: true,
+    beatEvidenceReliable: true,
+    positionSeconds: 0.9,
+    beatGridMs: [0, 500, 1000, 1500],
+    contextTimeAtPosition: () => 12,
+  });
+  assert.deepEqual(off, {
+    requested: false,
+    status: "off",
+    targetPositionSeconds: null,
+    activationTime: null,
+    usedBeatFallback: false,
+  });
+
+  const planned = planLiveStemSwapBoundary({
+    snap: "beat",
+    playing: true,
+    beatEvidenceReliable: true,
+    positionSeconds: 0.9,
+    beatGridMs: [0, 500, 1000, 1500],
+    contextTimeAtPosition: target => 12 + (target - 0.9),
+  });
+  assert.deepEqual(planned, {
+    requested: true,
+    status: "scheduled",
+    targetPositionSeconds: 1.5,
+    activationTime: 12.6,
+    usedBeatFallback: false,
+  });
+});
+
+test("live donor snap refuses unreliable, missing, or unmappable beat evidence", () => {
+  const makePlan = (overrides: Partial<Parameters<typeof planLiveStemSwapBoundary>[0]>) =>
+    planLiveStemSwapBoundary({
+      snap: "beat",
+      playing: true,
+      beatEvidenceReliable: true,
+      positionSeconds: 0.9,
+      beatGridMs: [0, 500, 1000, 1500],
+      contextTimeAtPosition: () => 12,
+      ...overrides,
+    });
+  assert.equal(makePlan({ beatEvidenceReliable: false }).status, "unavailable");
+  assert.equal(makePlan({ beatGridMs: null }).status, "unavailable");
+  assert.equal(makePlan({ contextTimeAtPosition: () => null }).status, "unavailable");
 });
 
 test("performance boundary rejects late or interrupted source-clock callbacks", () => {
