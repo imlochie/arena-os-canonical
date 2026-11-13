@@ -62,6 +62,7 @@ import {
   liveStemBeatOffsetSeconds,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
+  liveStemSectionAlignmentCandidates,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
   nextSessionTrack,
@@ -72,6 +73,7 @@ import {
   type TransitionConfig,
   type TransitionMode,
   type LiveStemSectionAlignmentBasis,
+  type LiveStemSectionAlignmentCandidate,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 import {
   resolveSessionKeyMatch,
@@ -288,7 +290,10 @@ interface TemporaryIsolation {
   level: number;
 }
 
-type LibraryTrackOption = Pick<LibraryTrackSummary, "id" | "title" | "artist" | "analysis" | "stemAvailability">;
+type LibraryTrackOption = Pick<
+  LibraryTrackSummary,
+  "id" | "title" | "artist" | "durationSeconds" | "analysis" | "stemAvailability"
+>;
 
 function getPersistedSwapSetup(
   session: SessionDetail | null,
@@ -3422,6 +3427,18 @@ export default function SessionExperience({
     [activeDeck, currentItem, manualTempoCorrections, session],
   );
 
+  const resolveLiveSwapPreviewAsset = useCallback(async (donorId: string, stemType: string) => {
+    const sessionDonor = sessionRef.current?.tracks.find((item) => item.track.id === donorId);
+    let donorStem = sessionDonor?.stems.find((stem) => stem.stemType === stemType);
+    if (!donorStem) {
+      const response = await fetch(`/api/library/tracks/${encodeURIComponent(donorId)}`, { cache: "no-store" });
+      if (!response.ok) return null;
+      const body = await response.json() as { track?: { stems?: SessionTrackItem["stems"] } };
+      donorStem = body.track?.stems?.find((stem) => stem.stemType === stemType);
+    }
+    return donorStem?.id ? `/api/assets/${encodeURIComponent(donorStem.id)}` : null;
+  }, []);
+
   const prefetchLiveSwapAsset = useCallback((stemType: string, donorId: string) => {
     if (session === null || currentItem === null) return;
     const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
@@ -4684,6 +4701,7 @@ export default function SessionExperience({
           beatConfidence: donor.analysis?.beatConfidence ?? null,
           musicalKey: donor.analysis?.musicalKey ?? null,
           keyConfidence: donor.analysis?.keyConfidence ?? null,
+          durationSeconds: donor.track.durationSeconds,
           collection: "session" as const,
         };
       }),
@@ -4700,10 +4718,46 @@ export default function SessionExperience({
           beatConfidence: donor.analysis?.beatConfidence ?? null,
           musicalKey: donor.analysis?.musicalKey ?? null,
           keyConfidence: donor.analysis?.keyConfidence ?? null,
+          durationSeconds: donor.durationSeconds,
           collection: "library" as const,
         };
       }),
     ];
+    const getEntryCandidates = (donorId: string): LiveStemSectionAlignmentCandidate[] => {
+      const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
+      const libraryDonor = library.find((item) => item.id === donorId);
+      const donorAnalysis = sessionDonor?.analysis ?? libraryDonor?.analysis ?? null;
+      if (donorAnalysis === null || currentItem.analysis === null) return [];
+      const donorTempo = tempoForTrack(donorId, donorAnalysis, manualTempoCorrections);
+      const candidateTempoEvidence = {
+        recipientBpmConfidence: recipientTempo.confidence,
+        donorBpmConfidence: donorTempo.confidence,
+        recipientBeatConfidence: currentItem.analysis.beatConfidence,
+        donorBeatConfidence: donorAnalysis.beatConfidence,
+      };
+      const stretchRatio = liveStemTempoStretchRatio(
+        recipientTempo.bpm,
+        donorTempo.bpm,
+        candidateTempoEvidence,
+      ) ?? 1;
+      return liveStemSectionAlignmentCandidates(
+        currentItem.analysis.sections,
+        donorAnalysis.sections,
+        positions[activeDeck],
+        stretchRatio,
+        {
+          ...candidateTempoEvidence,
+          recipientBeatGridMs: currentItem.analysis.beatGridMs,
+          donorBeatGridMs: donorAnalysis.beatGridMs,
+          recipientBpm: recipientTempo.bpm,
+          donorBpm: donorTempo.bpm,
+          recipientKey: currentItem.analysis.musicalKey,
+          donorKey: donorAnalysis.musicalKey,
+          recipientKeyConfidence: currentItem.analysis.keyConfidence,
+          donorKeyConfidence: donorAnalysis.keyConfidence,
+        },
+      );
+    };
     const selectedDonor = session.tracks.find((item) => item.track.id === swap?.toTrackId);
     const selectedDonorLibraryTrack = library.find((item) => item.id === swap?.toTrackId);
     const selectedDonorTitle = selectedDonor?.track.title

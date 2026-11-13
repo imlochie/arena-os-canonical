@@ -12,6 +12,7 @@ import {
   liveStemBeatOffsetSeconds,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
+  liveStemSectionAlignmentCandidates,
   liveStemSectionOffsetSeconds,
   liveStemTempoStretchRatio,
   nearestEntryEvidenceMs,
@@ -108,6 +109,19 @@ function testSourceSection(
     analysisEngineVersion: "1",
     sourceChecksumSha256: checksum,
     passageFingerprint: testPassageFingerprint(checksum, windows),
+  };
+}
+
+function testLongSourceSection(
+  checksum: string,
+  windows: PassageRollingWindow[],
+): SourceSection {
+  const fingerprint = testPassageFingerprint(checksum, windows);
+  return {
+    ...testSourceSection(0, checksum, windows),
+    endMs: 24_000,
+    endBeatIndex: 48,
+    passageFingerprint: { ...fingerprint, endBeatIndex: 48 },
   };
 }
 
@@ -231,6 +245,48 @@ test("live stem mapping selects the strongest checksum-bound local rhythm and ha
   const offset = liveStemSectionOffsetSeconds([recipient], [donor], 5, stretchRatio, evidence);
   assert.ok(offset !== null && Math.abs(offset - 2) < 0.001);
   assert.equal(liveStemSectionAlignment([recipient], [donor], 5, stretchRatio, evidence)?.basis, "rhythm-harmony-phrase");
+});
+
+test("live stem entry alternatives expose distinct measured windows and their evidence", () => {
+  const checksum = "a".repeat(64);
+  const recipient = testLongSourceSection(checksum, [
+    testRollingWindow(0, 1),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 2),
+  ]);
+  const donor = testLongSourceSection("b".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 1),
+    testRollingWindow(8, 2),
+    testRollingWindow(16, 0),
+    testRollingWindow(20, 1),
+    testRollingWindow(24, 2),
+    testRollingWindow(32, 0),
+    testRollingWindow(36, 1),
+    testRollingWindow(40, 2),
+  ]);
+  const evidence = testLiveStemEvidence();
+  const alternatives = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence);
+
+  assert.equal(alternatives.length, 3, "overlapping four-beat hops collapse to distinct eight-beat windows");
+  assert.ok(alternatives.every((candidate) => candidate.basis === "rhythm-harmony-phrase"));
+  assert.deepEqual(alternatives.map((candidate) => candidate.donorWindowStartMs), [0, 8_000, 16_000]);
+  assert.ok(alternatives.every((candidate) =>
+    candidate.rhythmSimilarity !== null
+    && candidate.harmonySimilarity !== null
+    && candidate.durationSimilarity !== null
+    && candidate.rhythmMeasurementConfidence === 0.95
+    && candidate.harmonyMeasurementConfidence === 0.95
+    && candidate.recipientBeatConfidence === 0.95
+    && candidate.donorBeatConfidence === 0.95,
+  ));
+  assert.equal(alternatives[0]?.donorEntryMs, 3_000);
+  assert.deepEqual(
+    liveStemSectionAlignment([recipient], [donor], 5, 1, evidence),
+    { offsetSeconds: alternatives[0]?.offsetSeconds, basis: alternatives[0]?.basis },
+    "legacy automatic alignment still selects the strongest alternative",
+  );
+  assert.deepEqual(liveStemSectionAlignmentCandidates([recipient], [donor], 2.5, 1, evidence, 2).length, 2);
 });
 
 test("one weak section elsewhere does not block a confident live phrase match", () => {

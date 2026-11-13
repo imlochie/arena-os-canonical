@@ -329,34 +329,35 @@ function hasReliableLocalPassageBeatEvidence(evidence: LiveStemSectionEvidence):
     && confidentGrid(evidence.donorBeatConfidence);
 }
 
-function livePhraseSectionOffsetSeconds(
+function livePhraseSectionAlignmentCandidates(
   recipientSections: readonly LiveStemSection[],
   donorSections: readonly LiveStemSection[],
   recipient: LiveStemSection,
   recipientPositionSeconds: number,
   stretchRatio: number,
   evidence: LiveStemSectionEvidence,
-): number | null {
+  maxCandidates: number,
+): LiveStemSectionAlignmentCandidate[] {
   // A low whole-track BPM score must keep the donor at native pace, but it
   // need not discard checksum-bound local phrase evidence when both measured
   // beat grids are independently strong. Duration similarity still rejects
   // windows that would drift too far at native pace.
-  if (!hasReliableLocalPassageBeatEvidence(evidence)) return null;
+  if (!hasReliableLocalPassageBeatEvidence(evidence)) return [];
   const recipientGrid = orderedBeatGrid(evidence.recipientBeatGridMs);
   const donorGrid = orderedBeatGrid(evidence.donorBeatGridMs);
-  if (!recipientGrid || !donorGrid) return null;
+  if (!recipientGrid || !donorGrid) return [];
   const currentBeatIndex = nearestBeatIndexAtMs(recipientGrid, recipientPositionSeconds * 1000);
-  if (currentBeatIndex === null) return null;
+  if (currentBeatIndex === null) return [];
 
   const recipientWindows = measuredRollingWindows(recipient);
   const recipientWindow = recipientWindows?.find((window) =>
     window.startBeatIndex <= currentBeatIndex && currentBeatIndex < window.endBeatIndex
     && window.rhythm.status === "measured" && window.chroma.status === "measured",
   );
-  if (!recipientWindow) return null;
+  if (!recipientWindow) return [];
   const recipientWindowStartMs = beatBoundaryMs(recipientGrid, recipientWindow.startBeatIndex);
   const recipientWindowEndMs = beatBoundaryMs(recipientGrid, recipientWindow.endBeatIndex);
-  if (recipientWindowStartMs === null || recipientWindowEndMs === null || recipientWindowEndMs <= recipientWindowStartMs) return null;
+  if (recipientWindowStartMs === null || recipientWindowEndMs === null || recipientWindowEndMs <= recipientWindowStartMs) return [];
 
   const anchorKeyTrusted = typeof evidence.recipientKey === "string"
     && (evidence.recipientKeyConfidence ?? 0) >= LIVE_STEM_TRUSTED_KEY_CONFIDENCE_MIN;
@@ -368,7 +369,7 @@ function livePhraseSectionOffsetSeconds(
   const recipientDurationMs = recipientWindowEndMs - recipientWindowStartMs;
   const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
   const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
-  let best: { offset: number; score: number; positionDistance: number } | null = null;
+  const matches: Array<LiveStemSectionAlignmentCandidate & { rankingScore: number; positionDistance: number }> = [];
 
   for (const donorSection of donorSections) {
     const donorWindows = measuredRollingWindows(donorSection);
@@ -404,16 +405,62 @@ function livePhraseSectionOffsetSeconds(
           - (recipientWindow.startBeatIndex / recipientTrackEnd),
         )
         : Number.POSITIVE_INFINITY;
-      if (!best || score > best.score || (score === best.score && positionDistance < best.positionDistance)) {
-        best = {
-          offset: (donorWindowStartMs * stretchRatio - recipientWindowStartMs) / 1000,
-          score,
-          positionDistance,
-        };
-      }
+      const offsetSeconds = (donorWindowStartMs * stretchRatio - recipientWindowStartMs) / 1000;
+      const donorEntryMs = (recipientPositionSeconds * 1000 + offsetSeconds * 1000) / stretchRatio;
+      if (!Number.isFinite(donorEntryMs) || donorEntryMs < donorWindowStartMs || donorEntryMs >= donorWindowEndMs) continue;
+      const measurementConfidence = (window: PassageRollingWindow, channel: "rhythm" | "chroma") => {
+        const confidence = window[channel].confidence;
+        return typeof confidence === "number" && Number.isFinite(confidence) ? confidence : null;
+      };
+      matches.push({
+        offsetSeconds,
+        donorEntryMs,
+        basis: "rhythm-harmony-phrase",
+        donorSectionIndex: donorSection.sectionIndex,
+        recipientSectionIndex: recipient.sectionIndex,
+        donorWindowStartMs,
+        donorWindowEndMs,
+        recipientWindowStartMs,
+        recipientWindowEndMs,
+        rhythmSimilarity: similarity.rhythmSimilarity,
+        harmonySimilarity: similarity.harmonySimilarity,
+        durationSimilarity,
+        rhythmMeasurementConfidence: Math.min(
+          measurementConfidence(recipientWindow, "rhythm") ?? 0,
+          measurementConfidence(donorWindow, "rhythm") ?? 0,
+        ),
+        harmonyMeasurementConfidence: Math.min(
+          measurementConfidence(recipientWindow, "chroma") ?? 0,
+          measurementConfidence(donorWindow, "chroma") ?? 0,
+        ),
+        recipientBoundaryConfidence: recipient.structuralConfidence,
+        donorBoundaryConfidence: donorSection.structuralConfidence,
+        recipientBeatConfidence: evidence.recipientBeatConfidence ?? null,
+        donorBeatConfidence: evidence.donorBeatConfidence ?? null,
+        transpositionSemitones: similarity.transpositionSemitones,
+        rankingScore: score,
+        positionDistance,
+      });
     }
   }
-  return best?.offset ?? null;
+  matches.sort((left, right) =>
+    right.rankingScore - left.rankingScore || left.positionDistance - right.positionDistance,
+  );
+  const diverse: typeof matches = [];
+  for (const match of matches) {
+    const duration = match.donorWindowEndMs - match.donorWindowStartMs;
+    const overlapsExisting = diverse.some((existing) => {
+      const overlap = Math.max(0, Math.min(match.donorWindowEndMs, existing.donorWindowEndMs)
+        - Math.max(match.donorWindowStartMs, existing.donorWindowStartMs));
+      const shorter = Math.min(duration, existing.donorWindowEndMs - existing.donorWindowStartMs);
+      return shorter > 0 && overlap / shorter >= 0.5;
+    });
+    if (overlapsExisting) continue;
+    const { rankingScore: _rankingScore, positionDistance: _positionDistance, ...candidate } = match;
+    diverse.push(candidate);
+    if (diverse.length >= maxCandidates) break;
+  }
+  return diverse;
 }
 
 /**
@@ -425,13 +472,43 @@ function livePhraseSectionOffsetSeconds(
  */
 export type LiveStemSectionAlignmentBasis = "rhythm-harmony-phrase" | "trusted-section-role";
 
-export function liveStemSectionAlignment(
+export type LiveStemSectionAlignmentCandidate = {
+  offsetSeconds: number;
+  donorEntryMs: number;
+  basis: LiveStemSectionAlignmentBasis;
+  donorSectionIndex: number;
+  recipientSectionIndex: number;
+  donorWindowStartMs: number;
+  donorWindowEndMs: number;
+  recipientWindowStartMs: number;
+  recipientWindowEndMs: number;
+  rhythmSimilarity: number | null;
+  harmonySimilarity: number | null;
+  durationSimilarity: number | null;
+  rhythmMeasurementConfidence: number | null;
+  harmonyMeasurementConfidence: number | null;
+  recipientBoundaryConfidence: number;
+  donorBoundaryConfidence: number;
+  recipientBeatConfidence: number | null;
+  donorBeatConfidence: number | null;
+  transpositionSemitones: number | null;
+};
+
+const MAX_LIVE_STEM_ALIGNMENT_CANDIDATES = 5;
+
+/**
+ * Returns distinct, source-verified alternatives at the current recipient
+ * playhead. Similarity and measurement confidence remain separate; these are
+ * local audio-window matches, not semantic phrase or section labels.
+ */
+export function liveStemSectionAlignmentCandidates(
   recipientSections: readonly LiveStemSection[] | null | undefined,
   donorSections: readonly LiveStemSection[] | null | undefined,
   recipientPositionSeconds: number,
   stretchRatio: number,
   evidence?: LiveStemSectionEvidence,
-): { offsetSeconds: number; basis: LiveStemSectionAlignmentBasis } | null {
+  maxCandidates = MAX_LIVE_STEM_ALIGNMENT_CANDIDATES,
+): LiveStemSectionAlignmentCandidate[] {
   if (
     !Array.isArray(recipientSections)
     || !Array.isArray(donorSections)
@@ -441,11 +518,11 @@ export function liveStemSectionAlignment(
     || recipientPositionSeconds < 0
     || !Number.isFinite(stretchRatio)
     || stretchRatio <= 0
-  ) return null;
+    || !Number.isInteger(maxCandidates)
+    || maxCandidates < 1
+    || maxCandidates > 20
+  ) return [];
 
-  // Validate the track's section map structurally, but assess confidence only
-  // for the active recipient section and donor sections considered below. A
-  // weak unrelated boundary must not disable phrase matching for the whole song.
   const validSections = (sections: readonly LiveStemSection[]) => sections.every((section, index) =>
     section.sectionIndex === index
     && Number.isSafeInteger(section.startMs)
@@ -464,53 +541,94 @@ export function liveStemSectionAlignment(
     && section.structuralConfidence <= 1
     && (index === 0 || section.startMs >= sections[index - 1].endMs),
   );
-  if (!validSections(recipientSections) || !validSections(donorSections)) return null;
+  if (!validSections(recipientSections) || !validSections(donorSections)) return [];
 
   const recipientMs = recipientPositionSeconds * 1000;
   const recipient = recipientSections.find((section) =>
     recipientMs >= section.startMs && recipientMs < section.endMs,
   );
-  if (!recipient || recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return null;
+  if (!recipient || recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return [];
   const anyFingerprint = [...recipientSections, ...donorSections]
     .some((section) => section.passageFingerprint !== undefined && section.passageFingerprint !== null);
   if (anyFingerprint) {
-    const offsetSeconds = evidence
-      ? livePhraseSectionOffsetSeconds(
+    return evidence
+      ? livePhraseSectionAlignmentCandidates(
         recipientSections,
         donorSections,
         recipient,
         recipientPositionSeconds,
         stretchRatio,
         evidence,
+        maxCandidates,
       )
-      : null;
-    return offsetSeconds === null ? null : { offsetSeconds, basis: "rhythm-harmony-phrase" };
+      : [];
   }
 
   const role = comparableSectionLabel(recipient.label);
-  if (!role || recipient.labelConfidence < LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN) return null;
+  if (!role || recipient.labelConfidence < LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN) return [];
   const recipientBeatLength = recipient.endBeatIndex - recipient.startBeatIndex;
   const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
   const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
-  if (recipientTrackEnd <= 0 || donorTrackEnd <= 0) return null;
+  if (recipientTrackEnd <= 0 || donorTrackEnd <= 0) return [];
   const recipientPhase = recipient.startBeatIndex / recipientTrackEnd;
-  const donor = donorSections
+  const donors = donorSections
     .filter((candidate) => comparableSectionLabel(candidate.label) === role
       && candidate.labelConfidence >= LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN
       && candidate.structuralConfidence >= LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN
       && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 4)
-    .sort((left, right) => {
-      const leftDistance = Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase);
-      const rightDistance = Math.abs(right.startBeatIndex / donorTrackEnd - recipientPhase);
-      return leftDistance - rightDistance;
-    })[0];
-  if (!donor) return null;
+    .sort((left, right) =>
+      Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase)
+      - Math.abs(right.startBeatIndex / donorTrackEnd - recipientPhase),
+    );
+  return donors.slice(0, maxCandidates).flatMap((candidate) => {
+    const offsetSeconds = (candidate.startMs * stretchRatio - recipient.startMs) / 1000;
+    const donorEntryMs = (recipientMs + offsetSeconds * 1000) / stretchRatio;
+    const recipientDurationMs = recipient.endMs - recipient.startMs;
+    const donorDurationMs = candidate.endMs - candidate.startMs;
+    if (!Number.isFinite(donorEntryMs)
+      || donorEntryMs < candidate.startMs
+      || donorEntryMs >= candidate.endMs) return [];
+    return [{
+      offsetSeconds,
+      donorEntryMs,
+      basis: "trusted-section-role" as const,
+      donorSectionIndex: candidate.sectionIndex,
+      recipientSectionIndex: recipient.sectionIndex,
+      donorWindowStartMs: candidate.startMs,
+      donorWindowEndMs: candidate.endMs,
+      recipientWindowStartMs: recipient.startMs,
+      recipientWindowEndMs: recipient.endMs,
+      rhythmSimilarity: null,
+      harmonySimilarity: null,
+      durationSimilarity: Math.min(recipientDurationMs, donorDurationMs * stretchRatio)
+        / Math.max(recipientDurationMs, donorDurationMs * stretchRatio),
+      rhythmMeasurementConfidence: null,
+      harmonyMeasurementConfidence: null,
+      recipientBoundaryConfidence: recipient.structuralConfidence,
+      donorBoundaryConfidence: candidate.structuralConfidence,
+      recipientBeatConfidence: evidence?.recipientBeatConfidence ?? null,
+      donorBeatConfidence: evidence?.donorBeatConfidence ?? null,
+      transpositionSemitones: null,
+    }];
+  });
+}
 
-  // Output-coordinate offset: donor section start * stretch = recipient section start + offset.
-  return {
-    offsetSeconds: (donor.startMs * stretchRatio - recipient.startMs) / 1000,
-    basis: "trusted-section-role",
-  };
+export function liveStemSectionAlignment(
+  recipientSections: readonly LiveStemSection[] | null | undefined,
+  donorSections: readonly LiveStemSection[] | null | undefined,
+  recipientPositionSeconds: number,
+  stretchRatio: number,
+  evidence?: LiveStemSectionEvidence,
+): { offsetSeconds: number; basis: LiveStemSectionAlignmentBasis } | null {
+  const candidate = liveStemSectionAlignmentCandidates(
+    recipientSections,
+    donorSections,
+    recipientPositionSeconds,
+    stretchRatio,
+    evidence,
+    1,
+  )[0];
+  return candidate ? { offsetSeconds: candidate.offsetSeconds, basis: candidate.basis } : null;
 }
 
 /** Numeric-offset compatibility wrapper for existing callers and tests. */

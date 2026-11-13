@@ -10,6 +10,7 @@ import {
   liveStemTempoStretchRatio,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
+  type LiveStemSectionAlignmentCandidate,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 import { displaySourceSectionLabel, type SourceSection } from "@workspace/arena/lib/waveyard/types/source-sections";
 
@@ -24,6 +25,7 @@ export interface LiveStemDonorOption {
   beatConfidence: number | null;
   musicalKey: string | null;
   keyConfidence: number | null;
+  durationSeconds: number | null;
   collection: "session" | "library";
 }
 
@@ -46,6 +48,7 @@ interface LiveStemSwapPickerProps {
   currentBeatConfidence: number | null;
   currentKey: string | null;
   currentKeyConfidence: number | null;
+  currentPositionSeconds: number;
   candidates: LiveStemDonorOption[];
   preparationCandidates: LiveStemPreparationOption[];
   preparingTrackIds: ReadonlySet<string>;
@@ -60,6 +63,8 @@ interface LiveStemSwapPickerProps {
   onToggle: () => void;
   onClose: () => void;
   onChoose: (donorId: string, donorEntryOffsetMs?: number | null) => void;
+  onGetEntryCandidates: (donorId: string) => LiveStemSectionAlignmentCandidate[];
+  onResolvePreviewAsset: (donorId: string, stemType: string) => Promise<string | null>;
   onWarm: (donorId: string) => void;
   onPrefetch: (donorId: string) => void;
   onPrepare: (trackId: string) => void;
@@ -170,6 +175,10 @@ function usesCompactPickerViewport() {
 function formatEntryTime(ms: number): string {
   const seconds = Math.floor(Math.max(0, ms) / 1000);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function formatEvidencePercent(value: number | null): string {
+  return value === null || !Number.isFinite(value) ? "unavailable" : `${Math.round(value * 100)}%`;
 }
 
 function VocalEntryTimeControl({
@@ -300,6 +309,7 @@ export default function LiveStemSwapPicker({
   currentBeatConfidence,
   currentKey,
   currentKeyConfidence,
+  currentPositionSeconds,
   candidates,
   preparationCandidates,
   preparingTrackIds,
@@ -314,6 +324,8 @@ export default function LiveStemSwapPicker({
   onToggle,
   onClose,
   onChoose,
+  onGetEntryCandidates,
+  onResolvePreviewAsset,
   onWarm,
   onPrefetch,
   onPrepare,
@@ -334,8 +346,176 @@ export default function LiveStemSwapPicker({
   const firstPreparationRef = useRef<HTMLButtonElement>(null);
   const hoverWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prefetchedCandidateKeyRef = useRef<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewResolveSequenceRef = useRef(0);
+  const previewStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [entryDonorId, setEntryDonorId] = useState<string | null>(null);
+  const [entryCandidates, setEntryCandidates] = useState<LiveStemSectionAlignmentCandidate[]>([]);
+  const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
+  const [manualEntryMs, setManualEntryMs] = useState(0);
+  const [previewAssetUrl, setPreviewAssetUrl] = useState<string | null>(null);
+  const [previewAssetState, setPreviewAssetState] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
+  const [previewAudioReady, setPreviewAudioReady] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewMessage, setPreviewMessage] = useState("");
   const pickerId = `live-swap-picker-${stemType}`;
   const prefetchCandidateId = candidates.slice(1).find((candidate) => candidate.id !== selectedDonorId)?.id ?? null;
+  const stopEntryPreview = useCallback(() => {
+    if (previewStopTimerRef.current !== null) clearTimeout(previewStopTimerRef.current);
+    previewStopTimerRef.current = null;
+    const audio = previewAudioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.onended = null;
+      audio.ontimeupdate = null;
+    }
+    setPreviewing(false);
+  }, []);
+  const stageDonorForEntry = useCallback((donorId: string) => {
+    stopEntryPreview();
+    const sequence = ++previewResolveSequenceRef.current;
+    const alternatives = stemType === "vocals" ? onGetEntryCandidates(donorId) : [];
+    setEntryDonorId(donorId);
+    setEntryCandidates(alternatives);
+    setSelectedEntryIndex(0);
+    setManualEntryMs(alternatives[0]?.donorEntryMs ?? 0);
+    setPreviewAssetUrl(null);
+    setPreviewAudioReady(false);
+    setPreviewAssetState("loading");
+    setPreviewMessage("");
+    void onResolvePreviewAsset(donorId, stemType).then((url) => {
+      if (previewResolveSequenceRef.current !== sequence) return;
+      setPreviewAssetUrl(url);
+      setPreviewAssetState(url === null ? "unavailable" : "ready");
+    }).catch(() => {
+      if (previewResolveSequenceRef.current !== sequence) return;
+      setPreviewAssetUrl(null);
+      setPreviewAssetState("unavailable");
+    });
+  }, [onGetEntryCandidates, onResolvePreviewAsset, stemType, stopEntryPreview]);
+
+  const selectedAlignmentCandidate = entryCandidates[selectedEntryIndex] ?? null;
+  const stagedDonor = candidates.find((candidate) => candidate.id === entryDonorId) ?? null;
+  const entryTempoEvidence = stagedDonor === null ? null : {
+    recipientBpmConfidence: currentBpmConfidence,
+    donorBpmConfidence: stagedDonor.bpmConfidence,
+    recipientBeatConfidence: currentBeatConfidence,
+    donorBeatConfidence: stagedDonor.beatConfidence,
+  };
+  const entryStretchRatio = stagedDonor === null || entryTempoEvidence === null
+    ? 1
+    : liveStemTempoStretchRatio(currentBpm, stagedDonor.bpm, entryTempoEvidence) ?? 1;
+  const selectedAlignmentIsStale = selectedAlignmentCandidate !== null
+    && (currentPositionSeconds * 1000 < selectedAlignmentCandidate.recipientWindowStartMs
+      || currentPositionSeconds * 1000 >= selectedAlignmentCandidate.recipientWindowEndMs);
+
+  useEffect(() => {
+    const audio = previewAudioRef.current;
+    if (!isOpen || !previewAssetUrl) {
+      if (audio) {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      }
+      previewAudioRef.current = null;
+      setPreviewAudioReady(false);
+      setPreviewing(false);
+      return;
+    }
+    const audition = new Audio(previewAssetUrl);
+    audition.preload = "auto";
+    audition.volume = 0.5;
+    const onLoadedMetadata = () => setPreviewAudioReady(true);
+    const onAudioError = () => {
+      setPreviewAudioReady(false);
+      setPreviewAssetState("unavailable");
+    };
+    audition.addEventListener("loadedmetadata", onLoadedMetadata);
+    audition.addEventListener("error", onAudioError);
+    audition.load();
+    previewAudioRef.current = audition;
+    return () => {
+      audition.removeEventListener("loadedmetadata", onLoadedMetadata);
+      audition.removeEventListener("error", onAudioError);
+      audition.pause();
+      audition.removeAttribute("src");
+      audition.load();
+      if (previewAudioRef.current === audition) previewAudioRef.current = null;
+    };
+  }, [isOpen, previewAssetUrl]);
+
+  useEffect(() => {
+    if (isOpen) return;
+    stopEntryPreview();
+    setEntryDonorId(null);
+    setEntryCandidates([]);
+    setPreviewAssetUrl(null);
+    setPreviewAudioReady(false);
+    setPreviewAssetState("idle");
+    setPreviewMessage("");
+  }, [isOpen, stopEntryPreview]);
+
+  useEffect(() => () => {
+    if (previewStopTimerRef.current !== null) clearTimeout(previewStopTimerRef.current);
+    previewAudioRef.current?.pause();
+  }, []);
+
+  const refreshEntryCandidates = () => {
+    if (entryDonorId !== null) stageDonorForEntry(entryDonorId);
+  };
+
+  const previewSelectedEntry = async () => {
+    const audio = previewAudioRef.current;
+    const candidate = selectedAlignmentCandidate;
+    const currentMs = currentPositionSeconds * 1000;
+    if (!audio || !candidate || previewAssetState !== "ready" || !previewAudioReady) {
+      setPreviewMessage("The donor audio is not ready to audition yet.");
+      return;
+    }
+    if (currentMs < candidate.recipientWindowStartMs || currentMs >= candidate.recipientWindowEndMs) {
+      setPreviewMessage("The playhead moved outside this matched window. Refresh alternatives before auditioning.");
+      return;
+    }
+    const donorStartMs = (currentMs + candidate.offsetSeconds * 1000) / entryStretchRatio;
+    if (!Number.isFinite(donorStartMs)
+      || donorStartMs < candidate.donorWindowStartMs
+      || donorStartMs >= candidate.donorWindowEndMs) {
+      setPreviewMessage("This candidate no longer maps to a valid donor time. Refresh alternatives.");
+      return;
+    }
+    stopEntryPreview();
+    const media = audio as HTMLAudioElement & {
+      preservesPitch?: boolean;
+      webkitPreservesPitch?: boolean;
+      mozPreservesPitch?: boolean;
+    };
+    audio.currentTime = donorStartMs / 1000;
+    audio.playbackRate = 1 / entryStretchRatio;
+    if ("preservesPitch" in media) media.preservesPitch = true;
+    if ("webkitPreservesPitch" in media) media.webkitPreservesPitch = true;
+    if ("mozPreservesPitch" in media) media.mozPreservesPitch = true;
+    const donorRemainingMs = candidate.donorWindowEndMs - donorStartMs;
+    const recipientRemainingMs = candidate.recipientWindowEndMs - currentMs;
+    const previewDurationMs = Math.min(12_000, donorRemainingMs * entryStretchRatio, recipientRemainingMs);
+    const stopAtSeconds = donorStartMs / 1000 + previewDurationMs / entryStretchRatio / 1000;
+    audio.ontimeupdate = () => {
+      if (audio.currentTime >= stopAtSeconds) stopEntryPreview();
+    };
+    audio.onended = () => {
+      setPreviewing(false);
+      if (previewStopTimerRef.current !== null) clearTimeout(previewStopTimerRef.current);
+      previewStopTimerRef.current = null;
+    };
+    try {
+      await audio.play();
+      setPreviewing(true);
+      setPreviewMessage("Auditioning the selected donor window at the current playhead. Browser pitch/time processing may differ from the final mix.");
+      previewStopTimerRef.current = setTimeout(stopEntryPreview, Math.max(250, previewDurationMs + 200));
+    } catch {
+      setPreviewing(false);
+      setPreviewMessage("The browser blocked playback. Press audition again to retry.");
+    }
+  };
   const focusSwapTrigger = useCallback(() => {
     const quickTrigger = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-live-swap-anchor]"))
       .find((candidate) =>
@@ -479,7 +659,9 @@ export default function LiveStemSwapPicker({
       : key.confidenceLevel === "tentative"
         ? `Tentative key · possible ${key.compatible ? "fit" : "clash"}`
         : "Key confidence unavailable";
-    const selected = candidate.id === selectedDonorId;
+    const selected = stemType === "vocals"
+      ? candidate.id === entryDonorId
+      : candidate.id === selectedDonorId;
     const isWarming = candidate.id === warmingDonorId;
     const warmStatus = tempoKnown && stretchRatio !== null && Math.abs(stretchRatio - 1) > 0.001
       ? "Preparing tempo match…"
@@ -494,19 +676,23 @@ export default function LiveStemSwapPicker({
           title={tempoMatchUnavailable ? "Live swap is disabled because matching would require an extreme tempo change." : undefined}
           aria-pressed={selected}
           aria-busy={isWarming}
-          aria-label={`${tempoMatchUnavailable ? "Unavailable; " : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${lowBeatConfidence ? "; beat sync unavailable because analysis confidence is low" : ""}${isWarming ? `; ${warmStatus}` : ""}`}
+          aria-label={`${tempoMatchUnavailable ? "Unavailable; " : stemType === "vocals" ? `Compare ${candidate.title} vocal entry alternatives; ` : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${lowBeatConfidence ? "; beat sync unavailable because analysis confidence is low" : ""}${isWarming ? `; ${warmStatus}` : ""}`}
           data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
           onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
           onPointerEnter={() => scheduleHoverWarm(candidate.id)}
           onPointerLeave={clearHoverWarm}
           onPointerDown={() => { clearHoverWarm(); onWarm(candidate.id); }}
           onClick={() => {
+            if (stemType === "vocals") {
+              stageDonorForEntry(candidate.id);
+              return;
+            }
             onChoose(candidate.id);
             closeAndReturnFocus();
           }}
         >
           <span className="wy-swap-candidate-copy">
-            <strong>{candidate.title}</strong>
+            <strong>{candidate.title}{stemType === "vocals" && candidate.id === selectedDonorId ? " · current donor" : ""}</strong>
             <small>
               {candidate.artist || "Unknown artist"}
               {candidate.tempoCorrected
@@ -642,6 +828,162 @@ export default function LiveStemSwapPicker({
                 )}
               </div>
             </div>
+          )}
+          {stemType === "vocals" && entryDonorId !== null && stagedDonor && (
+            <section
+              className="wy-vocal-entry-alternatives"
+              aria-label={`Entry alternatives from ${stagedDonor.title}`}
+              data-testid="vocal-entry-alternatives"
+            >
+              <header>
+                <div>
+                  <strong>Compare vocal entry windows</strong>
+                  <small>{stagedDonor.title} · selection is staged; the current swap stays unchanged until applied</small>
+                </div>
+                <button type="button" onClick={refreshEntryCandidates} disabled={busy || pending}>
+                  Refresh
+                </button>
+              </header>
+              <p className="wy-vocal-entry-evidence">
+                These are measured rolling audio windows, not lyric phrases or verified verse/chorus labels. Similarity scores and signal-confidence measurements are shown separately.
+              </p>
+              {entryCandidates.length > 0 ? (
+                <div className="wy-vocal-entry-candidate-list" role="radiogroup" aria-label="Measured donor entry alternatives">
+                  {entryCandidates.map((candidate, index) => (
+                    <button
+                      key={`${candidate.donorSectionIndex}-${candidate.donorWindowStartMs}-${index}`}
+                      className={`wy-vocal-entry-candidate${selectedEntryIndex === index ? " selected" : ""}`}
+                      type="button"
+                      role="radio"
+                      aria-checked={selectedEntryIndex === index}
+                      data-testid={`vocal-entry-candidate-${index}`}
+                      onClick={() => {
+                        setSelectedEntryIndex(index);
+                        setManualEntryMs(candidate.donorEntryMs);
+                        stopEntryPreview();
+                        setPreviewMessage("");
+                      }}
+                    >
+                      <strong>Alternative {index + 1} · donor entry {formatEntryTime(candidate.donorEntryMs)}</strong>
+                      <small>
+                        {candidate.basis === "rhythm-harmony-phrase"
+                          ? `Matched ${formatEntryTime(candidate.donorWindowStartMs)}–${formatEntryTime(candidate.donorWindowEndMs)} rolling audio window`
+                          : "Trusted section-role match; waveform similarity is unavailable"}
+                      </small>
+                      <span>
+                        Rhythm similarity {formatEvidencePercent(candidate.rhythmSimilarity)}
+                        {" · "}measurement {formatEvidencePercent(candidate.rhythmMeasurementConfidence)}
+                      </span>
+                      <span>
+                        Harmony similarity {formatEvidencePercent(candidate.harmonySimilarity)}
+                        {" · "}measurement {formatEvidencePercent(candidate.harmonyMeasurementConfidence)}
+                      </span>
+                      <span>
+                        Duration fit {formatEvidencePercent(candidate.durationSimilarity)}
+                        {" · "}boundary evidence {formatEvidencePercent(candidate.recipientBoundaryConfidence)}
+                        {" / "}{formatEvidencePercent(candidate.donorBoundaryConfidence)}
+                      </span>
+                      <span>
+                        Beat-grid evidence {formatEvidencePercent(candidate.recipientBeatConfidence)}
+                        {" / "}{formatEvidencePercent(candidate.donorBeatConfidence)}
+                        {candidate.transpositionSemitones !== null && candidate.transpositionSemitones !== 0
+                          ? ` · chroma shift ${candidate.transpositionSemitones > 0 ? "+" : ""}${candidate.transpositionSemitones} semitones`
+                          : ""}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="wy-vocal-entry-no-candidates" role="status">
+                  No source-verified rhythm/harmony window passed the current evidence gates at this playhead. That does not prove no usable passage exists; automatic safe alignment and manual entry remain available.
+                </p>
+              )}
+              {selectedAlignmentCandidate && (
+                <div className="wy-vocal-entry-preview">
+                  <span>
+                    {previewAssetState === "loading" ? "Loading donor audio…"
+                      : previewAssetState === "unavailable" ? "Donor audio is unavailable for audition."
+                        : previewAudioReady ? "Donor audio ready"
+                          : "Preparing donor audio…"}
+                  </span>
+                  {previewing ? (
+                    <button type="button" onClick={stopEntryPreview} data-testid="button-stop-entry-preview">
+                      Stop audition
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={!previewAudioReady || selectedAlignmentIsStale || busy || pending}
+                      onClick={() => { void previewSelectedEntry(); }}
+                      data-testid="button-preview-entry-candidate"
+                    >
+                      Audition this window
+                    </button>
+                  )}
+                </div>
+              )}
+              {selectedAlignmentIsStale && (
+                <small className="wy-vocal-entry-stale" role="status">
+                  The playhead left this matched window. Refresh alternatives before applying a match.
+                </small>
+              )}
+              {previewMessage && <small className="wy-vocal-entry-snap-status" role="status">{previewMessage}</small>}
+              {stagedDonor.durationSeconds !== null && stagedDonor.durationSeconds > 0 ? (
+                <label className="wy-vocal-entry-time">
+                  <span>Manual donor start · no feature match</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(1, Math.floor(stagedDonor.durationSeconds * 1000) - 1)}
+                    step={50}
+                    value={Math.min(
+                      Math.max(0, manualEntryMs),
+                      Math.max(1, Math.floor(stagedDonor.durationSeconds * 1000) - 1),
+                    )}
+                    onChange={(event) => setManualEntryMs(Number(event.target.value))}
+                    aria-label={`Manual donor start time for ${stagedDonor.title}`}
+                    data-testid="staged-donor-entry-slider"
+                  />
+                  <output>{formatEntryTime(manualEntryMs)}</output>
+                </label>
+              ) : null}
+              <div className="wy-vocal-entry-actions">
+                <button
+                  type="button"
+                  disabled={busy || pending || selectedAlignmentCandidate === null || selectedAlignmentIsStale}
+                  onClick={() => {
+                    if (!selectedAlignmentCandidate || selectedAlignmentIsStale) return;
+                    onChoose(entryDonorId, Math.round(selectedAlignmentCandidate.donorEntryMs));
+                    closeAndReturnFocus();
+                  }}
+                  data-testid="button-apply-entry-candidate"
+                >
+                  Apply selected match
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || pending || stagedDonor.durationSeconds === null}
+                  onClick={() => {
+                    onChoose(entryDonorId, Math.round(manualEntryMs));
+                    closeAndReturnFocus();
+                  }}
+                  data-testid="button-apply-manual-entry"
+                >
+                  Apply manual start
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || pending}
+                  onClick={() => {
+                    onChoose(entryDonorId, null);
+                    closeAndReturnFocus();
+                  }}
+                  data-testid="button-apply-automatic-entry"
+                >
+                  Use automatic safe alignment
+                </button>
+              </div>
+            </section>
           )}
           {selectedDonorId && (
             <>
