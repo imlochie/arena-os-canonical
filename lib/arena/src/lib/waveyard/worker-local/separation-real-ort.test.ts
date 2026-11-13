@@ -972,6 +972,8 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       repetition: number;
       requestedDevice: string;
       resolvedDevice: string;
+      startedAtUtcMs: number;
+      finishedAtUtcMs: number;
       chunkCounts: Record<string, number>;
       activeModelPasses: { model: string; activeMemoryPeak: SeparationActiveMemoryPeak }[];
       postReleaseMemory: Awaited<ReturnType<typeof sampleMemory>>;
@@ -993,6 +995,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
           })
           .where(eq(processingJobs.id, f.job.id));
       }
+      const startedAtUtcMs = Date.now();
       assert.deepEqual(await retrySeparationJob(f.database, f.job.id), { queued: true });
       const deadline = Date.now() + 240_000;
       let job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
@@ -1005,6 +1008,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
       }
       assert.equal(job?.status, "complete", `pinned four-model repetition ${run + 1} completes before timeout`);
+      const finishedAtUtcMs = Date.now();
       assert.equal(harness.broker.stats().submitted, run + 1, `repetition ${run + 1} reached the local production worker`);
       assert.equal(harness.broker.stats().succeeded, run + 1, `repetition ${run + 1} succeeded in the local production worker`);
       const runPasses = completedModelPasses.slice(firstPassIndex);
@@ -1022,11 +1026,18 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
       assert.equal(stems.length, 4, `repetition ${run + 1} persists all four stems`);
       const memory = await sampleMemory();
+      if (process.platform === "win32" && job.resolvedDevice === "dml") {
+        // Give the Windows-side one-second GPU counter sampler a chance to
+        // observe dedicated memory after the model sessions have been released.
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 1_100));
+      }
       samples.push(memory);
       jobReports.push({
         repetition: run + 1,
         requestedDevice: job.requestedDevice ?? "unknown",
         resolvedDevice: job.resolvedDevice ?? "unknown",
+        startedAtUtcMs,
+        finishedAtUtcMs,
         chunkCounts: Object.fromEntries(runPasses.map(({ model, chunkCount }) => [model, chunkCount])),
         activeModelPasses: modelPassMemoryPeaks(runPasses),
         postReleaseMemory: memory,
@@ -1090,8 +1101,8 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
     const memoryReportPath = process.env.WAVEYARD_REAL_ORT_MEMORY_REPORT?.trim();
     if (memoryReportPath) {
       const memoryReport = {
-        schemaVersion: 3,
-        benchmark: "repeated pinned four-model multi-chunk process memory",
+        schemaVersion: 4,
+        benchmark: "repeated pinned four-model multi-chunk process and GPU memory",
         providerSelectionMode,
         measuredMachine: {
           platform: process.platform,
@@ -1121,6 +1132,15 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
           rssSource: "independent parent-thread process.memoryUsage.rss() sampling plus worker samples",
           otherCountersSource: "inference worker isolate process.memoryUsage()",
         },
+        gpuMemory: {
+          applicable: resolvedDevices[0] === "dml",
+          status: resolvedDevices[0] === "dml" ? "pending_windows_runner" : "not_applicable",
+          source: null,
+          unavailableReason: resolvedDevices[0] === "dml"
+            ? "The Windows runner has not attached GPU Process Memory counter samples."
+            : "The selected execution provider was CPU; DirectML GPU memory does not apply.",
+          samples: [],
+        },
         summary: {
           warmupRetentionBytes: samples[warmupJobs - 1]!.rss - baseline.rss,
           firstSteadyRssBytes: firstSteadySample.rss,
@@ -1128,6 +1148,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
           continuedRssGrowthBytes: continuedRssGrowth,
           allowedContinuedGrowthBytes: maxContinuedGrowthBytes,
           continuedGrowthBounded: continuedRssGrowth <= maxContinuedGrowthBytes,
+          gpuMemoryLevelsOffAfterWarmup: null,
           samplingMethod: "per-model worker counters sampled at 500 ms and whole-process RSS independently at 100 ms, plus post-job process.memoryUsage after optional explicit GC and a 150 ms teardown settle",
           explicitGcAvailable: Boolean(forceGc),
         },
