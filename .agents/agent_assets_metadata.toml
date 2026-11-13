@@ -266,3 +266,31 @@ mtime_ms = 1793303159856
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5b96a4d3-3a23-4b96-ba18-2a0c53f91be0/efdde6a8-97ef-4867-a878-5b471598e778"
 storage_version_token = "1794449916005628"
 content_type = "audio/mpeg"
+
+[[outputs]]
+id = "qZaOR3axV0dIokqS06yMZ"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/listen-ab/continuous-overlay-baseline.mp3"
+type = "audio"
+title = "Waveyard A/B — continuous overlay"
+description = "The earlier single-offset Queen vocals over the September bed. Full 3:35 mix, converted from the production-route WAV for listening."
+logical_id = "2176acbc-1b31-4fd7-8ae4-b5ad897c8ce5"
+content_hash = "sha256:525918df664cc9751a263f932f346fddc4ec19ef77dd96558c9782b7bda15a2d"
+size = 5158496
+mtime_ms = 1794570067673
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/2176acbc-1b31-4fd7-8ae4-b5ad897c8ce5/069cdc71-9dbd-4e64-8731-f9f92ee1c9f8"
+storage_version_token = "1794570642164582"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "cM0J2fZ6ITg_R55oKk9AR"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/listen-ab/segmented-placement-candidate.mp3"
+type = "audio"
+title = "Waveyard A/B — segmented placement"
+description = "The new 44-unit segmented Queen-vocal arrangement over September, produced and exported through the persisted Studio route. Full 3:35 mix; listen against the continuous overlay."
+logical_id = "f423ab0b-d864-43f2-a0a7-c5e8fa6c98e4"
+content_hash = "sha256:ff0aaa9e3351ad50f40ea47c0a57d422f56a6405d154fb93dc769855bee25669"
+size = 5158496
+mtime_ms = 1794570488481
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/f423ab0b-d864-43f2-a0a7-c5e8fa6c98e4/fae7de71-073d-4161-af17-6bb8f6a64f26"
+storage_version_token = "1794570642902746"
+content_type = "audio/mpeg"
