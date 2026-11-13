@@ -130,6 +130,8 @@ export type MashupArrangement = {
   unitsTotal: number;
   unitsPlaced: number;
   unitsSkipped: number;
+  segmentedUnitsPlaced: number;
+  continuousUnitsPlaced: number;
   evidence: {
     chordTimeline: boolean;
     drumTransients: boolean;
@@ -1426,8 +1428,18 @@ function arrangementGapPenalty(gapMs: number, barMs: number): number {
 type ArrangementSolution = {
   /** Bed slot index per unit, in unit order; slots[i] === -1 means the unit was dropped. */
   slotIndices: number[];
+  placedCount: number;
   total: number;
 };
+
+function assignmentIsBetter(
+  candidateCount: number,
+  candidateScore: number,
+  bestCount: number,
+  bestScore: number,
+): boolean {
+  return candidateCount > bestCount || (candidateCount === bestCount && candidateScore > bestScore);
+}
 
 /**
  * Monotone assignment of voiced units to bed slots, maximising the shared
@@ -1446,51 +1458,80 @@ function solveArrangementMonotonic(
   const slotCount = slots.length;
   const negative = Number.NEGATIVE_INFINITY;
   const dp: Float64Array[] = Array.from({ length: unitCount + 1 }, () => new Float64Array(slotCount).fill(0));
+  const dpPlaced: Uint16Array[] = Array.from({ length: unitCount + 1 }, () => new Uint16Array(slotCount));
   const globalBest: Float64Array = new Float64Array(unitCount + 1).fill(0);
+  const globalBestPlaced: Uint16Array = new Uint16Array(unitCount + 1);
   const globalBestSlot: Int32Array = new Int32Array(unitCount + 1).fill(-1);
   const choice: Int32Array[] = Array.from({ length: unitCount }, () => new Int32Array(slotCount).fill(-2));
   globalBest[unitCount] = 0;
+  globalBestPlaced[unitCount] = 0;
   for (let i = unitCount - 1; i >= 0; i -= 1) {
     const { spanStretchedMs } = units[i]!;
     let rowBest = negative;
+    let rowBestPlaced = -1;
     let rowBestSlot = -1;
     for (let j = 0; j < slotCount; j += 1) {
       const base = scores[i]![j];
       const startMs = slots[j]!;
       const endMs = startMs + spanStretchedMs;
       let placeValue = negative;
+      let placeCount = -1;
       let placeChoice = -1;
       if (Number.isFinite(base) && endMs <= bedDurationMs + 1) {
         if (i === unitCount - 1) {
           // The final placed unit has no successor: "end of chain" is a valid,
           // penalty-free continuation of the sequence.
           placeValue = base;
+          placeCount = 1;
           placeChoice = -1;
         } else {
           const nextStart = arrangementSlotIndex(slots, endMs);
           let best = negative;
+          let bestCount = -1;
           let bestK = -1;
           for (let k = nextStart; k < slotCount; k += 1) {
             const candidate = dp[i + 1]![k]!;
-            if (candidate === negative) continue;
+            const candidateCount = dpPlaced[i + 1]![k]!;
             const value = candidate - arrangementGapPenalty(Math.max(0, slots[k]! - endMs), barMs);
-            if (value > best) { best = value; bestK = k; }
+            if (assignmentIsBetter(candidateCount, value, bestCount, best)) {
+              best = value;
+              bestCount = candidateCount;
+              bestK = k;
+            }
           }
-          placeValue = base + (best === negative ? 0 : best);
-          placeChoice = bestK;
+          if (bestCount >= 0) {
+            placeValue = base + best;
+            placeCount = 1 + bestCount;
+            placeChoice = bestK;
+          } else {
+            // This unit fits, but no later unit can start after it. Keep it as
+            // the end of this partial chain; the DP compares that path with
+            // skipping it to retain a larger feasible suffix.
+            placeValue = base;
+            placeCount = 1;
+            placeChoice = -1;
+          }
         }
       }
       const skipValue = globalBest[i + 1]!;
-      if (placeValue >= skipValue) {
+      const skipCount = globalBestPlaced[i + 1]!;
+      if (placeCount > skipCount || (placeCount === skipCount && placeValue >= skipValue)) {
+        dpPlaced[i]![j] = placeCount;
         dp[i]![j] = placeValue;
         choice[i]![j] = placeChoice;
       } else {
+        dpPlaced[i]![j] = skipCount;
         dp[i]![j] = skipValue;
         choice[i]![j] = -2; // skip this unit
       }
-      if (dp[i]![j]! > rowBest) { rowBest = dp[i]![j]!; rowBestSlot = j; }
+      if (assignmentIsBetter(dpPlaced[i]![j]!, dp[i]![j]!, rowBestPlaced, rowBest)) {
+        rowBest = dp[i]![j]!;
+        rowBestPlaced = dpPlaced[i]![j]!;
+        rowBestSlot = j;
+      }
     }
     globalBest[i] = rowBest;
+    globalBestPlaced[i] = Math.max(0, rowBestPlaced);
     globalBestSlot[i] = rowBestSlot;
   }
   const slotIndices: number[] = [];
@@ -1502,7 +1543,7 @@ function solveArrangementMonotonic(
     slotIndices.push(cursor);
     cursor = move;
   }
-  return { slotIndices, total: globalBest[0]! };
+  return { slotIndices, placedCount: globalBestPlaced[0]!, total: globalBest[0]! };
 }
 
 function sanitizeTransientEvents(events: MashupTransientEvent[] | undefined): MashupTransientEvent[] {
@@ -1587,16 +1628,20 @@ function planArrangement(
     Math.round(overlayEntryMs + (unit.fromMs - body.fromMs) * stretchRatio);
   let overlayScore = 0;
   let overlayPlaced = 0;
-  for (const unit of unitTimings) {
+  const overlayUnitIndices = new Set<number>();
+  for (const [index, unit] of unitTimings.entries()) {
     const startMs = overlayStartFor(unit);
     const endMs = startMs + Math.round((unit.toMs - unit.fromMs) * stretchRatio);
     if (startMs < 0 || endMs > bed.durationMs + 1) continue;
     overlayScore += arrangementFeatureScore(unit, startMs, context).score;
     overlayPlaced += 1;
+    overlayUnitIndices.add(index);
   }
 
   const segmentedPlaced = segmented.slotIndices.filter((index) => index >= 0).length;
-  const segmentedBetter = segmentedPlaced >= overlayPlaced
+  const missingContinuousUnits = [...overlayUnitIndices].filter((index) => segmented.slotIndices[index] < 0).length;
+  const segmentedBetter = missingContinuousUnits === 0
+    && segmentedPlaced >= overlayPlaced
     && Number.isFinite(segmented.total)
     && segmented.total - overlayScore > Math.max(0.5, 0.03 * Math.abs(overlayScore));
   const selected: "segmented" | "continuous-overlay" = segmentedBetter ? "segmented" : "continuous-overlay";
@@ -1648,11 +1693,11 @@ function planArrangement(
     );
   } else {
     rationale.push(
-      `full-track arrangement search evaluated ${unitTimings.length} voiced unit(s) against ${slots.length} bed ${gridTrusted ? "beat-grid" : "boundary"} slots; the segmented placement scored ${segmented.total.toFixed(2)} versus ${overlayScore.toFixed(2)} for the continuous overlay, so the uninterrupted vocal was kept`,
+      `full-track arrangement search evaluated ${unitTimings.length} voiced unit(s) against ${slots.length} bed ${gridTrusted ? "beat-grid" : "boundary"} slots; segmented placement placed ${segmentedPlaced}/${unitTimings.length} units versus ${overlayPlaced}/${unitTimings.length} continuously and scored ${segmented.total.toFixed(2)} versus ${overlayScore.toFixed(2)}${missingContinuousUnits > 0 ? `, but would omit ${missingContinuousUnits} unit(s) that fit in the continuous overlay` : ""}; the uninterrupted vocal was kept${missingContinuousUnits > 0 ? " to preserve all continuous vocal material" : " because the score margin was not decisive"}`,
     );
-    warnings.push(
-      "Vocal units were evaluated across the whole bed but no re-placement beat the continuous overlay decisively; the overlay is retained and the comparison is recorded in the plan.",
-    );
+    warnings.push(missingContinuousUnits > 0
+      ? `Segmented placement would omit ${missingContinuousUnits} vocal unit(s) that fit in the continuous overlay; all continuous vocal material was preserved despite the relative segmented score.`
+      : "Vocal units were evaluated across the whole bed, but the segmented score did not beat the continuous overlay by the required margin; the overlay is retained.");
   }
   if (unitsSkipped > 0) {
     warnings.push(`${unitsSkipped} voiced unit(s) did not fit before the end of the bed and are not placed; the bed simply ends first.`);
@@ -1668,6 +1713,8 @@ function planArrangement(
     unitsTotal: unitTimings.length,
     unitsPlaced: placements.length,
     unitsSkipped,
+    segmentedUnitsPlaced: segmented.placedCount,
+    continuousUnitsPlaced: overlayPlaced,
     evidence: {
       chordTimeline: evidence.chordTimeline,
       drumTransients: evidence.drumTransients,
