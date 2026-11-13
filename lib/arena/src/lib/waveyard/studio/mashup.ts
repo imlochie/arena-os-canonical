@@ -28,8 +28,9 @@ import {
 } from "../types/harmony-analysis";
 import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
+import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v11";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v12";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -58,6 +59,9 @@ export type MashupSourceProfile = {
   keyConfidence?: number | null;
   beatGridMs?: number[] | null;
   beatConfidence?: number | null;
+  /** Full-mix source analysis; a beat grid alone must never be promoted to a bar grid. */
+  downbeatGridMs?: number[] | null;
+  downbeatConfidence?: number | null;
   durationMs: number;
   sections: MashupSection[];
   stems?: Array<{ id: string; stemType: string }>;
@@ -156,6 +160,7 @@ export type MashupArrangement = {
 
 export type MashupPlan = {
   engine: typeof MASHUP_PLANNER_ENGINE;
+  alignmentStrategy: MashupAlignmentStrategy;
   /** The bed's tempo — the instrumental always wins the tempo war. */
   masterBpm: number;
   /** timeStretch ratio for the vocal (output length / input length). */
@@ -221,6 +226,18 @@ export type MashupPassageSearch = {
 export type MashupPlanResult =
   | { ok: true; plan: MashupPlan }
   | { ok: false; reason: string };
+
+export type MashupAlignmentStrategy = "continuous" | "paired-grid" | "downbeat" | "phrase-aware";
+
+export const MASHUP_ALIGNMENT_CANDIDATES: ReadonlyArray<{
+  id: MashupAlignmentStrategy;
+  title: string;
+}> = [
+  { id: "continuous", title: "Continuous baseline" },
+  { id: "paired-grid", title: "Paired beat-grid" },
+  { id: "downbeat", title: "Measured downbeat" },
+  { id: "phrase-aware", title: "Fingerprint-ranked passage" },
+];
 
 const LOCK_TOLERANCE = 0.03;
 const CROSSFADE_MS = 250;
@@ -356,6 +373,21 @@ function alignBedEntryToMeasuredBeat(
   return {
     at: roundedMs,
     why: `the padded vocal crop enters on a measured bed beat at ${(roundedMs / 1000).toFixed(2)}s`,
+  };
+}
+
+function alignBedEntryToMeasuredDownbeat(
+  bed: MashupSourceProfile,
+  requestedEntryMs: number,
+): { at: number; why: string } | null {
+  const grid = bed.downbeatGridMs;
+  if (!hasReliableSessionDownbeatEvidence(bed.downbeatConfidence, grid)
+    || grid!.some((position) => position > bed.durationMs)) return null;
+  const at = grid!.find((position) => position >= requestedEntryMs - 20);
+  if (at === undefined || at >= bed.durationMs) return null;
+  return {
+    at,
+    why: `entry uses a measured bed downbeat at ${(at / 1000).toFixed(2)}s (downbeat confidence ${(bed.downbeatConfidence! * 100).toFixed(0)}%)`,
   };
 }
 
@@ -2021,6 +2053,7 @@ function grooveAwareBedEntry(
   masterBpm: number,
   stretchRatio: number,
   vocalPitchShiftSemitones: number,
+  options: { searchPassages: boolean } = { searchPassages: true },
 ): { at: number; why: string | null; warning: string | null; passageSearch: MashupPassageSearch } {
   const base = alignBedEntryToMeasuredBeat(bed, requestedEntryMs, masterBpm);
   const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
@@ -2042,9 +2075,19 @@ function grooveAwareBedEntry(
     : vocalTiming.kind === "pitch-continuity"
       ? "pitch-continuity run starts"
       : "combined vocal-activity and pitch-run starts";
-  const passageDecision = rankedPassageEntry(
-    vocals, bed, body, base.at, masterBpm, stretchRatio, vocalPitchShiftSemitones,
-  );
+  const passageDecision = options.searchPassages
+    ? rankedPassageEntry(vocals, bed, body, base.at, masterBpm, stretchRatio, vocalPitchShiftSemitones)
+    : {
+        match: null,
+        reason: "phrase-passage ranking was not run for this comparison candidate",
+        search: {
+          evaluatedDonorPassageCount: 0,
+          rankableDonorPassageCount: 0,
+          evaluations: [],
+          selectedDonorSectionId: null,
+          selectedBedSectionId: null,
+        },
+      };
   const passageEntry = passageDecision.match;
   if (passageEntry) {
     const selectedSection = vocals.sections.find((section) => {
@@ -2084,12 +2127,19 @@ function grooveAwareBedEntry(
   return {
     at: base.at,
     why: `${base.why}; ${phraseTiming}; ${passageDecision.reason}, so transient coincidences alone do not shift this passage-entry fallback`,
-    warning: `Passage matching remains a measured-beat fallback because ${passageDecision.reason}.${grid ? "" : " No trusted bed beat grid was available."}${body.vocalActivityEvidence ? "" : " No current isolated-vocal activity or pitch intervals were available."} A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.`,
+    warning: options.searchPassages
+      ? `Passage matching remains a measured-beat fallback because ${passageDecision.reason}.${grid ? "" : " No trusted bed beat grid was available."}${body.vocalActivityEvidence ? "" : " No current isolated-vocal activity or pitch intervals were available."} A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.`
+      : `This candidate deliberately skips passage ranking and uses the baseline bed entry; it is beat-snapped only when a trusted bed beat grid exists. It is not a lyric-aware or sound-quality judgement.`,
     passageSearch: passageDecision.search,
   };
 }
 
-export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile): MashupPlanResult {
+export function planMashup(
+  vocals: MashupSourceProfile,
+  bed: MashupSourceProfile,
+  options: { strategy?: MashupAlignmentStrategy } = {},
+): MashupPlanResult {
+  const strategy = options.strategy ?? "phrase-aware";
   vocals = profileFromCurrentEvidence(vocals);
   bed = profileFromCurrentEvidence(bed);
   const rationale: string[] = [];
@@ -2190,21 +2240,45 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   const barMs = beatMs * 4;
   const body = vocalBodySpan(vocals);
   const requestedEntry = bedEntryMs(bed, barMs);
+  const downbeatEntry = strategy === "downbeat"
+    ? alignBedEntryToMeasuredDownbeat(bed, requestedEntry.at)
+    : null;
+  if (strategy === "downbeat" && !downbeatEntry) {
+    return {
+      ok: false,
+      reason: "A measured, checksum-current bed downbeat grid with confidence of at least 0.65 is unavailable. Waveyard will not infer bar starts from the beat grid.",
+    };
+  }
+  const entryRequestMs = downbeatEntry?.at ?? requestedEntry.at;
   const alignedEntry = grooveAwareBedEntry(
     vocals,
     bed,
     body,
-    requestedEntry.at,
+    entryRequestMs,
     masterBpm,
     stretchRatio,
     pitchMove.semitones,
+    { searchPassages: strategy === "phrase-aware" },
   );
   const entry = {
     at: alignedEntry.at,
-    why: [requestedEntry.why, alignedEntry.why].filter(Boolean).join("; "),
+    why: [
+      requestedEntry.why,
+      downbeatEntry?.why,
+      alignedEntry.why,
+    ].filter(Boolean).join("; "),
   };
   rationale.push(entry.why);
   if (alignedEntry.warning) warnings.push(alignedEntry.warning);
+  if (strategy === "continuous") {
+    rationale.push("continuous baseline: the full vocal body keeps its source timing; passage ranking, whole-body entry search, and local WSOLA correction are disabled.");
+  } else if (strategy === "paired-grid") {
+    rationale.push("paired-grid comparison: phrase ranking is disabled so the measured donor/bed beat-phase search can be judged independently.");
+  } else if (strategy === "downbeat") {
+    rationale.push("downbeat comparison: entry is anchored to an independently measured bed downbeat; no 4/4 phase is inferred from ordinary beat positions.");
+  } else if (strategy === "phrase-aware") {
+    rationale.push("phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.");
+  }
   warnings.push(...(vocals.grooveWarnings ?? []), ...(bed.grooveWarnings ?? []));
 
   rationale.push(body.why);
@@ -2226,7 +2300,22 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   // First compare coherent whole-body offsets even when the donor is shorter:
   // moving one complete performance can improve its musical fit without
   // destroying its internal pace. Only use a reprise when no coherent move wins.
-  if (stretchedMs > 0 && bedRoomMs > 0) {
+  if ((strategy === "continuous" || strategy === "downbeat") && stretchedMs > 0 && bedRoomMs > 0) {
+    const endMs = Math.round(Math.min(bed.durationMs, entry.at + stretchedMs));
+    segments.push({
+      mashupStartMs: entry.at,
+      mashupEndMs: endMs,
+      vocalsFromMs: body.fromMs,
+      vocalsToMs: body.toMs,
+      crossfadeMs: crossfadeForSegment(entry.at, endMs),
+      rationale: `complete vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s; no local timing map is applied`,
+      stemType: "vocals",
+      sourceRole: "vocals",
+    });
+    if (stretchedMs > bedRoomMs) {
+      warnings.push("The complete vocal body extends beyond the available bed and will fade at the bed's end.");
+    }
+  } else if (strategy !== "continuous" && strategy !== "downbeat" && stretchedMs > 0 && bedRoomMs > 0) {
     const passageMatchSelected = alignedEntry.passageSearch?.selectedDonorSectionId != null;
     if (!passageMatchSelected) {
       arrangement = planArrangement(vocals, bed, body, entry.at, masterBpm, stretchRatio, pitchMove.semitones);
@@ -2345,6 +2434,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
     ok: true,
     plan: {
       engine: MASHUP_PLANNER_ENGINE,
+      alignmentStrategy: strategy,
       masterBpm,
       vocalsStretchRatio: stretchRatio,
       vocalsPitchSemitones: pitchMove.semitones,
@@ -2357,6 +2447,55 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
     passageSearch: alignedEntry.passageSearch,
     },
   };
+}
+
+export type MashupAlignmentCandidate = {
+  id: MashupAlignmentStrategy;
+  title: string;
+  available: boolean;
+  unavailableReason?: string;
+  plan: MashupPlan | null;
+};
+
+/** Run the existing production strategies over the same source profiles. */
+export function compareMashupAlignmentCandidates(
+  vocals: MashupSourceProfile,
+  bed: MashupSourceProfile,
+): MashupAlignmentCandidate[] {
+  return MASHUP_ALIGNMENT_CANDIDATES.map(({ id, title }) => {
+    const result = planMashup(vocals, bed, { strategy: id });
+    if (!result.ok) {
+      return { id, title, available: false, unavailableReason: result.reason, plan: null };
+    }
+    if (result.plan.segments.length === 0) {
+      return {
+        id,
+        title,
+        available: false,
+        unavailableReason: "This strategy could not place a vocal segment inside the instrumental bed.",
+        plan: result.plan,
+      };
+    }
+    if (id === "paired-grid" && !result.plan.arrangement?.evidence.pairedBeatGrids) {
+      return {
+        id,
+        title,
+        available: false,
+        unavailableReason: "Both songs need checksum-current trusted beat grids before a paired-grid candidate can be compared.",
+        plan: result.plan,
+      };
+    }
+    if (id === "phrase-aware" && !result.plan.passageSearch?.selectedDonorSectionId) {
+      return {
+        id,
+        title,
+        available: false,
+        unavailableReason: "No measured vocal passage had a rankable bed match. The continuous fallback is still available.",
+        plan: result.plan,
+      };
+    }
+    return { id, title, available: true, plan: result.plan };
+  });
 }
 
 function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceProfile {

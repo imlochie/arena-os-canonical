@@ -46,6 +46,7 @@ import {
 import { chooseStemForHarmony } from "../stem-harmony-analysis";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
 import { usableBeatGrid } from "../types/beat-grid";
+import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
 import {
   measuredEvidence,
   MUSICAL_EVIDENCE_PACKET_FORMAT,
@@ -83,6 +84,8 @@ export async function loadSourceProfile(
       keyConfidence: sourceAnalyses.keyConfidence,
       beatGrid: sourceAnalyses.beatGrid,
       beatConfidence: sourceAnalyses.beatConfidence,
+      downbeatGrid: sourceAnalyses.downbeatGrid,
+      downbeatConfidence: sourceAnalyses.downbeatConfidence,
       sourceChecksumSha256: sourceAnalyses.sourceChecksumSha256,
       status: sourceAnalyses.status,
       analysisEngine: sourceAnalyses.analysisEngine,
@@ -189,6 +192,18 @@ export async function loadSourceProfile(
       parsedGrid = usableBeatGrid(JSON.parse(analysis.beatGrid));
     } catch {
       parsedGrid = null;
+    }
+  }
+  let parsedDownbeatGrid: number[] | null = null;
+  if (analysis?.downbeatGrid) {
+    try {
+      const candidate = JSON.parse(analysis.downbeatGrid);
+      if (hasReliableSessionDownbeatEvidence(analysis.downbeatConfidence, candidate)
+        && candidate.every((position: number) => position <= Math.round(asset.durationSeconds * 1000))) {
+        parsedDownbeatGrid = candidate;
+      }
+    } catch {
+      parsedDownbeatGrid = null;
     }
   }
 
@@ -317,6 +332,8 @@ export async function loadSourceProfile(
     keyConfidence: evidence.features.key.status === "measured" ? evidence.features.key.value.confidence : null,
     beatGridMs: evidence.features.beatGrid.status === "measured" ? evidence.features.beatGrid.value.beatsMs : null,
     beatConfidence: evidence.features.beatGrid.status === "measured" ? evidence.features.beatGrid.value.confidence : null,
+    downbeatGridMs: parsedDownbeatGrid,
+    downbeatConfidence: parsedDownbeatGrid ? analysis?.downbeatConfidence ?? null : null,
     durationMs: evidence.source.durationMs,
     sections,
     vocalPhrases: vocalEvidence?.phrases ?? [],

@@ -1,6 +1,34 @@
 # Arena handoff — read this first
 
-## Current: paired-grid local WSOLA correction (planner v11)
+## Current: auditionable mashup alignment candidates (planner v12)
+
+Waveyard now compares four distinct real planner paths for the same vocal/bed
+pair: a continuous baseline, paired beat-grid alignment, measured-downbeat
+entry, and evidence-ranked phrase-aware entry. Each candidate has its own plan
+and renders through the production route on demand; the selected strategy is
+saved into the versioned remix snapshot. The new Studio panel shows entry,
+tempo/pitch transforms, available beat-phase evidence, selected passage bounds,
+warnings and limitations, with WAV playback/download. It does not display a
+composite quality score. At most two rendered previews are retained at a time
+to bound browser memory.
+
+Downbeat entry uses only a checksum-current persisted full-source downbeat grid
+with confidence ≥0.65. It never derives bar phase from ordinary beat positions;
+without evidence the candidate is disabled with a reason. Paired-grid and
+phrase-aware candidates likewise remain unavailable when their required
+measurements are missing. The continuous fallback remains usable.
+
+Verification in this checkout: `pnpm run typecheck` passed; the focused
+`mashup.test.ts` and PGlite `mashup-db-acceptance.test.ts` passed 43/43; the
+production route acceptance passed with synthetic audio, including candidate
+comparison, actual continuous-candidate WAV rendering, and persistence of the
+selected strategy. The page-level preview loads, but no saved Studio
+arrangement was present to visually exercise the candidate panel. This turn
+did not render or audition candidates from the real Queen-vocals/September-bed
+pair, so it does **not** establish that the candidates sound good or that the
+musical matching is accurate.
+
+## Previous: paired-grid local WSOLA correction (planner v11)
 
 Waveyard now checks ordered donor/bed drum-beat correspondence across a whole
 vocal body and can apply a gentle, pitch-preserving local WSOLA rate map when

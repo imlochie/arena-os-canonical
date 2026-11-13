@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  compareMashupAlignmentCandidates,
   pitchMoveForKeys,
   planMashup,
   planSongExtension,
@@ -149,6 +150,51 @@ test("plan: bed owns the tempo, vocal stretch + entry are explained", () => {
   assert.equal(plan.durationMs, 60_000);
   assert.ok(plan.rationale.length >= 4, "every decision is explained");
   assert.ok(plan.rationale.some((line) => line.includes("master tempo")));
+});
+
+test("alignment lab keeps continuous timing separate and requires real downbeat evidence", () => {
+  const vocals = profile({
+    role: "vocals",
+    bpm: 120,
+    bpmConfidence: 0.9,
+    beatConfidence: 0.9,
+    beatGridMs: Array.from({ length: 41 }, (_, index) => index * 500),
+    durationMs: 20_000,
+    sections: [section("verse", 0, 15_000)],
+  });
+  const bed = profile({
+    role: "instrumental",
+    bpm: 120,
+    bpmConfidence: 0.9,
+    beatConfidence: 0.9,
+    beatGridMs: Array.from({ length: 61 }, (_, index) => index * 500),
+    durationMs: 30_000,
+    sections: [section("intro", 0, 4_400), section("chorus", 4_400, 30_000)],
+  });
+
+  const continuous = planMashup(vocals, bed, { strategy: "continuous" });
+  assert.ok(continuous.ok);
+  assert.equal(continuous.plan.segments[0].mashupStartMs, 4_500);
+  assert.equal(continuous.plan.segments[0].localTempoMap, undefined);
+  assert.ok(continuous.plan.rationale.some((line) => line.includes("continuous baseline")));
+
+  const unavailableDownbeat = planMashup(vocals, bed, { strategy: "downbeat" });
+  assert.equal(unavailableDownbeat.ok, false);
+  if (!unavailableDownbeat.ok) assert.match(unavailableDownbeat.reason, /will not infer bar starts/i);
+
+  const measuredDownbeat = planMashup(vocals, {
+    ...bed,
+    downbeatGridMs: Array.from({ length: 16 }, (_, index) => index * 2_000),
+    downbeatConfidence: 0.9,
+  }, { strategy: "downbeat" });
+  assert.ok(measuredDownbeat.ok);
+  assert.equal(measuredDownbeat.plan.segments[0].mashupStartMs, 6_000);
+  assert.ok(measuredDownbeat.plan.rationale.some((line) => line.includes("measured bed downbeat")));
+
+  const candidates = compareMashupAlignmentCandidates(vocals, bed);
+  assert.equal(candidates.find((candidate) => candidate.id === "continuous")?.available, true);
+  assert.equal(candidates.find((candidate) => candidate.id === "downbeat")?.available, false);
+  assert.match(candidates.find((candidate) => candidate.id === "downbeat")?.unavailableReason ?? "", /confidence of at least 0.65/i);
 });
 
 test("plan labels source-mix harmony fallback instead of implying isolated-bed analysis", () => {

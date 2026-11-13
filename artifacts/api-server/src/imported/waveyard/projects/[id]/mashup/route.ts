@@ -3,8 +3,9 @@
  * always be making mashups").
  *
  * POST /api/waveyard/projects/[id]/mashup
- *   body: { action: "plan", vocalsSourceId, instrumentalSourceId }
- *         { action: "render", vocalsSourceId, instrumentalSourceId }
+ *   body: { action: "plan", vocalsSourceId, instrumentalSourceId, alignmentStrategy? }
+ *         { action: "compare", vocalsSourceId, instrumentalSourceId }
+ *         { action: "render", vocalsSourceId, instrumentalSourceId, alignmentStrategy? }
  *         { action: "extend", sourceAssetId, sectionLabel?, repeats? }
  *   → plan: the full explained decision (tempo master, stretch, key move,
  *     segment placement, rationale, warnings). render: the mashup as a real
@@ -50,7 +51,17 @@ import {
   sumInstrumentalStems,
   type InstrumentalBedStem,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
-import { analyseStereoPcm, planMashup, planSongExtension, renderMashup, renderSongExtension, type MashupTransientEvent } from "@workspace/arena/lib/waveyard/studio/mashup";
+import {
+  analyseStereoPcm,
+  compareMashupAlignmentCandidates,
+  MASHUP_ALIGNMENT_CANDIDATES,
+  planMashup,
+  planSongExtension,
+  renderMashup,
+  renderSongExtension,
+  type MashupAlignmentStrategy,
+  type MashupTransientEvent,
+} from "@workspace/arena/lib/waveyard/studio/mashup";
 import { detectBassAttacks, detectDrumTransients } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
   DESKTOP_ANALYSIS_ENGINE,
@@ -98,6 +109,7 @@ type MashupBody = {
   action?: unknown;
   vocalsSourceId?: unknown;
   instrumentalSourceId?: unknown;
+  alignmentStrategy?: unknown;
   sourceAssetId?: unknown;
   sectionLabel?: unknown;
   repeats?: unknown;
@@ -802,7 +814,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const body = (await request.json().catch(() => ({}))) as MashupBody;
     const action = typeof body.action === "string" ? body.action : "plan";
 
-    if (action === "plan" || action === "render" || action === "save") {
+    if (action === "plan" || action === "compare" || action === "render" || action === "save") {
       const vocalsId = typeof body.vocalsSourceId === "string" ? body.vocalsSourceId : "";
       const bedId = typeof body.instrumentalSourceId === "string" ? body.instrumentalSourceId : "";
       if (!isUuid(vocalsId) || !isUuid(bedId)) {
@@ -811,6 +823,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (vocalsId === bedId) {
         return Response.json({ error: "Pick two different tracks — the mashup needs a vocal source and an instrumental source." }, { status: 400 });
       }
+      const requestedStrategy = body.alignmentStrategy;
+      if (requestedStrategy !== undefined
+        && !MASHUP_ALIGNMENT_CANDIDATES.some((candidate) => candidate.id === requestedStrategy)) {
+        return Response.json({ error: "Choose a supported mashup alignment strategy." }, { status: 400 });
+      }
+      const alignmentStrategy = (requestedStrategy ?? "phrase-aware") as MashupAlignmentStrategy;
 
       const [resolvedVocalSource, resolvedBedSource] = await Promise.all([
         findBedSource(projectId, vocalsId),
@@ -844,6 +862,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           if (vocals.keyConfidence === null || vocals.keyConfidence === undefined) vocals.keyConfidence = analysis.keyConfidence;
           if (!vocals.beatGridMs && analysis.beatGridMs) vocals.beatGridMs = analysis.beatGridMs;
           if (vocals.beatConfidence === null || vocals.beatConfidence === undefined) vocals.beatConfidence = analysis.beatConfidence;
+          if (!vocals.downbeatGridMs && analysis.downbeatGridMs) vocals.downbeatGridMs = analysis.downbeatGridMs;
+          if (vocals.downbeatConfidence === null || vocals.downbeatConfidence === undefined) vocals.downbeatConfidence = analysis.downbeatConfidence;
           recordRuntimeSourceAnalysis(vocals, vPcm.checksumSha256, analysis);
 
           // Persist analysis so subsequent runs reuse the analysis result
@@ -863,6 +883,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 keyConfidence: analysis.keyConfidence,
                 beatGrid: analysis.beatGridMs ? JSON.stringify(analysis.beatGridMs) : null,
                 beatConfidence: analysis.beatConfidence,
+                downbeatGrid: analysis.downbeatGridMs ? JSON.stringify(analysis.downbeatGridMs) : null,
+                downbeatConfidence: analysis.downbeatConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
           } catch {
@@ -881,6 +903,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           if (bed.keyConfidence === null || bed.keyConfidence === undefined) bed.keyConfidence = analysis.keyConfidence;
           if (!bed.beatGridMs && analysis.beatGridMs) bed.beatGridMs = analysis.beatGridMs;
           if (bed.beatConfidence === null || bed.beatConfidence === undefined) bed.beatConfidence = analysis.beatConfidence;
+          if (!bed.downbeatGridMs && analysis.downbeatGridMs) bed.downbeatGridMs = analysis.downbeatGridMs;
+          if (bed.downbeatConfidence === null || bed.downbeatConfidence === undefined) bed.downbeatConfidence = analysis.downbeatConfidence;
           recordRuntimeSourceAnalysis(bed, bPcm.checksumSha256, analysis);
 
           // Persist analysis so subsequent runs reuse the analysis result
@@ -900,6 +924,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 keyConfidence: analysis.keyConfidence,
                 beatGrid: analysis.beatGridMs ? JSON.stringify(analysis.beatGridMs) : null,
                 beatConfidence: analysis.beatConfidence,
+                downbeatGrid: analysis.downbeatGridMs ? JSON.stringify(analysis.downbeatGridMs) : null,
+                downbeatConfidence: analysis.downbeatConfidence,
                 completedAt: new Date(),
               }).onConflictDoNothing();
           } catch {
@@ -921,7 +947,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           : unavailableEvidence("No checksum-current low-band bass attack evidence is available.");
       }
 
-      const planned = planMashup(vocals, bed);
+      if (action === "compare") {
+        const bedInfo = await inspectBed(projectId, bedId);
+        return Response.json({
+          candidates: compareMashupAlignmentCandidates(vocals, bed),
+          bed: bedInfo,
+          evidence: {
+            vocals: vocals.evidence ? summarizeEvidencePacket(vocals.evidence) : null,
+            bed: bed.evidence ? summarizeEvidencePacket(bed.evidence) : null,
+          },
+        }, { status: 200 });
+      }
+      const planned = planMashup(vocals, bed, { strategy: alignmentStrategy });
       if (!planned.ok) {
         return Response.json({ error: planned.reason }, { status: 422 });
       }
@@ -1114,6 +1151,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             targetKey: remix.targetKey,
             mashupPlan: {
               engine: planned.plan.engine,
+              alignmentStrategy: planned.plan.alignmentStrategy,
               masterBpm: planned.plan.masterBpm,
               vocalsStretchRatio: planned.plan.vocalsStretchRatio,
               vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
@@ -1233,7 +1271,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         stems: complementaryDonorStems.size > 0 ? complementaryDonorStems : undefined,
         sampleRate: RENDER_SAMPLE_RATE,
       });
-      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings);
+      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy);
     }
 
     if (action === "extend") {
@@ -1279,6 +1317,7 @@ function wavResponse(
   kind: string,
   bed?: BedSourceInfo,
   warnings: string[] = [],
+  alignmentStrategy?: MashupAlignmentStrategy,
 ): Response {
   const headers = new Headers({
     "content-type": "audio/wav",
@@ -1293,6 +1332,7 @@ function wavResponse(
       headers.set("x-waveyard-bed-stems", bed.includedStemTypes.join(","));
     }
   }
+  if (alignmentStrategy) headers.set("x-waveyard-alignment-strategy", alignmentStrategy);
   for (const warning of warnings) {
     headers.append("x-waveyard-warning", encodeURIComponent(warning));
   }

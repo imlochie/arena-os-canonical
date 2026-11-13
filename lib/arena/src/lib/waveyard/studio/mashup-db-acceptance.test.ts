@@ -562,6 +562,7 @@ test("deterministic analysis selection and beat snapping gating across competing
     }).returning();
     // Insert initial analysis
     const initialGrid = Array.from({ length: 17 }, (_, index) => index * 500);
+    const initialDownbeatGrid = Array.from({ length: 60 }, (_, index) => index * 2_000);
     const [currentAnalysis] = await db.insert(sourceAnalyses).values({
       projectId: project.id,
       sourceAssetId: source.id,
@@ -578,6 +579,8 @@ test("deterministic analysis selection and beat snapping gating across competing
       keyConfidence: 0.88,
       beatConfidence: 0.92,
       beatGrid: JSON.stringify(initialGrid),
+      downbeatConfidence: 0.82,
+      downbeatGrid: JSON.stringify(initialDownbeatGrid),
       completedAt: new Date(),
       createdAt: new Date(),
     }).returning();
@@ -763,6 +766,8 @@ test("deterministic analysis selection and beat snapping gating across competing
     assert.equal(profile.bpmConfidence, 0.95);
     assert.equal(profile.beatConfidence, 0.92);
     assert.deepEqual(profile.beatGridMs, initialGrid);
+    assert.equal(profile.downbeatConfidence, 0.82);
+    assert.deepEqual(profile.downbeatGridMs, initialDownbeatGrid);
     assert.equal(profile.sections.length, 1);
     assert.equal(profile.sections[0]?.label, "chorus");
     assert.equal(profile.sections[0]?.startMs, 0);

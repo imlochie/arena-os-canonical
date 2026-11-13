@@ -830,24 +830,26 @@ test(
         .where(eq(schema.bassAnalyses.id, bassAnalysis.id)))[0]?.status, "complete");
     }
 
-    const renderRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const renderRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         action: "render",
         vocalsSourceId: vocalsSource.id,
         instrumentalSourceId: bedSource.id,
+        ...(alignmentStrategy ? { alignmentStrategy } : {}),
       }),
     });
 
     // Plan path reports the authoritative bed source before rendering.
-    const planRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const planRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action: "plan",
           vocalsSourceId: vocalsSource.id,
           instrumentalSourceId: bedSource.id,
+          ...(alignmentStrategy ? { alignmentStrategy } : {}),
         }),
       });
     let planResponse = await routeModule.POST(
@@ -1337,10 +1339,50 @@ test(
         .where(eq(schema.vocalAnalyses.id, realVocalAnalysisId));
     }
 
-    // Actual production route render.
-    const renderResponse = await routeModule.POST(renderRequest(), { params: Promise.resolve({ id: project.id }) });
+    const compareResponse = await routeModule.POST(
+      new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "compare",
+          vocalsSourceId: vocalsSource.id,
+          instrumentalSourceId: bedSource.id,
+        }),
+      }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(compareResponse.status, 200, "the production route must compare the real planner strategies");
+    const compareBody = await compareResponse.json() as {
+      candidates?: Array<{
+        id: string;
+        available: boolean;
+        unavailableReason?: string;
+        plan: {
+          alignmentStrategy: string;
+          arrangement?: unknown;
+          segments: Array<{ mashupStartMs: number; vocalsFromMs: number; localTempoMap?: unknown }>;
+          passageSearch?: { selectedDonorSectionId: string | null; selectedBedSectionId: string | null } | null;
+        } | null;
+      }>;
+    };
+    assert.deepEqual(
+      compareBody.candidates?.map((candidate) => candidate.id),
+      ["continuous", "paired-grid", "downbeat", "phrase-aware"],
+      "all distinct alignment strategies must be returned in a stable presentation order",
+    );
+    assert.equal(compareBody.candidates?.find((candidate) => candidate.id === "continuous")?.available, true,
+      "the continuous fallback must remain available when higher-evidence candidates cannot be proven");
+    assert.ok(compareBody.candidates?.find((candidate) => candidate.id === "downbeat")?.unavailableReason,
+      "the route must disclose why downbeat alignment is unavailable instead of inventing bar phase");
+    const continuousCandidate = compareBody.candidates?.find((candidate) => candidate.id === "continuous");
+    assert.ok(continuousCandidate?.plan);
+    const continuousPlan = continuousCandidate.plan;
+
+    // Actual production route render of the selected candidate strategy.
+    const renderResponse = await routeModule.POST(renderRequest("continuous"), { params: Promise.resolve({ id: project.id }) });
     assert.equal(renderResponse.status, 200, "the render route must succeed");
     assert.match(renderResponse.headers.get("content-type") ?? "", /audio\/wav/);
+    assert.equal(renderResponse.headers.get("x-waveyard-alignment-strategy"), "continuous");
     assert.equal(renderResponse.headers.get("x-waveyard-bed-source"), "separated", "the route must use the synthesized bed");
     const bedStemsHeader = (renderResponse.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort();
     assert.deepEqual(bedStemsHeader, ["bass", "drums", "other"], "the bed must be drums + bass + other, not vocals");
@@ -1544,13 +1586,14 @@ test(
       );
     }
 
-    const saveRequest = () => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const saveRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         action: "save",
         vocalsSourceId: vocalsSource.id,
         instrumentalSourceId: bedSource.id,
+        ...(alignmentStrategy ? { alignmentStrategy } : {}),
       }),
     });
     if (!realFixture) {
@@ -1567,7 +1610,7 @@ test(
         .where(eq(schema.processingJobs.id, bedJob.id));
     }
     // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips.
-    const saveResponse = await routeModule.POST(saveRequest(), { params: Promise.resolve({ id: project.id }) });
+    const saveResponse = await routeModule.POST(saveRequest("continuous"), { params: Promise.resolve({ id: project.id }) });
     assert.equal(saveResponse.status, 201, "save action must return 201 Created");
     const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
     assert.equal(saveBody.ok, true);
@@ -1578,19 +1621,22 @@ test(
     assert.ok(initialVersion);
     const initialSnapshot = JSON.parse(initialVersion.snapshot) as {
       mashupPlan?: {
+        alignmentStrategy?: string;
         arrangement?: unknown;
         passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } | null;
         segments?: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
         clipTimingMaps?: Array<{ clipId: string; remixTrackId: string; stemAssetId: string }>;
       };
     };
+    assert.equal(initialSnapshot.mashupPlan?.alignmentStrategy, "continuous",
+      "the user-selected alignment strategy must survive the persisted remix version");
     assert.deepEqual(
       initialSnapshot.mashupPlan?.arrangement ?? null,
-      planBody.plan?.arrangement ?? null,
-      "whole-track placement evidence must survive the persisted initial remix version",
+      continuousPlan.arrangement ?? null,
+      "the selected candidate's placement decision must survive the persisted remix version",
     );
     if (realFixture) {
-      const plannedLocalMaps = (planBody.plan?.segments ?? [])
+      const plannedLocalMaps = continuousPlan.segments
         .filter((segment) => segment.localTempoMap);
       assert.equal(
         initialSnapshot.mashupPlan?.clipTimingMaps?.length ?? 0,
@@ -1599,8 +1645,8 @@ test(
       );
       assert.deepEqual(
         initialSnapshot.mashupPlan?.segments?.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
-        planBody.plan?.segments.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
-        "the original passage plan must be included in the persisted remix version",
+        continuousPlan.segments.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
+        "the selected continuous candidate must be included in the persisted remix version",
       );
       assert.deepEqual(
         [
@@ -1608,8 +1654,8 @@ test(
           initialSnapshot.mashupPlan?.passageSearch?.selectedBedSectionId ?? null,
         ],
         [
-          planBody.plan?.passageSearch?.selectedDonorSectionId ?? null,
-          planBody.plan?.passageSearch?.selectedBedSectionId ?? null,
+          continuousPlan.passageSearch?.selectedDonorSectionId ?? null,
+          continuousPlan.passageSearch?.selectedBedSectionId ?? null,
         ],
         "the exact selected passage decision must survive into the versioned snapshot",
       );

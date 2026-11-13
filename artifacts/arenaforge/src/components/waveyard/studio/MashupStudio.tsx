@@ -17,13 +17,23 @@ import { useEffect, useRef, useState } from "react";
 import type { MashupArrangement } from "@workspace/arena/lib/waveyard/studio/mashup";
 import type { Source } from "./types";
 import { compactMusicAnalysisLabel } from "@workspace/arena/lib/waveyard/types";
+import {
+  CandidateAlignmentLab,
+  type CandidateAlignmentCandidate,
+  type CandidateAlignmentId,
+} from "./CandidateAlignmentLab";
 
 type Plan = {
   masterBpm: number;
   vocalsStretchRatio: number;
   vocalsPitchSemitones: number;
   keyRelationship: string;
-  segments: Array<{ mashupStartMs: number; mashupEndMs: number; rationale: string }>;
+  segments: Array<{
+    mashupStartMs: number;
+    mashupEndMs: number;
+    rationale: string;
+    localTempoMap?: { maximumRateDeviationPercent: number } | null;
+  }>;
   passageSearch?: {
     evaluatedDonorPassageCount: number;
     rankableDonorPassageCount: number;
@@ -68,6 +78,14 @@ type Plan = {
   warnings: string[];
 };
 
+type AlignmentCandidatePlan = {
+  id: CandidateAlignmentId;
+  title: string;
+  available: boolean;
+  unavailableReason?: string;
+  plan: Plan | null;
+};
+
 type EvidenceFeatureSummary =
   | { status: "measured"; analysisEngine: string; analysisEngineVersion: string; persistence: "database" | "request" }
   | { status: "unavailable"; reason: string };
@@ -103,6 +121,10 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [error, setError] = useState<string | null>(null);
   const [renderUrl, setRenderUrl] = useState<string | null>(null);
   const [renderKind, setRenderKind] = useState<"mashup" | "extended" | null>(null);
+  const [alignmentCandidates, setAlignmentCandidates] = useState<AlignmentCandidatePlan[]>([]);
+  const [selectedAlignment, setSelectedAlignment] = useState<CandidateAlignmentId | null>(null);
+  const [candidateRendering, setCandidateRendering] = useState<CandidateAlignmentId | null>(null);
+  const [renderedCandidateUrls, setRenderedCandidateUrls] = useState<Partial<Record<CandidateAlignmentId, string>>>({});
   const [bedInfo, setBedInfo] = useState<{
     source: string;
     warning: string;
@@ -111,75 +133,218 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [savingRemix, setSavingRemix] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
+  const candidateRenderUrlsRef = useRef(new Map<CandidateAlignmentId, string>());
+  const candidateRenderOrderRef = useRef<CandidateAlignmentId[]>([]);
+  const sourceGenerationRef = useRef(0);
 
   useEffect(() => {
     return () => {
       if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
+      for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
     };
   }, []);
 
+  useEffect(() => {
+    sourceGenerationRef.current += 1;
+    for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
+    candidateRenderUrlsRef.current.clear();
+    candidateRenderOrderRef.current = [];
+    if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
+    renderUrlRef.current = null;
+    setRenderedCandidateUrls({});
+    setAlignmentCandidates([]);
+    setSelectedAlignment(null);
+    setPlan(null);
+    setEvidence(null);
+    setBedInfo(null);
+    setError(null);
+    setCandidateRendering(null);
+    setPlanning(false);
+    setRendering(null);
+    setRenderUrl(null);
+    setRenderKind(null);
+    setSaveSuccess(null);
+  }, [vocalsId, bedId, projectId]);
+
   const call = async (payload: Record<string, unknown>, kind: "mashup" | "extended") => {
+    const sourceGeneration = sourceGenerationRef.current;
     setRendering(kind === "mashup" ? "mashup" : "extend");
     setError(null);
-    const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (kind === "mashup" && response.headers.get("content-type")?.includes("application/json")) {
-      const body = await response.json().catch(() => ({}));
-      setRendering(null);
+    try {
+      const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (sourceGeneration !== sourceGenerationRef.current) return null;
+      if (kind === "mashup" && response.headers.get("content-type")?.includes("application/json")) {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setError(body.error ?? "The mashup could not be planned.");
+          return null;
+        }
+        if (body.bed) {
+          setBedInfo(body.bed as { source: string; warning: string; includedStemTypes?: string[] });
+        }
+        setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
+        return body.plan as Plan;
+      }
       if (!response.ok) {
-        setError(body.error ?? "The mashup could not be planned.");
+        const body = await response.json().catch(() => ({}));
+        setError(body.error ?? "The render failed.");
         return null;
       }
-      if (body.bed) {
-        setBedInfo(body.bed as { source: string; warning: string; includedStemTypes?: string[] });
+      const bedSource = response.headers.get("x-waveyard-bed-source");
+      const bedWarning = response.headers.get("x-waveyard-bed-warning");
+      if (bedSource) {
+        setBedInfo({
+          source: bedSource,
+          warning: bedWarning ? decodeURIComponent(bedWarning) : "",
+          includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
+        });
       }
-      setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
-      return body.plan as Plan;
-    }
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      setRendering(null);
-      setError(body.error ?? "The render failed.");
+      const url = URL.createObjectURL(await response.blob());
+      if (sourceGeneration !== sourceGenerationRef.current) {
+        URL.revokeObjectURL(url);
+        return null;
+      }
+      if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
+      renderUrlRef.current = url;
+      setRenderUrl(url);
+      setRenderKind(kind);
       return null;
+    } catch {
+      if (sourceGeneration === sourceGenerationRef.current) {
+        setError(kind === "mashup" ? "The mashup request failed." : "The instrumental extension failed.");
+      }
+      return null;
+    } finally {
+      if (sourceGeneration === sourceGenerationRef.current) setRendering(null);
     }
-    const bedSource = response.headers.get("x-waveyard-bed-source");
-    const bedWarning = response.headers.get("x-waveyard-bed-warning");
-    if (bedSource) {
-      setBedInfo({
-        source: bedSource,
-        warning: bedWarning ? decodeURIComponent(bedWarning) : "",
-        includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
-      });
-    }
-    const blob = await response.blob();
-    if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
-    const url = URL.createObjectURL(blob);
-    renderUrlRef.current = url;
-    setRenderUrl(url);
-    setRenderKind(kind);
-    setRendering(null);
-    return null;
   };
 
   const planMashup = async () => {
+    const sourceGeneration = sourceGenerationRef.current;
     setPlanning(true);
     setError(null);
     setEvidence(null);
-    const result = await call({ action: "plan", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }, "mashup");
-    setPlan(result);
-    setPlanning(false);
+    setPlan(null);
+    setAlignmentCandidates([]);
+    setSelectedAlignment(null);
+    for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
+    candidateRenderUrlsRef.current.clear();
+    candidateRenderOrderRef.current = [];
+    setRenderedCandidateUrls({});
+    try {
+      const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "compare", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (sourceGeneration !== sourceGenerationRef.current) return;
+      if (!response.ok) {
+        setError(body.error ?? "Waveyard could not compare alignment options.");
+        return;
+      }
+      if (body.bed) setBedInfo(body.bed as { source: string; warning: string; includedStemTypes?: string[] });
+      setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
+      const candidates = Array.isArray(body.candidates) ? body.candidates as AlignmentCandidatePlan[] : [];
+      setAlignmentCandidates(candidates);
+      const selected = (["phrase-aware", "paired-grid", "downbeat", "continuous"] as CandidateAlignmentId[])
+        .map((id) => candidates.find((candidate) => candidate.id === id && candidate.available))
+        .find((candidate) => candidate !== undefined);
+      if (selected) {
+        setSelectedAlignment(selected.id);
+        setPlan(selected.plan);
+      } else {
+        setError("No alignment option could place a vocal segment. Check the selected sources and their analysis.");
+      }
+    } catch {
+      if (sourceGeneration === sourceGenerationRef.current) setError("Failed to compare mashup alignment options.");
+    } finally {
+      if (sourceGeneration === sourceGenerationRef.current) setPlanning(false);
+    }
   };
 
-  const renderMashup = async () => {
-    if (plan === null) return;
-    await call({ action: "render", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }, "mashup");
+  const selectAlignment = (id: CandidateAlignmentId) => {
+    const candidate = alignmentCandidates.find((item) => item.id === id);
+    if (!candidate?.available || !candidate.plan) return;
+    setSelectedAlignment(id);
+    setPlan(candidate.plan);
+    setSaveSuccess(null);
+  };
+
+  const renderAlignment = async (id: CandidateAlignmentId) => {
+    const candidate = alignmentCandidates.find((item) => item.id === id);
+    if (!candidate?.available || candidateRendering !== null || rendering !== null) {
+      if (candidateRendering !== null || rendering !== null) setError("Wait for the current render to finish before starting another.");
+      return;
+    }
+    const sourceGeneration = sourceGenerationRef.current;
+    setCandidateRendering(id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "render",
+          vocalsSourceId: vocalsId,
+          instrumentalSourceId: bedId,
+          alignmentStrategy: id,
+        }),
+      });
+      if (sourceGeneration !== sourceGenerationRef.current) return;
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        setError(body.error ?? `The ${candidate.title} render failed.`);
+        return;
+      }
+      const bedSource = response.headers.get("x-waveyard-bed-source");
+      const bedWarning = response.headers.get("x-waveyard-bed-warning");
+      if (bedSource) {
+        setBedInfo({
+          source: bedSource,
+          warning: bedWarning ? decodeURIComponent(bedWarning) : "",
+          includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
+        });
+      }
+      const url = URL.createObjectURL(await response.blob());
+      if (sourceGeneration !== sourceGenerationRef.current) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const urls = candidateRenderUrlsRef.current;
+      const previousUrl = urls.get(id);
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      else if (urls.size >= 2) {
+        const oldestId = candidateRenderOrderRef.current.shift();
+        if (oldestId) {
+          const oldestUrl = urls.get(oldestId);
+          if (oldestUrl) URL.revokeObjectURL(oldestUrl);
+          urls.delete(oldestId);
+        }
+      }
+      urls.set(id, url);
+      candidateRenderOrderRef.current = candidateRenderOrderRef.current.filter((candidateId) => candidateId !== id);
+      candidateRenderOrderRef.current.push(id);
+      setRenderedCandidateUrls(Object.fromEntries(urls) as Partial<Record<CandidateAlignmentId, string>>);
+    } catch {
+      if (sourceGeneration === sourceGenerationRef.current) setError(`Failed to render the ${candidate.title} candidate.`);
+    } finally {
+      if (sourceGeneration === sourceGenerationRef.current) setCandidateRendering(null);
+    }
+  };
+
+  const keepOneCandidatePlaying = (playingId: CandidateAlignmentId) => {
+    document.querySelectorAll<HTMLAudioElement>('[data-testid^="audio-candidate-"]').forEach((audio) => {
+      if (audio.dataset.testid !== `audio-candidate-${playingId}` && !audio.paused) audio.pause();
+    });
   };
 
   const saveMashupAsRemix = async () => {
-    if (plan === null) return;
+    if (plan === null || selectedAlignment === null) return;
     setSavingRemix(true);
     setError(null);
     setSaveSuccess(null);
@@ -187,13 +352,18 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }),
+        body: JSON.stringify({
+          action: "save",
+          vocalsSourceId: vocalsId,
+          instrumentalSourceId: bedId,
+          alignmentStrategy: selectedAlignment,
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
         setError(data.error ?? "Could not save mashup as remix.");
       } else {
-        setSaveSuccess("Mashup saved to project arrangement timeline as an editable remix.");
+          setSaveSuccess(`The ${alignmentCandidates.find((candidate) => candidate.id === selectedAlignment)?.title ?? "selected"} plan was saved to the project arrangement timeline as an editable remix.`);
       }
     } catch {
       setError("Failed to save mashup as remix.");
@@ -204,8 +374,44 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
 
   const extendTrack = async () => {
     if (bedId === "") return;
+    if (candidateRendering !== null) {
+      setError("Wait for the current mashup render to finish before extending the track.");
+      return;
+    }
     await call({ action: "extend", sourceAssetId: bedId, repeats: 2 }, "extended");
   };
+
+  const candidateViews: CandidateAlignmentCandidate[] = alignmentCandidates.map((candidate) => {
+    const candidatePlan = candidate.plan;
+    const selectedPassage = candidatePlan?.passageSearch?.evaluations.find((evaluation) => evaluation.selected) ?? null;
+    const localDeviation = candidatePlan?.segments
+      .map((segment) => segment.localTempoMap?.maximumRateDeviationPercent)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+      .reduce((maximum, value) => Math.max(maximum, value), 0) ?? null;
+    const evidenceNotes = candidatePlan?.rationale.filter((line) =>
+      /beat|downbeat|phrase|entry|passage|continuous/i.test(line),
+    ) ?? [];
+    return {
+      id: candidate.id,
+      title: candidate.title,
+      available: candidate.available,
+      ...(candidate.unavailableReason ? { unavailableReason: candidate.unavailableReason } : {}),
+      selected: candidate.id === selectedAlignment,
+      rendering: candidate.id === candidateRendering,
+      ...(renderedCandidateUrls[candidate.id] ? { renderedUrl: renderedCandidateUrls[candidate.id] } : {}),
+      entryMs: candidatePlan?.segments[0]?.mashupStartMs ?? null,
+      vocalTempoRatio: candidatePlan?.vocalsStretchRatio ?? null,
+      pitchShiftSemitones: candidatePlan?.vocalsPitchSemitones ?? null,
+      pairedGridFit: candidatePlan?.arrangement?.pairedBeatPhaseFit ?? null,
+      localRateDeviationPercent: localDeviation,
+      selectedDonorPassage: selectedPassage ? { startMs: selectedPassage.donorStartMs, endMs: selectedPassage.donorEndMs } : null,
+      selectedBedPassage: selectedPassage && selectedPassage.bedStartMs !== null && selectedPassage.bedEndMs !== null
+        ? { startMs: selectedPassage.bedStartMs, endMs: selectedPassage.bedEndMs }
+        : null,
+      evidenceNotes,
+      limitations: candidatePlan?.warnings ?? [],
+    };
+  });
 
   if (sources.length < 2) {
     return (
@@ -257,12 +463,26 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
               ))}
             </select>
           </label>
-          <button className="button" disabled={planning || vocalsId === "" || bedId === "" || vocalsId === bedId} onClick={() => void planMashup()}>
-            {planning ? "Reading both songs…" : "Plan the mashup"}
+          <button className="button" disabled={planning || candidateRendering !== null || rendering !== null || vocalsId === "" || bedId === "" || vocalsId === bedId} onClick={() => void planMashup()}>
+            {planning ? "Comparing real alternatives…" : "Compare alignment options"}
           </button>
         </div>
       )}
       {error && <p className="form-error" role="alert">{error}</p>}
+      {canEdit && (
+        <CandidateAlignmentLab
+          candidates={candidateViews}
+          selectedId={selectedAlignment}
+          onSelect={selectAlignment}
+          onRender={(id) => void renderAlignment(id)}
+          onAudioPlay={keepOneCandidatePlaying}
+        />
+      )}
+      {canEdit && alignmentCandidates.length > 0 && (
+        <p className="mashup-memory-note">
+          To keep long WAV previews from using excessive memory, Waveyard retains at most two rendered candidates at a time; rendering another replaces the oldest preview.
+        </p>
+      )}
 
       {plan !== null && (
         <div className="mashup-plan" data-testid="mashup-plan">
@@ -444,13 +664,10 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           )}
           {canEdit && (
             <div className="remix-actions">
-              <button className="button" disabled={rendering !== null} onClick={() => void renderMashup()}>
-                {rendering === "mashup" ? "Rendering…" : "Render mashup (WAV)"}
-              </button>
-              <button className="button secondary" disabled={savingRemix} onClick={() => void saveMashupAsRemix()}>
+              <button className="button secondary" disabled={savingRemix || selectedAlignment === null || candidateRendering !== null} onClick={() => void saveMashupAsRemix()}>
                 {savingRemix ? "Saving…" : "Save as project remix"}
               </button>
-              <small>The plan is a proposal — your arrangement is never touched.</small>
+              <small>Save the selected alignment as an editable project remix. Rendering a candidate above creates a separate WAV to audition.</small>
             </div>
           )}
           {saveSuccess && <p className="success" role="status" style={{ color: "var(--playback)", fontSize: 13, marginTop: 8 }}>✓ {saveSuccess}</p>}
@@ -469,7 +686,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
 
       {canEdit && (
         <div className="remix-actions mashup-extend">
-          <button className="button secondary" disabled={rendering !== null || bedId === ""} onClick={() => void extendTrack()}>
+          <button className="button secondary" disabled={rendering !== null || candidateRendering !== null || bedId === ""} onClick={() => void extendTrack()}>
             {rendering === "extend" ? "Extending…" : "Extend the instrumental (+2 chorus loops)"}
           </button>
         </div>
