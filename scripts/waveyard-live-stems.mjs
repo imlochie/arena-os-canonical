@@ -3577,6 +3577,85 @@ try {
     await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
     assert.deepEqual(assetSnapshot(), originalAssets, "handoff and editing preserve original audio");
     console.log("PASS: mobile-sized Bluetooth output-switch simulation resumes stem and arrangement playback at their current positions; blocked resumes expose linked, focusable retry controls");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+    await page.locator(".timeline-track").first().waitFor();
+    const verifyBackgroundRecovery = async ({ retryButton, playingButton, message }) => {
+      const contextCountBeforePlay = await page.evaluate(() => window.audioProbe.contexts.length);
+      await page.getByRole("button", { name: retryButton, exact: true }).click();
+      await page.getByRole("button", { name: playingButton, exact: true }).waitFor();
+      const contextIndex = await waitForAudioContext(contextCountBeforePlay);
+      const initialPosition = await position();
+      await page.waitForFunction(previousPosition =>
+        Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > previousPosition + 0.1,
+      initialPosition, { timeout: 10_000 });
+      const interruptedPosition = await position();
+
+      await page.evaluate(async (index) => {
+        window.__waveyardTestVisibility = "hidden";
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          get: () => window.__waveyardTestVisibility,
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+        const audio = window.audioProbe.contexts[index];
+        if (!audio) throw new Error(`No audio context exists at index ${index}.`);
+        await audio.suspend();
+        if (audio.state !== "suspended") throw new Error("The background fixture did not suspend its audio context.");
+
+        window.__waveyardBlockedRecovery = {
+          attempts: 0,
+          nativeResume: AudioContext.prototype.resume,
+        };
+        AudioContext.prototype.resume = function () {
+          window.__waveyardBlockedRecovery.attempts += 1;
+          return Promise.reject(new DOMException("A user activation is required.", "NotAllowedError"));
+        };
+        window.__waveyardTestVisibility = "visible";
+        document.dispatchEvent(new Event("visibilitychange"));
+      }, contextIndex);
+
+      const action = await assertRecoveryControl(retryButton, message);
+      assert.equal(await page.getByRole("button", { name: playingButton, exact: true }).count(), 0,
+        `${retryButton} is not left in a false-playing state after returning from the background`);
+      assert(await position() >= interruptedPosition - 0.15,
+        `${retryButton} recovery preserves the playhead instead of restarting from zero`);
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event("focus"));
+        window.dispatchEvent(new Event("pageshow"));
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.waitForTimeout(100);
+      assert.equal(await page.evaluate(() => window.__waveyardBlockedRecovery.attempts), 1,
+        `${retryButton} is not retried repeatedly by focus and visibility events after a blocked resume`);
+      assert.equal(await page.getByRole("alert").filter({ hasText: message }).count(), 1,
+        `${retryButton} keeps one recovery announcement after repeated lifecycle events`);
+
+      await page.evaluate(() => {
+        AudioContext.prototype.resume = window.__waveyardBlockedRecovery.nativeResume;
+      });
+      await action.click();
+      await page.getByRole("button", { name: playingButton, exact: true }).waitFor({ timeout: 10_000 });
+      await page.waitForFunction(previousPosition =>
+        Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > previousPosition + 0.1,
+      interruptedPosition, { timeout: 10_000 });
+      await page.getByRole("button", { name: playingButton, exact: true }).click();
+    };
+
+    await verifyBackgroundRecovery({
+      retryButton: "Play stems",
+      playingButton: "Pause stems",
+      message: "Audio playback was interrupted. Activate Play stems to resume.",
+    });
+    await verifyBackgroundRecovery({
+      retryButton: "Preview arrangement",
+      playingButton: "Pause arrangement",
+      message: "Audio couldn't resume automatically. Activate Preview arrangement to try again.",
+    });
+    console.log("PASS: returning from a simulated background interruption exposes one linked retry announcement for stems and arrangement preview; repeated lifecycle events do not repeat blocked recovery, and manual retry resumes playback");
   } else if (sharedDonorRetryOnly) {
     tracks[0].track.durationSeconds = 90;
     for (const [index, type] of types.entries()) assets.set(`a-${type}`, wav(90, 130 + index * 40));
