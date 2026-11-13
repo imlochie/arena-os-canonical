@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "producer": "Waveyard production mashup route",
+  "captureContract": "Copy the full production plan's source-bound passage evaluations without recalculating, reordering, or truncating rankedBedCandidates. Include sourceDurationMs, all structural sections, and each internal section start in sectionBoundaries. Section endpoints must stay within 50 ms of sourceDurationMs. Structural boundaries are evaluated separately from semantic labels. Pitch-continuity runs are not lyric phrases.",
+  "producerRevision": null,
+  "capturedAt": null,
+  "recordings": {
+    "another-one-bites-the-dust": {
+      "sourceSha256": "30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c",
+      "sourceDurationMs": 222670,
+      "pitchContinuityRuns": [],
+      "sections": [],
+      "sectionBoundaries": [],
+      "donorWindows": []
+    },
+    "september": {
+      "sourceSha256": "6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1",
+      "sourceDurationMs": 215140,
+      "pitchContinuityRuns": [],
+      "sections": [],
+      "sectionBoundaries": [],
+      "donorWindows": []
+    }
+  }
+}

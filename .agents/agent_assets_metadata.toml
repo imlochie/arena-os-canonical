@@ -224,3 +224,115 @@ mtime_ms = 1793863849958
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5ac505f9-b99b-46c1-b140-8ab42d145216/25323f6d-b162-4bbb-b031-88e3da5320e7"
 storage_version_token = "1793864092251520"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "qAKNyI632vitrRJVYKAoF"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/full-song-studio-export.wav"
+type = "audio"
+title = "Waveyard full-song Studio export"
+description = "215-second, 44.1 kHz stereo WAV produced from real separated stems through analysis, render, save/reopen, edit, restore and export. The technical workflow passed; musical quality has not been evaluated."
+logical_id = "da948470-8de6-4f41-8ca8-4817137ca124"
+content_hash = "sha256:483ce67e44b51e2b807914e33118c600761dc03a31e52682b923fd2cb885bf98"
+size = 37926078
+mtime_ms = 1794405335444
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/da948470-8de6-4f41-8ca8-4817137ca124/01b17abc-1315-4c4b-b701-694e0716f5de"
+storage_version_token = "1794405917444562"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "mUNfICAZgxnAuhwB3s6oT"
+uri = "file://attached_assets/0_another_one_bites_the_dust_1793860743093.mp3"
+type = "audio"
+title = "Another One Bites the Dust — original audio"
+description = "Full-length source recording for the blind section and vocal-phrase review."
+logical_id = "5ba940bf-1037-4a8c-b36a-8379385751e6"
+content_hash = "sha256:30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c"
+size = 3563565
+mtime_ms = 1793860746335
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5ba940bf-1037-4a8c-b36a-8379385751e6/3067ed0e-83d9-4ec8-95a3-93127f8c3164"
+storage_version_token = "1794449915163747"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "m7LVvPYkrCzMb7N6mo7XK"
+uri = "file://attached_assets/0_ytmp3free.cc_earth-wind-fire-september-official-hd-video-you_1793303155539.mp3"
+type = "audio"
+title = "September — original audio"
+description = "Full-length source recording for the blind section and vocal-phrase review."
+logical_id = "5b96a4d3-3a23-4b96-ba18-2a0c53f91be0"
+content_hash = "sha256:6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1"
+size = 3442989
+mtime_ms = 1793303159856
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/5b96a4d3-3a23-4b96-ba18-2a0c53f91be0/efdde6a8-97ef-4867-a878-5b471598e778"
+storage_version_token = "1794449916005628"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "qZaOR3axV0dIokqS06yMZ"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/listen-ab/continuous-overlay-baseline.mp3"
+type = "audio"
+title = "Waveyard previous continuous baseline"
+description = "Reference only: the earlier whole-track overlay before tempo was measured from the isolated drum stems. Compare its timing and flow with the new tempo-locked whole-body mix."
+logical_id = "2176acbc-1b31-4fd7-8ae4-b5ad897c8ce5"
+content_hash = "sha256:525918df664cc9751a263f932f346fddc4ec19ef77dd96558c9782b7bda15a2d"
+size = 5158496
+mtime_ms = 1794570067673
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/2176acbc-1b31-4fd7-8ae4-b5ad897c8ce5/363b5234-71fe-4ee6-82b5-1465964d32f6"
+storage_version_token = "1794573549914450"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "cM0J2fZ6ITg_R55oKk9AR"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/listen-ab/segmented-placement-candidate.mp3"
+type = "audio"
+title = "Waveyard A/B — segmented placement"
+description = "The new 44-unit segmented Queen-vocal arrangement over September, produced and exported through the persisted Studio route. Full 3:35 mix; listen against the continuous overlay."
+logical_id = "f423ab0b-d864-43f2-a0a7-c5e8fa6c98e4"
+content_hash = "sha256:ff0aaa9e3351ad50f40ea47c0a57d422f56a6405d154fb93dc769855bee25669"
+size = 5158496
+mtime_ms = 1794570488481
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/f423ab0b-d864-43f2-a0a7-c5e8fa6c98e4/fae7de71-073d-4161-af17-6bb8f6a64f26"
+storage_version_token = "1794570642902746"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "61Os1vrYjuTqy7ac46Z3v"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/continuous-tempo-locked-whole-body.mp3"
+type = "audio"
+title = "Waveyard tempo-locked whole-body mix"
+description = "A full-length real-stem test: Queen vocals globally tempo-matched from 109.957 to the 126.048 BPM September bed, with the vocal performance kept in one continuous clip."
+logical_id = "93671b0c-ee1f-4eb1-b40e-ee736bd14431"
+content_hash = "sha256:ca21dd12a09c0a1d3f60f073cdde8d3c4157f2df903d06a9d1da4169d9fd7947"
+size = 4920238
+mtime_ms = 1794573337609
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/93671b0c-ee1f-4eb1-b40e-ee736bd14431/d88b6f8e-2bb9-4730-b573-f00c978b3f60"
+storage_version_token = "1794573346102149"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "lnNA389iW8A2sbcwDyd-G"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/paired-grid-studio-export-listen.mp3"
+type = "audio"
+title = "Paired-grid mashup — Studio export"
+description = "Exact listening copy of the real Studio save/reopen/edit/restore/export run: Queen vocals over the separated September bed. Planner reports 200/335 donor beats within 90 ms of the bed grid versus 163/335 at the prior entry. This is evidence of timing improvement, not a claim of listener-quality or correct verse/chorus detection."
+logical_id = "1e41dcc3-92ed-49f4-992b-3c5096468cca"
+content_hash = "sha256:80da17c13ca76a01f8c44a9674423051ccc726fe576290474fe301781cdcefb2"
+size = 5158496
+mtime_ms = 1794577089668
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/1e41dcc3-92ed-49f4-992b-3c5096468cca/469d5f63-c262-4e60-8351-5dc2e937b834"
+storage_version_token = "1794577107911950"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "CQXmYf8pdZl__Sa1eOBqX"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/local-tempo-warp-route-render.wav"
+type = "audio"
+title = "Queen vocals over September — local beat-aligned mix"
+description = "215-second full-track route render. Measured corresponding-beat fit improved from 7/335 to 174/335 within 90 ms; this does not certify listening quality, and 161 beats remain outside the window."
+logical_id = "654ad616-cc46-41da-84c3-39cd5f8a41d6"
+content_hash = "sha256:6ec585eeb6681035aa27115985ecdb955da116f0bd3a451ff5d4020dd57496f5"
+size = 37926044
+mtime_ms = 1794606054814
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/654ad616-cc46-41da-84c3-39cd5f8a41d6/bd9f45f7-62ca-498c-a177-60c98ee6e4f0"
+storage_version_token = "1794606273056281"
+content_type = "audio/wav"

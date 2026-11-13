@@ -1,5 +1,6 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
+import { SOURCE_DURATION_ROUNDING_TOLERANCE_MS } from "@workspace/arena/lib/waveyard/types/clip-editing";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -63,7 +64,9 @@ export async function POST(
     const durationByAssetId = new Map(referencedStems.map((asset) => [asset.id, asset.durationSeconds * 1000]));
     if (state.tracks.some((track) => !durationByAssetId.has(track.stemAssetId) || track.clips.some((clip) => !durationByAssetId.has(clip.stemAssetId))))
       return Response.json({ error: "This version references a removed asset." }, { status: 409 });
-    if (state.tracks.some((track) => track.clips.some((clip) => !clip.tempoSyncEnabled && clip.sourceOffsetMs + clip.durationMs > durationByAssetId.get(clip.stemAssetId)!)))
+    if (state.tracks.some((track) => track.clips.some((clip) => !clip.tempoSyncEnabled
+      && clip.sourceOffsetMs + clip.durationMs
+      > durationByAssetId.get(clip.stemAssetId)! + SOURCE_DURATION_ROUNDING_TOLERANCE_MS)))
       return Response.json({ error: "This version extends beyond its source stem." }, { status: 422 });
     const crossfadeMessage = state.tracks.map(crossfadeError).find(Boolean);
     if (crossfadeMessage) return Response.json({ error: crossfadeMessage }, { status: 422 });
@@ -93,6 +96,7 @@ export async function POST(
       })));
       if (automationPoints.length) await tx.insert(remixAutomationPoints).values(automationPoints);
       const clips = state.tracks.flatMap((track) => track.clips.map((clip) => ({
+        ...(clip.id ? { id: clip.id } : {}),
         remixTrackId: track.id,
         stemAssetId: clip.stemAssetId,
         timelineStartMs: clip.timelineStartMs,
@@ -104,6 +108,8 @@ export async function POST(
         tempoSyncEnabled: clip.tempoSyncEnabled,
         keySyncEnabled: clip.keySyncEnabled,
         beatSnapEnabled: clip.beatSnapEnabled,
+        chopStepIndex: clip.chopStepIndex ?? null,
+        chopSampleDurationMs: clip.chopSampleDurationMs ?? null,
       })));
       if (clips.length) await tx.insert(remixClips).values(clips);
       await tx.update(remixSessions).set(restoredSessionFields(state, remix)).where(eq(remixSessions.id, remix.id));

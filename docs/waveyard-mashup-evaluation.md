@@ -1,6 +1,6 @@
 # Waveyard live stem-swap evaluation
 
-This is a small, repeatable evaluation of real source audio through Waveyard's local separation worker and `SessionExperience` live-swap controls. It is evidence about those runs, not a claim that Waveyard is a complete Stem.fm replacement or that its mixes sound good.
+This is a small, repeatable evaluation of real source audio through Waveyard's local separation worker and `SessionExperience` live-swap controls. It is evidence about those runs, not a claim that Waveyard is a complete Stem.fm replacement or that its mixes sound good. The separate full-track, two-reviewer ground-truth protocol and its current blocked status are documented in [waveyard-ground-truth-evaluation.md](./waveyard-ground-truth-evaluation.md).
 
 ## Licensed source tracks
 

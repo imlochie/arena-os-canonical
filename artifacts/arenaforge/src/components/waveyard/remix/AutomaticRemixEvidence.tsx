@@ -10,6 +10,7 @@ const dimensions = [
   ["beatPhase", "Beat phase"],
   ["vocalActivity", "Vocal activity"],
   ["instrumentalDensity", "Instrument activity"],
+  ["stemActivity", "Per-stem changes"],
   ["downbeatConfidence", "Downbeat"],
 ] as const;
 
@@ -24,7 +25,14 @@ export function AutomaticRemixEvidence({ report }: { report?: AutomaticRemixComp
     <ol>
       {report.pairs.slice(0, 4).map((pair) => <li key={`${pair.anchorSectionId}:${pair.donorSectionId}`}>
         <strong>{pair.anchorSourceName} → {pair.donorSourceName}</strong>
-        <div>{pair.barCount} bars · {pair.beatCount} beats{pair.eligible ? " · core-compatible audition candidate" : " · not matched"}</div>
+        <div>
+          {pair.barCount} bars · {pair.beatCount} beats
+          {pair.eligible
+            ? " · core-compatible audition candidate"
+            : pair.dimensions.phraseAlignment.status === "context"
+              ? " · different-length relative comparison, not an exact phrase match"
+              : " · not matched"}
+        </div>
         <ul>
           {dimensions.map(([key, label]) => {
             const evidence = pair.dimensions[key];

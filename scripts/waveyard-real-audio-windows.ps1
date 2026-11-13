@@ -43,10 +43,12 @@ Run only the pinned four-model repeated memory measurement.
 Optional 44.1 kHz stereo 16-bit PCM WAV input for memory-only mode.
 
 .PARAMETER MemoryReportPath
-Memory-only JSON report destination.
+Memory-only JSON report destination. Defaults to a separate path for automatic and CPU runs.
 
 .PARAMETER MemoryRepetitions
 Memory-only job count. Defaults to 7; accepts 6 to 12.
+.PARAMETER MemoryProvider
+Execution provider for memory-only mode. Defaults to automatic selection; use cpu to force CPU. Example: -MemoryOnly -MemoryProvider cpu
 
 .EXAMPLE
 .\scripts\waveyard-real-audio-windows.ps1 -AudioPath "C:\Music\sample.mp3"
@@ -76,9 +78,11 @@ param(
 
   [string]$MemoryWavPath,
 
-  [string]$MemoryReportPath = "generated-artifacts/waveyard-four-stem-memory-windows.json",
+  [string]$MemoryReportPath,
 
-  [int]$MemoryRepetitions = 7
+  [int]$MemoryRepetitions = 7,
+  [ValidateSet("auto", "cpu")]
+  [string]$MemoryProvider = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,6 +103,7 @@ if (-not $nodeExecutable) {
 }
 
 if ($MemoryOnly) {
+  $MemoryProvider = $MemoryProvider.ToLowerInvariant()
   if ($MemoryRepetitions -lt 6 -or $MemoryRepetitions -gt 12) {
     throw "MemoryRepetitions must be an integer from 6 to 12."
   }
@@ -108,10 +113,17 @@ if ($MemoryOnly) {
       throw "MemoryWavPath must be a 44.1 kHz stereo 16-bit PCM WAV file."
     }
   }
-  $resolvedMemoryReportPath = if ([System.IO.Path]::IsPathRooted($MemoryReportPath)) {
+  $effectiveMemoryReportPath = if ($MemoryReportPath) {
     $MemoryReportPath
+  } elseif ($MemoryProvider -eq "cpu") {
+    "generated-artifacts/waveyard-four-stem-memory-windows-cpu.json"
   } else {
-    Join-Path $repoRoot $MemoryReportPath
+    "generated-artifacts/waveyard-four-stem-memory-windows.json"
+  }
+  $resolvedMemoryReportPath = if ([System.IO.Path]::IsPathRooted($effectiveMemoryReportPath)) {
+    $effectiveMemoryReportPath
+  } else {
+    Join-Path $repoRoot $effectiveMemoryReportPath
   }
   $memoryReportDirectory = Split-Path -Parent $resolvedMemoryReportPath
   if ($memoryReportDirectory -and -not (Test-Path -LiteralPath $memoryReportDirectory)) {
@@ -125,7 +137,10 @@ if ($MemoryOnly) {
   $previousMemoryWav = $env:WAVEYARD_REAL_ORT_MEMORY_WAV
   $previousMemoryReport = $env:WAVEYARD_REAL_ORT_MEMORY_REPORT
   $previousMemoryRepetitions = $env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS
+  $previousMemoryProvider = $env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER
   Push-Location $repoRoot
+  $memoryStdoutPath = [System.IO.Path]::GetTempFileName()
+  $memoryStderrPath = [System.IO.Path]::GetTempFileName()
   try {
     if ($resolvedMemoryWavPath) {
       $env:WAVEYARD_REAL_ORT_MEMORY_WAV = $resolvedMemoryWavPath
@@ -134,10 +149,79 @@ if ($MemoryOnly) {
     }
     $env:WAVEYARD_REAL_ORT_MEMORY_REPORT = $resolvedMemoryReportPath
     $env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS = [string]$MemoryRepetitions
+    $env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER = $MemoryProvider
 
     $runStartedAt = [DateTime]::UtcNow
-    & $nodeExecutable $memoryTestRunner --test --test-name-pattern "repeated pinned four-model jobs" $testPath
-    $testExitCode = $LASTEXITCODE
+    $nodeArguments = @(
+      $memoryTestRunner,
+      "--test",
+      "--test-name-pattern",
+      "repeated pinned four-model jobs",
+      $testPath
+    )
+    $quotedArguments = foreach ($argument in $nodeArguments) {
+      $escapedArgument = [regex]::Replace([string]$argument, '(\\*)"', '$1$1\"')
+      $escapedArgument = [regex]::Replace($escapedArgument, '(\\+)$', '$1$1')
+      '"' + $escapedArgument + '"'
+    }
+    $memoryTestProcess = Start-Process `
+      -FilePath $nodeExecutable `
+      -ArgumentList ($quotedArguments -join " ") `
+      -WorkingDirectory $repoRoot `
+      -PassThru `
+      -NoNewWindow `
+      -RedirectStandardOutput $memoryStdoutPath `
+      -RedirectStandardError $memoryStderrPath
+
+    $gpuCounterPath = '\GPU Process Memory(*)\Dedicated Usage'
+    $gpuCounterAvailable = $false
+    $gpuCounterUnavailableReason = $null
+    $gpuSamples = [System.Collections.Generic.List[object]]::new()
+    try {
+      Get-Counter -Counter $gpuCounterPath -MaxSamples 1 -ErrorAction Stop | Out-Null
+      $gpuCounterAvailable = $true
+    } catch {
+      $gpuCounterUnavailableReason = "Windows GPU Process Memory counter is unavailable: $($_.Exception.Message)"
+    }
+
+    $sampleProcessGpuMemory = {
+      param([int]$ProcessId)
+      try {
+        $counter = Get-Counter -Counter $gpuCounterPath -MaxSamples 1 -ErrorAction Stop
+        $processPattern = "(?i)pid_${ProcessId}(?:_|\\)"
+        $processSamples = @($counter.CounterSamples | Where-Object { $_.Path -match $processPattern })
+        if ($processSamples.Count -gt 0) {
+          $dedicatedBytes = [long][Math]::Round(
+            ($processSamples | Measure-Object -Property CookedValue -Sum).Sum
+          )
+          $gpuSamples.Add([pscustomobject]@{
+            sampledAtUtcMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            dedicatedBytes = $dedicatedBytes
+          })
+        }
+      } catch {
+        # A sampling failure is reflected by missing per-job samples below.
+      }
+    }
+
+    while (-not $memoryTestProcess.HasExited) {
+      if ($gpuCounterAvailable) {
+        & $sampleProcessGpuMemory $memoryTestProcess.Id
+      }
+      Start-Sleep -Milliseconds 1000
+      $memoryTestProcess.Refresh()
+    }
+    $memoryTestProcess.WaitForExit()
+    $testExitCode = $memoryTestProcess.ExitCode
+    if ($gpuCounterAvailable) {
+      # Capture the retained allocation after the final session has released.
+      for ($sampleIndex = 0; $sampleIndex -lt 2; $sampleIndex += 1) {
+        & $sampleProcessGpuMemory $memoryTestProcess.Id
+        Start-Sleep -Milliseconds 1000
+      }
+    }
+    Get-Content -LiteralPath $memoryStdoutPath | ForEach-Object { Write-Host $_ }
+    Get-Content -LiteralPath $memoryStderrPath | ForEach-Object { Write-Host $_ }
     if ($testExitCode -ne 0) {
       throw "The Windows four-stem memory run failed with exit code $testExitCode."
     }
@@ -155,10 +239,14 @@ if ($MemoryOnly) {
     if ($memoryReport.repetitions -ne $MemoryRepetitions -or @($memoryReport.jobs).Count -ne $MemoryRepetitions) {
       throw "The report does not contain all requested memory repetitions."
     }
-    if ($memoryReport.requestedProvider -ne "auto") {
-      throw "The report did not run with automatic provider selection."
+    $expectedSelectionMode = if ($MemoryProvider -eq "cpu") { "forced" } else { "automatic" }
+    if ($memoryReport.providerSelectionMode -ne $expectedSelectionMode -or $memoryReport.requestedProvider -ne $MemoryProvider) {
+      throw "The report does not identify the requested $expectedSelectionMode $MemoryProvider provider run."
     }
-    if (@("dml", "cpu") -notcontains $memoryReport.selectedProvider) {
+    if ($MemoryProvider -eq "cpu" -and $memoryReport.selectedProvider -ne "cpu") {
+      throw "The forced-CPU run selected '$($memoryReport.selectedProvider)' instead of cpu."
+    }
+    if ($MemoryProvider -eq "auto" -and @("dml", "cpu") -notcontains $memoryReport.selectedProvider) {
       throw "The Windows run selected unexpected provider '$($memoryReport.selectedProvider)'; expected dml or cpu."
     }
     if (-not $memoryReport.selectedProvider -or -not $memoryReport.summary.continuedGrowthBounded) {
@@ -168,8 +256,14 @@ if ($MemoryOnly) {
       throw "The report does not identify all four pinned models."
     }
     foreach ($job in $memoryReport.jobs) {
+      if ($job.requestedDevice -ne $MemoryProvider) {
+        throw "Repetition $($job.repetition) requested '$($job.requestedDevice)' instead of $MemoryProvider."
+      }
       if ($job.resolvedDevice -ne $memoryReport.selectedProvider) {
         throw "The selected provider changed between memory repetitions."
+      }
+      if ($null -eq $job.postReleaseMemory.rss -or $job.postReleaseMemory.rss -le 0) {
+        throw "Repetition $($job.repetition) does not include a valid post-job RSS measurement."
       }
       foreach ($model in $memoryReport.models) {
         $chunkCount = $job.chunkCounts.PSObject.Properties[$model.id].Value
@@ -179,12 +273,160 @@ if ($MemoryOnly) {
       }
     }
 
-    $rssSamples = @($memoryReport.jobs | ForEach-Object { [Math]::Round($_.memory.rss / 1MB, 1) })
+    $gpuMemoryApplicable = $memoryReport.selectedProvider -eq "dml"
+    $gpuMemoryStatus = "not_applicable"
+    $gpuMemoryReason = "The selected provider was CPU; DirectML GPU memory does not apply."
+    if ($gpuMemoryApplicable) {
+      $gpuMemoryStatus = "unavailable"
+      $gpuMemoryReason = $gpuCounterUnavailableReason
+      if ($gpuCounterAvailable) {
+        $gpuMemoryReason = "The GPU counter did not report dedicated memory for the Node separation process."
+      }
+      if ($gpuSamples.Count -gt 0) {
+        $gpuMemoryStatus = "measured"
+        $gpuMemoryReason = $null
+      }
+    }
+
+    $gpuJobMeasurements = @()
+    foreach ($job in $memoryReport.jobs) {
+      $duringJob = @($gpuSamples | Where-Object {
+        $_.sampledAtUtcMs -ge $job.startedAtUtcMs -and $_.sampledAtUtcMs -le $job.finishedAtUtcMs
+      })
+      $postRelease = $null
+      $postReleaseSampleUtcMs = $null
+      if ($gpuMemoryApplicable -and $gpuSamples.Count -gt 0) {
+        $nearbySamples = @($gpuSamples | Where-Object {
+          $_.sampledAtUtcMs -ge $job.finishedAtUtcMs -and $_.sampledAtUtcMs -le ($job.finishedAtUtcMs + 2000)
+        } | Sort-Object { $_.sampledAtUtcMs })
+        if ($nearbySamples.Count -gt 0) {
+          $postRelease = $nearbySamples[0].dedicatedBytes
+          $postReleaseSampleUtcMs = $nearbySamples[0].sampledAtUtcMs
+        }
+      }
+      $peakDedicatedBytes = $null
+      if ($duringJob.Count -gt 0) {
+        $peakDedicatedBytes = [long](($duringJob | Measure-Object -Property dedicatedBytes -Maximum).Maximum)
+      }
+      $jobGpuStatus = if (-not $gpuMemoryApplicable) { "not_applicable" } elseif ($duringJob.Count -gt 0) { "measured" } else { "unavailable" }
+      $jobGpuReason = if ($jobGpuStatus -eq "not_applicable") {
+        "The selected provider was CPU."
+      } elseif ($jobGpuStatus -eq "unavailable") {
+        "No GPU counter sample fell within this job's execution window."
+      } else {
+        $null
+      }
+      $jobGpuMemory = [pscustomobject]@{
+        status = $jobGpuStatus
+        sampleCount = $duringJob.Count
+        peakDedicatedBytes = $peakDedicatedBytes
+        postReleaseDedicatedBytes = $postRelease
+        postReleaseSampleUtcMs = $postReleaseSampleUtcMs
+        unavailableReason = $jobGpuReason
+      }
+      $job | Add-Member -NotePropertyName gpuMemory -NotePropertyValue $jobGpuMemory -Force
+      $gpuJobMeasurements += $jobGpuMemory
+    }
+
+    if ($gpuMemoryApplicable -and $gpuSamples.Count -gt 0) {
+      $jobsWithGpuSamples = @($gpuJobMeasurements | Where-Object { $_.sampleCount -gt 0 }).Count
+      if ($jobsWithGpuSamples -eq $gpuJobMeasurements.Count) {
+        $gpuMemoryStatus = "measured"
+      } else {
+        $gpuMemoryStatus = "partial"
+        $gpuMemoryReason = "GPU memory samples were missing from one or more repeated job windows."
+      }
+    }
+
+    $gpuMemoryLevelsOffAfterWarmup = $null
+    $gpuFirstSteadyBytes = $null
+    $gpuFinalHalfMedianBytes = $null
+    $gpuContinuedGrowthBytes = $null
+    $gpuAllowedContinuedGrowthBytes = 128 * 1024 * 1024
+    if ($gpuMemoryApplicable -and $gpuMemoryStatus -eq "measured") {
+      $postReleaseValues = @($gpuJobMeasurements | ForEach-Object { $_.postReleaseDedicatedBytes })
+      $hasCompletePostReleaseSamples = $postReleaseValues.Count -eq $MemoryRepetitions -and
+        @($postReleaseValues | Where-Object { $null -eq $_ }).Count -eq 0
+      if ($hasCompletePostReleaseSamples -and $postReleaseValues.Count -gt $memoryReport.warmupJobs) {
+        $firstSteadyIndex = [int]$memoryReport.warmupJobs
+        $gpuFirstSteadyBytes = [long]$postReleaseValues[$firstSteadyIndex]
+        $steadyValues = @($postReleaseValues | Select-Object -Skip $firstSteadyIndex)
+        $tailValues = @($steadyValues | Select-Object -Skip ([int][Math]::Floor($steadyValues.Count / 2)) | Sort-Object)
+        $middleGpuIndex = [int][Math]::Floor($tailValues.Count / 2)
+        if ($tailValues.Count % 2 -eq 1) {
+          $gpuFinalHalfMedianBytes = [long]$tailValues[$middleGpuIndex]
+        } else {
+          $gpuFinalHalfMedianBytes = [long](($tailValues[$middleGpuIndex - 1] + $tailValues[$middleGpuIndex]) / 2)
+        }
+        $gpuContinuedGrowthBytes = $gpuFinalHalfMedianBytes - $gpuFirstSteadyBytes
+        $gpuMemoryLevelsOffAfterWarmup = $gpuContinuedGrowthBytes -le $gpuAllowedContinuedGrowthBytes
+      } else {
+        $gpuMemoryStatus = "partial"
+        $gpuMemoryReason = "GPU readings were collected, but there were not enough post-release samples for a warm-up trend."
+      }
+    }
+
+    $gpuMemoryReport = [pscustomobject]@{
+      applicable = $gpuMemoryApplicable
+      status = $gpuMemoryStatus
+      source = if ($gpuMemoryApplicable) { "Windows GPU Process Memory\\Dedicated Usage counter, filtered to the Node test process" } else { $null }
+      sampleIntervalMs = 1000
+      samples = if ($gpuMemoryApplicable) { @($gpuSamples.ToArray()) } else { @() }
+      unavailableReason = $gpuMemoryReason
+    }
+    $memoryReport | Add-Member -NotePropertyName gpuMemory -NotePropertyValue $gpuMemoryReport -Force
+    $memoryReport.summary | Add-Member -NotePropertyName gpuMemoryStatus -NotePropertyValue $gpuMemoryStatus -Force
+    $memoryReport.summary | Add-Member -NotePropertyName gpuFirstSteadyPostReleaseBytes -NotePropertyValue $gpuFirstSteadyBytes -Force
+    $memoryReport.summary | Add-Member -NotePropertyName gpuFinalHalfMedianPostReleaseBytes -NotePropertyValue $gpuFinalHalfMedianBytes -Force
+    $memoryReport.summary | Add-Member -NotePropertyName gpuContinuedGrowthBytes -NotePropertyValue $gpuContinuedGrowthBytes -Force
+    $memoryReport.summary | Add-Member -NotePropertyName gpuAllowedContinuedGrowthBytes -NotePropertyValue $gpuAllowedContinuedGrowthBytes -Force
+    $memoryReport.summary | Add-Member -NotePropertyName gpuMemoryLevelsOffAfterWarmup -NotePropertyValue $gpuMemoryLevelsOffAfterWarmup -Force
+    $memoryReport.summary | Add-Member -NotePropertyName gpuMemoryTrendMethod -NotePropertyValue "Compare the final-half median post-release dedicated memory after $($memoryReport.warmupJobs) warm-up jobs with the first steady job; levels off means growth is at most 128 MiB." -Force
+    $memoryReport | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $resolvedMemoryReportPath -Encoding UTF8
+
+    if ($memoryReport.selectedProvider -eq "cpu" -and $memoryReport.gpuMemory.status -ne "not_applicable") {
+      throw "CPU fallback must label dedicated GPU memory as not applicable."
+    }
+    if ($memoryReport.selectedProvider -eq "dml" -and $memoryReport.gpuMemory.status -eq "measured") {
+      if (@($memoryReport.jobs | Where-Object { $_.gpuMemory.sampleCount -lt 1 }).Count -gt 0) {
+        throw "The DirectML report is missing a GPU measurement for one or more repeated jobs."
+      }
+      if ($null -eq $memoryReport.summary.gpuMemoryLevelsOffAfterWarmup) {
+        throw "The DirectML report does not state whether GPU memory levels off after warm-up."
+      }
+    }
+
+    $rssSamples = @($memoryReport.jobs | ForEach-Object { [Math]::Round($_.postReleaseMemory.rss / 1MB, 1) })
     Write-Host "Windows memory report saved to $resolvedMemoryReportPath"
-    Write-Host "Selected provider: $($memoryReport.selectedProvider)"
+    Write-Host "Provider selection: $($memoryReport.providerSelectionMode) ($($memoryReport.requestedProvider)); selected provider: $($memoryReport.selectedProvider)"
     Write-Host "Post-job RSS (MiB): $($rssSamples -join ' -> ')"
     Write-Host "Continued RSS growth after warm-up: $([Math]::Round($memoryReport.summary.continuedRssGrowthBytes / 1MB, 1)) MiB; bounded: $($memoryReport.summary.continuedGrowthBounded)"
+    if ($gpuMemoryStatus -eq "measured") {
+      $gpuSamplesMiB = @($memoryReport.jobs | ForEach-Object {
+        if ($null -eq $_.gpuMemory.postReleaseDedicatedBytes) { "n/a" }
+        else { [Math]::Round($_.gpuMemory.postReleaseDedicatedBytes / 1MB, 1) }
+      })
+      Write-Host "Post-release dedicated GPU memory (MiB): $($gpuSamplesMiB -join ' -> ')"
+      if ($null -eq $gpuMemoryLevelsOffAfterWarmup) {
+        Write-Host "Dedicated GPU memory level-off after warm-up: undetermined (insufficient post-release samples)"
+      } else {
+        Write-Host "Dedicated GPU memory level-off after warm-up: $gpuMemoryLevelsOffAfterWarmup (continued growth $([Math]::Round($gpuContinuedGrowthBytes / 1MB, 1)) MiB)"
+      }
+    } else {
+      Write-Host "Dedicated GPU memory measurement: $gpuMemoryStatus ($gpuMemoryReason)"
+      if (-not $gpuMemoryApplicable) {
+        Write-Host "Dedicated GPU memory level-off after warm-up: not applicable to CPU execution."
+      } else {
+        Write-Host "Dedicated GPU memory level-off after warm-up: undetermined (GPU counter data is incomplete)."
+      }
+    }
   } finally {
+    if (Test-Path -LiteralPath $memoryStdoutPath) {
+      Remove-Item -LiteralPath $memoryStdoutPath -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $memoryStderrPath) {
+      Remove-Item -LiteralPath $memoryStderrPath -Force -ErrorAction SilentlyContinue
+    }
     if ($null -eq $previousMemoryWav) {
       Remove-Item Env:WAVEYARD_REAL_ORT_MEMORY_WAV -ErrorAction SilentlyContinue
     } else {
@@ -199,6 +441,11 @@ if ($MemoryOnly) {
       Remove-Item Env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS -ErrorAction SilentlyContinue
     } else {
       $env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS = $previousMemoryRepetitions
+    }
+    if ($null -eq $previousMemoryProvider) {
+      Remove-Item Env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER -ErrorAction SilentlyContinue
+    } else {
+      $env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER = $previousMemoryProvider
     }
     Pop-Location
   }

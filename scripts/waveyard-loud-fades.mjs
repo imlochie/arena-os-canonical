@@ -8,12 +8,23 @@ const MIX = { vocals: 0.94, drums: 0.53, bass: 0.76, other: 0.84 };
 export async function runLoudAutomaticFadeAcceptance({ page, session, tracks, sourceOnlyTrack, assets, wav, chooseLiveSource }) {
   const report = {
     format: "waveyard-loud-fades/v1",
-    evidence: "Chromium WebAudio, synthetic PCM and mocked persistence; not Windows driver acceptance",
+    evidence: "Chromium WebAudio analyser sample peaks, synthetic PCM and mocked persistence; reconstructed true peak is measured separately by the 4x windowed-sinc limiter tests; neither is Windows audio-driver acceptance",
     fixtures: {
       correlated: "Same-polarity held PCM: source 0.98, reconstructed stem track 0.98 including its donor component; individually safe decks expose pure overlap overload independent of media start phase.",
       uncorrelated: "Distinct-frequency 0.98-peak sine on each native stem and live donor; deliberate multi-stem overload stress.",
     },
-    thresholds: { ceiling: 0.98, outputTolerance: 0.0001, minimumFadeWindows: 15, cadenceMs: 20 },
+    thresholds: {
+      ceiling: 0.98,
+      outputTolerance: 0.0001,
+      minimumFadeWindows: 15,
+      cadenceMs: 20,
+    },
+    reconstructedPeakValidation: {
+      evidence: "Separate limiter unit tests, not browser analyser data",
+      method: "4x polyphase windowed-sinc, 24 taps per phase",
+      ceiling: 0.98,
+      tolerance: 0.001,
+    },
     scenarios: [],
   };
   const folder = "generated-artifacts/waveyard-loud-fades";

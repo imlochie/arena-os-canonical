@@ -1,6 +1,6 @@
 export const VOCAL_ANALYSIS_ENGINE = "waveyard-numpy-monophonic-pitch";
 export const VOCAL_ANALYSIS_ENGINE_VERSION = "1.0.0";
-export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_VOCAL_ANALYSIS_ENGINE, DESKTOP_STEM_ANALYSIS_ENGINE_VERSION as LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
+export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_VOCAL_ANALYSIS_ENGINE, DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION as LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
 
 export function vocalAnalysisIdempotencyKey(stemAssetId: string, engine = VOCAL_ANALYSIS_ENGINE, version = VOCAL_ANALYSIS_ENGINE_VERSION) {
   return `vocal:${stemAssetId}:${engine}:${version}`;
@@ -16,6 +16,9 @@ export type VocalPitchFrame = {
 };
 
 export type VocalPhrase = { startMs: number; endMs: number; confidence: number };
+
+/** Coarse energy-based activity in an isolated vocal stem; not word timing. */
+export type VocalActivityInterval = { startMs: number; endMs: number; confidence: number };
 
 export function frequencyToMidi(frequencyHz: number) {
   if (!Number.isFinite(frequencyHz) || frequencyHz <= 0) return null;
@@ -70,7 +73,9 @@ export function segmentVocalPhrases(frames: VocalPitchFrame[], silenceGapMs = 26
   let count = 0;
   const finish = () => {
     if (!start || !previous) return;
-    phrases.push({ startMs: start.timestampMs, endMs: previous.timestampMs, confidence: Number((confidenceTotal / Math.max(1, count)).toFixed(6)) });
+    if (previous.timestampMs > start.timestampMs) {
+      phrases.push({ startMs: start.timestampMs, endMs: previous.timestampMs, confidence: Number((confidenceTotal / Math.max(1, count)).toFixed(6)) });
+    }
     start = null; previous = null; confidenceTotal = 0; count = 0;
   };
   for (const frame of frames) {

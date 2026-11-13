@@ -14,6 +14,10 @@ import {
   type MdxSessionLike,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
+import {
+  createSeparationActiveMemorySampler,
+  type SeparationWorkerMemoryPeak,
+} from "./separation-memory";
 
 type RequestData = {
   spec: MdxModelSpec;
@@ -37,8 +41,10 @@ async function run() {
   }
 
   const attempts = executionProviderAttempts(request.requestedDevice);
+  const memorySampler = createSeparationActiveMemorySampler();
   let session: MdxSessionLike | undefined;
   let resolvedDevice: string | undefined;
+  let activeMemoryPeak: SeparationWorkerMemoryPeak | undefined;
   let lastError: unknown = null;
   for (const executionProviders of attempts) {
     try {
@@ -61,6 +67,7 @@ async function run() {
     }
   }
   if (!session || resolvedDevice === undefined) {
+    activeMemoryPeak = memorySampler.stop();
     throw new SeparationUnavailableError(
       `Could not open separation model "${request.spec.id}" for inference: ${
         lastError instanceof Error ? lastError.message : String(lastError)
@@ -73,6 +80,7 @@ async function run() {
         separated: Awaited<ReturnType<typeof demixMdx>>;
         resolvedDevice: string;
         timings: MdxStageTimings | undefined;
+        activeMemoryPeak: SeparationWorkerMemoryPeak;
       }
     | undefined;
   try {
@@ -81,13 +89,18 @@ async function run() {
       [new Float32Array(request.left), new Float32Array(request.right)],
       request.spec,
       sessionInfer(session, (type, data, dims) => new ort.Tensor(type, data, dims)),
-      (done, total) => port.postMessage({ type: "progress", done, total }),
+      (done, total) => {
+        memorySampler.sampleNow();
+        port.postMessage({ type: "progress", done, total });
+      },
       (measured) => {
         timings = measured;
       },
     );
-    response = { separated, resolvedDevice, timings };
+    activeMemoryPeak = memorySampler.stop();
+    response = { separated, resolvedDevice, timings, activeMemoryPeak };
   } finally {
+    activeMemoryPeak ??= memorySampler.stop();
     // Do not signal completion until the native session is released. The
     // parent runs recipe models sequentially and waits for this worker to
     // exit before opening the next session.
@@ -110,6 +123,7 @@ void run()
       type: "error",
       errorCode: error instanceof SeparationUnavailableError ? error.errorCode : null,
       message: error instanceof Error ? error.message : String(error),
+      ...(activeMemoryPeak ? { activeMemoryPeak } : {}),
     });
   })
   .finally(() => port.close());

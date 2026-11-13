@@ -10,10 +10,12 @@
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playback without a second engine; merge changed stem keys and keep master output volume device-local.
 - [Waveyard private device sync](waveyard-private-device-sync.md) — prefer QR pairing and encrypted laptop-hosted sync; keep audio and library files private and avoid paid-cloud dependency.
 - [Waveyard live-swap recovery](waveyard-live-swap-recovery.md) — keep the last audible layer playing while retaining the failed donor choice for an explicit retry.
+- [Waveyard local phrase alignment](waveyard-live-section-confidence.md) — gate confidence per active/candidate passage; weak unrelated sections must not disable a whole track, and weak BPM never authorizes stretch.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
 - [Windows build resource limits](windows-build-resources.md) — user has seen Windows builds exhaust laptop disk; distinguish RAM, dependencies, staging, installers, and downloaded models.
 - [Windows validation timing](windows-validation-timing.md) — keep preparing Windows checks, but defer asking for user runs until product gaps are nearly cleared.
 - [Waveyard database tests](waveyard-db-tests.md) — separate startup failures from queue evidence; seed real-route acceptance data with the API's actual identity.
+- [Waveyard real-stem evidence](waveyard-real-stem-evidence.md) — a test can have real stem files yet still exercise source-only analysis when separation provenance is incomplete.
 - [PostgreSQL test binaries](postgresql-test-binaries.md) — database integration tests should use bundled binaries when present and PATH tools otherwise.
 - [Waveyard clip donor provenance](waveyard-clip-donor-provenance.md) — a clip's stem reference can differ from its lane default; loading, permissions, playback, export, and deletion protection must follow clip IDs.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
@@ -23,6 +25,7 @@
 - [Capture performance evidence](waveyard-capture-performance.md) — keep signal observation bounded; separate observer cost and retention from disk, HTTP probes and runtime warmup.
 - [Waveyard CPU separation profiling](waveyard-cpu-separation-profiling.md) — measured local 4-stem CPU cost is dominated by JS STFT/ISTFT transforms, so profile before tuning ONNX inference.
 - [Waveyard product expectations](waveyard-stemfm-expectation.md) — live swapping, pitch behavior, beat-aligned DJ controls, mobile usability, and Studio handoff must all work.
+- [Waveyard breakdown sections](waveyard-breakdown-sections.md) — preserve breakdowns separately from bridges and instrumental sections when the arrangement drops to vocals/percussion or sparse claps.
 - [Arena product expectations](arena-product-expectations.md) — prioritize demonstrable local tools and open-source alternatives over claims, presets, and page-load checks.
 - [Arena baseline reconciliation](arena-baseline-reconciliation.md) — recover branch intent as user outcomes, then verify current end-to-end workflows; code similarity is not proof.
 - [SourceForge release evidence](sourceforge-release-evidence.md) — a provider SHA pins bytes, but license provenance and archive safety remain separate install gates.
@@ -55,3 +58,5 @@
 - [Waveyard Studio readiness refresh](waveyard-studio-readiness-refresh.md) — compare source and stem asset identities in session refreshes so disappearing or replaced audio cannot leave picker readiness stale.
 - [Waveyard keyboard selection](waveyard-keyboard-selection.md) — separate focus from membership so arbitrary clip groups do not require hijacking browser shortcuts.
 - [Waveyard fullscreen focus](waveyard-fullscreen-focus.md) — check post-exit layout, hit testing and overlay visibility, not just activeElement.
+- [Waveyard worker memory peaks](waveyard-worker-memory-peaks.md) — ONNX can block the inference worker loop; sample process RSS independently from the parent and report worker counters separately.
+- [Waveyard hook recurrence](waveyard-hook-recurrence.md) — short beat/chroma matches can find hooks but cannot safely label whole choruses without wider song context.

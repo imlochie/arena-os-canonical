@@ -14,6 +14,7 @@ import {
   analysePcm,
   chromaFromPcm,
   estimateBeatGrid,
+  estimateDownbeatGrid,
   estimateBpm,
   estimateTrackTempo,
   keyFromChroma,
@@ -21,8 +22,10 @@ import {
   onsetEnvelope,
   beatConfidenceFromGrid,
   decodeMonoPcm,
+  detectBassAttacks,
   detectDrumTransients,
   detectHarmonyTimeline,
+  detectVocalActivityIntervals,
   detectVocalPitchFrames,
 } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
@@ -33,6 +36,7 @@ import {
   DESKTOP_ANALYSIS_ENGINE_VERSION,
 } from "../types/analysis-provenance";
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import { HARMONY_TEMPLATE_MIN_MARGIN } from "../types/harmony-analysis";
 
 const RATE = 22_050;
 
@@ -68,6 +72,37 @@ function accentedClickTrack(bpm: number, seconds: number): Float32Array {
   return samples;
 }
 
+function downbeatFixture(phase: number, beatCount = 33): { envelope: Float32Array; grid: number[] } {
+  const frameMs = 10;
+  const grid = Array.from({ length: beatCount }, (_, index) => index * 500);
+  const envelope = new Float32Array(Math.ceil(grid.at(-1)! / frameMs) + 16);
+  for (let index = 0; index < beatCount; index += 1) {
+    const center = Math.round(grid[index]! / frameMs);
+    const level = index % 4 === phase ? 1 : 0.1;
+    envelope[center] = level;
+    envelope[center - 1] = level * 0.5;
+    envelope[center + 1] = level * 0.5;
+  }
+  return { envelope, grid };
+}
+
+function graduallyDriftingClickTrack(seconds: number): { samples: Float32Array; beatsMs: number[] } {
+  const samples = new Float32Array(Math.round(seconds * RATE));
+  const beatsMs: number[] = [];
+  let timeSeconds = 0;
+  const clickLength = Math.round(RATE * 0.01);
+  while (timeSeconds < seconds - 0.02) {
+    beatsMs.push(Math.round(timeSeconds * 1000));
+    const start = Math.round(timeSeconds * RATE);
+    for (let index = 0; index < clickLength && start + index < samples.length; index += 1) {
+      samples[start + index] = 0.9 * Math.sin((2 * Math.PI * 1000 * (start + index)) / RATE) * (1 - index / clickLength);
+    }
+    const drift = timeSeconds / seconds;
+    timeSeconds += 0.48 + 0.04 * drift;
+  }
+  return { samples, beatsMs };
+}
+
 test("estimateBpm detects an exact 120 BPM click track", () => {
   const pcm = clickTrack(120, 10);
   const { envelope, frameMs } = onsetEnvelope(pcm);
@@ -101,6 +136,87 @@ test("estimateBeatGrid returns evenly spaced beats near the true tempo", () => {
     const interval = beats[i] - beats[i - 1];
     assert.ok(Math.abs(interval - expected) < expected * 0.25, `interval ${interval} vs expected ${expected}`);
   }
+});
+
+test("downbeat analysis finds repeated 4/4 accents without assuming beat zero is bar one", () => {
+  const { envelope, grid } = downbeatFixture(3);
+  const result = estimateDownbeatGrid(envelope, 10, grid, 0.9);
+  assert.deepEqual(result.downbeatGridMs, [1500, 3500, 5500, 7500, 9500, 11500, 13500, 15500]);
+  assert.ok((result.downbeatConfidence ?? 0) >= 0.65);
+
+  const openingAccent = downbeatFixture(0);
+  const atZero = estimateDownbeatGrid(openingAccent.envelope, 10, openingAccent.grid, 0.9);
+  assert.deepEqual(atZero.downbeatGridMs, [0, 2000, 4000, 6000, 8000, 10000, 12000, 14000],
+    "the emitted grid stops at the last complete evidence window instead of extrapolating the tail");
+});
+
+test("downbeat analysis refuses a pickup/irregular opening instead of backfilling an invented bar phase", () => {
+  const { envelope, grid } = downbeatFixture(0);
+  for (let index = 0; index < 4; index += 1) {
+    const center = Math.round(grid[index]! / 10);
+    envelope[center] = index === 1 ? 1 : 0.1;
+    envelope[center - 1] = envelope[center] * 0.5;
+    envelope[center + 1] = envelope[center] * 0.5;
+  }
+  const result = estimateDownbeatGrid(envelope, 10, grid, 0.9);
+  assert.equal(result.downbeatGridMs, null);
+  assert.ok((result.downbeatConfidence ?? 1) < 0.65);
+});
+
+test("downbeat analysis rejects a confident phase change instead of flattening two arrangements into one bar grid", () => {
+  const { envelope, grid } = downbeatFixture(0, 49);
+  for (let index = 20; index < grid.length; index += 1) {
+    const center = Math.round(grid[index]! / 10);
+    const level = index % 4 === 2 ? 1 : 0.1;
+    envelope[center] = level;
+    envelope[center - 1] = level * 0.5;
+    envelope[center + 1] = level * 0.5;
+  }
+  const result = estimateDownbeatGrid(envelope, 10, grid, 0.9);
+  assert.equal(result.downbeatGridMs, null);
+});
+
+test("downbeat analysis leaves uniform pulses and weak beat grids unavailable", () => {
+  const { envelope, grid } = downbeatFixture(0);
+  for (const beat of grid) {
+    const center = Math.round(beat / 10);
+    envelope[center] = 0.5;
+    envelope[center - 1] = 0.25;
+    envelope[center + 1] = 0.25;
+  }
+  assert.equal(estimateDownbeatGrid(envelope, 10, grid, 0.9).downbeatGridMs, null);
+  assert.equal(estimateDownbeatGrid(envelope, 10, grid, 0.49).downbeatGridMs, null);
+
+  const tripleMeter = new Float32Array(envelope.length);
+  for (let index = 0; index < grid.length; index += 1) {
+    const center = Math.round(grid[index]! / 10);
+    const level = index % 3 === 0 ? 1 : 0.1;
+    tripleMeter[center] = level;
+    tripleMeter[center - 1] = level * 0.5;
+    tripleMeter[center + 1] = level * 0.5;
+  }
+  assert.equal(estimateDownbeatGrid(tripleMeter, 10, grid, 0.9).downbeatGridMs, null);
+});
+
+test("beat grid follows gradual tempo drift instead of forcing one constant period", () => {
+  const { samples, beatsMs: expectedBeats } = graduallyDriftingClickTrack(36);
+  const { envelope, frameMs } = onsetEnvelope(samples);
+  const grid = estimateBeatGrid(envelope, frameMs, 120);
+  assert.ok(grid.beatGridMs !== null);
+  const tracked = grid.beatGridMs!;
+  const count = Math.min(tracked.length, expectedBeats.length);
+  assert.ok(count > 50, `enough tracked beats: ${count}`);
+  let trackedError = 0;
+  let fixedError = 0;
+  for (let index = 0; index < count; index += 1) {
+    trackedError += Math.abs(tracked[index]! - expectedBeats[index]!);
+    fixedError += Math.abs(index * 500 - expectedBeats[index]!);
+  }
+  const trackedMeanError = trackedError / count;
+  const fixedMeanError = fixedError / count;
+  assert.ok(trackedMeanError < 30, `tracked mean timing error ${trackedMeanError.toFixed(1)}ms`);
+  assert.ok(trackedMeanError < fixedMeanError * 0.5,
+    `tracked error ${trackedMeanError.toFixed(1)}ms should beat fixed-grid error ${fixedMeanError.toFixed(1)}ms`);
 });
 
 test("spectral onset flux recovers quieter intervening beats and reports tempo changes honestly", () => {
@@ -157,6 +273,8 @@ test("silence produces honest nulls, never invented values", () => {
   assert.equal(result.bpm, null);
   assert.equal(result.musicalKey, null);
   assert.equal(result.beatGridMs, null);
+  assert.equal(result.downbeatGridMs, null);
+  assert.equal(result.downbeatConfidence, null);
 });
 
 test("key detection identifies a pure C major triad as C major-ish", () => {
@@ -214,6 +332,26 @@ test("local drum analysis executes onset detection without inventing drum classe
   }
 });
 
+test("bass attack analysis measures only low-band changes and leaves silence or high clicks unclassified", () => {
+  const renderBursts = (frequencyHz: number) => {
+    const pcm = new Float32Array(RATE * 4);
+    for (const time of [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25]) {
+      const start = Math.round(time * RATE);
+      for (let index = start; index < Math.min(start + 2_000, pcm.length); index += 1) {
+        const offset = index - start;
+        pcm[index] = 0.7 * Math.exp(-offset / 500) * Math.sin((2 * Math.PI * frequencyHz * offset) / RATE);
+      }
+    }
+    return pcm;
+  };
+
+  const bassAttacks = detectBassAttacks(renderBursts(65));
+  assert.ok(bassAttacks.length >= 5, `expected low-band attacks, got ${bassAttacks.length}`);
+  assert.ok(bassAttacks.every((event) => event.confidence >= 0 && event.confidence <= 1));
+  assert.equal(detectBassAttacks(renderBursts(5_000)).length, 0, "high-only clicks must not be called bass attacks");
+  assert.equal(detectBassAttacks(new Float32Array(RATE * 4)).length, 0, "silence must not create bass attacks");
+});
+
 test("local harmony analysis returns timed chord evidence and unknowns for silence", () => {
   const pcm = new Float32Array(RATE * 4);
   const chords = [[261.63, 329.63, 392], [349.23, 440, 523.25]];
@@ -224,6 +362,8 @@ test("local harmony analysis returns timed chord evidence and unknowns for silen
   const events = detectHarmonyTimeline(pcm, 2);
   assert.equal(events.length, 2);
   assert.ok(events.every((event) => event.root && event.quality !== "unknown"), JSON.stringify(events));
+  assert.ok(events.every((event) => event.confidence >= HARMONY_TEMPLATE_MIN_MARGIN),
+    "the persisted confidence value is the accepted template margin, not a calibrated 0–1 probability");
   assert.deepEqual(detectHarmonyTimeline(new Float32Array(RATE * 2), 2).map((event) => event.quality), ["unknown"]);
 });
 
@@ -237,6 +377,39 @@ test("local vocal analysis tracks voiced pitch and leaves silence unvoiced", () 
   assert.ok(voiced.every((frame) => Math.abs((frame.frequencyHz ?? 0) - 220) < 8));
   assert.ok(unvoiced.length > 10);
   assert.ok(unvoiced.every((frame) => frame.frequencyHz === null && frame.midiFloat === null));
+});
+
+test("vocal pitch resolves fractional periods across the singing range", () => {
+  for (const frequency of [73.42, 146.83, 233.08, 349.23, 587.33, 987.77]) {
+    const frames = detectVocalPitchFrames(sine(frequency, 0.5));
+    const voiced = frames.filter(frame => frame.voiced);
+    assert.ok(voiced.length >= frames.length * 0.9, `missing periodic voice at ${frequency} Hz`);
+    for (const frame of voiced) {
+      const cents = Math.abs(1200 * Math.log2(frame.frequencyHz! / frequency));
+      assert.ok(cents < 15, `${frequency} Hz measured as ${frame.frequencyHz}: ${cents} cents`);
+    }
+  }
+});
+
+test("vocal activity finds unpitched passages independently of pitch tracking", () => {
+  const pcm = new Float32Array(RATE * 4);
+  let state = 0x12345678;
+  for (let index = 0; index < pcm.length; index += 1) {
+    state = (1664525 * state + 1013904223) >>> 0;
+    const noise = (state / 0x1_0000_0000) * 2 - 1;
+    const seconds = index / RATE;
+    const active = (seconds >= 0.5 && seconds < 1.5) || (seconds >= 2 && seconds < 3.25);
+    pcm[index] = noise * (active ? 0.05 : 0.0003);
+  }
+  const intervals = detectVocalActivityIntervals(pcm);
+  assert.equal(intervals.length, 2, JSON.stringify(intervals));
+  assert.ok(Math.abs(intervals[0]!.startMs - 500) <= 30);
+  assert.ok(Math.abs(intervals[0]!.endMs - 1_500) <= 40);
+  assert.ok(Math.abs(intervals[1]!.startMs - 2_000) <= 30);
+  assert.ok(Math.abs(intervals[1]!.endMs - 3_250) <= 40);
+  assert.ok(intervals.every((interval) => interval.confidence >= 0 && interval.confidence <= 1));
+  assert.equal(detectVocalPitchFrames(pcm).filter((frame) => frame.voiced).length, 0,
+    "the fixture must remain unpitched so pitch tracking cannot explain the activity result");
 });
 
 test("key confidence separates clear tonal evidence from ambiguous chords", () => {

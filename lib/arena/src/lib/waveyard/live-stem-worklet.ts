@@ -9,6 +9,7 @@ type WorkletMessage =
       rate: number;
       pitchPreserving: boolean;
       playing: boolean;
+      activationFrame?: number;
     }
   | { type: "rate"; value: number }
   | { type: "pitch"; enabled: boolean }
@@ -28,10 +29,12 @@ type WorkletProcessorConstructor = new () => WorkletProcessorInstance & {
 const workletGlobal = globalThis as unknown as {
   AudioWorkletProcessor: new () => WorkletProcessorInstance;
   registerProcessor: (name: string, constructor: WorkletProcessorConstructor) => void;
+  currentFrame?: number;
 };
 
 class WaveyardLiveStemProcessor extends workletGlobal.AudioWorkletProcessor {
   private processor: LiveStemWsola | null = null;
+  private activationFrame: number | null = null;
 
   constructor() {
     super();
@@ -47,6 +50,9 @@ class WaveyardLiveStemProcessor extends workletGlobal.AudioWorkletProcessor {
           this.processor.setRate(message.rate);
           this.processor.setPitchPreserving(message.pitchPreserving);
           this.processor.setPlaying(message.playing);
+          this.activationFrame = Number.isSafeInteger(message.activationFrame)
+            ? message.activationFrame!
+            : null;
           this.port.postMessage({ type: "ready" });
         } catch (error) {
           this.port.postMessage({
@@ -74,6 +80,13 @@ class WaveyardLiveStemProcessor extends workletGlobal.AudioWorkletProcessor {
   process(_inputs: Float32Array[][], outputs: Float32Array[][]) {
     const output = outputs[0];
     if (!output) return true;
+    if (
+      this.activationFrame !== null
+      && (workletGlobal.currentFrame ?? 0) >= this.activationFrame
+    ) {
+      this.processor?.setPlaying(true);
+      this.activationFrame = null;
+    }
     if (this.processor) this.processor.process(output);
     else for (const channel of output) channel.fill(0);
     return true;

@@ -16,12 +16,22 @@ import {
   type SessionAudioMediaLease,
 } from "@workspace/arena/lib/waveyard/useStemTransport";
 import {
+  assessRecipientVocalLayerEnergy,
+  recipientVocalLayerEnergyMessage,
+  type LiveStemSwapResult,
+  type RecipientVocalLayerEnergyCheck,
+} from "@workspace/arena/lib/waveyard/live-stem-layers";
+import {
   hasReliableSessionBeatEvidence,
+  hasReliableSessionDownbeatEvidence,
+  nextSessionBarLoop,
   nextSessionBeatLoop,
+  SESSION_DJ_BAR_LENGTHS,
   SESSION_DJ_LOOP_LENGTHS,
 } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase, normalizeStemMix } from "@workspace/arena/lib/waveyard/library/model";
+import type { SourceSection } from "@workspace/arena/lib/waveyard/types/source-sections";
 import {
   localStorageSessionSaveJournal,
   sessionSavePatchAgainstPending,
@@ -50,7 +60,12 @@ import {
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
-  liveStemSectionOffsetSeconds,
+  liveStemDonorEntryOffsetSeconds,
+  liveStemSectionAlignment,
+  liveStemSectionAlignmentCandidates,
+  liveStemCandidateDonorEntryMs,
+  nearestEntryEvidenceMs,
+  normalizeManualTempoBpm,
   nextSessionTrack,
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
@@ -58,6 +73,8 @@ import {
   normalizeTransitionConfig,
   type TransitionConfig,
   type TransitionMode,
+  type LiveStemSectionAlignmentBasis,
+  type LiveStemSectionAlignmentCandidate,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 import {
   resolveSessionKeyMatch,
@@ -70,6 +87,7 @@ import {
   defaultPerformance,
   PERFORMANCE_MINIMUM_LEAD_SECONDS,
   nextPerformanceBoundary,
+  planLiveStemSwapBoundary,
   performMix,
   performanceTick,
   type PerformanceAction,
@@ -90,6 +108,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const SESSION_MASTER_LEVEL_STORAGE_KEY = "waveyard:session-master-level:v1";
+const SESSION_TEMPO_CORRECTIONS_STORAGE_KEY = "waveyard:session-tempo-corrections:v1";
 
 function readStoredSessionMasterLevel(): number {
   if (typeof window === "undefined") return 1;
@@ -118,19 +137,14 @@ interface SessionTrackItem {
     bpm: number | null;
     bpmConfidence: number | null;
     beatConfidence: number | null;
+    downbeatConfidence: number | null;
     keyConfidence: number | null;
     musicalKey: string | null;
     beatGridMs: number[] | null;
-    sections: Array<{
-      sectionIndex: number;
-      startMs: number;
-      endMs: number;
-      startBeatIndex: number;
-      endBeatIndex: number;
-      label: string;
-      labelConfidence: number;
-      structuralConfidence: number;
-    }> | null;
+    downbeatGridMs: number[] | null;
+    sections: SourceSection[] | null;
+    vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+    voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
   } | null;
 }
 
@@ -151,16 +165,52 @@ interface SessionDetail {
     fromStemAssetId: string | null;
     toStemAssetId: string | null;
     atSeconds: number;
+    donorEntryOffsetMs: number | null;
     createdAt: string;
     donorTrack?: {
       id: string;
       title: string;
+      durationSeconds: number;
       stems: Array<{ id: string; stemType: string; durationSeconds: number }>;
       analysis?: SessionTrackItem["analysis"];
     } | null;
   }>;
   createdAt: string;
   updatedAt: string;
+}
+
+type TempoAnalysis = { bpm: number | null; bpmConfidence?: number | null } | null;
+type ManualTempoCorrections = Record<string, number>;
+
+function readSessionTempoCorrections(sessionId: string): ManualTempoCorrections {
+  if (typeof window === "undefined") return {};
+  try {
+    const stored = window.localStorage.getItem(`${SESSION_TEMPO_CORRECTIONS_STORAGE_KEY}:${sessionId}`);
+    if (stored === null) return {};
+    const parsed = JSON.parse(stored);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).flatMap(([trackId, value]) => {
+      const bpm = normalizeManualTempoBpm(value);
+      return trackId.length > 0 && bpm !== null ? [[trackId, bpm]] : [];
+    }));
+  } catch {
+    return {};
+  }
+}
+
+function tempoForTrack(
+  trackId: string,
+  analysis: TempoAnalysis | undefined,
+  corrections: ManualTempoCorrections,
+) {
+  const correction = corrections[trackId];
+  const corrected = correction !== undefined;
+  return {
+    bpm: corrected ? correction : analysis?.bpm ?? null,
+    confidence: corrected ? 1 : analysis?.bpmConfidence ?? null,
+    automaticBpm: analysis?.bpm ?? null,
+    corrected,
+  };
 }
 
 function savedKeyShiftFor(item: SessionTrackItem | null, shifts: SessionKeyShifts): number {
@@ -201,6 +251,7 @@ interface PendingLiveSwap {
     bpm?: number | null;
     bpmConfidence?: number | null;
     beatConfidence?: number | null;
+    donorEntryOffsetMs?: number | null;
   };
   previousSwap?: SessionDetail["swaps"][number];
   failed?: boolean;
@@ -240,24 +291,28 @@ interface TemporaryIsolation {
   level: number;
 }
 
-type LibraryTrackOption = Pick<LibraryTrackSummary, "id" | "title" | "artist" | "analysis" | "stemAvailability">;
+type LibraryTrackOption = Pick<
+  LibraryTrackSummary,
+  "id" | "title" | "artist" | "durationSeconds" | "analysis" | "stemAvailability"
+>;
 
 function getPersistedSwapSetup(
   session: SessionDetail | null,
   item: SessionTrackItem | null,
   library: LibraryTrackOption[],
   cancelledSwapIds: Set<string>,
+  tempoCorrections: ManualTempoCorrections,
   keyMode: SessionKeyMode,
   deckSemitones: number,
 ) {
   const swaps: Record<string, string> = {};
   const tempoStretchRatios: Record<string, number> = {};
   const beatOffsets: Record<string, number> = {};
-  const sectionPositionMatches: Record<string, boolean> = {};
+  const alignmentBases: Record<string, LiveStemSectionAlignmentBasis> = {};
   const keyCorrections: Record<string, number> = {};
   const keyMatchStatuses: Record<string, string> = {};
   if (session === null || item === null) {
-    return { swaps, tempoStretchRatios, beatOffsets, sectionPositionMatches, keyCorrections, keyMatchStatuses };
+    return { swaps, tempoStretchRatios, beatOffsets, alignmentBases, keyCorrections, keyMatchStatuses };
   }
 
   for (const swap of session.swaps) {
@@ -269,31 +324,54 @@ function getPersistedSwapSetup(
 
     const libraryDonorAnalysis = library.find((track) => track.id === swap.toTrackId)?.analysis ?? null;
     const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? null;
-    const donorBpm = donorAnalysis?.bpm ?? libraryDonorAnalysis?.bpm ?? null;
+    const recipientTempo = tempoForTrack(item.track.id, item.analysis, tempoCorrections);
+    const donorTrackId = swap.toTrackId;
+    const donorTempo = tempoForTrack(donorTrackId, donorAnalysis ?? libraryDonorAnalysis, tempoCorrections);
     const tempoEvidence = {
-      recipientBpmConfidence: item.analysis?.bpmConfidence,
-      donorBpmConfidence: donorAnalysis?.bpmConfidence ?? libraryDonorAnalysis?.bpmConfidence,
+      recipientBpmConfidence: recipientTempo.confidence,
+      donorBpmConfidence: donorTempo.confidence,
       recipientBeatConfidence: item.analysis?.beatConfidence,
       donorBeatConfidence: donorAnalysis?.beatConfidence ?? libraryDonorAnalysis?.beatConfidence,
     };
     const reliableTempoEvidence = hasReliableLiveStemTempoEvidence(tempoEvidence);
     const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
-    const ratio = liveStemTempoStretchRatio(item.analysis?.bpm ?? null, donorBpm, tempoEvidence);
+    const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, tempoEvidence);
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
-    const sectionOffset = ratio === null || !reliableBeatEvidence ? null : liveStemSectionOffsetSeconds(
+    const sectionAlignment = ratio === null ? null : liveStemSectionAlignment(
       item.analysis?.sections,
       donorAnalysis?.sections,
       swap.atSeconds,
       ratio,
+      {
+        recipientBeatGridMs: item.analysis?.beatGridMs,
+        donorBeatGridMs: donorAnalysis?.beatGridMs,
+        recipientBpm: recipientTempo.bpm,
+        donorBpm: donorTempo.bpm,
+        recipientBpmConfidence: recipientTempo.confidence,
+        donorBpmConfidence: donorTempo.confidence,
+        recipientBeatConfidence: item.analysis?.beatConfidence,
+        donorBeatConfidence: donorAnalysis?.beatConfidence,
+        recipientKey: shiftMusicalKey(item.analysis?.musicalKey, deckSemitones),
+        donorKey: donorAnalysis?.musicalKey ?? null,
+        recipientKeyConfidence: item.analysis?.keyConfidence,
+        donorKeyConfidence: donorAnalysis?.keyConfidence,
+      },
     );
+    const sectionOffset = sectionAlignment?.offsetSeconds ?? null;
     const beatOffset = ratio === null || !reliableBeatEvidence ? null : liveStemBeatOffsetSeconds(
       item.analysis?.beatGridMs,
       donorAnalysis?.beatGridMs,
       ratio,
     );
-    const offset = sectionOffset ?? beatOffset;
+    const explicitDonorEntryOffset = liveStemDonorEntryOffsetSeconds(
+      swap.donorEntryOffsetMs,
+      swap.atSeconds,
+      ratio,
+    );
+    const offset = explicitDonorEntryOffset ?? sectionOffset ?? beatOffset;
     if (offset !== null) beatOffsets[swap.stemType] = offset;
-    if (sectionOffset !== null) sectionPositionMatches[swap.stemType] = true;
+    if (sectionAlignment !== null && explicitDonorEntryOffset === null)
+      alignmentBases[swap.stemType] = sectionAlignment.basis;
     const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
     const donorKeyConfidence = donor?.analysis?.keyConfidence ?? swap.donorTrack?.analysis?.keyConfidence
@@ -331,7 +409,7 @@ function getPersistedSwapSetup(
             ? "Key already aligned"
             : keyMode === "camelot" ? "Camelot-compatible key matched" : "Key matched to lead";
   }
-  return { swaps, tempoStretchRatios, beatOffsets, sectionPositionMatches, keyCorrections, keyMatchStatuses };
+  return { swaps, tempoStretchRatios, beatOffsets, alignmentBases, keyCorrections, keyMatchStatuses };
 }
 
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
@@ -488,6 +566,7 @@ function SessionDeck({
   attachingOriginalAudio,
   onApi,
   onPlaying,
+  onStarting,
   onProgress,
   onEnded,
   audioAssetPool,
@@ -530,7 +609,12 @@ function SessionDeck({
   stemExtra?: (stemType: string) => ReactNode;
   openSwapPickerStem?: string | null;
   onOpenSwapPicker?: (stemType: string) => void;
-  onLiveLayerReady?: (sessionTrackId: string, stemType: string, selectedAt: number | null) => void;
+  onLiveLayerReady?: (
+    sessionTrackId: string,
+    stemType: string,
+    selectedAt: number | null,
+    result?: LiveStemSwapResult | null,
+  ) => void;
   onLiveLayerFailed?: (sessionTrackId: string, stemType: string, message: string, selectedAt: number | null) => void;
   liveSwapFailure?: string | null;
   onRetryLiveSwap?: () => void;
@@ -539,6 +623,7 @@ function SessionDeck({
   attachingOriginalAudio?: boolean;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
+  onStarting: (deckIndex: number, starting: boolean) => void;
   onProgress: (deckIndex: number, position: number) => void;
   onEnded: (deckIndex: number, itemId: string) => void;
   audioAssetPool: SessionAudioAssetPool;
@@ -573,6 +658,7 @@ function SessionDeck({
   const transport = useStemTransport(transportIds, duration, assetIds, outputGroup, audioAssetPool);
   const [cuePosition, setCuePosition] = useState(0);
   const [selectedLoopBeats, setSelectedLoopBeats] = useState<number | null>(null);
+  const [selectedLoopBars, setSelectedLoopBars] = useState<number | null>(null);
   useEffect(() => {
     transport.setPlaybackRate(playbackRate);
   }, [playbackRate, transport.setPlaybackRate]);
@@ -595,12 +681,14 @@ function SessionDeck({
   useEffect(() => {
     setCuePosition(0);
     setSelectedLoopBeats(null);
+    setSelectedLoopBars(null);
     transport.setLoop({ enabled: false, start: 0, end: 0 });
   }, [item?.id, transport.setLoop]);
   const selectBeatLoop = (beats: number) => {
     if (transport.loop.enabled && selectedLoopBeats === beats) {
       transport.setLoop({ ...transport.loop, enabled: false });
       setSelectedLoopBeats(null);
+      setSelectedLoopBars(null);
       return;
     }
     const range = nextSessionBeatLoop(
@@ -612,6 +700,24 @@ function SessionDeck({
     if (!range) return;
     transport.setLoop({ enabled: true, ...range });
     setSelectedLoopBeats(beats);
+    setSelectedLoopBars(null);
+  };
+  const selectBarLoop = (bars: number) => {
+    if (transport.loop.enabled && selectedLoopBars === bars) {
+      transport.setLoop({ ...transport.loop, enabled: false });
+      setSelectedLoopBars(null);
+      return;
+    }
+    const range = nextSessionBarLoop(
+      item?.analysis?.downbeatGridMs,
+      transport.position,
+      bars,
+      item?.analysis?.downbeatConfidence,
+    );
+    if (!range) return;
+    transport.setLoop({ enabled: true, ...range });
+    setSelectedLoopBars(bars);
+    setSelectedLoopBeats(null);
   };
   const mediaElements = useRef<Record<string, HTMLAudioElement | null>>({});
   const mediaAssetLeases = useRef(new Map<string, SessionAudioMediaLease>());
@@ -698,12 +804,42 @@ function SessionDeck({
   useEffect(() => {
     let stale = false;
     const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null, number, number]>;
+    const plan = planLiveStemSwapBoundary({
+      snap: performanceSettings.snap,
+      playing: active && transport.playing,
+      beatEvidenceReliable: hasReliableSessionBeatEvidence(item?.analysis?.beatConfidence),
+      downbeatEvidenceReliable: hasReliableSessionDownbeatEvidence(
+        item?.analysis?.downbeatConfidence,
+        item?.analysis?.downbeatGridMs,
+      ),
+      positionSeconds: transport.currentPosition(),
+      beatGridMs: item?.analysis?.beatGridMs ?? null,
+      downbeatGridMs: item?.analysis?.downbeatGridMs ?? null,
+      contextTimeAtPosition: transport.contextTimeAtPosition,
+      minimumLeadSeconds: PERFORMANCE_MINIMUM_LEAD_SECONDS,
+    });
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
     const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt, beatOffset, keyCorrection]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
-      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined, beatOffset, keyCorrection).then((installed) => {
+      return transport.replaceStem(
+        id,
+        donor ? `/api/assets/${donor}` : null,
+        tempoStretchRatio,
+        selectedAt ?? undefined,
+        beatOffset,
+        keyCorrection,
+        {
+          snapRequested: donor !== null && plan.requested,
+          activationTime: plan.activationTime,
+        },
+      ).then((installed) => {
         if (!stale && installed !== false && donor !== null && item !== null) {
-          onLiveLayerReady?.(item.id, stemType, selectedAt);
+          onLiveLayerReady?.(
+            item.id,
+            stemType,
+            selectedAt,
+            typeof installed === "object" ? installed : null,
+          );
         }
       }).catch((error: unknown) => {
         if (!stale && donor !== null && item !== null) {
@@ -726,7 +862,25 @@ function SessionDeck({
       setLoadingLayers(false);
     });
     return () => { stale = true; };
-  }, [swapKey, stemTypeByAsset, tempoStretchRatios, transport.replaceStem, onLiveLayerReady, onLiveLayerFailed, item?.id, swapRetry]);
+  }, [
+    swapKey,
+    stemTypeByAsset,
+    tempoStretchRatios,
+    transport.replaceStem,
+    transport.currentPosition,
+    transport.contextTimeAtPosition,
+    transport.playing,
+    onLiveLayerReady,
+    onLiveLayerFailed,
+    item?.id,
+    item?.analysis?.beatConfidence,
+    item?.analysis?.beatGridMs,
+    item?.analysis?.downbeatConfidence,
+    item?.analysis?.downbeatGridMs,
+    active,
+    performanceSettings.snap,
+    swapRetry,
+  ]);
 
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
@@ -857,6 +1011,9 @@ function SessionDeck({
   useEffect(() => {
     onPlaying(deckIndex, transport.playing);
   }, [deckIndex, transport.playing, onPlaying]);
+  useEffect(() => {
+    onStarting(deckIndex, transport.starting);
+  }, [deckIndex, transport.starting, onStarting]);
   useEffect(() => {
     onProgress(deckIndex, transport.position);
   }, [deckIndex, transport.position, onProgress]);
@@ -1001,7 +1158,11 @@ function SessionDeck({
             <h3>{item.track.title}</h3>
             <p className="sess-deck-sub">
               {item.track.artist || "Unknown artist"}
-              {item.analysis?.bpm != null ? ` · ${Math.round(item.analysis.bpm)} BPM` : ""}
+              {item.analysis?.bpm != null
+                ? item.analysis.bpmConfidence === null || item.analysis.bpmConfidence < 0.5
+                  ? ` · ~${Math.round(item.analysis.bpm)} BPM (uncertain)`
+                  : ` · ${Math.round(item.analysis.bpm)} BPM`
+                : ""}
               {item.analysis?.musicalKey ? ` · ${item.analysis.musicalKey}` : ""}
               {item.analysis === null ? " · analysis pending" : ""}
             </p>
@@ -1029,7 +1190,7 @@ function SessionDeck({
               <input
                 type="range"
                 aria-label="Session playback speed"
-                aria-valuetext={`${playbackRate.toFixed(2)} times${item.analysis?.bpm == null ? "" : `, ${Math.round(item.analysis.bpm * playbackRate)} BPM`}; ${pitchModesAvailable ? (pitchPreserving ? "pitch preserved" : "pitch follows speed") : "pitch mode unavailable"}`}
+                aria-valuetext={`${playbackRate.toFixed(2)} times${item.analysis?.bpm == null ? "" : `, ${item.analysis.bpmConfidence === null || item.analysis.bpmConfidence < 0.5 ? "approximately " : ""}${Math.round(item.analysis.bpm * playbackRate)} BPM${item.analysis.bpmConfidence === null || item.analysis.bpmConfidence < 0.5 ? ", tempo uncertain" : ""}`}; ${pitchModesAvailable ? (pitchPreserving ? "pitch preserved" : "pitch follows speed") : "pitch mode unavailable"}`}
                 min={SESSION_PLAYBACK_RATE_MIN}
                 max={SESSION_PLAYBACK_RATE_MAX}
                 step={0.01}
@@ -1050,7 +1211,9 @@ function SessionDeck({
               <small>
                 {item.analysis?.bpm == null
                   ? "Tempo analysis unavailable"
-                  : `${Math.round(item.analysis.bpm * playbackRate)} BPM`}
+                  : item.analysis.bpmConfidence === null || item.analysis.bpmConfidence < 0.5
+                    ? `~${Math.round(item.analysis.bpm * playbackRate)} BPM · tempo uncertain`
+                    : `${Math.round(item.analysis.bpm * playbackRate)} BPM`}
                 {` · ${pitchModesAvailable ? (pitchPreserving ? "pitch stays steady" : "pitch follows speed") : "pitch control unavailable in this browser"}`}
               </small>
               {pitchModesAvailable && <button
@@ -1103,11 +1266,36 @@ function SessionDeck({
                   onClick={() => {
                     transport.setLoop({ ...transport.loop, enabled: false });
                     setSelectedLoopBeats(null);
+                  setSelectedLoopBars(null);
                   }}
                   data-testid="session-loop-off"
                 >
                   Off
                 </button>
+              </div>
+              <div className="wy-dj-loop-buttons" role="group" aria-label="Bar loops">
+                <span>Bars</span>
+                {SESSION_DJ_BAR_LENGTHS.map((bars) => {
+                  const range = nextSessionBarLoop(
+                    item.analysis?.downbeatGridMs,
+                    transport.position,
+                    bars,
+                    item.analysis?.downbeatConfidence,
+                  );
+                  return (
+                    <button
+                      key={`bar-${bars}`}
+                      type="button"
+                      aria-pressed={transport.loop.enabled && selectedLoopBars === bars}
+                      aria-label={`Loop ${bars} ${bars === 1 ? "bar" : "bars"}`}
+                      disabled={!range}
+                      onClick={() => selectBarLoop(bars)}
+                      data-testid={`session-loop-bar-${bars}`}
+                    >
+                      {bars} {bars === 1 ? "bar" : "bars"}
+                    </button>
+                  );
+                })}
               </div>
               <button
                 type="button"
@@ -1127,11 +1315,26 @@ function SessionDeck({
               </button>
               <small>
                 {hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)
-                  ? "Loops enter on the next measured beat."
+                  ? "Beat loops use the measured pulse; bar actions need stable repeated four-beat accents."
                   : item.analysis?.beatGridMs?.length
                     ? "Beat evidence is low confidence; beat loops are disabled."
-                    : "Analyze this track to enable beat loops."}
+                    : "No measured beat grid is stored; beat loops are disabled."}
               </small>
+              <small data-testid="session-bar-meter-limit">
+                Bar timing is based on rhythmic accents, not a detected time signature. A disabled loop length may also lack a full span before the track ends.
+              </small>
+              {!hasReliableSessionDownbeatEvidence(
+                item.analysis?.downbeatConfidence,
+                item.analysis?.downbeatGridMs,
+              ) && (
+                <small data-testid="session-bar-loop-unavailable">
+                  {typeof item.analysis?.downbeatConfidence === "number"
+                    ? "The accent pattern does not support a stable four-beat phase; bar snap and loops are disabled."
+                    : item.analysis?.beatGridMs?.length
+                      ? "This stored analysis has no supported downbeat grid. A beat grid or BPM alone cannot establish bars."
+                      : "No measured beat grid is stored. BPM alone cannot establish a bar."}
+                </small>
+              )}
             </div>
           )}
           {!active && <p className="wy-deck-note">Seeking here only previews the cue; a beat/bar transition re-cues from the grid.</p>}
@@ -1250,7 +1453,18 @@ function SessionDeck({
                       <option value="quarter" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>¼ beat</option>
                       <option value="half" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>½ beat</option>
                       <option value="beat" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>Beat</option>
-                      <option value="bar" disabled>Bar unavailable</option>
+                      <option
+                        value="bar"
+                        disabled={!hasReliableSessionDownbeatEvidence(
+                          item.analysis?.downbeatConfidence,
+                          item.analysis?.downbeatGridMs,
+                        )}
+                      >
+                        {hasReliableSessionDownbeatEvidence(
+                          item.analysis?.downbeatConfidence,
+                          item.analysis?.downbeatGridMs,
+                        ) ? "Bar" : "Bar unavailable"}
+                      </option>
                     </select>
                   </label>
                   <label className="wy-performance-restore">
@@ -1272,8 +1486,11 @@ function SessionDeck({
                   {performanceSettings.snap !== "off" && !hasReliableSessionBeatEvidence(item.analysis?.beatConfidence) && (
                     <span className="wy-performance-note">Snap needs a beat grid with measured confidence of at least 0.50.</span>
                   )}
-                  {performanceSettings.snap === "bar" && (
-                    <span className="wy-performance-note">Bar snap needs verified downbeat data.</span>
+                  {performanceSettings.snap === "bar" && !hasReliableSessionDownbeatEvidence(
+                    item.analysis?.downbeatConfidence,
+                    item.analysis?.downbeatGridMs,
+                  ) && (
+                    <span className="wy-performance-note">No stable downbeat grid is available. Stem actions apply immediately; BPM alone cannot establish a bar.</span>
                   )}
                   <span className="wy-performance-note">Snaps use the analyzed source grid; they are not sample-locked.</span>
                 </div>
@@ -1301,7 +1518,14 @@ function SessionDeck({
                 const peak = meters?.[stem.id]?.peak ?? 0;
                 return (
                   <div key={stem.id} className={`wy-stem wy-stem-${stem.stemType}${silent ? " silent" : ""}`}>
-                    <span className="wy-stem-name">{stem.stemType}{swaps[stem.stemType] ? " · swapped" : ""}</span>
+                    <span
+                      className="wy-stem-name"
+                      title={stem.stemType === "vocals" && swaps[stem.stemType]
+                        ? "Donor vocal layer selected; source-voice leakage in other stems is unverified."
+                        : undefined}
+                    >
+                      {stem.stemType}{swaps[stem.stemType] ? stem.stemType === "vocals" ? " · donor" : " · swapped" : ""}
+                    </span>
                     <span className="wy-stem-meter" aria-hidden="true">
                       <i style={{ transform: `scaleX(${Math.min(1, peak)})` }} />
                     </span>
@@ -1399,6 +1623,37 @@ export default function SessionExperience({
   const audioAssetPool = useMemo(() => new SessionAudioAssetPool(), [sessionId]);
   useEffect(() => () => audioAssetPool.dispose(), [audioAssetPool]);
   const [session, setSession] = useState<SessionDetail | null>(null);
+  const [tempoCorrectionState, setTempoCorrectionState] = useState<{
+    sessionId: string;
+    values: ManualTempoCorrections;
+  }>(() => ({ sessionId, values: readSessionTempoCorrections(sessionId) }));
+  const manualTempoCorrections = tempoCorrectionState.sessionId === sessionId
+    ? tempoCorrectionState.values
+    : {};
+  useEffect(() => {
+    setTempoCorrectionState({ sessionId, values: readSessionTempoCorrections(sessionId) });
+  }, [sessionId]);
+  useEffect(() => {
+    if (tempoCorrectionState.sessionId !== sessionId || typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        `${SESSION_TEMPO_CORRECTIONS_STORAGE_KEY}:${sessionId}`,
+        JSON.stringify(tempoCorrectionState.values),
+      );
+    } catch {
+      // Corrections remain available in memory when browser storage is unavailable.
+    }
+  }, [sessionId, tempoCorrectionState]);
+  const correctTrackTempo = useCallback((trackId: string, value: number | null) => {
+    const bpm = value === null ? null : normalizeManualTempoBpm(value);
+    if (value !== null && bpm === null) return;
+    setTempoCorrectionState((previous) => {
+      const values = previous.sessionId === sessionId ? { ...previous.values } : {};
+      if (bpm === null) delete values[trackId];
+      else values[trackId] = bpm;
+      return { sessionId, values };
+    });
+  }, [sessionId]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [library, setLibrary] = useState<LibraryTrackOption[]>([]);
   const [preparingSeparationTrackIds, setPreparingSeparationTrackIds] = useState<Set<string>>(() => new Set());
@@ -1471,6 +1726,10 @@ export default function SessionExperience({
   const swapMutationRequestVersionsRef = useRef(new Map<string, number>());
   const pendingSwapCancelRequestsRef = useRef(new Set<string>());
   const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
+  const [recipientVocalHealth, setRecipientVocalHealth] = useState<{
+    sessionTrackId: string;
+    check: RecipientVocalLayerEnergyCheck;
+  } | null>(null);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
   const [pendingPerformance, setPendingPerformance] = useState<PendingPerformance | null>(null);
@@ -1510,6 +1769,25 @@ export default function SessionExperience({
 
   const decksRef = useRef<Array<DeckApi | null>>([null, null]);
 
+  const checkRecipientVocalLayer = useCallback((item: SessionTrackItem, deckIndex: 0 | 1) => {
+    const deck = decksRef.current[deckIndex];
+    const vocalStem = item.stems.find((stem) => stem.stemType === "vocals");
+    if (
+      !deck || deck.itemId !== item.id || !deck.hasStemChannels || !deck.transport.playing || !vocalStem
+    ) {
+      return assessRecipientVocalLayerEnergy(null, null);
+    }
+    const sourceMeters = deck.transport.readSourceMeters();
+    const vocalRms = sourceMeters[vocalStem.id]?.rms;
+    const bedRms = Math.sqrt(item.stems
+      .filter((stem) => stem.stemType !== "vocals")
+      .reduce((sum, stem) => {
+        const rms = sourceMeters[stem.id]?.rms ?? 0;
+        return sum + rms * rms;
+      }, 0));
+    return assessRecipientVocalLayerEnergy(vocalRms, bedRms);
+  }, []);
+
   const reportKeyShiftFailure = useCallback((_itemId: string | null, message: string) => {
     setKeyMatchError(`${message} The current mix and playhead were kept.`);
   }, []);
@@ -1522,6 +1800,7 @@ export default function SessionExperience({
   const fadeRef = useRef<{ raf: number; t0: number; fromDeck: 0 | 1; toDeck: 0 | 1; cfg: TransitionConfig; fromMix: Record<string, number> } | null>(null);
   const advancingRef = useRef(false);
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
+  const [startingByDeck, setStartingByDeck] = useState<[boolean, boolean]>([false, false]);
   const sessionRef = useRef<SessionDetail | null>(null);
   // All session GET paths share one order; committed edits invalidate older GETs.
   const sessionRequestVersion = useRef(0);
@@ -1771,12 +2050,12 @@ export default function SessionExperience({
     : resolvedNextKeyMatch;
   const nextKeyShift = nextKeyMatch.semitones ?? 0;
   const currentSwapSetup = useMemo(
-    () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds, keyMode, currentKeyShift),
-    [session, currentItem, library, cancelledSwapIds, keyMode, currentKeyShift],
+    () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, currentKeyShift),
+    [session, currentItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, currentKeyShift],
   );
   const nextSwapSetup = useMemo(
-    () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds, keyMode, nextKeyShift),
-    [session, nextItem, library, cancelledSwapIds, keyMode, nextKeyShift],
+    () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, nextKeyShift),
+    [session, nextItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, nextKeyShift],
   );
   useEffect(() => {
     if (!nextItem || nextKeyMatch.semitones === null) return;
@@ -1991,6 +2270,14 @@ export default function SessionExperience({
       });
     }
   }, [clearRemoteTransport, publishTransport]);
+  const handleDeckStarting = useCallback((deckIndex: number, starting: boolean) => {
+    setStartingByDeck((previous) => {
+      if (previous[deckIndex] === starting) return previous;
+      const next: [boolean, boolean] = [previous[0], previous[1]];
+      next[deckIndex] = starting;
+      return next;
+    });
+  }, []);
   const handleDeckProgress = useCallback((deckIndex: number, position: number) => {
     setPositions((prev) => {
       if (Math.abs(prev[deckIndex] - position) < 0.25) return prev;
@@ -2170,15 +2457,22 @@ export default function SessionExperience({
       && item.id === currentIdRef.current
       && deck?.transport.playing === true
       && settings.snap !== "off";
-    const beatEvidenceReliable = hasReliableSessionBeatEvidence(item.analysis?.beatConfidence);
+    const snapEvidenceReliable = settings.snap === "bar"
+      ? hasReliableSessionDownbeatEvidence(
+        item.analysis?.downbeatConfidence,
+        item.analysis?.downbeatGridMs,
+      )
+      : hasReliableSessionBeatEvidence(item.analysis?.beatConfidence);
     const shouldSnap = wantsSnap
-      && beatEvidenceReliable
+      && snapEvidenceReliable
       && !(restoring && settings.instantRestore);
     if (!shouldSnap) {
       cancelPendingPerformance();
       applyPerformanceActions(item, deckIndex, [action]);
-      if (wantsSnap && !beatEvidenceReliable) {
-        setStatus("Beat snap unavailable: this track’s measured beat confidence is low. The stem change was applied immediately.");
+      if (wantsSnap && !snapEvidenceReliable) {
+        setStatus(settings.snap === "bar"
+          ? "Bar snap unavailable: no stable measured downbeat grid is available. The stem change was applied immediately."
+          : "Beat snap unavailable: this track’s measured beat confidence is low. The stem change was applied immediately.");
       }
       return;
     }
@@ -2188,24 +2482,14 @@ export default function SessionExperience({
       position,
       item.analysis?.beatGridMs,
       settings.snap,
-      undefined,
+      item.analysis?.downbeatGridMs,
       PERFORMANCE_MINIMUM_LEAD_SECONDS,
     );
-    if (target === null && settings.snap === "bar") {
-      target = nextPerformanceBoundary(
-        position,
-        item.analysis?.beatGridMs,
-        "beat",
-        undefined,
-        PERFORMANCE_MINIMUM_LEAD_SECONDS,
-      );
-      if (target !== null) setStatus("No verified bar boundary is available; using the next verified beat.");
-    }
     if (target === null) {
       cancelPendingPerformance();
       applyPerformanceActions(item, deckIndex, [action]);
       setStatus(settings.snap === "bar"
-        ? "No verified bar or beat boundary is available; applied immediately."
+        ? "No stable measured downbeat boundary is available; applied immediately."
         : "No upcoming verified beat is available; applied immediately.");
       return;
     }
@@ -2523,6 +2807,10 @@ export default function SessionExperience({
     endTemporaryIsolation();
     const api = decksRef.current[activeDeck];
     if (api === null) return;
+    if (api.transport.starting) {
+      api.transport.pause();
+      return;
+    }
     const remote = remoteTransportRef.current;
     if (!api.transport.playing && remote?.sessionId === sessionId && remote.playing) {
       const paused = publishTransport({
@@ -2843,6 +3131,22 @@ export default function SessionExperience({
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const detail = (await response.json()).session as SessionDetail;
           if (requestId !== sessionRequestVersion.current || sessionRef.current?.id !== detail.id) return;
+          const latest = sessionRef.current;
+          if (latest === null || latest.id !== detail.id) return;
+          const audible = new Set<string>();
+          for (const [index, deck] of decksRef.current.entries()) {
+            const deckItem = deckItems[index as 0 | 1];
+            if (deck?.transport.playing && deckItem) audible.add(deckItem.id);
+          }
+          const tracks = detail.tracks.map((item) => {
+            const old = latest.tracks.find((candidate) => candidate.id === item.id);
+            // Keep the new saved preference, but don't replace media already
+            // playing on either deck. The preference takes effect on a later load.
+            return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id)
+              ? { ...item, playback: old.playback }
+              : item;
+          });
+          const refreshed = { ...detail, tracks };
           const currentRetained = previousCurrentId === null || detail.tracks.some((item) => item.id === previousCurrentId);
           const nextRetained = previousNextId === null || detail.tracks.some((item) => item.id === previousNextId);
           const wasFading = fadeRef.current !== null;
@@ -2858,8 +3162,8 @@ export default function SessionExperience({
           setMixes((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
           setTransitions((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
           setStemsReady((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
-          sessionRef.current = detail;
-          setSession(detail);
+          sessionRef.current = refreshed;
+          setSession(refreshed);
 
           if (previousCurrentId === null || currentRetained) {
             if (!(wasFading && removedNext)) {
@@ -3079,21 +3383,22 @@ export default function SessionExperience({
       if (session === null || currentItem === null) return Promise.resolve();
       const recipientStemId = currentItem.stems.find((stem) => stem.stemType === stemType)?.id;
       if (!recipientStemId) return Promise.resolve();
-      const key = `${activeDeck}:${currentItem.id}:${stemType}:${donor.id}`;
-      const existing = liveSwapWarmupsRef.current.get(key);
-      if (existing) return existing;
-
-      const selectedAt = performance.now();
+      const recipientTempo = tempoForTrack(currentItem.track.id, currentItem.analysis, manualTempoCorrections);
       const tempoStretchRatio = liveStemTempoStretchRatio(
-        currentItem.analysis?.bpm ?? null,
+        recipientTempo.bpm,
         donor.bpm ?? null,
         {
-          recipientBpmConfidence: currentItem.analysis?.bpmConfidence,
+          recipientBpmConfidence: recipientTempo.confidence,
           donorBpmConfidence: donor.bpmConfidence,
           recipientBeatConfidence: currentItem.analysis?.beatConfidence,
           donorBeatConfidence: donor.beatConfidence,
         },
       ) ?? 1;
+      const key = `${activeDeck}:${currentItem.id}:${stemType}:${donor.id}:${tempoStretchRatio.toFixed(6)}`;
+      const existing = liveSwapWarmupsRef.current.get(key);
+      if (existing) return existing;
+
+      const selectedAt = performance.now();
       setWarmingLiveSwap({
         key,
         sessionTrackId: currentItem.id,
@@ -3120,8 +3425,20 @@ export default function SessionExperience({
       liveSwapWarmupsRef.current.set(key, warming);
       return warming;
     },
-    [activeDeck, currentItem, session],
+    [activeDeck, currentItem, manualTempoCorrections, session],
   );
+
+  const resolveLiveSwapPreviewAsset = useCallback(async (donorId: string, stemType: string) => {
+    const sessionDonor = sessionRef.current?.tracks.find((item) => item.track.id === donorId);
+    let donorStem = sessionDonor?.stems.find((stem) => stem.stemType === stemType);
+    if (!donorStem) {
+      const response = await fetch(`/api/library/tracks/${encodeURIComponent(donorId)}`, { cache: "no-store" });
+      if (!response.ok) return null;
+      const body = await response.json() as { track?: { stems?: SessionTrackItem["stems"] } };
+      donorStem = body.track?.stems?.find((stem) => stem.stemType === stemType);
+    }
+    return donorStem?.id ? `/api/assets/${encodeURIComponent(donorStem.id)}` : null;
+  }, []);
 
   const prefetchLiveSwapAsset = useCallback((stemType: string, donorId: string) => {
     if (session === null || currentItem === null) return;
@@ -3155,7 +3472,7 @@ export default function SessionExperience({
       bpm?: number | null;
       bpmConfidence?: number | null;
       beatConfidence?: number | null;
-    }) => {
+    }, donorEntryOffsetMs: number | null = null) => {
       if (session === null || currentItem === null) return;
       const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
       if (validation && !validation.ok) {
@@ -3196,6 +3513,7 @@ export default function SessionExperience({
           bpm: donor.bpm,
           bpmConfidence: donor.bpmConfidence,
           beatConfidence: donor.beatConfidence,
+          donorEntryOffsetMs,
         },
         previousSwap,
         savePending: true,
@@ -3216,6 +3534,7 @@ export default function SessionExperience({
             stemType,
             toTrackId: donor.id,
             atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
+            donorEntryOffsetMs,
           }),
         }, scope);
         if (detail) {
@@ -3447,11 +3766,18 @@ export default function SessionExperience({
     liveLayerFailureRef.current(sessionTrackId, stemType, message, selectedAt);
   }, []);
 
-  const markLiveLayerReady = useCallback((sessionTrackId: string, stemType: string, selectedAt: number | null) => {
+  const markLiveLayerReady = useCallback((
+    sessionTrackId: string,
+    stemType: string,
+    selectedAt: number | null,
+    result?: LiveStemSwapResult | null,
+  ) => {
     const activeSessionId = sessionRef.current?.id;
+    let matchedPending = false;
     if (activeSessionId) {
       const key = swapMutationKey({ sessionId: activeSessionId, sessionTrackId, stemType });
       if (pendingLiveSwapRef.current.get(key)?.selectedAt === selectedAt) {
+        matchedPending = true;
         pendingLiveSwapRef.current.delete(key);
       }
     }
@@ -3462,11 +3788,25 @@ export default function SessionExperience({
       (failed) => failed.sessionTrackId !== sessionTrackId || failed.stemType !== stemType ||
         failed.selectedAt !== selectedAt,
     ));
+    if (matchedPending && result) {
+      const label = stemType === "vocals" ? "Vocal" : stemType[0]?.toUpperCase() + stemType.slice(1);
+      if (result.snap === "scheduled") {
+        setStatus(`${label} donor activated on the next verified beat boundary.`);
+      } else if (result.snap === "missed") {
+        setStatus(`${label} donor switched immediately; preparation missed the beat boundary, so no snapped swap was claimed.`);
+      } else if (result.snap === "paused") {
+        setStatus(`${label} donor is prepared, but playback paused before the beat. It will be used when playback resumes; no snapped swap was claimed.`);
+      } else {
+        setStatus(`${label} donor switched immediately; snap was unavailable because a reliable beat boundary or running audio clock was not available.`);
+      }
+    }
   }, []);
 
   const retryFailedLiveSwaps = useCallback(async (sessionTrackId: string) => {
     const failures = failedLiveSwaps.filter((failed) => failed.sessionTrackId === sessionTrackId);
-    for (const failure of failures) await requestSwap(failure.stemType, failure.donor);
+    for (const failure of failures) {
+      await requestSwap(failure.stemType, failure.donor, failure.donor.donorEntryOffsetMs ?? null);
+    }
   }, [failedLiveSwaps, requestSwap]);
 
   useEffect(() => {
@@ -3480,6 +3820,48 @@ export default function SessionExperience({
     });
   }, [session?.swaps]);
 
+  const refreshSessionFromOtherTab = useCallback(async () => {
+    if (sessionRef.current?.id !== sessionId) return null;
+    const requestId = ++sessionRequestVersion.current;
+    try {
+      const [sessionResponse, libraryResponse] = await Promise.all([
+        fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" }),
+        fetch("/api/library/tracks", { cache: "no-store" }),
+      ]);
+      if (!sessionResponse.ok || !libraryResponse.ok) return null;
+      const [sessionPayload, libraryPayload] = await Promise.all([
+        sessionResponse.json(),
+        libraryResponse.json(),
+      ]);
+      const fresh = sessionPayload.session as SessionDetail;
+      const tracks = (Array.isArray(libraryPayload.tracks) ? libraryPayload.tracks : []) as LibraryTrackOption[];
+      if (requestId !== sessionRequestVersion.current || fresh.id !== sessionId) return null;
+      const previous = sessionRef.current;
+      if (previous === null || previous.id !== sessionId) return null;
+      const audible = new Set<string>();
+      for (const [index, deck] of decksRef.current.entries()) {
+        const item = deckItems[index as 0 | 1];
+        if (deck?.transport.playing && item) audible.add(item.id);
+      }
+      const merged = fresh.tracks.map((item) => {
+        const old = previous.tracks.find((candidate) => candidate.id === item.id);
+        // A refresh must retain the saved preference while keeping any
+        // currently audible deck on its existing media until a later load.
+        return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id)
+          ? { ...item, playback: old.playback }
+          : item;
+      });
+      const next = { ...previous, ...fresh, tracks: merged };
+      sessionRef.current = next;
+      setSession(next);
+      setLibrary(tracks);
+      return { session: next, library: tracks };
+    } catch {
+      /* The next queue update or tab resume will retry the refresh. */
+      return null;
+    }
+  }, [sessionId, deckItems]);
+
   // -------------------------------------------------------- studio handoff
   const sendToStudio = useCallback(() => {
     if (session === null || studioHandoffInFlight.current) return;
@@ -3491,17 +3873,48 @@ export default function SessionExperience({
       setStatus("Wait for the selected live stem swap to finish saving before sending it to Studio.");
       return;
     }
-    const selectedFullSourceEntries = session.tracks.filter((item) => {
-      if (!selectedStudioTrackIds.includes(item.id)) return false;
-      const readiness = getStudioTrackReadiness(item, library);
-      return !readiness.ready && readiness.canUseFullSource;
-    });
+    const selectedAtClick = [...selectedStudioTrackIds];
     studioHandoffInFlight.current = true;
     setSendingToStudio(true);
     setHandoff(null);
-    setStatus(selectedFullSourceEntries.length > 0 ? "Preparing selected full-source audio for Studio…" : null);
+    setStatus("Checking the selected audio before sending it to Studio…");
     void (async () => {
       try {
+        // Revalidate against the latest session and library snapshot. A choice
+        // can become unavailable after the picker rendered but before handoff.
+        const latest = await refreshSessionFromOtherTab();
+        if (latest === null) {
+          setStatus("Could not confirm the latest audio readiness. Check the connection and try again.");
+          return;
+        }
+        const currentById = new Map(latest.session.tracks.map((item) => [item.id, item]));
+        const unavailableSelections: Array<{ title: string; reason: string }> = [];
+        const selectedEntries = selectedAtClick.flatMap((id) => {
+          const item = currentById.get(id);
+          if (item === undefined) {
+            const previous = session.tracks.find((candidate) => candidate.id === id);
+            unavailableSelections.push({
+              title: previous?.track.title ?? "Removed session entry",
+              reason: "This entry is no longer in the session.",
+            });
+            return [];
+          }
+          const readiness = getStudioTrackReadiness(item, latest.library);
+          if (!readiness.ready && !readiness.canUseFullSource) {
+            unavailableSelections.push({ title: item.track.title, reason: readiness.label });
+            return [];
+          }
+          return [item];
+        });
+        if (selectedEntries.length === 0) {
+          setStatus(unavailableSelections.map((item) => `${item.title}: ${item.reason}`).join("; ")
+            || "No selected track is currently available for Studio.");
+          return;
+        }
+        const selectedFullSourceEntries = selectedEntries.filter((item) => {
+          const readiness = getStudioTrackReadiness(item, latest.library);
+          return !readiness.ready && readiness.canUseFullSource;
+        });
         const fullSourceFailures: Array<{ title: string; reason: string }> = [];
         const failedFullSourceIds = new Set<string>();
         const preparedFullSourceIds: string[] = [];
@@ -3538,18 +3951,20 @@ export default function SessionExperience({
             });
           }
         }
-        const handoffTrackIds = selectedStudioTrackIds.filter((id) => !failedFullSourceIds.has(id));
+        const handoffTrackIds = selectedEntries
+          .map((item) => item.id)
+          .filter((id) => !failedFullSourceIds.has(id));
         if (handoffTrackIds.length === 0) {
           setStatus(fullSourceFailures.map((item) => `${item.title}: ${item.reason}`).join("; ")
             || "No selected track could be prepared for Studio.");
           return;
         }
-        const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
+        const response = await fetch(`/api/library/sessions/${latest.session.id}/studio-handoff`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sessionTrackIds: handoffTrackIds,
-            trackEdits: session.tracks
+            trackEdits: latest.session.tracks
               .filter((item) => handoffTrackIds.includes(item.id))
               .map((item) => ({
                 sessionTrackId: item.id,
@@ -3575,7 +3990,7 @@ export default function SessionExperience({
             refused?: Array<{ title: string; reason: string }>;
           };
         };
-        const refused = [...(body.handoff.refused ?? []), ...fullSourceFailures];
+        const refused = [...(body.handoff.refused ?? []), ...unavailableSelections, ...fullSourceFailures];
         setHandoff({
           ...body.handoff,
           fullSourceCount: preparedFullSourceIds.length,
@@ -3591,7 +4006,7 @@ export default function SessionExperience({
         setSendingToStudio(false);
       }
     })();
-  }, [session, selectedStudioTrackIds, library, savingSwap, mixes]);
+  }, [session, selectedStudioTrackIds, savingSwap, mixes, refreshSessionFromOtherTab]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -3611,36 +4026,15 @@ export default function SessionExperience({
     },
   });
 
-  const refreshSessionFromOtherTab = useCallback(async () => {
-    if (sessionRef.current?.id !== sessionId) return;
-    const requestId = ++sessionRequestVersion.current;
-    try {
-      const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
-      if (!response.ok) return;
-      const fresh = (await response.json()).session as SessionDetail;
-      if (requestId !== sessionRequestVersion.current || fresh.id !== sessionId) return;
-      const previous = sessionRef.current;
-      if (previous === null || previous.id !== sessionId) return;
-      const audible = new Set<string>();
-      for (const [index, deck] of decksRef.current.entries()) {
-        const item = deckItems[index as 0 | 1];
-        if (deck?.transport.playing && item) audible.add(item.id);
-      }
-      const merged = fresh.tracks.map((item) => {
-        const old = previous.tracks.find((candidate) => candidate.id === item.id);
-        return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id) ? old : item;
-      });
-      const next = { ...previous, ...fresh, tracks: merged };
-      sessionRef.current = next;
-      setSession(next);
-    } catch {
-      /* The next queue update or tab resume will retry the refresh. */
-    }
-  }, [sessionId, deckItems]);
-
-  useEffect(() => subscribeToWaveyardQueueChanges(({ affectedSessionIds, transport }) => {
+  useEffect(() => subscribeToWaveyardQueueChanges(({ affectedSessionIds, affectedTrackIds, transport }) => {
     if (transport !== undefined) receiveRemoteTransport(transport);
-    else if (affectedSessionIds.includes(sessionId)) void refreshSessionFromOtherTab();
+    else if (
+      affectedSessionIds.includes(sessionId)
+      || (affectedTrackIds.length > 0
+        && (sessionRef.current?.tracks.some((item) => affectedTrackIds.includes(item.track.id)) ?? false))
+    ) {
+      void refreshSessionFromOtherTab();
+    }
   }), [sessionId, receiveRemoteTransport, refreshSessionFromOtherTab]);
 
   useEffect(() => subscribeToWaveyardResume(() => {
@@ -3649,7 +4043,6 @@ export default function SessionExperience({
 
   // Background refresh: picks up finished separations and new library tracks.
   // A deck that is AUDIBLE keeps its source until the user switches.
-  const pending = session?.tracks.some((item) => item.playback?.kind !== "stems") ?? false;
   const sessionSeparationProgress = useMemo(() => {
     if (session === null) return [];
     return session.tracks.flatMap((item) => {
@@ -3670,12 +4063,15 @@ export default function SessionExperience({
   useEffect(() => {
     if (session === null) return;
     let cancelled = false;
+    let tickInFlight = false;
     const id = session.id;
     const tick = async () => {
-      const requestId = pending ? ++sessionRequestVersion.current : null;
+      if (tickInFlight) return;
+      tickInFlight = true;
+      const requestId = ++sessionRequestVersion.current;
       try {
         const [sessionResponse, libraryResponse] = await Promise.all([
-          pending ? fetch(`/api/library/sessions/${id}`, { cache: "no-store" }) : Promise.resolve(null),
+          fetch(`/api/library/sessions/${id}`, { cache: "no-store" }),
           fetch("/api/library/tracks", { cache: "no-store" }),
         ]);
         if (cancelled || sessionRef.current?.id !== id) return;
@@ -3683,7 +4079,7 @@ export default function SessionExperience({
           const tracks = ((await libraryResponse.json()).tracks ?? []) as LibraryTrackOption[];
           if (!cancelled) setLibrary(tracks);
         }
-        if (sessionResponse === null || !sessionResponse.ok) return;
+        if (!sessionResponse.ok) return;
         const fresh = (await sessionResponse.json()).session as SessionDetail;
         const prev = sessionRef.current;
         if (cancelled || requestId !== sessionRequestVersion.current || prev === null || prev.id !== id) return;
@@ -3749,15 +4145,22 @@ export default function SessionExperience({
         });
       } catch {
         /* polling is opportunistic; the next tick retries */
+      } finally {
+        tickInFlight = false;
       }
     };
-    const interval = window.setInterval(() => void tick(), pending ? 8000 : 30000);
+    // Track/library events normally refresh immediately. This short visible-
+    // tab poll is the recovery path for missed broadcasts and external changes.
+    void tick();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void tick();
+    }, 3000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- interval per session + pending state
-  }, [session?.id, pending]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- interval per active session
+  }, [session?.id]);
 
   const switchToStems = useCallback(async (itemId: string) => {
     const ready = stemsReady[itemId];
@@ -4249,12 +4652,14 @@ export default function SessionExperience({
     const selectedDonorAnalysis = swap === undefined ? null
       : session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis
         ?? swap.donorTrack?.analysis
-        ?? library.find((item) => item.id === swap.toTrackId)?.analysis
         ?? null;
-    const selectedDonorBpm = selectedDonorAnalysis?.bpm ?? null;
+    const recipientTempo = tempoForTrack(currentItem.track.id, currentItem.analysis, manualTempoCorrections);
+    const selectedDonorTempo = swap === undefined ? null
+      : tempoForTrack(swap.toTrackId, selectedDonorAnalysis, manualTempoCorrections);
+    const selectedDonorBpm = selectedDonorTempo?.bpm ?? null;
     const tempoEvidence = {
-      recipientBpmConfidence: currentItem.analysis?.bpmConfidence,
-      donorBpmConfidence: selectedDonorAnalysis?.bpmConfidence,
+      recipientBpmConfidence: recipientTempo.confidence,
+      donorBpmConfidence: selectedDonorTempo?.confidence,
       recipientBeatConfidence: currentItem.analysis?.beatConfidence,
       donorBeatConfidence: selectedDonorAnalysis?.beatConfidence,
     };
@@ -4284,35 +4689,97 @@ export default function SessionExperience({
       }];
     });
     const candidates: LiveStemDonorOption[] = [
-      ...donors.map((donor) => ({
-        id: donor.track.id,
-        title: donor.track.title,
-        artist: donor.track.artist,
-        bpm: donor.analysis?.bpm ?? null,
-        bpmConfidence: donor.analysis?.bpmConfidence ?? null,
-        beatConfidence: donor.analysis?.beatConfidence ?? null,
-        musicalKey: donor.analysis?.musicalKey ?? null,
-        keyConfidence: donor.analysis?.keyConfidence ?? null,
-        collection: "session" as const,
-      })),
-      ...libraryDonors.map((donor) => ({
-        id: donor.id,
-        title: donor.title,
-        artist: donor.artist,
-        bpm: donor.analysis?.bpm ?? null,
-        bpmConfidence: donor.analysis?.bpmConfidence ?? null,
-        beatConfidence: donor.analysis?.beatConfidence ?? null,
-        musicalKey: donor.analysis?.musicalKey ?? null,
-        keyConfidence: donor.analysis?.keyConfidence ?? null,
-        collection: "library" as const,
-      })),
+      ...donors.map((donor) => {
+        const tempo = tempoForTrack(donor.track.id, donor.analysis, manualTempoCorrections);
+        return {
+          id: donor.track.id,
+          title: donor.track.title,
+          artist: donor.track.artist,
+          bpm: tempo.bpm,
+          bpmConfidence: tempo.confidence,
+          automaticBpm: tempo.automaticBpm,
+          tempoCorrected: tempo.corrected,
+          beatConfidence: donor.analysis?.beatConfidence ?? null,
+          musicalKey: donor.analysis?.musicalKey ?? null,
+          keyConfidence: donor.analysis?.keyConfidence ?? null,
+          durationSeconds: donor.track.durationSeconds,
+          collection: "session" as const,
+        };
+      }),
+      ...libraryDonors.map((donor) => {
+        const tempo = tempoForTrack(donor.id, donor.analysis, manualTempoCorrections);
+        return {
+          id: donor.id,
+          title: donor.title,
+          artist: donor.artist,
+          bpm: tempo.bpm,
+          bpmConfidence: tempo.confidence,
+          automaticBpm: tempo.automaticBpm,
+          tempoCorrected: tempo.corrected,
+          beatConfidence: donor.analysis?.beatConfidence ?? null,
+          musicalKey: donor.analysis?.musicalKey ?? null,
+          keyConfidence: donor.analysis?.keyConfidence ?? null,
+          durationSeconds: donor.durationSeconds,
+          collection: "library" as const,
+        };
+      }),
     ];
+    const getEntryCandidates = (donorId: string): LiveStemSectionAlignmentCandidate[] => {
+      const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
+      // Library summaries deliberately omit checksum-bound windows. Reuse full
+      // session/saved-donor evidence only; never fabricate windows from summaries.
+      const donorAnalysis = sessionDonor?.analysis
+        ?? session.swaps.find((item) => item.toTrackId === donorId)?.donorTrack?.analysis
+        ?? null;
+      if (donorAnalysis === null || currentItem.analysis === null) return [];
+      const donorTempo = tempoForTrack(donorId, donorAnalysis, manualTempoCorrections);
+      const candidateTempoEvidence = {
+        recipientBpmConfidence: recipientTempo.confidence,
+        donorBpmConfidence: donorTempo.confidence,
+        recipientBeatConfidence: currentItem.analysis.beatConfidence,
+        donorBeatConfidence: donorAnalysis.beatConfidence,
+      };
+      const stretchRatio = liveStemTempoStretchRatio(
+        recipientTempo.bpm,
+        donorTempo.bpm,
+        candidateTempoEvidence,
+      ) ?? 1;
+      return liveStemSectionAlignmentCandidates(
+        currentItem.analysis.sections,
+        donorAnalysis.sections,
+        decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+        stretchRatio,
+        {
+          ...candidateTempoEvidence,
+          recipientBeatGridMs: currentItem.analysis.beatGridMs,
+          donorBeatGridMs: donorAnalysis.beatGridMs,
+          recipientBpm: recipientTempo.bpm,
+          donorBpm: donorTempo.bpm,
+          recipientKey: currentItem.analysis.musicalKey,
+          donorKey: donorAnalysis.musicalKey,
+          recipientKeyConfidence: currentItem.analysis.keyConfidence,
+          donorKeyConfidence: donorAnalysis.keyConfidence,
+        },
+      );
+    };
     const selectedDonor = session.tracks.find((item) => item.track.id === swap?.toTrackId);
+    const selectedDonorLibraryTrack = library.find((item) => item.id === swap?.toTrackId);
     const selectedDonorTitle = selectedDonor?.track.title
-      ?? library.find((item) => item.id === swap?.toTrackId)?.title
+      ?? selectedDonorLibraryTrack?.title
       ?? swap?.donorTrack?.title
       ?? null;
-    const recipientBpm = currentItem.analysis?.bpm ?? null;
+    const selectedDonorDurationSeconds = selectedDonor?.track.durationSeconds
+      ?? swap?.donorTrack?.durationSeconds
+      ?? null;
+    const selectedDonorSwapChoice = swap && selectedDonorTitle ? {
+      id: swap.toTrackId,
+      title: selectedDonorTitle,
+      stems: selectedDonor?.stems,
+      bpm: selectedDonorTempo?.bpm ?? selectedDonorAnalysis?.bpm ?? null,
+      bpmConfidence: selectedDonorTempo?.confidence ?? selectedDonorAnalysis?.bpmConfidence ?? null,
+      beatConfidence: selectedDonorAnalysis?.beatConfidence ?? null,
+    } : null;
+    const recipientBpm = recipientTempo.bpm;
     const lowTempoConfidence = recipientBpm !== null && selectedDonorBpm !== null && !reliableTempoEvidence;
     const lowBeatConfidence = recipientBpm !== null && selectedDonorBpm !== null
       && reliableTempoEvidence && !reliableBeatEvidence;
@@ -4320,9 +4787,19 @@ export default function SessionExperience({
     const halfDoubleTempo = reliableTempoEvidence && isHalfDoubleTempoPair(recipientBpm, selectedDonorBpm);
     const unsafeTempoGap = reliableTempoEvidence && recipientBpm !== null && selectedDonorBpm !== null
       && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
+    const alignmentBasis = currentSwapSetup.alignmentBases[stemType];
+    const alignmentDescription = alignmentBasis === "rhythm-harmony-phrase"
+      ? "rhythm + harmony matched"
+      : alignmentBasis === "trusted-section-role"
+        ? "section role matched"
+        : "beat phase aligned";
     const tempoStatus = swap === undefined ? null
       : pendingSwap
         ? "Preparing live layer…"
+        : swap.donorEntryOffsetMs !== null
+          ? `Manual donor start ${formatClock(swap.donorEntryOffsetMs / 1000)} · ${activeTempoStretchRatio !== undefined
+            ? `tempo ${activeTempoStretchRatio.toFixed(3)}×`
+            : "native pace"}${lowTempoConfidence ? " · tempo uncertain" : ""}`
         : lowTempoConfidence
           ? "Low tempo confidence · native pace; no beat sync"
         : halfDoubleTempo
@@ -4331,9 +4808,7 @@ export default function SessionExperience({
             ? `Tempo gap too wide · native ${Math.round(selectedDonorBpm!)} BPM`
         : activeTempoStretchRatio !== undefined && Math.abs(activeTempoStretchRatio - 1) > 0.001
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
-            ? currentSwapSetup.sectionPositionMatches[stemType]
-              ? "Tempo matched · pitch preserved · section position matched"
-              : "Tempo matched · pitch preserved · beat phase aligned"
+            ? `Tempo matched · pitch preserved · ${alignmentDescription}`
             : "Tempo matched · pitch preserved · beat alignment unavailable"
         : lowBeatConfidence
           ? activeTempoStretchRatio !== undefined
@@ -4341,24 +4816,41 @@ export default function SessionExperience({
             : "Beat sync unavailable · analysis confidence is low"
         : activeTempoStretchRatio !== undefined
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
-            ? currentSwapSetup.sectionPositionMatches[stemType]
-              ? "Native tempo · section position matched"
-              : "Native tempo · beat phase aligned"
+            ? `Native tempo · ${alignmentDescription}`
             : "Native tempo · beat alignment unavailable"
         : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
             : "Tempo unavailable · native tempo";
     const keyMatchStatus = currentSwapSetup.keyMatchStatuses[stemType];
-    const swapStatus = tempoStatus === null ? null
+    const statusWithKey = tempoStatus === null ? null
       : keyMatchStatus ? `${tempoStatus} · ${keyMatchStatus}` : tempoStatus;
+    const manualTempoUsed = recipientTempo.corrected || selectedDonorTempo?.corrected === true;
+    const currentVocalHealth = recipientVocalHealth?.sessionTrackId === currentItem.id
+      ? recipientVocalHealth.check
+      : null;
+    const vocalHealthMessage = currentVocalHealth === null
+      ? "Clean vocal removal is unverified; source voice may remain in other stems."
+      : recipientVocalLayerEnergyMessage(currentVocalHealth);
+    const swapStatus = statusWithKey === null ? null
+      : [
+        manualTempoUsed ? `${statusWithKey} · manual BPM correction` : statusWithKey,
+        stemType === "vocals" ? "vocal leakage unverified" : null,
+      ].filter((part): part is string => part !== null).join(" · ");
     return (
       <LiveStemSwapPicker
         stemType={stemType}
-        currentBpm={currentItem.analysis?.bpm ?? null}
-        currentBpmConfidence={currentItem.analysis?.bpmConfidence ?? null}
+        currentTrackId={currentItem.track.id}
+        currentTrackTitle={currentItem.track.title}
+        currentBpm={recipientTempo.bpm}
+        currentAutomaticBpm={recipientTempo.automaticBpm}
+        currentTempoCorrected={recipientTempo.corrected}
+        currentBpmConfidence={recipientTempo.confidence}
         currentBeatConfidence={currentItem.analysis?.beatConfidence ?? null}
         currentKey={currentItem.analysis?.musicalKey ?? null}
         currentKeyConfidence={currentItem.analysis?.keyConfidence ?? null}
+        currentPositionSeconds={positions[activeDeck]}
+        currentPlaying={playingByDeck[activeDeck]}
+        sessionPlaybackRate={playbackRate}
         candidates={candidates}
         preparationCandidates={preparationCandidates}
         preparingTrackIds={preparingSeparationTrackIds}
@@ -4368,19 +4860,29 @@ export default function SessionExperience({
           ? warmingLiveSwap.donorId
           : null}
         swapStatus={swapStatus}
+        vocalHealthMessage={stemType === "vocals" ? vocalHealthMessage : null}
         isOpen={openSwapStem === stemType}
         pending={pendingSwap !== undefined}
         busy={savingSwapKeys.has(`${currentItem.id}:${stemType}`)}
-        onToggle={() => setOpenSwapStem((current) => current === stemType ? null : stemType)}
+        onToggle={() => {
+          if (openSwapStem !== stemType && stemType === "vocals") {
+            setRecipientVocalHealth({
+              sessionTrackId: currentItem.id,
+              check: checkRecipientVocalLayer(currentItem, activeDeck),
+            });
+          }
+          setOpenSwapStem((current) => current === stemType ? null : stemType);
+        }}
         onClose={() => setOpenSwapStem(null)}
         onWarm={(donorId) => {
+          const tempo = candidates.find((candidate) => candidate.id === donorId);
           const donor = donors.find((item) => item.track.id === donorId);
           if (donor) {
             void warmLiveSwap(stemType, {
               id: donor.track.id,
               stems: donor.stems,
-              bpm: donor.analysis?.bpm ?? null,
-              bpmConfidence: donor.analysis?.bpmConfidence ?? null,
+              bpm: tempo?.bpm ?? donor.analysis?.bpm ?? null,
+              bpmConfidence: tempo?.bpmConfidence ?? donor.analysis?.bpmConfidence ?? null,
               beatConfidence: donor.analysis?.beatConfidence ?? null,
             });
             return;
@@ -4388,33 +4890,76 @@ export default function SessionExperience({
           const source = libraryDonors.find((item) => item.id === donorId);
           if (source) void warmLiveSwap(stemType, {
             id: source.id,
-            bpm: source.analysis?.bpm ?? null,
-            bpmConfidence: source.analysis?.bpmConfidence ?? null,
+            bpm: tempo?.bpm ?? source.analysis?.bpm ?? null,
+            bpmConfidence: tempo?.bpmConfidence ?? source.analysis?.bpmConfidence ?? null,
             beatConfidence: source.analysis?.beatConfidence ?? null,
           });
         }}
         onPrefetch={(donorId) => prefetchLiveSwapAsset(stemType, donorId)}
-        onChoose={(donorId) => {
+        onGetEntryCandidates={getEntryCandidates}
+        onResolvePreviewAsset={resolveLiveSwapPreviewAsset}
+        onPauseForEntryReview={() => decksRef.current[activeDeck]?.transport.pause()}
+        onChoose={(donorId, donorEntryOffsetMs = null, entryCandidate) => {
+          if (entryCandidate) {
+            const candidateTempo = candidates.find((candidate) => candidate.id === donorId);
+            const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, candidateTempo?.bpm ?? null, {
+              recipientBpmConfidence: recipientTempo.confidence,
+              donorBpmConfidence: candidateTempo?.bpmConfidence,
+              recipientBeatConfidence: currentItem.analysis?.beatConfidence,
+              donorBeatConfidence: candidateTempo?.beatConfidence,
+            }) ?? 1;
+            const exactEntryMs = liveStemCandidateDonorEntryMs(
+              entryCandidate,
+              decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+              ratio,
+            );
+            if (exactEntryMs === null) {
+              setStatus("The reviewed entry window expired or its tempo changed. Refresh alternatives before applying.");
+              return false;
+            }
+            donorEntryOffsetMs = exactEntryMs;
+          }
+          if (stemType === "vocals") {
+            setRecipientVocalHealth({
+              sessionTrackId: currentItem.id,
+              check: checkRecipientVocalLayer(currentItem, activeDeck),
+            });
+          }
+          const tempo = candidates.find((candidate) => candidate.id === donorId);
           const donor = donors.find((item) => item.track.id === donorId);
           if (donor) {
             void requestSwap(stemType, {
               id: donor.track.id,
               title: donor.track.title,
               stems: donor.stems,
-              bpm: donor.analysis?.bpm ?? null,
-              bpmConfidence: donor.analysis?.bpmConfidence ?? null,
+              bpm: tempo?.bpm ?? donor.analysis?.bpm ?? null,
+              bpmConfidence: tempo?.bpmConfidence ?? donor.analysis?.bpmConfidence ?? null,
               beatConfidence: donor.analysis?.beatConfidence ?? null,
-            });
-            return;
+            }, donorEntryOffsetMs);
+            return true;
           }
           const source = libraryDonors.find((item) => item.id === donorId);
-          if (source) void requestSwap(stemType, {
-            id: source.id,
-            title: source.title,
-            bpm: source.analysis?.bpm ?? null,
-            bpmConfidence: source.analysis?.bpmConfidence ?? null,
-            beatConfidence: source.analysis?.beatConfidence ?? null,
-          });
+          if (source) {
+            void requestSwap(stemType, {
+              id: source.id,
+              title: source.title,
+              bpm: tempo?.bpm ?? source.analysis?.bpm ?? null,
+              bpmConfidence: tempo?.bpmConfidence ?? source.analysis?.bpmConfidence ?? null,
+              beatConfidence: source.analysis?.beatConfidence ?? null,
+            }, donorEntryOffsetMs);
+            return true;
+          }
+          return false;
+        }}
+        onTempoCorrection={correctTrackTempo}
+        selectedDonorDurationSeconds={selectedDonorDurationSeconds}
+        selectedDonorEntryOffsetMs={swap?.donorEntryOffsetMs ?? null}
+        selectedDonorSections={selectedDonorAnalysis?.sections ?? null}
+        selectedDonorVocalActivityStartsMs={selectedDonorAnalysis?.vocalActivityStartsMs ?? null}
+        selectedDonorVoicedPhraseStartsMs={selectedDonorAnalysis?.voicedPhraseStartsMs ?? null}
+        onApplyDonorEntryOffset={(offsetMs) => {
+          if (stemType !== "vocals" || selectedDonorSwapChoice === null) return;
+          void requestSwap(stemType, selectedDonorSwapChoice, offsetMs);
         }}
         onPrepare={(trackId) => { void startSessionTrackSeparation(trackId); }}
         onRestore={() => {
@@ -4497,7 +5042,15 @@ export default function SessionExperience({
       onReset: () => { if (item) resetMix(item); },
       stemExtra: isActive ? swapExtra : undefined,
       openSwapPickerStem: openSwapStem,
-      onOpenSwapPicker: isActive ? (stemType: string) => setOpenSwapStem(stemType) : undefined,
+      onOpenSwapPicker: isActive ? (stemType: string) => {
+        if (stemType === "vocals" && item) {
+          setRecipientVocalHealth({
+            sessionTrackId: item.id,
+            check: checkRecipientVocalLayer(item, deckIndex),
+          });
+        }
+        setOpenSwapStem(stemType);
+      } : undefined,
       onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
       onLiveLayerFailed: isActive ? markLiveLayerFailed : undefined,
       liveSwapFailure: isActive && liveSwapFailures.length > 0
@@ -4515,6 +5068,7 @@ export default function SessionExperience({
       attachingOriginalAudio: item !== null && restoringOriginalTrackId === item.id,
       onApi: handleDeckApi,
       onPlaying: handleDeckPlaying,
+      onStarting: handleDeckStarting,
       onProgress: handleDeckProgress,
       onEnded: handleDeckEnded,
     };
@@ -4563,7 +5117,7 @@ export default function SessionExperience({
           <button type="button" className="wy-icon" aria-label="Previous track" disabled={previousItem === null} onClick={() => previousItem && jumpTo(previousItem.id, playing)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
           </button>
-          <button type="button" className="wy-play" aria-label={playing ? "Pause" : "Play"} aria-pressed={playing} disabled={currentItem === null} onClick={() => void togglePlay()} data-testid="session-play">
+          <button type="button" className="wy-play" aria-label={startingByDeck[activeDeck] ? "Cancel playback start" : playing ? "Pause" : "Play"} aria-pressed={playing} aria-busy={startingByDeck[activeDeck]} disabled={currentItem === null} onClick={() => void togglePlay()} data-testid="session-play">
             {playing ? (
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
             ) : (

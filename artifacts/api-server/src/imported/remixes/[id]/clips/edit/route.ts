@@ -11,6 +11,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import {
   MAX_CLIPS_PER_TRACK,
+  SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
   clipWindowIsValid,
   moveClipTimeline,
   nearestBeat,
@@ -22,8 +23,9 @@ import {
 } from "@workspace/arena/lib/waveyard/types";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
-import { crossfadeError } from "@workspace/arena/lib/waveyard/remix";
+import { crossfadeError, type RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
 import { barMs, beatMs, snapTimelineMs, type MusicalTiming } from "@workspace/arena/lib/waveyard/timing";
+import { bindChopSequencerClipToTimeline, CHOP_SEQUENCER_TRACK_NAME } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
 
 const operations = new Set(["move", "nudge", "trim-left", "trim-right", "slip", "duplicate", "split"]);
 type Operation = "move" | "nudge" | "trim-left" | "trim-right" | "slip" | "duplicate" | "split";
@@ -46,10 +48,12 @@ function clipValues(clip: typeof remixClips.$inferSelect) {
     tempoSyncEnabled: clip.tempoSyncEnabled,
     keySyncEnabled: clip.keySyncEnabled,
     beatSnapEnabled: clip.beatSnapEnabled,
+    chopStepIndex: clip.chopStepIndex,
+    chopSampleDurationMs: clip.chopSampleDurationMs,
   };
 }
 
-function persistedValues(clip: ReturnType<typeof clipValues>) {
+function persistedValues(clip: RemixClipInput) {
   return {
     stemAssetId: clip.stemAssetId,
     timelineStartMs: clip.timelineStartMs,
@@ -61,6 +65,8 @@ function persistedValues(clip: ReturnType<typeof clipValues>) {
     tempoSyncEnabled: clip.tempoSyncEnabled,
     keySyncEnabled: clip.keySyncEnabled,
     beatSnapEnabled: clip.beatSnapEnabled,
+    chopStepIndex: clip.chopStepIndex ?? null,
+    chopSampleDurationMs: clip.chopSampleDurationMs ?? null,
     updatedAt: new Date(),
   };
 }
@@ -107,7 +113,7 @@ export async function POST(
       .select()
       .from(remixClips)
       .where(eq(remixClips.remixTrackId, track.id));
-    if (!clipWindowIsValid(original, sourceDurationMs, tempoRatio))
+    if (!clipWindowIsValid(original, sourceDurationMs, tempoRatio, SOURCE_DURATION_ROUNDING_TOLERANCE_MS))
       return Response.json({ error: "The existing clip has an invalid source window." }, { status: 422 });
     const timing: MusicalTiming = {
       tempoBpm: remix.tempoBpm,
@@ -120,7 +126,7 @@ export async function POST(
     const snapTarget = (value: number) => snapMode === "free"
       ? Math.max(0, Math.round(value))
       : snapTimelineMs(value, { ...timing, gridDivision: snapMode as "beat" | "bar" });
-    let next: ReturnType<typeof clipValues> | null = null;
+    let next: RemixClipInput | null = null;
     if (operation === "move") {
       const target = asFinite(body.timelineStartMs);
       next = target === null ? null : moveClipTimeline(original, snapTarget(target));
@@ -146,8 +152,11 @@ export async function POST(
     }
     if (operation === "duplicate") {
       const target = asFinite(body.timelineStartMs);
-      const duplicate = moveClipTimeline(original, target === null ? original.timelineStartMs + original.durationMs : snapTarget(target));
-      if (!duplicate || !clipWindowIsValid(duplicate, sourceDurationMs, tempoRatio))
+      const duplicatePosition = moveClipTimeline(original, target === null ? original.timelineStartMs + original.durationMs : snapTarget(target));
+      const duplicate = duplicatePosition
+        ? bindChopSequencerClipToTimeline(duplicatePosition, track.name, remix.tempoBpm)
+        : null;
+      if (!duplicate || !clipWindowIsValid(duplicate, sourceDurationMs, tempoRatio, SOURCE_DURATION_ROUNDING_TOLERANCE_MS))
         return Response.json({ error: "Duplicate placement is outside the arrangement timeline." }, { status: 422 });
       const current = await db.select({ id: remixClips.id }).from(remixClips).where(eq(remixClips.remixTrackId, track.id));
       if (current.length >= MAX_CLIPS_PER_TRACK)
@@ -171,26 +180,36 @@ export async function POST(
       const splitAt = asFinite(body.timelineMs);
       const split = splitAt === null ? null : splitEditableClip(original, splitAt, sourceDurationMs, tempoRatio);
       if (!split) return Response.json({ error: "Split point must fall inside the source-bounded clip." }, { status: 422 });
+      const splitClips = track.name === CHOP_SEQUENCER_TRACK_NAME
+        ? [
+            { ...split.left, chopStepIndex: null, chopSampleDurationMs: null },
+            { ...split.right, chopStepIndex: null, chopSampleDurationMs: null },
+          ]
+        : [split.left, split.right];
       const crossfadeMessage = crossfadeError({
         clips: [
           ...trackClips.filter((candidate) => candidate.id !== clip.id).map(clipValues),
-          split.left,
-          split.right,
+          ...splitClips,
         ],
       });
       if (crossfadeMessage)
         return Response.json({ error: crossfadeMessage }, { status: 422 });
       const created = await db.transaction(async (tx) => {
-        const [left] = await tx.insert(remixClips).values({ remixTrackId: track.id, ...persistedValues(split.left) }).returning();
-        const [right] = await tx.insert(remixClips).values({ remixTrackId: track.id, ...persistedValues(split.right) }).returning();
+        const [left] = await tx.insert(remixClips).values({ remixTrackId: track.id, ...persistedValues(splitClips[0]!) }).returning();
+        const [right] = await tx.insert(remixClips).values({ remixTrackId: track.id, ...persistedValues(splitClips[1]!) }).returning();
         await tx.delete(remixClips).where(eq(remixClips.id, clip.id));
         await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
         return [left, right];
       });
       return Response.json({ operation, replacedClipId: clip.id, clips: created, version: remix.version + 1 });
     }
-    if (!next || !clipWindowIsValid(next, sourceDurationMs, tempoRatio))
+    if (!next || !clipWindowIsValid(next, sourceDurationMs, tempoRatio, SOURCE_DURATION_ROUNDING_TOLERANCE_MS))
       return Response.json({ error: "This edit falls outside immutable source or timeline bounds." }, { status: 422 });
+    if (track.name === CHOP_SEQUENCER_TRACK_NAME) {
+      next = operation === "move" || operation === "nudge"
+        ? bindChopSequencerClipToTimeline(next, track.name, remix.tempoBpm)
+        : { ...next, chopStepIndex: null, chopSampleDurationMs: null };
+    }
     const crossfadeMessage = crossfadeError({
       clips: trackClips.map((candidate) =>
         candidate.id === clip.id ? next : clipValues(candidate),

@@ -18,14 +18,14 @@
  *    Kim Vocal 2), not Demucs' four.
  *  - modelVersion records the model file's sha256 — the exact bits that
  *    produced the stems.
- *  - Separation does not auto-create analysis rows. The Studio's explicit
- *    analysis requests use the local drum/harmony/vocal executors registered
- *    by worker-local/index.ts.
+ *  - A completed separation queues local vocal pitch-continuity analysis and
+ *    refreshes structural analysis against the checksum-bound stems.
  *  - Real progress: chunk-level progress is written into the durable job's
  *    metadata while separating, so the UI polls one honest number.
  */
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
@@ -35,11 +35,13 @@ import { and, eq, ne } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
 
-import { processingJobs, sourceAssets, stemAssets, waveformJobs } from "@workspace/db/waveyardSchema";
+import { processingJobs, sourceAnalyses, sourceAssets, stemAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
+import { chooseStemForHarmony, ensureStemHarmonyAnalysis } from "@workspace/arena/lib/waveyard/stem-harmony-analysis";
+import { provisionDesktopSectionAnalysis, provisionDesktopVocalAnalysis } from "./analysis";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@workspace/arena/lib/waveyard/types";
 import {
@@ -65,6 +67,12 @@ import {
   verifyModelFile,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { DependencyMissingError } from "@workspace/arena/lib/waveyard/measure/pcm";
+import {
+  combineSeparationMemoryPeaks,
+  createSeparationProcessRssSampler,
+  type SeparationActiveMemoryPeak,
+  type SeparationWorkerMemoryPeak,
+} from "./separation-memory";
 
 /** Everything the handler needs from the outside world, injectable so the
  *  e2e test runs the FULL pipeline (decode → demix → encode → persist)
@@ -77,11 +85,14 @@ export type SeparationHandlerDeps = {
   openEngine?: (spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda") => Promise<OpenedEngine>;
   decode?: typeof decodeSourceToStereoPcm;
   enqueueWaveform?: typeof enqueueWaveform;
+  enqueueSectionAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueSourceSectionAnalysis;
+  enqueueVocalAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueVocalAnalysis;
+  enqueueStemHarmonyAnalysis?: typeof import("@workspace/arena/lib/waveyard/queue").enqueueStemHarmonyAnalysis;
   /** The deep pass (owner-prepared Demucs, separation/deep.ts). Injectable
    *  so the e2e test drives the FULL pipeline with a stub engine. */
   runDeep?: typeof runDeepSeparation;
   /** Measurement seam for worker-side inference stage timings. */
-  onInferenceTiming?: (modelId: string, timings: MdxStageTimings) => void;
+  onInferenceTiming?: (modelId: string, timings: MdxStageTimings, activeMemoryPeak?: SeparationActiveMemoryPeak) => void;
 };
 
 export type OpenedEngine = {
@@ -135,6 +146,7 @@ type WorkerDemixResult = {
   separated: SeparatedStems;
   resolvedDevice: string;
   timings: MdxStageTimings;
+  activeMemoryPeak: SeparationActiveMemoryPeak;
 };
 
 export class SeparationCancelledError extends Error {
@@ -171,14 +183,21 @@ export function demixMdxInWorker(
   // Keep the decoded mix available for every model in a multi-stem recipe.
   const left = mix[0].slice();
   const right = mix[1].slice();
-
-  return new Promise((resolveResult, rejectResult) => {
-    const worker = new Worker(target.filename, {
+  const processRssSampler = createSeparationProcessRssSampler();
+  let worker: Worker;
+  try {
+    worker = new Worker(target.filename, {
       workerData: { spec, requestedDevice, left: left.buffer, right: right.buffer },
       transferList: [left.buffer, right.buffer],
     });
+  } catch (error) {
+    processRssSampler.stop();
+    return Promise.reject(error);
+  }
+
+  return new Promise((resolveResult, rejectResult) => {
     let settled = false;
-    let result: WorkerDemixResult | undefined;
+    let result: Omit<WorkerDemixResult, "activeMemoryPeak"> & { activeMemoryPeak: SeparationWorkerMemoryPeak } | undefined;
     let workerError: Error | undefined;
     let termination: Promise<number> | undefined;
     const onAbort = () => {
@@ -221,6 +240,7 @@ export function demixMdxInWorker(
           separated: message.separated as SeparatedStems,
           resolvedDevice: String(message.resolvedDevice),
           timings: message.timings as MdxStageTimings,
+          activeMemoryPeak: message.activeMemoryPeak as SeparationWorkerMemoryPeak,
         };
       }
     });
@@ -228,6 +248,7 @@ export function demixMdxInWorker(
       if (!signal?.aborted) workerError = error instanceof Error ? error : new Error(String(error));
     });
     worker.once("exit", (code) => {
+      const processRssPeak = processRssSampler.stop();
       if (signal?.aborted) {
         settle(() => rejectResult(new SeparationCancelledError()));
       } else if (code !== 0) {
@@ -235,7 +256,10 @@ export function demixMdxInWorker(
       } else if (workerError) {
         settle(() => rejectResult(workerError!));
       } else if (result) {
-        settle(() => resolveResult(result!));
+        settle(() => resolveResult({
+          ...result!,
+          activeMemoryPeak: combineSeparationMemoryPeaks(result!.activeMemoryPeak, processRssPeak),
+        }));
       } else {
         settle(() => rejectResult(new Error("Separation inference worker exited before returning a result (code 0).")));
       }
@@ -701,7 +725,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
               });
             }, deps.signal);
             await assertSeparationNotCancelled(database, job.id, deps.signal);
-            deps.onInferenceTiming?.(modelRun.spec.id, separated.timings);
+            deps.onInferenceTiming?.(modelRun.spec.id, separated.timings, separated.activeMemoryPeak);
             resolvedDevice = separated.resolvedDevice;
             for (const run of modelRun.outputs) {
               orderedOutputs.push({
@@ -802,6 +826,13 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
 
     const durableWork = await database.transaction(async (tx) => {
+      const [currentSource] = await tx.select({ checksumSha256: sourceAssets.checksumSha256 })
+        .from(sourceAssets)
+        .where(and(eq(sourceAssets.id, source.id), eq(sourceAssets.projectId, source.projectId)))
+        .for("update")
+        .limit(1);
+      if (!currentSource || currentSource.checksumSha256 !== source.checksumSha256)
+        throw new Error("Source audio changed during separation; output stems were not published.");
       const [claimed] = await tx
         .update(processingJobs)
         .set({
@@ -814,6 +845,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
             model: job.model,
             models: runModels,
             resolvedDevice,
+            sourceChecksumSha256: source.checksumSha256,
             outputCount: values.length,
             stems: stemOutputs.map((stem) => stem.stemType),
           }),
@@ -831,7 +863,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       const storedStems = await tx
         .insert(stemAssets)
         .values(values)
-        .returning({ id: stemAssets.id });
+        .returning();
       const waveformWork = await tx
         .insert(waveformJobs)
         .values(
@@ -844,11 +876,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           })),
         )
         .returning({ id: waveformJobs.id, stemAssetId: waveformJobs.stemAssetId });
-      return waveformWork;
+      return { waveformJobs: waveformWork, stems: storedStems };
     });
     // Separation is complete even if a later derived-artifact queue needs
     // a retry. Each durable job records its own failure boundary.
-    for (const waveformJob of durableWork) {
+    for (const waveformJob of durableWork.waveformJobs) {
       try {
         await (deps.enqueueWaveform ?? enqueueWaveform)({
           waveformJobId: waveformJob.id,
@@ -867,6 +899,55 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
             updatedAt: new Date(),
           })
           .where(eq(waveformJobs.id, waveformJob.id));
+      }
+    }
+    // Re-run structure after the new stem files are durably published. The
+    // refreshed section job has a distinct queue ID, so it cannot be lost
+    // behind an earlier source-only analysis that is still in flight.
+    try {
+      const [sourceAnalysis] = await database.select().from(sourceAnalyses).where(and(
+        eq(sourceAnalyses.projectId, source.projectId),
+        eq(sourceAnalyses.sourceAssetId, source.id),
+        eq(sourceAnalyses.sourceChecksumSha256, source.checksumSha256),
+        eq(sourceAnalyses.status, "complete"),
+      )).limit(1);
+      if (sourceAnalysis) {
+        const stemDispatchKey = createHash("sha256")
+          .update(`${job.id}\n${values.map((stem) => `${stem.stemType}:${stem.checksumSha256}`).sort().join("\n")}`)
+          .digest("hex")
+          .slice(0, 24);
+        await provisionDesktopSectionAnalysis(sourceAnalysis, source, {
+          database,
+          dispatchKey: stemDispatchKey,
+          enqueue: deps.enqueueSectionAnalysis,
+        });
+      }
+    } catch (sectionRefreshError) {
+      // Separation remains complete; the durable section row records its own
+      // failure boundary, and source-only structure remains an honest fallback.
+      console.error("could not refresh Waveyard sections after stem publication", sectionRefreshError);
+    }
+    const vocalStem = durableWork.stems.find((stem) => stem.stemType === "vocals");
+    if (vocalStem) {
+      try {
+        await provisionDesktopVocalAnalysis(source, vocalStem, {
+          database,
+          enqueue: deps.enqueueVocalAnalysis,
+        });
+      } catch (vocalQueueError) {
+        // Separation is already committed; vocal timing can be retried through
+        // its own durable row without making valid stems appear to have failed.
+        console.warn("could not provision Waveyard vocal timing analysis", vocalQueueError);
+      }
+    }
+    const harmonyStem = chooseStemForHarmony(durableWork.stems);
+    if (harmonyStem) {
+      try {
+        await ensureStemHarmonyAnalysis(database, source, harmonyStem, deps.enqueueStemHarmonyAnalysis);
+      } catch (harmonyQueueError) {
+        // Stem chord analysis is optional evidence; never roll back valid stems
+        // or the completed separation when its own queue is unavailable.
+        console.warn("could not provision Waveyard separated-stem harmony analysis", harmonyQueueError);
       }
     }
     completed = true;

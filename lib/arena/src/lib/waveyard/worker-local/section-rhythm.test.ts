@@ -8,8 +8,13 @@ import {
   labelRepeatedRhythmSections,
   labelSectionEnergyChanges,
   buildPassageFingerprint,
+  buildStemActivityProfile,
+  detectStemActivityBoundaryChanges,
+  detectVocalActivityBoundaryChanges,
+  desktopSectionCandidates,
   sectionEnergyChangeDb,
 } from "./section-rhythm";
+import type { StemActivityProfile } from "./section-rhythm";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
 
 const beatGridMs = Array.from({ length: 33 }, (_, index) => index * 500);
@@ -86,6 +91,60 @@ test("combined rhythm and harmonic evidence labels a repeated audio pattern, not
   assert.doesNotMatch(result[0].label, /verse|chorus/i);
 });
 
+test("repeated vocal activity strengthens an audio-pattern label without claiming repeated lyrics or chorus", () => {
+  const envelope = new Float32Array(1_700);
+  for (const startBeat of [0, 8, 16]) {
+    for (let beat = 0; beat < 8; beat += 1) addPulse(envelope, startBeat + beat, beat % 2 === 0 ? 0 : 2);
+  }
+  const repeatedContour = [
+    { startMs: 100, endMs: 480, confidence: 0.9 },
+    { startMs: 2_100, endMs: 2_480, confidence: 0.9 },
+    { startMs: 8_100, endMs: 8_480, confidence: 0.9 },
+    { startMs: 10_100, endMs: 10_480, confidence: 0.9 },
+  ];
+
+  const result = labelRepeatedRhythmSections(
+    candidates(),
+    beatGridMs,
+    envelope,
+    frameMs,
+    chordTrack(),
+    repeatedContour,
+  );
+
+  assert.equal(result[0].label, "vocal-pattern-repeat-a");
+  assert.equal(result[2].label, "vocal-pattern-repeat-a");
+  assert.equal(result[1].label, "section");
+  assert.doesNotMatch(result[0].label, /lyrics|verse|chorus/i);
+});
+
+test("different vocal activity keeps the measured rhythm-and-chroma pattern label", () => {
+  const envelope = new Float32Array(1_700);
+  for (const startBeat of [0, 8, 16]) {
+    for (let beat = 0; beat < 8; beat += 1) addPulse(envelope, startBeat + beat, beat % 2 === 0 ? 0 : 2);
+  }
+  const result = labelRepeatedRhythmSections(
+    candidates(),
+    beatGridMs,
+    envelope,
+    frameMs,
+    chordTrack(),
+    [
+      { startMs: 100, endMs: 480, confidence: 0.9 },
+      { startMs: 2_100, endMs: 2_480, confidence: 0.9 },
+      { startMs: 8_100, endMs: 8_480, confidence: 0.9 },
+      { startMs: 10_100, endMs: 10_480, confidence: 0.9 },
+      { startMs: 8_600, endMs: 9_000, confidence: 0.9 },
+      { startMs: 9_100, endMs: 9_480, confidence: 0.9 },
+      { startMs: 10_600, endMs: 11_000, confidence: 0.9 },
+      { startMs: 11_100, endMs: 11_480, confidence: 0.9 },
+    ],
+  );
+
+  assert.equal(result[0].label, "pattern-repeat-a");
+  assert.equal(result[2].label, "pattern-repeat-a");
+});
+
 test("passage fingerprint persists measured source features and marks unsupported claims unavailable", () => {
   const envelope = new Float32Array(1_700);
   for (let beat = 0; beat < 16; beat += 1) addPulse(envelope, beat, beat % 2 === 0 ? 0 : 2);
@@ -106,6 +165,15 @@ test("passage fingerprint persists measured source features and marks unsupporte
   assert.equal(fingerprint.downbeatConfidence.status, "unavailable");
   assert.equal(fingerprint.vocalActivity.status, "unavailable");
   assert.equal(fingerprint.instrumentalDensity.status, "unavailable");
+  assert.equal(fingerprint.rollingWindows?.status, "measured");
+  if (fingerprint.rollingWindows?.status === "measured") {
+    assert.deepEqual(fingerprint.rollingWindows.value.map((window) => window.startBeatIndex), [0, 4, 8]);
+    assert.ok(fingerprint.rollingWindows.value.every((window) =>
+      window.endBeatIndex - window.startBeatIndex === 8
+      && window.rhythm.status === "measured"
+      && window.chroma.status === "measured",
+    ));
+  }
   assert.deepEqual(parsePassageFingerprint(fingerprint, {
     sourceChecksumSha256: "a".repeat(64),
     startBeatIndex: 0,
@@ -244,4 +312,127 @@ test("flat or too-short audio evidence never creates a repeated-rhythm claim", (
   assert.equal(short[0].label, "section");
   assert.ok(labelSectionEnergyChanges(candidates(), beatGridMs, new Float32Array(ANALYSIS_PCM_RATE * 12))
     .every((section) => section.label === "section"));
+});
+
+test("per-stem PCM adds a boundary only for a sustained activity change, not a one-bar fill", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const pcm = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  for (let sample = 0; sample < pcm.length; sample += 1) {
+    const bar = Math.floor(sample / (ANALYSIS_PCM_RATE * 2));
+    const amplitude = bar < 4 ? 0.02 : 0.16;
+    pcm[sample] = amplitude * Math.sin((2 * Math.PI * 110 * sample) / ANALYSIS_PCM_RATE);
+  }
+  const profile = buildStemActivityProfile(pcm, longGrid, {
+    stemType: "bass",
+    stemAssetId: "stem-bass",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "b".repeat(64),
+  });
+  assert.ok(profile);
+  const changes = detectStemActivityBoundaryChanges([profile]);
+  assert.deepEqual(changes.map((change) => change.beatIndex), [16]);
+  assert.ok(Math.abs(changes[0]!.deltaDb) >= 6);
+  const simultaneous = detectStemActivityBoundaryChanges([
+    profile,
+    { ...profile, stemType: "drums", stemAssetId: "stem-drums" },
+  ]);
+  assert.deepEqual(simultaneous.map((change) => change.stemType), ["bass", "drums"]);
+
+  const envelope = new Float32Array(3_300);
+  const sourcePcm = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  const candidatesWithStemEvidence = desktopSectionCandidates(longGrid, envelope, frameMs, sourcePcm, [], changes);
+  assert.equal(candidatesWithStemEvidence?.find((candidate) => candidate.startBeatIndex === 16)?.label, "stem-change");
+  assert.ok(candidatesWithStemEvidence?.some((candidate) => candidate.startBeatIndex === 0));
+  const overlappingRepeat = desktopSectionCandidates(longGrid, envelope, frameMs, sourcePcm, [{
+    startBeatIndex: 12,
+    endBeatIndex: 20,
+    label: "pattern-repeat-test",
+    labelConfidence: 0.97,
+  }], changes);
+  assert.equal(overlappingRepeat?.find((candidate) => candidate.startBeatIndex === 16)?.label, "stem-change");
+  assert.ok(overlappingRepeat?.some((candidate) => candidate.endBeatIndex === 16));
+
+  const transient = new Float32Array(ANALYSIS_PCM_RATE * 32);
+  for (let sample = 0; sample < transient.length; sample += 1) {
+    const bar = Math.floor(sample / (ANALYSIS_PCM_RATE * 2));
+    const amplitude = bar === 4 ? 0.16 : 0.02;
+    transient[sample] = amplitude * Math.sin((2 * Math.PI * 110 * sample) / ANALYSIS_PCM_RATE);
+  }
+  const transientProfile = buildStemActivityProfile(transient, longGrid, {
+    stemType: "drums",
+    stemAssetId: "stem-drums",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "c".repeat(64),
+  });
+  assert.ok(transientProfile);
+  assert.deepEqual(detectStemActivityBoundaryChanges([transientProfile]), []);
+});
+
+test("sustained vocal entrances and dropouts add explicit event boundaries without semantic section labels", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const intervals = [{ startMs: 8_000, endMs: 20_000, confidence: 0.8 }];
+  const changes = detectVocalActivityBoundaryChanges(intervals, longGrid);
+  assert.deepEqual(changes.map((change) => change.beatIndex), [16, 40]);
+  assert.ok(changes.every((change) => Math.abs(change.deltaCoverage) >= 0.65));
+
+  const candidates = desktopSectionCandidates(
+    longGrid,
+    new Float32Array(3_300),
+    frameMs,
+    new Float32Array(ANALYSIS_PCM_RATE * 32),
+    [],
+    [],
+    intervals,
+  );
+  assert.equal(candidates?.find((candidate) => candidate.startBeatIndex === 16)?.label, "vocal-change");
+  assert.equal(candidates?.find((candidate) => candidate.startBeatIndex === 40)?.label, "vocal-change");
+  assert.ok(candidates?.every((candidate) => !/verse|chorus|bridge|breakdown/i.test(candidate.label)));
+});
+
+test("vocal event coverage sorts intervals once and closes the final full bar when the beat endpoint is exclusive", () => {
+  const grid = Array.from({ length: 20 }, (_, index) => index * 500);
+  const changes = detectVocalActivityBoundaryChanges([
+    { startMs: 7_000, endMs: 8_000, confidence: 0.8 },
+    { startMs: 4_000, endMs: 7_000, confidence: 0.7 },
+    { startMs: Number.NaN, endMs: 12_000, confidence: 1 },
+  ], grid);
+  assert.deepEqual(changes.map((change) => change.beatIndex), [8]);
+  assert.equal(changes[0]?.deltaCoverage, 1);
+});
+
+test("stem activity is persisted as source-linked signal evidence, not a semantic label", () => {
+  const longGrid = Array.from({ length: 65 }, (_, index) => index * 500);
+  const pcm = new Float32Array(ANALYSIS_PCM_RATE * 32).fill(0.1);
+  const profile = buildStemActivityProfile(pcm, longGrid, {
+    stemType: "vocals",
+    stemAssetId: "stem-vocals",
+    separationJobId: "separation-current",
+    stemChecksumSha256: "d".repeat(64),
+  }) as StemActivityProfile;
+  const envelope = new Float32Array(3_300);
+  const fingerprint = buildPassageFingerprint({
+    sourceChecksumSha256: "a".repeat(64),
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    beatGridMs: longGrid,
+    beatConfidence: 0.8,
+    envelope,
+    frameMs,
+    pcm,
+    stemActivityProfiles: [profile],
+    stemActivityBoundaryChanges: [{
+      beatIndex: 4,
+      stemType: "vocals",
+      deltaDb: -9.2,
+      evidenceStrength: 0.511,
+    }],
+  });
+  assert.equal(fingerprint.stemActivity.status, "measured");
+  if (fingerprint.stemActivity.status === "measured") {
+    assert.equal(fingerprint.stemActivity.value[0]?.stemType, "vocals");
+    assert.equal(fingerprint.stemActivity.value[0]?.stemAssetId, "stem-vocals");
+    assert.equal(fingerprint.stemActivity.value[0]?.separationJobId, "separation-current");
+    assert.deepEqual(fingerprint.stemActivity.value[0]?.boundaryChanges, [{ beatIndex: 4, deltaDb: -9.2 }]);
+  }
+  assert.doesNotMatch(JSON.stringify(fingerprint), /chorus|verse/i);
 });

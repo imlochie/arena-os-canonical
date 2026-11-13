@@ -6,6 +6,7 @@ import {
   type RemixAutomationLane,
 } from "./types";
 import { INSERTS_FORMAT, parseInserts, type InsertChain } from "./mixer/inserts";
+import { parsePersistedClipTempoMap, type PersistedClipTempoMap } from "./studio/local-tempo-map";
 import {
   DEFAULT_TIMING,
   GRID_DIVISIONS,
@@ -31,6 +32,12 @@ export type RemixClipInput = {
   keySyncEnabled: boolean;
   // Missing on historical snapshots retains freehand source editing.
   beatSnapEnabled: boolean;
+  /** Zero-based sixteenth-note position for a Vocal Chop Sequencer hit. */
+  chopStepIndex?: number | null;
+  /** Uncapped extracted sample length, used when the tempo changes. */
+  chopSampleDurationMs?: number | null;
+  /** Checksum-bound local WSOLA map; absent on legacy or unverified clips. */
+  localTempoMap?: PersistedClipTempoMap;
 };
 export type RemixTrackInput = {
   id: string;
@@ -120,8 +127,31 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
       const fadeInMs = Math.round(clamp(clip.fadeInMs ?? 0, 0, durationMs));
       const fadeOutMs = Math.round(clamp(clip.fadeOutMs ?? 0, 0, durationMs));
       if (fadeInMs + fadeOutMs > durationMs) return null;
+      const noChopMetadata = clip.chopStepIndex === undefined && clip.chopSampleDurationMs === undefined;
+      const detachedChopMetadata = clip.chopStepIndex === null && clip.chopSampleDurationMs === null;
+      const hasChopMetadata = typeof clip.chopStepIndex === "number"
+        && typeof clip.chopSampleDurationMs === "number";
+      if (!noChopMetadata && !detachedChopMetadata && !hasChopMetadata) return null;
+      let chopStepIndex: number | null = null;
+      let chopSampleDurationMs: number | null = null;
+      if (hasChopMetadata) {
+        if (!Number.isSafeInteger(clip.chopStepIndex)
+          || Number(clip.chopStepIndex) < 0
+          || Number(clip.chopStepIndex) > 1_728_000)
+          return null;
+        if (!Number.isSafeInteger(clip.chopSampleDurationMs)
+          || Number(clip.chopSampleDurationMs) < durationMs
+          || Number(clip.chopSampleDurationMs) > 86_400_000)
+          return null;
+        chopStepIndex = Number(clip.chopStepIndex);
+        chopSampleDurationMs = Number(clip.chopSampleDurationMs);
+      }
       const fadeShape = clip.fadeShape === undefined ? "linear" : clip.fadeShape;
       if (!isClipFadeShape(fadeShape)) return null;
+      const localTempoMap = clip.localTempoMap === undefined
+        ? undefined
+        : parsePersistedClipTempoMap(clip.localTempoMap);
+      if (clip.localTempoMap !== undefined && !localTempoMap) return null;
       clips.push({
         id: clip.id,
         stemAssetId: String(clip.stemAssetId),
@@ -132,10 +162,14 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
         fadeInMs,
         fadeOutMs,
         fadeShape,
+        ...(localTempoMap ? { localTempoMap } : {}),
         // Missing in historical snapshots preserves prior, untransformed export behavior.
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
         keySyncEnabled: clip.keySyncEnabled === true,
         beatSnapEnabled: clip.beatSnapEnabled === true,
+        ...(detachedChopMetadata
+          ? { chopStepIndex: null, chopSampleDurationMs: null }
+          : chopStepIndex === null ? {} : { chopStepIndex, chopSampleDurationMs: chopSampleDurationMs! }),
       });
     }
     tracks.push({

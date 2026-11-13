@@ -11,7 +11,9 @@ export * from "./arrangement-automation";
 export * from "./musical-events";
 export * from "./vocal-analysis";
 export * from "./drum-analysis";
+export * from "./bass-analysis";
 export * from "./harmony-analysis";
+export * from "./stem-harmony-analysis";
 export * from "./midi";
 export * from "./automatic-remix";
 export * from "./musical-meeting-points";
@@ -79,6 +81,8 @@ export type SourceSectionAnalysisJobPayload = {
   sourceAnalysisId: string;
   analysisEngine: string;
   analysisEngineVersion: string;
+  /** Unique redispatch when a completed separation adds structural evidence. */
+  dispatchKey?: string;
 };
 
 export type SourceEventAnalysisJobPayload = {

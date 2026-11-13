@@ -9,6 +9,7 @@ import { drizzle } from "drizzle-orm/pglite";
 
 import { projects, sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections } from "@workspace/db/waveyardSchema";
 import { applyDesktopMigrationsToPGlite } from "./pglite-migrations.test-helper";
+import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 import {
   PASSAGE_FINGERPRINT_ENGINE,
   PASSAGE_FINGERPRINT_ENGINE_VERSION,
@@ -17,7 +18,7 @@ import {
 } from "../types/passage-compatibility";
 
 const fingerprint: PassageFingerprint = {
-  schemaVersion: 1,
+  schemaVersion: 3,
   engine: PASSAGE_FINGERPRINT_ENGINE,
   engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
   sourceChecksumSha256: "a".repeat(64),
@@ -30,6 +31,34 @@ const fingerprint: PassageFingerprint = {
   downbeatConfidence: { status: "unavailable", reason: "No independent downbeat analysis." },
   vocalActivity: { status: "unavailable", reason: "No isolated-vocal analysis." },
   instrumentalDensity: { status: "unavailable", reason: "No non-vocal stem activity envelope." },
+  stemActivity: { status: "unavailable", reason: "No current separated-stem activity evidence." },
+  rollingWindows: {
+    status: "measured",
+    value: [{
+      startBeatIndex: 0,
+      endBeatIndex: 8,
+      rhythm: {
+        status: "measured",
+        value: Array.from({ length: 32 }, (_, index) => index % 4 === 0 ? 1 : 0),
+        method: "local eight-beat onset envelope",
+        confidence: 0.8,
+      },
+      chroma: {
+        status: "measured",
+        value: Array.from({ length: 48 }, (_, index) => index % 12 === 0 ? 1 : -1 / 11),
+        method: "local eight-beat chroma",
+        confidence: 0.8,
+      },
+      beatPhase: {
+        status: "measured",
+        value: { subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 },
+        method: "local beat subdivision energy",
+        confidence: 0.8,
+      },
+    }],
+    method: "checksum-bound local eight-beat windows",
+    confidence: 0.8,
+  },
 };
 
 test("desktop migration persists and reloads source-section passage fingerprints", async () => {
@@ -68,8 +97,8 @@ test("desktop migration persists and reloads source-section passage fingerprints
       sourceAnalysisId: analysis.id,
       status: "complete",
       idempotencyKey: `sections:${source.id}:${randomUUID()}`,
-      analysisEngine: "arena-js-structure",
-      analysisEngineVersion: "1.5.0",
+      analysisEngine: DESKTOP_SECTION_ENGINE,
+      analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
       sourceChecksumSha256: source.checksumSha256,
     }).returning();
     await db.insert(sourceSections).values({
@@ -87,8 +116,8 @@ test("desktop migration persists and reloads source-section passage fingerprints
       endBar: 4,
       label: "section",
       structuralConfidence: 0.8,
-      analysisEngine: "arena-js-structure",
-      analysisEngineVersion: "1.5.0",
+      analysisEngine: DESKTOP_SECTION_ENGINE,
+      analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
       sourceChecksumSha256: source.checksumSha256,
       passageFingerprint: fingerprint,
     });

@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 2,
+  "studyId": "waveyard-queen-earth-wind-fire-full-track-v2",
+  "sourceManifest": [
+    {
+      "id": "another-one-bites-the-dust",
+      "title": "Another One Bites the Dust",
+      "expectedDurationSeconds": 222.67,
+      "sourceFileName": "0_another_one_bites_the_dust_1793860743093.mp3",
+      "durationSeconds": 222.67,
+      "sourceSha256": "30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c",
+      "rightsEvidencePresent": false
+    },
+    {
+      "id": "september",
+      "title": "September",
+      "expectedDurationSeconds": 215.14,
+      "sourceFileName": "0_ytmp3free.cc_earth-wind-fire-september-official-hd-video-you_1793303155539.mp3",
+      "durationSeconds": 215.14,
+      "sourceSha256": "6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1",
+      "rightsEvidencePresent": false
+    }
+  ],
+  "producerCapture": {
+    "producer": "Waveyard production mashup route",
+    "producerRevision": null,
+    "capturedAt": null
+  },
+  "status": "blocked",
+  "validation": {
+    "complete": false,
+    "issues": [
+      "dataset status must be adjudicated after both blind reviews are locked",
+      "dataset creation/adjudication timestamp missing or invalid",
+      "another-one-bites-the-dust: source attribution and documented rights basis missing",
+      "another-one-bites-the-dust: independent adjudication missing",
+      "september: source attribution and documented rights basis missing",
+      "september: independent adjudication missing"
+    ]
+  },
+  "predictionValidation": {
+    "complete": false,
+    "issues": [
+      "exact 40-character producer revision missing",
+      "prediction capture timestamp missing or invalid"
+    ]
+  },
+  "thresholds": {
+    "candidateWindowIoU": 0.5,
+    "sectionBoundaryToleranceMs": 2000,
+    "recallAtK": 5
+  },
+  "tracks": [
+    {
+      "id": "another-one-bites-the-dust",
+      "status": "blocked-ground-truth",
+      "metrics": null
+    },
+    {
+      "id": "september",
+      "status": "blocked-ground-truth",
+      "metrics": null
+    }
+  ],
+  "interpretation": "Structural boundary detection and semantic section classification are separate: semantic classification is unavailable until the producer emits semantic labels. Pitch-continuity runs are not lyric phrases and are not scored as such. Candidate rankings do not establish harmonic compatibility or perceived mashup quality. Null metrics mean evidence is missing, not zero performance."
+}

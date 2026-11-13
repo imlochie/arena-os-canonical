@@ -22,6 +22,10 @@ import {
   type Pcm16WavHeader,
 } from "./arrangement-preview-segments";
 import type { RemixTrackInput } from "./remix";
+import {
+  makeLocalTempoMapWindow,
+  renderLocalTempoMapRange,
+} from "./studio/local-tempo-map";
 
 type PreviewClip = RemixTrackInput["clips"][number];
 type PreviewTrack = RemixTrackInput;
@@ -253,6 +257,64 @@ export function useArrangementPreview(
     if (generation !== playbackGeneration.current) return null;
     const header = await ensurePcmWavHeader(segment.assetId, generation);
     if (!header || generation !== playbackGeneration.current) return null;
+    const localMap = segment.clip.tempoSyncEnabled ? segment.clip.localTempoMap : undefined;
+    if (localMap && header.channels === 2) {
+      const window = makeLocalTempoMapWindow(
+        localMap,
+        header.sampleRate,
+        segment.clipElapsedMs,
+        segment.durationMs,
+      );
+      if (window) {
+        const sourceOffsetFrame = Math.round(segment.clip.sourceOffsetMs * header.sampleRate / 1_000)
+          + window.inputStartFrame;
+        const inputFrames = window.inputEndFrame - window.inputStartFrame;
+        const range = pcm16WavSegmentRange(
+          header,
+          sourceOffsetFrame * 1_000 / header.sampleRate,
+          inputFrames * 1_000 / header.sampleRate,
+        );
+        if (range && range.frameCount === inputFrames) {
+          const response = await fetch(`/api/assets/${segment.assetId}`, {
+            headers: { Range: `bytes=${range.byteStart}-${range.byteEnd}` },
+            cache: "no-store",
+          });
+          if (response.status === 206) {
+            const contentRange = parseHttpContentRange(response.headers.get("content-range"));
+            if (contentRange?.start === range.byteStart && contentRange.end === range.byteEnd) {
+              const encoded = await response.arrayBuffer();
+              if (encoded.byteLength === inputFrames * header.blockAlign) {
+                if (generation !== playbackGeneration.current) return null;
+                const source = new Float32Array(inputFrames * 2);
+                const view = new DataView(encoded);
+                for (let frame = 0; frame < inputFrames; frame += 1) {
+                  source[frame * 2] = view.getInt16(frame * header.blockAlign, true) / 32768;
+                  source[frame * 2 + 1] = view.getInt16(frame * header.blockAlign + 2, true) / 32768;
+                }
+                const rendered = renderLocalTempoMapRange(source, header.sampleRate, window);
+                if (rendered) {
+                  const frames = rendered.length / 2;
+                  const buffer = audio.createBuffer(2, frames, header.sampleRate);
+                  const left = buffer.getChannelData(0);
+                  const right = buffer.getChannelData(1);
+                  for (let frame = 0; frame < frames; frame += 1) {
+                    left[frame] = rendered[frame * 2]!;
+                    right[frame] = rendered[frame * 2 + 1]!;
+                  }
+                  const key = `segment:${generation}:${nextBufferKey.current++}`;
+                  buffers.current.set(key, buffer);
+                  return { ...segment, key, buffer, sourceOffsetMs: 0, durationMs: frames * 1_000 / header.sampleRate };
+                }
+              }
+            } else await response.body?.cancel();
+          } else {
+            await response.body?.cancel();
+          }
+        }
+      }
+      // A range/map mismatch is stale evidence, not a reason to block the
+      // arrangement. Continue through the ordinary continuous-placement path.
+    }
     const range = pcm16WavSegmentRange(header, segment.sourceOffsetMs, segment.durationMs);
     if (!range) return null;
     const response = await fetch(`/api/assets/${segment.assetId}`, {
@@ -326,6 +388,21 @@ export function useArrangementPreview(
     const requests = plans.map((plan) => {
       const asset = metadataById.get(plan.assetId);
       if (!asset) return { assetId: plan.assetId, durationMs: plan.durationMs, encodedBytes: 0 };
+      const localWindow = plan.clip.localTempoMap
+        ? makeLocalTempoMapWindow(
+            plan.clip.localTempoMap,
+            asset.sampleRate,
+            plan.clipElapsedMs,
+            plan.durationMs,
+          )
+        : null;
+      if (localWindow) {
+        return {
+          assetId: plan.assetId,
+          durationMs: plan.durationMs,
+          encodedBytes: (localWindow.inputEndFrame - localWindow.inputStartFrame) * asset.channels * 2,
+        };
+      }
       const frames = Math.ceil(plan.durationMs * asset.sampleRate / 1_000);
       return {
         assetId: plan.assetId,
@@ -665,6 +742,9 @@ export function useArrangementPreview(
       [...supplementalAssets, ...(state.previewAssets ?? [])].map((asset) => [asset.id, asset]),
     );
     const metadata = [...metadataById.values()];
+    const hasLocalTempoMap = audibleTracks.some((track) =>
+      track.clips.some((clip) => clip.tempoSyncEnabled && clip.localTempoMap),
+    );
     const estimate = estimateArrangementPreviewMemory(assetIds, metadata, audio.sampleRate);
     if (!estimate.ok) {
       buffers.current.clear();
@@ -682,7 +762,7 @@ export function useArrangementPreview(
         const codec = metadataById.get(assetId)?.codec;
         return typeof codec === "string" && Boolean(previewMimeTypeForCodec(codec));
       });
-      if (hasEncodedCodec && mediaCodecsKnown) {
+      if (!hasLocalTempoMap && hasEncodedCodec && mediaCodecsKnown) {
         const endMs = Math.max(0, ...state.tracks.flatMap((track) =>
           track.clips.map((clip) => clip.timelineStartMs + clip.durationMs),
         ));
@@ -721,6 +801,9 @@ export function useArrangementPreview(
         return true;
       }
 
+    }
+
+    if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES || hasLocalTempoMap) {
       segmentedMode.current = true;
       buffers.current.clear();
       const endMs = Math.max(0, ...state.tracks.flatMap((track) =>

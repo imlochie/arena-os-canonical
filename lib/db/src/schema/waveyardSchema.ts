@@ -183,6 +183,10 @@ export const sourceAnalyses = pgTable("source_analyses", {
   // metadata, deliberately independent from RemixSession's timing model.
   beatGrid: text("beat_grid"),
   beatConfidence: real("beat_confidence"),
+  // Downbeats are persisted separately because a pulse grid does not establish
+  // meter or bar phase. Null means no sufficiently supported 4/4 bar evidence.
+  downbeatGrid: text("downbeat_grid"),
+  downbeatConfidence: real("downbeat_confidence"),
   analysisError: text("analysis_error"),
   errorCode: text("error_code"),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -330,6 +334,49 @@ export const harmonyEvents = pgTable("harmony_events", {
   index("harmony_events_analysis_start_idx").on(table.harmonyAnalysisId, table.startMs),
 ]);
 
+// Chords measured on one separated non-vocal stem. Keep this distinct from
+// source-level harmony so mashup ranking can prefer backing-specific evidence.
+export const stemHarmonyAnalyses = pgTable("stem_harmony_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("stem_harmony_analyses_stem_asset_unique").on(table.stemAssetId),
+  uniqueIndex("stem_harmony_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("stem_harmony_analyses_project_id_idx").on(table.projectId),
+  index("stem_harmony_analyses_source_stem_idx").on(table.sourceAssetId, table.stemAssetId),
+]);
+
+export const stemHarmonyEvents = pgTable("stem_harmony_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  stemHarmonyAnalysisId: uuid("stem_harmony_analysis_id").notNull().references(() => stemHarmonyAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  root: text("root"),
+  quality: text("quality").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("stem_harmony_events_analysis_index_unique").on(table.stemHarmonyAnalysisId, table.eventIndex),
+  index("stem_harmony_events_analysis_start_idx").on(table.stemHarmonyAnalysisId, table.startMs),
+]);
+
 // Stem-scoped V1 vocal evidence never claims that the original mixed source is vocal.
 // Stem-scoped deterministic drum/percussion transient evidence. This preserves
 // generic source events while enforcing the exact separated stem provenance.
@@ -373,6 +420,49 @@ export const drumEvents = pgTable("drum_events", {
 }, (table) => [
   uniqueIndex("drum_events_analysis_index_unique").on(table.drumAnalysisId, table.eventIndex),
   index("drum_events_analysis_time_idx").on(table.drumAnalysisId, table.timestampMs),
+]);
+
+// Low-band attacks from an isolated bass stem are measured separately from
+// drum transients; they are timing evidence, not inferred bass-note labels.
+export const bassAnalyses = pgTable("bass_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("bass_analyses_stem_asset_unique").on(table.stemAssetId),
+  uniqueIndex("bass_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("bass_analyses_project_id_idx").on(table.projectId),
+  index("bass_analyses_source_stem_idx").on(table.sourceAssetId, table.stemAssetId),
+]);
+
+export const bassEvents = pgTable("bass_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  bassAnalysisId: uuid("bass_analysis_id").notNull().references(() => bassAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  timestampMs: integer("timestamp_ms").notNull(),
+  strength: real("strength").notNull(),
+  confidence: real("confidence").notNull(),
+  nearestBeatIndex: integer("nearest_beat_index"),
+  beatOffsetMs: integer("beat_offset_ms"),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("bass_events_analysis_index_unique").on(table.bassAnalysisId, table.eventIndex),
+  index("bass_events_analysis_time_idx").on(table.bassAnalysisId, table.timestampMs),
 ]);
 
 export const vocalAnalyses = pgTable("vocal_analyses", {
@@ -428,6 +518,21 @@ export const vocalPhrases = pgTable("vocal_phrases", {
 }, (table) => [
   uniqueIndex("vocal_phrases_analysis_index_unique").on(table.vocalAnalysisId, table.phraseIndex),
   index("vocal_phrases_analysis_start_idx").on(table.vocalAnalysisId, table.startMs),
+]);
+
+/** Coarse isolated-stem activity is deliberately separate from pitch-derived
+ * phrase candidates; an energy window is not a lyric or word boundary. */
+export const vocalActivityIntervals = pgTable("vocal_activity_intervals", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  vocalAnalysisId: uuid("vocal_analysis_id").notNull().references(() => vocalAnalyses.id, { onDelete: "cascade" }),
+  intervalIndex: integer("interval_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_activity_intervals_analysis_index_unique").on(table.vocalAnalysisId, table.intervalIndex),
+  index("vocal_activity_intervals_analysis_start_idx").on(table.vocalAnalysisId, table.startMs),
 ]);
 
 // A remix is non-destructive arrangement metadata over existing stems. No clip
@@ -636,6 +741,10 @@ export const remixClips = pgTable("remix_clips", {
   keySyncEnabled: boolean("key_sync_enabled").notNull().default(false),
   // Source-editing intent; snapping resolves metadata only and adds no DSP.
   beatSnapEnabled: boolean("beat_snap_enabled").notNull().default(false),
+  /** Pad-grid identity for generated vocal-chop clips; null for ordinary clips. */
+  chopStepIndex: integer("chop_step_index"),
+  /** Original extracted sample length before capping it to one sequencer step. */
+  chopSampleDurationMs: integer("chop_sample_duration_ms"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_clips_track_id_idx").on(table.remixTrackId), index("remix_clips_asset_id_idx").on(table.stemAssetId)]);
@@ -912,6 +1021,8 @@ export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
   fromStemAssetId: uuid("from_stem_asset_id").references(() => stemAssets.id, { onDelete: "set null" }),
   toStemAssetId: uuid("to_stem_asset_id").references(() => stemAssets.id, { onDelete: "set null" }),
   atSeconds: real("at_seconds").notNull().default(0),
+  /** Optional donor-clock vocal entry chosen from measured activity/phrase evidence. */
+  donorEntryOffsetMs: integer("donor_entry_offset_ms"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("wy_listen_session_swaps_session_idx").on(table.sessionId, table.createdAt),

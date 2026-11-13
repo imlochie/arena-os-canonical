@@ -25,9 +25,11 @@ import { and, asc, eq } from "drizzle-orm";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
+import { LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION } from "../types/vocal-analysis";
 import { getStorage } from "../storage";
 import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
 import { restoreVerifiedAudioBackupZip } from "./audio-restore";
+import { FOUR_STEM_MODELS } from "../worker-local/pinned-models.test-helper";
 
 // The route handlers under test resolve the desktop/local owner from
 // NODE_ENV. Establish the test mode before any route module is imported
@@ -1927,10 +1929,14 @@ test("session: a missing original can be restored without changing stems or sess
       bpm: null,
       bpmConfidence: null,
       beatConfidence: null,
+      downbeatConfidence: null,
       keyConfidence: null,
       musicalKey: null,
       beatGridMs: null,
+      downbeatGridMs: null,
       sections: null,
+      vocalActivityStartsMs: null,
+      voicedPhraseStartsMs: null,
     });
     const updatedTrack = await service.getTrack(OWNER, trackA.id);
     assert.equal(updatedTrack?.analysis?.bpm, null);
@@ -2078,6 +2084,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     stemType: "vocals",
     toTrackId: trackA.id,
     atSeconds: 16,
+    donorEntryOffsetMs: 1_000,
   });
   assert.equal(swappedWithVocals.swaps.length, 2, "distinct stem swaps stay active together");
   const drumSwap = swappedWithVocals.swaps.find((entry) => entry.stemType === "drums");
@@ -2085,6 +2092,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   assert.ok(drumSwap && vocalSwap);
   assert.equal(drumSwap.toTrackId, trackA.id);
   assert.equal(vocalSwap.toTrackId, trackA.id);
+  assert.equal(vocalSwap.donorEntryOffsetMs, 1_000, "the chosen donor vocal entry survives the persisted session response");
   assert.notEqual(drumSwap.toStemAssetId, vocalSwap.toStemAssetId,
     "different stem types pin different assets even when they share a donor track");
 
@@ -2108,6 +2116,30 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   await assert.rejects(
     () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "other", toTrackId: trackA.id, atSeconds: 1 }),
     (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
+  );
+  await assert.rejects(
+    () => sessions.recordStemSwap({
+      ownerId: OWNER,
+      sessionId: created.id,
+      sessionTrackId: sessionTrackB,
+      stemType: "drums",
+      toTrackId: trackA.id,
+      atSeconds: 1,
+      donorEntryOffsetMs: 500,
+    }),
+    (error: Error) => error instanceof sessions.StemSwapRefusedError && /only be set for a vocal swap/i.test(error.message),
+  );
+  await assert.rejects(
+    () => sessions.recordStemSwap({
+      ownerId: OWNER,
+      sessionId: created.id,
+      sessionTrackId: sessionTrackB,
+      stemType: "vocals",
+      toTrackId: trackA.id,
+      atSeconds: 1,
+      donorEntryOffsetMs: Math.round(trackA.durationSeconds * 1000),
+    }),
+    (error: Error) => error instanceof sessions.StemSwapRefusedError && /outside the donor track/i.test(error.message),
   );
   const replaced = await sessions.recordStemSwap({
     ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
@@ -3049,6 +3081,12 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
   const [sourceAssetB] = await db.db.select().from(schema.sourceAssets)
     .where(eq(schema.sourceAssets.id, sourceB)).limit(1);
   assert.ok(sourceAssetB);
+  const trackBDetail = await service.getTrack(OWNER, trackB.id);
+  const donorVocalStem = trackBDetail?.stems.find((stem) => stem.stemType === "vocals");
+  assert.ok(donorVocalStem, "the donor's isolated vocal asset is available");
+  const [donorVocalStemRecord] = await db.db.select().from(schema.stemAssets)
+    .where(eq(schema.stemAssets.id, donorVocalStem.id)).limit(1);
+  assert.ok(donorVocalStemRecord);
   await db.db.insert(schema.sourceAnalyses).values({
     projectId: trackB.studioProjectId,
     sourceAssetId: sourceB,
@@ -3059,22 +3097,122 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
     sourceChecksumSha256: sourceAssetB.checksumSha256,
     idempotencyKey: `analysis-test-b:${sourceB}`,
     bpm: 129,
+    bpmConfidence: 0.9,
     musicalKey: "C major",
     beatGrid: JSON.stringify([0, 500, 1000, 1500, 2000]),
+    beatConfidence: 0.9,
+    downbeatGrid: JSON.stringify([0, 2000]),
+    downbeatConfidence: 0.9,
   });
 
-  const analysisA = await sessions.sessionTrackAnalysis(OWNER, trackA.id);
-  const analysisB = await sessions.sessionTrackAnalysis(OWNER, trackB.id);
-  assert.equal(analysisA?.bpm, 128.5);
-  assert.equal(analysisA?.musicalKey, "A minor");
-  assert.equal(analysisB?.bpm, 129);
+  const [vocalAnalysisRow] = await db.db.insert(schema.vocalAnalyses).values({
+    projectId: trackB.studioProjectId,
+    sourceAssetId: sourceB,
+    stemAssetId: donorVocalStem.id,
+    status: "complete",
+    stage: "complete",
+    idempotencyKey: `session-vocal-entry:${randomUUID()}`,
+    analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+    analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256: sourceAssetB.checksumSha256!,
+    stemChecksumSha256: donorVocalStemRecord.checksumSha256,
+  }).returning();
+  try {
+    await db.db.insert(schema.vocalActivityIntervals).values([
+      {
+        vocalAnalysisId: vocalAnalysisRow.id,
+        intervalIndex: 0,
+        startMs: 250,
+        endMs: 850,
+        confidence: 0.92,
+      },
+      {
+        vocalAnalysisId: vocalAnalysisRow.id,
+        intervalIndex: 1,
+        startMs: Math.round(trackB.durationSeconds * 1000),
+        endMs: Math.round(trackB.durationSeconds * 1000) + 500,
+        confidence: 0.99,
+      },
+    ]);
+    await db.db.insert(schema.vocalPhrases).values([
+      {
+        vocalAnalysisId: vocalAnalysisRow.id,
+        phraseIndex: 0,
+        startMs: 1_100,
+        endMs: 2_100,
+        confidence: 0.7,
+      },
+      {
+        vocalAnalysisId: vocalAnalysisRow.id,
+        phraseIndex: 1,
+        startMs: Math.round(trackB.durationSeconds * 1000) - 100,
+        endMs: Math.round(trackB.durationSeconds * 1000) + 100,
+        confidence: 0.9,
+      },
+    ]);
 
-  const tempo = sessionLogic.tempoCompatibility(analysisA?.bpm ?? null, analysisB?.bpm ?? null);
-  assert.equal(tempo.compatible, true, "128.5 → 129 is close");
-  const key = sessionLogic.keyCompatibility(analysisA?.musicalKey ?? null, analysisB?.musicalKey ?? null);
-  assert.equal(key.relationship, "relative", "A minor ↔ C major");
-  const alignment = sessionLogic.beatAlignedTransitionStart(analysisA?.beatGridMs ?? null, analysisB?.beatGridMs ?? null, 100, "beat");
-  assert.equal(alignment.ok, true, "both grids verified → aligned start available");
+    await db.db.update(schema.vocalAnalyses).set({
+      sourceChecksumSha256: "a".repeat(64),
+      stemChecksumSha256: "b".repeat(64),
+    }).where(eq(schema.vocalAnalyses.id, vocalAnalysisRow.id));
+    const staleAnalysis = await sessions.sessionTrackAnalysis(OWNER, trackB.id);
+    assert.deepEqual(staleAnalysis?.vocalActivityStartsMs, null,
+      "source or stem checksum changes suppress otherwise complete vocal evidence");
+    await db.db.update(schema.vocalAnalyses).set({
+      sourceChecksumSha256: sourceAssetB.checksumSha256!,
+      stemChecksumSha256: donorVocalStemRecord.checksumSha256,
+    }).where(eq(schema.vocalAnalyses.id, vocalAnalysisRow.id));
+
+    const analysisA = await sessions.sessionTrackAnalysis(OWNER, trackA.id);
+    const analysisB = await sessions.sessionTrackAnalysis(OWNER, trackB.id);
+    assert.equal(analysisA?.bpm, 128.5);
+    assert.equal(analysisA?.musicalKey, "A minor");
+    assert.equal(analysisB?.bpm, 129);
+    assert.deepEqual(analysisB?.downbeatGridMs, [0, 2000],
+      "the session endpoint exposes persisted downbeats only on the current analysis beat grid");
+    assert.equal(analysisB?.downbeatConfidence, 0.9);
+    await db.db.update(schema.sourceAnalyses).set({ downbeatConfidence: 0.64 })
+      .where(eq(schema.sourceAnalyses.sourceAssetId, sourceB));
+    const weakDownbeatAnalysis = await sessions.sessionTrackAnalysis(OWNER, trackB.id);
+    assert.equal(weakDownbeatAnalysis?.downbeatGridMs, null,
+      "persisted candidate positions are suppressed when downbeat confidence falls below the bar-action threshold");
+    assert.equal(weakDownbeatAnalysis?.downbeatConfidence, 0.64);
+    await db.db.update(schema.sourceAnalyses).set({ downbeatConfidence: 0.9 })
+      .where(eq(schema.sourceAnalyses.sourceAssetId, sourceB));
+    assert.deepEqual(analysisB?.vocalActivityStartsMs, [{ startMs: 250, confidence: 0.92 }],
+      "session analysis exposes only current-checksum vocal activity that ends inside the source and stem");
+    assert.deepEqual(analysisB?.voicedPhraseStartsMs, [{ startMs: 1_100, confidence: 0.7 }],
+      "pitch-continuity phrase starts remain distinct and source-bounded");
+
+    const session = await sessions.createSession(OWNER, "Persisted vocal entry");
+    try {
+      const withRecipient = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackA.id });
+      const withDonorSwap = await sessions.recordStemSwap({
+        ownerId: OWNER,
+        sessionId: session.id,
+        sessionTrackId: withRecipient.tracks[0].id,
+        stemType: "vocals",
+        toTrackId: trackB.id,
+        atSeconds: 1,
+        donorEntryOffsetMs: 1_100,
+      });
+      assert.deepEqual(withDonorSwap.swaps[0]?.donorTrack?.analysis?.voicedPhraseStartsMs,
+        [{ startMs: 1_100, confidence: 0.7 }],
+        "the selected donor's measured entry points are available through the persisted session swap response");
+      assert.equal(withDonorSwap.swaps[0]?.donorEntryOffsetMs, 1_100);
+    } finally {
+      await sessions.deleteSession(OWNER, session.id);
+    }
+
+    const tempo = sessionLogic.tempoCompatibility(analysisA?.bpm ?? null, analysisB?.bpm ?? null);
+    assert.equal(tempo.compatible, true, "128.5 → 129 is close");
+    const key = sessionLogic.keyCompatibility(analysisA?.musicalKey ?? null, analysisB?.musicalKey ?? null);
+    assert.equal(key.relationship, "relative", "A minor ↔ C major");
+    const alignment = sessionLogic.beatAlignedTransitionStart(analysisA?.beatGridMs ?? null, analysisB?.beatGridMs ?? null, 100, "beat");
+    assert.equal(alignment.ok, true, "both grids verified → aligned start available");
+  } finally {
+    await db.db.delete(schema.vocalAnalyses).where(eq(schema.vocalAnalyses.id, vocalAnalysisRow.id));
+  }
 });
 
 test("track curation: rating and labels persist, normalise, and round-trip", async () => {
@@ -3414,7 +3552,7 @@ test("library retry action completes its original job through the real stem work
   const result = await verifyLibraryRetryWithRealWorker({
     database: db.db, client, directory: root, addTrack: service.addTrackFromAudioFile,
   });
-  t.diagnostic(`Real library retry: ${result.stemCount} stems on ${result.device} in ${result.elapsedMs} ms; one-second synthetic input, not Windows or separation-quality evidence.`);
+  t.diagnostic(`Real library retry: ${result.separation.privateOutputCount} stems on ${result.separation.resolvedDevice} in ${result.performance.elapsedMs} ms; one-second synthetic input, not Windows or separation-quality evidence.`);
 });
 
 test("library default four-stem retry reaches real live-mixing controls", {
@@ -3433,7 +3571,44 @@ test("library default four-stem retry reaches real live-mixing controls", {
     audioInputPath: process.env.WAVEYARD_REAL_LIBRARY_AUDIO_INPUT?.trim() || undefined,
     incomingAudioInputPath: process.env.WAVEYARD_REAL_LIBRARY_INCOMING_AUDIO_INPUT?.trim() || undefined,
   });
-  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. ${realInputs.length}/2 source files were supplied as real audio; remaining files are one-second synthetic controls. Pinned CPU execution and UI routing do not establish subjective separation quality or Windows performance.`);
+  t.diagnostic(`Default-recipe library retry and transition: ${JSON.stringify(result)}. ${realInputs.length}/2 source files were supplied as real audio; remaining files are four-second synthetic controls. Pinned CPU execution and UI routing do not establish subjective separation quality or Windows performance.`);
+});
+
+// Exercises a generated, non-DRM AAC stream in an M4A container through the
+// same default four-model CPU path, persisted outputs, and real mixer controls.
+// Opt in separately so this does not run two long four-model jobs by default.
+test("AAC/M4A library import creates a playable isolated four-stem mix", {
+  skip: process.env.WAVEYARD_RUN_REAL_LIBRARY_M4A !== "1",
+  timeout: 720_000,
+}, async t => {
+  assert.ok(client && root);
+  const { verifyLibraryRetryWithRealWorker } = await import("./retry-worker-acceptance.test-helper");
+  const result = await verifyLibraryRetryWithRealWorker({
+    database: db.db,
+    client,
+    directory: root,
+    addTrack: service.addTrackFromAudioFile,
+    recipe: "default-four-stem",
+    inputFormat: "m4a",
+    withIncomingTrack: false,
+  });
+  assert.match(result.codecImport.container ?? "", /mov,mp4,m4a/i);
+  assert.equal(result.codecImport.codec, "aac");
+  assert.equal(result.codecImport.mimeType, "audio/mp4");
+  assert.equal(result.codecImport.originalFilename, "Fixture - Library AAC acceptance.m4a");
+  assert.equal(result.codecImport.sampleRate, 44_100);
+  assert.equal(result.codecImport.channels, 2);
+  assert.equal(result.codecImport.inputUnchanged, true);
+  assert.deepEqual(result.separation.outputStemTypes, ["bass", "drums", "other", "vocals"]);
+  assert.equal(result.separation.resolvedDevice, "cpu");
+  assert.deepEqual(result.separation.completedModelPasses, FOUR_STEM_MODELS.map(model => model.id));
+  assert.equal(result.separation.privateOutputCount, 4);
+  assert.deepEqual(result.separation.isolatedStemTypes, ["bass", "drums", "other", "vocals"]);
+  assert.equal(result.separation.subjectiveQualityAssessed, false);
+  assert.equal(result.performance.windowsPerformanceMeasured, false);
+  t.diagnostic(`Codec/import evidence: ${JSON.stringify(result.codecImport)}. FFmpeg generated a disposable non-DRM AAC/M4A; the imported metadata matches ffprobe.`);
+  t.diagnostic(`Separation/mixer evidence: ${JSON.stringify(result.separation)}. Four pinned CPU outputs were persisted, served privately, decoded by the live mixer, and each isolation control muted the other three. Subjective separation quality was not assessed.`);
+  t.diagnostic(`Performance evidence: ${JSON.stringify(result.performance)}. This Linux CPU duration is not Windows performance evidence.`);
 });
 
 // Opt-in real CPU load and HTTP latency measurement, using this suite's private

@@ -18,7 +18,7 @@
  */
 
 import type { StereoBuffer } from "../mixer/dsp";
-import type { RemixClipInput } from "../remix";
+import type { RemixClipInput, RemixTrackInput } from "../remix";
 
 export const CHOP_SCAN_ENGINE = "waveyard-chop-scan-v1";
 export const CHOP_RENDER_ENGINE = "waveyard-chop-render-v1";
@@ -34,7 +34,99 @@ export type ChopSequencerSample = {
 /** One chop assignment per sixteenth-note step; null means an empty pad. */
 export type ChopSequencerStep = string | null;
 
-const CHOP_SEQUENCER_STEP_COUNT = 16;
+export const CHOP_SEQUENCER_STEP_COUNT = 16;
+
+/** Return the sixteenth-note position only when the clip is on that grid. */
+export function chopStepIndexAtTimelineMs(timelineStartMs: number, bpm: number): number | null {
+  if (!Number.isFinite(timelineStartMs) || timelineStartMs < 0 || !Number.isFinite(bpm) || bpm <= 0)
+    return null;
+  const stepMs = 60_000 / bpm / 4;
+  const stepIndex = Math.round(timelineStartMs / stepMs);
+  if (stepIndex < 0 || stepIndex > 1_728_000) return null;
+  return Math.abs(timelineStartMs - stepIndex * stepMs) <= Math.max(2, stepMs * 0.1)
+    ? stepIndex
+    : null;
+}
+
+/** Keep a manually moved sequencer clip linked only when it lands on a pad step. */
+export function bindChopSequencerClipToTimeline(
+  clip: RemixClipInput,
+  trackName: string,
+  bpm: number,
+): RemixClipInput {
+  if (trackName !== CHOP_SEQUENCER_TRACK_NAME) return clip;
+  const chopStepIndex = chopStepIndexAtTimelineMs(clip.timelineStartMs, bpm);
+  if (chopStepIndex === null)
+    return { ...clip, chopStepIndex: null, chopSampleDurationMs: null };
+  return {
+    ...clip,
+    chopStepIndex,
+    chopSampleDurationMs: clip.chopSampleDurationMs ?? clip.durationMs,
+  };
+}
+
+/**
+ * Re-time sequencer clips when the arrangement BPM changes. The clip's step
+ * and extracted sample length are durable musical intent; `timelineStartMs`
+ * and `durationMs` are the values the preview and renderer consume.
+ *
+ * Legacy patterns have no explicit intent fields. Recover their step from the
+ * previous BPM and preserve their existing bounded duration as the safest
+ * available sample-length limit.
+ */
+export function retimeChopSequencerTracks(
+  tracks: readonly RemixTrackInput[],
+  previousBpm: number,
+  nextBpm: number,
+): RemixTrackInput[] {
+  if (
+    !Number.isFinite(previousBpm) ||
+    previousBpm <= 0 ||
+    !Number.isFinite(nextBpm) ||
+    nextBpm <= 0 ||
+    Math.abs(previousBpm - nextBpm) < 0.0001
+  ) return tracks as RemixTrackInput[];
+
+  const nextStepMs = 60_000 / nextBpm / 4;
+  let changed = false;
+  const retimed = tracks.map((track) => {
+    if (track.name !== CHOP_SEQUENCER_TRACK_NAME) return track;
+    let trackChanged = false;
+    const clips = track.clips.map((clip) => {
+      const stepIndex = clip.chopStepIndex === undefined
+        ? chopStepIndexAtTimelineMs(clip.timelineStartMs, previousBpm)
+        : clip.chopStepIndex;
+      if (stepIndex === null || stepIndex === undefined) return clip;
+      const sampleDurationMs = clip.chopSampleDurationMs ?? clip.durationMs;
+      const timelineStartMs = Math.round(stepIndex * nextStepMs);
+      if (timelineStartMs > 86_400_000) return clip;
+      const durationMs = Math.max(1, Math.round(Math.min(sampleDurationMs, nextStepMs)));
+      const fadeLimitMs = Math.floor(durationMs / 2);
+      const nextClip: RemixClipInput = {
+        ...clip,
+        timelineStartMs,
+        durationMs,
+        fadeInMs: Math.min(clip.fadeInMs, fadeLimitMs),
+        fadeOutMs: Math.min(clip.fadeOutMs, fadeLimitMs),
+        chopStepIndex: stepIndex,
+        chopSampleDurationMs: sampleDurationMs,
+      };
+      if (
+        timelineStartMs !== clip.timelineStartMs ||
+        durationMs !== clip.durationMs ||
+        nextClip.fadeInMs !== clip.fadeInMs ||
+        nextClip.fadeOutMs !== clip.fadeOutMs ||
+        clip.chopStepIndex !== stepIndex ||
+        clip.chopSampleDurationMs !== sampleDurationMs
+      ) trackChanged = true;
+      return nextClip;
+    });
+    if (!trackChanged) return track;
+    changed = true;
+    return { ...track, clips };
+  });
+  return changed ? retimed : tracks as RemixTrackInput[];
+}
 
 /**
  * Convert the first-bar pad pattern to ordinary remix clips. These clips use
@@ -76,6 +168,8 @@ export function buildChopSequencerClips(
       tempoSyncEnabled: false,
       keySyncEnabled: false,
       beatSnapEnabled: false,
+      chopStepIndex: stepIndex,
+      chopSampleDurationMs: Math.round(sample.durationMs),
     }];
   });
 }
@@ -88,7 +182,6 @@ export function readChopSequencerSteps(
 ): ChopSequencerStep[] {
   const steps: ChopSequencerStep[] = Array.from({ length: CHOP_SEQUENCER_STEP_COUNT }, () => null);
   if (!Number.isFinite(bpm) || bpm <= 0) return steps;
-  const stepMs = 60_000 / bpm / 4;
 
   for (const clip of clips) {
     const sample = samples.find((candidate) =>
@@ -96,9 +189,10 @@ export function readChopSequencerSteps(
       Math.abs(candidate.startMs - clip.sourceOffsetMs) <= 1,
     );
     if (!sample) continue;
-    const stepIndex = Math.round(clip.timelineStartMs / stepMs);
-    if (stepIndex < 0 || stepIndex >= CHOP_SEQUENCER_STEP_COUNT) continue;
-    if (Math.abs(clip.timelineStartMs - stepIndex * stepMs) > Math.max(2, stepMs * 0.1)) continue;
+    const stepIndex = clip.chopStepIndex === undefined
+      ? chopStepIndexAtTimelineMs(clip.timelineStartMs, bpm)
+      : clip.chopStepIndex;
+    if (stepIndex === null || stepIndex === undefined || stepIndex < 0 || stepIndex >= CHOP_SEQUENCER_STEP_COUNT) continue;
     steps[stepIndex] = sample.id;
   }
   return steps;
@@ -134,6 +228,38 @@ export type ChopDetection = {
   /** Weighted quality score (0–1) — the ranking key. */
   score: number;
 };
+
+/**
+ * Keep the highest-scoring take for each available pitch class before filling
+ * the remaining slots by score. This gives a sampler useful note choices
+ * without pretending a lower-ranked take is higher quality.
+ */
+export function diversifyChopDetections(
+  detections: readonly ChopDetection[],
+  maxChops = 12,
+): ChopDetection[] {
+  if (!Number.isSafeInteger(maxChops) || maxChops <= 0) return [];
+  const ranked = [...detections].sort((left, right) => right.score - left.score);
+  const selected: ChopDetection[] = [];
+  const selectedSet = new Set<ChopDetection>();
+  const pitchClasses = new Set<number>();
+
+  for (const detection of ranked) {
+    const pitchClass = ((Math.round(detection.rootMidi) % 12) + 12) % 12;
+    if (pitchClasses.has(pitchClass)) continue;
+    selected.push(detection);
+    selectedSet.add(detection);
+    pitchClasses.add(pitchClass);
+    if (selected.length >= maxChops) return selected.sort((left, right) => right.score - left.score);
+  }
+
+  for (const detection of ranked) {
+    if (selectedSet.has(detection)) continue;
+    selected.push(detection);
+    if (selected.length >= maxChops) break;
+  }
+  return selected.sort((left, right) => right.score - left.score);
+}
 
 /** A decoded PCM buffer (interleaved, any channel count). */
 export type PcmBuffer = {
@@ -434,8 +560,7 @@ export function detectVocalChops(buffer: PcmBuffer, options: ChopScanOptions = {
     });
   }
 
-  detections.sort((left, right) => right.score - left.score);
-  return detections.slice(0, maxChops);
+  return diversifyChopDetections(detections, maxChops);
 }
 
 export type ExtractedChop = {

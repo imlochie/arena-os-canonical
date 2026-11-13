@@ -1,0 +1,37 @@
+{
+  "status": "provisional-single-listener-notes",
+  "scope": "Development comparison only. These approximate owner-supplied times are neither independent blind reviews nor adjudicated ground truth. No calibration, generalization or listening-quality claim is supported.",
+  "timingToleranceMs": 1000,
+  "recordings": {
+    "another-one-bites-the-dust": {
+      "sourceSha256": "30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c",
+      "sections": [
+        { "startMs": 0, "endMs": 27000, "label": "unknown" },
+        { "startMs": 27000, "endMs": 35000, "label": "verse" },
+        { "startMs": 35000, "endMs": 45000, "label": "pre-chorus" },
+        { "startMs": 45000, "endMs": 71000, "label": "chorus" },
+        { "startMs": 71000, "endMs": 80000, "label": "verse" },
+        { "startMs": 80000, "endMs": 90000, "label": "pre-chorus" },
+        { "startMs": 90000, "endMs": 110000, "label": "chorus" },
+        { "startMs": 110000, "endMs": 144000, "label": "bridge" },
+        { "startMs": 144000, "endMs": 162000, "label": "breakdown" },
+        { "startMs": 162000, "endMs": 171000, "label": "verse" },
+        { "startMs": 171000, "endMs": 181000, "label": "pre-chorus" },
+        { "startMs": 181000, "endMs": 197000, "label": "chorus" },
+        { "startMs": 197000, "endMs": 222670, "label": "outro" }
+      ]
+    },
+    "september": {
+      "sourceSha256": "6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1",
+      "sections": [
+        { "startMs": 0, "endMs": 20000, "label": "intro" },
+        { "startMs": 20000, "endMs": 50000, "label": "verse" },
+        { "startMs": 50000, "endMs": 80000, "label": "chorus" },
+        { "startMs": 80000, "endMs": 111000, "label": "verse" },
+        { "startMs": 111000, "endMs": 140000, "label": "chorus" },
+        { "startMs": 140000, "endMs": 172000, "label": "breakdown" },
+        { "startMs": 172000, "endMs": 215140, "label": "outro" }
+      ]
+    }
+  }
+}

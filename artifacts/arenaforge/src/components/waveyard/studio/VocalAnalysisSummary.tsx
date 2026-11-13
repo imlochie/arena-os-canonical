@@ -8,7 +8,7 @@ function clockMs(milliseconds: number) {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
 }
 
-/** Read-only evidence from an isolated vocals stem; it does not create notes or edit audio. */
+/** Read-only pitch-continuity evidence from an isolated vocals stem. */
 export function VocalAnalysisSummary({
   stem,
   editable = false,
@@ -47,7 +47,7 @@ export function VocalAnalysisSummary({
     }
   };
   if (!analysis) return <section className="vocal-analysis-summary" aria-label="Vocal stem pitch observation">
-    <p>No vocal pitch observation is recorded for this isolated stem.</p>
+    <p>No vocal pitch-continuity evidence is recorded for this isolated stem.</p>
     {editable && onRequestAnalysis && <button type="button" className="button secondary" disabled={requesting} onClick={() => void request()}>{requesting ? "Queuing…" : "Analyze vocal stem"}</button>}
     {requestMessage && <p className="error">{requestMessage}</p>}
   </section>;
@@ -66,11 +66,11 @@ export function VocalAnalysisSummary({
   const voiced = frames.filter((frame) => frame.voiced);
   const range = voiced.length ? `${Math.min(...voiced.map((frame) => frame.nearestMidiNote ?? 0))}–${Math.max(...voiced.map((frame) => frame.nearestMidiNote ?? 0))}` : "No voiced frames";
   return <section className="vocal-analysis-summary" aria-label="Vocal stem pitch observation">
-    <div><b>Vocal stem observation</b><small>{voiced.length} voiced frames · MIDI range {range} · {phrases.length} coarse phrases</small></div>
+    <div><b>Vocal stem timing</b><small>{voiced.length} voiced frames · MIDI range {range} · {phrases.length} pitch-continuity runs</small></div>
     {phrases.length > 0 && <ol>
-      {phrases.slice(0, 6).map((phrase, index) => <li key={phrase.id}>Phrase {index + 1}: {clockMs(phrase.startMs)}–{clockMs(phrase.endMs)} · confidence {Math.round(phrase.confidence * 100)}%</li>)}
+      {phrases.slice(0, 6).map((phrase, index) => <li key={phrase.id}>Run {index + 1}: {clockMs(phrase.startMs)}–{clockMs(phrase.endMs)} · confidence {Math.round(phrase.confidence * 100)}%</li>)}
     </ol>}
-    <p>Source-relative pitch evidence from the isolated vocals stem only. It does not correct audio, create lyrics, or generate music.</p>
+    <p>Runs mark sustained voiced pitch in the isolated stem. They do not identify words, lyrics, or semantic vocal phrases.</p>
     {onExportMidi && <button type="button" className="button secondary" disabled={requesting} onClick={() => void exportMidi()}>{requesting ? "Queuing…" : "Export MIDI"}</button>}
     {requestMessage && <p className="notice">{requestMessage}</p>}
   </section>;

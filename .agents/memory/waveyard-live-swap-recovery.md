@@ -14,3 +14,9 @@ Shared encoded-audio caches must invalidate bytes rejected by the decoder, not j
 **Why:** An HTTP 200 can contain corrupt audio; retaining it makes an explicit retry fail repeatedly without reaching the server. Revoking an existing deck lease during invalidation can interrupt unrelated playback.
 
 **How to apply:** Exercise a corrupt response followed by valid bytes at the same URL. Verify retry repairs the donor and standby deck, then actually transition to the repaired next track. Releasing an old lease must not evict the replacement.
+
+For vocal replacements, a recipient stem's RMS is only a warning signal: it cannot prove that source vocals have been removed from drums, bass, or other layers. Paused or unavailable measurements are unknown, not evidence of failed separation. Never label a donor overlay as a clean vocal swap unless leakage was actually verified.
+
+**Why:** Quiet vocal stems can leave the original voice audible elsewhere, while sparse and instrumental passages can look quiet for valid reasons.
+
+**How to apply:** Read pre-fader source-level energy without changing the playhead or mix, disclose uncertainty before the user selects a donor, and validate any future voice-leak detector against real separated audio with manually checked references.

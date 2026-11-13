@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "description": "Six eight-second excerpts from three separately sourced CC BY 4.0 tracks. Excerpts are stereo 44.1 kHz signed 16-bit PCM WAVs.",
+  "songs": [
+    {
+      "id": "monkeys-spinning-monkeys",
+      "title": "Monkeys Spinning Monkeys",
+      "artist": "Kevin MacLeod",
+      "source": {
+        "path": "generated-artifacts/waveyard-mashup-quality/sources/monkeys-spinning-monkeys.mp3",
+        "sha256": "a5bb345c23849ad0786aa0bc5157a9f2d4039660fe00282e55754d475f36dc14",
+        "url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1400011",
+        "license": "CC BY 4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "excerpts": [
+        {
+          "path": "generated-artifacts/waveyard-separation-memory/excerpts/monkeys-spinning-monkeys-15s.wav",
+          "startSeconds": 15,
+          "durationSeconds": 8,
+          "sha256": "2737a1c4d0e5987ced5cc53932c2bd8480136cdde0dace20e08fdf80bc703cd9"
+        },
+        {
+          "path": "generated-artifacts/waveyard-separation-memory/excerpts/monkeys-spinning-monkeys-35s.wav",
+          "startSeconds": 35,
+          "durationSeconds": 8,
+          "sha256": "79e5669fcf32174e2c5742b6ce7d44c92e67f42d010a08207d6c584494302baf"
+        }
+      ]
+    },
+    {
+      "id": "sneaky-snitch",
+      "title": "Sneaky Snitch",
+      "artist": "Kevin MacLeod",
+      "source": {
+        "path": "generated-artifacts/waveyard-mashup-quality/sources/sneaky-snitch.mp3",
+        "sha256": "db1710333d68a215277f77e4e17e1a64bf4ed38f87c70f8d0f56b16b6aa4f884",
+        "url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100772",
+        "license": "CC BY 4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "excerpts": [
+        {
+          "path": "generated-artifacts/waveyard-separation-memory/excerpts/sneaky-snitch-15s.wav",
+          "startSeconds": 15,
+          "durationSeconds": 8,
+          "sha256": "b80dc18c78a1ad251264d99fec298fdf44303fcdc0f860d5b5a39aae06fecce4"
+        },
+        {
+          "path": "generated-artifacts/waveyard-separation-memory/excerpts/sneaky-snitch-35s.wav",
+          "startSeconds": 35,
+          "durationSeconds": 8,
+          "sha256": "5c851197828cbf0c113bcf70fc5f3591a458360572d78f4ae4831604b09fac28"
+        }
+      ]
+    },
+    {
+      "id": "funkorama",
+      "title": "Funkorama",
+      "artist": "Kevin MacLeod",
+      "source": {
+        "path": "generated-artifacts/waveyard-drum-swap-proof/sources/funkorama.mp3",
+        "sha256": "6be229815d85a0b99382b944d31098b882702c04ac7ad899e44ab7f8ba89b5ad",
+        "url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100474",
+        "license": "CC BY 4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by/4.0/"
+      },
+      "excerpts": [
+        {
+          "path": "generated-artifacts/waveyard-separation-memory/excerpts/funkorama-20s.wav",
+          "startSeconds": 20,
+          "durationSeconds": 8,
+          "sha256": "6ad59ae7c4aad8ac7001362bec1b6dd16039314e2dc16821f3e294867514125c"
+        },
+        {
+          "path": "generated-artifacts/waveyard-separation-memory/excerpts/funkorama-40s.wav",
+          "startSeconds": 40,
+          "durationSeconds": 8,
+          "sha256": "65a9b42c69fe3c0b5e65e2e56d81d6b8fd2918de470f4fb7c3a985e321d8a6d9"
+        }
+      ]
+    }
+  ]
+}

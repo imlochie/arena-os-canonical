@@ -26,6 +26,7 @@ import {
   currentKeyConfidence,
   isCurrentDesktopAnalysis,
 } from "../types/analysis-provenance";
+import { hasReliableMixingConfidence } from "../types/analysis-confidence";
 import {
   listenSessionSwaps,
   listenSessions,
@@ -42,6 +43,9 @@ import {
   sourceSections,
   stemAssets,
   tracks,
+  vocalAnalyses,
+  vocalActivityIntervals,
+  vocalPhrases,
   waveformAssets,
   waveformJobs,
 } from "@workspace/db/waveyardSchema";
@@ -53,6 +57,12 @@ import { desktopAnalysisIdempotencyKey, DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSI
 import { enqueueSourceAnalysis, enqueueWaveform } from "../queue";
 import { sourceSectionsAreValid, type SourceSection } from "../types/source-sections";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
+import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
+import {
+  LOCAL_VOCAL_ANALYSIS_ENGINE,
+  LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+  vocalAnalysisProvenanceReason,
+} from "../types/vocal-analysis";
 import {
   normalizeStemMix,
   parseStemMix,
@@ -201,8 +211,9 @@ export interface SessionSwapPayload {
   fromStemAssetId: string | null;
   toStemAssetId: string | null;
   atSeconds: number;
+  donorEntryOffsetMs: number | null;
   createdAt: string;
-  donorTrack: { id: string; title: string; stems: TrackStem[]; analysis: SessionTrackAnalysis | null } | null;
+  donorTrack: { id: string; title: string; durationSeconds: number; stems: TrackStem[]; analysis: SessionTrackAnalysis | null } | null;
 }
 
 interface SessionTrackRow {
@@ -296,6 +307,15 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
   for (const source of sourceRows) {
     sourceAvailability.set(source.id, await getStorage().exists(source.storageKey));
   }
+  const donorAnalyses = new Map<string, Promise<SessionTrackAnalysis | null>>();
+  const analysisForDonor = (trackId: string) => {
+    let analysis = donorAnalyses.get(trackId);
+    if (!analysis) {
+      analysis = sessionTrackAnalysis(session.ownerId, trackId);
+      donorAnalyses.set(trackId, analysis);
+    }
+    return analysis;
+  };
   return {
     id: session.id,
     name: session.name,
@@ -332,12 +352,14 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
       fromStemAssetId: row.fromStemAssetId,
       toStemAssetId: row.toStemAssetId,
       atSeconds: row.atSeconds,
+      donorEntryOffsetMs: row.donorEntryOffsetMs,
       createdAt: row.createdAt.toISOString(),
       donorTrack: details.has(row.toTrackId) ? {
         id: row.toTrackId,
         title: details.get(row.toTrackId)!.title,
+        durationSeconds: details.get(row.toTrackId)!.durationSeconds,
         stems: details.get(row.toTrackId)!.stems,
-        analysis: await sessionTrackAnalysis(session.ownerId, row.toTrackId),
+        analysis: await analysisForDonor(row.toTrackId),
       } : null,
     }))),
     createdAt: session.createdAt.toISOString(),
@@ -537,6 +559,8 @@ export async function restoreSessionTrackOriginalAudio(
           keyConfidence: null,
           beatGrid: null,
           beatConfidence: null,
+          downbeatGrid: null,
+          downbeatConfidence: null,
           analysisError: null,
           errorCode: null,
           startedAt: null,
@@ -997,6 +1021,7 @@ export async function recordStemSwap(input: {
   stemType: string;
   toTrackId: string;
   atSeconds: number;
+  donorEntryOffsetMs?: number | null;
   expectedSwapId?: string;
   toStemAssetId?: string | null;
 }): Promise<SessionDetailPayload> {
@@ -1032,6 +1057,16 @@ export async function recordStemSwap(input: {
   if (currentStem === undefined || donorStem === undefined) {
     throw new StemSwapRefusedError("The exact audio for this stem swap is no longer available.");
   }
+  if (input.donorEntryOffsetMs != null) {
+    if (input.stemType !== "vocals") {
+      throw new StemSwapRefusedError("A donor entry point can only be set for a vocal swap.");
+    }
+    if (!Number.isSafeInteger(input.donorEntryOffsetMs)
+      || input.donorEntryOffsetMs < 0
+      || input.donorEntryOffsetMs >= Math.round(Math.min(donorDetail.durationSeconds, donorStem.durationSeconds) * 1000)) {
+      throw new StemSwapRefusedError("The selected vocal entry point is outside the donor track.");
+    }
+  }
 
   await db.transaction(async (tx) => {
     // All selections for a session serialize here, including guarded restores.
@@ -1063,6 +1098,7 @@ export async function recordStemSwap(input: {
       fromStemAssetId: currentStem.id,
       toStemAssetId: donorStem.id,
       atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
+      donorEntryOffsetMs: input.donorEntryOffsetMs ?? null,
     });
   });
   await touchSession(input.sessionId);
@@ -1503,10 +1539,16 @@ export interface SessionTrackAnalysis {
   bpm: number | null;
   bpmConfidence: number | null;
   beatConfidence: number | null;
+  downbeatConfidence: number | null;
   keyConfidence: number | null;
   musicalKey: string | null;
   beatGridMs: number[] | null;
+  downbeatGridMs: number[] | null;
   sections: SourceSection[] | null;
+  /** Checksum-verified isolated-vocal activity starts; these are not lyric word boundaries. */
+  vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+  /** Pitch-continuity phrase candidates; unvoiced consonants and lyric boundaries are not guaranteed. */
+  voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
 }
 
 export async function sessionTrackAnalysis(ownerId: string, trackId: string): Promise<SessionTrackAnalysis | null> {
@@ -1528,6 +1570,8 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       bpm: sourceAnalyses.bpm,
       bpmConfidence: sourceAnalyses.bpmConfidence,
       beatConfidence: sourceAnalyses.beatConfidence,
+      downbeatGrid: sourceAnalyses.downbeatGrid,
+      downbeatConfidence: sourceAnalyses.downbeatConfidence,
       keyConfidence: sourceAnalyses.keyConfidence,
       analysisEngine: sourceAnalyses.analysisEngine,
       analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
@@ -1543,10 +1587,14 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       bpm: null,
       bpmConfidence: null,
       beatConfidence: null,
+      downbeatConfidence: null,
       keyConfidence: null,
       musicalKey: null,
       beatGridMs: null,
+      downbeatGridMs: null,
       sections: null,
+      vocalActivityStartsMs: null,
+      voicedPhraseStartsMs: null,
     };
   }
   const analysisMatchesSource = sourceTrack.checksumSha256 !== null
@@ -1556,10 +1604,14 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       bpm: null,
       bpmConfidence: null,
       beatConfidence: null,
+      downbeatConfidence: null,
       keyConfidence: null,
       musicalKey: null,
       beatGridMs: null,
+      downbeatGridMs: null,
       sections: null,
+      vocalActivityStartsMs: null,
+      voicedPhraseStartsMs: null,
     };
   }
   const analysisIsCurrent = isCurrentDesktopAnalysis(analysis);
@@ -1570,6 +1622,33 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
   } catch {
     beatGridMs = null;
   }
+  let downbeatGridMs: number[] | null = null;
+  try {
+    const parsed = JSON.parse(analysisIsCurrent ? analysis.downbeatGrid ?? "null" : "null");
+    const beatIndices = Array.isArray(parsed)
+      ? parsed.map((beat) => beatGridMs?.indexOf(beat) ?? -1)
+      : [];
+    if (
+      Array.isArray(parsed)
+      && parsed.length >= 2
+      && beatIndices.every((index, offset) =>
+        index >= 0 && (offset === 0 || index - beatIndices[offset - 1]! === 4),
+      )
+    ) downbeatGridMs = parsed;
+  } catch {
+    downbeatGridMs = null;
+  }
+  const measuredBeatConfidence = currentBeatConfidence(analysis);
+  const downbeatConfidence = analysisIsCurrent
+    && hasReliableMixingConfidence(measuredBeatConfidence)
+    && measuredBeatConfidence !== null
+    && typeof analysis.downbeatConfidence === "number"
+    && Number.isFinite(analysis.downbeatConfidence)
+    && analysis.downbeatConfidence >= 0
+    && analysis.downbeatConfidence <= 1
+    ? Math.min(analysis.downbeatConfidence, measuredBeatConfidence)
+    : null;
+  if (!hasReliableSessionDownbeatEvidence(downbeatConfidence, downbeatGridMs)) downbeatGridMs = null;
 
   let sections: SourceSection[] | null = null;
   if (
@@ -1658,13 +1737,91 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       }
     }
   }
+  let vocalActivityStartsMs: SessionTrackAnalysis["vocalActivityStartsMs"] = null;
+  let voicedPhraseStartsMs: SessionTrackAnalysis["voicedPhraseStartsMs"] = null;
+  const vocalStem = detail.stems.find((stem) => stem.stemType === "vocals"
+    && stem.engine !== "passthrough-unseparated");
+  if (vocalStem && sourceTrack.checksumSha256 !== null) {
+    const [vocalAnalysis] = await db.select({
+      id: vocalAnalyses.id,
+      sourceAssetId: vocalAnalyses.sourceAssetId,
+      stemAssetId: vocalAnalyses.stemAssetId,
+      sourceChecksumSha256: vocalAnalyses.sourceChecksumSha256,
+      stemChecksumSha256: vocalAnalyses.stemChecksumSha256,
+      currentStemChecksumSha256: stemAssets.checksumSha256,
+      analysisEngine: vocalAnalyses.analysisEngine,
+      analysisEngineVersion: vocalAnalyses.analysisEngineVersion,
+    }).from(vocalAnalyses).innerJoin(stemAssets, eq(vocalAnalyses.stemAssetId, stemAssets.id)).where(and(
+      eq(vocalAnalyses.sourceAssetId, sourceTrack.sourceAssetId),
+      eq(vocalAnalyses.stemAssetId, vocalStem.id),
+      eq(vocalAnalyses.status, "complete"),
+      eq(vocalAnalyses.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE),
+      eq(vocalAnalyses.analysisEngineVersion, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION),
+      eq(vocalAnalyses.sourceChecksumSha256, sourceTrack.checksumSha256),
+      eq(stemAssets.sourceAssetId, sourceTrack.sourceAssetId),
+      eq(stemAssets.stemType, "vocals"),
+      eq(vocalAnalyses.stemChecksumSha256, stemAssets.checksumSha256),
+    )).orderBy(desc(vocalAnalyses.createdAt)).limit(1);
+    const provenanceReason = vocalAnalysis ? vocalAnalysisProvenanceReason({
+        sourceAssetId: vocalAnalysis.sourceAssetId,
+        expectedSourceAssetId: sourceTrack.sourceAssetId,
+        stemAssetId: vocalAnalysis.stemAssetId,
+        expectedStemAssetId: vocalStem.id,
+        sourceChecksumSha256: vocalAnalysis.sourceChecksumSha256,
+        expectedSourceChecksumSha256: sourceTrack.checksumSha256,
+        stemChecksumSha256: vocalAnalysis.stemChecksumSha256,
+        expectedStemChecksumSha256: vocalAnalysis.currentStemChecksumSha256,
+        analysisEngine: vocalAnalysis.analysisEngine,
+        analysisEngineVersion: vocalAnalysis.analysisEngineVersion,
+    }, {
+      engine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+      version: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+    }) : "source_stem_mismatch";
+    if (vocalAnalysis && !provenanceReason) {
+      const [activityRows, phraseRows] = await Promise.all([
+        db.select({
+          startMs: vocalActivityIntervals.startMs,
+          endMs: vocalActivityIntervals.endMs,
+          confidence: vocalActivityIntervals.confidence,
+        }).from(vocalActivityIntervals)
+          .where(eq(vocalActivityIntervals.vocalAnalysisId, vocalAnalysis.id))
+          .orderBy(asc(vocalActivityIntervals.startMs))
+          .limit(10_000),
+        db.select({
+          startMs: vocalPhrases.startMs,
+          endMs: vocalPhrases.endMs,
+          confidence: vocalPhrases.confidence,
+        }).from(vocalPhrases)
+          .where(eq(vocalPhrases.vocalAnalysisId, vocalAnalysis.id))
+          .orderBy(asc(vocalPhrases.startMs))
+          .limit(10_000),
+      ]);
+      const durationMs = Math.round(Math.min(detail.durationSeconds, vocalStem.durationSeconds) * 1000);
+      const validStarts = (rows: typeof activityRows) => rows.filter((row) =>
+        Number.isSafeInteger(row.startMs)
+        && Number.isSafeInteger(row.endMs)
+        && row.startMs >= 0
+        && row.endMs > row.startMs
+        && row.endMs <= durationMs
+        && Number.isFinite(row.confidence)
+        && row.confidence >= 0
+        && row.confidence <= 1,
+      ).map(({ startMs, confidence }) => ({ startMs, confidence }));
+      vocalActivityStartsMs = validStarts(activityRows);
+      voicedPhraseStartsMs = validStarts(phraseRows);
+    }
+  }
   return {
     bpm: analysis.bpm,
     bpmConfidence: currentBpmConfidence(analysis),
-    beatConfidence: currentBeatConfidence(analysis),
+    beatConfidence: measuredBeatConfidence,
+    downbeatConfidence,
     keyConfidence: currentKeyConfidence(analysis),
     musicalKey: analysis.musicalKey,
     beatGridMs,
+    downbeatGridMs,
     sections,
+    vocalActivityStartsMs,
+    voicedPhraseStartsMs,
   };
 }

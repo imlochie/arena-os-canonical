@@ -38,6 +38,12 @@ test("tempoRatio and required duration math match the worker", () => {
   assert.throws(() => tempoRatio(120, 10));
 });
 
+test("source duration validation accepts only persisted whole-second rounding", () => {
+  assert.equal(sourceDurationFits(0, 215_137, 1, 215_000), false);
+  assert.equal(sourceDurationFits(0, 215_137, 1, 215_000, 500), true);
+  assert.equal(sourceDurationFits(0, 215_501, 1, 215_000, 500), false);
+});
+
 test("pitchFilterChain shifts rate and restores duration", () => {
   const chain = pitchFilterChain(2, 44100);
   // 2 semitones up: asetrate ~49587 then aresample back, atempo ~0.891

@@ -60,9 +60,10 @@ approval, denial, stale artifacts, cancellation, fallback rejection, source
 redaction in a **real persisted database journal**, and refusal of autonomous
 resume. They are not real-model generation evidence.
 
-The Chromium browser journey in `scripts/arcade-development-journey.mjs` now
-passes without an owner session or model. It uses an original authorized HTML
-coin fixture and verifies real controls and durable browser records:
+The browser journey in `scripts/arcade-development-journey.mjs` now passes in
+Chromium, Firefox, and Playwright WebKit without an owner session or model. It
+uses the same original authorized HTML coin fixture and verifies real controls
+and durable browser records:
 
 - The base collects two coins. A manually saved draft changes collection from
   one to five points, with a displayed comparison and exact source hashes.
@@ -83,11 +84,17 @@ coin fixture and verifies real controls and durable browser records:
   real-model evidence.
 
 Run `node scripts/arcade-development-journey.mjs` against the running preview
-(or set `TEST_BASE_URL`). Its report and screenshots are generated under
-`generated-artifacts/arcade-development-journey/`. Clock manipulation and
-transaction-abort injection are test-only; production storage is not bypassed.
-This is Chromium evidence, not Windows packaging, physical mobile-device, or
-selected-model acceptance.
+(or set `TEST_BASE_URL`). Set `TEST_BROWSER` to `chromium`, `firefox`, or
+`webkit` to select the engine; Chromium is the default. If a local WebKit
+installation requires a visible display, set `TEST_HEADLESS=0` and run under
+the host's virtual display. On Nix hosts, Playwright's bundled WebKit may need
+a host-compatible GTK launcher; set `WEBKIT_PATH` to that launcher.
+Browser-specific executable overrides are `CHROMIUM_PATH`, `FIREFOX_PATH`,
+and `WEBKIT_PATH`. Each engine's report and screenshots are generated in its
+own subdirectory under `generated-artifacts/arcade-development-journey/`.
+Clock manipulation and transaction-abort injection are test-only; production
+storage is not bypassed. These Linux browser runs are not physical iOS/Windows,
+packaging, or selected-model acceptance.
 
 Installation and the development checkpoint are separate durable operations.
 Checkpoint/evidence failure after installation must be reported as partial

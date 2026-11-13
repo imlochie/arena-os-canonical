@@ -2,8 +2,53 @@ import type { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
 export const LIVE_STEM_MIN_DONOR_RMS_DBFS = -55;
+export const LIVE_STEM_RECIPIENT_VOCAL_QUIET_RMS = 0.001;
+export const LIVE_STEM_RECIPIENT_BED_ACTIVE_RMS = 0.01;
 export const SESSION_PLAYBACK_RATE_MIN = 0.8;
 export const SESSION_PLAYBACK_RATE_MAX = 1.2;
+
+export type RecipientVocalLayerEnergyCheck =
+  | { state: "quiet-over-active-bed"; vocalRms: number; bedRms: number }
+  | { state: "no-vocal-activity"; vocalRms: number; bedRms: number }
+  | { state: "audible"; vocalRms: number; bedRms: number }
+  | { state: "unavailable"; vocalRms: null; bedRms: null };
+
+/**
+ * A live meter can identify a quiet recipient vocal stem, but cannot prove
+ * voice leakage or semantic vocal presence. Keep low-vocal/active-bed readings
+ * as a warning, not a rejection; sparse or instrumental moments remain
+ * explicitly inconclusive.
+ */
+export function assessRecipientVocalLayerEnergy(
+  vocalRms: number | null | undefined,
+  bedRms: number | null | undefined,
+): RecipientVocalLayerEnergyCheck {
+  if (
+    typeof vocalRms !== "number" || !Number.isFinite(vocalRms) || vocalRms < 0
+    || typeof bedRms !== "number" || !Number.isFinite(bedRms) || bedRms < 0
+  ) {
+    return { state: "unavailable", vocalRms: null, bedRms: null };
+  }
+  if (vocalRms < LIVE_STEM_RECIPIENT_VOCAL_QUIET_RMS) {
+    return bedRms >= LIVE_STEM_RECIPIENT_BED_ACTIVE_RMS
+      ? { state: "quiet-over-active-bed", vocalRms, bedRms }
+      : { state: "no-vocal-activity", vocalRms, bedRms };
+  }
+  return { state: "audible", vocalRms, bedRms };
+}
+
+export function recipientVocalLayerEnergyMessage(check: RecipientVocalLayerEnergyCheck) {
+  switch (check.state) {
+    case "quiet-over-active-bed":
+      return "Vocal stem is very quiet under active backing; the original voice may remain in other stems beneath a donor.";
+    case "no-vocal-activity":
+      return "No vocal energy at this playhead; this may be sparse or instrumental, so voice leakage cannot be assessed.";
+    case "audible":
+      return "Vocal signal is present, but this check cannot prove other stems are clean; vocals may still double.";
+    case "unavailable":
+      return "Vocal isolation could not be checked; clean replacement is not assured.";
+  }
+}
 
 function measureAudioBufferRmsDbfs(buffer: {
   numberOfChannels: number;
@@ -116,6 +161,18 @@ export type LiveStemTiming = {
   transferBytes: number;
 };
 
+export type LiveStemSwapResult = {
+  installed: true;
+  snap: "scheduled" | "missed" | "unavailable" | "paused";
+};
+
+export type LiveStemSwapOptions = {
+  /** True only when the user has snap enabled and the receiving deck is playing. */
+  snapRequested?: boolean;
+  /** Absolute AudioContext time for the measured receiving-track boundary. */
+  activationTime?: number | null;
+};
+
 type PreparedStem = {
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
@@ -147,7 +204,8 @@ type InFlightAsset = {
 type PendingSwap = {
   controller: AbortController;
   key: string;
-  promise: Promise<void | false>;
+  activationTime?: number;
+  promise: Promise<void | false | LiveStemSwapResult>;
 };
 
 type BufferStretcher = (
@@ -445,14 +503,50 @@ export class LiveStemLayers {
   }
 
   private ramp(gain: GainNode, value: number) {
+    this.rampAt(gain, value, gain.context.currentTime);
+  }
+
+  private rampAt(gain: GainNode, value: number, time: number) {
     const now = gain.context.currentTime;
+    const startAt = Math.max(now, time);
     if (typeof gain.gain.cancelAndHoldAtTime === "function") {
-      gain.gain.cancelAndHoldAtTime(now);
+      gain.gain.cancelAndHoldAtTime(startAt);
     } else {
-      gain.gain.cancelScheduledValues(now);
-      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.cancelScheduledValues(startAt);
+      gain.gain.setValueAtTime(gain.gain.value, startAt);
     }
-    gain.gain.linearRampToValueAtTime(value, now + 0.04);
+    gain.gain.linearRampToValueAtTime(value, startAt + 0.04);
+  }
+
+  private cancelFutureRamp(gain: GainNode, time: number, value?: number) {
+    if (typeof gain.gain.cancelAndHoldAtTime === "function") {
+      gain.gain.cancelAndHoldAtTime(time);
+    } else {
+      gain.gain.cancelScheduledValues(time);
+      gain.gain.setValueAtTime(gain.gain.value, time);
+    }
+    if (value !== undefined) gain.gain.setValueAtTime(value, time);
+  }
+
+  private waitForAudioTime(context: AudioContext, target: number, signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (error?: Error) => {
+        if (timer !== undefined) clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const abort = () => finish(new DOMException("Live stem activation was cancelled.", "AbortError"));
+      const check = () => {
+        if (signal.aborted) return abort();
+        if (context.state === "closed") return finish(new Error("Audio stopped before the snapped stem could activate."));
+        if (context.currentTime >= target) return finish();
+        timer = setTimeout(check, 12);
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      check();
+    });
   }
 
   private stopEngine(
@@ -492,6 +586,7 @@ export class LiveStemLayers {
     playing: boolean,
     pitchPreserving: boolean,
     additionalPcmBytes = 0,
+    activationTime?: number,
   ) {
     const context = this.context();
     await ensureLiveStemWorklet(context, this.workletUrl);
@@ -524,6 +619,9 @@ export class LiveStemLayers {
           rate: this.playbackRate,
           pitchPreserving,
           playing,
+          activationFrame: activationTime === undefined
+            ? undefined
+            : Math.round(activationTime * context.sampleRate),
         }, channels.map((channel) => channel.buffer));
       });
       return node;
@@ -579,9 +677,9 @@ export class LiveStemLayers {
     }
   }
 
-  private retire(layer: Layer) {
+  private retire(layer: Layer, alreadyFaded = false) {
     this.rememberRecent(layer);
-    this.ramp(layer.input, 0);
+    if (!alreadyFaded) this.ramp(layer.input, 0);
     this.retired.add(layer);
     const timer = setTimeout(() => {
       this.stop(layer);
@@ -596,8 +694,8 @@ export class LiveStemLayers {
     return ((position + layer.beatOffsetSeconds) % layer.duration + layer.duration) % layer.duration;
   }
 
-  private async start(layer: Layer, channel: Channel) {
-    if (this.disposed) return;
+  private async start(layer: Layer, channel: Channel, activationTime?: number): Promise<boolean> {
+    if (this.disposed) return false;
     if (layer.sourceMode === "worklet" && layer.source) {
       const media = channel.source.mediaElement;
       const worklet = layer.source as AudioWorkletNode;
@@ -607,42 +705,61 @@ export class LiveStemLayers {
         frame: layer.duration > 0 ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate : 0,
       });
       worklet.port.postMessage({ type: media.paused || media.ended ? "pause" : "play" });
-      return;
+      return false;
     }
     this.stop(layer);
     const media = channel.source.mediaElement;
-    if (media.paused || media.ended) return;
+    if (media.paused || media.ended) return false;
     if (!layer.buffer) throw new Error("The prepared live stem audio is no longer available.");
+    const context = this.context();
+    const scheduledAt = activationTime !== undefined && activationTime > context.currentTime + 0.01
+      ? activationTime
+      : undefined;
     if (this.pitchPreserving) {
       const pcmBytes = audioBufferPcmBytes(layer.buffer);
       const additionalPcmBytes = [...this.layers.values()].includes(layer) ? 0 : pcmBytes;
       this.assertPitchLockMemoryBudget(additionalPcmBytes);
+      const futurePosition = scheduledAt === undefined
+        ? media.currentTime
+        : media.currentTime + (scheduledAt - context.currentTime) * Math.max(0.01, media.playbackRate || 1);
       const offset = layer.duration > 0
-        ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate
+        ? this.alignedOffset(layer, futurePosition) * layer.sampleRate
         : 0;
       const source = await this.createWorkletSource(
-        layer.buffer, layer.input, offset, true, true, additionalPcmBytes,
+        layer.buffer, layer.input, offset, scheduledAt === undefined, true, additionalPcmBytes, scheduledAt,
       );
       if (this.disposed) {
         this.stopEngine(source, "worklet");
-        return;
+        return false;
       }
       layer.source = source;
       layer.sourceMode = "worklet";
       layer.pcmBytes = audioBufferPcmBytes(layer.buffer);
       this.discardRecent(this.preparedKey(layer.url, layer.tempoStretchRatio));
       layer.buffer = null;
-      return;
+      if (scheduledAt !== undefined && context.currentTime < scheduledAt) return true;
+      if (activationTime !== undefined) {
+        const currentOffset = layer.duration > 0
+          ? this.alignedOffset(layer, media.currentTime) * layer.sampleRate
+          : 0;
+        source.port.postMessage({ type: "seek", frame: currentOffset });
+        source.port.postMessage({ type: media.paused || media.ended ? "pause" : "play" });
+      }
+      return false;
     }
-    const source = this.context().createBufferSource();
+    const source = context.createBufferSource();
     source.buffer = layer.buffer;
-    source.playbackRate.setValueAtTime(this.playbackRate, this.context().currentTime);
+    source.playbackRate.setValueAtTime(this.playbackRate, context.currentTime);
     // Short donors repeat without ending or resetting the recipient's clock.
     source.loop = true;
     source.connect(layer.input);
-    source.start(0, this.alignedOffset(layer, media.currentTime));
+    const futurePosition = scheduledAt === undefined
+      ? media.currentTime
+      : media.currentTime + (scheduledAt - context.currentTime) * Math.max(0.01, media.playbackRate || 1);
+    source.start(scheduledAt ?? 0, this.alignedOffset(layer, futurePosition));
     layer.source = source;
     layer.sourceMode = "buffer";
+    return scheduledAt !== undefined;
   }
 
   private reportAudible(layer: Layer) {
@@ -974,14 +1091,24 @@ export class LiveStemLayers {
     }
   }
 
-  async replace(id: string, url: string | null, tempoStretchRatio = 1, selectedAt = performance.now(), beatOffsetSeconds = 0, keyShiftSemitones = 0) {
+  async replace(
+    id: string,
+    url: string | null,
+    tempoStretchRatio = 1,
+    selectedAt = performance.now(),
+    beatOffsetSeconds = 0,
+    keyShiftSemitones = 0,
+    options: LiveStemSwapOptions = {},
+  ): Promise<void | false | LiveStemSwapResult> {
     if (!Number.isFinite(beatOffsetSeconds)) throw new Error("The donor beat offset must be finite.");
     if (!Number.isInteger(keyShiftSemitones) || Math.abs(keyShiftSemitones) > 11) throw new Error("The donor key correction must be an integer from -11 to +11.");
     if (url && (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2)) {
       throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
     }
     if (this.disposed) return false;
-    const key = url ? `${this.preparedKey(url, tempoStretchRatio)}:${beatOffsetSeconds}:${keyShiftSemitones}` : "";
+    const key = url
+      ? `${this.preparedKey(url, tempoStretchRatio)}:${beatOffsetSeconds}:${keyShiftSemitones}:${options.snapRequested === true ? 1 : 0}:${options.activationTime ?? ""}`
+      : "";
     const currentPending = this.pending.get(id);
     if (key && currentPending?.key === key) return currentPending.promise;
     currentPending?.controller.abort();
@@ -1000,17 +1127,26 @@ export class LiveStemLayers {
     const operation: PendingSwap = {
       controller: new AbortController(),
       key,
+      activationTime: options.activationTime ?? undefined,
       promise: Promise.resolve(),
     };
     this.pending.set(id, operation);
-    operation.promise = this.installReplacement(id, url, tempoStretchRatio, selectedAt, previous, operation, beatOffsetSeconds, keyShiftSemitones);
+    operation.promise = this.installReplacement(
+      id, url, tempoStretchRatio, selectedAt, previous, operation, beatOffsetSeconds, keyShiftSemitones, options,
+    );
     return operation.promise;
   }
 
   /** Stop only the preparation, never the currently audible layer or its clock. */
   cancelPending(id: string) {
-    this.pending.get(id)?.controller.abort();
-    this.pending.delete(id);
+    const operation = this.pending.get(id);
+    if (operation?.activationTime !== undefined && this.context().currentTime >= operation.activationTime) {
+      // The source and gain automation have already crossed their scheduled
+      // audio boundary; a later cancel must be handled as a new replacement.
+      return;
+    }
+    operation?.controller.abort();
+    if (operation && this.pending.get(id) === operation) this.pending.delete(id);
   }
 
   private async installReplacement(
@@ -1022,12 +1158,18 @@ export class LiveStemLayers {
     operation: PendingSwap,
     beatOffsetSeconds: number,
     keyShiftSemitones: number,
-  ) {
+    options: LiveStemSwapOptions,
+  ): Promise<void | false | LiveStemSwapResult> {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
     let replacementInput: GainNode | null = null;
     let replacementKeyNode: AudioWorkletNode | null = null;
+    let replacementLayer: Layer | null = null;
+    let activationChannel: Channel | null = null;
+    let scheduledPrevious: Layer | undefined;
+    let scheduledAt: number | undefined;
+    let snapResult: LiveStemSwapResult["snap"] | null = null;
     try {
       const deadline = new Promise<never>((_resolve, reject) => {
         onAbort = () => reject(new DOMException("Live stem preparation was cancelled.", "AbortError"));
@@ -1058,6 +1200,7 @@ export class LiveStemLayers {
       this.registerPitchBudgetOwner(ctx);
       const channel = this.channel(id);
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
+      activationChannel = channel;
       const input = ctx.createGain();
       replacementInput = input;
       input.gain.value = 0;
@@ -1078,22 +1221,76 @@ export class LiveStemLayers {
         sourceMode: null,
         timing: prepared,
       };
-      await this.start(layer, channel);
+      replacementLayer = layer;
+      if (options.snapRequested) snapResult = "unavailable";
+      const requestedActivation = options.snapRequested
+        && typeof options.activationTime === "number"
+        && Number.isFinite(options.activationTime)
+        ? options.activationTime
+        : undefined;
+      scheduledAt = requestedActivation !== undefined && requestedActivation > ctx.currentTime + 0.01
+        ? requestedActivation
+        : undefined;
+      if (options.snapRequested && requestedActivation !== undefined && scheduledAt === undefined) {
+        snapResult = "missed";
+      } else if (scheduledAt !== undefined) {
+        snapResult = "scheduled";
+        operation.activationTime = scheduledAt;
+      }
+      const scheduled = await this.start(layer, channel, scheduledAt);
+      if (scheduledAt !== undefined && !scheduled) {
+        const media = channel.source.mediaElement;
+        const paused = media.paused || media.ended;
+        scheduledAt = undefined;
+        operation.activationTime = undefined;
+        snapResult = paused ? "paused" : "missed";
+      }
       if (this.disposed || operation.controller.signal.aborted || this.pending.get(id) !== operation) {
         this.stop(layer);
         this.disconnectLayer(layer);
+        replacementLayer = null;
+        replacementKeyNode = null;
+        replacementInput = null;
+        return false;
+      }
+      const activation = scheduledAt ?? ctx.currentTime;
+      this.rampAt(input, 1, activation);
+      this.rampAt(channel.inputGain, 0, activation);
+      scheduledPrevious = previous;
+      if (scheduledAt !== undefined && previous) this.rampAt(previous.input, 0, activation);
+      if (scheduledAt !== undefined) {
+        await this.waitForAudioTime(ctx, scheduledAt, operation.controller.signal);
+      }
+      if (this.disposed || operation.controller.signal.aborted || this.pending.get(id) !== operation) {
+        this.cancelFutureRamp(input, ctx.currentTime, 0);
+        if (scheduledAt !== undefined) {
+          this.cancelFutureRamp(channel.inputGain, ctx.currentTime);
+          if (previous) this.cancelFutureRamp(previous.input, ctx.currentTime);
+        }
+        this.stop(layer);
+        this.disconnectLayer(layer);
+        replacementLayer = null;
         replacementKeyNode = null;
         replacementInput = null;
         return false;
       }
       this.layers.set(id, layer);
-      this.ramp(input, 1);
-      this.ramp(channel.inputGain, 0);
       if (layer.source) this.reportAudible(layer);
-      if (previous) this.retire(previous);
+      if (previous) this.retire(previous, scheduledAt !== undefined);
       replacementKeyNode = null; // The installed layer owns the processor.
-      return undefined;
+      replacementLayer = null;
+      return snapResult === null ? undefined : { installed: true, snap: snapResult };
     } catch (error) {
+      if (replacementLayer) {
+        const now = this.context().currentTime;
+        this.cancelFutureRamp(replacementLayer.input, now, 0);
+        if (scheduledAt !== undefined && activationChannel) {
+          this.cancelFutureRamp(activationChannel.inputGain, now);
+          if (scheduledPrevious) this.cancelFutureRamp(scheduledPrevious.input, now);
+        }
+        this.stop(replacementLayer);
+        this.disconnectLayer(replacementLayer);
+      }
       replacementInput?.disconnect();
       if (replacementKeyNode) {
         replacementKeyNode.port.postMessage({ type: "dispose" });

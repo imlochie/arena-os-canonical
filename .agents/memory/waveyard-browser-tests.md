@@ -19,6 +19,12 @@ Live-swap donor audio may be fetched before the picker opens or before a fixture
 
 **Why:** Requiring exactly one request made a successful browser-measured swap fail even though the selected donor decoded and became audible.
 
+Session audio elements may expose temporary `blob:` URLs after the asset pool finishes loading, while the stable asset path remains in `data-waveyard-asset-url`.
+
+**Why:** Looking up an audio graph by `HTMLAudioElement.src` can miss the current source after object-URL replacement, making restored fader checks time out despite correct UI and saved state.
+
+**How to apply:** Match media elements by `dataset.waveyardAssetUrl` (falling back to `src` only when needed) in browser probes and reload assertions.
+
 **How to apply:** For recovery tests that need a stalled donor, arm per-page response gates before loading either session tab and verify both requests are held before canceling or timing out. Release both gates afterward. For performance tests, record whether the donor was already loaded, allow cache reuse or at most one additional fetch, and assert audible selection plus no duplicate transfer.
 
 For app-background audio recovery tests, this workspace's Chromium build does not expose the CDP `Emulation.setPageVisibilityState` command. Override `document.visibilityState` in the test page and dispatch `visibilitychange`, while suspending real audio contexts and pausing actual media elements.
@@ -121,7 +127,7 @@ For pitch-mode transitions, keep assertions tied to physical deck identity while
 
 **Why:** A single-deck pitch test and a passing WSOLA unit test do not prove that saved standby donors are prepared, that pitch mode reaches both transports, or that playback continues through a deck-role swap.
 
-**How to apply:** Map media nodes to physical deck DOM identity and donor worklets to their actual recipient channel connections, not AudioContext identity or graph creation order. Standby preparation can build its graph first, and decks can share an output context. If measuring donor output pitch, tap the active donor gain after migration and old-source retirement; source-media frequency, donor PCM input, and audible donor output are separate evidence.
+**How to apply:** Map media nodes to physical deck DOM identity and donor worklets to their actual recipient channel connections, not AudioContext identity or graph creation order. Session audio elements may expose blob URLs after asset leasing; identify their library assets through `data-waveyard-asset-url`, not `src` or `currentSrc`. Standby preparation can build its graph first, and decks can share an output context. If measuring donor output pitch, tap the active donor gain after migration and old-source retirement; source-media frequency, donor PCM input, and audible donor output are separate evidence.
 
 When a browser scenario temporarily reorders tracks or seeds donor swaps, restore the complete prior session fixture and source mode before later scenarios.
 
