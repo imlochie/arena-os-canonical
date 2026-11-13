@@ -5,10 +5,10 @@ export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.4.0";
 export const DESKTOP_STEM_ANALYSIS_ENGINE = "arena-js-stem-analysis";
 export const DESKTOP_STEM_ANALYSIS_ENGINE_VERSION = "1.0.0";
 /** Versioned separately because vocal activity is persisted independently from pitch runs. */
-export const DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION = "1.1.0";
+export const DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION = "1.2.0";
 export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
 // 1.8 adds conservative, isolated-vocal recurrence/context form inference.
-export const DESKTOP_SECTION_ENGINE_VERSION = "1.9.0";
+export const DESKTOP_SECTION_ENGINE_VERSION = "1.10.0";
 
 export function isStaleDesktopAnalysis(analysis: {
   analysisEngine: string | null;

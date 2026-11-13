@@ -815,23 +815,29 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
     }
     const max = Math.min(maxLag, Math.floor(windowSize / 2));
     const differences = new Float64Array(max + 1);
-    for (let lag = minLag; lag <= max; lag += 1) {
+    // CMND needs the sum from lag 1, including periods outside the search
+    // range. Use equal support for every lag, not a shrinking comparison.
+    for (let lag = 1; lag <= max; lag += 1) {
       let difference = 0;
-      for (let index = 0; index + lag < windowSize; index += 1) {
+      for (let index = 0; index < windowSize - max; index += 1) {
         const delta = signal[index] - signal[index + lag];
         difference += delta * delta;
       }
       differences[lag] = difference;
     }
     let running = 0;
+    const normalizedDifferences = new Float64Array(max + 1);
+    for (let lag = 1; lag <= max; lag += 1) {
+      running += differences[lag]!;
+      normalizedDifferences[lag] = running > 0 ? differences[lag]! * lag / running : 1;
+    }
     let bestLag = -1;
     let bestValue = Number.POSITIVE_INFINITY;
     let previousNormalized = Number.POSITIVE_INFINITY;
     for (let lag = minLag; lag <= max; lag += 1) {
-      running += differences[lag] ?? 0;
-      const normalized = running > 0 ? ((differences[lag] ?? 0) * (lag - minLag + 1)) / running : 1;
+      const normalized = normalizedDifferences[lag]!;
       if (normalized < bestValue) { bestValue = normalized; bestLag = lag; }
-      if (lag > minLag && normalized < 0.16 && normalized >= previousNormalized) {
+      if (lag > minLag && previousNormalized < 0.16 && normalized >= previousNormalized) {
         // The first CMND valley is the fundamental period. Searching the
         // global minimum biases toward octave/subharmonic multiples.
         bestLag = lag - 1;
@@ -848,7 +854,17 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
       frames.push({ timestampMs, frequencyHz: null, midiFloat: null, nearestMidiNote: null, confidence: 0, voiced: false });
       continue;
     }
-    const frequencyHz = rate / bestLag;
+    // Integer-lag estimates quantize higher sung notes by tens of cents.
+    // Interpolate the accepted valley without relaxing voiced confidence.
+    let period = bestLag;
+    if (bestLag > 1 && bestLag < max) {
+      const left = normalizedDifferences[bestLag - 1]!;
+      const middle = normalizedDifferences[bestLag]!;
+      const right = normalizedDifferences[bestLag + 1]!;
+      const curvature = left - 2 * middle + right;
+      if (curvature > 1e-12) period += Math.max(-0.5, Math.min(0.5, (left - right) / (2 * curvature)));
+    }
+    const frequencyHz = rate / period;
     const midiFloat = 69 + 12 * Math.log2(frequencyHz / 440);
     const confidence = Math.max(0, Math.min(1, 1 - bestValue));
     if (frequencyHz < 50 || frequencyHz > 1_200 || !Number.isFinite(midiFloat)) {

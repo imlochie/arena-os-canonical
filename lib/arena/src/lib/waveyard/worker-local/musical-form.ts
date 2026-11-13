@@ -6,7 +6,7 @@ export type FormWindow = {
   /** Time-ordered, track-centred vocal and original source pitch-class observations. */
   vocal: number[];
   backing: number[];
-  /** Beat-relative monophonic voicing-continuity evidence, not words/lyrics. */
+  /** Beat-relative vocal activity and pitched articulation, not words/lyrics. */
   vocalPhraseTiming?: number[];
   vocalCoverage: number;
   energyDb: number;
@@ -55,8 +55,8 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
     const music = cosine(a.backing, b.backing);
     if (voice === null || music === null) return -1;
     const phraseTiming = cosine(a.vocalPhraseTiming ?? [], b.vocalPhraseTiming ?? []);
-    // Older/unavailable pitch analysis remains a supported fallback. When
-    // both windows have measured runs, their beat-relative timing is an
+    // Older/unavailable vocal analysis remains a supported fallback. When
+    // both windows have measured activity, their beat-relative timing is an
     // additional, explicitly non-lexical recurrence signal.
     return phraseTiming === null ? 0.7 * voice + 0.3 * music
       : 0.55 * voice + 0.15 * phraseTiming + 0.3 * music;
@@ -120,14 +120,22 @@ export function measureFormWindows(
   vocalPcm: Float32Array,
   beats: readonly number[],
   vocalPitchContinuityRuns: readonly { startMs: number; endMs: number; confidence: number }[] = [],
+  vocalActivityIntervals: readonly { startMs: number; endMs: number; confidence: number }[] = [],
 ): FormWindow[] {
   if (!beats.every((t, i) => Number.isFinite(t) && t >= 0 && (i === 0 || t > beats[i - 1]!))) return [];
   if (Math.abs(sourcePcm.length - vocalPcm.length) / ANALYSIS_PCM_RATE > 0.5) return [];
-  if (vocalPitchContinuityRuns.length > 10_000 || vocalPitchContinuityRuns.some((run, i) =>
+  const validRuns = (runs: typeof vocalPitchContinuityRuns) => runs.length <= 10_000 && !runs.some((run, i) =>
     !Number.isSafeInteger(run.startMs) || !Number.isSafeInteger(run.endMs)
     || run.startMs < 0 || run.endMs <= run.startMs || !Number.isFinite(run.confidence)
     || run.confidence < 0 || run.confidence > 1
-    || (i > 0 && run.startMs < vocalPitchContinuityRuns[i - 1]!.startMs))) return [];
+    || run.endMs > sourcePcm.length * 1000 / ANALYSIS_PCM_RATE
+    || (i > 0 && run.startMs < runs[i - 1]!.startMs));
+  if (!validRuns(vocalPitchContinuityRuns)) {
+    // Optional stale/malformed timing must not suppress valid PCM recurrence.
+    // Discard the entire optional observation set rather than invent repairs.
+    vocalPitchContinuityRuns = [];
+  }
+  if (!validRuns(vocalActivityIntervals)) vocalActivityIntervals = [];
   const bars = Math.min(MAX_BARS, Math.floor((beats.length - 1) / 4));
   if (bars < 16) return [];
   const measurements = Array.from({ length: bars }, (_, bar) => {
@@ -162,25 +170,31 @@ export function measureFormWindows(
   const binsPerWindow = WINDOW_BARS * 4 * binsPerBeat;
   const phraseActivityBins = new Float64Array(beatCount * binsPerBeat);
   const phraseOnsetBins = new Float64Array(beatCount * binsPerBeat);
-  for (const run of vocalPitchContinuityRuns) {
-    if (run.confidence < PHRASE_RUN_CONFIDENCE || run.startMs >= beats[beatCount]!) continue;
-    let low = 0, high = beatCount;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (beats[middle]! <= run.startMs) low = middle + 1;
-      else high = middle;
-    }
-    for (let beat = Math.max(0, low - 1); beat < beatCount && beats[beat]! < run.endMs; beat += 1) {
-      const beatStartMs = beats[beat]!;
-      const beatEndMs = beats[beat + 1]!;
-      for (let half = 0; half < binsPerBeat; half += 1) {
-        const bin = beat * binsPerBeat + half;
-        const startMs = beatStartMs + (beatEndMs - beatStartMs) * half / binsPerBeat;
-        const endMs = beatStartMs + (beatEndMs - beatStartMs) * (half + 1) / binsPerBeat;
-        const overlap = Math.max(0, Math.min(endMs, run.endMs) - Math.max(startMs, run.startMs));
-        phraseActivityBins[bin] = Math.max(phraseActivityBins[bin]!, overlap / (endMs - startMs) * run.confidence);
-        if (run.startMs >= startMs && run.startMs < endMs) {
-          phraseOnsetBins[bin] = Math.max(phraseOnsetBins[bin]!, run.confidence);
+  // Energy-qualified vocal activity retains unpitched syllables. Pitch runs
+  // independently describe tonal articulation; neither is a lyric transcript.
+  const coverageRuns = vocalActivityIntervals.length ? vocalActivityIntervals : vocalPitchContinuityRuns;
+  const onsetRuns = vocalPitchContinuityRuns.length ? vocalPitchContinuityRuns : vocalActivityIntervals;
+  for (const [kind, runs] of [["coverage", coverageRuns], ["onset", onsetRuns]] as const) {
+    for (const run of runs) {
+      if (run.confidence < PHRASE_RUN_CONFIDENCE || run.startMs >= beats[beatCount]!) continue;
+      let low = 0, high = beatCount;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (beats[middle]! <= run.startMs) low = middle + 1;
+        else high = middle;
+      }
+      for (let beat = Math.max(0, low - 1); beat < beatCount && beats[beat]! < run.endMs; beat += 1) {
+        const beatStartMs = beats[beat]!;
+        const beatEndMs = beats[beat + 1]!;
+        for (let half = 0; half < binsPerBeat; half += 1) {
+          const bin = beat * binsPerBeat + half;
+          const startMs = beatStartMs + (beatEndMs - beatStartMs) * half / binsPerBeat;
+          const endMs = beatStartMs + (beatEndMs - beatStartMs) * (half + 1) / binsPerBeat;
+          const overlap = Math.max(0, Math.min(endMs, run.endMs) - Math.max(startMs, run.startMs));
+          if (kind === "coverage") phraseActivityBins[bin] = Math.max(phraseActivityBins[bin]!, overlap / (endMs - startMs) * run.confidence);
+          if (kind === "onset" && run.startMs >= startMs && run.startMs < endMs) {
+            phraseOnsetBins[bin] = Math.max(phraseOnsetBins[bin]!, run.confidence);
+          }
         }
       }
     }
@@ -190,7 +204,7 @@ export function measureFormWindows(
     const firstBin = startBar * 4 * binsPerBeat;
     return { startBar, vocal: window.flatMap(m => m.active ? m.vocal : m.vocal.map(() => 0)),
       backing: window.flatMap(m => m.backing),
-      ...(vocalPitchContinuityRuns.length ? { vocalPhraseTiming: [
+      ...(coverageRuns.length || onsetRuns.length ? { vocalPhraseTiming: [
         ...phraseActivityBins.slice(firstBin, firstBin + binsPerWindow),
         ...phraseOnsetBins.slice(firstBin, firstBin + binsPerWindow),
       ] } : {}),

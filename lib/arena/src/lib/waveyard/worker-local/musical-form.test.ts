@@ -80,10 +80,17 @@ test("beat-relative vocal pitch-continuity runs are added as timing evidence", (
   assert.equal(windows[0]!.vocalPhraseTiming?.length, 128);
   assert.ok(windows[0]!.vocalPhraseTiming![2]! > 0);
   assert.ok(windows[0]!.vocalPhraseTiming![64 + 2]! > 0);
-  assert.equal(measureFormWindows(audio, audio, beatGrid, [
+  const combined = measureFormWindows(audio, audio, beatGrid,
+    [{ startMs: 750, endMs: 1_000, confidence: 0.9 }],
+    [{ startMs: 500, endMs: 1_250, confidence: 0.8 }]);
+  assert.ok(combined[0]!.vocalPhraseTiming![2]! > 0, "unpitched vocal entry survives sparse pitch coverage");
+  assert.equal(combined[0]!.vocalPhraseTiming![64 + 2], 0);
+  assert.ok(combined[0]!.vocalPhraseTiming![64 + 3]! > 0, "pitched articulation remains independent of coarse activity");
+  assert.deepEqual(measureFormWindows(audio, audio, beatGrid, [
     { startMs: 500, endMs: 1_000, confidence: 0.9 },
     { startMs: 400, endMs: 800, confidence: 0.8 },
-  ]).length, 0, "invalid timing evidence abstains");
+  ]), measureFormWindows(audio, audio, beatGrid),
+  "invalid optional timing preserves the verified PCM fallback");
 });
 
 test("inferred roles keep section IDs, gaps and fingerprint ranges stable through persistence", () => {

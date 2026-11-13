@@ -379,6 +379,18 @@ test("local vocal analysis tracks voiced pitch and leaves silence unvoiced", () 
   assert.ok(unvoiced.every((frame) => frame.frequencyHz === null && frame.midiFloat === null));
 });
 
+test("vocal pitch resolves fractional periods across the singing range", () => {
+  for (const frequency of [73.42, 146.83, 233.08, 349.23, 587.33, 987.77]) {
+    const frames = detectVocalPitchFrames(sine(frequency, 0.5));
+    const voiced = frames.filter(frame => frame.voiced);
+    assert.ok(voiced.length >= frames.length * 0.9, `missing periodic voice at ${frequency} Hz`);
+    for (const frame of voiced) {
+      const cents = Math.abs(1200 * Math.log2(frame.frequencyHz! / frequency));
+      assert.ok(cents < 15, `${frequency} Hz measured as ${frame.frequencyHz}: ${cents} cents`);
+    }
+  }
+});
+
 test("vocal activity finds unpitched passages independently of pitch tracking", () => {
   const pcm = new Float32Array(RATE * 4);
   let state = 0x12345678;
