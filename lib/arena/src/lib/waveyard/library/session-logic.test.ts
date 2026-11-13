@@ -13,6 +13,7 @@ import {
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
+  liveStemCandidateDonorEntryMs,
   liveStemSectionOffsetSeconds,
   liveStemTempoStretchRatio,
   nearestEntryEvidenceMs,
@@ -265,7 +266,10 @@ test("live stem entry alternatives expose distinct measured windows and their ev
     testRollingWindow(36, 1),
     testRollingWindow(40, 2),
   ]);
-  const evidence = testLiveStemEvidence();
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+    donorBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+  });
   const alternatives = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence);
 
   assert.equal(alternatives.length, 3, "overlapping four-beat hops collapse to distinct eight-beat windows");
@@ -281,12 +285,19 @@ test("live stem entry alternatives expose distinct measured windows and their ev
     && candidate.donorBeatConfidence === 0.95,
   ));
   assert.equal(alternatives[0]?.donorEntryMs, 3_000);
+  const first = alternatives[0]!;
+  assert.equal(liveStemCandidateDonorEntryMs(first, 5.5, 1), 3_500,
+    "applying a reviewed choice follows the live clock within the same window");
+  assert.equal(liveStemCandidateDonorEntryMs(first, 6, 1), null, "the window end is exclusive");
+  assert.equal(liveStemCandidateDonorEntryMs(first, 1, 1), null, "seeking before the window invalidates the choice");
+  assert.equal(liveStemCandidateDonorEntryMs(first, 5, 1.1), null, "a changed tempo match needs fresh evidence");
+  assert.equal(liveStemCandidateDonorEntryMs(first, Number.NaN, 1), null);
   assert.deepEqual(
     liveStemSectionAlignment([recipient], [donor], 5, 1, evidence),
     { offsetSeconds: alternatives[0]?.offsetSeconds, basis: alternatives[0]?.basis },
     "legacy automatic alignment still selects the strongest alternative",
   );
-  assert.deepEqual(liveStemSectionAlignmentCandidates([recipient], [donor], 2.5, 1, evidence, 2).length, 2);
+  assert.equal(liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence, 2).length, 2);
 });
 
 test("one weak section elsewhere does not block a confident live phrase match", () => {

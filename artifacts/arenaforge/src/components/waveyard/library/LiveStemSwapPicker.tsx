@@ -7,6 +7,7 @@ import {
   hasReliableLiveStemBeatEvidence,
   isHalfDoubleTempoPair,
   keyCompatibilityEvidence,
+  liveStemCandidateDonorEntryMs,
   liveStemTempoStretchRatio,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
@@ -49,6 +50,8 @@ interface LiveStemSwapPickerProps {
   currentKey: string | null;
   currentKeyConfidence: number | null;
   currentPositionSeconds: number;
+  currentPlaying: boolean;
+  sessionPlaybackRate: number;
   candidates: LiveStemDonorOption[];
   preparationCandidates: LiveStemPreparationOption[];
   preparingTrackIds: ReadonlySet<string>;
@@ -62,7 +65,8 @@ interface LiveStemSwapPickerProps {
   busy: boolean;
   onToggle: () => void;
   onClose: () => void;
-  onChoose: (donorId: string, donorEntryOffsetMs?: number | null) => void;
+  onChoose: (donorId: string, donorEntryOffsetMs?: number | null, candidate?: LiveStemSectionAlignmentCandidate) => boolean | void;
+  onPauseForEntryReview: () => void;
   onGetEntryCandidates: (donorId: string) => LiveStemSectionAlignmentCandidate[];
   onResolvePreviewAsset: (donorId: string, stemType: string) => Promise<string | null>;
   onWarm: (donorId: string) => void;
@@ -310,6 +314,8 @@ export default function LiveStemSwapPicker({
   currentKey,
   currentKeyConfidence,
   currentPositionSeconds,
+  currentPlaying,
+  sessionPlaybackRate,
   candidates,
   preparationCandidates,
   preparingTrackIds,
@@ -324,6 +330,7 @@ export default function LiveStemSwapPicker({
   onToggle,
   onClose,
   onChoose,
+  onPauseForEntryReview,
   onGetEntryCandidates,
   onResolvePreviewAsset,
   onWarm,
@@ -344,10 +351,12 @@ export default function LiveStemSwapPicker({
   const searchRef = useRef<HTMLInputElement>(null);
   const firstCandidateRef = useRef<HTMLButtonElement>(null);
   const firstPreparationRef = useRef<HTMLButtonElement>(null);
+  const entryReviewRef = useRef<HTMLElement>(null);
   const hoverWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prefetchedCandidateKeyRef = useRef<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewResolveSequenceRef = useRef(0);
+  const previewPlaySequenceRef = useRef(0);
   const previewStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [entryDonorId, setEntryDonorId] = useState<string | null>(null);
   const [entryCandidates, setEntryCandidates] = useState<LiveStemSectionAlignmentCandidate[]>([]);
@@ -361,6 +370,7 @@ export default function LiveStemSwapPicker({
   const pickerId = `live-swap-picker-${stemType}`;
   const prefetchCandidateId = candidates.slice(1).find((candidate) => candidate.id !== selectedDonorId)?.id ?? null;
   const stopEntryPreview = useCallback(() => {
+    previewPlaySequenceRef.current += 1;
     if (previewStopTimerRef.current !== null) clearTimeout(previewStopTimerRef.current);
     previewStopTimerRef.current = null;
     const audio = previewAudioRef.current;
@@ -396,6 +406,10 @@ export default function LiveStemSwapPicker({
 
   const selectedAlignmentCandidate = entryCandidates[selectedEntryIndex] ?? null;
   const stagedDonor = candidates.find((candidate) => candidate.id === entryDonorId) ?? null;
+  const manualEntryLimitMs = stagedDonor?.durationSeconds != null && Number.isFinite(stagedDonor.durationSeconds)
+    && stagedDonor.durationSeconds > 0 ? Math.max(0, Math.floor(stagedDonor.durationSeconds * 1000) - 1) : null;
+  const boundedManualEntryMs = Number.isFinite(manualEntryMs)
+    ? Math.min(manualEntryLimitMs ?? 0, Math.max(0, Math.round(manualEntryMs))) : 0;
   const entryTempoEvidence = stagedDonor === null ? null : {
     recipientBpmConfidence: currentBpmConfidence,
     donorBpmConfidence: stagedDonor.bpmConfidence,
@@ -406,8 +420,7 @@ export default function LiveStemSwapPicker({
     ? 1
     : liveStemTempoStretchRatio(currentBpm, stagedDonor.bpm, entryTempoEvidence) ?? 1;
   const selectedAlignmentIsStale = selectedAlignmentCandidate !== null
-    && (currentPositionSeconds * 1000 < selectedAlignmentCandidate.recipientWindowStartMs
-      || currentPositionSeconds * 1000 >= selectedAlignmentCandidate.recipientWindowEndMs);
+    && liveStemCandidateDonorEntryMs(selectedAlignmentCandidate, currentPositionSeconds, entryStretchRatio) === null;
 
   useEffect(() => {
     const audio = previewAudioRef.current;
@@ -446,6 +459,7 @@ export default function LiveStemSwapPicker({
 
   useEffect(() => {
     if (isOpen) return;
+    previewResolveSequenceRef.current += 1;
     stopEntryPreview();
     setEntryDonorId(null);
     setEntryCandidates([]);
@@ -455,7 +469,18 @@ export default function LiveStemSwapPicker({
     setPreviewMessage("");
   }, [isOpen, stopEntryPreview]);
 
+  useEffect(() => {
+    if (entryDonorId === null) return;
+    const frame = requestAnimationFrame(() => {
+      entryReviewRef.current?.focus({ preventScroll: true });
+      entryReviewRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [entryDonorId]);
+
   useEffect(() => () => {
+    previewResolveSequenceRef.current += 1;
+    previewPlaySequenceRef.current += 1;
     if (previewStopTimerRef.current !== null) clearTimeout(previewStopTimerRef.current);
     previewAudioRef.current?.pause();
   }, []);
@@ -476,28 +501,28 @@ export default function LiveStemSwapPicker({
       setPreviewMessage("The playhead moved outside this matched window. Refresh alternatives before auditioning.");
       return;
     }
-    const donorStartMs = (currentMs + candidate.offsetSeconds * 1000) / entryStretchRatio;
-    if (!Number.isFinite(donorStartMs)
-      || donorStartMs < candidate.donorWindowStartMs
-      || donorStartMs >= candidate.donorWindowEndMs) {
+    const donorStartMs = liveStemCandidateDonorEntryMs(candidate, currentPositionSeconds, entryStretchRatio);
+    if (donorStartMs === null) {
       setPreviewMessage("This candidate no longer maps to a valid donor time. Refresh alternatives.");
       return;
     }
     stopEntryPreview();
+    const playSequence = previewPlaySequenceRef.current;
     const media = audio as HTMLAudioElement & {
       preservesPitch?: boolean;
       webkitPreservesPitch?: boolean;
       mozPreservesPitch?: boolean;
     };
     audio.currentTime = donorStartMs / 1000;
-    audio.playbackRate = 1 / entryStretchRatio;
+    audio.playbackRate = sessionPlaybackRate / entryStretchRatio;
     if ("preservesPitch" in media) media.preservesPitch = true;
     if ("webkitPreservesPitch" in media) media.webkitPreservesPitch = true;
     if ("mozPreservesPitch" in media) media.mozPreservesPitch = true;
     const donorRemainingMs = candidate.donorWindowEndMs - donorStartMs;
     const recipientRemainingMs = candidate.recipientWindowEndMs - currentMs;
-    const previewDurationMs = Math.min(12_000, donorRemainingMs * entryStretchRatio, recipientRemainingMs);
-    const stopAtSeconds = donorStartMs / 1000 + previewDurationMs / entryStretchRatio / 1000;
+    const previewSourceSpanMs = Math.min(12_000 * sessionPlaybackRate, donorRemainingMs * entryStretchRatio, recipientRemainingMs);
+    const previewDurationMs = previewSourceSpanMs / sessionPlaybackRate;
+    const stopAtSeconds = donorStartMs / 1000 + previewSourceSpanMs / entryStretchRatio / 1000;
     audio.ontimeupdate = () => {
       if (audio.currentTime >= stopAtSeconds) stopEntryPreview();
     };
@@ -508,12 +533,18 @@ export default function LiveStemSwapPicker({
     };
     try {
       await audio.play();
+      if (previewPlaySequenceRef.current !== playSequence || previewAudioRef.current !== audio) {
+        if (previewAudioRef.current !== audio) audio.pause();
+        return;
+      }
       setPreviewing(true);
-      setPreviewMessage("Auditioning the selected donor window at the current playhead. Browser pitch/time processing may differ from the final mix.");
+      setPreviewMessage("Donor-only audition at half volume; not a rendered mashup or part of the recording. Browser pitch/time processing may differ from the applied mix.");
       previewStopTimerRef.current = setTimeout(stopEntryPreview, Math.max(250, previewDurationMs + 200));
     } catch {
-      setPreviewing(false);
-      setPreviewMessage("The browser blocked playback. Press audition again to retry.");
+      if (previewPlaySequenceRef.current === playSequence && previewAudioRef.current === audio) {
+        setPreviewing(false);
+        setPreviewMessage("The browser blocked playback. Press audition again to retry.");
+      }
     }
   };
   const focusSwapTrigger = useCallback(() => {
@@ -659,9 +690,7 @@ export default function LiveStemSwapPicker({
       : key.confidenceLevel === "tentative"
         ? `Tentative key · possible ${key.compatible ? "fit" : "clash"}`
         : "Key confidence unavailable";
-    const selected = stemType === "vocals"
-      ? candidate.id === entryDonorId
-      : candidate.id === selectedDonorId;
+    const selected = candidate.id === selectedDonorId;
     const isWarming = candidate.id === warmingDonorId;
     const warmStatus = tempoKnown && stretchRatio !== null && Math.abs(stretchRatio - 1) > 0.001
       ? "Preparing tempo match…"
@@ -676,17 +705,14 @@ export default function LiveStemSwapPicker({
           title={tempoMatchUnavailable ? "Live swap is disabled because matching would require an extreme tempo change." : undefined}
           aria-pressed={selected}
           aria-busy={isWarming}
-          aria-label={`${tempoMatchUnavailable ? "Unavailable; " : stemType === "vocals" ? `Compare ${candidate.title} vocal entry alternatives; ` : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${lowBeatConfidence ? "; beat sync unavailable because analysis confidence is low" : ""}${isWarming ? `; ${warmStatus}` : ""}`}
+          aria-label={`${tempoMatchUnavailable ? "Unavailable; " : `Use ${candidate.title} for ${stemType}; `}${tempoMatchUnavailable ? "tempo change too large for a safe live match" : tempoLabel}; ${keyLabel}${lowBeatConfidence ? "; beat sync unavailable because analysis confidence is low" : ""}${isWarming ? `; ${warmStatus}` : ""}`}
           data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
           onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
           onPointerEnter={() => scheduleHoverWarm(candidate.id)}
           onPointerLeave={clearHoverWarm}
           onPointerDown={() => { clearHoverWarm(); onWarm(candidate.id); }}
           onClick={() => {
-            if (stemType === "vocals") {
-              stageDonorForEntry(candidate.id);
-              return;
-            }
+            stopEntryPreview();
             onChoose(candidate.id);
             closeAndReturnFocus();
           }}
@@ -718,6 +744,18 @@ export default function LiveStemSwapPicker({
             {isWarming && <span className="wy-swap-fit-chip unknown" role="status">{warmStatus}</span>}
           </span>
         </button>
+        {stemType === "vocals" && (
+          <button
+            type="button"
+            className="wy-vocal-entry-compare"
+            disabled={tempoMatchUnavailable || busy || pending}
+            aria-pressed={entryDonorId === candidate.id}
+            onClick={() => stageDonorForEntry(candidate.id)}
+            data-testid={`compare-vocal-entries-${candidate.id}`}
+          >
+            Compare entry windows
+          </button>
+        )}
         <TempoCorrectionControl
           trackId={candidate.id}
           trackTitle={candidate.title}
@@ -831,7 +869,9 @@ export default function LiveStemSwapPicker({
           )}
           {stemType === "vocals" && entryDonorId !== null && stagedDonor && (
             <section
+              ref={entryReviewRef}
               className="wy-vocal-entry-alternatives"
+              tabIndex={-1}
               aria-label={`Entry alternatives from ${stagedDonor.title}`}
               data-testid="vocal-entry-alternatives"
             >
@@ -847,6 +887,15 @@ export default function LiveStemSwapPicker({
               <p className="wy-vocal-entry-evidence">
                 These are measured rolling audio windows, not lyric phrases or verified verse/chorus labels. Similarity scores and signal-confidence measurements are shown separately.
               </p>
+              {currentPlaying ? (
+                <button type="button" className="wy-vocal-entry-compare" onClick={() => {
+                  stopEntryPreview();
+                  onPauseForEntryReview();
+                  refreshEntryCandidates();
+                }} data-testid="button-pause-entry-review">
+                  Pause mix to compare entries
+                </button>
+              ) : <small>Mix paused · audition the donor separately without moving the playhead.</small>}
               {entryCandidates.length > 0 ? (
                 <div className="wy-vocal-entry-candidate-list" role="radiogroup" aria-label="Measured donor entry alternatives">
                   {entryCandidates.map((candidate, index) => (
@@ -895,7 +944,9 @@ export default function LiveStemSwapPicker({
                 </div>
               ) : (
                 <p className="wy-vocal-entry-no-candidates" role="status">
-                  No source-verified rhythm/harmony window passed the current evidence gates at this playhead. That does not prove no usable passage exists; automatic safe alignment and manual entry remain available.
+                  No source-verified rhythm/harmony window passed the current evidence gates at this playhead.
+                  {stagedDonor.collection === "library" ? " Library-only summaries omit detailed windows; add the track to this session to compare them." : ""}
+                  {" "}That does not prove no usable passage exists; automatic safe alignment and manual entry remain available.
                 </p>
               )}
               {selectedAlignmentCandidate && (
@@ -928,23 +979,20 @@ export default function LiveStemSwapPicker({
                 </small>
               )}
               {previewMessage && <small className="wy-vocal-entry-snap-status" role="status">{previewMessage}</small>}
-              {stagedDonor.durationSeconds !== null && stagedDonor.durationSeconds > 0 ? (
+              {manualEntryLimitMs !== null ? (
                 <label className="wy-vocal-entry-time">
                   <span>Manual donor start · no feature match</span>
                   <input
                     type="range"
                     min={0}
-                    max={Math.max(1, Math.floor(stagedDonor.durationSeconds * 1000) - 1)}
+                    max={manualEntryLimitMs}
                     step={50}
-                    value={Math.min(
-                      Math.max(0, manualEntryMs),
-                      Math.max(1, Math.floor(stagedDonor.durationSeconds * 1000) - 1),
-                    )}
+                    value={boundedManualEntryMs}
                     onChange={(event) => setManualEntryMs(Number(event.target.value))}
                     aria-label={`Manual donor start time for ${stagedDonor.title}`}
                     data-testid="staged-donor-entry-slider"
                   />
-                  <output>{formatEntryTime(manualEntryMs)}</output>
+                  <output>{formatEntryTime(boundedManualEntryMs)}</output>
                 </label>
               ) : null}
               <div className="wy-vocal-entry-actions">
@@ -953,7 +1001,12 @@ export default function LiveStemSwapPicker({
                   disabled={busy || pending || selectedAlignmentCandidate === null || selectedAlignmentIsStale}
                   onClick={() => {
                     if (!selectedAlignmentCandidate || selectedAlignmentIsStale) return;
-                    onChoose(entryDonorId, Math.round(selectedAlignmentCandidate.donorEntryMs));
+                    stopEntryPreview();
+                    const applied = onChoose(entryDonorId, null, selectedAlignmentCandidate);
+                    if (applied === false) {
+                      setPreviewMessage("The live playhead or tempo changed. Refresh alternatives before applying.");
+                      return;
+                    }
                     closeAndReturnFocus();
                   }}
                   data-testid="button-apply-entry-candidate"
@@ -962,9 +1015,10 @@ export default function LiveStemSwapPicker({
                 </button>
                 <button
                   type="button"
-                  disabled={busy || pending || stagedDonor.durationSeconds === null}
+                  disabled={busy || pending || manualEntryLimitMs === null}
                   onClick={() => {
-                    onChoose(entryDonorId, Math.round(manualEntryMs));
+                    stopEntryPreview();
+                    onChoose(entryDonorId, boundedManualEntryMs);
                     closeAndReturnFocus();
                   }}
                   data-testid="button-apply-manual-entry"
@@ -975,6 +1029,7 @@ export default function LiveStemSwapPicker({
                   type="button"
                   disabled={busy || pending}
                   onClick={() => {
+                    stopEntryPreview();
                     onChoose(entryDonorId, null);
                     closeAndReturnFocus();
                   }}

@@ -1421,6 +1421,24 @@
 .wy-vocal-entry-snaps button:disabled,.wy-vocal-entry-actions button:disabled{opacity:.48;cursor:not-allowed}
 .wy-vocal-entry-evidence,.wy-vocal-entry-section,.wy-vocal-entry-snap-status{margin:0}
 .wy-vocal-entry-section{color:var(--wy-b)}
+.wy-vocal-entry-compare{margin:5px 0;padding:8px 10px;min-height:36px;border:1px solid var(--line);background:transparent;color:var(--wy-b);font-size:11px;text-align:left}
+.wy-vocal-entry-compare:hover:not(:disabled),.wy-vocal-entry-compare[aria-pressed="true"]{border-color:var(--wy-b);background:rgba(122,229,231,.08)}
+.wy-vocal-entry-compare:disabled{opacity:.48;cursor:not-allowed}
+.wy-vocal-entry-alternatives{display:grid;gap:10px;min-width:0;padding:12px;border:1px solid var(--wy-b);background:#111713;scroll-margin-top:85px}
+.wy-vocal-entry-alternatives>header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.wy-vocal-entry-alternatives>header>div{display:grid;gap:4px;min-width:0}
+.wy-vocal-entry-alternatives strong{font-size:12px;color:var(--ink)}
+.wy-vocal-entry-alternatives small,.wy-vocal-entry-no-candidates{font-size:11px;line-height:1.5;color:var(--muted)}
+.wy-vocal-entry-alternatives>header button,.wy-vocal-entry-preview button{flex-shrink:0;min-height:40px;padding:8px 10px;border:1px solid var(--line);background:#171e18;color:var(--ink);font-size:11px}
+.wy-vocal-entry-candidate-list{display:grid;gap:7px;max-height:340px;overflow-y:auto}
+.wy-vocal-entry-candidate{display:grid;gap:4px;min-width:0;padding:10px;border:1px solid var(--line);background:#171e18;color:var(--muted);text-align:left;white-space:normal;overflow-wrap:anywhere}
+.wy-vocal-entry-candidate.selected{border-color:var(--wy-b);background:rgba(122,229,231,.08)}
+.wy-vocal-entry-candidate span{font-size:11px;line-height:1.4}
+.wy-vocal-entry-preview{display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:space-between;color:var(--muted);font-size:11px}
+.wy-vocal-entry-preview button:disabled{opacity:.48;cursor:not-allowed}
+.wy-vocal-entry-stale{color:#efb56a!important}
+.wy-vocal-entry-alternatives .wy-vocal-entry-actions button{min-height:40px;font-size:11px}
+.wy-vocal-entry-alternatives .wy-vocal-entry-actions button:first-child:not(:disabled){border-color:var(--wy-b);color:var(--wy-b)}
 .wy-swap-empty{display:grid;justify-items:start;gap:7px;padding:12px;border:1px dashed var(--line);background:rgba(0,0,0,.12)}
 .wy-swap-empty strong{color:var(--ink);font-size:11px}
 .wy-swap-empty small,.wy-swap-footnote{margin:0;color:var(--muted);font-size:9px;line-height:1.45}

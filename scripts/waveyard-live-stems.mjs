@@ -10,6 +10,7 @@ import {
   assertLiveStemTimingBudget,
   LIVE_STEM_TIMING_SAMPLE_COUNT,
 } from "./waveyard-live-stem-timing-budget.mjs";
+import { runEntryAuditionAcceptance } from "./waveyard-entry-audition-fixture.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
 const outputProtectionOnly = process.argv.includes("--session-output-recovery-only");
 const mashupEvaluationOnly = process.argv.includes("--mashup-evaluation-only");
@@ -1969,7 +1970,9 @@ try {
     return reloaded;
   }
 
-  if (mashupEvaluationOnly) {
+  if (process.argv.includes("--entry-audition-only")) {
+    await runEntryAuditionAcceptance({ page, session, tracks, assets, wav });
+  } else if (mashupEvaluationOnly) {
     const outputDirectory = resolve(
       dirname(resolve(mashupManifestPath)),
       mashupManifest.outputDirectory ?? "live-captures",

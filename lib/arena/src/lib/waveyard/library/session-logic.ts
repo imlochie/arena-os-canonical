@@ -409,11 +409,14 @@ function livePhraseSectionAlignmentCandidates(
       const donorEntryMs = (recipientPositionSeconds * 1000 + offsetSeconds * 1000) / stretchRatio;
       if (!Number.isFinite(donorEntryMs) || donorEntryMs < donorWindowStartMs || donorEntryMs >= donorWindowEndMs) continue;
       const measurementConfidence = (window: PassageRollingWindow, channel: "rhythm" | "chroma") => {
-        const confidence = window[channel].confidence;
+        const signal = window[channel];
+        if (signal.status !== "measured") return null;
+        const confidence = signal.confidence;
         return typeof confidence === "number" && Number.isFinite(confidence) ? confidence : null;
       };
       matches.push({
         offsetSeconds,
+        stretchRatio,
         donorEntryMs,
         basis: "rhythm-harmony-phrase",
         donorSectionIndex: donorSection.sectionIndex,
@@ -446,7 +449,7 @@ function livePhraseSectionAlignmentCandidates(
   matches.sort((left, right) =>
     right.rankingScore - left.rankingScore || left.positionDistance - right.positionDistance,
   );
-  const diverse: typeof matches = [];
+  const diverse: LiveStemSectionAlignmentCandidate[] = [];
   for (const match of matches) {
     const duration = match.donorWindowEndMs - match.donorWindowStartMs;
     const overlapsExisting = diverse.some((existing) => {
@@ -474,6 +477,7 @@ export type LiveStemSectionAlignmentBasis = "rhythm-harmony-phrase" | "trusted-s
 
 export type LiveStemSectionAlignmentCandidate = {
   offsetSeconds: number;
+  stretchRatio: number;
   donorEntryMs: number;
   basis: LiveStemSectionAlignmentBasis;
   donorSectionIndex: number;
@@ -590,6 +594,7 @@ export function liveStemSectionAlignmentCandidates(
       || donorEntryMs >= candidate.endMs) return [];
     return [{
       offsetSeconds,
+      stretchRatio,
       donorEntryMs,
       basis: "trusted-section-role" as const,
       donorSectionIndex: candidate.sectionIndex,
@@ -611,6 +616,30 @@ export function liveStemSectionAlignmentCandidates(
       transpositionSemitones: null,
     }];
   });
+}
+
+/** Re-project a reviewed window onto the live clock; never carry it across a
+ * seek outside that window or a changed tempo match. */
+export function liveStemCandidateDonorEntryMs(
+  candidate: LiveStemSectionAlignmentCandidate,
+  recipientPositionSeconds: number,
+  currentStretchRatio: number,
+): number | null {
+  if (!Number.isFinite(recipientPositionSeconds) || recipientPositionSeconds < 0
+    || !Number.isFinite(currentStretchRatio) || currentStretchRatio <= 0
+    || !Number.isFinite(candidate.stretchRatio)
+    || Math.abs(candidate.stretchRatio - currentStretchRatio) > 1e-9
+    || !Number.isFinite(candidate.offsetSeconds)
+    || ![candidate.recipientWindowStartMs, candidate.recipientWindowEndMs,
+      candidate.donorWindowStartMs, candidate.donorWindowEndMs].every(Number.isFinite)
+    || candidate.recipientWindowStartMs >= candidate.recipientWindowEndMs
+    || candidate.donorWindowStartMs >= candidate.donorWindowEndMs) return null;
+  const positionMs = recipientPositionSeconds * 1000;
+  if (positionMs < candidate.recipientWindowStartMs || positionMs >= candidate.recipientWindowEndMs) return null;
+  const donorMs = (positionMs + candidate.offsetSeconds * 1000) / currentStretchRatio;
+  if (!Number.isFinite(donorMs)
+    || donorMs < candidate.donorWindowStartMs || donorMs >= candidate.donorWindowEndMs) return null;
+  return Math.min(candidate.donorWindowEndMs - 1, Math.max(candidate.donorWindowStartMs, Math.round(donorMs)));
 }
 
 export function liveStemSectionAlignment(

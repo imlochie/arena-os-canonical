@@ -1,5 +1,36 @@
 # Arena handoff — read this first
 
+## Current verification — alternative live vocal entries
+
+* The vocal source picker keeps its existing one-tap swap and now offers
+  **Compare entry windows** as a separate, non-saving action. Up to five
+  distinct alternatives expose donor times, rhythm/harmony similarity,
+  duration fit, measurement confidence, boundary confidence and beat evidence.
+  Scores are not advertised as musical-quality ratings or lyric recognition.
+* Donor-only auditions use the actual selected vocal asset, are capped to the
+  reviewed window, and stop on close/source changes. The listener may explicitly
+  pause the mix for comparison. This browser-media preview is outside the mix
+  recording and does not reproduce final WSOLA/key correction/output processing.
+* Applying a reviewed match reprojects its offset against the live transport.
+  An expired window, seek outside it, or changed tempo ratio requires refreshing;
+  it cannot silently apply a stale start. Explicit manual starts and the existing
+  automatic alignment fallback remain available and use the existing saved-swap API.
+* Detailed alternatives require full session/donor analysis. Library-only
+  summaries omit rolling windows; the picker explains adding the donor to the
+  session rather than inventing evidence. Missing evidence never blocks a manual
+  or ordinary swap. No similarity/confidence threshold was relaxed.
+* Verified: frontend TypeScript check; session logic **57/57**; Chromium 155
+  `node scripts/waveyard-live-stems.mjs --entry-audition-only`.
+  The focused browser fixture checks evidence display, audition without a swap
+  write, stop/close cleanup, applying/reopening an exact offset, an existing manual
+  override, stale-window refusal, missing-evidence fallback and a 390px layout.
+  It uses generated PCM and **mocked session persistence**, not PostgreSQL or
+  human-reviewed music. Workflow startup and a mobile Waveyard landing screenshot
+  were also checked; neither proves physical-device behavior.
+* This delivers selection controls, **not better real-song detection**. The
+  six-track result below is unchanged. Real persisted September/Queen offsets
+  and independent musical validation remain outstanding.
+
 ## Current real-song result — full-track live alignment probe
 
 * The current live section-alignment helper was exercised against all six complete uploaded

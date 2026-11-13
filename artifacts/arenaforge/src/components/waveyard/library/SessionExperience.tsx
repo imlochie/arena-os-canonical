@@ -63,6 +63,7 @@ import {
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
+  liveStemCandidateDonorEntryMs,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
   nextSessionTrack,
@@ -4725,8 +4726,11 @@ export default function SessionExperience({
     ];
     const getEntryCandidates = (donorId: string): LiveStemSectionAlignmentCandidate[] => {
       const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
-      const libraryDonor = library.find((item) => item.id === donorId);
-      const donorAnalysis = sessionDonor?.analysis ?? libraryDonor?.analysis ?? null;
+      // Library summaries deliberately omit checksum-bound windows. Reuse full
+      // session/saved-donor evidence only; never fabricate windows from summaries.
+      const donorAnalysis = sessionDonor?.analysis
+        ?? session.swaps.find((item) => item.toTrackId === donorId)?.donorTrack?.analysis
+        ?? null;
       if (donorAnalysis === null || currentItem.analysis === null) return [];
       const donorTempo = tempoForTrack(donorId, donorAnalysis, manualTempoCorrections);
       const candidateTempoEvidence = {
@@ -4743,7 +4747,7 @@ export default function SessionExperience({
       return liveStemSectionAlignmentCandidates(
         currentItem.analysis.sections,
         donorAnalysis.sections,
-        positions[activeDeck],
+        decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
         stretchRatio,
         {
           ...candidateTempoEvidence,
@@ -4844,6 +4848,9 @@ export default function SessionExperience({
         currentBeatConfidence={currentItem.analysis?.beatConfidence ?? null}
         currentKey={currentItem.analysis?.musicalKey ?? null}
         currentKeyConfidence={currentItem.analysis?.keyConfidence ?? null}
+        currentPositionSeconds={positions[activeDeck]}
+        currentPlaying={playingByDeck[activeDeck]}
+        sessionPlaybackRate={playbackRate}
         candidates={candidates}
         preparationCandidates={preparationCandidates}
         preparingTrackIds={preparingSeparationTrackIds}
@@ -4889,7 +4896,29 @@ export default function SessionExperience({
           });
         }}
         onPrefetch={(donorId) => prefetchLiveSwapAsset(stemType, donorId)}
-        onChoose={(donorId, donorEntryOffsetMs = null) => {
+        onGetEntryCandidates={getEntryCandidates}
+        onResolvePreviewAsset={resolveLiveSwapPreviewAsset}
+        onPauseForEntryReview={() => decksRef.current[activeDeck]?.transport.pause()}
+        onChoose={(donorId, donorEntryOffsetMs = null, entryCandidate) => {
+          if (entryCandidate) {
+            const candidateTempo = candidates.find((candidate) => candidate.id === donorId);
+            const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, candidateTempo?.bpm ?? null, {
+              recipientBpmConfidence: recipientTempo.confidence,
+              donorBpmConfidence: candidateTempo?.bpmConfidence,
+              recipientBeatConfidence: currentItem.analysis?.beatConfidence,
+              donorBeatConfidence: candidateTempo?.beatConfidence,
+            }) ?? 1;
+            const exactEntryMs = liveStemCandidateDonorEntryMs(
+              entryCandidate,
+              decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+              ratio,
+            );
+            if (exactEntryMs === null) {
+              setStatus("The reviewed entry window expired or its tempo changed. Refresh alternatives before applying.");
+              return false;
+            }
+            donorEntryOffsetMs = exactEntryMs;
+          }
           if (stemType === "vocals") {
             setRecipientVocalHealth({
               sessionTrackId: currentItem.id,
@@ -4907,16 +4936,20 @@ export default function SessionExperience({
               bpmConfidence: tempo?.bpmConfidence ?? donor.analysis?.bpmConfidence ?? null,
               beatConfidence: donor.analysis?.beatConfidence ?? null,
             }, donorEntryOffsetMs);
-            return;
+            return true;
           }
           const source = libraryDonors.find((item) => item.id === donorId);
-          if (source) void requestSwap(stemType, {
-            id: source.id,
-            title: source.title,
-            bpm: tempo?.bpm ?? source.analysis?.bpm ?? null,
-            bpmConfidence: tempo?.bpmConfidence ?? source.analysis?.bpmConfidence ?? null,
-            beatConfidence: source.analysis?.beatConfidence ?? null,
-          }, donorEntryOffsetMs);
+          if (source) {
+            void requestSwap(stemType, {
+              id: source.id,
+              title: source.title,
+              bpm: tempo?.bpm ?? source.analysis?.bpm ?? null,
+              bpmConfidence: tempo?.bpmConfidence ?? source.analysis?.bpmConfidence ?? null,
+              beatConfidence: source.analysis?.beatConfidence ?? null,
+            }, donorEntryOffsetMs);
+            return true;
+          }
+          return false;
         }}
         onTempoCorrection={correctTrackTempo}
         selectedDonorDurationSeconds={selectedDonorDurationSeconds}
