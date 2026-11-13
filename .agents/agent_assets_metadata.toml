@@ -308,3 +308,17 @@ mtime_ms = 1794573337609
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/93671b0c-ee1f-4eb1-b40e-ee736bd14431/d88b6f8e-2bb9-4730-b573-f00c978b3f60"
 storage_version_token = "1794573346102149"
 content_type = "audio/mpeg"
+
+[[outputs]]
+id = "lnNA389iW8A2sbcwDyd-G"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/paired-grid-studio-export-listen.mp3"
+type = "audio"
+title = "Paired-grid mashup — Studio export"
+description = "Exact listening copy of the real Studio save/reopen/edit/restore/export run: Queen vocals over the separated September bed. Planner reports 200/335 donor beats within 90 ms of the bed grid versus 163/335 at the prior entry. This is evidence of timing improvement, not a claim of listener-quality or correct verse/chorus detection."
+logical_id = "1e41dcc3-92ed-49f4-992b-3c5096468cca"
+content_hash = "sha256:80da17c13ca76a01f8c44a9674423051ccc726fe576290474fe301781cdcefb2"
+size = 5158496
+mtime_ms = 1794577089668
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/1e41dcc3-92ed-49f4-992b-3c5096468cca/469d5f63-c262-4e60-8351-5dc2e937b834"
+storage_version_token = "1794577107911950"
+content_type = "audio/mpeg"
