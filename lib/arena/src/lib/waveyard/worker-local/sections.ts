@@ -3,8 +3,10 @@
  * processSourceSectionAnalysis, with the structure engine reimplemented in
  * JS: conservative boundaries use source onset novelty plus sustained changes
  * from checksum-matched separated-stem and vocal-activity evidence; repeated
- * phrases remain supported.
- * Repetition is not mislabeled as verse/chorus or used to align other songs.
+ * phrases remain supported. Repetition is not mislabeled as verse/chorus.
+ * Persisted, source-checksum-bound phrase fingerprints may later be compared
+ * across tracks for local live-swap alignment; that comparison is not a
+ * semantic section classification.
  * Candidates flow through the app's own normalizeSourceSections/
  * sourceSectionsAreValid validators, so rows are indistinguishable in shape
  * and constraints from worker-produced sections; only the engine provenance

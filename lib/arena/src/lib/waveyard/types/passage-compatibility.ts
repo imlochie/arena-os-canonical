@@ -322,6 +322,58 @@ function normalisedRhythmSimilarity(
   );
 }
 
+export type PassageWindowSimilarity = {
+  rhythmSimilarity: number | null;
+  harmonySimilarity: number | null;
+  transpositionSemitones: number | null;
+  harmonicShiftAllowed: boolean;
+};
+
+/**
+ * Compares two measured local phrase windows without inferring a section label.
+ * A chroma transposition is accepted only when trusted track keys authorize it.
+ */
+export function comparePassageWindowSimilarity(input: {
+  anchor: PassageRollingWindow;
+  donor: PassageRollingWindow;
+  anchorKeyTrusted: boolean;
+  donorKeyTrusted: boolean;
+  expectedKeyShift?: number | null;
+}): PassageWindowSimilarity {
+  const anchorBeats = input.anchor.endBeatIndex - input.anchor.startBeatIndex;
+  const donorBeats = input.donor.endBeatIndex - input.donor.startBeatIndex;
+  const usable = <T>(evidence: PassageEvidence<T>): evidence is Extract<PassageEvidence<T>, { status: "measured" }> =>
+    evidence.status === "measured" && evidence.confidence !== null && evidence.confidence >= 0.5;
+  const rhythmSimilarity = usable(input.anchor.rhythm) && usable(input.donor.rhythm)
+    ? normalisedRhythmSimilarity(
+      input.anchor.rhythm.value,
+      input.donor.rhythm.value,
+      anchorBeats,
+      donorBeats,
+    )
+    : null;
+
+  let bestShift: number | null = null;
+  let bestHarmony = -2;
+  if (usable(input.anchor.chroma) && usable(input.donor.chroma)) {
+    for (let shift = -2; shift <= 2; shift += 1) {
+      const score = shiftedChroma(input.anchor.chroma.value, input.donor.chroma.value, shift);
+      if (score !== null && score > bestHarmony) {
+        bestHarmony = score;
+        bestShift = shift;
+      }
+    }
+  }
+  const harmonySimilarity = bestShift === null ? null : bestHarmony;
+  return {
+    rhythmSimilarity,
+    harmonySimilarity,
+    transpositionSemitones: bestShift,
+    harmonicShiftAllowed: bestShift === 0
+      || (input.anchorKeyTrusted && input.donorKeyTrusted && bestShift === input.expectedKeyShift),
+  };
+}
+
 function shiftedChroma(left: readonly number[], right: readonly number[], semitones: number): number | null {
   if (left.length !== 48 || right.length !== 48) return null;
   const shifted = Array.from({ length: 48 }, (_, index) => {

@@ -11,9 +11,120 @@ import assert from "node:assert/strict";
 import {
   liveStemBeatOffsetSeconds,
   liveStemDonorEntryOffsetSeconds,
+  liveStemSectionAlignment,
   liveStemSectionOffsetSeconds,
   nearestEntryEvidenceMs,
 } from "./session-logic";
+import {
+  PASSAGE_FINGERPRINT_ENGINE,
+  PASSAGE_FINGERPRINT_ENGINE_VERSION,
+  type PassageFingerprint,
+  type PassageRollingWindow,
+} from "../types/passage-compatibility";
+import type { SourceSection } from "../types/source-sections";
+
+const testEvidence = <T>(value: T) => ({
+  status: "measured" as const,
+  value,
+  method: "test PCM evidence",
+  confidence: 0.95,
+});
+const testUnavailable = (reason: string) => ({ status: "unavailable" as const, reason });
+
+function testRhythm(pattern: 0 | 1 | 2): number[] {
+  return Array.from({ length: 32 }, (_, index) => {
+    if (pattern === 0) return index % 8 === 0 ? 1 : index % 8 === 2 ? 0.25 : 0;
+    if (pattern === 1) return index % 8 === 4 ? 1 : index % 8 === 6 ? 0.25 : 0;
+    return index % 8 === 1 ? 1 : index % 8 === 3 ? 0.25 : 0;
+  });
+}
+
+function testChroma(semitoneShift = 0): number[] {
+  const pitches = [0, 3, 7, 5];
+  return Array.from({ length: 48 }, (_, index) => {
+    const timeBin = Math.floor(index / 12);
+    const pitchClass = index % 12;
+    return pitchClass === (pitches[timeBin]! + semitoneShift + 12) % 12 ? 1 : 0;
+  });
+}
+
+function testRollingWindow(
+  startBeatIndex: number,
+  rhythmPattern: 0 | 1 | 2,
+  semitoneShift = 0,
+): PassageRollingWindow {
+  return {
+    startBeatIndex,
+    endBeatIndex: startBeatIndex + 8,
+    rhythm: testEvidence(testRhythm(rhythmPattern)),
+    chroma: testEvidence(testChroma(semitoneShift)),
+    beatPhase: testEvidence({ subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 }),
+  };
+}
+
+function testPassageFingerprint(
+  sourceChecksumSha256: string,
+  windows: PassageRollingWindow[],
+): PassageFingerprint {
+  return {
+    schemaVersion: 3,
+    engine: PASSAGE_FINGERPRINT_ENGINE,
+    engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
+    sourceChecksumSha256,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    rhythm: testEvidence([...testRhythm(0), ...testRhythm(0)]),
+    chroma: testEvidence(testChroma()),
+    beatPhase: testEvidence({ subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 }),
+    energy: testEvidence({ rmsDb: -12 }),
+    downbeatConfidence: testUnavailable("No independent downbeat measurement."),
+    vocalActivity: testUnavailable("No vocal measurement."),
+    instrumentalDensity: testUnavailable("No instrumental measurement."),
+    stemActivity: testUnavailable("No stem measurement."),
+    rollingWindows: testEvidence(windows),
+  };
+}
+
+function testSourceSection(
+  sectionIndex: number,
+  checksum: string,
+  windows: PassageRollingWindow[],
+  label = "section",
+): SourceSection {
+  return {
+    id: `section-${sectionIndex}`,
+    sectionIndex,
+    startMs: 0,
+    endMs: 8_000,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    startBar: 0,
+    endBar: 4,
+    label,
+    labelConfidence: 0.95,
+    structuralConfidence: 0.95,
+    analysisEngine: "test",
+    analysisEngineVersion: "1",
+    sourceChecksumSha256: checksum,
+    passageFingerprint: testPassageFingerprint(checksum, windows),
+  };
+}
+
+const testLiveStemEvidence = (overrides: Record<string, unknown> = {}) => ({
+  recipientBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+  donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+  recipientBpm: 120,
+  donorBpm: 120,
+  recipientBpmConfidence: 0.95,
+  donorBpmConfidence: 0.95,
+  recipientBeatConfidence: 0.95,
+  donorBeatConfidence: 0.95,
+  recipientKey: "C major",
+  donorKey: "C major",
+  recipientKeyConfidence: 0.95,
+  donorKeyConfidence: 0.95,
+  ...overrides,
+});
 
 test("vocal-entry snap selects the nearest valid measured start and leaves missing evidence alone", () => {
   assert.equal(nearestEntryEvidenceMs(1_420, [{ startMs: 1_000 }, { startMs: 1_500 }, { startMs: -1 }]), 1_500);
@@ -54,6 +165,7 @@ test("live stem section phase aligns corresponding, structurally compatible sect
 
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1.1), 1.1);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 12, 1.1), 1.9);
+  assert.equal(liveStemSectionAlignment(recipient, donor, 4, 1.1)?.basis, "trusted-section-role");
 });
 
 test("live stem section mapping matches a confident role, not the same ordinal", () => {
@@ -92,6 +204,90 @@ test("live stem section phase refuses weak, mismatched, or out-of-range maps", (
   assert.equal(liveStemSectionOffsetSeconds(rhythmGroups, rhythmGroups, 4, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 8, 1), null);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, Number.NaN), null);
+});
+
+test("live stem mapping selects the strongest checksum-bound local rhythm and harmony phrase", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const donor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0),
+  ]);
+  const stretchRatio = 109.0909090909 / 120;
+  const evidence = testLiveStemEvidence({
+    donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 550),
+    donorBpm: 109.0909090909,
+  });
+
+  // At 5 seconds, the active recipient phrase is the 4–12 beat window.
+  // The best donor phrase begins at beat 8 (4 seconds), so the donor clock
+  // is tempo-stretched to the same four-second phrase duration and aligned
+  // with a 2-second offset.
+  const offset = liveStemSectionOffsetSeconds([recipient], [donor], 5, stretchRatio, evidence);
+  assert.ok(offset !== null && Math.abs(offset - 2) < 0.001);
+  assert.equal(liveStemSectionAlignment([recipient], [donor], 5, stretchRatio, evidence)?.basis, "rhythm-harmony-phrase");
+});
+
+test("live stem phrase mapping rejects conflicting fingerprints and stale provenance", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ], "chorus");
+  const conflictingDonor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 1, 6),
+    testRollingWindow(8, 1, 6),
+  ], "chorus");
+  const staleDonor = {
+    ...conflictingDonor,
+    passageFingerprint: testPassageFingerprint("c".repeat(64), [
+      testRollingWindow(0, 0),
+      testRollingWindow(4, 0),
+      testRollingWindow(8, 0),
+    ]),
+  };
+  const evidence = testLiveStemEvidence();
+
+  assert.equal(liveStemSectionOffsetSeconds([recipient], [conflictingDonor], 5, 1, evidence), null,
+    "a same-name section cannot override conflicting measured rhythm and harmony");
+  assert.equal(liveStemSectionOffsetSeconds([recipient], [staleDonor], 5, 1, evidence), null,
+    "a fingerprint from a different source checksum cannot align a live stem");
+  assert.equal(
+    liveStemBeatOffsetSeconds(evidence.recipientBeatGridMs, evidence.donorBeatGridMs, 1),
+    0,
+    "the caller still has a verified beat-phase fallback when phrase evidence fails",
+  );
+});
+
+test("live stem phrase mapping permits only key-authorized small chroma transpositions", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const transposedDonor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0, 1),
+  ]);
+  const evidence = testLiveStemEvidence({
+    donorKey: "C# major",
+    donorKeyConfidence: 0.95,
+  });
+
+  assert.equal(liveStemSectionOffsetSeconds([recipient], [transposedDonor], 5, 1, evidence), 2);
+  assert.equal(liveStemSectionOffsetSeconds(
+    [recipient],
+    [transposedDonor],
+    5,
+    1,
+    { ...evidence, donorKeyConfidence: 0.4 },
+  ), null, "untrusted key labels cannot authorize a fingerprint transposition");
 });
 
 import {

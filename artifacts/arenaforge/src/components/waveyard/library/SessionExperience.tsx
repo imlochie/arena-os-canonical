@@ -27,6 +27,7 @@ import {
 } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase, normalizeStemMix } from "@workspace/arena/lib/waveyard/library/model";
+import type { SourceSection } from "@workspace/arena/lib/waveyard/types/source-sections";
 import {
   localStorageSessionSaveJournal,
   sessionSavePatchAgainstPending,
@@ -56,7 +57,7 @@ import {
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
   liveStemDonorEntryOffsetSeconds,
-  liveStemSectionOffsetSeconds,
+  liveStemSectionAlignment,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
   nextSessionTrack,
@@ -66,6 +67,7 @@ import {
   normalizeTransitionConfig,
   type TransitionConfig,
   type TransitionMode,
+  type LiveStemSectionAlignmentBasis,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 import {
   resolveSessionKeyMatch,
@@ -130,16 +132,7 @@ interface SessionTrackItem {
     keyConfidence: number | null;
     musicalKey: string | null;
     beatGridMs: number[] | null;
-    sections: Array<{
-      sectionIndex: number;
-      startMs: number;
-      endMs: number;
-      startBeatIndex: number;
-      endBeatIndex: number;
-      label: string;
-      labelConfidence: number;
-      structuralConfidence: number;
-    }> | null;
+    sections: SourceSection[] | null;
     vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
     voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
   } | null;
@@ -302,11 +295,11 @@ function getPersistedSwapSetup(
   const swaps: Record<string, string> = {};
   const tempoStretchRatios: Record<string, number> = {};
   const beatOffsets: Record<string, number> = {};
-  const sectionPositionMatches: Record<string, boolean> = {};
+  const alignmentBases: Record<string, LiveStemSectionAlignmentBasis> = {};
   const keyCorrections: Record<string, number> = {};
   const keyMatchStatuses: Record<string, string> = {};
   if (session === null || item === null) {
-    return { swaps, tempoStretchRatios, beatOffsets, sectionPositionMatches, keyCorrections, keyMatchStatuses };
+    return { swaps, tempoStretchRatios, beatOffsets, alignmentBases, keyCorrections, keyMatchStatuses };
   }
 
   for (const swap of session.swaps) {
@@ -331,12 +324,27 @@ function getPersistedSwapSetup(
     const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
     const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, tempoEvidence);
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
-    const sectionOffset = ratio === null || !reliableBeatEvidence ? null : liveStemSectionOffsetSeconds(
+    const sectionAlignment = ratio === null || !reliableBeatEvidence ? null : liveStemSectionAlignment(
       item.analysis?.sections,
       donorAnalysis?.sections,
       swap.atSeconds,
       ratio,
+      {
+        recipientBeatGridMs: item.analysis?.beatGridMs,
+        donorBeatGridMs: donorAnalysis?.beatGridMs,
+        recipientBpm: recipientTempo.bpm,
+        donorBpm: donorTempo.bpm,
+        recipientBpmConfidence: recipientTempo.confidence,
+        donorBpmConfidence: donorTempo.confidence,
+        recipientBeatConfidence: item.analysis?.beatConfidence,
+        donorBeatConfidence: donorAnalysis?.beatConfidence,
+        recipientKey: shiftMusicalKey(item.analysis?.musicalKey, deckSemitones),
+        donorKey: donorAnalysis?.musicalKey ?? null,
+        recipientKeyConfidence: item.analysis?.keyConfidence,
+        donorKeyConfidence: donorAnalysis?.keyConfidence,
+      },
     );
+    const sectionOffset = sectionAlignment?.offsetSeconds ?? null;
     const beatOffset = ratio === null || !reliableBeatEvidence ? null : liveStemBeatOffsetSeconds(
       item.analysis?.beatGridMs,
       donorAnalysis?.beatGridMs,
@@ -349,7 +357,8 @@ function getPersistedSwapSetup(
     );
     const offset = explicitDonorEntryOffset ?? sectionOffset ?? beatOffset;
     if (offset !== null) beatOffsets[swap.stemType] = offset;
-    if (sectionOffset !== null && explicitDonorEntryOffset === null) sectionPositionMatches[swap.stemType] = true;
+    if (sectionAlignment !== null && explicitDonorEntryOffset === null)
+      alignmentBases[swap.stemType] = sectionAlignment.basis;
     const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
     const donorKeyConfidence = donor?.analysis?.keyConfidence ?? swap.donorTrack?.analysis?.keyConfidence
@@ -387,7 +396,7 @@ function getPersistedSwapSetup(
             ? "Key already aligned"
             : keyMode === "camelot" ? "Camelot-compatible key matched" : "Key matched to lead";
   }
-  return { swaps, tempoStretchRatios, beatOffsets, sectionPositionMatches, keyCorrections, keyMatchStatuses };
+  return { swaps, tempoStretchRatios, beatOffsets, alignmentBases, keyCorrections, keyMatchStatuses };
 }
 
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
@@ -4551,6 +4560,12 @@ export default function SessionExperience({
     const halfDoubleTempo = reliableTempoEvidence && isHalfDoubleTempoPair(recipientBpm, selectedDonorBpm);
     const unsafeTempoGap = reliableTempoEvidence && recipientBpm !== null && selectedDonorBpm !== null
       && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
+    const alignmentBasis = currentSwapSetup.alignmentBases[stemType];
+    const alignmentDescription = alignmentBasis === "rhythm-harmony-phrase"
+      ? "rhythm + harmony phrase matched"
+      : alignmentBasis === "trusted-section-role"
+        ? "high-confidence section role matched"
+        : "beat phase aligned";
     const tempoStatus = swap === undefined ? null
       : pendingSwap
         ? "Preparing live layer…"
@@ -4566,9 +4581,7 @@ export default function SessionExperience({
             ? `Tempo gap too wide · native ${Math.round(selectedDonorBpm!)} BPM`
         : activeTempoStretchRatio !== undefined && Math.abs(activeTempoStretchRatio - 1) > 0.001
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
-            ? currentSwapSetup.sectionPositionMatches[stemType]
-              ? "Tempo matched · pitch preserved · section position matched"
-              : "Tempo matched · pitch preserved · beat phase aligned"
+            ? `Tempo matched · pitch preserved · ${alignmentDescription}`
             : "Tempo matched · pitch preserved · beat alignment unavailable"
         : lowBeatConfidence
           ? activeTempoStretchRatio !== undefined
@@ -4576,9 +4589,7 @@ export default function SessionExperience({
             : "Beat sync unavailable · analysis confidence is low"
         : activeTempoStretchRatio !== undefined
           ? currentSwapSetup.beatOffsets[stemType] !== undefined
-            ? currentSwapSetup.sectionPositionMatches[stemType]
-              ? "Native tempo · section position matched"
-              : "Native tempo · beat phase aligned"
+            ? `Native tempo · ${alignmentDescription}`
             : "Native tempo · beat alignment unavailable"
         : selectedDonorBpm !== null
             ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`

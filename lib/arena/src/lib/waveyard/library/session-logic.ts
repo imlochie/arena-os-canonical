@@ -19,6 +19,12 @@ import {
   usableBeatGrid,
 } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { normaliseMusicalKey, semitoneShift } from "@workspace/arena/lib/waveyard/types/musical-key";
+import {
+  comparePassageWindowSimilarity,
+  parsePassageFingerprint,
+  PASSAGE_MATCH_SIMILARITY_THRESHOLD,
+  type PassageRollingWindow,
+} from "../types/passage-compatibility";
 import type { SourceSection } from "../types/source-sections";
 import { normalizePerformance, type PerformanceSettings } from "./performance";
 
@@ -248,29 +254,171 @@ type LiveStemSection = Pick<
   SourceSection,
   | "sectionIndex" | "startMs" | "endMs" | "startBeatIndex" | "endBeatIndex"
   | "label" | "labelConfidence" | "structuralConfidence"
->;
+> & Partial<Pick<SourceSection, "sourceChecksumSha256" | "passageFingerprint">>;
+
+type LiveStemSectionEvidence = LiveStemTempoEvidence & {
+  recipientBeatGridMs?: unknown;
+  donorBeatGridMs?: unknown;
+  recipientBpm?: number | null;
+  donorBpm?: number | null;
+  recipientKey?: string | null;
+  donorKey?: string | null;
+  recipientKeyConfidence?: number | null;
+  donorKeyConfidence?: number | null;
+};
 
 const COMPARABLE_SECTION_LABELS = new Set([
   "verse", "chorus", "pre chorus", "bridge", "intro", "outro", "drop",
   "breakdown", "refrain", "hook", "instrumental",
 ]);
+const LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN = 0.9;
+const LIVE_STEM_TRUSTED_KEY_CONFIDENCE_MIN = 0.75;
+const LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN = 0.75;
 
 function comparableSectionLabel(label: string): string | null {
   const normalized = label.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+\d+$/, "").trim();
   return COMPARABLE_SECTION_LABELS.has(normalized) ? normalized : null;
 }
 
+function orderedBeatGrid(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length < 2
+    || value.some((beat) => !Number.isSafeInteger(beat) || beat < 0)
+    || value.some((beat, index) => index > 0 && beat <= value[index - 1])) return null;
+  return value as number[];
+}
+
+function nearestBeatIndexAtMs(grid: readonly number[], targetMs: number): number | null {
+  if (!Number.isFinite(targetMs) || grid.length < 2) return null;
+  let low = 0;
+  let high = grid.length - 1;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (grid[middle]! <= targetMs) low = middle;
+    else high = middle;
+  }
+  return Math.abs(grid[low]! - targetMs) <= Math.abs(grid[high]! - targetMs) ? low : high;
+}
+
+function beatBoundaryMs(grid: readonly number[], beatIndex: number): number | null {
+  if (!Number.isInteger(beatIndex) || beatIndex < 0 || beatIndex > grid.length) return null;
+  if (beatIndex < grid.length) return grid[beatIndex]!;
+  const intervals = grid.slice(1).map((time, index) => time - grid[index]!).sort((left, right) => left - right);
+  const median = intervals[Math.floor(intervals.length / 2)];
+  return median && Number.isFinite(median) ? grid.at(-1)! + median : null;
+}
+
+function measuredRollingWindows(section: LiveStemSection): PassageRollingWindow[] | null {
+  if (!section.sourceChecksumSha256 || !/^[a-f\d]{64}$/i.test(section.sourceChecksumSha256)) return null;
+  const fingerprint = parsePassageFingerprint(section.passageFingerprint, {
+    sourceChecksumSha256: section.sourceChecksumSha256,
+    startBeatIndex: section.startBeatIndex,
+    endBeatIndex: section.endBeatIndex,
+  });
+  return fingerprint?.rollingWindows?.status === "measured"
+    ? fingerprint.rollingWindows.value
+    : null;
+}
+
+function livePhraseSectionOffsetSeconds(
+  recipientSections: readonly LiveStemSection[],
+  donorSections: readonly LiveStemSection[],
+  recipient: LiveStemSection,
+  recipientPositionSeconds: number,
+  stretchRatio: number,
+  evidence: LiveStemSectionEvidence,
+): number | null {
+  if (!hasReliableLiveStemBeatEvidence(evidence)
+    || !Number.isFinite(evidence.recipientBpm) || (evidence.recipientBpm ?? 0) <= 0
+    || !Number.isFinite(evidence.donorBpm) || (evidence.donorBpm ?? 0) <= 0) return null;
+  const recipientGrid = orderedBeatGrid(evidence.recipientBeatGridMs);
+  const donorGrid = orderedBeatGrid(evidence.donorBeatGridMs);
+  if (!recipientGrid || !donorGrid) return null;
+  const currentBeatIndex = nearestBeatIndexAtMs(recipientGrid, recipientPositionSeconds * 1000);
+  if (currentBeatIndex === null) return null;
+
+  const recipientWindows = measuredRollingWindows(recipient);
+  const recipientWindow = recipientWindows?.find((window) =>
+    window.startBeatIndex <= currentBeatIndex && currentBeatIndex < window.endBeatIndex
+    && window.rhythm.status === "measured" && window.chroma.status === "measured",
+  );
+  if (!recipientWindow) return null;
+  const recipientWindowStartMs = beatBoundaryMs(recipientGrid, recipientWindow.startBeatIndex);
+  const recipientWindowEndMs = beatBoundaryMs(recipientGrid, recipientWindow.endBeatIndex);
+  if (recipientWindowStartMs === null || recipientWindowEndMs === null || recipientWindowEndMs <= recipientWindowStartMs) return null;
+
+  const anchorKeyTrusted = typeof evidence.recipientKey === "string"
+    && (evidence.recipientKeyConfidence ?? 0) >= LIVE_STEM_TRUSTED_KEY_CONFIDENCE_MIN;
+  const donorKeyTrusted = typeof evidence.donorKey === "string"
+    && (evidence.donorKeyConfidence ?? 0) >= LIVE_STEM_TRUSTED_KEY_CONFIDENCE_MIN;
+  const expectedKeyShift = anchorKeyTrusted && donorKeyTrusted
+    ? semitoneShift(evidence.donorKey, evidence.recipientKey)
+    : null;
+  const recipientDurationMs = recipientWindowEndMs - recipientWindowStartMs;
+  const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
+  const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
+  let best: { offset: number; score: number; positionDistance: number } | null = null;
+
+  for (const donorSection of donorSections) {
+    const donorWindows = measuredRollingWindows(donorSection);
+    if (!donorWindows) continue;
+    for (const donorWindow of donorWindows) {
+      if (donorWindow.rhythm.status !== "measured" || donorWindow.chroma.status !== "measured") continue;
+      const donorWindowStartMs = beatBoundaryMs(donorGrid, donorWindow.startBeatIndex);
+      const donorWindowEndMs = beatBoundaryMs(donorGrid, donorWindow.endBeatIndex);
+      if (donorWindowStartMs === null || donorWindowEndMs === null || donorWindowEndMs <= donorWindowStartMs) continue;
+      const stretchedDonorDurationMs = (donorWindowEndMs - donorWindowStartMs) * stretchRatio;
+      const durationSimilarity = Math.min(recipientDurationMs, stretchedDonorDurationMs)
+        / Math.max(recipientDurationMs, stretchedDonorDurationMs);
+      if (durationSimilarity < LIVE_STEM_PHRASE_DURATION_SIMILARITY_MIN) continue;
+
+      const similarity = comparePassageWindowSimilarity({
+        anchor: recipientWindow,
+        donor: donorWindow,
+        anchorKeyTrusted,
+        donorKeyTrusted,
+        expectedKeyShift,
+      });
+      if (similarity.rhythmSimilarity === null
+        || similarity.harmonySimilarity === null
+        || similarity.rhythmSimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD
+        || similarity.harmonySimilarity < PASSAGE_MATCH_SIMILARITY_THRESHOLD
+        || !similarity.harmonicShiftAllowed) continue;
+
+      const score = (similarity.rhythmSimilarity + similarity.harmonySimilarity) / 2 * durationSimilarity;
+      const positionDistance = recipientTrackEnd > 0 && donorTrackEnd > 0
+        ? Math.abs(
+          (donorWindow.startBeatIndex / donorTrackEnd)
+          - (recipientWindow.startBeatIndex / recipientTrackEnd),
+        )
+        : Number.POSITIVE_INFINITY;
+      if (!best || score > best.score || (score === best.score && positionDistance < best.positionDistance)) {
+        best = {
+          offset: (donorWindowStartMs * stretchRatio - recipientWindowStartMs) / 1000,
+          score,
+          positionDistance,
+        };
+      }
+    }
+  }
+  return best?.offset ?? null;
+}
+
 /**
- * Map by a confident, comparable musical role—not section ordinal. Generic
- * novelty cuts and per-track A/B labels are not cross-track structural evidence.
- * Missing or weak roles fall back to verified beat phase.
+ * Prefer checksum-verified local phrase windows with matching rhythm, chroma,
+ * and post-stretch duration. This is evidence of similar local audio, not a
+ * semantic section label. Legacy role matching remains for sources without
+ * fingerprints; incomplete/conflicting fingerprint evidence returns null so
+ * the caller can use verified beat-phase alignment.
  */
-export function liveStemSectionOffsetSeconds(
+export type LiveStemSectionAlignmentBasis = "rhythm-harmony-phrase" | "trusted-section-role";
+
+export function liveStemSectionAlignment(
   recipientSections: readonly LiveStemSection[] | null | undefined,
   donorSections: readonly LiveStemSection[] | null | undefined,
   recipientPositionSeconds: number,
   stretchRatio: number,
-): number | null {
+  evidence?: LiveStemSectionEvidence,
+): { offsetSeconds: number; basis: LiveStemSectionAlignmentBasis } | null {
   if (
     !Array.isArray(recipientSections)
     || !Array.isArray(donorSections)
@@ -307,8 +455,24 @@ export function liveStemSectionOffsetSeconds(
     recipientMs >= section.startMs && recipientMs < section.endMs,
   );
   if (!recipient) return null;
+  const anyFingerprint = [...recipientSections, ...donorSections]
+    .some((section) => section.passageFingerprint !== undefined && section.passageFingerprint !== null);
+  if (anyFingerprint) {
+    const offsetSeconds = evidence
+      ? livePhraseSectionOffsetSeconds(
+        recipientSections,
+        donorSections,
+        recipient,
+        recipientPositionSeconds,
+        stretchRatio,
+        evidence,
+      )
+      : null;
+    return offsetSeconds === null ? null : { offsetSeconds, basis: "rhythm-harmony-phrase" };
+  }
+
   const role = comparableSectionLabel(recipient.label);
-  if (!role || recipient.labelConfidence < 0.75) return null;
+  if (!role || recipient.labelConfidence < LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN) return null;
   const recipientBeatLength = recipient.endBeatIndex - recipient.startBeatIndex;
   const recipientTrackEnd = recipientSections.at(-1)?.endBeatIndex ?? 0;
   const donorTrackEnd = donorSections.at(-1)?.endBeatIndex ?? 0;
@@ -316,7 +480,7 @@ export function liveStemSectionOffsetSeconds(
   const recipientPhase = recipient.startBeatIndex / recipientTrackEnd;
   const donor = donorSections
     .filter((candidate) => comparableSectionLabel(candidate.label) === role
-      && candidate.labelConfidence >= 0.75
+      && candidate.labelConfidence >= LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN
       && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 4)
     .sort((left, right) => {
       const leftDistance = Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase);
@@ -326,7 +490,27 @@ export function liveStemSectionOffsetSeconds(
   if (!donor) return null;
 
   // Output-coordinate offset: donor section start * stretch = recipient section start + offset.
-  return (donor.startMs * stretchRatio - recipient.startMs) / 1000;
+  return {
+    offsetSeconds: (donor.startMs * stretchRatio - recipient.startMs) / 1000,
+    basis: "trusted-section-role",
+  };
+}
+
+/** Numeric-offset compatibility wrapper for existing callers and tests. */
+export function liveStemSectionOffsetSeconds(
+  recipientSections: readonly LiveStemSection[] | null | undefined,
+  donorSections: readonly LiveStemSection[] | null | undefined,
+  recipientPositionSeconds: number,
+  stretchRatio: number,
+  evidence?: LiveStemSectionEvidence,
+): number | null {
+  return liveStemSectionAlignment(
+    recipientSections,
+    donorSections,
+    recipientPositionSeconds,
+    stretchRatio,
+    evidence,
+  )?.offsetSeconds ?? null;
 }
 
 /** Snaps an editable donor time to the closest measured vocal/section start.

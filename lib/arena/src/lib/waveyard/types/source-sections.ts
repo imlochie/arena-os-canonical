@@ -17,6 +17,7 @@ export type SourceSection = {
   analysisEngine: string;
   analysisEngineVersion: string;
   sourceChecksumSha256: string;
+  /** Versioned source-PCM rhythm/chroma evidence; supports phrase matching, not semantic labels. */
   passageFingerprint?: PassageFingerprint | null;
 };
 
