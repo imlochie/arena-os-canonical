@@ -12,6 +12,7 @@ import {
 } from "./waveyard-live-stem-timing-budget.mjs";
 import { runEntryAuditionAcceptance } from "./waveyard-entry-audition-fixture.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
+const sessionControlsOnly = process.argv.includes("--session-controls-only");
 const outputProtectionOnly = process.argv.includes("--session-output-recovery-only");
 const mashupEvaluationOnly = process.argv.includes("--mashup-evaluation-only");
 const mashupManifestPath = process.env.WAVEYARD_MASHUP_MANIFEST?.trim();
@@ -29,6 +30,48 @@ const studioSelectionFreshnessOnly = process.argv.includes("--studio-selection-f
 const requireBrowserEngines = process.env.WAVEYARD_REQUIRE_BROWSER_ENGINES === "1"
   || process.argv.includes("--require-browser-engines");
 const headedWebKit = process.argv.includes("--headed-webkit");
+if (process.argv.includes("--session-controls-matrix")) {
+  const { spawnSync } = await import("node:child_process");
+  const skippedEngines = [];
+  for (const engine of ["firefox", "webkit"]) {
+    console.log(`SESSION_CONTROLS_ENGINE ${engine}`);
+    const args = [process.argv[1], "--session-controls-only", `--engine=${engine}`];
+    if (requireBrowserEngines) args.push("--require-browser-engines");
+    const result = spawnSync(process.execPath, args, {
+      stdio: ["inherit", "pipe", "pipe"],
+      env: process.env,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const engineOut = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.error) throw result.error;
+    if (result.status === 3 && !requireBrowserEngines) {
+      skippedEngines.push(engine);
+      continue;
+    }
+    if (result.status !== 0) {
+      if (process.env.GITHUB_ACTIONS === "true") {
+        console.log(`::error::SESSION_CONTROLS_ENGINE ${engine} exited with status ${result.status}`);
+        const diagnostic = engineOut
+          .split("\n")
+          .map(line => line.trim())
+          .filter(line => line.length > 0 && /SESSION_CONTROLS_|INCOMPLETE|TimeoutError|\bError\b|waveyard-live-stems\.mjs:\d+/i.test(line))
+          .slice(-6);
+        for (const line of diagnostic) console.log(`::error::${engine}: ${line.slice(0, 900)}`);
+        if (diagnostic.length === 0) console.log(`::error::${engine}: produced no diagnostic output`);
+      }
+      console.log(`SESSION_CONTROLS_FAILED ${engine} status=${result.status}`);
+      process.exit(result.status ?? 1);
+    }
+  }
+  if (skippedEngines.length > 0) {
+    console.log(`INCOMPLETE: session playback, live-swap, and Studio handoff coverage unavailable for ${skippedEngines.join(", ")}; this is not a pass.`);
+    process.exit(3);
+  }
+  console.log("PASS: Firefox and WebKit session playback, isolation, queue, live-swap, and Studio handoff checks completed.");
+  process.exit(0);
+}
 if (process.argv.includes("--live-stem-timing-matrix")) {
   const { spawnSync } = await import("node:child_process");
   const skippedEngines = [];
@@ -360,6 +403,7 @@ let releaseStudioHandoff = null;
 let signalStudioHandoffStarted = null;
 let studioHandoffRequests = 0;
 let lastStudioHandoffSelection = [];
+let sessionControlsPreservedSwapCount = 0;
 let forcedStudioRefusals = new Map();
 let studioProjectCreations = 0;
 let studioProjectData = null;
@@ -386,13 +430,14 @@ let browser;
 try {
   const chromiumExecutable = process.env.CHROMIUM_PATH
     ?? (existsSync("/repl/tools/bin/chromium") ? "/repl/tools/bin/chromium" : undefined);
-  browser = await browserType.launch(engineName === "chromium"
+  const launchOptions = engineName === "chromium"
     ? { ...(chromiumExecutable ? { executablePath: chromiumExecutable } : {}),
       args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] }
     : { headless: engineName === "webkit" ? !headedWebKit : true,
       // Headless CI Firefox has no audio device or gesture-backed autoplay
       // allowance, so play() would never resolve without these.
-      ...(engineName === "firefox" ? { firefoxUserPrefs: { "media.autoplay.default": 0, "media.autoplay.blocking_policy": 0, "media.volume_scale": "0.0" } } : {}) });
+      ...(engineName === "firefox" ? { firefoxUserPrefs: { "media.autoplay.default": 0, "media.autoplay.blocking_policy": 0, "media.volume_scale": "0.0" } } : {}) };
+  browser = await browserType.launch(launchOptions);
   console.log("BROWSER_ENGINE", JSON.stringify({
     engine: engineName,
     version: browser.version(),
@@ -400,6 +445,15 @@ try {
     physicalDevice: false,
   }));
 } catch (error) {
+  if (sessionControlsOnly) {
+    const detail = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 600) : String(error);
+    if (requireBrowserEngines) {
+      console.error(`INCOMPLETE: required ${engineName} session-controls coverage cannot start: ${detail}`);
+      process.exit(1);
+    }
+    console.log(`INCOMPLETE: ${engineName} session-controls coverage is unavailable: ${detail}`);
+    process.exit(3);
+  }
   if (timingOnly) {
     const detail = error instanceof Error ? error.message.split("\n")[0] : String(error);
     if (requireBrowserEngines) {
@@ -1367,6 +1421,7 @@ try {
       });
     }
     const body = route.request().postDataJSON();
+    sessionControlsPreservedSwapCount = 0;
     assert.ok(Array.isArray(body?.sessionTrackIds), "the handoff sends an explicit session-entry selection");
     assert.ok(Array.isArray(body?.trackEdits), "the handoff sends the current mixer snapshot");
     lastStudioHandoffSelection = [...body.sessionTrackIds];
@@ -1417,27 +1472,51 @@ try {
           } : {}),
         });
       }
+      let preservedItemSwaps = 0;
       for (const stem of item.stems) {
+        const swap = sessionControlsOnly
+          ? session.swaps.find(candidate => candidate.sessionTrackId === item.id && candidate.stemType === stem.stemType)
+          : null;
+        const donor = swap ? tracks.find(candidate => candidate.track.id === swap.toTrackId) : null;
+        const donorStem = donor?.stems.find(candidate =>
+          candidate.id === swap.toStemAssetId || candidate.stemType === stem.stemType);
+        const handoffStem = donorStem ?? stem;
+        const handoffSourceId = donorStem
+          ? (donor.sourceAssetId ?? `${donor.track.id}-source`)
+          : sourceId;
+        const handoffSourceTitle = donorStem ? donor.track.title : item.track.title;
+        if (!sources.some(source => source.id === handoffSourceId)) {
+          sources.push({
+            id: handoffSourceId, originalFilename: `${handoffSourceTitle} original.wav`,
+            durationSeconds: donorStem ? donor.track.durationSeconds : item.track.durationSeconds,
+            sampleRate: 22050, channels: 1, codec: "pcm_s16le", mimeType: "audio/wav", fileSizeBytes: 1000,
+            checksumSha256: createHash("sha256").update(assets.get(handoffSourceId) ?? Buffer.alloc(0)).digest("hex"),
+            linkedFromLibrary: handoffSourceId !== "a-source",
+          });
+        }
+        if (donorStem) preservedItemSwaps += 1;
         stems.push({
-          id: stem.id, sourceAssetId: sourceId, stemType: stem.stemType, engine: stem.engine,
+          id: handoffStem.id, sourceAssetId: handoffSourceId, stemType: stem.stemType, engine: handoffStem.engine,
           model: "synthetic-fixture", modelVersion: "1", durationSeconds: item.track.durationSeconds,
           sampleRate: 22050, channels: 1, codec: "pcm_s16le", format: "wav",
-          fileSizeBytes: 1000, checksumSha256: `checksum-${stem.id}`,
+          fileSizeBytes: 1000, checksumSha256: `checksum-${handoffStem.id}`,
         });
         const trackId = `studio-${item.id}-${stem.stemType}`;
         remixTracks.push({
-          id: trackId, stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`,
+          id: trackId, stemAssetId: handoffStem.id,
+          name: `${item.track.title} — ${stem.stemType}${donorStem ? ` · ${donor.track.title}` : ""}`,
           sortOrder: remixTracks.length,
           volume: handoffMixById.get(item.id)?.[stem.stemType] ?? item.stemMix[stem.stemType] ?? 1,
           pan: 0, muted: false, solo: false, inserts: [], phaseInverted: false,
           clips: [{
-            id: `clip-${trackId}`, remixTrackId: trackId, stemAssetId: stem.id,
+            id: `clip-${trackId}`, remixTrackId: trackId, stemAssetId: handoffStem.id,
             timelineStartMs, sourceOffsetMs: 0,
             durationMs: Math.round(item.track.durationSeconds * 1000), gain: 1,
             beatSnapEnabled: false, tempoRatio: 1,
           }],
         });
       }
+      if (sessionControlsOnly) sessionControlsPreservedSwapCount += preservedItemSwaps;
       timelineStartMs += Math.max(1, Math.round(item.track.durationSeconds * 1000));
     }
     if (remixTracks.length === 0) {
@@ -1468,7 +1547,9 @@ try {
       status: 201,
       json: { handoff: {
         projectId: studioProjectId, remixSessionId: studioRemixId,
-        remixTrackCount: remixTracks.length, preservedSwapCount: 0, refused: refused.length ? refused : undefined,
+        remixTrackCount: remixTracks.length,
+        preservedSwapCount: sessionControlsOnly ? sessionControlsPreservedSwapCount : 0,
+        refused: refused.length ? refused : undefined,
       } },
     });
   });
@@ -2337,6 +2418,147 @@ try {
     await context.close();
     await browser.close();
     process.exit(0);
+  } else if (sessionControlsOnly) {
+    session.tracks = tracks.slice(0, 2).map((item, index) => ({
+      ...item,
+      id: item.track.id,
+      position: index,
+      stemMix: { vocals: 1, drums: 1, bass: 1, other: 1 },
+    }));
+    session.swaps = [];
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element =>
+        element.readyState === 4 && new URL(element.src).pathname.includes("/api/assets/a-"),
+      );
+    }, null, { timeout: 15_000 });
+    const currentDeck = page.locator('[data-role="current"]');
+    const sessionOrder = page.locator("summary").filter({ hasText: "Session order" });
+    await sessionOrder.click();
+    await page.locator("#sess-add").selectOption("d");
+    await page.getByTestId("session-add-track").click();
+    await page.locator(".sess-queue-list .sess-queue-item").filter({ hasText: "Test D" }).waitFor();
+    assert.equal(session.tracks.length, 3, `${engineName}: adding a song updates the session queue`);
+    assert.equal(session.tracks[2].track.id, "d", `${engineName}: the added song is saved at the queue end`);
+
+    const play = page.getByTestId("session-play");
+    await play.click();
+    try {
+      await page.waitForFunction(() =>
+        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true"
+          && [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
+      null, { timeout: 10_000 });
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        pressed: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
+        audio: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => ({
+          paused: audio.paused, readyState: audio.readyState, currentTime: audio.currentTime,
+          src: window.audioProbe.assetUrl(audio), error: audio.error?.code ?? null,
+        })),
+        contexts: window.audioProbe.contexts.map(context => ({ state: context.state, currentTime: context.currentTime })),
+        playRejections: window.audioProbe.playRejections.slice(-4),
+        contextResumes: window.audioProbe.contextResumes.slice(-4),
+        status: document.querySelector('[data-testid="session-status"]')?.textContent,
+        alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent),
+      }));
+      console.error(`SESSION_CONTROLS_PLAY_STATE ${engineName} ${JSON.stringify(state)}`);
+      throw error;
+    }
+    const clockBeforePause = await currentDeck.locator("audio").first().evaluate(audio => audio.currentTime);
+    await page.waitForFunction(before => {
+      const audio = document.querySelector('[data-role="current"] audio');
+      return audio instanceof HTMLAudioElement && audio.currentTime > before + 0.15;
+    }, clockBeforePause, { timeout: 5_000 });
+    await play.click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false"
+        && [...document.querySelectorAll('[data-role="current"] audio')].every(audio => audio.paused),
+    null, { timeout: 5_000 });
+    const pausedClock = await currentDeck.locator("audio").first().evaluate(audio => audio.currentTime);
+    await page.waitForTimeout(200);
+    const settledPausedClock = await currentDeck.locator("audio").first().evaluate(audio => audio.currentTime);
+    assert.ok(Math.abs(settledPausedClock - pausedClock) < 0.08,
+      `${engineName}: pausing freezes the actual session audio clock`);
+    await play.click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true"
+        && [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
+    null, { timeout: 10_000 });
+
+    await currentDeck.getByTestId("quick-isolate-vocals").click();
+    await page.waitForFunction(() => {
+      const gain = type => window.audioProbe.currentStemGain(type);
+      return gain("vocals") > 0.9 && ["drums", "bass", "other"].every(type => gain(type) < 0.01);
+    }, null, { timeout: 5_000 });
+    await currentDeck.getByTestId("quick-restore-mix").click();
+    await page.waitForFunction(() =>
+      ["vocals", "drums", "bass", "other"].every(type => window.audioProbe.currentStemGain(type) > 0.9),
+    null, { timeout: 5_000 });
+
+    const buffersBeforeSwap = await page.evaluate(() => window.audioProbe.buffers.length);
+    const clocksBeforeSwap = await currentDeck.locator("audio").evaluateAll(elements =>
+      elements.map(audio => ({ source: window.audioProbe.assetUrl(audio), time: audio.currentTime, paused: audio.paused })),
+    );
+    await currentDeck.getByTestId("open-live-swap-vocals").click();
+    const donorChoice = currentDeck.getByTestId("live-swap-candidate-vocals-b");
+    await donorChoice.waitFor({ timeout: 10_000 });
+    const swapSaved = page.waitForResponse(response =>
+      response.url().endsWith("/swaps") && response.request().method() === "POST",
+    );
+    await donorChoice.click();
+    assert.ok((await swapSaved).ok(), `${engineName}: saving the live donor succeeds`);
+    await currentDeck.getByTestId("restore-live-swap-vocals").waitFor({ timeout: 15_000 });
+    await page.waitForFunction(baseline => window.audioProbe.buffers.slice(baseline)
+      .some(source => source.buffer?.duration > 0 && source.inputNode?.gain?.value > 0.03
+        && (source.stopCount ?? 0) === 0), buffersBeforeSwap, { timeout: 15_000 });
+    assert.equal(session.currentSessionTrackId, "a", `${engineName}: the live swap keeps the intended session track current`);
+    assert.equal(session.swaps.find(swap => swap.sessionTrackId === "a" && swap.stemType === "vocals")?.toTrackId,
+      "b", `${engineName}: the selected donor is saved against the vocal layer`);
+    const swapAudioState = await currentDeck.locator("audio").evaluateAll(elements =>
+      elements.map(audio => ({ source: window.audioProbe.assetUrl(audio), time: audio.currentTime, paused: audio.paused })),
+    );
+    const continuingOriginals = clocksBeforeSwap
+      .filter(item => !item.source.endsWith("/a-vocals"))
+      .map(before => ({ before, after: swapAudioState.find(item => item.source === before.source) }))
+      .filter(item => item.after);
+    assert.ok(continuingOriginals.length === 3 && continuingOriginals.every(({ before, after }) =>
+      after && !after.paused && after.time > before.time),
+    `${engineName}: the other three current stems remain audible and advance through the swap: ${JSON.stringify(continuingOriginals)}`);
+
+    await page.getByRole("button", { name: "Current only" }).click();
+    const handoffResponse = page.waitForResponse(response =>
+      response.url().endsWith(`/api/library/sessions/${sessionId}/studio-handoff`)
+        && response.request().method() === "POST",
+    );
+    await page.getByTestId("session-handoff").click();
+    assert.equal((await handoffResponse).status(), 201, `${engineName}: the Studio handoff succeeds`);
+    const studioLink = page.getByTestId("link-open-studio");
+    await studioLink.waitFor({ timeout: 10_000 });
+    assert.deepEqual(lastStudioHandoffSelection, ["a"], `${engineName}: handoff carries the selected current track only`);
+    assert.equal(sessionControlsPreservedSwapCount, 1,
+      `${engineName}: the session's live vocal donor is included in the Studio arrangement`);
+    await studioLink.click();
+    await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
+    await page.waitForFunction(() =>
+      document.querySelectorAll(".timeline-track").length === 4
+        && [...document.querySelectorAll("#studio-editor audio")].some(audio =>
+          window.audioProbe.assetUrl(audio).endsWith("/b-vocals")),
+    null, { timeout: 20_000 });
+    assert.equal(studioRemixData.tracks.length, 4, `${engineName}: Studio has four tracks for the selected song`);
+    const studioVocalTrack = studioRemixData.tracks.find(track => track.name.includes("vocals"));
+    assert.equal(studioVocalTrack?.stemAssetId, "b-vocals",
+      `${engineName}: Studio references the donor audio rather than the replaced original vocal`);
+    assert.ok(await page.locator("#studio-editor audio").evaluateAll(elements =>
+      elements.some(audio => window.audioProbe.assetUrl(audio).endsWith("/b-vocals")),
+    ), `${engineName}: the handed-off donor audio is mounted in the Studio editor`);
+    assert.equal(await page.getByTestId("waveyard-mode-studio").getAttribute("aria-selected"), "true",
+      `${engineName}: the handoff opens the Studio presentation`);
+    assert.deepEqual(await page.evaluate(() => window.audioProbe.pageErrors), [],
+      `${engineName}: session controls and the handoff do not raise browser errors`);
+    console.log(`PASS: ${engineName} play/pause freezes and resumes real audio; queue addition, isolation, live donor audio, and Studio handoff state verified.`);
   } else if (timingOnly) {
     session.tracks = pitchAcceptanceTrackSnapshot;
     session.swaps = [];
