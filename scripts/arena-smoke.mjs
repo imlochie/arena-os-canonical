@@ -4367,6 +4367,7 @@ let liveDrumDonorResponseBodyLength = 0;
   const revisedPongFrame = page.frameLocator('iframe[title="Add a multi-ball mode"]');
   const revisedPongCanvas = revisedPongFrame.locator("canvas");
   await revisedPongFrame.locator("#input-state").waitFor();
+  await revisedPongCanvas.scrollIntoViewIfNeeded();
   await revisedPongCanvas.evaluate(canvas => canvas.focus());
   await page.keyboard.press("ArrowRight");
   assert.equal(

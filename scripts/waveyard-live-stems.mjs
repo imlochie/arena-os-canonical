@@ -2575,16 +2575,17 @@ try {
       } catch (error) {
         const state = await page.evaluate(() => {
           const sources = window.audioProbe.sources
-            .filter(item => item.mediaElement.src.endsWith("/a-vocals"))
+            .filter(item => window.audioProbe.assetUrl(item.mediaElement).endsWith("/a-vocals"))
             .map(item => {
               const inputGain = item.probeConnections?.find(node => node instanceof GainNode);
               const stemGain = inputGain?.nextNode instanceof GainNode ? inputGain.nextNode : inputGain;
               return {
                 gain: stemGain?.gain?.value ?? null,
                 paused: item.mediaElement.paused,
-                currentTime: item.mediaElement.currentTime,
+                currentTime: Number(item.mediaElement.currentTime.toFixed(2)),
                 readyState: item.mediaElement.readyState,
                 ended: item.mediaElement.ended,
+                deck: item.mediaElement.closest('[data-testid^="session-deck-"]')?.getAttribute("data-testid") ?? null,
               };
             });
           return {

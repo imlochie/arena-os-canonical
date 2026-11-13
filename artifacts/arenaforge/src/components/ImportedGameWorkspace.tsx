@@ -1349,6 +1349,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   key={`${runtimeSaveId}:${runtimeGame?.source.length ?? 0}:${gameSaves.reloadKey}`}
                   title={`Playable game: ${selected.name}`}
                   sandbox="allow-scripts"
+                  allow="autoplay"
                   referrerPolicy="no-referrer"
                   ref={htmlFrameRef}
                   srcDoc={selectedHtmlDocument}

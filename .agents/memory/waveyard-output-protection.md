@@ -20,3 +20,9 @@ Use stereo PCM for near-full-scale speaker-channel tests and distinguish deliber
 **Why:** Mono centre panning attenuates speaker channels, while independently started equal-frequency tones can cancel because their phases differ. Either can hide the intended overload.
 
 **How to apply:** Use explicitly labelled same-polarity held stereo PCM for deterministic worst-case overlap, and distinct-frequency stereo stems for a separate overload stress case. Do not describe either synthetic fixture as music-quality or hardware acceptance.
+
+Reconstructed-peak tests must measure the limiter's output, including transient gain-envelope changes, not only estimate peaks on the input.
+
+**Why:** A time-varying gain curve can create new inter-sample overshoot even when input reconstruction is measured and sample peaks stay below the nominal ceiling.
+
+**How to apply:** Use an explicit oversampling method, test the post-limiter stereo PCM at supported sample rates, and keep browser analyser evidence separate from reconstructed-peak and physical-device claims.
