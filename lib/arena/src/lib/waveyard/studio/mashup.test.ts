@@ -238,7 +238,7 @@ test("plan: isolated transient coincidence cannot move the entry without a compa
   assert.equal(result.plan.segments[0]!.mashupStartMs, 0,
     "without checksum-current cross-song passage fingerprints, keep the measured structural entry instead of chasing attack coincidence");
   assert.ok(result.plan.rationale.some((line) =>
-    line.includes("0/3 voiced-run starts overlap measured drum transients")
+    line.includes("0/3 pitch-continuity run starts overlap measured drum transients")
     && line.includes("0/3 overlap low-band bass attacks")
     && line.includes("transient coincidences did not move the entry"),
   ));
@@ -1041,10 +1041,7 @@ test("plan: a valid early-bed match is not discarded just because it precedes th
           passageFingerprint: passageFingerprint(checksumDonor, 8, 24),
         },
       ],
-      vocalPhrases: [
-        { startMs: 1_000, endMs: 1_500, confidence: 0.95 },
-        { startMs: 5_000, endMs: 5_500, confidence: 0.95 },
-      ],
+      vocalActivityIntervals: [{ startMs: 5_000, endMs: 5_500, confidence: 0.95 }],
     }),
     profile({
       role: "instrumental",
@@ -1082,7 +1079,8 @@ test("plan: a valid early-bed match is not discarded just because it precedes th
   assert.equal(result.plan.passageSearch?.selectedBedSectionId, "bed-intro-match");
   assert.ok(result.plan.segments[0]!.mashupStartMs < 16_000,
     "a measured earlier bed passage can be selected instead of the heuristic first-body fallback");
-  assert.equal(result.plan.segments[0]!.vocalsFromMs, 750);
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 4_750,
+    "coarse isolated-vocal activity supplies the crop and donor passage even when pitch continuity is unavailable");
 });
 
 test("plan: low-confidence vocal phrases are not used as lyric timing evidence", () => {

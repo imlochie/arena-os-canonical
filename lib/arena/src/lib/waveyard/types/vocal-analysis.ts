@@ -17,6 +17,9 @@ export type VocalPitchFrame = {
 
 export type VocalPhrase = { startMs: number; endMs: number; confidence: number };
 
+/** Coarse energy-based activity in an isolated vocal stem; not word timing. */
+export type VocalActivityInterval = { startMs: number; endMs: number; confidence: number };
+
 export function frequencyToMidi(frequencyHz: number) {
   if (!Number.isFinite(frequencyHz) || frequencyHz <= 0) return null;
   return 69 + 12 * Math.log2(frequencyHz / 440);

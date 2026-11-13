@@ -25,10 +25,10 @@ import {
   harmonyPitchClasses,
   type HarmonyEvent,
 } from "../types/harmony-analysis";
-import type { VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
+import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v5";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v6";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -62,6 +62,8 @@ export type MashupSourceProfile = {
   stems?: Array<{ id: string; stemType: string }>;
   /** Checksum-current isolated-vocal phrase intervals; not lyric transcription. */
   vocalPhrases?: VocalPhrase[];
+  /** Checksum-current coarse energy intervals from the isolated vocal stem; not words. */
+  vocalActivityIntervals?: VocalActivityInterval[];
   /** Checksum-current monophonic pitch observations from the isolated vocal stem. */
   vocalPitchFrames?: VocalPitchFrame[];
   /** Checksum-current source-relative chord timeline. */
@@ -120,6 +122,7 @@ export type MashupPassageSearch = {
     donorStartMs: number;
     donorEndMs: number;
     voicedPhraseCount: number;
+      vocalIntervalKind?: "activity" | "pitch-continuity" | "combined";
     status: "ranked" | "no-candidate";
     selected: boolean;
     bestBedSectionId: string | null;
@@ -292,18 +295,84 @@ function alignBedEntryToMeasuredBeat(
   };
 }
 
-/** Build a padded crop from checksum-current voiced runs, not semantic section labels. */
-function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: number; why: string; voicedEvidence: boolean } {
-  const phrases = (vocals.vocalPhrases ?? [])
+function qualifiedVocalActivityIntervals(vocals: MashupSourceProfile): VocalActivityInterval[] {
+  return (vocals.vocalActivityIntervals ?? [])
+    .filter((interval) => Number.isSafeInteger(interval.startMs)
+      && Number.isSafeInteger(interval.endMs)
+      && interval.startMs >= 0
+      && interval.endMs > interval.startMs
+      && interval.endMs <= vocals.durationMs
+      && Number.isFinite(interval.confidence)
+      && interval.confidence >= 0.5
+      && interval.confidence <= 1)
+    .sort((left, right) => left.startMs - right.startMs);
+}
+
+function qualifiedVocalPitchRuns(
+  vocals: MashupSourceProfile,
+  body: { fromMs: number; toMs: number },
+): VocalPhrase[] {
+  return (vocals.vocalPhrases ?? [])
     .filter((phrase) => Number.isSafeInteger(phrase.startMs)
       && Number.isSafeInteger(phrase.endMs)
-      && phrase.startMs >= 0
-      && phrase.endMs > phrase.startMs
-      && phrase.endMs <= vocals.durationMs
+      && phrase.startMs >= body.fromMs
+      && phrase.startMs < body.toMs
+      && phrase.endMs > body.fromMs
+      && phrase.endMs <= body.toMs
       && Number.isFinite(phrase.confidence)
       && phrase.confidence >= 0.5
       && phrase.confidence <= 1)
     .sort((left, right) => left.startMs - right.startMs);
+}
+
+function vocalTimingIntervals(
+  vocals: MashupSourceProfile,
+  body: { fromMs: number; toMs: number },
+): {
+  intervals: Array<VocalActivityInterval | VocalPhrase>;
+  kind: "activity" | "pitch-continuity" | "combined";
+} {
+  const activity = qualifiedVocalActivityIntervals(vocals)
+    .filter((interval) => interval.startMs < body.toMs && interval.endMs > body.fromMs)
+    .map((interval) => ({
+      ...interval,
+      startMs: Math.max(body.fromMs, interval.startMs),
+      endMs: Math.min(body.toMs, interval.endMs),
+    }));
+  const pitchRuns = qualifiedVocalPitchRuns(vocals, body);
+  if (activity.length > 0 && pitchRuns.length > 0) {
+    // Use precise pitch-continuity onsets where they exist, and retain coarse
+    // activity-only intervals so unpitched vocals are not silently discarded.
+    const unpitchedActivity = activity.filter((interval) =>
+      !pitchRuns.some((phrase) => phrase.startMs < interval.endMs && phrase.endMs > interval.startMs));
+    return {
+      intervals: [...pitchRuns, ...unpitchedActivity].sort((left, right) => left.startMs - right.startMs),
+      kind: "combined",
+    };
+  }
+  if (activity.length > 0) return { intervals: activity, kind: "activity" };
+  return { intervals: pitchRuns, kind: "pitch-continuity" };
+}
+
+/** Build a padded crop from current isolated-vocal energy or pitch evidence. */
+function vocalBodySpan(vocals: MashupSourceProfile): {
+  fromMs: number;
+  toMs: number;
+  why: string;
+  vocalActivityEvidence: boolean;
+} {
+  const activityIntervals = qualifiedVocalActivityIntervals(vocals);
+  if (activityIntervals.length > 0) {
+    const from = activityIntervals[0]!.startMs;
+    const to = activityIntervals.at(-1)!.endMs;
+    return {
+      fromMs: Math.max(0, from - 250),
+      toMs: Math.min(vocals.durationMs, to + 250),
+      why: `measured coarse vocal activity spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s; a 250ms safety pad is kept on both ends`,
+      vocalActivityEvidence: true,
+    };
+  }
+  const phrases = qualifiedVocalPitchRuns(vocals, { fromMs: 0, toMs: vocals.durationMs });
   // Section labels are analyzer output, not human verse/chorus ground truth.
   // Include vocal activity in every measured section, including sections that
   // happen to carry an "intro" or "outro" label.
@@ -325,14 +394,14 @@ function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: num
         fromMs: paddedFrom,
         toMs: paddedTo,
         why: `measured voiced activity spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s; a 250ms safety pad is kept on both ends`,
-        voicedEvidence: true,
+        vocalActivityEvidence: true,
       };
     }
     return {
       fromMs: sectionFrom,
       toMs: sectionTo,
       why: `vocal body spans ${active.length} section${active.length === 1 ? "" : "s"} (${(sectionFrom / 1000).toFixed(1)}s–${(sectionTo / 1000).toFixed(1)}s)`,
-      voicedEvidence: false,
+      vocalActivityEvidence: false,
     };
   }
   if (phrases.length > 0) {
@@ -344,14 +413,14 @@ function vocalBodySpan(vocals: MashupSourceProfile): { fromMs: number; toMs: num
       fromMs: paddedFrom,
       toMs: paddedTo,
       why: `measured voiced activity spans ${(from / 1000).toFixed(1)}s–${(to / 1000).toFixed(1)}s; a 250ms safety pad is kept on both ends`,
-      voicedEvidence: true,
+      vocalActivityEvidence: true,
     };
   }
   return {
     fromMs: 0,
     toMs: vocals.durationMs,
-    why: "no current vocal phrase timing — the full vocal source is used",
-    voicedEvidence: false,
+    why: "no current vocal activity or pitch timing — the full vocal source is used",
+    vocalActivityEvidence: false,
   };
 }
 
@@ -680,17 +749,8 @@ function rankedPassageEntry(
       && event.confidence >= 0
       && event.confidence <= 1)
     .sort((left, right) => left.startMs - right.startMs);
-  const qualifiedPhrases = (vocals.vocalPhrases ?? [])
-    .filter((phrase) => Number.isSafeInteger(phrase.startMs)
-      && Number.isSafeInteger(phrase.endMs)
-      && phrase.startMs >= body.fromMs
-      && phrase.endMs > phrase.startMs
-      && phrase.endMs <= body.toMs
-      && Number.isFinite(phrase.confidence)
-      && phrase.confidence >= 0.5
-      && phrase.confidence <= 1)
-    .sort((left, right) => left.startMs - right.startMs);
-  const vocalPhrases = qualifiedPhrases;
+  const vocalTiming = vocalTimingIntervals(vocals, body);
+  const vocalIntervals = vocalTiming.intervals;
 
   const donorBpm = typeof vocals.bpm === "number" && Number.isFinite(vocals.bpm) && vocals.bpm > 0
     ? vocals.bpm : null;
@@ -756,10 +816,10 @@ function rankedPassageEntry(
       && section.endMs > section.startMs)
     .map((section) => ({
       section,
-      phrases: vocalPhrases.filter((phrase) =>
-        phrase.startMs >= section.startMs && phrase.startMs < section.endMs),
+      intervals: vocalIntervals.filter((interval) =>
+        interval.startMs >= section.startMs && interval.startMs < section.endMs),
     }))
-    .filter((passage) => passage.phrases.length > 0);
+    .filter((passage) => passage.intervals.length > 0);
 
   const evaluations: MashupPassageSearch["evaluations"] = [];
   const candidates: Array<{
@@ -788,7 +848,7 @@ function rankedPassageEntry(
   let unplaceableEntryCount = 0;
 
   for (const donorPassage of donorPassages) {
-    const { section: donorSection, phrases } = donorPassage;
+    const { section: donorSection, intervals } = donorPassage;
     const donorSectionId = donorSection.id
       ?? `${vocals.sourceAssetId ?? "vocals"}:${donorSection.startBeatIndex ?? donorSection.startMs}`;
     const donorFingerprint = donorSection.passageFingerprint;
@@ -798,7 +858,8 @@ function rankedPassageEntry(
         vocalSourceSha256: vocals.sourceChecksumSha256 ?? null,
         donorStartMs: donorSection.startMs,
         donorEndMs: donorSection.endMs,
-        voicedPhraseCount: phrases.length,
+        voicedPhraseCount: intervals.length,
+        vocalIntervalKind: vocalTiming.kind,
         status: "no-candidate",
         selected: false,
         bestBedSectionId: null,
@@ -835,7 +896,7 @@ function rankedPassageEntry(
           const startMs = beatGridBoundaryMs(vocals.beatGridMs, window.startBeatIndex);
           const endMs = beatGridBoundaryMs(vocals.beatGridMs, window.endBeatIndex);
           return startMs !== null && endMs !== null
-            && phrases.some((phrase) => phrase.startMs < endMs && phrase.endMs > startMs);
+            && intervals.some((interval) => interval.startMs < endMs && interval.endMs > startMs);
         });
         const searchDonorWindows = evenlySpaced(voicedDonorWindows, 128);
         const searchBedWindows = evenlySpaced(bedRollingWindows, 128);
@@ -885,7 +946,7 @@ function rankedPassageEntry(
               entryMs,
             );
             if (!ranking) continue;
-            const onsetOffsets = phrases.map((phrase) => phrase.startMs - body.fromMs);
+            const onsetOffsets = intervals.map((interval) => interval.startMs - body.fromMs);
             const transientScore = onsetOffsets.length >= MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK
               ? scoreEntryAgainstTransients(entryMs, onsetOffsets, stretchRatio, bed.drumEvents ?? [], bed.bassEvents ?? []).score
               : 0;
@@ -965,7 +1026,7 @@ function rankedPassageEntry(
         continue;
       }
 
-      const onsetOffsets = phrases.map((phrase) => phrase.startMs - body.fromMs);
+      const onsetOffsets = intervals.map((interval) => interval.startMs - body.fromMs);
       const transientScore = onsetOffsets.length >= MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK
         ? scoreEntryAgainstTransients(entryMs, onsetOffsets, stretchRatio, bed.drumEvents ?? [], bed.bassEvents ?? []).score
         : 0;
@@ -977,7 +1038,9 @@ function rankedPassageEntry(
       ].join("; ");
       sectionCandidates.push({
         at: entryMs,
-        why: `aligned voice-bearing donor section ${donorSectionId} (${donorSection.startMs}–${donorSection.endMs}ms, ${phrases.length} voiced-run starts) with bed section ${bedSection.id ?? bedSection.startMs} (${bedSection.startMs}–${bedSection.endMs}ms); whole vocal material is retained; relative score ${ranking.score.toFixed(3)} (${ranking.details.join(", ")}); ${comparisonSummary}; transient alignment only breaks near-ties`,
+        why: `aligned voice-bearing donor section ${donorSectionId} (${donorSection.startMs}–${donorSection.endMs}ms, ${intervals.length} ${vocalTiming.kind === "activity"
+          ? "coarse activity intervals"
+          : vocalTiming.kind === "pitch-continuity" ? "pitch-continuity runs" : "combined activity intervals and pitch-continuity runs"}) with bed section ${bedSection.id ?? bedSection.startMs} (${bedSection.startMs}–${bedSection.endMs}ms); whole vocal material is retained; relative score ${ranking.score.toFixed(3)} (${ranking.details.join(", ")}); ${comparisonSummary}; transient alignment only breaks near-ties`,
         musicalScore: ranking.score,
         minimumFeatureConfidence: ranking.minimumFeatureConfidence,
         similarities: ranking.similarities,
@@ -1008,7 +1071,8 @@ function rankedPassageEntry(
       vocalSourceSha256: donorFingerprint.sourceChecksumSha256 ?? null,
       donorStartMs: donorSection.startMs,
       donorEndMs: donorSection.endMs,
-      voicedPhraseCount: phrases.length,
+      voicedPhraseCount: intervals.length,
+      vocalIntervalKind: vocalTiming.kind,
       status: best ? "ranked" : "no-candidate",
       selected: false,
       bestBedSectionId: best?.bedSectionId ?? null,
@@ -1065,10 +1129,10 @@ function rankedPassageEntry(
     selectedDonorSectionId: best?.donorSectionId ?? null,
     selectedBedSectionId: best?.bedSectionId ?? null,
   };
-  const reason = !vocalPhrases.length
-    ? "no confidence-qualified vocal runs are available for passage evaluation"
+  const reason = !vocalIntervals.length
+    ? "no confidence-qualified vocal activity or pitch runs are available for passage evaluation"
     : !donorPassages.length
-      ? "no source section contains a confidence-qualified vocal run"
+      ? "no source section contains a confidence-qualified vocal activity or pitch run"
       : best
         ? `${search.rankableDonorPassageCount} of ${search.evaluatedDonorPassageCount} voice-bearing donor sections had a candidate; the best relative score was ${best.musicalScore.toFixed(3)}`
         : evaluations.some((evaluation) => evaluation.reason.includes("no current checksum-bound bed"))
@@ -1111,17 +1175,13 @@ function grooveAwareBedEntry(
       && Number.isFinite(event.confidence) && event.confidence > 0 && event.confidence <= 1)
     .slice()
     .sort((left, right) => left.timestampMs - right.timestampMs);
-  const qualifiedPhrases = (vocals.vocalPhrases ?? [])
-    .filter((phrase) => Number.isSafeInteger(phrase.startMs)
-      && Number.isSafeInteger(phrase.endMs)
-      && phrase.startMs >= body.fromMs
-      && phrase.startMs < body.toMs
-      && phrase.endMs > phrase.startMs
-      && phrase.endMs <= body.toMs
-      && Number.isFinite(phrase.confidence)
-      && phrase.confidence >= 0.5
-      && phrase.confidence <= 1);
-  const vocalOnsetOffsetsMs = qualifiedPhrases.map((phrase) => phrase.startMs - body.fromMs);
+  const vocalTiming = vocalTimingIntervals(vocals, body);
+  const vocalOnsetOffsetsMs = vocalTiming.intervals.map((interval) => interval.startMs - body.fromMs);
+  const vocalOnsetLabel = vocalTiming.kind === "activity"
+    ? "coarse vocal-activity interval starts"
+    : vocalTiming.kind === "pitch-continuity"
+      ? "pitch-continuity run starts"
+      : "combined vocal-activity and pitch-run starts";
   const passageDecision = rankedPassageEntry(
     vocals, bed, body, base.at, masterBpm, stretchRatio, vocalPitchShiftSemitones,
   );
@@ -1133,9 +1193,9 @@ function grooveAwareBedEntry(
       return sectionId === passageEntry.donorSectionId;
     });
     const selectedOnsetOffsetsMs = selectedSection
-      ? qualifiedPhrases
-        .filter((phrase) => phrase.startMs >= selectedSection.startMs && phrase.startMs < selectedSection.endMs)
-        .map((phrase) => phrase.startMs - body.fromMs)
+      ? vocalTiming.intervals
+        .filter((interval) => interval.startMs >= selectedSection.startMs && interval.startMs < selectedSection.endMs)
+        .map((interval) => interval.startMs - body.fromMs)
       : vocalOnsetOffsetsMs;
     const selectedTiming = scoreEntryAgainstTransients(
       passageEntry.at, selectedOnsetOffsetsMs, stretchRatio, drumEvents, bassEvents,
@@ -1146,7 +1206,7 @@ function grooveAwareBedEntry(
       at: passageEntry.at,
       why: [
         passageEntry.why,
-        `at the selected passage, ${drumLabel} voiced-run starts overlap measured drum transients and ${bassLabel} overlap low-band bass attacks`,
+        `at the selected passage, ${drumLabel} ${vocalOnsetLabel} overlap measured drum transients and ${bassLabel} overlap low-band bass attacks`,
       ].filter(Boolean).join("; "),
       warning: `The passage choice is only the highest relative evidence ranking among current candidates (${passageEntry.score.toFixed(3)}); it is not calibrated or listener-validated. It does not establish a good-sounding arrangement; transient matches are only a tie-breaker.`,
       passageSearch: passageDecision.search,
@@ -1159,12 +1219,12 @@ function grooveAwareBedEntry(
   const drumLabel = drumEvents.length > 0 ? `${baselineTiming.drumMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
   const bassLabel = bassEvents.length > 0 ? `${baselineTiming.bassMatches}/${vocalOnsetOffsetsMs.length}` : "unavailable";
   const phraseTiming = vocalOnsetOffsetsMs.length
-    ? `at the unchanged entry, ${drumLabel} voiced-run starts overlap measured drum transients and ${bassLabel} overlap low-band bass attacks`
-    : "no confidence-qualified voiced-run starts were available for transient comparison";
+    ? `at the unchanged entry, ${drumLabel} ${vocalOnsetLabel} overlap measured drum transients and ${bassLabel} overlap low-band bass attacks`
+    : "no confidence-qualified vocal activity or pitch interval starts were available for transient comparison";
   return {
     at: base.at,
     why: `${base.why}; ${phraseTiming}; ${passageDecision.reason}, so transient coincidences did not move the entry`,
-    warning: `The entry remains a measured-beat fallback because ${passageDecision.reason}.${grid ? "" : " No trusted bed beat grid was available."}${body.voicedEvidence ? "" : " No current isolated-vocal voicing intervals were available."} Voiced runs are not lyric phrases, and event timing does not establish musical fit or listening quality.`,
+    warning: `The entry remains a measured-beat fallback because ${passageDecision.reason}.${grid ? "" : " No trusted bed beat grid was available."}${body.vocalActivityEvidence ? "" : " No current isolated-vocal activity or pitch intervals were available."} These observations are not lyric phrases, and event timing does not establish musical fit or listening quality.`,
     passageSearch: passageDecision.search,
   };
 }
@@ -1288,7 +1348,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   warnings.push(...(bed.grooveWarnings ?? []));
 
   rationale.push(body.why);
-  if (body.voicedEvidence) {
+  if (body.vocalActivityEvidence) {
     rationale.push("the crop keeps 250ms around measured voiced activity; word, syllable, and lyrical-meaning timing are not analyzed.");
   } else {
     warnings.push("No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.");
@@ -1404,6 +1464,10 @@ function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceP
   const beatGrid = currentEvidenceValue(packet.features.beatGrid, sourceChecksum);
   const sections = currentEvidenceValue(packet.features.sections, sourceChecksum);
   const vocalPhrases = currentEvidenceValue(packet.features.vocalPhrases, sourceChecksum);
+  const vocalActivityEvidence = packet.features.vocalActivityIntervals;
+  const vocalActivityIntervals = vocalActivityEvidence
+    ? currentEvidenceValue(vocalActivityEvidence, sourceChecksum)
+    : null;
   const vocalPitchFrames = packet.features.vocalPitchFrames
     ? currentEvidenceValue(packet.features.vocalPitchFrames, sourceChecksum)
     : null;
@@ -1422,6 +1486,9 @@ function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceP
     beatConfidence: beatGrid?.confidence ?? profile.beatConfidence ?? null,
     sections: sections ?? profile.sections,
     vocalPhrases: vocalPhrases ?? profile.vocalPhrases ?? [],
+    vocalActivityIntervals: vocalActivityEvidence
+      ? vocalActivityIntervals ?? []
+      : profile.vocalActivityIntervals ?? [],
     vocalPitchFrames: vocalPitchFrames ?? undefined,
     harmonyEvents: harmonyEvents ?? undefined,
     drumEvents: drumEvents ?? profile.drumEvents ?? [],

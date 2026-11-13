@@ -18,6 +18,7 @@ import {
   sourceSectionAnalyses,
   sourceSections,
   stemAssets,
+  vocalActivityIntervals,
   vocalAnalyses,
   vocalPitchFrames,
   vocalPhrases,
@@ -29,6 +30,7 @@ import {
   vocalAnalysisProvenanceReason,
   type VocalPitchFrame,
   type VocalPhrase,
+  type VocalActivityInterval,
 } from "../types/vocal-analysis";
 import {
   LOCAL_HARMONY_ANALYSIS_ENGINE,
@@ -290,6 +292,9 @@ export async function loadSourceProfile(
       vocalPhrases: vocalEvidence
         ? measuredEvidence(vocalEvidence.phrases, vocalEvidence.provenance)
         : unavailableEvidence("No current isolated-vocal phrase analysis is available for this source."),
+      vocalActivityIntervals: vocalEvidence
+        ? measuredEvidence(vocalEvidence.activityIntervals, vocalEvidence.provenance)
+        : unavailableEvidence("No current isolated-vocal activity analysis is available for this source."),
       vocalPitchFrames: vocalEvidence && vocalEvidence.pitchFrames !== null
         ? measuredEvidence(vocalEvidence.pitchFrames, vocalEvidence.provenance)
         : unavailableEvidence("No current isolated-vocal pitch frames are available for this source."),
@@ -315,6 +320,7 @@ export async function loadSourceProfile(
     durationMs: evidence.source.durationMs,
     sections,
     vocalPhrases: vocalEvidence?.phrases ?? [],
+    ...(vocalEvidence ? { vocalActivityIntervals: vocalEvidence.activityIntervals } : {}),
     ...(measuredVocalPitchFrames !== null ? { vocalPitchFrames: measuredVocalPitchFrames } : {}),
     ...(evidence.features.harmony.status === "measured"
       ? { harmonyEvents: evidence.features.harmony.value }
@@ -426,6 +432,7 @@ async function loadCurrentVocalEvidence(
   durationMs: number,
 ): Promise<{
   phrases: VocalPhrase[];
+  activityIntervals: VocalActivityInterval[];
   pitchFrames: VocalPitchFrame[] | null;
   provenance: MusicalEvidenceProvenance;
 } | null> {
@@ -504,6 +511,25 @@ async function loadCurrentVocalEvidence(
     && phrase.confidence >= 0
     && phrase.confidence <= 1,
   );
+  const activityRows = await database
+    .select({
+      startMs: vocalActivityIntervals.startMs,
+      endMs: vocalActivityIntervals.endMs,
+      confidence: vocalActivityIntervals.confidence,
+    })
+    .from(vocalActivityIntervals)
+    .where(eq(vocalActivityIntervals.vocalAnalysisId, analysis.id))
+    .orderBy(asc(vocalActivityIntervals.startMs));
+  const activityIntervals = activityRows.filter((interval: VocalActivityInterval) =>
+    Number.isSafeInteger(interval.startMs)
+    && Number.isSafeInteger(interval.endMs)
+    && interval.startMs >= 0
+    && interval.endMs > interval.startMs
+    && interval.endMs <= durationMs
+    && Number.isFinite(interval.confidence)
+    && interval.confidence >= 0
+    && interval.confidence <= 1,
+  );
   const pitchFrameRows = await database
     .select({
       timestampMs: vocalPitchFrames.timestampMs,
@@ -519,6 +545,7 @@ async function loadCurrentVocalEvidence(
   const pitchFrames = normaliseVocalPitchFrames(pitchFrameRows, durationMs);
   return {
     phrases,
+    activityIntervals,
     pitchFrames,
     provenance: {
       analysisId: analysis.id,

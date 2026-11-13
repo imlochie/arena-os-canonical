@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { HARMONY_CHORD_TEMPLATES, HARMONY_TEMPLATE_MIN_MARGIN } from "../types/harmony-analysis";
+import type { VocalActivityInterval } from "../types/vocal-analysis";
 import { SESSION_MIN_DOWNBEAT_CONFIDENCE } from "../session-dj-controls";
 
 export { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
@@ -876,7 +877,7 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
   return frames;
 }
 
-export type LocalVocalActivityInterval = { startMs: number; endMs: number; confidence: number };
+export type LocalVocalActivityInterval = VocalActivityInterval;
 
 /**
  * Finds coarse activity passages from the isolated vocal stem independently

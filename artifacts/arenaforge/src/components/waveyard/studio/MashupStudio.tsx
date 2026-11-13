@@ -33,6 +33,7 @@ type Plan = {
       donorStartMs: number;
       donorEndMs: number;
       voicedPhraseCount: number;
+      vocalIntervalKind?: "activity" | "pitch-continuity" | "combined";
       status: "ranked" | "no-candidate";
       selected: boolean;
       bestBedSectionId: string | null;
@@ -293,7 +294,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                 Feature confidence is detector confidence, not a prediction that the mashup will sound good.
               </p>
               {plan.passageSearch.evaluations.length === 0
-                ? <p>No confidence-qualified vocal runs were assigned to a measured section.</p>
+                 ? <p>No confidence-qualified vocal activity or pitch runs were assigned to a measured section.</p>
                 : (
                   <ol>
                     {plan.passageSearch.evaluations.map((evaluation) => (
@@ -304,7 +305,13 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                           {evaluation.selected ? " · selected" : ""}
                         </b>
                         <small>
-                          {evaluation.voicedPhraseCount} measured voiced-run starts · {evaluation.status}
+                          {evaluation.voicedPhraseCount} {
+                            evaluation.vocalIntervalKind === "activity"
+                              ? "coarse vocal-activity intervals"
+                              : evaluation.vocalIntervalKind === "combined"
+                                ? "combined activity intervals and pitch-continuity runs"
+                                : "pitch-continuity runs"
+                          } · {evaluation.status}
                           {evaluation.bestBedSectionId && evaluation.bedStartMs !== null && evaluation.bedEndMs !== null
                             ? ` · bed passage ${formatPassageTime(evaluation.bedStartMs)}–${formatPassageTime(evaluation.bedEndMs)}`
                             : ""}

@@ -1,6 +1,34 @@
 # Arena handoff — read this first
 
-## Current: recurring-chorus anchors with distinct-verse support
+## Current: mashup planning consumes persisted vocal activity
+
+Mashup planner v6 now loads the checksum-current `vocal_activity_intervals`
+from the same completed vocal analysis as pitch frames and pitch-continuity
+runs. These coarse energy intervals are included in the shared musical-evidence
+packet and `MashupSourceProfile`; mashup body cropping, voice-bearing passage
+eligibility, and transient timing use them alongside pitch-continuity runs:
+pitch runs supply more precise onsets where available, and coarse intervals
+remain for activity with no pitch match. Activity bounds also trim the donor
+body even when pitch evidence is absent. This lets unpitched or weakly pitched
+vocal activity participate in planning without pretending to provide
+word, syllable, or verse/chorus timing. A stale source or stem checksum removes
+both activity and pitch evidence.
+
+Verification for this change: 38 mashup planner/full-length/database tests
+passed, including a persisted profile round-trip and stale-checksum rejection;
+API and ArenaForge typechecks passed. The real separated-stem route also
+completed save/reopen/edit/restore/export for Another One Bites the Dust vocals
+over the September instrumental bed, producing a 215-second WAV. Its existing
+local vocal-activity detector produced 40 checksum-bound coarse intervals,
+which the planner loaded alongside 88 pitch-continuity runs. The combined
+94 timing starts overlapped drum transients at 59/94 and bass attacks at
+87/94. Those counts are timing evidence, not a quality score. The planner still
+correctly kept its measured-beat
+fallback because no candidate had sufficient comparable whole-bar passage
+evidence. This verifies persisted data flow and export, not that the mix sounds
+good or that Waveyard recognizes lyrics or semantic song form.
+
+## Previous: recurring-chorus anchors with distinct-verse support
 
 The latest sweep includes all six owner uploads: September, Another One Bites
 the Dust, I Feel It Coming (80s remix), Stayin' Alive (Reflex revision),
@@ -70,9 +98,10 @@ Invalid optional timing does not suppress valid PCM recurrence. Section 1.12
 consumes those existing persisted checksummed analyses and requires reanalysis;
 old results are not relabeled as new.
 
-Verification: 10 musical-form tests, 7 persisted stem/section tests, API
-typecheck, and the actual separated-stem save/reopen/edit/restore/export route
-passed under engine 1.12. No new model, schema or planner was added.
+Historical verification for section engine 1.12: 10 musical-form tests, 7
+persisted stem/section tests, API typecheck, and the actual separated-stem
+save/reopen/edit/restore/export route passed. That section change did not add a
+new model or schema.
 
 ## Previous: inferred verse/chorus roles and measured limitations
 

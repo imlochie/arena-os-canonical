@@ -18,6 +18,7 @@ import {
   processingJobs,
   stemAssets,
   vocalAnalyses,
+  vocalActivityIntervals,
   vocalPitchFrames,
   vocalPhrases,
   stemHarmonyAnalyses,
@@ -688,6 +689,13 @@ test("deterministic analysis selection and beat snapping gating across competing
       endMs: 700,
       confidence: 0.95,
     });
+    await db.insert(vocalActivityIntervals).values({
+      vocalAnalysisId: vocalAnalysis.id,
+      intervalIndex: 0,
+      startMs: 0,
+      endMs: 900,
+      confidence: 0.88,
+    });
     const [harmonyAnalysis] = await db.insert(harmonyAnalyses).values({
       projectId: project.id,
       sourceAssetId: source.id,
@@ -796,8 +804,12 @@ test("deterministic analysis selection and beat snapping gating across competing
     );
     assert.equal(vocalProfile.vocalPitchFrames?.length, 8);
     assert.equal(vocalProfile.vocalPhrases.length, 1);
+    assert.deepEqual(vocalProfile.vocalActivityIntervals, [
+      { startMs: 0, endMs: 900, confidence: 0.88 },
+    ]);
     assert.equal(vocalProfile.evidence?.features.vocalPitchFrames.status, "measured");
     assert.equal(vocalProfile.evidence?.features.vocalPhrases.status, "measured");
+    assert.equal(vocalProfile.evidence?.features.vocalActivityIntervals?.status, "measured");
     if (vocalProfile.evidence?.features.vocalPitchFrames.status === "measured") {
       assert.equal(vocalProfile.evidence.features.vocalPitchFrames.provenance.stemChecksumSha256, stemChecksum,
         "only pitch frames tied to the current separated-vocal checksum may reach the planner");
@@ -811,7 +823,10 @@ test("deterministic analysis selection and beat snapping gating across competing
     const staleVocalProfile = await loadSourceProfile(project.id, source.id, "vocals", db);
     assert.equal(staleVocalProfile?.evidence?.features.vocalPitchFrames.status, "unavailable",
       "replacing the donor stem checksum must remove its old melody evidence from planning");
+    assert.equal(staleVocalProfile?.evidence?.features.vocalActivityIntervals?.status, "unavailable",
+      "replacing the donor stem checksum must also remove its old coarse activity evidence");
     assert.equal(staleVocalProfile?.vocalPitchFrames, undefined);
+    assert.equal(staleVocalProfile?.vocalActivityIntervals, undefined);
     await db.update(harmonyAnalyses)
       .set({ analysisEngineVersion: `${DESKTOP_STEM_ANALYSIS_ENGINE_VERSION}-old` })
       .where(eq(harmonyAnalyses.id, harmonyAnalysis.id));

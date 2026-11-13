@@ -232,6 +232,7 @@ test(
     count: number;
     firstVoicedRun: { startMs: number; endMs: number; confidence: number };
     lastVoicedRun: { startMs: number; endMs: number; confidence: number };
+    activityIntervalCount: number;
     analysisEngine: string;
     analysisEngineVersion: string;
   } | null = null;
@@ -503,7 +504,12 @@ test(
     assert.ok(vocalsStemRow);
 
     if (realFixture && vocalsStemRow) {
-      const [{ decodeMonoPcm, detectVocalPitchFrames, ANALYSIS_PCM_RATE }, vocalTypes] = await Promise.all([
+      const [{
+        decodeMonoPcm,
+        detectVocalPitchFrames,
+        detectVocalActivityIntervals,
+        ANALYSIS_PCM_RATE,
+      }, vocalTypes] = await Promise.all([
         import("@workspace/arena/lib/waveyard/worker-local/analysis-engine"),
         import("@workspace/arena/lib/waveyard/types/vocal-analysis"),
       ]);
@@ -512,6 +518,9 @@ test(
         detectVocalPitchFrames(analysisPcm), Math.floor(analysisPcm.length * 1000 / ANALYSIS_PCM_RATE),
       );
       assert.ok(pitchFrames, "real separated vocals must yield valid pitch observations");
+      const activityIntervals = detectVocalActivityIntervals(analysisPcm, pitchFrames);
+      assert.ok(activityIntervals.length > 0,
+        "real isolated-vocal PCM must produce coarse activity intervals independently of lyric labels");
       const phrases = vocalTypes.segmentVocalPhrases(pitchFrames)
         .filter((phrase) => phrase.endMs > phrase.startMs && phrase.confidence >= 0.5);
       assert.ok(phrases.length > 0, "real separated vocals must yield at least one confidence-qualified voiced phrase");
@@ -524,6 +533,7 @@ test(
         count: phrases.length,
         firstVoicedRun: phrases[0],
         lastVoicedRun: phrases[phrases.length - 1],
+        activityIntervalCount: activityIntervals.length,
         analysisEngine: vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE,
         analysisEngineVersion: vocalTypes.LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
       };
@@ -564,6 +574,13 @@ test(
         startMs: phrase.startMs,
         endMs: phrase.endMs,
         confidence: phrase.confidence,
+      })));
+      await dbModule.db.insert(schema.vocalActivityIntervals).values(activityIntervals.map((interval, intervalIndex) => ({
+        vocalAnalysisId: vocalAnalysis.id,
+        intervalIndex,
+        startMs: interval.startMs,
+        endMs: interval.endMs,
+        confidence: interval.confidence,
       })));
     } else if (vocalsStemRow) {
       const [vocalAnalysis] = await dbModule.db.insert(schema.vocalAnalyses).values({
@@ -1011,7 +1028,11 @@ test(
         }
         assert.ok(planBody.plan.rationale.some((line) => line.includes("word, syllable, and lyrical-meaning timing are not analyzed")),
           "the plan must distinguish voicing activity from lyric understanding");
-        realGrooveTimingSummary = planBody.plan.rationale.find((line) => line.includes("voiced-run starts overlap")) ?? null;
+        realGrooveTimingSummary = planBody.plan.rationale.find((line) =>
+          line.includes("coarse vocal-activity interval starts overlap")
+          || line.includes("combined vocal-activity and pitch-run starts overlap")
+          || line.includes("pitch-continuity run starts overlap"),
+        ) ?? null;
         assert.ok(realGrooveTimingSummary,
           "the real-stem plan must compare measured vocal activity with separated drum and bass attacks");
         assert.ok(realGrooveTimingSummary.includes("measured drum transients"));
