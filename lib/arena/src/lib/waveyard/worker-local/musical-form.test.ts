@@ -23,6 +23,43 @@ test("infers both recurrent vocal roles from an alternating arrangement and meas
   assert.ok(predictions.every(p => p.strength <= 0.7));
 });
 
+test("a recurrent chorus can anchor verses whose vocal melodies do not repeat", () => {
+  const verseOne = window(0, "a");
+  verseOne.vocalPhraseTiming = [1, 0, 0];
+  const chorusOne = window(8, "c", -15);
+  chorusOne.vocalPhraseTiming = [0, 0, 1];
+  const verseTwo = window(16, "b");
+  verseTwo.vocalPhraseTiming = [1, 0, 0];
+  const chorusTwo = window(24, "c", -15);
+  chorusTwo.vocalPhraseTiming = [0, 0, 1];
+  const evidence = [
+    verseOne, chorusOne, verseTwo, chorusTwo,
+    ...[4, 12, 20, 28].map(startBar => ({ ...window(startBar, "a"), vocalCoverage: 0 })),
+  ];
+
+  assert.deepEqual(inferFormFromWindows(evidence).map(p => [p.startBar, p.label]), [
+    [0, "verse"], [8, "chorus"], [16, "verse"], [24, "chorus"],
+  ]);
+});
+
+test("one-off verse candidates abstain when their backing patterns conflict", () => {
+  const verseOne = window(0, "a");
+  verseOne.vocalPhraseTiming = [1, 0, 0];
+  const chorusOne = window(8, "c", -15);
+  chorusOne.vocalPhraseTiming = [0, 0, 1];
+  const verseTwo = window(16, "b");
+  verseTwo.vocalPhraseTiming = [1, 0, 0];
+  verseTwo.backing = [0, 1, 0];
+  const chorusTwo = window(24, "c", -15);
+  chorusTwo.vocalPhraseTiming = [0, 0, 1];
+  const evidence = [
+    verseOne, chorusOne, verseTwo, chorusTwo,
+    ...[4, 12, 20, 28].map(startBar => ({ ...window(startBar, "a"), vocalCoverage: 0 })),
+  ];
+
+  assert.deepEqual(inferFormFromWindows(evidence), []);
+});
+
 test("repetition, energy alone, missing vocal activity and ambiguous competing hooks abstain", () => {
   assert.deepEqual(inferFormFromWindows(arrangement().map(w => ({ ...w, vocal: [1, 0, 0] }))), []);
   assert.deepEqual(inferFormFromWindows(arrangement().map(w => ({ ...w, energyDb: -20 }))), []);

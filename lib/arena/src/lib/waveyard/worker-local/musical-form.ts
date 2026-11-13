@@ -39,10 +39,13 @@ const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / Math.max(
 
 /**
  * Conservative recurrence/context model, not a trained semantic classifier.
- * Requires TWO distinct recurrent vocal arrangements in an A–B–A–B context,
- * plus a measured dynamic lift for the proposed chorus. Repeating a bass riff,
- * an energy peak alone, or a constant loop cannot establish either role.
- * Quiet choruses, chorus-first forms and ambiguous material may abstain.
+ * A chorus must recur as a vocal arrangement and carry a measured dynamic lift.
+ * Verses may use different lyrics and melodies: when two distinct, lower-energy
+ * vocal passages sit before/between recurrent choruses over a shared backing
+ * pattern, that is enough context to label them without requiring the verses
+ * themselves to repeat. A bass riff, energy peak, or constant loop alone cannot
+ * establish either role. Quiet choruses, chorus-first forms and ambiguous
+ * material may abstain.
  */
 export function inferFormFromWindows(windows: readonly FormWindow[]): FormPrediction[] {
   if (windows.length < 8) return [];
@@ -62,7 +65,8 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
       : 0.55 * voice + 0.15 * phraseTiming + 0.3 * music;
   };
   // Star groups are pairwise checked, not transitive similarity chains.
-  const groups = usable.map(seed => {
+  type RoleGroup = { members: FormWindow[]; energy: number; recurrence: number };
+  const groups: RoleGroup[] = usable.map(seed => {
     const members = [seed];
     const peers = usable.filter(w => Math.abs(w.startBar - seed.startBar) >= WINDOW_BARS * 2)
       .map(w => ({ w, similarity: similarity(seed, w) }))
@@ -76,7 +80,8 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
     return { members, energy: mean(members.map(w => w.energyDb)),
       recurrence: mean(members.slice(1).map(w => similarity(seed, w))) };
   }).filter(g => g.members.length >= 2);
-  const pairs: { verse: typeof groups[number]; chorus: typeof groups[number]; score: number }[] = [];
+  const pairs: { verse: RoleGroup; chorus: RoleGroup; score: number }[] = [];
+  // Preserve the strict A–B–A–B path when both arrangements recur.
   for (const chorus of groups) {
     const first = chorus.members[0]!.startBar, last = chorus.members.at(-1)!.startBar;
     for (const verse of groups) {
@@ -91,6 +96,63 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
       pairs.push({ verse, chorus, score: 0.5 * Math.min(verse.recurrence, chorus.recurrence)
         + 0.3 * Math.min(1, lift / 6) + 0.2 * Math.min(1, chorus.members.length / 3) });
     }
+  }
+  // Verse 2 commonly has different lyrics and a different melody from verse 1.
+  // Requiring the verse windows to repeat was therefore a product-level false
+  // negative. Keep the chorus recurrence gate, then admit one-off verse windows
+  // only when they are vocal-active, lower-energy, distinct from the chorus,
+  // and share an observed source-harmonic pattern with the other verse window.
+  for (const chorus of groups) {
+    const chorusMembers = chorus.members.slice().sort((a, b) => a.startBar - b.startBar);
+    if (chorusMembers.length < 2) continue;
+    const hasBeatRelativeVocalEvidence = (window: FormWindow) =>
+      window.vocalPhraseTiming?.some(value => Number.isFinite(value) && value > 0) === true;
+    if (!chorusMembers.every(hasBeatRelativeVocalEvidence)) continue;
+    const firstChorus = chorusMembers[0]!;
+    const firstVerse = usable
+      .filter(w => w.startBar >= Math.max(0, firstChorus.startBar - WINDOW_BARS * 2)
+        && w.startBar + WINDOW_BARS <= firstChorus.startBar
+        && hasBeatRelativeVocalEvidence(w)
+        && similarity(w, firstChorus) <= 0.55
+        && chorus.energy - w.energyDb >= 1.5)
+      .sort((a, b) => b.startBar - a.startBar)[0];
+    if (!firstVerse) continue;
+
+    const verseMembers = [firstVerse];
+    let validContext = true;
+    for (let index = 0; index < chorusMembers.length - 1; index += 1) {
+      const currentChorus = chorusMembers[index]!;
+      const nextChorus = chorusMembers[index + 1]!;
+      const verse = usable
+        .filter(w => w.startBar >= currentChorus.startBar + WINDOW_BARS
+          && w.startBar + WINDOW_BARS <= nextChorus.startBar
+          && hasBeatRelativeVocalEvidence(w)
+          && similarity(w, nextChorus) <= 0.55
+          && chorus.energy - w.energyDb >= 1.5)
+        .sort((a, b) => b.startBar - a.startBar)[0];
+      if (!verse) {
+        validContext = false;
+        break;
+      }
+      verseMembers.push(verse);
+    }
+    if (!validContext || verseMembers.length < 2
+      || verseMembers.some((left, index) => verseMembers.slice(index + 1)
+        .some(right => Math.abs(left.startBar - right.startBar) < WINDOW_BARS))) continue;
+
+    const verseBackingSimilarities = verseMembers.slice(1).map((verse, index) =>
+      cosine(verseMembers[index]!.backing, verse.backing)).filter((value): value is number => value !== null);
+    if (verseBackingSimilarities.length !== verseMembers.length - 1
+      || verseBackingSimilarities.some(value => value < 0.75)) continue;
+    const verse = {
+      members: verseMembers,
+      energy: mean(verseMembers.map(w => w.energyDb)),
+      recurrence: mean(verseBackingSimilarities),
+    };
+    const lift = chorus.energy - verse.energy;
+    if (lift < 1.5) continue;
+    pairs.push({ verse, chorus, score: 0.5 * Math.min(verse.recurrence, chorus.recurrence)
+      + 0.3 * Math.min(1, lift / 6) + 0.2 * Math.min(1, chorus.members.length / 3) });
   }
   pairs.sort((a, b) => b.score - a.score);
   const best = pairs[0];

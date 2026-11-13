@@ -1,6 +1,6 @@
 # Arena handoff — read this first
 
-## Current: full-section form anchors and measured owner-note comparison
+## Current: recurring-chorus anchors with distinct-verse support
 
 The latest sweep includes all six owner uploads: September, Another One Bites
 the Dust, I Feel It Coming (80s remix), Stayin' Alive (Reflex revision),
@@ -14,15 +14,18 @@ the other four need real full-track separation before the same form path can
 evaluate them. The existing Queen full four-model CPU run took about 18 minutes;
 no additional long separation runs or model downloads were performed here.
 
-Section engine 1.11 changes the form-recognition output, not the upstream pitch
-detector. Repeated eight-bar windows are treated as passage anchors, not as
-whole-section labels. The selected vocal/harmonic recurrence groups must still
-support an alternating verse→chorus→verse→chorus sequence and measured chorus
-lift. Each anchored interval ends at the next opposite-role anchor; a same-role
-hook reprise cannot extend a chorus through an unverified breakdown or outro.
-When there is no later opposite-role evidence, the final anchor is bounded to
-its directly observed eight bars. Other sections remain structural/unknown.
-Source-section IDs and timing are not rewritten.
+Section engine 1.12 changes the form-recognition output, not the upstream pitch
+detector. Repeated eight-bar vocal/harmonic windows still have to establish a
+recurrent chorus and a measured energy lift. Verses no longer have to repeat
+the same melody or words: one-off verse windows are accepted only when they
+carry beat-relative vocal timing, are distinct from the recurrent chorus, sit
+at the expected positions before/between chorus anchors, share measured source
+harmonic structure, and remain lower-energy than the chorus. Without those
+signals the detector abstains. Each interval ends at the next opposite-role
+anchor; a same-role hook reprise cannot extend a chorus through an unverified
+breakdown or outro. Without later opposite-role evidence, the final anchor is
+bounded to its directly observed eight bars. Other sections remain
+structural/unknown. Source-section IDs and timing are not rewritten.
 
 The real persisted save/reopen/edit/restore/export route was rerun on the actual
 separated September and Queen files. Against the owner's approximate September
@@ -34,8 +37,11 @@ section notes, the same full-song route changed from engine 1.10 to 1.11:
   precision loss is a real tradeoff for roughly 2.3× more correctly covered
   verse/chorus time; it should not be hidden.
 * Verse F1 changed **0.596→0.880** and chorus F1 **0.384→0.725**.
-* Queen still abstains with zero verse/chorus labels. The change does not claim
-  to solve all song forms or prove a reliable mashup.
+* Queen still abstains with zero verse/chorus labels. The new distinct-verse
+  path does not help when a track has no qualifying recurrent eight-bar chorus;
+  the route produced the same labels and metrics as engine 1.11 on both
+  separated-stem fixtures. This is a targeted logic correction, not a measured
+  accuracy gain on the current two-track corpus.
 
 These are **provisional**, owner-authored approximate boundaries from one
 annotated track, not two independent reviewers or a broad accuracy benchmark.
@@ -43,28 +49,28 @@ They are useful comparative evidence for this iteration, not proof of Stem.fm
 parity, generalization, lyric recognition, or listening quality. The route
 test proves the new labels are produced from real persisted stems and survive
 the normal workflow. The final local reports are
-`generated-artifacts/waveyard-real-world-acceptance/form-route-acceptance-bounded.json`
-and `form-provisional-bounded.json` (ignored, local audio evidence).
+`generated-artifacts/waveyard-real-world-acceptance/form-route-acceptance-v112.json`
+and `form-provisional-v112.json` (ignored, local audio evidence).
 
 The earlier vocal correction remains in the section history: 1.2.0 pitch
 analysis stores pitch-continuity runs, including corrected CMND valley
 selection and fractional-period interpolation; coarse vocal activity keeps
 unpitched vocal coverage. These are audio observations, not words or lyrics.
-Invalid optional timing does not suppress valid PCM recurrence. Section 1.11
+Invalid optional timing does not suppress valid PCM recurrence. Section 1.12
 consumes those existing persisted checksummed analyses and requires reanalysis;
 old results are not relabeled as new.
 
-Verification: 8 musical-form tests, 7 persisted stem/section tests, API
+Verification: 10 musical-form tests, 7 persisted stem/section tests, API
 typecheck, and the actual separated-stem save/reopen/edit/restore/export route
-passed. No new model, schema or planner was added.
+passed under engine 1.12. No new model, schema or planner was added.
 
 ## Previous: inferred verse/chorus roles and measured limitations
 
-The local source-section worker now uses **checksum-verified isolated vocal PCM**
-and the original full-track PCM. It compares eight-bar vocal/harmonic contours
-across distant passages and requires two distinct recurring vocal arrangements,
-an alternating verse/chorus context and a measured dynamic lift before assigning
-either role. The 1.9 engine also compares confidence-qualified, beat-relative
+The earlier 1.9 local source-section worker used **checksum-verified isolated
+vocal PCM** and the original full-track PCM. It compared eight-bar
+vocal/harmonic contours across distant passages and required two distinct
+recurring vocal arrangements, an alternating verse/chorus context and a
+measured dynamic lift before assigning either role. The 1.9 engine also compared confidence-qualified, beat-relative
 monophonic vocal-pitch-continuity timing when current stored voicing runs exist.
 Those runs are supporting audio evidence, **not** words or lyric boundaries.
 Repetition or energy alone does not count. Source-only/corrupt/missing stems
