@@ -1186,6 +1186,24 @@ if (changingMemoryInputsJson) {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const workspaceRoot = resolve(arenaRoot, "../..");
     const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
+    type MemorySongFixture = {
+      id: string;
+      title: string;
+      artist: string;
+      source: {
+        path: string;
+        sha256: string;
+        url: string;
+        license: string;
+        licenseUrl: string;
+      };
+      excerpts: {
+        path: string;
+        startSeconds: number;
+        durationSeconds: number;
+        sha256: string;
+      }[];
+    };
     for (const spec of FOUR_STEM_MODELS) {
       const modelPath = join(modelDirectory, spec.file);
       if (!existsSync(modelPath)) {
@@ -1199,7 +1217,76 @@ if (changingMemoryInputsJson) {
     assert.ok(Array.isArray(paths), "WAVEYARD_REAL_ORT_MEMORY_WAVS_JSON must be a JSON array of WAV paths");
     assert.ok(paths.length >= 6 && paths.length <= 12, "supply between six and twelve changing real excerpts");
     assert.ok(paths.every((path): path is string => typeof path === "string" && path.trim().length > 0));
-    const sources = await Promise.all(paths.map((path) => createMemoryMeasurementSource(path)));
+    const fixtureManifestPath = join(
+      workspaceRoot,
+      "lib/arena/src/lib/waveyard/worker-local/separation-memory-fixtures.json",
+    );
+    const fixtureManifest = JSON.parse(await readFile(fixtureManifestPath, "utf8")) as {
+      schemaVersion: number;
+      songs: MemorySongFixture[];
+    };
+    assert.equal(fixtureManifest.schemaVersion, 1, "the licensed memory-fixture manifest version is supported");
+    const registeredExcerpts = fixtureManifest.songs.flatMap((song) =>
+      song.excerpts.map((excerpt) => ({ song, excerpt })),
+    );
+    const inputs = paths.map((path) => {
+      const absolutePath = resolve(path);
+      const workspaceRelativePath = resolve(workspaceRoot, path);
+      const registered = registeredExcerpts.find(({ excerpt }) => {
+        const excerptPath = resolve(workspaceRoot, excerpt.path);
+        return excerptPath === absolutePath || excerptPath === workspaceRelativePath;
+      });
+      assert.ok(
+        registered,
+        `changing-memory input ${path} must match a source-attributed excerpt in the checked-in fixture manifest`,
+      );
+      return registered;
+    });
+    assert.equal(
+      new Set(inputs.map(({ excerpt }) => excerpt.path)).size,
+      inputs.length,
+      "each changing-memory job uses a different documented excerpt",
+    );
+    const selectedSongs = [...new Map(inputs.map(({ song }) => [song.id, song])).values()];
+    assert.ok(selectedSongs.length >= 3, "the changing excerpts come from at least three separate source songs");
+    assert.equal(
+      new Set(selectedSongs.map(({ source }) => source.sha256)).size,
+      selectedSongs.length,
+      "every source song has a distinct documented source SHA-256",
+    );
+    for (const song of selectedSongs) {
+      assert.equal(song.source.license, "CC BY 4.0", `${song.title} has a documented reusable license`);
+      assert.equal(
+        await checksumFile(resolve(workspaceRoot, song.source.path)),
+        song.source.sha256,
+        `${song.title} source audio matches its documented SHA-256`,
+      );
+    }
+    const sources = await Promise.all(inputs.map(async ({ song, excerpt }) => {
+      const source = await createMemoryMeasurementSource(resolve(workspaceRoot, excerpt.path));
+      assert.equal(source.checksum, excerpt.sha256, `${song.title} excerpt matches its documented SHA-256`);
+      return {
+        ...source,
+        song: {
+          id: song.id,
+          title: song.title,
+          artist: song.artist,
+          source: {
+            filename: basename(song.source.path),
+            sha256: song.source.sha256,
+            url: song.source.url,
+            license: song.source.license,
+            licenseUrl: song.source.licenseUrl,
+          },
+        },
+        excerpt: {
+          filename: basename(excerpt.path),
+          sha256: excerpt.sha256,
+          startSeconds: excerpt.startSeconds,
+          durationSeconds: excerpt.durationSeconds,
+        },
+      };
+    }));
     assert.ok(sources.every(({ kind }) => kind === "real"), "every changing input must be a real WAV excerpt");
     assert.equal(
       new Set(sources.map(({ checksum }) => checksum)).size,
@@ -1311,8 +1398,11 @@ if (changingMemoryInputsJson) {
         const memory = await sampleMemory();
         jobReports.push({
           input: {
-            filename: basename(source.path),
-            sha256: source.checksum!,
+            songId: source.song.id,
+            title: source.song.title,
+            artist: source.song.artist,
+            source: source.song.source,
+            excerpt: source.excerpt,
             durationSeconds: Number((source.sampleCount / 44_100).toFixed(2)),
           },
           requestedDevice: job.requestedDevice ?? "unknown",
@@ -1336,12 +1426,6 @@ if (changingMemoryInputsJson) {
         : (postWarmRss[middleIndex - 1]! + postWarmRss[middleIndex]!) / 2;
       const continuedRssGrowth = tailMedianRss - firstSteadyRss;
       const maxContinuedGrowthBytes = 128 * 1024 * 1024;
-      assert.ok(
-        continuedRssGrowth <= maxContinuedGrowthBytes,
-        `RSS continued growing by ${toMiB(continuedRssGrowth)} MiB after warm-up; ` +
-          `allowed ${toMiB(maxContinuedGrowthBytes)} MiB. ` +
-          `Samples: ${jobReports.map(({ postReleaseMemory }) => `${toMiB(postReleaseMemory.rss)} MiB`).join(" → ")}`,
-      );
       const requestedDevices = [...new Set(jobReports.map(({ requestedDevice }) => requestedDevice))];
       const resolvedDevices = [...new Set(jobReports.map(({ resolvedDevice }) => resolvedDevice))];
       assert.equal(requestedDevices.length, 1, "all changing-input jobs use the same requested provider");
@@ -1350,9 +1434,27 @@ if (changingMemoryInputsJson) {
 
       const reportPath = process.env.WAVEYARD_REAL_ORT_CHANGING_MEMORY_REPORT?.trim();
       if (reportPath) {
+        const memoryCounters = ["rss", "heapUsed", "external", "arrayBuffers"] as const;
+        const memoryTrends = Object.fromEntries(memoryCounters.map((field) => {
+          const finalHalfValues = jobReports
+            .slice(warmupJobs)
+            .slice(Math.floor((jobReports.length - warmupJobs) / 2))
+            .map(({ postReleaseMemory }) => postReleaseMemory[field])
+            .sort((left, right) => left - right);
+          const medianIndex = Math.floor(finalHalfValues.length / 2);
+          const finalHalfMedian = finalHalfValues.length % 2 === 1
+            ? finalHalfValues[medianIndex]!
+            : (finalHalfValues[medianIndex - 1]! + finalHalfValues[medianIndex]!) / 2;
+          return [field, {
+            warmupRetentionBytes: jobReports[warmupJobs - 1]!.postReleaseMemory[field] - baseline[field],
+            firstSteadyBytes: jobReports[warmupJobs]!.postReleaseMemory[field],
+            finalHalfMedianBytes: finalHalfMedian,
+            continuedGrowthBytes: finalHalfMedian - jobReports[warmupJobs]!.postReleaseMemory[field],
+          }];
+        }));
         const report = {
-          schemaVersion: 2,
-          benchmark: "changing real excerpts with pinned four-model process memory",
+          schemaVersion: 3,
+          benchmark: "separately sourced real songs with pinned four-model process memory",
           measuredMachine: {
             platform: process.platform,
             osType: osType(),
@@ -1365,6 +1467,16 @@ if (changingMemoryInputsJson) {
           requestedProvider: requestedDevices[0],
           selectedProvider: resolvedDevices[0],
           models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
+          sourceSongs: selectedSongs.map((song) => ({
+            id: song.id,
+            title: song.title,
+            artist: song.artist,
+            sourceFilename: basename(song.source.path),
+            sourceSha256: song.source.sha256,
+            sourceUrl: song.source.url,
+            license: song.source.license,
+            licenseUrl: song.source.licenseUrl,
+          })),
           baselineMemoryBytes: baseline,
           warmupJobs,
           jobs: jobReports,
@@ -1381,6 +1493,7 @@ if (changingMemoryInputsJson) {
             continuedRssGrowthBytes: continuedRssGrowth,
             allowedContinuedGrowthBytes: maxContinuedGrowthBytes,
             continuedGrowthBounded: continuedRssGrowth <= maxContinuedGrowthBytes,
+            memoryCounters: memoryTrends,
             samplingMethod: "per-model worker counters sampled at 500 ms and whole-process RSS independently at 100 ms, plus post-job process.memoryUsage after optional explicit GC and a 150 ms worker-teardown settle",
             explicitGcAvailable: Boolean(forceGc),
           },
@@ -1389,6 +1502,16 @@ if (changingMemoryInputsJson) {
         await mkdir(dirname(resolvedReportPath), { recursive: true });
         await writeFile(resolvedReportPath, `${JSON.stringify(report, null, 2)}\n`);
       }
+
+      // Keep the full counter series even when the memory bound fails; the
+      // report is needed to distinguish one-time warm-up retention from a
+      // continued leak or allocator growth.
+      assert.ok(
+        continuedRssGrowth <= maxContinuedGrowthBytes,
+        `RSS continued growing by ${toMiB(continuedRssGrowth)} MiB after warm-up; ` +
+          `allowed ${toMiB(maxContinuedGrowthBytes)} MiB. ` +
+          `Samples: ${jobReports.map(({ postReleaseMemory }) => `${toMiB(postReleaseMemory.rss)} MiB`).join(" → ")}`,
+      );
 
       t.diagnostic(
         `Pinned four-model changing-input memory run on ${resolvedDevices[0]}: ${sources.length} distinct excerpts ` +
@@ -1400,8 +1523,8 @@ if (changingMemoryInputsJson) {
           `heapUsed ${jobReports.map(({ postReleaseMemory }) => toMiB(postReleaseMemory.heapUsed)).join(" → ")} MiB; ` +
           `external ${jobReports.map(({ postReleaseMemory }) => toMiB(postReleaseMemory.external)).join(" → ")} MiB; ` +
           `arrayBuffers ${jobReports.map(({ postReleaseMemory }) => toMiB(postReleaseMemory.arrayBuffers)).join(" → ")} MiB; ` +
-          `first excerpt active peak RSS per model ${jobReports[0]!.activeModelPasses.map(({ model, activeMemoryPeak }) => `${model}=${toMiB(activeMemoryPeak.peak.rss)} MiB`).join(", ")}; ` +
-          `excerpt SHA-256 values ${sources.map(({ checksum }) => checksum).join(", ")}.`,
+          `source songs ${selectedSongs.map(({ title, source }) => `${title}=${source.sha256}`).join(", ")}; ` +
+          `excerpt SHA-256 values ${sources.map(({ song, excerpt }) => `${song.title}/${excerpt.filename}=${excerpt.sha256}`).join(", ")}.`,
       );
     } finally {
       await harness?.restore();
