@@ -61,6 +61,25 @@ export function chordLabel(event: Pick<HarmonyEvent, "root" | "quality">) {
   return `${event.root}${suffix[event.quality]}`;
 }
 
+/**
+ * Validate against actual decoded audio first, then conservatively crop the
+ * sub-second tail omitted by whole-second source metadata. Never relax the
+ * persisted timeline contract or hide a larger duration discrepancy.
+ */
+export function normaliseHarmonyEventsWithinAudio(
+  input: unknown,
+  decodedDurationMs: number,
+  sourceDurationMs: number,
+): HarmonyEvent[] | null {
+  if (!Number.isSafeInteger(sourceDurationMs) || sourceDurationMs < 0
+    || decodedDurationMs - sourceDurationMs >= 1000) return null;
+  const measured = normaliseHarmonyEvents(input, decodedDurationMs);
+  if (measured === null) return null;
+  const endMs = Math.min(decodedDurationMs, sourceDurationMs);
+  return measured.filter(event => event.startMs < endMs)
+    .map(event => ({ ...event, endMs: Math.min(event.endMs, endMs) }));
+}
+
 export function normaliseHarmonyEvents(input: unknown, durationMs: number): HarmonyEvent[] | null {
   if (!Array.isArray(input) || input.length > 50_000 || !Number.isSafeInteger(durationMs) || durationMs < 0) return null;
   const events: HarmonyEvent[] = [];

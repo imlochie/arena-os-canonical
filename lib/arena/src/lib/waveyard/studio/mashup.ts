@@ -28,7 +28,7 @@ import {
 import type { VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v4";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v5";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -604,7 +604,7 @@ function rankPassagePair(
   const details = features.map((feature) => `${feature.label} similarity ${feature.score.toFixed(3)}`);
   if (vocalChordFit) {
     details.push(
-      `${vocalChordFit.matchedFrames} voiced pitch frames covered ${Math.round(vocalChordFit.coverage * 100)}% by measured bed chords`,
+      `placed vocal body: ${vocalChordFit.matchedFrames} voiced pitch frames covered ${Math.round(vocalChordFit.coverage * 100)}% by measured bed chords (not just the discovery window)`,
     );
   }
   return {
@@ -705,6 +705,43 @@ function rankedPassageEntry(
   const expectedKeyShift = donorKey && bedKey ? semitoneShift(donorKey, bedKey) : null;
   const vocalSpanMs = Math.max(0, body.toMs - body.fromMs) * stretchRatio;
   const baselineVocalCoverageMs = Math.min(vocalSpanMs, Math.max(0, bed.durationMs - baselineEntryMs));
+
+  // A rolling window discovers an offset, but that offset moves the entire
+  // retained vocal body. Score the material we will actually place, rather
+  // than letting four locally consonant seconds speak for the whole song.
+  // Existing measured-chord coverage gates and ranking weights are unchanged.
+  const placementChordFits = new Map<number, VocalChordToneFit | null>();
+  const chordFitForPlacement = (entryMs: number): VocalChordToneFit | null => {
+    if (placementChordFits.has(entryMs)) return placementChordFits.get(entryMs)!;
+    const fit = scoreVocalChordToneFit({
+      vocalFrames: vocalPitchFrames,
+      bedChords: bedHarmonyEvents,
+      donorStartMs: body.fromMs,
+      donorEndMs: Math.min(body.toMs, Math.floor(body.fromMs + (bed.durationMs - entryMs) / stretchRatio)),
+      bedStartMs: entryMs,
+      bedEndMs: bed.durationMs,
+      stretchRatio,
+      pitchShiftSemitones: vocalPitchShiftSemitones,
+    });
+    // Cache offsets, not section-pair identities: many overlapping windows
+    // propose exactly the same placement. Bound retention on very long songs.
+    if (placementChordFits.size >= 1024) placementChordFits.delete(placementChordFits.keys().next().value!);
+    placementChordFits.set(entryMs, fit);
+    return fit;
+  };
+  const rankAtEntry = (
+    comparison: ReturnType<typeof comparePassageCompatibility>,
+    donorFingerprint: PassageFingerprint,
+    bedFingerprint: PassageFingerprint,
+    entryMs: number,
+  ) => {
+    const args = [comparison, donorFingerprint, bedFingerprint, donorBpm, bedBpm,
+      tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2] as const;
+    const base = rankPassagePair(...args, null);
+    if (!base) return null; // Do not scan a whole vocal for an unrankable pair.
+    const fit = chordFitForPlacement(entryMs);
+    return fit ? rankPassagePair(...args, fit) : base;
+  };
 
   const bedPassages = bed.sections.filter((section) =>
     section.passageFingerprint
@@ -828,26 +865,6 @@ function rankedPassageEntry(
               donorKeyTrusted: donorKey !== null,
               expectedKeyShift,
             });
-            const vocalChordFit = scoreVocalChordToneFit({
-              vocalFrames: vocalPitchFrames,
-              bedChords: bedHarmonyEvents,
-              donorStartMs: donorWindowStartMs,
-              donorEndMs: donorWindowEndMs,
-              bedStartMs: bedWindowStartMs,
-              bedEndMs: bedWindowEndMs,
-              stretchRatio,
-              pitchShiftSemitones: vocalPitchShiftSemitones,
-            });
-            const ranking = rankPassagePair(
-              comparison,
-              localDonorFingerprint,
-              localBedFingerprint,
-              donorBpm,
-              bedBpm,
-              tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
-              vocalChordFit,
-            );
-            if (!ranking) continue;
             const donorWindowOffsetMs = (donorWindowStartMs - body.fromMs) * stretchRatio;
             const entryMs = Math.round(bedWindowStartMs - donorWindowOffsetMs);
             if (entryMs < 0) {
@@ -861,6 +878,13 @@ function rankedPassageEntry(
               sectionContentLossCount += 1;
               continue;
             }
+            const ranking = rankAtEntry(
+              comparison,
+              localDonorFingerprint,
+              localBedFingerprint,
+              entryMs,
+            );
+            if (!ranking) continue;
             const onsetOffsets = phrases.map((phrase) => phrase.startMs - body.fromMs);
             const transientScore = onsetOffsets.length >= MIN_VOICE_RUNS_FOR_TRANSIENT_TIEBREAK
               ? scoreEntryAgainstTransients(entryMs, onsetOffsets, stretchRatio, bed.drumEvents ?? [], bed.bassEvents ?? []).score
@@ -909,36 +933,6 @@ function rankedPassageEntry(
         donorKeyTrusted: donorKey !== null,
         expectedKeyShift,
       });
-      const vocalChordFit = scoreVocalChordToneFit({
-        vocalFrames: vocalPitchFrames,
-        bedChords: bedHarmonyEvents,
-        donorStartMs: donorSection.startMs,
-        donorEndMs: donorSection.endMs,
-        bedStartMs: bedSection.startMs,
-        bedEndMs: bedSection.endMs,
-        stretchRatio,
-        pitchShiftSemitones: vocalPitchShiftSemitones,
-      });
-      const ranking = rankPassagePair(
-        comparison,
-        donorFingerprint,
-        bedSection.passageFingerprint,
-        donorBpm,
-        bedBpm,
-        tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2,
-        vocalChordFit,
-      );
-      if (!ranking) {
-        if (comparison.dimensions.phraseAlignment.status === "conflict") {
-          phraseLengthMismatchCount += 1;
-          sectionPhraseLengthMismatchCount += 1;
-        } else {
-          missingCoreEvidenceCount += 1;
-          sectionMissingCoreEvidenceCount += 1;
-        }
-        continue;
-      }
-
       // Align this whole-track offset to the bed passage, so later verses/hooks
       // are evaluated without discarding the vocal material before them.
       const donorPassageOffsetMs = (donorSection.startMs - body.fromMs) * stretchRatio;
@@ -952,6 +946,22 @@ function rankedPassageEntry(
       if (candidateCoverageMs < baselineVocalCoverageMs - 1) {
         contentLossCount += 1;
         sectionContentLossCount += 1;
+        continue;
+      }
+      const ranking = rankAtEntry(
+        comparison,
+        donorFingerprint,
+        bedSection.passageFingerprint,
+        entryMs,
+      );
+      if (!ranking) {
+        if (comparison.dimensions.phraseAlignment.status === "conflict") {
+          phraseLengthMismatchCount += 1;
+          sectionPhraseLengthMismatchCount += 1;
+        } else {
+          missingCoreEvidenceCount += 1;
+          sectionMissingCoreEvidenceCount += 1;
+        }
         continue;
       }
 

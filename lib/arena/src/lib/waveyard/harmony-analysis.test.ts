@@ -6,12 +6,33 @@ import {
   harmonyPitchClasses,
   normaliseChordRoot,
   normaliseHarmonyEvents,
+  normaliseHarmonyEventsWithinAudio,
   harmonyAnalysisIdempotencyKey,
   HARMONY_ANALYSIS_ENGINE,
   HARMONY_ANALYSIS_ENGINE_VERSION,
 } from "./types/harmony-analysis";
 
 describe("deterministic source-relative harmony analysis", () => {
+  it("retains real harmony when decoded audio has a fractional-second metadata tail", () => {
+    const measured = [
+      { startMs: 0, endMs: 2_000, root: "C", quality: "major", confidence: 0.05 },
+      { startMs: 2_000, endMs: 4_137, root: "F", quality: "major", confidence: 0.06 },
+    ];
+    expect(normaliseHarmonyEvents(measured, 4_000)).toBeNull();
+    expect(normaliseHarmonyEventsWithinAudio(measured, 4_137, 4_000)).toEqual([
+      measured[0], { ...measured[1], endMs: 4_000 },
+    ]);
+    expect(normaliseHarmonyEventsWithinAudio(measured, 4_137, 5_000)).toEqual(measured);
+    expect(measured[1].endMs).toBe(4_137);
+  });
+
+  it("does not crop away corrupt analysis or larger source/stem duration mismatches", () => {
+    const event = { startMs: 0, endMs: 4_500, root: "C", quality: "major", confidence: 0.05 };
+    expect(normaliseHarmonyEventsWithinAudio([event], 4_137, 4_000)).toBeNull();
+    expect(normaliseHarmonyEventsWithinAudio([event], 4_500, 3_000)).toBeNull();
+    expect(normaliseHarmonyEventsWithinAudio([event], Number.NaN, 4_000)).toBeNull();
+  });
+
   it("normalizes canonical roots and compact chord labels", () => {
     expect(normaliseChordRoot("Db")).toBe("C#");
     expect(normaliseChordRoot("H")).toBeNull();

@@ -847,6 +847,73 @@ test("plan: measured vocal notes rank the chord-fitting local bed window without
     "the new relative cue must not be described as verified arrangement quality");
 });
 
+for (const rolling of [true, false]) {
+  test(`plan: ${rolling ? "rolling" : "section"} discovery scores later vocals, not only the locally fitting opening`, () => {
+    const donorHash = "d".repeat(64);
+    const bedHash = "b".repeat(64);
+    const vocalFrames = Array.from({ length: 72 }, (_, index) => ({
+      timestampMs: 250 + index * 100,
+      frequencyHz: 261.625565,
+      midiFloat: 60,
+      nearestMidiNote: 60,
+      confidence: 0.95,
+      voiced: true,
+    }));
+    const makeSection = (id: string, startMs: number, hash: string): MashupSection => ({
+      id, label: "section", startMs, endMs: startMs + 4_000,
+      startBeatIndex: startMs / 500, endBeatIndex: startMs / 500 + 8,
+      passageFingerprint: passageFingerprint(
+        hash, startMs / 500, startMs / 500 + 8, "compatible", 500,
+        rolling ? [rollingWindow(startMs / 500, startMs / 500 + 8)] : [],
+      ),
+    });
+    const vocals = profile({
+      role: "vocals", sourceChecksumSha256: donorHash, durationMs: 8_000,
+      beatGridMs: Array.from({ length: 17 }, (_, i) => i * 500),
+      beatConfidence: 0.95,
+      sections: [makeSection("donor-opening", 0, donorHash), section("section", 4_000, 8_000)],
+      vocalPhrases: [
+        { startMs: 250, endMs: 3_450, confidence: 0.95 },
+        { startMs: 4_250, endMs: 7_450, confidence: 0.95 },
+      ],
+      vocalPitchFrames: vocalFrames,
+    });
+    const bed = profile({
+      sourceChecksumSha256: bedHash, durationMs: 20_000,
+      beatGridMs: Array.from({ length: 41 }, (_, i) => i * 500),
+      beatConfidence: 0.95,
+      sections: [makeSection("misleading-opening", 0, bedHash), makeSection("sustained-support", 8_000, bedHash)],
+      harmonyEvents: [
+        { startMs: 0, endMs: 4_000, root: "C", quality: "major", confidence: 0.05 },
+        { startMs: 4_000, endMs: 8_000, root: "F#", quality: "major", confidence: 0.05 },
+        { startMs: 8_000, endMs: 20_000, root: "C", quality: "major", confidence: 0.05 },
+      ],
+    });
+    const result = planMashup(vocals, bed);
+    assert.ok(result.ok);
+    assert.equal(result.plan.passageSearch?.selectedBedSectionId, "sustained-support");
+    const ranking = result.plan.passageSearch?.evaluations.find(item => item.selected)?.rankedBedCandidates;
+    assert.equal(ranking?.[0]?.similarities.vocalChordFit, 1);
+    assert.ok((ranking?.[1]?.similarities.vocalChordFit ?? 1) < 0.6,
+      "later unsupported notes remain visible even though both discovery windows fit perfectly");
+    assert.equal(result.plan.segments[0]?.mashupStartMs, 8_000);
+    assert.equal(result.plan.segments[0]?.vocalsFromMs, 0);
+    assert.equal(result.plan.segments.at(-1)?.vocalsToMs, 7_700, "both vocal runs are retained");
+    const rendered = renderMashup(result.plan, {
+      vocals: new Float32Array(8 * 8_000 * 2).fill(0.2),
+      bed: new Float32Array(20 * 8_000 * 2),
+      sampleRate: 8_000,
+    });
+    assert.equal(rendered.subarray(0, 8 * 8_000 * 2).some(value => value !== 0), false,
+      "the actual renderer uses the improved placement, not the old opening");
+    assert.ok(rendered.subarray(9 * 8_000 * 2, 10 * 8_000 * 2).some(value => value > 0.01));
+    const fallback = planMashup({ ...vocals, vocalPitchFrames: undefined }, { ...bed, harmonyEvents: undefined });
+    assert.ok(fallback.ok, "missing pitch/chord observations never block generation");
+    assert.equal(fallback.plan.passageSearch?.selectedBedSectionId, "misleading-opening",
+      "without evidence the earlier deterministic ordering is preserved");
+  });
+}
+
 test("vocal-to-chord fit applies the planned transposition before comparing pitch classes", () => {
   const vocalFrames = Array.from({ length: 10 }, (_, index) => {
     const nearestMidiNote = [60, 64, 67][index % 3]!;

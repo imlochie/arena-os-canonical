@@ -501,12 +501,16 @@ test(
     assert.ok(vocalsStemRow);
 
     if (realFixture && vocalsStemRow) {
-      const [{ decodeMonoPcm, detectVocalPitchFrames }, vocalTypes] = await Promise.all([
+      const [{ decodeMonoPcm, detectVocalPitchFrames, ANALYSIS_PCM_RATE }, vocalTypes] = await Promise.all([
         import("@workspace/arena/lib/waveyard/worker-local/analysis-engine"),
         import("@workspace/arena/lib/waveyard/types/vocal-analysis"),
       ]);
       const analysisPcm = await decodeMonoPcm(vocalsStemPath);
-      const phrases = vocalTypes.segmentVocalPhrases(detectVocalPitchFrames(analysisPcm))
+      const pitchFrames = vocalTypes.normaliseVocalPitchFrames(
+        detectVocalPitchFrames(analysisPcm), Math.floor(analysisPcm.length * 1000 / ANALYSIS_PCM_RATE),
+      );
+      assert.ok(pitchFrames, "real separated vocals must yield valid pitch observations");
+      const phrases = vocalTypes.segmentVocalPhrases(pitchFrames)
         .filter((phrase) => phrase.endMs > phrase.startMs && phrase.confidence >= 0.5);
       assert.ok(phrases.length > 0, "real separated vocals must yield at least one confidence-qualified voiced phrase");
       realPitchContinuityRuns = phrases.map(({ startMs, endMs, confidence }) => ({
@@ -543,6 +547,15 @@ test(
       }).returning({ id: schema.vocalAnalyses.id });
       assert.ok(vocalAnalysis);
       realVocalAnalysisId = vocalAnalysis.id;
+      // Exercise the same persisted observations as the production vocal worker,
+      // not just its phrase summary. Otherwise harmonic ranking is never used.
+      for (let offset = 0; offset < pitchFrames.length; offset += 500) {
+        await dbModule.db.insert(schema.vocalPitchFrames).values(
+          pitchFrames.slice(offset, offset + 500).map((frame, index) => ({
+            vocalAnalysisId: vocalAnalysis.id, frameIndex: offset + index, ...frame,
+          })),
+        );
+      }
       await dbModule.db.insert(schema.vocalPhrases).values(phrases.map((phrase, phraseIndex) => ({
         vocalAnalysisId: vocalAnalysis.id,
         phraseIndex,
@@ -829,6 +842,30 @@ test(
       };
     };
     if (realFixture) {
+      const [{ handleStemHarmonyAnalysisJob }, harmonyTypes] = await Promise.all([
+        import("@workspace/arena/lib/waveyard/worker-local/stem-analysis"),
+        import("@workspace/arena/lib/waveyard/types/stem-harmony-analysis"),
+      ]);
+      const [otherStem] = await dbModule.db.select().from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.separationJobId, bedJob.id), eq(schema.stemAssets.stemType, "other"),
+      ));
+      assert.ok(otherStem);
+      const [harmonyJob] = await dbModule.db.insert(schema.stemHarmonyAnalyses).values({
+        projectId: project.id, sourceAssetId: bedSource.id, stemAssetId: otherStem.id,
+        status: "queued", stage: "queued",
+        idempotencyKey: harmonyTypes.stemHarmonyAnalysisIdempotencyKey(otherStem.id),
+        sourceChecksumSha256: sha256(bedOriginal), stemChecksumSha256: otherStem.checksumSha256,
+        analysisEngine: harmonyTypes.LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+        analysisEngineVersion: harmonyTypes.LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+      }).returning();
+      assert.ok(harmonyJob);
+      await handleStemHarmonyAnalysisJob({
+        stemHarmonyAnalysisId: harmonyJob.id, projectId: project.id, sourceAssetId: bedSource.id,
+        stemAssetId: otherStem.id, analysisEngine: harmonyJob.analysisEngine,
+        analysisEngineVersion: harmonyJob.analysisEngineVersion,
+      }, { db: dbModule.db, storage });
+      assert.equal((await dbModule.db.select().from(schema.stemHarmonyAnalyses)
+        .where(eq(schema.stemHarmonyAnalyses.id, harmonyJob.id)))[0]?.status, "complete");
       // The first plan decodes and persists full-track analysis. Run the
       // existing durable section worker on those exact original files, then
       // plan again so the production loader and planner consume the persisted
@@ -898,6 +935,20 @@ test(
           sectionCount: rows.length,
           fingerprintCount: rows.filter((row) => row.passageFingerprint !== null).length,
         });
+      }
+      const profileReportPath = process.env.WAVEYARD_MASHUP_PROFILE_REPORT_PATH?.trim();
+      if (profileReportPath) {
+        const { loadSourceProfile } = await import("@workspace/arena/lib/waveyard/studio/mashup-sources");
+        const vocalsProfile = await loadSourceProfile(project.id, vocalsSource.id, "vocals", dbModule.db, { separationJobId: vocalsJob.id });
+        const bedProfile = await loadSourceProfile(project.id, bedSource.id, "instrumental", dbModule.db, { separationJobId: bedJob.id });
+        assert.ok(vocalsProfile?.vocalPitchFrames?.length, "real pitch observations reach the planner profile");
+        assert.ok(bedProfile?.harmonyEvents?.length, "real bed chord observations reach the planner profile");
+        const output = realFixturePath(profileReportPath);
+        await mkdir(path.dirname(output), { recursive: true });
+        await writeFile(output, JSON.stringify({
+          evidence: "real separated audio, existing production analyzers and persisted profile loader; not human ground truth",
+          vocals: vocalsProfile, bed: bedProfile,
+        }));
       }
       realSectionPassageEvidence = {
         vocals: sectionResults[0]!,
@@ -970,8 +1021,16 @@ test(
         const rankedPassages = planBody.plan.passageSearch.evaluations.filter(
           (evaluation) => (evaluation.rankedBedCandidates?.length ?? 0) > 0,
         );
-        assert.ok(rankedPassages.length > 0,
-          "the production API must expose the feasible bed rankings used by the whole-track evaluation");
+        assert.equal(rankedPassages.length, planBody.plan.passageSearch.rankableDonorPassageCount,
+          "the production API must expose every feasible ranking, without inventing one for missing evidence");
+        if (rankedPassages.length === 0) {
+          assert.equal(planBody.plan.passageSearch.selectedDonorSectionId, null);
+          assert.equal(planBody.plan.passageSearch.selectedBedSectionId, null);
+          assert.ok(planBody.plan.passageSearch.evaluations.every(evaluation => !evaluation.selected),
+            "an evidence-limited fallback must not claim a selected passage");
+          assert.match(JSON.stringify(planBody.plan), /fallback/,
+            "absence of comparable passages must be explained instead of blocking the real render/export");
+        }
         for (const evaluation of rankedPassages) {
           const rankedCandidates = evaluation.rankedBedCandidates!;
           assert.deepEqual(

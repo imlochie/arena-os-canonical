@@ -55,4 +55,10 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **Why:** The user’s multi-step prompt makes whole-song, arbitrary-pair mashup production the goal. Analysis, section labels, phrase timing, swaps, arrangement, and exports are successive parts of that workflow—not independent endpoints or prerequisites that can block creation.
 
-**How to apply:** Keep semantic labels, measured structural events, and vocal timing as separate evidence. A snap may use real phrase/activity points or measured beat/section boundaries, but must say what signal it used and fall back honestly when evidence is missing. Judge progress by whether the complete rendered result is more useful and remains editable after reopening, not by added labels or passing synthetic tests alone.
+**How to apply:** Keep semantic labels, measured structural events, and vocal timing as separate evidence. A snap may use real phrase/activity points or measured beat/section boundaries, but must say what signal it used and fall back honestly when evidence is missing. Judge progress by whether the complete rendered result is more useful and remains editable after reopening, not by added labels or passing synthetic tests alone. Evaluate a proposed placement over the material it actually renders: a locally fitting discovery window is not evidence that the rest of a moved vocal body fits.
+
+**Intelligence-upgrade scope:** Prioritize one independently actionable musical weakness at a time, connect its evidence to actual production decisions, and compare before/after behavior. More UI controls, confidence fields, evaluation infrastructure or speculative semantic labels are not substitutes for better musical decisions.
+
+**Why:** The user explicitly requested meaningful musical intelligence and audible results, not another detector or UI redesign, while preserving arbitrary-song generation and honest uncertainty.
+
+**How to apply:** Reuse current analyzers, persisted provenance, planners and renderers. Keep unit, synthetic, real-song analytical, rendered-signal and independent listening evidence separate; do not introduce heavyweight dependencies without demonstrated practical value.

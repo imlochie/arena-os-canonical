@@ -374,7 +374,9 @@ test("separated backing harmony is computed from persisted stem PCM and restart-
     const db = drizzle(client) as unknown as NonNullable<Parameters<typeof handleStemHarmonyAnalysisJob>[1]>["db"];
     const storage = new LocalStorageProvider(join(root, "storage"));
     const [project] = await db.insert(projects).values({ ownerId: randomUUID(), title: "Stem harmony" }).returning();
-    const audio = stereoWav(chordSource());
+    const fractionalPcm = new Float32Array(Math.round(RATE * 4.137));
+    fractionalPcm.set(chordSource());
+    const audio = stereoWav(fractionalPcm);
     const audioPath = join(root, "other.wav");
     await writeFile(audioPath, audio);
     const checksum = createHash("sha256").update(audio).digest("hex");

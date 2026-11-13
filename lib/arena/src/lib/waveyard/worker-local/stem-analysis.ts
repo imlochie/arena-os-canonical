@@ -31,12 +31,11 @@ import {
 } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import {
   harmonyAnalysisProvenanceReason, LOCAL_HARMONY_ANALYSIS_ENGINE,
-  LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION, normaliseHarmonyEvents,
+  LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION, normaliseHarmonyEventsWithinAudio,
 } from "@workspace/arena/lib/waveyard/types/harmony-analysis";
 import {
   LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
   LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
-  normaliseStemHarmonyEvents,
   stemHarmonyAnalysisProvenanceReason,
 } from "@workspace/arena/lib/waveyard/types/stem-harmony-analysis";
 import {
@@ -318,7 +317,9 @@ export async function handleHarmonyAnalysisJob(payloadInput: Record<string, unkn
     const pcm = await decode(inputPath);
     if (pcm.length < 2_205) throw new Error("Source audio is too short for harmony analysis.");
     const raw = detectHarmonyTimeline(pcm);
-    const events = normaliseHarmonyEvents(raw, Math.round(source.durationSeconds * 1000));
+    const events = normaliseHarmonyEventsWithinAudio(
+      raw, Math.round(pcm.length * 1000 / ANALYSIS_PCM_RATE), Math.round(source.durationSeconds * 1000),
+    );
     if (events === null) throw new Error("The local DSP engine returned invalid harmony events.");
     const analyzedAt = new Date();
     await database.transaction(async (tx) => {
@@ -419,7 +420,10 @@ export async function handleStemHarmonyAnalysisJob(payloadInput: Record<string, 
     }
     const pcm = await decode(inputPath);
     if (pcm.length < 2_205) throw new Error("The separated harmonic stem is too short for chord analysis.");
-    const events = normaliseStemHarmonyEvents(detectHarmonyTimeline(pcm), Math.round(source.durationSeconds * 1000));
+    const events = normaliseHarmonyEventsWithinAudio(
+      detectHarmonyTimeline(pcm), Math.round(pcm.length * 1000 / ANALYSIS_PCM_RATE),
+      Math.round(source.durationSeconds * 1000),
+    );
     if (events === null) throw new Error("The local DSP engine returned invalid stem-harmony events.");
     const analyzedAt = new Date();
     await database.transaction(async (tx) => {

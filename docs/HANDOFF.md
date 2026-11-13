@@ -1,5 +1,72 @@
 # Arena handoff — read this first
 
+## Current musical-intelligence change — score the vocal material actually placed
+
+Starting checkout was clean at `868ebec6` on
+`jules-2321982355158174303-7f554415`, matching its remote. No branch switch,
+history rewrite, PR merge, new model dependency or UI redesign was performed.
+
+**Production path inspected:** decoded source PCM → existing source/section
+analysis and rolling fingerprints → persisted current source/stem analysis →
+`studio/mashup-sources.ts` (checksum/separation-bound vocal pitch observations,
+voiced runs and backing chord events) → `studio/mashup.ts` ranking/plan →
+existing mashup route render and persisted Studio arrangement/export.
+Structural windows remain distinct from semantic form and lyric phrases.
+
+**Implemented:**
+* Planner v5 scores vocal-to-chord agreement over the entire audible vocal body
+  that each candidate offset would place, not only the short window that
+  discovered the offset. This changes both rolling-window and section discovery.
+  Original ranking weights, confidence gates, tempo/key protections and
+  missing-evidence fallback are unchanged. Repeated offsets share a bounded
+  cache; unrankable feature pairs do not trigger whole-body scans.
+* A real separated-song run exposed a separate evidence-loss bug: the harmony
+  workers rejected a complete timeline when decoded duration exceeded rounded
+  source metadata by a fraction of a second. Both harmonic workers now validate
+  against decoded audio first, conservatively crop only that sub-second tail
+  to the existing source timeline, and still reject corrupt observations or
+  discrepancies of a second or more. Original audio is never changed.
+* The existing real-route fixture now persists actual vocal pitch observations
+  and runs the existing isolated-backing harmony worker. Previously it saved
+  voiced runs alone and did not exercise this harmonic decision path. An optional
+  `WAVEYARD_MASHUP_PROFILE_REPORT_PATH` exports the actual persisted profiles for
+  comparison, without introducing another analyzer/evaluation system.
+
+**Evidence, kept separate:**
+* Controlled known-note regression: both discovery paths previously chose the
+  locally fitting opening at 0ms despite later harmonic disagreement. Both now
+  choose the sustained-support placement at 8000ms, retain both vocal runs and
+  render at that placement. The exact new regressions fail against the starting
+  planner and pass against v5. Missing observations retain the original choice.
+* Real September separated backing: decoded **215137ms**, metadata **215000ms**.
+  The old validator rejected all **108** windows; the corrected worker retains
+  108 bounded windows, **36** with accepted chord estimates. The real persisted
+  Queen vocal profile carries **7438** pitch frames. These are analyzer
+  observations, not independently verified notes/chords.
+* On that real pair, v4 and v5 both retain the **279ms** fallback entry and
+  **zero rankable passages**. Queen's confidence-limited passage features still
+  prevent an evidence-backed match. There is **no demonstrated audible
+  improvement on this pair**. No gate was lowered to fabricate one.
+* The full real PostgreSQL route acceptance passes: plan/render → save/reopen →
+  edit/restore/export, using existing separated recordings. Output was **215s,
+  stereo 44.1kHz**, peak **0.432434**, RMS **0.037937**, **0 clipped frames**.
+  This is signal/persistence evidence, not a listening-quality result. Its old
+  unconditional “at least one ranked passage” assertion was replaced with
+  accounting plus explicit no-selection/fallback checks when evidence yields none.
+* Other checks: planner **32/32**; full-length/regression/bed **19/19**;
+  harmony and persisted stem-worker **7/7**; API TypeScript check passed.
+  The first real runs exposed the harmony failure and the invalid assumption
+  that a real recording must yield a candidate; only the final run passed.
+  Reports remain local/ignored under
+  `generated-artifacts/waveyard-real-world-acceptance/full-placement-*.json`.
+
+**Next highest-value work:** investigate why the real Queen route produces
+zero-confidence passage features, measuring local beat/feature reliability
+without authorizing untrusted stretching. After that, complete independently
+reviewed phrase/form validation and rendered masking/phrase-continuity checks.
+Semantic verse/chorus accuracy, general musical quality, and Stem.fm parity
+remain unproven; this is a focused upgrade, not completion of the entire brief.
+
 ## Current verification — alternative live vocal entries
 
 * The vocal source picker keeps its existing one-tap swap and now offers
