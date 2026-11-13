@@ -206,6 +206,7 @@ function startSourceIngestProcess(
   projectId: string,
   filePath: string,
   storageDir: string,
+  failureMode?: "after-commit" | "before-commit",
 ): ChildProcess & { send(message: unknown): boolean } {
   const importFlagIndex = process.execArgv.findIndex((arg, index, args) =>
     arg === "--import" && args[index + 1]?.includes("tsx/dist/loader.mjs"));
@@ -226,6 +227,7 @@ function startSourceIngestProcess(
       WAVEYARD_STORAGE_DIR: storageDir,
       SOURCE_INGEST_TEST_PROJECT_ID: projectId,
       SOURCE_INGEST_TEST_FILE_PATH: filePath,
+      ...(failureMode ? { SOURCE_INGEST_TEST_FAILURE_MODE: failureMode } : {}),
     },
     stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
@@ -582,6 +584,69 @@ test("source cleanup on another API connection preserves a concurrent committed 
     await cleanupPromise?.catch(() => undefined);
     await cleanupPool.end();
     await observer.end();
+    await f.close();
+    await pg.close();
+  }
+});
+
+test("source upload error cleanup preserves committed objects and removes rolled-back uploads across API processes", async (t) => {
+  const pg = await independentRecoveryPostgres(t);
+  if (!pg) return;
+
+  const f = await fixture();
+  const storage = getStorage();
+  const children: ChildProcess[] = [];
+  try {
+    const [project] = await pg.database
+      .insert(projects)
+      .values({ ownerId: randomUUID(), title: "Ambiguous source upload" })
+      .returning();
+    const storageRoot = path.resolve(storage.getLocalPath(privateObjectKey(project.id, "source", "wav"))!, "..", "..", "..", "..");
+
+    const committedUpload = startSourceIngestProcess(
+      pg.connectionString,
+      project.id,
+      f.sourcePath,
+      storageRoot,
+      "after-commit",
+    );
+    children.push(committedUpload);
+    const committedFailure = await waitForRecoveryMessage(committedUpload, "failed");
+    await waitForRecoveryProcessExit(committedUpload);
+    const committedKey = String(committedFailure.key);
+    assert.equal(String(committedFailure.message), "SOURCE_INGEST_TEST_FORCED_FAILURE_AFTER_COMMIT");
+    assert.equal(await storage.exists(committedKey), true, "an upload with a committed source row survives ambiguous failure cleanup");
+    const [committedSource] = await pg.database
+      .select()
+      .from(sourceAssets)
+      .where(eq(sourceAssets.storageKey, committedKey));
+    assert.ok(committedSource, "the source row committed before the request reported failure");
+
+    const rolledBackUpload = startSourceIngestProcess(
+      pg.connectionString,
+      project.id,
+      f.sourcePath,
+      storageRoot,
+      "before-commit",
+    );
+    children.push(rolledBackUpload);
+    const rolledBackFailure = await waitForRecoveryMessage(rolledBackUpload, "failed");
+    await waitForRecoveryProcessExit(rolledBackUpload);
+    const rolledBackKey = String(rolledBackFailure.key);
+    assert.equal(String(rolledBackFailure.message), "SOURCE_INGEST_TEST_FORCED_FAILURE_BEFORE_COMMIT");
+    assert.equal(await storage.exists(rolledBackKey), false, "an upload whose transaction rolled back is cleaned up");
+    const [rolledBackSource] = await pg.database
+      .select()
+      .from(sourceAssets)
+      .where(eq(sourceAssets.storageKey, rolledBackKey));
+    assert.equal(rolledBackSource, undefined, "the rolled-back upload has no source row");
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.send({ type: "release" });
+        await waitForRecoveryProcessExit(child).catch(() => undefined);
+      }
+    }
     await f.close();
     await pg.close();
   }
