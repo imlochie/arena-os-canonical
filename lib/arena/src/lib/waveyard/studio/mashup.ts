@@ -1232,6 +1232,8 @@ const ARRANGEMENT_MAX_UNITS = 120;
 const ARRANGEMENT_UNIT_MERGE_GAP_MS = 750;
 const ARRANGEMENT_MIN_UNIT_MS = 150;
 const ARRANGEMENT_MAX_SLOTS = 600;
+/** One percentage point is the maximum phase-fit regression or minimum gain used in the trade-off. */
+const PAIRED_BEAT_PHASE_SCORE_MARGIN = 0.01;
 
 type ArrangementUnit = {
   fromMs: number;
@@ -1592,7 +1594,7 @@ function planArrangement(
       : null;
     const candidatePhaseSafe = baselineBeatPhaseFit === null
       || (candidateBeatPhaseFit !== null
-        && candidateBeatPhaseFit.score >= baselineBeatPhaseFit.score - 0.01);
+        && candidateBeatPhaseFit.score >= baselineBeatPhaseFit.score - PAIRED_BEAT_PHASE_SCORE_MARGIN);
     const phasePreferred = candidateBeatPhaseFit !== null
       && coherentBeatPhaseFit !== null
       && candidateBeatPhaseFit.score > coherentBeatPhaseFit.score + 1e-6;
@@ -1621,7 +1623,7 @@ function planArrangement(
   const contextImproved = coherentScore - overlayScore > contextImprovementThreshold;
   const pairedPhaseImproved = baselineBeatPhaseFit !== null
     && coherentBeatPhaseFit !== null
-    && coherentBeatPhaseFit.score > baselineBeatPhaseFit.score + 0.01;
+    && coherentBeatPhaseFit.score > baselineBeatPhaseFit.score + PAIRED_BEAT_PHASE_SCORE_MARGIN;
   const contextNotMateriallyWorse = coherentScore - overlayScore >= -contextImprovementThreshold;
   const alignmentAccepted = baselineBeatPhaseFit === null
     ? contextImproved

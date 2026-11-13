@@ -1,56 +1,58 @@
 # Arena handoff — read this first
 
-## Current: coherent, tempo-locked full-track mix (planner v9)
+## Current: paired-drum-grid whole-body alignment (planner v10)
 
-The latest real-track iteration fixes the failure reported in the prior listen:
-the segmented plan could land individual fragments on beats while compressing
-long donor pauses, making the vocal feel sporadic. Planner v9 now tests
-whole-body offsets. One measured beat anchors the first voice-active window;
-every later window stays at its original donor-relative time under one global
-tempo ratio. The output remains one continuous vocal clip, so no activity
-window is cut, independently relocated, reordered, or dropped.
+The planner now compares timing from both songs instead of snapping vocal
+activity to the bed alone. When both checksum-current, completed drum stems
+produce trusted beat grids, it maps donor drum beats into the bed using the
+tempo stretch, tests whole-body offsets, and reports how many donor beats land
+within 90 ms of a bed beat. It prefers candidates that do not worsen the
+original paired-grid fit by more than one percentage point; a phase gain over
+one point can justify a small contextual-score trade-off. The vocal remains one
+continuous clip; internal pauses and phrase timing are not independently moved,
+cut, reordered, or dropped. Without two trusted grids, the existing safe
+fallback remains and the plan says the paired check was unavailable.
 
-The production route also checks the latest completed separation for both
-tracks. It uses a separated drum stem for BPM/beat-grid evidence only when the
-job's recorded source checksum still matches the source, the stored stem bytes
-match their checksum, the full-length WAV is 44.1 kHz stereo, and analysis
-confidence clears the existing trust threshold. This measurement is marked
-request-time separated-stem evidence; it does not overwrite or masquerade as
-full-mix `source_analyses`. Low-confidence or stale evidence keeps the prior
-safe behavior.
+The route keeps BPM and beat-grid evidence together from the same isolated drum
+stem when both values pass trust checks. Otherwise it falls back to the
+existing per-feature confidence selection. Evidence remains request-time and
+checksum-bound; it does not overwrite full-mix `source_analyses`.
 
-On Queen's *Another One Bites the Dust* vocals over Earth, Wind & Fire's
-*September* instrumental stems, isolated drums measured Queen at 109.957 BPM
-(confidence 0.737) and September at 126.048 BPM (confidence 0.891). The planner
-therefore applies a pitch-preserving WSOLA ratio of 0.87234 and shifts the
-entire vocal body to 21.098 s as one clip. All 44 coarse voice-activity windows
-remain in one source-relative timing map. The relative placement scores
-(21.598 vs 20.268) are uncalibrated ranking values, not a listening-quality
-metric.
+Real full-track check: Queen's *Another One Bites the Dust* vocals over Earth,
+Wind & Fire's *September* separated bed. The isolated drum stems measured
+109.957 BPM (confidence 0.737) and 126.048 BPM (confidence 0.891); WSOLA retains
+the planned 0.87234× pitch-preserving tempo ratio. The paired-grid offset moved
+the full vocal body to 20.573 s as one clip, retaining all 44 coarse
+voice-activity windows. On this pair, 200/335 donor beats (59.7%) land within
+90 ms of a bed beat, versus 163/335 (48.7%) at the previous continuous entry;
+mean nearest-beat error fell from 96.2 ms to 87.0 ms. This is a measured
+improvement, not perfect synchronization. The contextual score was 19.85 versus
+20.27 at the old entry (about 2.1% lower), within the planner's explicit
+trade-off bound. These scores are uncalibrated and do not measure sound quality.
 
 The full production route completed plan → save → reopen → versioned edit →
 restore → WAV export using the real separated files. The restored Studio
 session contained 4 tracks and 4 clips (one vocal clip plus three bed stems).
-Export: 214.858 s, 44.1 kHz stereo PCM16, 37,901,026 bytes, checksum
-`7245b5a9dfaf3ea3e03b7ac0913e1781a18a7825eeb1b0b78652a71113d855c8`.
-The request-time evidence report is
-`generated-artifacts/waveyard-real-world-acceptance/full-song-route-coherent-tempo.json`;
-the full files remain ignored local artifacts. A listening copy was attached in
-the conversation for the owner to judge.
+The saved export was 214.858 s, 44.1 kHz stereo PCM16, 37,901,026 bytes,
+checksum `52c58a9dae1a93296cd27018fab0e50d4b24fce705dc49ae511aac30cf61b003`.
+The request-time report is
+`generated-artifacts/waveyard-real-world-acceptance/full-song-route-planner-v10-paired-beats.json`;
+generated audio and analysis remain ignored local artifacts.
 
-Verification: **37/37** mashup planner tests; **1/1** full real-stem production
-route including save/reopen/edit/restore/export; `pnpm run typecheck:libs`,
-`pnpm --filter @workspace/api-server run typecheck`,
-`pnpm --filter @workspace/arenaforge run typecheck`, and `git diff --check`
-pass. Tests used a disposable local database; no user or production database
-was modified.
+Verification: **38/38** mashup planner tests, including a synthetic regression
+that verifies preserving a vocal's offbeat phase while aligning the two drum
+grids; **1/1** real full-song production-route test including save/reopen/edit/
+restore/export; `pnpm run typecheck:libs`,
+`pnpm --filter @workspace/api-server run typecheck`, and
+`pnpm --filter @workspace/arenaforge run typecheck` pass. Tests used a
+disposable local database; no user or production database was modified.
 
-**Still unproven:** the owner has not yet judged this audio, so it is not
-certified as a good-sounding mashup. The 44 windows are coarse activity
-measurements, not transcript phrases. This does not establish verse/chorus
-accuracy, lyric timing, or semantic song-structure understanding. The live
-preview screenshot reached Waveyard's empty library page, so the updated
-arrangement detail panel has not been visually checked in a signed-in Studio.
+**Still unproven:** the owner has not judged this output, and the measured pair
+still has 135/335 donor beats outside the 90 ms window. This does not establish
+a good-sounding mashup, verse/chorus accuracy, lyric timing, or semantic song
+structure. The live preview screenshot reached Waveyard's empty library page,
+so the arrangement detail panel has not been visually checked in a signed-in
+Studio.
 
 ## Timestamped transcript opportunity
 

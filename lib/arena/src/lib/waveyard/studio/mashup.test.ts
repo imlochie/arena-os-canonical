@@ -1427,6 +1427,11 @@ test("plan: full-track arrangement keeps the continuous overlay when no re-place
   const arrangement = result.plan.arrangement;
   assert.ok(arrangement, "the comparison is recorded even when the overlay wins");
   assert.equal(arrangement.selected, "continuous-overlay");
+  assert.equal(arrangement.evidence.pairedBeatGrids, false);
+  assert.equal(arrangement.pairedBeatPhaseFit, null);
+  assert.equal(arrangement.baselineBeatPhaseFit, null);
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("paired donor-and-bed beat-grid check was unavailable")),
+    "the fallback explicitly says that two-track beat phase was not verified");
   assert.equal(arrangement.coherentUnitsPlaced, arrangement.unitsTotal);
   assert.equal(arrangement.continuousUnitsPlaced, arrangement.unitsTotal);
   assert.ok(arrangement.coherentScore - arrangement.overlayScore <= Math.max(0.5, 0.03 * Math.abs(arrangement.overlayScore)) + 1e-9);
