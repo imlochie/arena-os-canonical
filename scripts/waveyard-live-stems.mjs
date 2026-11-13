@@ -737,7 +737,9 @@ try {
       const audio = [...(deck?.querySelectorAll("audio") ?? [])]
         .find(element => window.audioProbe.assetUrl(element).endsWith(`/a-${stemType}`));
       const source = window.audioProbe.sources.find(entry => entry.mediaElement === audio);
-      return source?.inputNode?.nextNode?.gain?.value ?? null;
+      const inputGain = source?.probeConnections?.find(node => node instanceof GainNode);
+      const stemGain = inputGain?.nextNode instanceof GainNode ? inputGain.nextNode : inputGain;
+      return stemGain?.gain?.value ?? null;
     };
     window.audioProbe.currentMasterGain = () => {
       const deckIndex = document.querySelector('[data-role="current"]')?.getAttribute("data-testid") === "session-deck-b" ? 1 : 0;
@@ -2568,21 +2570,23 @@ try {
       }
       try {
         await page.waitForFunction(() => {
-          const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-vocals"));
-          const stemGain = source?.probeConnections?.find(node => node instanceof GainNode);
-          return stemGain?.gain?.value > 0.9;
+          return window.audioProbe.currentStemGain("vocals") > 0.9;
         });
       } catch (error) {
         const state = await page.evaluate(() => {
           const sources = window.audioProbe.sources
             .filter(item => item.mediaElement.src.endsWith("/a-vocals"))
-            .map(item => ({
-              gain: item.probeConnections?.find(node => node instanceof GainNode)?.gain?.value ?? null,
-              paused: item.mediaElement.paused,
-              currentTime: item.mediaElement.currentTime,
-              readyState: item.mediaElement.readyState,
-              ended: item.mediaElement.ended,
-            }));
+            .map(item => {
+              const inputGain = item.probeConnections?.find(node => node instanceof GainNode);
+              const stemGain = inputGain?.nextNode instanceof GainNode ? inputGain.nextNode : inputGain;
+              return {
+                gain: stemGain?.gain?.value ?? null,
+                paused: item.mediaElement.paused,
+                currentTime: item.mediaElement.currentTime,
+                readyState: item.mediaElement.readyState,
+                ended: item.mediaElement.ended,
+              };
+            });
           return {
             sources,
             restoreVisible: Boolean(document.querySelector('[data-testid="restore-live-swap-vocals"]')),
@@ -2690,9 +2694,7 @@ try {
     };
     const waitForGains = async (targetPage, { vocals, drums }) => {
       await targetPage.waitForFunction(({ vocals: targetVocals, drums: targetDrums }) => {
-        const gain = type => window.audioProbe.sources
-          .filter(source => source.mediaElement.src.endsWith(`/a-${type}`))
-          .at(-1)?.inputNode?.nextNode?.gain?.value;
+        const gain = type => window.audioProbe.currentStemGain(type);
         return Math.abs(gain("vocals") - targetVocals) < 0.01
           && Math.abs(gain("drums") - targetDrums) < 0.01;
       }, { vocals, drums }, { timeout: 5_000 });
