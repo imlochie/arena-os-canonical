@@ -933,7 +933,10 @@ let liveDrumDonorResponseBodyLength = 0;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/swaps` && route.request().method() === "DELETE") {
       const swapId = url.searchParams.get("swapId");
-      assert(liveSwaps.some((swap) => swap.id === swapId), "cancelling removes the exact pending live swap");
+      assert(
+        liveSwaps.some((swap) => swap.id === swapId),
+        `cancelling removes the exact pending live swap (requested ${swapId ?? "no id"}; stored ${liveSwaps.map((swap) => swap.id).join(", ") || "none"})`,
+      );
       liveSwapDeleteRequestCount += 1;
       liveSwaps = liveSwaps.filter((swap) => swap.id !== swapId);
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
