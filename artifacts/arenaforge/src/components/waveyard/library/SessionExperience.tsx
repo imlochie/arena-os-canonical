@@ -4562,9 +4562,9 @@ export default function SessionExperience({
       && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
     const alignmentBasis = currentSwapSetup.alignmentBases[stemType];
     const alignmentDescription = alignmentBasis === "rhythm-harmony-phrase"
-      ? "rhythm + harmony phrase matched"
+      ? "rhythm + harmony matched"
       : alignmentBasis === "trusted-section-role"
-        ? "high-confidence section role matched"
+        ? "section role matched"
         : "beat phase aligned";
     const tempoStatus = swap === undefined ? null
       : pendingSwap

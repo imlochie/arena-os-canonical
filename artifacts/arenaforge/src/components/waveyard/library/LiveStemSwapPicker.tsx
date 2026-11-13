@@ -613,29 +613,6 @@ export default function LiveStemSwapPicker({
             confidence={currentTempoCorrected ? 1 : currentBpmConfidence}
             onApply={onTempoCorrection}
           />
-          {selectedDonorId && (
-            <>
-              <div className="wy-swap-original-row">
-                <span>Using {selectedDonorTitle ?? "another source"}</span>
-                <button type="button" disabled={busy} onClick={() => { onRestore(); closeAndReturnFocus(); }}>
-                  Restore original
-                </button>
-              </div>
-              {stemType === "vocals" && (
-                <VocalEntryTimeControl
-                  donorId={selectedDonorId}
-                  donorTitle={selectedDonorTitle ?? "another source"}
-                  durationSeconds={selectedDonorDurationSeconds}
-                  entryOffsetMs={selectedDonorEntryOffsetMs}
-                  sections={selectedDonorSections}
-                  vocalActivityStartsMs={selectedDonorVocalActivityStartsMs}
-                  voicedPhraseStartsMs={selectedDonorVoicedPhraseStartsMs}
-                  disabled={busy || pending}
-                  onApply={onApplyDonorEntryOffset}
-                />
-              )}
-            </>
-          )}
           {sourceCount > 4 && (
             <label className="wy-swap-search">
               <span className="visually-hidden">Search separated sources</span>
@@ -665,6 +642,29 @@ export default function LiveStemSwapPicker({
                 )}
               </div>
             </div>
+          )}
+          {selectedDonorId && (
+            <>
+              <div className="wy-swap-original-row">
+                <span>Using {selectedDonorTitle ?? "another source"}</span>
+                <button type="button" disabled={busy} onClick={() => { onRestore(); closeAndReturnFocus(); }}>
+                  Restore original
+                </button>
+              </div>
+              {stemType === "vocals" && (
+                <VocalEntryTimeControl
+                  donorId={selectedDonorId}
+                  donorTitle={selectedDonorTitle ?? "another source"}
+                  durationSeconds={selectedDonorDurationSeconds}
+                  entryOffsetMs={selectedDonorEntryOffsetMs}
+                  sections={selectedDonorSections}
+                  vocalActivityStartsMs={selectedDonorVocalActivityStartsMs}
+                  voicedPhraseStartsMs={selectedDonorVoicedPhraseStartsMs}
+                  disabled={busy || pending}
+                  onApply={onApplyDonorEntryOffset}
+                />
+              )}
+            </>
           )}
           {visiblePreparationCandidates.length > 0 && (
             <div className="wy-swap-group">
