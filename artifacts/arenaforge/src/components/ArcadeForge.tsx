@@ -8,7 +8,7 @@ const ModWorkshop = lazy(() => import("./ModWorkshop"));
 const ArcadeDevelopmentWorkspace = lazy(() => import("./ArcadeDevelopmentWorkspace"));
 import type { WorkshopPlayback } from "../lib/modWorkshopTypes";
 import { useArcadeGameSave } from "../lib/arcadeGameSave";
-import { ArcadeSaveWarning } from "./ArcadeSaveWarning";
+import { ArcadeSaveWarning, UnsavedProgressLeaveDialog } from "./ArcadeSaveWarning";
 import { browserHtmlAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
 import ArcadeGameManagement from "./ArcadeGameManagement";
@@ -262,6 +262,19 @@ export default function ArcadeForge() {
     typeof window !== "undefined" && new URLSearchParams(window.location.search).has("testModel"),
   );
   const [modelHandoffMessage, setModelHandoffMessage] = useState<string | null>(null);
+  const importedLeaveGuard = useRef<((action: () => void, destination?: string) => void) | null>(null);
+  const registerImportedLeaveGuard = useCallback((guard: ((action: () => void, destination?: string) => void) | null) => {
+    importedLeaveGuard.current = guard;
+  }, []);
+  const requestWorkspaceChange = useCallback((next: ArcadeWorkspace) => {
+    if (next === workspace) return;
+    const change = () => setWorkspace(next);
+    if (workspace === "imports" && importedLeaveGuard.current) {
+      importedLeaveGuard.current(change, "switch workspaces");
+    } else {
+      change();
+    }
+  }, [workspace]);
 
   // On-device AI state
   const [gpu, setGpu] = useState<{ ok: boolean; reason?: string } | null>(null);
@@ -1213,7 +1226,15 @@ export default function ArcadeForge() {
     return `Remote model · ${selected?.name ?? runtime.modelId ?? runtime.backend}`;
   }
 
-  async function run(p?: string) {
+  function run(p?: string) {
+    if (game?.id && gameSaves.persistenceWarning) {
+      gameSaves.guardLeave(() => { void runNow(p); }, "replace this game");
+      return;
+    }
+    void runNow(p);
+  }
+
+  async function runNow(p?: string) {
     const q = (p ?? prompt).trim();
     if (!q || busy) return;
     if (strategy !== "instant") {
@@ -1307,7 +1328,15 @@ export default function ArcadeForge() {
     }
   }
 
-  async function iterate() {
+  function iterate() {
+    if (game?.id && gameSaves.persistenceWarning) {
+      gameSaves.guardLeave(() => { void iterateNow(); }, "change this game");
+      return;
+    }
+    void iterateNow();
+  }
+
+  async function iterateNow() {
     const ins = instruction.trim();
     if (!ins || !game || iterating || busy) return;
     if (game.ephemeral) {
@@ -1439,7 +1468,7 @@ export default function ArcadeForge() {
     }
   }
 
-  async function openGame(id: string) {
+  async function loadGame(id: string) {
     setHistoryError(null);
     historyRetryRef.current = null;
     setHistoryAction({ id, kind: "open" });
@@ -1461,26 +1490,47 @@ export default function ArcadeForge() {
     }
   }
 
+  function openGame(id: string) {
+    if (game?.id === id) return;
+    if (game?.id) {
+      gameSaves.guardLeave(() => { void loadGame(id); }, "open another game");
+      return;
+    }
+    void loadGame(id);
+  }
+
   function openOfflineGame(saved: SavedOfflineGame) {
-    setGame({
-      ...saved,
-      localOffline: true,
-      ephemeral: false,
-      saveSlotId: saved.saveSlotId || saved.id,
-    });
-    setPrompt(saved.prompt);
-    setWorkspace("create");
-    setTab("play");
-    setNotice(saved.draft
-      ? "Opened an unverified draft from your offline shelf. Inspect or try it; the saved game it came from was not changed."
-      : "Opened from your offline shelf. Play it, inspect its source, or prompt a change.");
-    setError(null);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (game?.id === saved.id) return;
+    gameSaves.guardLeave(() => {
+      setGame({
+        ...saved,
+        localOffline: true,
+        ephemeral: false,
+        saveSlotId: saved.saveSlotId || saved.id,
+      });
+      setPrompt(saved.prompt);
+      setWorkspace("create");
+      setTab("play");
+      setNotice(saved.draft
+        ? "Opened an unverified draft from your offline shelf. Inspect or try it; the saved game it came from was not changed."
+        : "Opened from your offline shelf. Play it, inspect its source, or prompt a change.");
+      setError(null);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }, "open another game");
   }
 
   async function deleteOfflineGame(id: string) {
     const saved = offlineGames.find((item) => item.id === id);
     if (!saved || !confirm(`Remove “${saved.title}” from this browser's offline shelf?`)) return;
+    if (game?.id === id) {
+      gameSaves.guardLeave(() => { void deleteOfflineGameConfirmed(saved); }, "remove this game");
+      return;
+    }
+    await deleteOfflineGameConfirmed(saved);
+  }
+
+  async function deleteOfflineGameConfirmed(saved: SavedOfflineGame) {
+    const id = saved.id;
     try {
       await deleteOfflineSavedGame(id);
       try {
@@ -1495,6 +1545,10 @@ export default function ArcadeForge() {
 
   async function deleteGame(id: string, confirmed = false) {
     if (!confirmed && !confirm("Delete this game?")) return;
+    if (!confirmed && game?.id === id) {
+      gameSaves.guardLeave(() => { void deleteGame(id, true); }, "delete this game");
+      return;
+    }
     setHistoryError(null);
     historyRetryRef.current = null;
     setHistoryAction({ id, kind: "delete" });
@@ -1883,7 +1937,7 @@ export default function ArcadeForge() {
             type="button"
             role="tab"
             aria-selected={workspace === "create"}
-            onClick={() => setWorkspace("create")}
+            onClick={() => requestWorkspaceChange("create")}
             className={`rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "create" ? "bg-emerald-400 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}
           >
             Create and revise
@@ -1892,7 +1946,7 @@ export default function ArcadeForge() {
             type="button"
             role="tab"
             aria-selected={workspace === "imports"}
-            onClick={() => setWorkspace("imports")}
+            onClick={() => requestWorkspaceChange("imports")}
             className={`rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "imports" ? "bg-emerald-400 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}
           >
             Import and emulate
@@ -1901,18 +1955,18 @@ export default function ArcadeForge() {
             type="button"
             role="tab"
             aria-selected={workspace === "native"}
-            onClick={() => setWorkspace("native")}
+            onClick={() => requestWorkspaceChange("native")}
             className={`rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "native" ? "bg-emerald-400 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}
           >
             Native games
           </button>
-          <button type="button" role="tab" aria-selected={workspace === "mods"} onClick={() => setWorkspace("mods")}
+          <button type="button" role="tab" aria-selected={workspace === "mods"} onClick={() => requestWorkspaceChange("mods")}
             className={`rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "mods" ? "bg-emerald-400 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}>
             Mod Workshop
           </button>
         </div>
 
-        <button type="button" role="tab" aria-selected={workspace === "develop"} onClick={() => setWorkspace("develop")}
+        <button type="button" role="tab" aria-selected={workspace === "develop"} onClick={() => requestWorkspaceChange("develop")}
           className={`mt-2 rounded-xl px-4 py-2 text-xs font-extrabold ${workspace === "develop" ? "bg-amber-300 text-slate-950" : "border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}>
           Develop mods
         </button>
@@ -1930,7 +1984,7 @@ export default function ArcadeForge() {
           </Suspense>
         ) : workspace === "imports" ? (
           <Suspense fallback={<p className="mt-4 text-sm text-slate-400" role="status">Loading import and emulator tools…</p>}>
-            <ImportedGameWorkspace workshopLaunch={workshopLaunch} onExitWorkshop={() => setWorkshopLaunch(null)} onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} onNativeInstalled={() => setWorkspace("native")} />
+            <ImportedGameWorkspace workshopLaunch={workshopLaunch} onExitWorkshop={() => setWorkshopLaunch(null)} onReviseSource={reviseImportedSource} onUseRemakePrompt={useRemakePrompt} onNativeInstalled={() => requestWorkspaceChange("native")} onRegisterLeaveGuard={registerImportedLeaveGuard} />
           </Suspense>
         ) : (
           <>
@@ -2034,12 +2088,12 @@ export default function ArcadeForge() {
             )}
             {game && !busy && (
               <button
-                onClick={() => {
+                onClick={() => gameSaves.guardLeave(() => {
                   setGame(null);
                   setPrompt("");
                   setNotice(null);
                   setError(null);
-                }}
+                }, "start a new game")}
                 className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-bold text-white hover:bg-white/10"
               >
                 ＋ New
@@ -2074,7 +2128,7 @@ export default function ArcadeForge() {
                 <button onClick={() => setTab("play")} className={`px-4 py-1.5 text-xs font-bold ${tab === "play" ? "bg-emerald-500/25 text-emerald-200" : "text-slate-400 hover:text-white"}`}>
                   ▶ Play
                 </button>
-                <button onClick={() => setTab("code")} className={`px-4 py-1.5 text-xs font-bold ${tab === "code" ? "bg-emerald-500/25 text-emerald-200" : "text-slate-400 hover:text-white"}`}>
+                <button onClick={() => gameSaves.guardLeave(() => setTab("code"), "open the game code")} className={`px-4 py-1.5 text-xs font-bold ${tab === "code" ? "bg-emerald-500/25 text-emerald-200" : "text-slate-400 hover:text-white"}`}>
                   {"</>"} Code
                 </button>
               </div>
@@ -2187,7 +2241,7 @@ export default function ArcadeForge() {
                   canRetry={gameSaves.canRetrySave}
                   conflict={gameSaves.hasRevisionConflict}
                   onRetry={gameSaves.retrySaving}
-                  onReload={gameSaves.reloadGame}
+                  onReload={() => gameSaves.guardLeave(gameSaves.reloadGame, "restart the game")}
                   onReconcile={gameSaves.reconcileStaleProgress}
                 />
               </div>
@@ -2196,6 +2250,14 @@ export default function ArcadeForge() {
                 <pre className="scroll-thin max-h-[560px] overflow-auto p-4 font-mono text-[11px] leading-relaxed text-slate-300">{game.code}</pre>
               </div>
             )}
+
+            <UnsavedProgressLeaveDialog
+              destination={gameSaves.leavePrompt}
+              canRetry={gameSaves.canRetrySave}
+              onRetry={gameSaves.retrySaving}
+              onStay={gameSaves.stayInGame}
+              onDiscard={gameSaves.discardAndLeave}
+            />
 
             {!game.ephemeral ? (
               <div className="glass mt-3 rounded-2xl p-4">

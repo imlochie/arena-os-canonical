@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Copy, Download, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { useArcadeGameSave } from "../lib/arcadeGameSave";
-import { ArcadeSaveWarning } from "./ArcadeSaveWarning";
+import { ArcadeSaveWarning, UnsavedProgressLeaveDialog } from "./ArcadeSaveWarning";
 import { browserHtmlAdapter, browserNesAdapter } from "../lib/arcadeRuntimeAdapters";
 import { useArcadeManagement } from "../lib/useArcadeManagement";
 import ArcadeGameManagement from "./ArcadeGameManagement";
@@ -73,6 +73,7 @@ type ImportedGameWorkspaceProps = {
   /** Optional mod-profile playback. Only runtime bindings and saves change; the base shelf record is never replaced. */
   workshopLaunch?: WorkshopPlayback | null;
   onExitWorkshop?: () => void;
+  onRegisterLeaveGuard?: (guard: ((action: () => void, destination?: string) => void) | null) => void;
 };
 
 const MAX_ARCHIVE_CONTENT_BYTES = 6 * 1024 * 1024;
@@ -426,7 +427,7 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
   return false;
 }
 
-export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt, onNativeInstalled, workshopLaunch = null, onExitWorkshop }: ImportedGameWorkspaceProps & { onNativeInstalled?: () => void }) {
+export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePrompt, onNativeInstalled, workshopLaunch = null, onExitWorkshop, onRegisterLeaveGuard }: ImportedGameWorkspaceProps & { onNativeInstalled?: () => void }) {
   const [games, setGames] = useState<ImportedGame[]>([]);
   const currentGames = useRef<ImportedGame[]>([]);
   const persistedGames = useRef<ImportedGame[]>([]);
@@ -515,6 +516,10 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     htmlFrameRef,
     selected?.kind === "html" ? runtimeSaveId || null : null,
   );
+  useEffect(() => {
+    onRegisterLeaveGuard?.(gameSaves.guardLeave);
+    return () => onRegisterLeaveGuard?.(null);
+  }, [gameSaves.guardLeave, onRegisterLeaveGuard]);
   // Save-indicator updates must not regenerate srcDoc with newly saved bytes:
   // changing that attribute navigates the iframe and resets live gameplay.
   const selectedHtmlDocument = useMemo(
@@ -1086,18 +1091,21 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const removeSelected = async () => {
     if (workshopActive) { setError("Leave the mod profile before changing or removing the base game."); return; }
     if (!selected || removing || busy) return;
-    const next = games.filter((game) => game.id !== selected.id);
-    // Clear the removed game's error before the async storage write. A newer
-    // import may start as soon as the row disappears; late cleanup must not
-    // erase that import's validation feedback.
-    setNotice("");
-    setError("");
-    setRemoving(true);
-    try {
-      if (!await saveGames(next, false)) return;
-      setReaAnalysis((current) => current?.gameId === selected.id ? null : current);
-      setSelectedId((current) => current === selected.id ? next[0]?.id ?? "" : current);
-    } finally { setRemoving(false); }
+    const remove = async () => {
+      const next = games.filter((game) => game.id !== selected.id);
+      // Clear the removed game's error before the async storage write. A newer
+      // import may start as soon as the row disappears; late cleanup must not
+      // erase that import's validation feedback.
+      setNotice("");
+      setError("");
+      setRemoving(true);
+      try {
+        if (!await saveGames(next, false)) return;
+        setReaAnalysis((current) => current?.gameId === selected.id ? null : current);
+        setSelectedId((current) => current === selected.id ? next[0]?.id ?? "" : current);
+      } finally { setRemoving(false); }
+    };
+    gameSaves.guardLeave(() => { void remove(); }, "remove this game");
   };
 
   const remakePrompt = useMemo(() => {
@@ -1337,7 +1345,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
               <div role="status" data-testid="workshop-profile-banner" className="flex flex-wrap items-center gap-2 border-b border-amber-300/20 bg-amber-300/[0.07] px-4 py-2.5 text-[11px] text-amber-100">
                 <span className="rounded-full bg-amber-300/15 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider">Mod profile</span>
                 <span className="min-w-0 flex-1"><b>{workshopLaunch.profileName}</b> · {workshopLaunch.modKeys.length} mod{workshopLaunch.modKeys.length === 1 ? "" : "s"} · saves <span className="font-mono">{workshopLaunch.saveId}</span>. Base source, revisions and removal are locked while playing this profile.</span>
-                <button type="button" data-testid="workshop-leave-profile" onClick={() => onExitWorkshop?.()} className="rounded-lg border border-amber-300/30 px-3 py-1.5 text-[10px] font-black hover:bg-amber-300/10">Leave profile · play base</button>
+                <button type="button" data-testid="workshop-leave-profile" onClick={() => gameSaves.guardLeave(() => onExitWorkshop?.(), "leave this profile")} className="rounded-lg border border-amber-300/30 px-3 py-1.5 text-[10px] font-black hover:bg-amber-300/10">Leave profile · play base</button>
               </div>
             )}
             <ArcadeGameManagement management={management} />
@@ -1379,7 +1387,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   canRetry={gameSaves.canRetrySave}
                   conflict={gameSaves.hasRevisionConflict}
                   onRetry={gameSaves.retrySaving}
-                  onReload={gameSaves.reloadGame}
+                  onReload={() => gameSaves.guardLeave(gameSaves.reloadGame, "restart the game")}
                   onReconcile={gameSaves.reconcileStaleProgress}
                 />
                 <ImportedGameProgressBackup key={runtimeSaveId} game={workshopActive && runtimeGame ? { ...runtimeGame, id: runtimeSaveId } : selected} hasProgress={gameSaves.hasSavedProgress} disabled={busy || savingShelf > 0} onRestore={gameSaves.restoreSavedProgress} />
@@ -1599,7 +1607,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                     <p className="mt-1 text-[10px] leading-relaxed text-slate-500">The prompt uses only this filename and your description. ROM bytes are never read for a remake.</p>
                   </div>
                   <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Describe the broad mechanics or feeling to recreate in an original game…" rows={2} maxLength={800} className="w-full resize-y rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-cyan-300/50 focus:outline-none" />
-                  <button type="button" onClick={() => onUseRemakePrompt(remakePrompt)} disabled={!remakePrompt} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-bold text-cyan-100 hover:bg-cyan-300/15 disabled:opacity-40">
+                  <button type="button" onClick={() => gameSaves.guardLeave(() => onUseRemakePrompt(remakePrompt), "open a new game")} disabled={!remakePrompt} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-bold text-cyan-100 hover:bg-cyan-300/15 disabled:opacity-40">
                     <Copy size={13} /> Load prompt into game creator
                   </button>
                   {remakePrompt && <details className="text-[10px] text-slate-400"><summary className="cursor-pointer">View prompt</summary><p className="mt-2 rounded-lg bg-black/20 p-2 leading-relaxed">{remakePrompt}</p></details>}
@@ -1653,7 +1661,15 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           </div>}
           <div className="mt-3 space-y-1.5">
             {games.map((game) => (
-              <button key={game.id} data-testid={`button-select-imported-game-${game.id}`} type="button" onClick={() => { if (workshopLaunch && game.id !== workshopLaunch.gameId) onExitWorkshop?.(); setSelectedId(game.id); setError(""); setNotice(""); }} className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${selectedId === game.id ? "border-emerald-300/30 bg-emerald-300/[0.08]" : "border-transparent bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.05]"}`}>
+              <button key={game.id} data-testid={`button-select-imported-game-${game.id}`} type="button" onClick={() => {
+                if (game.id === selectedId) return;
+                gameSaves.guardLeave(() => {
+                  if (workshopLaunch && game.id !== workshopLaunch.gameId) onExitWorkshop?.();
+                  setSelectedId(game.id);
+                  setError("");
+                  setNotice("");
+                }, "switch games");
+              }} className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${selectedId === game.id ? "border-emerald-300/30 bg-emerald-300/[0.08]" : "border-transparent bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.05]"}`}>
                 <span className="block truncate text-xs font-bold text-slate-200">{game.name}</span>
                 {unsavedIds.includes(game.id) && <span className="block text-[10px] font-bold text-amber-200">Not saved · this tab only</span>}
                 <span className="mt-1 block text-[9px] font-bold uppercase tracking-wider text-slate-500">
@@ -1689,6 +1705,13 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           </div>
         </div>
       </aside>
+      <UnsavedProgressLeaveDialog
+        destination={gameSaves.leavePrompt}
+        canRetry={gameSaves.canRetrySave}
+        onRetry={gameSaves.retrySaving}
+        onStay={gameSaves.stayInGame}
+        onDiscard={gameSaves.discardAndLeave}
+      />
     </section>
   );
 }
