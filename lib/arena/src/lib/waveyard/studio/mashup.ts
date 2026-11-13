@@ -28,7 +28,7 @@ import {
 import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v6";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v7";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -96,6 +96,52 @@ export type MashupSegment = {
   sourceRole?: "vocals" | "instrumental";
 };
 
+/** Traceable evidence for one voiced unit's chosen bed placement. */
+export type MashupArrangementPlacement = {
+  /** Absolute donor source window this placement carries (before stretch). */
+  donorFromMs: number;
+  donorToMs: number;
+  /** Absolute bed timeline position. */
+  bedStartMs: number;
+  /** Renormalised weighted score of the contributing channels. */
+  unitScore: number;
+  /** Measured vocal-to-bed chord-tone agreement, when computable. */
+  vocalChordFit: number | null;
+  chordFrames: number;
+  /** Measured drum/bass onset overlap over the unit onsets, when available. */
+  drumBassOnsetFit: number | null;
+  /** Hypothesis from the bed section label at the placement; not ground truth. */
+  bedSectionRole: "intro" | "body" | "climax" | "breakdown" | "outro" | "unlabeled";
+  evidence: string[];
+};
+
+export type MashupArrangement = {
+  engine: typeof MASHUP_PLANNER_ENGINE;
+  /** continuous-overlay keeps the full vocal body contiguously; segmented assigns voiced units across the bed. */
+  mode: "continuous-overlay" | "segmented";
+  /** Which mode was selected for this plan. */
+  selected: "continuous-overlay" | "segmented";
+  /** Objective score of the segmented arrangement, in the shared per-unit space. */
+  segmentedScore: number;
+  /** Objective score of the continuous overlay starting at the chosen entry. */
+  overlayScore: number;
+  /** (segmented - overlay) / max(1, |overlay|); null when no arrangement evidence existed. */
+  improvementRatio: number | null;
+  unitsTotal: number;
+  unitsPlaced: number;
+  unitsSkipped: number;
+  evidence: {
+    chordTimeline: boolean;
+    drumTransients: boolean;
+    bassAttacks: boolean;
+    beatGrid: boolean;
+    sectionRoles: boolean;
+  };
+  rationale: string[];
+  warnings: string[];
+  placements: MashupArrangementPlacement[];
+};
+
 export type MashupPlan = {
   engine: typeof MASHUP_PLANNER_ENGINE;
   /** The bed's tempo — the instrumental always wins the tempo war. */
@@ -106,6 +152,8 @@ export type MashupPlan = {
   vocalsPitchSemitones: number;
   keyRelationship: "same" | "fifth" | "relative" | "other" | "unknown";
   segments: MashupSegment[];
+  /** Structured full-track arrangement decision when the passage search found no match. */
+  arrangement?: MashupArrangement | null;
   /** Candidate evaluation per voice-bearing donor section, including its selected bed and full feasible ranking. */
   passageSearch?: MashupPassageSearch;
   durationMs: number;
@@ -1153,6 +1201,583 @@ function rankedPassageEntry(
   };
 }
 
+// ------------------------------------------------------------------
+// Full-track arrangement — the arrangement decision must use the whole
+// recording, not only the opening passage or a single global offset. The
+// optimizer combines only evidence the app already persists: voiced
+// activity/pitch intervals from the isolated vocal stem, the bed's measured
+// chord timeline, measured bed drum/bass onsets, the bed's beat grid, and
+// the bed's unverified section-role labels. No new analysis system and no
+// semantic (verse/chorus/lyric) claims are introduced.
+//
+// Voiced material is merged into units separated by at least
+// ARRANGEMENT_UNIT_MERGE_GAP_MS of silence. Unit ORDER IS ALWAYS PRESERVED,
+// units are never reordered, duplicated or cropped, and the renderer
+// receives ordinary segments — the save/reopen/edit/restore/export paths are
+// unchanged. The segmented plan is selected only when it beats the
+// continuous overlay on the shared per-unit objective by a clear margin;
+// otherwise the overlay is kept and the comparison is recorded in the plan.
+// ------------------------------------------------------------------
+
+const ARRANGEMENT_MAX_UNITS = 120;
+const ARRANGEMENT_UNIT_MERGE_GAP_MS = 750;
+const ARRANGEMENT_MIN_UNIT_MS = 150;
+const ARRANGEMENT_MAX_SLOTS = 600;
+
+type ArrangementUnit = {
+  fromMs: number;
+  toMs: number;
+  /** Bounded unit-relative onset points used only for transient fitting. */
+  onsetOffsetsMs: number[];
+};
+
+export function mergedArrangementUnits(
+  vocals: MashupSourceProfile,
+  body: { fromMs: number; toMs: number },
+): ArrangementUnit[] {
+  const timing = vocalTimingIntervals(vocals, body);
+  const ordered = [...timing.intervals]
+    .map((interval) => ({
+      startMs: Math.max(body.fromMs, interval.startMs),
+      endMs: Math.min(body.toMs, interval.endMs),
+    }))
+    .filter((interval) => interval.endMs > interval.startMs)
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+  if (ordered.length === 0) return [];
+  const merged: Array<{ fromMs: number; toMs: number; onsetOffsetsMs: number[] }> = [];
+  for (const interval of ordered) {
+    const last = merged[merged.length - 1];
+    if (last && interval.startMs - last.toMs <= ARRANGEMENT_UNIT_MERGE_GAP_MS) {
+      last.toMs = Math.max(last.toMs, interval.endMs);
+    } else {
+      merged.push({ fromMs: interval.startMs, toMs: interval.endMs, onsetOffsetsMs: [] });
+    }
+  }
+  for (const interval of ordered) {
+    // Linear scan is fine: the unit list is already merged and ordered.
+    const unit = merged.find((candidate) => interval.startMs >= candidate.fromMs && interval.startMs < candidate.toMs);
+    if (!unit) continue;
+    const relative = Math.round(interval.startMs - unit.fromMs);
+    if (!unit.onsetOffsetsMs.includes(relative) && unit.onsetOffsetsMs.length < 8) {
+      unit.onsetOffsetsMs.push(relative);
+    }
+  }
+  // Bound the scoring matrix by repeatedly merging the smallest-gap neighbours.
+  while (merged.length > ARRANGEMENT_MAX_UNITS) {
+    let minGap = Number.POSITIVE_INFINITY;
+    let mergeAt = -1;
+    for (let index = 0; index < merged.length - 1; index += 1) {
+      const gap = merged[index + 1]!.fromMs - merged[index]!.toMs;
+      if (gap < minGap) { minGap = gap; mergeAt = index; }
+    }
+    if (mergeAt < 0) break;
+    merged[mergeAt]!.toMs = merged[mergeAt + 1]!.toMs;
+    merged[mergeAt]!.onsetOffsetsMs = [0];
+    merged.splice(mergeAt + 1, 1);
+  }
+  return merged
+    .map((unit) => ({ ...unit, onsetOffsetsMs: unit.onsetOffsetsMs.length ? unit.onsetOffsetsMs : [0] }))
+    .filter((unit) => unit.toMs - unit.fromMs >= ARRANGEMENT_MIN_UNIT_MS);
+}
+
+type ArrangementBedContext = {
+  harmonyEvents: HarmonyEvent[];
+  drumEvents: MashupTransientEvent[];
+  bassEvents: MashupTransientEvent[];
+  sections: MashupSection[];
+  durationMs: number;
+  barMs: number;
+  stretchRatio: number;
+  pitchShiftSemitones: number;
+  vocalPitchFrames: readonly VocalPitchFrame[];
+};
+
+type ArrangementFeatureScore = {
+  score: number;
+  vocalChordFit: number | null;
+  chordFrames: number;
+  drumBassOnsetFit: number | null;
+  bedSectionRole: MashupArrangementPlacement["bedSectionRole"];
+  evidence: string[];
+};
+
+function bedSectionRoleAt(
+  sections: MashupSection[],
+  timeMs: number,
+): MashupArrangementPlacement["bedSectionRole"] {
+  const section = sections.find((candidate) =>
+    Number.isSafeInteger(candidate.startMs) && Number.isSafeInteger(candidate.endMs)
+    && timeMs >= candidate.startMs && timeMs < candidate.endMs);
+  if (!section) return "unlabeled";
+  const label = section.label.toLowerCase();
+  if (/intro/.test(label)) return "intro";
+  if (/outro|fade/.test(label)) return "outro";
+  if (/breakdown|break|instrumental|solo/.test(label)) return "breakdown";
+  if (/verse|chorus|pre-?chorus|post-?chorus|refrain|hook|bridge/.test(label)) return "climax";
+  return "unlabeled";
+}
+
+const ARRANGEMENT_ROLE_SCORE: Record<MashupArrangementPlacement["bedSectionRole"], number> = {
+  intro: 0.35,
+  unlabeled: 0.62,
+  breakdown: 0.55,
+  climax: 0.85,
+  body: 0.75,
+  outro: 0.4,
+};
+
+function arrangementSlotEvidence(bed: MashupSourceProfile): { slots: number[]; gridTrusted: boolean } {
+  const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  if (grid && grid.length >= 8) {
+    let slots = grid.filter((beat) => Number.isFinite(beat) && beat >= 0 && beat <= bed.durationMs);
+    if (slots.length > ARRANGEMENT_MAX_SLOTS) slots = evenlySpaced(slots, ARRANGEMENT_MAX_SLOTS);
+    if (slots.length >= 3) return { slots, gridTrusted: true };
+  }
+  const boundaries = [...new Set(
+    bed.sections.flatMap((section) => [section.startMs, section.endMs]),
+  )]
+    .filter((timeMs) => Number.isSafeInteger(timeMs) && timeMs >= 0 && timeMs <= bed.durationMs)
+    .sort((left, right) => left - right);
+  if (boundaries.length >= 3 && boundaries.length <= ARRANGEMENT_MAX_SLOTS) {
+    return { slots: boundaries, gridTrusted: false };
+  }
+  const ticks: number[] = [];
+  for (let timeMs = 0; timeMs <= bed.durationMs; timeMs += 2_000) ticks.push(timeMs);
+  if (ticks[ticks.length - 1] !== bed.durationMs) ticks.push(bed.durationMs);
+  return { slots: ticks, gridTrusted: false };
+}
+
+function arrangementFeatureScore(
+  unit: ArrangementUnit,
+  bedStartMs: number,
+  context: ArrangementBedContext,
+): ArrangementFeatureScore {
+  const unitSpanStretchedMs = (unit.toMs - unit.fromMs) * context.stretchRatio;
+  const bedEndMs = Math.min(context.durationMs, bedStartMs + unitSpanStretchedMs);
+  const chord = context.harmonyEvents.length > 0
+    ? scoreVocalChordToneFit({
+      vocalFrames: context.vocalPitchFrames,
+      bedChords: context.harmonyEvents,
+      donorStartMs: unit.fromMs,
+      donorEndMs: unit.toMs,
+      bedStartMs,
+      bedEndMs,
+      stretchRatio: context.stretchRatio,
+      pitchShiftSemitones: context.pitchShiftSemitones,
+    })
+    : null;
+  const transient = context.drumEvents.length > 0 || context.bassEvents.length > 0
+    ? scoreEntryAgainstTransients(
+      bedStartMs,
+      unit.onsetOffsetsMs,
+      context.stretchRatio,
+      context.drumEvents,
+      context.bassEvents,
+    ).score
+    : null;
+  const bedSectionRole = bedSectionRoleAt(context.sections, bedStartMs);
+  const roleScore = ARRANGEMENT_ROLE_SCORE[bedSectionRole];
+
+  const channels: Array<{ score: number; weight: number; label: string }> = [];
+  if (chord) {
+    channels.push({
+      score: chord.similarity,
+      weight: 0.5,
+      label: `vocal-to-bed chord-tone agreement ${(chord.similarity * 100).toFixed(0)}% across ${chord.matchedFrames} voiced frames`,
+    });
+  }
+  if (transient !== null) {
+    channels.push({
+      score: Math.max(0, Math.min(1, transient)),
+      weight: 0.35,
+      label: `drum/bass onset overlap ${(transient * 100).toFixed(0)}% over ${unit.onsetOffsetsMs.length} voiced onset(s)`,
+    });
+  }
+  channels.push({ score: roleScore, weight: 0.15, label: `bed section role hypothesis (${bedSectionRole}) — not a semantic label` });
+  const totalWeight = channels.reduce((total, channel) => total + channel.weight, 0);
+  const score = channels.reduce((total, channel) => total + channel.score * channel.weight, 0) / totalWeight;
+  return {
+    score,
+    vocalChordFit: chord?.similarity ?? null,
+    chordFrames: chord?.matchedFrames ?? 0,
+    drumBassOnsetFit: transient === null ? null : Math.max(0, Math.min(1, transient)),
+    bedSectionRole,
+    evidence: channels.map((channel) => channel.label),
+  };
+}
+
+function arrangementSlotIndex(slots: number[], timeMs: number): number {
+  let low = 0;
+  let high = slots.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (slots[middle]! < timeMs) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function arrangementGapPenalty(gapMs: number, barMs: number): number {
+  if (gapMs <= 1_500) return 0;
+  const bars = gapMs / Math.max(1, barMs);
+  return Math.min(0.6, bars * 0.03);
+}
+
+type ArrangementSolution = {
+  /** Bed slot index per unit, in unit order; slots[i] === -1 means the unit was dropped. */
+  slotIndices: number[];
+  total: number;
+};
+
+/**
+ * Monotone assignment of voiced units to bed slots, maximising the shared
+ * per-unit objective with a small penalty for long instrumental gaps. Units
+ * are never reordered. A unit may be dropped (value 0) only when no feasible
+ * placement exists before the end of the bed.
+ */
+function solveArrangementMonotonic(
+  units: Array<{ unit: ArrangementUnit; spanStretchedMs: number }>,
+  slots: number[],
+  scores: Float64Array[],
+  bedDurationMs: number,
+  barMs: number,
+): ArrangementSolution {
+  const unitCount = units.length;
+  const slotCount = slots.length;
+  const negative = Number.NEGATIVE_INFINITY;
+  const dp: Float64Array[] = Array.from({ length: unitCount + 1 }, () => new Float64Array(slotCount).fill(0));
+  const globalBest: Float64Array = new Float64Array(unitCount + 1).fill(0);
+  const globalBestSlot: Int32Array = new Int32Array(unitCount + 1).fill(-1);
+  const choice: Int32Array[] = Array.from({ length: unitCount }, () => new Int32Array(slotCount).fill(-2));
+  globalBest[unitCount] = 0;
+  for (let i = unitCount - 1; i >= 0; i -= 1) {
+    const { spanStretchedMs } = units[i]!;
+    let rowBest = negative;
+    let rowBestSlot = -1;
+    for (let j = 0; j < slotCount; j += 1) {
+      const base = scores[i]![j];
+      const startMs = slots[j]!;
+      const endMs = startMs + spanStretchedMs;
+      let placeValue = negative;
+      let placeChoice = -1;
+      if (Number.isFinite(base) && endMs <= bedDurationMs + 1) {
+        if (i === unitCount - 1) {
+          // The final placed unit has no successor: "end of chain" is a valid,
+          // penalty-free continuation of the sequence.
+          placeValue = base;
+          placeChoice = -1;
+        } else {
+          const nextStart = arrangementSlotIndex(slots, endMs);
+          let best = negative;
+          let bestK = -1;
+          for (let k = nextStart; k < slotCount; k += 1) {
+            const candidate = dp[i + 1]![k]!;
+            if (candidate === negative) continue;
+            const value = candidate - arrangementGapPenalty(Math.max(0, slots[k]! - endMs), barMs);
+            if (value > best) { best = value; bestK = k; }
+          }
+          placeValue = base + (best === negative ? 0 : best);
+          placeChoice = bestK;
+        }
+      }
+      const skipValue = globalBest[i + 1]!;
+      if (placeValue >= skipValue) {
+        dp[i]![j] = placeValue;
+        choice[i]![j] = placeChoice;
+      } else {
+        dp[i]![j] = skipValue;
+        choice[i]![j] = -2; // skip this unit
+      }
+      if (dp[i]![j]! > rowBest) { rowBest = dp[i]![j]!; rowBestSlot = j; }
+    }
+    globalBest[i] = rowBest;
+    globalBestSlot[i] = rowBestSlot;
+  }
+  const slotIndices: number[] = [];
+  let cursor = globalBestSlot[0]!;
+  for (let i = 0; i < unitCount; i += 1) {
+    if (cursor < 0) { slotIndices.push(-1); continue; }
+    const move = choice[i]![cursor]!;
+    if (move === -2) { slotIndices.push(-1); cursor = globalBestSlot[i + 1]!; continue; }
+    slotIndices.push(cursor);
+    cursor = move;
+  }
+  return { slotIndices, total: globalBest[0]! };
+}
+
+function sanitizeTransientEvents(events: MashupTransientEvent[] | undefined): MashupTransientEvent[] {
+  return (events ?? [])
+    .filter((event) => Number.isSafeInteger(event.timestampMs) && event.timestampMs >= 0
+      && Number.isFinite(event.confidence) && event.confidence > 0 && event.confidence <= 1
+      && Number.isFinite(event.strength) && event.strength >= 0 && event.strength <= 1)
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+}
+
+function planArrangement(
+  vocals: MashupSourceProfile,
+  bed: MashupSourceProfile,
+  body: { fromMs: number; toMs: number },
+  overlayEntryMs: number,
+  masterBpm: number,
+  stretchRatio: number,
+  vocalPitchShiftSemitones: number,
+): MashupArrangement | null {
+  const unitTimings = mergedArrangementUnits(vocals, body);
+  if (unitTimings.length === 0) return null;
+  const barMs = (60_000 / Math.max(1, masterBpm)) * 4;
+  const harmonyEvents = [...(bed.harmonyEvents ?? [])]
+    .filter((event) => Number.isSafeInteger(event.startMs) && Number.isSafeInteger(event.endMs)
+      && event.endMs > event.startMs && event.startMs >= 0
+      && Number.isFinite(event.confidence) && event.confidence >= 0 && event.confidence <= 1)
+    .sort((left, right) => left.startMs - right.startMs);
+  const vocalPitchFrames = [...(vocals.vocalPitchFrames ?? [])]
+    .filter((frame) => Number.isSafeInteger(frame.timestampMs)
+      && frame.timestampMs >= 0 && frame.timestampMs <= vocals.durationMs)
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+  const drumEvents = sanitizeTransientEvents(bed.drumEvents);
+  const bassEvents = sanitizeTransientEvents(bed.bassEvents);
+  const { slots, gridTrusted } = arrangementSlotEvidence(bed);
+  if (slots.length < 3) return null;
+  const evidence = {
+    chordTimeline: harmonyEvents.length >= 4 && vocalPitchFrames.length >= 12,
+    drumTransients: drumEvents.length >= 8,
+    bassAttacks: bassEvents.length >= 8,
+    beatGrid: gridTrusted,
+    sectionRoles: bed.sections.length >= 2,
+  };
+  const informative = evidence.chordTimeline || evidence.drumTransients || evidence.bassAttacks;
+  if (!informative) return null;
+
+  const context: ArrangementBedContext = {
+    harmonyEvents,
+    drumEvents,
+    bassEvents,
+    sections: bed.sections,
+    durationMs: bed.durationMs,
+    barMs,
+    stretchRatio,
+    pitchShiftSemitones: vocalPitchShiftSemitones,
+    vocalPitchFrames,
+  };
+  const timedUnits = unitTimings.map((unit) => ({
+    unit,
+    spanStretchedMs: Math.round((unit.toMs - unit.fromMs) * stretchRatio),
+  }));
+
+  // Precompute per-unit slot scores (bounded matrix).
+  const unitCount = unitTimings.length;
+  const slotCount = slots.length;
+  const scoreMatrix: Float64Array[] = [];
+  for (let index = 0; index < unitCount; index += 1) {
+    const unit = unitTimings[index]!;
+    const row = new Float64Array(slotCount);
+    for (let slotIndex = 0; slotIndex < slotCount; slotIndex += 1) {
+      const startMs = slots[slotIndex]!;
+      const endMs = startMs + timedUnits[index]!.spanStretchedMs;
+      row[slotIndex] = endMs > bed.durationMs + 1
+        ? Number.NaN
+        : arrangementFeatureScore(unit, startMs, context).score;
+    }
+    scoreMatrix.push(row);
+  }
+
+  const segmented = solveArrangementMonotonic(timedUnits, slots, scoreMatrix, bed.durationMs, barMs);
+
+  const overlayStartFor = (unit: ArrangementUnit) =>
+    Math.round(overlayEntryMs + (unit.fromMs - body.fromMs) * stretchRatio);
+  let overlayScore = 0;
+  let overlayPlaced = 0;
+  for (const unit of unitTimings) {
+    const startMs = overlayStartFor(unit);
+    const endMs = startMs + Math.round((unit.toMs - unit.fromMs) * stretchRatio);
+    if (startMs < 0 || endMs > bed.durationMs + 1) continue;
+    overlayScore += arrangementFeatureScore(unit, startMs, context).score;
+    overlayPlaced += 1;
+  }
+
+  const segmentedPlaced = segmented.slotIndices.filter((index) => index >= 0).length;
+  const segmentedBetter = segmentedPlaced >= overlayPlaced
+    && Number.isFinite(segmented.total)
+    && segmented.total - overlayScore > Math.max(0.5, 0.03 * Math.abs(overlayScore));
+  const selected: "segmented" | "continuous-overlay" = segmentedBetter ? "segmented" : "continuous-overlay";
+  const improvementRatio = Number.isFinite(segmented.total)
+    ? (segmented.total - overlayScore) / Math.max(1, Math.abs(overlayScore))
+    : null;
+
+  const placements: MashupArrangementPlacement[] = [];
+  let unitsSkipped = 0;
+  for (let index = 0; index < unitTimings.length; index += 1) {
+    const unit = unitTimings[index]!;
+    const bedStartMs = segmentedBetter
+      ? (segmented.slotIndices[index] ?? -1) >= 0 ? slots[segmented.slotIndices[index]!]! : -1
+      : overlayStartFor(unit);
+    if (bedStartMs < 0) { unitsSkipped += 1; continue; }
+    const endMs = bedStartMs + timedUnits[index]!.spanStretchedMs;
+    if (endMs > bed.durationMs + 1) { unitsSkipped += 1; continue; }
+    const feature = arrangementFeatureScore(unit, bedStartMs, context);
+    placements.push({
+      donorFromMs: unit.fromMs,
+      donorToMs: unit.toMs,
+      bedStartMs,
+      unitScore: Number(feature.score.toFixed(4)),
+      vocalChordFit: feature.vocalChordFit === null ? null : Number(feature.vocalChordFit.toFixed(4)),
+      chordFrames: feature.chordFrames,
+      drumBassOnsetFit: feature.drumBassOnsetFit === null ? null : Number(feature.drumBassOnsetFit.toFixed(4)),
+      bedSectionRole: feature.bedSectionRole,
+      evidence: feature.evidence,
+    });
+  }
+
+  const rationale: string[] = [];
+  const warnings: string[] = [];
+  const evidenceSources = [
+    evidence.chordTimeline ? "the bed's measured chord timeline" : null,
+    evidence.drumTransients ? "measured drum transients" : null,
+    evidence.bassAttacks ? "measured bass attacks" : null,
+    evidence.sectionRoles ? "inferred bed section roles (unverified hypotheses)" : null,
+  ].filter(Boolean).join(", ");
+  if (segmentedBetter) {
+    rationale.push(
+      `full-track arrangement: ${placements.length}/${unitTimings.length} voiced units placed monotonically across the bed on measured ${gridTrusted ? "beat-grid" : "section"} slots; vocal order is preserved and no voiced material is reordered or duplicated (${evidenceSources})`,
+    );
+    rationale.push(
+      `segmented placement scored ${segmented.total.toFixed(2)} against the continuous overlay's ${overlayScore.toFixed(2)} (${improvementRatio === null ? "n/a" : improvementRatio >= 0 ? `+${(improvementRatio * 100).toFixed(1)}%` : `${(improvementRatio * 100).toFixed(1)}%`}); the continuous overlay would have concentrated vocal placement at a single offset`,
+    );
+    warnings.push(
+      "The vocal arrangement was re-mapped onto the bed by measured placement evidence. Unit boundaries keep their internal timing; placement is a relative evidence ranking, not lyric timing or verse/chorus detection.",
+    );
+  } else {
+    rationale.push(
+      `full-track arrangement search evaluated ${unitTimings.length} voiced unit(s) against ${slots.length} bed ${gridTrusted ? "beat-grid" : "boundary"} slots; the segmented placement scored ${segmented.total.toFixed(2)} versus ${overlayScore.toFixed(2)} for the continuous overlay, so the uninterrupted vocal was kept`,
+    );
+    warnings.push(
+      "Vocal units were evaluated across the whole bed but no re-placement beat the continuous overlay decisively; the overlay is retained and the comparison is recorded in the plan.",
+    );
+  }
+  if (unitsSkipped > 0) {
+    warnings.push(`${unitsSkipped} voiced unit(s) did not fit before the end of the bed and are not placed; the bed simply ends first.`);
+  }
+
+  return {
+    engine: MASHUP_PLANNER_ENGINE,
+    selected,
+    segmentedScore: Number(segmented.total.toFixed(4)),
+    overlayScore: Number(overlayScore.toFixed(4)),
+    improvementRatio: improvementRatio === null ? null : Number(improvementRatio.toFixed(4)),
+    unitsTotal: unitTimings.length,
+    unitsPlaced: placements.length,
+    unitsSkipped,
+    evidence: {
+      chordTimeline: evidence.chordTimeline,
+      drumTransients: evidence.drumTransients,
+      bassAttacks: evidence.bassAttacks,
+      beatGrid: gridTrusted,
+      sectionRoles: evidence.sectionRoles,
+    },
+    rationale,
+    warnings,
+    placements,
+  };
+}
+
+/**
+ * Pick the donor material for a reprise over the late bed, grounded in
+ * evidence instead of blindly replaying the opening. Order of preference:
+ * 1. a repeated-passage section label persisted by the current analysis
+ *    (pattern/rhythm/vocal-pattern recurrence); the LATEST occurrence is
+ *    reprised and the measured recurrence agreement is disclosed;
+ * 2. the donor's final measured sustained vocal passage (activity or
+ *    pitch-continuity), labelled a closing echo rather than a recurrence.
+ * Returns null when no grounding exists; the caller then leaves the bed
+ * instrumental instead of faking a reprise.
+ */
+function chooseGroundedReprise(
+  vocals: MashupSourceProfile,
+  body: { fromMs: number; toMs: number },
+): { fromMs: number; toMs: number; rationale: string; evidence: string; warning: string | null } | null {
+  const repeatGroups = new Map<string, MashupSection[]>();
+  for (const section of vocals.sections) {
+    const match = /^(pattern|rhythm|vocal-pattern)-repeat-([a-z]+)$/.exec(section.label.toLowerCase());
+    if (!match) continue;
+    if (!Number.isSafeInteger(section.startMs) || !Number.isSafeInteger(section.endMs)
+      || section.endMs <= section.startMs) continue;
+    const key = `${match[1]}:${match[2]}`;
+    const list = repeatGroups.get(key) ?? [];
+    list.push(section);
+    repeatGroups.set(key, list);
+  }
+  const repriseGroups = [...repeatGroups.values()]
+    .map((group) => [...group].sort((left, right) => left.startMs - right.startMs))
+    .filter((group) => group.length >= 2);
+  let recurrenceCandidate: { section: MashupSection; durationSimilarity: number; occurrences: number; label: string } | null = null;
+  for (const group of repriseGroups) {
+    const last = group[group.length - 1]!;
+    const previous = group[group.length - 2]!;
+    const lastSpan = last.endMs - last.startMs;
+    const previousSpan = Math.max(1, previous.endMs - previous.startMs);
+    const durationSimilarity = Math.min(lastSpan, previousSpan) / Math.max(lastSpan, previousSpan);
+    if (durationSimilarity < 0.5) continue;
+    if (recurrenceCandidate && recurrenceCandidate.durationSimilarity >= durationSimilarity
+      && (recurrenceCandidate.section.endMs - recurrenceCandidate.section.startMs) >= lastSpan) continue;
+    recurrenceCandidate = { section: last, durationSimilarity, occurrences: group.length, label: last.label };
+  }
+  if (recurrenceCandidate) {
+    const span = recurrenceCandidate.section;
+    return {
+      fromMs: span.startMs,
+      toMs: span.endMs,
+      rationale: `reprise of the donor's measured repeated passage “${recurrenceCandidate.label}” (${(span.startMs / 1000).toFixed(1)}s–${(span.endMs / 1000).toFixed(1)}s)`,
+      evidence: `the donor's own recurrence label “${recurrenceCandidate.label}” across ${recurrenceCandidate.occurrences} occurrence(s), with ${(recurrenceCandidate.durationSimilarity * 100).toFixed(0)}% duration agreement — a structural recurrence hypothesis, not a semantic chorus claim`,
+      warning: null,
+    };
+  }
+  const activity = qualifiedVocalActivityIntervals(vocals);
+  const finalInterval = [...activity].reverse().find((interval) => interval.endMs - interval.startMs >= 1_500);
+  if (finalInterval) {
+    return {
+      fromMs: finalInterval.startMs,
+      toMs: finalInterval.endMs,
+      rationale: `closing-vocal echo of the donor's final sustained passage (${(finalInterval.startMs / 1000).toFixed(1)}s–${(finalInterval.endMs / 1000).toFixed(1)}s)`,
+      evidence: "the donor's final measured sustained vocal-activity passage (no repeated-passage label was available)",
+      warning: "The closing echo re-places the donor's final sustained vocal passage over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result.",
+    };
+  }
+  const phrases = qualifiedVocalPitchRuns(vocals, { fromMs: 0, toMs: vocals.durationMs });
+  const finalRun = [...phrases].reverse().find((phrase) => phrase.endMs - phrase.startMs >= 1_500);
+  if (finalRun) {
+    return {
+      fromMs: finalRun.startMs,
+      toMs: finalRun.endMs,
+      rationale: `closing-vocal echo of the donor's final pitch-continuity passage (${(finalRun.startMs / 1000).toFixed(1)}s–${(finalRun.endMs / 1000).toFixed(1)}s)`,
+      evidence: "the donor's final sustained pitch-continuity run (no repeated-passage label was available)",
+      warning: "The closing echo re-places the donor's final pitch-continuity passage over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result.",
+    };
+  }
+  // 4) The donor's final detected section, provided it is a different range
+  //    from the opening passage (never replay the identical window).
+  const bodyFrom = body.fromMs;
+  const bodyTo = body.toMs;
+  const bodyMid = (bodyFrom + bodyTo) / 2;
+  const finalSection = [...vocals.sections]
+    .filter((section) => Number.isSafeInteger(section.startMs) && Number.isSafeInteger(section.endMs)
+      && section.endMs > section.startMs
+      && !/intro/i.test(section.label))
+    .sort((left, right) => left.startMs - right.startMs)
+    .at(-1);
+  if (finalSection
+    && !(finalSection.startMs === bodyFrom && finalSection.endMs === bodyTo)
+    && finalSection.startMs >= bodyMid - 1_000) {
+    return {
+      fromMs: finalSection.startMs,
+      toMs: finalSection.endMs,
+      rationale: `closing-vocal encore of the donor's final detected passage “${finalSection.label}” (${(finalSection.startMs / 1000).toFixed(1)}s–${(finalSection.endMs / 1000).toFixed(1)}s)`,
+      evidence: `the donor's own persisted section “${finalSection.label}” — an encore of its closing passage, not a recurrence or semantic detection`,
+      warning: "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result.",
+    };
+  }
+  return null;
+}
+
 function grooveAwareBedEntry(
   vocals: MashupSourceProfile,
   bed: MashupSourceProfile,
@@ -1359,32 +1984,83 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
   const bedRoomMs = Math.max(0, bed.durationMs - entry.at);
 
   const segments: MashupSegment[] = [];
+  let arrangement: MashupArrangement | null = null;
 
   // Intelligently arrange full-length vocal segments across the bed timeline.
   // When vocals are significantly shorter than the bed (e.g. bed has extra sections / 2nd verse / chorus),
-  // place recurring vocal sections (or loop phrases aligned to bar boundaries) so both tracks contribute
-  // throughout the entire song.
+  // the planner places an evidence-grounded reprise of the donor's own later-occurring material instead of
+  // replaying the opening, so both tracks contribute throughout the entire song.
   if (stretchedMs > 0 && bedRoomMs > 0) {
+    const passageMatchSelected = alignedEntry.passageSearch?.selectedDonorSectionId != null;
     if (stretchedMs >= bedRoomMs * 0.75) {
-      // Standard full or near-full overlay
-      const segEndMs = Math.min(bed.durationMs, entry.at + stretchedMs);
-      segments.push({
-        mashupStartMs: entry.at,
-        mashupEndMs: segEndMs,
-        vocalsFromMs: body.fromMs,
-        vocalsToMs: body.toMs,
-        crossfadeMs: CROSSFADE_MS,
-        rationale: `primary vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s`,
-        stemType: "vocals",
-        sourceRole: "vocals",
-      });
-      if (stretchedMs > bedRoomMs) {
-        warnings.push(`The stretched vocal (${(stretchedMs / 1000).toFixed(1)}s) is longer than the bed has room (${(bedRoomMs / 1000).toFixed(1)}s) — it fades out at the bed's end.`);
+      if (!passageMatchSelected) {
+        arrangement = planArrangement(vocals, bed, body, entry.at, masterBpm, stretchRatio, pitchMove.semitones);
+      }
+      if (arrangement?.selected === "segmented") {
+        // Merge placements that remain back-to-back into fewer clips; the renderer and
+        // the Studio timeline still see ordinary segments with ordinary offsets.
+        const mergedPlacements: typeof arrangement.placements = [];
+        for (const placement of arrangement.placements) {
+          const last = mergedPlacements[mergedPlacements.length - 1];
+          if (last
+            && Math.round(last.bedStartMs + (last.donorToMs - last.donorFromMs) * stretchRatio) === placement.bedStartMs
+            && last.donorToMs === placement.donorFromMs) {
+            mergedPlacements[mergedPlacements.length - 1] = {
+              ...last,
+              donorToMs: placement.donorToMs,
+              unitScore: Number(((last.unitScore + placement.unitScore) / 2).toFixed(4)),
+              evidence: [...new Set([...last.evidence, ...placement.evidence])],
+            };
+            continue;
+          }
+          mergedPlacements.push({ ...placement });
+        }
+        // Keep arrangement.placements as the per-unit record; the merged run is
+        // only the segment representation of the same placements.
+        for (const [index, placement] of mergedPlacements.entries()) {
+          const segmentEndMs = Math.min(
+            bed.durationMs,
+            placement.bedStartMs + Math.round((placement.donorToMs - placement.donorFromMs) * stretchRatio),
+          );
+          if (segmentEndMs <= placement.bedStartMs) continue;
+          segments.push({
+            mashupStartMs: placement.bedStartMs,
+            mashupEndMs: segmentEndMs,
+            vocalsFromMs: placement.donorFromMs,
+            vocalsToMs: placement.donorToMs,
+            crossfadeMs: CROSSFADE_MS,
+            rationale: `voiced unit ${index + 1}/${mergedPlacements.length} placed at ${(placement.bedStartMs / 1000).toFixed(1)}s on measured bed evidence (${placement.evidence[0] ?? "placement evidence"})`,
+            stemType: "vocals",
+            sourceRole: "vocals",
+          });
+        }
+        rationale.push(...arrangement.rationale);
+        warnings.push(...arrangement.warnings);
+      } else {
+        // Standard full or near-full overlay
+        const segEndMs = Math.min(bed.durationMs, entry.at + stretchedMs);
+        segments.push({
+          mashupStartMs: entry.at,
+          mashupEndMs: segEndMs,
+          vocalsFromMs: body.fromMs,
+          vocalsToMs: body.toMs,
+          crossfadeMs: CROSSFADE_MS,
+          rationale: `primary vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s`,
+          stemType: "vocals",
+          sourceRole: "vocals",
+        });
+        if (stretchedMs > bedRoomMs) {
+          warnings.push(`The stretched vocal (${(stretchedMs / 1000).toFixed(1)}s) is longer than the bed has room (${(bedRoomMs / 1000).toFixed(1)}s) — it fades out at the bed's end.`);
+        }
+        if (arrangement) {
+          rationale.push(...arrangement.rationale);
+          warnings.push(...arrangement.warnings);
+        }
       }
     } else {
       // Bed is significantly longer than vocals. We build a structured multi-segment arrangement:
       // Segment 1: initial vocal verse/body
-      // Segment 2: chorus/body recap later in the bed after an instrumental breakdown/solo pocket
+      // Segment 2: evidence-grounded reprise later in the bed after an instrumental pocket
       const firstSegmentEnd = entry.at + stretchedMs;
       segments.push({
         mashupStartMs: entry.at,
@@ -1404,18 +2080,27 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
       const remainingMs = bed.durationMs - secondStart;
 
       if (remainingMs > 4_000) {
-        const vocalPortionMs = Math.min(vocalSpanMs, (remainingMs / stretchRatio));
-        segments.push({
-          mashupStartMs: secondStart,
-          mashupEndMs: Math.min(bed.durationMs, secondStart + vocalPortionMs * stretchRatio),
-          vocalsFromMs: body.fromMs,
-          vocalsToMs: body.fromMs + vocalPortionMs,
-          crossfadeMs: CROSSFADE_MS,
-          rationale: `re-entry after instrumental breakdown (${(breakdownMs / 1000).toFixed(1)}s pocket) extending vocals to song climax`,
-          stemType: "vocals",
-          sourceRole: "vocals",
-        });
-        rationale.push(`arranged secondary vocal re-entry at ${(secondStart / 1000).toFixed(1)}s following an instrumental section`);
+        const reprise = chooseGroundedReprise(vocals, body);
+        if (reprise) {
+          const repriseSpanMs = Math.max(0, reprise.toMs - reprise.fromMs);
+          const vocalPortionMs = Math.min(repriseSpanMs, remainingMs / stretchRatio);
+          segments.push({
+            mashupStartMs: secondStart,
+            mashupEndMs: Math.min(bed.durationMs, secondStart + vocalPortionMs * stretchRatio),
+            vocalsFromMs: reprise.fromMs,
+            vocalsToMs: reprise.fromMs + vocalPortionMs,
+            crossfadeMs: CROSSFADE_MS,
+            rationale: `${reprise.rationale} — placed at ${(secondStart / 1000).toFixed(1)}s after a ${(breakdownMs / 1000).toFixed(1)}s instrumental pocket, extending the vocal to the late bed`,
+            stemType: "vocals",
+            sourceRole: "vocals",
+          });
+          rationale.push(`second vocal placement grounded in ${reprise.evidence}`);
+          if (reprise.warning) warnings.push(reprise.warning);
+        } else {
+          warnings.push(
+            `The bed is significantly longer than the vocal body (${(stretchedMs / 1000).toFixed(1)}s singable) and no donor reprise had grounding evidence (no repeated-passage sections or sustained trailing passage); the rest of the bed runs instrumental rather than replaying the opening vocal material.`,
+          );
+        }
       }
     }
   } else {
@@ -1441,6 +2126,7 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
       vocalsPitchSemitones: pitchMove.semitones,
       keyRelationship: pitchMove.relationship,
       segments,
+      ...(arrangement ? { arrangement } : {}),
       durationMs: bed.durationMs,
       rationale,
       warnings,
