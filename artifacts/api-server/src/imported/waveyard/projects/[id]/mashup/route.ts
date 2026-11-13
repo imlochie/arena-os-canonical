@@ -81,6 +81,8 @@ const MAX_RENDER_SECONDS = 900;
 const GROOVE_EVIDENCE_CACHE_TTL_MS = 10 * 60_000;
 const GROOVE_EVIDENCE_CACHE_MAX_ENTRIES = 8;
 const GROOVE_EVIDENCE_VERSION = "waveyard-persisted-first-stem-transients-v3";
+const STEM_TIMING_CACHE_MAX_ENTRIES = 8;
+const separatedStemTimingCache = new Map<string, ReturnType<typeof analyseStereoPcm>>();
 
 type MeasuredBedGrooveEvidence = {
   drumEvents: MashupTransientEvent[];
@@ -295,6 +297,10 @@ function summarizeEvidencePacket(packet: MusicalEvidencePacket) {
         analysisEngine: evidence.provenance.analysisEngine,
         analysisEngineVersion: evidence.provenance.analysisEngineVersion,
         persistence: evidence.provenance.persistence,
+        subject: evidence.provenance.subject,
+        stemAssetId: evidence.provenance.stemAssetId,
+        stemType: evidence.provenance.stemType,
+        stemChecksumSha256: evidence.provenance.stemChecksumSha256,
       }
       : { status: evidence.status, reason: evidence.reason },
   ]));
@@ -644,6 +650,126 @@ function recordRuntimeSourceAnalysis(
   }
 }
 
+/**
+ * A separated drum stem often exposes a much clearer pulse than the complete
+ * mix. Use it only when it belongs to the same completed separation as this
+ * source, its bytes match the saved checksum, and its tempo/beat grid clear the
+ * same confidence gates used everywhere else. This is request-time evidence;
+ * it is deliberately not written into source_analyses as if it came from the
+ * original mix.
+ */
+async function applySeparatedDrumTiming(
+  projectId: string,
+  profile: NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>>,
+  separatedSource: BedSource,
+): Promise<void> {
+  const separationJobId = separatedSource.info.separationJobId;
+  if (!separationJobId || !profile.sourceAssetId || !profile.sourceChecksumSha256) return;
+  const [job] = await db.select({ metadata: processingJobs.metadata }).from(processingJobs).where(and(
+    eq(processingJobs.id, separationJobId),
+    eq(processingJobs.projectId, projectId),
+    eq(processingJobs.sourceAssetId, profile.sourceAssetId),
+    eq(processingJobs.type, "separation"),
+    eq(processingJobs.status, "complete"),
+  )).limit(1);
+  let jobSourceChecksum: string | null = null;
+  try {
+    const metadata = JSON.parse(job?.metadata ?? "{}") as Record<string, unknown>;
+    jobSourceChecksum = typeof metadata.sourceChecksumSha256 === "string"
+      ? metadata.sourceChecksumSha256
+      : null;
+  } catch {
+    // A malformed or absent separation manifest cannot prove which source
+    // version generated its stems.
+  }
+  if (jobSourceChecksum !== profile.sourceChecksumSha256) {
+    profile.grooveWarnings = [
+      ...(profile.grooveWarnings ?? []),
+      "The completed separation is not bound to the current source checksum; its drum timing evidence was excluded.",
+    ];
+    return;
+  }
+  const stem = separatedSource.stems.find((candidate) =>
+    (candidate.stemType === "drums" || candidate.stemType === "percussion")
+    && candidate.projectId === projectId
+    && candidate.sourceAssetId === profile.sourceAssetId
+    && candidate.separationJobId === separationJobId);
+  if (!stem) return;
+
+  let bytes: Buffer;
+  try {
+    bytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
+  } catch {
+    profile.grooveWarnings = [...(profile.grooveWarnings ?? []), "The separated drum stem for this track could not be read; other timing evidence remains in use."];
+    return;
+  }
+  const actualChecksum = createHash("sha256").update(bytes).digest("hex");
+  if (actualChecksum !== stem.checksumSha256) {
+    profile.grooveWarnings = [...(profile.grooveWarnings ?? []), "The separated drum stem checksum does not match its recorded value; its tempo and beat grid were excluded."];
+    return;
+  }
+  const decoded = decodeWav16(new Uint8Array(bytes));
+  if (!decoded || decoded.sampleRate !== RENDER_SAMPLE_RATE || decoded.channels !== 2
+    || Math.abs(decoded.frames / RENDER_SAMPLE_RATE * 1000 - profile.durationMs) > 1_100) {
+    profile.grooveWarnings = [...(profile.grooveWarnings ?? []), "The separated drum stem is not a full-length 44.1 kHz stereo WAV; its timing evidence was excluded."];
+    return;
+  }
+
+  const cacheKey = `${stem.id}:${stem.checksumSha256}:${DESKTOP_ANALYSIS_ENGINE_VERSION}`;
+  let analysis = separatedStemTimingCache.get(cacheKey);
+  if (!analysis) {
+    analysis = analyseStereoPcm(decoded.samples);
+    while (separatedStemTimingCache.size >= STEM_TIMING_CACHE_MAX_ENTRIES) {
+      const oldestKey = separatedStemTimingCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      separatedStemTimingCache.delete(oldestKey);
+    }
+    separatedStemTimingCache.set(cacheKey, analysis);
+  }
+  const stemBpm = trustedAnalysisBpm(analysis.bpm, analysis.bpmConfidence);
+  const stemBeatGrid = trustedAnalysisBeatGrid(analysis.beatGridMs, analysis.bpmConfidence, analysis.beatConfidence);
+  if (stemBpm === null && stemBeatGrid === null) return;
+
+  const provenance: MusicalEvidenceProvenance = {
+    analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+    analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256: profile.sourceChecksumSha256,
+    subject: "separated-stem",
+    stemAssetId: stem.id,
+    stemType: stem.stemType,
+    stemChecksumSha256: actualChecksum,
+    persistence: "request",
+  };
+  const currentBpmConfidence = profile.bpmConfidence ?? 0;
+  if (stemBpm !== null && (trustedAnalysisBpm(profile.bpm, profile.bpmConfidence) === null
+    || (analysis.bpmConfidence ?? 0) > currentBpmConfidence)) {
+    profile.bpm = stemBpm;
+    profile.bpmConfidence = analysis.bpmConfidence;
+    if (profile.evidence) {
+      profile.evidence.features.tempo = measuredEvidence({
+        bpm: stemBpm,
+        confidence: analysis.bpmConfidence,
+      }, provenance);
+    }
+  }
+  const currentBeatGrid = trustedAnalysisBeatGrid(profile.beatGridMs, profile.bpmConfidence, profile.beatConfidence);
+  if (stemBeatGrid !== null && (currentBeatGrid === null
+    || (analysis.beatConfidence ?? 0) > (profile.beatConfidence ?? 0))) {
+    profile.beatGridMs = stemBeatGrid;
+    profile.beatConfidence = analysis.beatConfidence;
+    if (profile.evidence) {
+      profile.evidence.features.beatGrid = measuredEvidence({
+        beatsMs: stemBeatGrid,
+        confidence: analysis.beatConfidence,
+      }, provenance);
+    }
+  }
+  profile.grooveWarnings = [
+    ...(profile.grooveWarnings ?? []),
+    `Tempo/beat evidence was measured from the checksum-verified ${stem.stemType} stem of this source's completed separation (request-time, not saved as full-mix analysis).`,
+  ];
+}
+
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const tempDir = join(tmpdir(), `arena-mashup-${randomUUID()}`);
   try {
@@ -665,9 +791,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: "Pick two different tracks — the mashup needs a vocal source and an instrumental source." }, { status: 400 });
       }
 
-      const resolvedBedSource = await findBedSource(projectId, bedId);
+      const [resolvedVocalSource, resolvedBedSource] = await Promise.all([
+        findBedSource(projectId, vocalsId),
+        findBedSource(projectId, bedId),
+      ]);
       const [vocals, bed] = await Promise.all([
-        loadSourceProfile(projectId, vocalsId, "vocals"),
+        loadSourceProfile(projectId, vocalsId, "vocals", db, {
+          separationJobId: resolvedVocalSource.info.separationJobId,
+        }),
         loadSourceProfile(projectId, bedId, "instrumental", db, {
           separationJobId: resolvedBedSource.info.separationJobId,
         }),
@@ -675,6 +806,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (vocals === null || bed === null) {
         return Response.json({ error: "One of the tracks is not in this project." }, { status: 404 });
       }
+      await Promise.all([
+        applySeparatedDrumTiming(projectId, vocals, resolvedVocalSource),
+        applySeparatedDrumTiming(projectId, bed, resolvedBedSource),
+      ]);
 
       // If either profile lacks BPM or key analysis, decode real PCM, analyse on the fly, and persist
       if (vocals.bpm === null || vocals.musicalKey === null) {

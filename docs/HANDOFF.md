@@ -1,103 +1,56 @@
 # Arena handoff — read this first
 
-## Current: real full-track mashup route (planner v8)
+## Current: coherent, tempo-locked full-track mix (planner v9)
 
-Mashup planner v8 replaces the two things that made a whole-track result
-impossible when no cross-song passage candidate existed: the continuous
-single-offset overlay and the unconditional "replay the opening as a reprise"
-after an instrumental pocket. Both remain in the code only when they are the
-honest outcome. Concretely:
+The latest real-track iteration fixes the failure reported in the prior listen:
+the segmented plan could land individual fragments on beats while compressing
+long donor pauses, making the vocal feel sporadic. Planner v9 now tests
+whole-body offsets. One measured beat anchors the first voice-active window;
+every later window stays at its original donor-relative time under one global
+tempo ratio. The output remains one continuous vocal clip, so no activity
+window is cut, independently relocated, reordered, or dropped.
 
-* `planMashup` now evaluates a **full-track arrangement** whenever the
-  stretched vocal body is at least ~75% of the bed's capacity and no
-  passage-search match was selected. Voiced material is merged into ordered
-  voiced units (≤120 units, ≥150 ms each, onsets capped per unit) and
-  monotonically assigned to bed slots (trusted beat-grid slots when a grid
-  with ≥8 measured beats exists, otherwise inferred section boundaries when
-  3–600 exist, otherwise 2-second ticks). Units are **never reordered,
-  duplicated, re-cropped, or overlapping**. Per unit, a feature score combines
-  measured vocal-to-bed chord-tone agreement (0.5), measured drum/bass onset
-  overlap (0.35), and a section-role hypothesis (0.15, explicitly not a
-  semantic label). The monotone dynamic program maximizes the number of placed
-  voiced units first; musical score and the existing small long-gap penalty
-  break ties. It no longer drops a feasible lyric unit merely to improve the
-  relative score. The final unit is not penalized for "gap after the end of the
-  chain".
-* The segmented arrangement is selected only when it preserves every unit
-  placed by the continuous overlay **and** beats that overlay's score by an
-  absolute 0.5 (or 3%, whichever is larger). Otherwise the continuous overlay
-  is kept. The comparison (`segmentedScore`, `overlayScore`,
-  `improvementRatio`), both candidate unit counts, evidence availability flags,
-  and per-unit placements are included in the initial saved remix-version
-  snapshot and carried into later versions. Mashup Studio displays the chosen
-  mode and that evidence; the relative score is not presented as a quality
-  prediction.
-* Each segment's fade is capped at half its own timeline duration. Without
-  that bound, short real vocal units could request fades whose combined
-  duration exceeded the clip and the Studio's strict state validator rejected
-  the first edit.
-* The renderer receives ordinary segments in both modes, so save/reopen/
-  edit/restore/export and every existing render path are unchanged. Segmented
-  placements that are contiguous in both donor and bed time are merged into
-  ordinary multi-second segments; `arrangement.placements` keeps the per-unit
-  record and `unitsPlaced`/`unitsSkipped` always describe units, not merged
-  segments.
-* Units that cannot end before the bed does are reported as skipped with an
-  explicit warning; the bed's end is respected and no material is invented to
-  fill it.
-* The long-bed second segment (bed significantly longer than the singable
-  body) no longer replays `body.fromMs`. It requires `chooseGroundedReprise`:
-  (1) a persisted repeated-passage section label (pattern/rhythm/
-  vocal-pattern recurrence, latest occurrence, duration agreement ≥50%, its
-  own 2× occurrence count disclosed as a *structural hypothesis, not a
-  semantic chorus claim*); (2) the donor's final sustained measured vocal
-  activity passage (≥1.5 s), (3) the donor's final pitch-continuity run
-  (≥1.5 s) — both labelled a **closing echo**, explicitly not an
-  evidence-backed recurrence; (4) the donor's final detected non-intro section
-  past the body midpoint, never identical to the opening window — labelled a
-  closing encore. When none of these exists, the bed runs instrumental and a
-  warning says so instead of replaying the opening verse. The previous
-  "intelligent reprise" was never asserted by any test and is gone.
-* Reprise semantics stay separate from timing, quality, and form evidence.
-  Recurrence labels are still unverified hypotheses about structure; words or
-  lyric meaning are still not analyzed.
+The production route also checks the latest completed separation for both
+tracks. It uses a separated drum stem for BPM/beat-grid evidence only when the
+job's recorded source checksum still matches the source, the stored stem bytes
+match their checksum, the full-length WAV is 44.1 kHz stereo, and analysis
+confidence clears the existing trust threshold. This measurement is marked
+request-time separated-stem evidence; it does not overwrite or masquerade as
+full-mix `source_analyses`. Low-confidence or stale evidence keeps the prior
+safe behavior.
 
-Real acceptance used the actual full-length separated sources: Queen's
-*Another One Bites the Dust* vocal stem (222.67 s) over the September drums,
-bass, and other stems (215.14 s), with source and stem checksums recorded.
-The production route generated a segmented plan with **44/44 voiced units
-placed, zero skipped**, and no reordering or duplication. Its relative score
-was 29.7926 against 17.8199 for the continuous overlay (+67.2%); that score is
-only the planner's uncalibrated evidence ranking. The persisted Studio session
-contained 4 correctly-provenanced tracks and 47 clips (44 vocal placements
-plus 3 bed stems). The route then completed plan → save → reopen → versioned
-edit → restore → WAV export. The saved 44.1 kHz stereo export was 214.858 s,
-37,901,026 bytes, checksum
-`b29385bf2d8dd5f5e3936b6f91e6974c5564b9e8030b90b7aa1500bd7413d648`.
-The independent PCM inspection found peak 0.2441, RMS 0.02225 and no clipped
-samples. This proves the real persisted route works; it does **not** certify
-that the arrangement sounds musical. The reproducible evidence report is
-`generated-artifacts/waveyard-real-world-acceptance/full-song-route-planner-v10-d80a6e9.json`.
-Full local artifacts are kept out of Git. The `listen-ab/` folder contains
-the previous continuous overlay and new segmented candidate as separate MP3s
-for listening comparison.
+On Queen's *Another One Bites the Dust* vocals over Earth, Wind & Fire's
+*September* instrumental stems, isolated drums measured Queen at 109.957 BPM
+(confidence 0.737) and September at 126.048 BPM (confidence 0.891). The planner
+therefore applies a pitch-preserving WSOLA ratio of 0.87234 and shifts the
+entire vocal body to 21.098 s as one clip. All 44 coarse voice-activity windows
+remain in one source-relative timing map. The relative placement scores
+(21.598 vs 20.268) are uncalibrated ranking values, not a listening-quality
+metric.
 
-Verification: **36/36** mashup planner tests, **2/2** persisted database
-round-trip tests, **1/1** full real-stem production-route acceptance, full
-`pnpm run typecheck`, and `git diff --check` pass. Tests used disposable local
-databases; no user or production database was modified.
+The full production route completed plan → save → reopen → versioned edit →
+restore → WAV export using the real separated files. The restored Studio
+session contained 4 tracks and 4 clips (one vocal clip plus three bed stems).
+Export: 214.858 s, 44.1 kHz stereo PCM16, 37,901,026 bytes, checksum
+`7245b5a9dfaf3ea3e03b7ac0913e1781a18a7825eeb1b0b78652a71113d855c8`.
+The request-time evidence report is
+`generated-artifacts/waveyard-real-world-acceptance/full-song-route-coherent-tempo.json`;
+the full files remain ignored local artifacts. A listening copy was attached in
+the conversation for the owner to judge.
 
-**Still unproven:** no human listening judgment has been recorded. The +67.2%
-ranking is not a quality metric; some individual placements lack harmonic
-frames, and any score is only evidence for where units might fit. The
-arrangement changes the gaps between vocal units while preserving each unit's
-internal time, so an A/B listen must decide whether the phrases feel natural.
-The route test does not establish verse/chorus detection, lyric timing,
-transcription accuracy, or a cross-song semantic understanding. The existing
-analysis has no word-level transcript/forced-alignment feature. The live
-preview screenshot reached Waveyard's empty library page; the changed
-arrangement detail panel was typechecked and covered by API assertions, but not
-visually exercised in its signed-in Studio state.
+Verification: **37/37** mashup planner tests; **1/1** full real-stem production
+route including save/reopen/edit/restore/export; `pnpm run typecheck:libs`,
+`pnpm --filter @workspace/api-server run typecheck`,
+`pnpm --filter @workspace/arenaforge run typecheck`, and `git diff --check`
+pass. Tests used a disposable local database; no user or production database
+was modified.
+
+**Still unproven:** the owner has not yet judged this audio, so it is not
+certified as a good-sounding mashup. The 44 windows are coarse activity
+measurements, not transcript phrases. This does not establish verse/chorus
+accuracy, lyric timing, or semantic song-structure understanding. The live
+preview screenshot reached Waveyard's empty library page, so the updated
+arrangement detail panel has not been visually checked in a signed-in Studio.
 
 ## Timestamped transcript opportunity
 

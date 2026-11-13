@@ -240,7 +240,7 @@ test("plan: isolated transient coincidence cannot move the entry without a compa
   assert.ok(result.plan.rationale.some((line) =>
     line.includes("0/3 pitch-continuity run starts overlap measured drum transients")
     && line.includes("0/3 overlap low-band bass attacks")
-    && line.includes("transient coincidences did not move the entry"),
+    && line.includes("transient coincidences alone do not shift this passage-entry fallback"),
   ));
   assert.ok(result.plan.warnings.some((line) =>
     line.includes("measured-beat fallback"),
@@ -1341,9 +1341,9 @@ test("extension: no sections → no plan (honest null)", () => {
   assert.equal(planSongExtension(profile({ bpm: 120, durationMs: 10_000, sections: [] })), null);
 });
 
-// --- full-track arrangement regressions (planner v7) -----------------------
+// --- full-track arrangement regressions (planner v9) -----------------------
 
-test("plan: full-track arrangement re-maps voiced units and records the segmented decision", () => {
+test("plan: whole-body placement preserves phrase gaps instead of snapping fragments independently", () => {
   const vocalFrames = Array.from({ length: 111 }, (_, index) => ({
     timestampMs: 500 + index * 100,
     frequencyHz: 261.625565,
@@ -1362,9 +1362,9 @@ test("plan: full-track arrangement re-maps voiced units and records the segmente
     ],
     vocalPitchFrames: vocalFrames,
   });
-  // Every chord before 11s clashes with the C4-only phrase (F# major); only the
-  // bed's final C chord supports the vocal, so re-mapping the units beats the
-  // continuous overlay decisively while preserving vocal order.
+  // Every chord before 11s clashes with the C4-only phrase (F# major); the
+  // ending chord can tempt a fragment-level planner to move only the second
+  // phrase. The correct output keeps the whole performance together.
   const bed = profile({
     role: "instrumental", sourceChecksumSha256: "b".repeat(64), durationMs: 15_000,
     beatGridMs: Array.from({ length: 31 }, (_, i) => i * 500), beatConfidence: 0.95, bpmConfidence: 0.95,
@@ -1380,26 +1380,28 @@ test("plan: full-track arrangement re-maps voiced units and records the segmente
   const result = planMashup(vocals, bed);
   assert.ok(result.ok);
   const arrangement = result.plan.arrangement;
-  assert.ok(arrangement, "the full-track arrangement decision is recorded");
-  assert.equal(arrangement.selected, "segmented");
+  assert.ok(arrangement, "the full-track placement comparison is recorded");
+  assert.ok(arrangement.selected === "continuous-overlay" || arrangement.selected === "coherent-overlay");
   assert.equal(arrangement.unitsTotal, 2);
-  assert.equal(arrangement.unitsPlaced, 2);
+  assert.equal(arrangement.unitsPlaced, arrangement.unitsTotal);
   assert.equal(arrangement.unitsSkipped, 0);
-  assert.equal(arrangement.segmentedUnitsPlaced, 2);
+  assert.equal(arrangement.coherentUnitsPlaced, 2);
   assert.equal(arrangement.continuousUnitsPlaced, 2);
-  assert.ok(arrangement.segmentedScore > arrangement.overlayScore);
   assert.equal(arrangement.placements.length, 2);
-  // Vocal order is preserved: units are never reordered, duplicated, or cropped.
+  // Phrase order and spacing are preserved by one global offset/tempo map.
   assert.ok(arrangement.placements[0]!.donorFromMs < arrangement.placements[1]!.donorFromMs);
   assert.equal(arrangement.placements[0]!.donorFromMs, 500);
   assert.equal(arrangement.placements[0]!.donorToMs, 5_500);
   assert.equal(arrangement.placements[1]!.donorFromMs, 6_500);
   assert.equal(arrangement.placements[1]!.donorToMs, 11_500);
-  // Segments carry the same units in the same order.
-  assert.equal(result.plan.segments.length, 2);
-  assert.equal(result.plan.segments[0]!.vocalsFromMs, 500);
-  assert.equal(result.plan.segments[0]!.sourceRole, "vocals");
-  assert.equal(result.plan.segments[1]!.vocalsFromMs, 6_500);
+  assert.equal(
+    arrangement.placements[1]!.bedStartMs - arrangement.placements[0]!.bedStartMs,
+    Math.round((6_500 - 500) * result.plan.vocalsStretchRatio),
+    "the 6s donor spacing is preserved after the one global tempo change",
+  );
+  assert.equal(result.plan.segments.length, 1, "activity windows are not cut into separately relocated audio clips");
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 250, "the padded vocal body stays intact");
+  assert.equal(result.plan.segments[0]!.vocalsToMs, 11_750);
 });
 
 test("plan: full-track arrangement keeps the continuous overlay when no re-placement wins decisively", () => {
@@ -1425,12 +1427,12 @@ test("plan: full-track arrangement keeps the continuous overlay when no re-place
   const arrangement = result.plan.arrangement;
   assert.ok(arrangement, "the comparison is recorded even when the overlay wins");
   assert.equal(arrangement.selected, "continuous-overlay");
-  assert.equal(arrangement.segmentedUnitsPlaced, arrangement.unitsTotal);
+  assert.equal(arrangement.coherentUnitsPlaced, arrangement.unitsTotal);
   assert.equal(arrangement.continuousUnitsPlaced, arrangement.unitsTotal);
-  assert.ok(arrangement.segmentedScore - arrangement.overlayScore <= Math.max(0.5, 0.03 * Math.abs(arrangement.overlayScore)) + 1e-9);
+  assert.ok(arrangement.coherentScore - arrangement.overlayScore <= Math.max(0.5, 0.03 * Math.abs(arrangement.overlayScore)) + 1e-9);
   assert.equal(result.plan.segments.length, 1);
   assert.equal(result.plan.segments[0]!.vocalsFromMs, 250, "the padded overlay body is kept intact");
-  assert.ok(result.plan.warnings.some((warning) => warning.includes("continuous overlay")),
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("whole-body move")),
     "the retained overlay is disclosed in the warnings");
 });
 
@@ -1456,7 +1458,7 @@ test("plan: long bed with no donor grounding keeps one body segment and warns in
     "no segment replays the opening body later in the bed");
 });
 
-test("plan: a unit that cannot fit before the bed ends is reported, not silently dropped", () => {
+test("plan: too-short bed keeps one full vocal clip and reports the bed-end truncation", () => {
   const vocals = profile({
     role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 12_000,
     beatGridMs: Array.from({ length: 25 }, (_, i) => i * 500), beatConfidence: 0.95, bpmConfidence: 0.95,
@@ -1474,15 +1476,56 @@ test("plan: a unit that cannot fit before the bed ends is reported, not silently
   assert.ok(result.ok);
   const arrangement = result.plan.arrangement;
   assert.ok(arrangement, "the arrangement comparison is recorded");
-  assert.equal(arrangement.unitsPlaced, 1, "the first unit is placed; the second cannot fit before the bed ends");
-  assert.equal(arrangement.unitsSkipped, 1, "the unplaceable unit is counted as skipped, never silently re-placed");
-  assert.equal(arrangement.segmentedUnitsPlaced, 1);
-  assert.ok(result.plan.warnings.some((warning) => warning.includes("did not fit")));
-  // The unplaceable unit's donor range never appears in the output — nothing
-  // is faked to cover it, and the bed's end is respected.
-  assert.equal(result.plan.segments.some((segment) =>
-    segment.vocalsFromMs < 11_500 && segment.vocalsToMs > 6_500), false,
-    "the unplaceable unit is absent from the segments, and its absence is disclosed");
+  assert.equal(arrangement.unitsTotal, 2);
+  assert.equal(result.plan.segments.length, 1, "the vocal is not split to fake complete placement");
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 250);
+  assert.equal(result.plan.segments[0]!.vocalsToMs, 11_750);
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("bed's end")),
+    "the full donor clip's end truncation is disclosed");
   assert.equal(result.plan.segments.some((segment) => segment.mashupEndMs > 7_000), false,
     "no segment plays past the end of the bed");
+});
+
+test("plan: a longer bed may improve the fit only by shifting the whole vocal body", () => {
+  const vocalFrames = Array.from({ length: 111 }, (_, index) => ({
+    timestampMs: 500 + index * 100,
+    frequencyHz: 261.625565,
+    midiFloat: 60,
+    nearestMidiNote: 60,
+    confidence: 0.95,
+    voiced: true,
+  }));
+  const vocals = profile({
+    role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 12_000,
+    bpmConfidence: 0.95,
+    vocalPhrases: [
+      { startMs: 500, endMs: 5_500, confidence: 0.95 },
+      { startMs: 6_500, endMs: 11_500, confidence: 0.95 },
+    ],
+    vocalPitchFrames: vocalFrames,
+  });
+  const bed = profile({
+    role: "instrumental", sourceChecksumSha256: "b".repeat(64), durationMs: 36_000,
+    bpmConfidence: 0.95,
+    beatGridMs: Array.from({ length: 73 }, (_, index) => index * 500),
+    beatConfidence: 0.95,
+    sections: [section("verse", 0, 14_000), section("chorus", 14_000, 36_000)],
+    harmonyEvents: [
+      { startMs: 0, endMs: 7_000, root: "F#", quality: "major", confidence: 0.05 },
+      { startMs: 7_000, endMs: 14_000, root: "F#", quality: "major", confidence: 0.05 },
+      { startMs: 14_000, endMs: 25_000, root: "C", quality: "major", confidence: 0.05 },
+      { startMs: 25_000, endMs: 36_000, root: "C", quality: "major", confidence: 0.05 },
+    ],
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  const arrangement = result.plan.arrangement;
+  assert.ok(arrangement);
+  assert.equal(arrangement.selected, "coherent-overlay",
+    "a better late backing section moves the whole donor performance together");
+  assert.ok(arrangement.coherentEntryMs > 10_000);
+  assert.equal(result.plan.segments.length, 1);
+  assert.equal(result.plan.segments[0]!.mashupStartMs, arrangement.coherentEntryMs);
+  assert.equal(arrangement.placements[1]!.bedStartMs - arrangement.placements[0]!.bedStartMs, 6_000,
+    "the donor's verse phrase spacing remains unchanged");
 });

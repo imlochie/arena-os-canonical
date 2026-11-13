@@ -271,14 +271,14 @@ content_type = "audio/mpeg"
 id = "qZaOR3axV0dIokqS06yMZ"
 uri = "file://generated-artifacts/waveyard-real-world-acceptance/listen-ab/continuous-overlay-baseline.mp3"
 type = "audio"
-title = "Waveyard A/B — continuous overlay"
-description = "The earlier single-offset Queen vocals over the September bed. Full 3:35 mix, converted from the production-route WAV for listening."
+title = "Waveyard previous continuous baseline"
+description = "Reference only: the earlier whole-track overlay before tempo was measured from the isolated drum stems. Compare its timing and flow with the new tempo-locked whole-body mix."
 logical_id = "2176acbc-1b31-4fd7-8ae4-b5ad897c8ce5"
 content_hash = "sha256:525918df664cc9751a263f932f346fddc4ec19ef77dd96558c9782b7bda15a2d"
 size = 5158496
 mtime_ms = 1794570067673
-storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/2176acbc-1b31-4fd7-8ae4-b5ad897c8ce5/069cdc71-9dbd-4e64-8731-f9f92ee1c9f8"
-storage_version_token = "1794570642164582"
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/2176acbc-1b31-4fd7-8ae4-b5ad897c8ce5/363b5234-71fe-4ee6-82b5-1465964d32f6"
+storage_version_token = "1794573549914450"
 content_type = "audio/mpeg"
 
 [[outputs]]
@@ -293,4 +293,18 @@ size = 5158496
 mtime_ms = 1794570488481
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/f423ab0b-d864-43f2-a0a7-c5e8fa6c98e4/fae7de71-073d-4161-af17-6bb8f6a64f26"
 storage_version_token = "1794570642902746"
+content_type = "audio/mpeg"
+
+[[outputs]]
+id = "61Os1vrYjuTqy7ac46Z3v"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/continuous-tempo-locked-whole-body.mp3"
+type = "audio"
+title = "Waveyard tempo-locked whole-body mix"
+description = "A full-length real-stem test: Queen vocals globally tempo-matched from 109.957 to the 126.048 BPM September bed, with the vocal performance kept in one continuous clip."
+logical_id = "93671b0c-ee1f-4eb1-b40e-ee736bd14431"
+content_hash = "sha256:ca21dd12a09c0a1d3f60f073cdde8d3c4157f2df903d06a9d1da4169d9fd7947"
+size = 4920238
+mtime_ms = 1794573337609
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/93671b0c-ee1f-4eb1-b40e-ee736bd14431/d88b6f8e-2bb9-4730-b573-f00c978b3f60"
+storage_version_token = "1794573346102149"
 content_type = "audio/mpeg"

@@ -503,6 +503,36 @@ test(
     }).returning({ id: schema.stemAssets.id });
     assert.ok(vocalsStemRow);
 
+    if (realFixture) {
+      const donorDrumsWav = await readRealStem(realFixture.vocals, "drums");
+      const donorDrumsPath = path.join(fixtureRoot, "donor-drums-stem.wav");
+      await writeFile(donorDrumsPath, donorDrumsWav);
+      await storage.putFile("mashup-fixture/donor-drums-stem.wav", donorDrumsPath);
+      const decodedDonorDrums = decodeWav16(donorDrumsWav);
+      assert.ok(decodedDonorDrums, "the donor's real separated drum stem must be decodable");
+      assert.equal(decodedDonorDrums.sampleRate, RATE);
+      assert.equal(decodedDonorDrums.channels, 2);
+      assert.ok(Math.abs(decodedDonorDrums.frames / RATE - vocalsDurationSeconds) < 1.1,
+        "the donor drum timing evidence must cover the source timeline");
+      await dbModule.db.insert(schema.stemAssets).values({
+        projectId: project.id,
+        sourceAssetId: vocalsSource.id,
+        separationJobId: vocalsJob.id,
+        stemType: "drums",
+        engine: realFixture.vocals.separation.engine,
+        model: realFixture.vocals.separation.models.drums.id,
+        modelVersion: realFixture.vocals.separation.models.drums.sha256,
+        storageKey: "mashup-fixture/donor-drums-stem.wav",
+        checksumSha256: sha256(donorDrumsWav),
+        durationSeconds: vocalsDurationSeconds,
+        sampleRate: RATE,
+        channels: 2,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: donorDrumsWav.length,
+      });
+    }
+
     if (realFixture && vocalsStemRow) {
       const [{
         decodeMonoPcm,
@@ -836,13 +866,14 @@ test(
           crossfadeMs: number;
         }>;
         arrangement?: {
-          selected: "continuous-overlay" | "segmented";
+          selected: "continuous-overlay" | "coherent-overlay";
           unitsTotal: number;
           unitsPlaced: number;
           unitsSkipped: number;
-          segmentedUnitsPlaced: number;
+          coherentUnitsPlaced: number;
           continuousUnitsPlaced: number;
-          segmentedScore: number;
+          coherentScore: number;
+          coherentEntryMs: number;
           overlayScore: number;
           placements: Array<{ donorFromMs: number; donorToMs: number; bedStartMs: number }>;
           rationale: string[];
@@ -875,8 +906,22 @@ test(
       };
       bed?: { source: string; warning: string };
       evidence?: {
-        vocals: Record<string, { status: string; persistence?: string }>;
-        bed: Record<string, { status: string; persistence?: string }>;
+        vocals: Record<string, {
+          status: string;
+          persistence?: string;
+          subject?: string;
+          stemAssetId?: string;
+          stemType?: string;
+          stemChecksumSha256?: string;
+        }>;
+        bed: Record<string, {
+          status: string;
+          persistence?: string;
+          subject?: string;
+          stemAssetId?: string;
+          stemType?: string;
+          stemChecksumSha256?: string;
+        }>;
       };
     };
     if (realFixture) {
@@ -1035,20 +1080,43 @@ test(
       assert.ok(realArrangement, "the real separated-stem route must produce a full-track placement decision");
       assert.equal(realArrangement.continuousUnitsPlaced, realArrangement.unitsTotal,
         "the continuous baseline must retain every eligible vocal unit");
-      assert.equal(realArrangement.segmentedUnitsPlaced, realArrangement.unitsTotal,
-        "the segmented candidate must retain every eligible vocal unit instead of dropping a phrase for score");
+      assert.equal(realArrangement.coherentUnitsPlaced, realArrangement.unitsTotal,
+        "the whole-body candidate must retain every eligible vocal unit");
       assert.equal(realArrangement.unitsSkipped, 0,
         "no voice-bearing unit may be silently lost when a full placement fits");
-      assert.equal(realArrangement.selected, "segmented",
-        "the real measured evidence favors a full-track segmented candidate once all vocal units are preserved");
+      assert.equal(realArrangement.selected, "coherent-overlay",
+        "the real evidence may move the full vocal body, but must never relocate fragments independently");
+      assert.ok(planBody.evidence?.vocals.tempo,
+        "the route exposes tempo evidence used to synchronize the donor");
+      assert.equal(planBody.evidence?.vocals.tempo.persistence, "request");
+      assert.equal(planBody.evidence?.vocals.tempo.subject, "separated-stem");
+      assert.equal(planBody.evidence?.vocals.tempo.stemType, "drums",
+        "the donor's isolated drums, rather than a low-confidence full mix, establish its pulse");
+      assert.equal(planBody.evidence?.bed.tempo.subject, "separated-stem");
+      assert.equal(planBody.evidence?.bed.tempo.stemType, "drums",
+        "the bed tempo also comes from its isolated drums when that measurement is more confident");
+      for (const timingEvidence of [planBody.evidence.vocals.tempo, planBody.evidence.bed.tempo]) {
+        assert.ok(timingEvidence.stemAssetId, "the timing source identifies the exact separated stem asset");
+        assert.match(timingEvidence.stemChecksumSha256 ?? "", /^[a-f0-9]{64}$/,
+          "the request-time timing evidence carries the validated stem checksum");
+      }
+      assert.ok(planBody.plan.vocalsStretchRatio > 0.84 && planBody.plan.vocalsStretchRatio < 0.91,
+        "the actual approximately 110 BPM donor is time-matched to the approximately 126 BPM bed");
+      assert.equal(planBody.plan.segments.length, 1,
+        "the mix preserves the full vocal flow as one clip instead of producing dozens of choppy fragments");
+      assert.ok(realArrangement.placements.length >= 30);
+      assert.ok(Math.abs(
+        (realArrangement.placements.at(-1)!.bedStartMs - realArrangement.placements[0]!.bedStartMs)
+        - Math.round(
+          (realArrangement.placements.at(-1)!.donorFromMs - realArrangement.placements[0]!.donorFromMs)
+          * planBody.plan.vocalsStretchRatio,
+        ),
+      ) <= 1, "all voice-active windows keep one global source-relative timing map after tempo stretch, within 1 ms rounding");
       assert.ok(planBody.plan.segments.every((segment) =>
         segment.crossfadeMs * 2 <= segment.mashupEndMs - segment.mashupStartMs),
       "every planned clip's two fades must fit within its own timeline span so the real Studio can save it");
-      assert.equal(planBody.plan.vocalsStretchRatio, 1,
-        "low-confidence donor tempo must not be presented as verified beat synchronization");
       assert.equal(planBody.plan.vocalsPitchSemitones, 0,
         "low-confidence keys must not trigger an automatic pitch transform");
-      assert.ok(planBody.plan.warnings.some((warning) => warning.includes("Automatic tempo stretching withheld")));
       assert.ok(planBody.plan.warnings.some((warning) => warning.includes("Key analysis confidence is below the trusted threshold")));
       assert.ok(planBody.plan.durationMs >= (bedDurationSeconds - 1) * 1000,
         "the arrangement must span essentially the complete instrumental source");

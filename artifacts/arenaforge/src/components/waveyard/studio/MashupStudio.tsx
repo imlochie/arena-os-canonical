@@ -361,20 +361,23 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           {plan.arrangement && (
             <details className="mashup-arrangement" data-testid="details-mashup-arrangement">
               <summary>
-                Whole-track placement · {plan.arrangement.selected === "segmented" ? "repositioned" : "kept continuous"}
+                Whole-track placement · {plan.arrangement.selected === "coherent-overlay" ? "moved as one flow" : "kept continuous"}
                 {" · "}{plan.arrangement.unitsPlaced}/{plan.arrangement.unitsTotal} vocal units
               </summary>
               <p>
                 Relative placement evidence, not a quality prediction or verse/chorus label.
-                {" "}Segmented {plan.arrangement.segmentedScore.toFixed(2)} · continuous {plan.arrangement.overlayScore.toFixed(2)}
+                {" "}Coherent {plan.arrangement.coherentScore.toFixed(2)} · current entry {plan.arrangement.overlayScore.toFixed(2)}
                 {plan.arrangement.improvementRatio === null
                   ? ""
                   : ` · difference ${(plan.arrangement.improvementRatio * 100).toFixed(1)}%`}
               </p>
               <p>
-                Units placed: segmented {plan.arrangement.segmentedUnitsPlaced}/{plan.arrangement.unitsTotal}
+                Units placed: coherent {plan.arrangement.coherentUnitsPlaced}/{plan.arrangement.unitsTotal}
                 {" · "}continuous {plan.arrangement.continuousUnitsPlaced}/{plan.arrangement.unitsTotal}
               </p>
+              {plan.arrangement.selected === "coherent-overlay" && (
+                <p>Whole vocal body starts at {(plan.arrangement.coherentEntryMs / 1000).toFixed(1)}s; all internal pauses stay in their original order.</p>
+              )}
               {plan.arrangement.warnings.map((warning, index) => <p key={`${warning}-${index}`} role="status">{warning}</p>)}
               <p>
                 Available: {[
