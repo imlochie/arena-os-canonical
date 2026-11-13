@@ -13,7 +13,7 @@
  * the render is stateless — the user's own arrangement is never touched.
  */
 
-import { pitchShift, timeStretch } from "../elastic";
+import { pitchShift, timeStretch, type TimeStretchMapPoint } from "../elastic";
 import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
@@ -28,7 +28,7 @@ import {
 import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v10";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v11";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -91,6 +91,14 @@ export type MashupSegment = {
   /** Trapezoid fade in/out on the segment (ms). */
   crossfadeMs: number;
   rationale: string;
+  /** Optional gentle source-relative WSOLA correction derived from both trusted beat grids. */
+  localTempoMap?: {
+    points: Array<{ sourceMs: number; outputMs: number }>;
+    baselineFit: { matchedBeats: number; comparedBeats: number; meanErrorMs: number };
+    correctedFit: { matchedBeats: number; comparedBeats: number; meanErrorMs: number };
+    maximumRateDeviationPercent: number;
+    entryShiftMs: number;
+  };
   /** Stem role for multi-stem arrangement (defaults to "vocals"). */
   stemType?: string;
   sourceRole?: "vocals" | "instrumental";
@@ -1366,24 +1374,15 @@ type PairedBeatPhaseFit = {
   toleranceMs: number;
 };
 
-function nearestBeatErrorMs(timestampMs: number, beatGridMs: readonly number[]): number {
-  let low = 0;
-  let high = beatGridMs.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (beatGridMs[middle]! < timestampMs) low = middle + 1;
-    else high = middle;
-  }
-  return Math.min(
-    Math.abs((beatGridMs[low - 1] ?? Number.POSITIVE_INFINITY) - timestampMs),
-    Math.abs((beatGridMs[low] ?? Number.POSITIVE_INFINITY) - timestampMs),
-  );
-}
+const LOCAL_TEMPO_WARP_MAX_RATE_DEVIATION = 0.015;
+const LOCAL_TEMPO_WARP_ANCHOR_EVERY_BEATS = 4;
+const LOCAL_TEMPO_WARP_SMOOTHING_RADIUS_BEATS = 4;
 
 /**
  * Compares both songs' measured beat grids after the planned tempo transform.
- * A hit is a donor drum beat landing within the existing 90 ms groove tolerance
- * of a bed drum beat. It is phase evidence, not a judgement of mix quality.
+ * Each donor beat is compared with its corresponding bed beat, rather than any
+ * nearby beat. This prevents a one-beat cycle slip from looking like a perfect
+ * phase match. The tolerance is phase evidence, not mix-quality evidence.
  */
 function scorePairedBeatPhase(
   donorBeatGridMs: readonly number[],
@@ -1395,18 +1394,18 @@ function scorePairedBeatPhase(
 ): PairedBeatPhaseFit | null {
   if (donorBeatGridMs.length < 8 || bedBeatGridMs.length < 8
     || !Number.isFinite(stretchRatio) || stretchRatio <= 0) return null;
-  const donorBeats = donorBeatGridMs.filter((beat) => beat >= donorStartMs && beat <= donorEndMs);
-  if (donorBeats.length < 8) return null;
+  const pairs = correspondingBeatPairs(
+    donorBeatGridMs, bedBeatGridMs, donorStartMs, donorEndMs, bedStartMs, stretchRatio,
+  );
+  if (!pairs || pairs.length < 8) return null;
 
   let score = 0;
   let matchedBeats = 0;
   let errorTotal = 0;
   let comparedBeats = 0;
-  for (const donorBeatMs of donorBeats) {
-    const bedBeatMs = bedStartMs + (donorBeatMs - donorStartMs) * stretchRatio;
-    if (bedBeatMs < 0 || bedBeatMs > bedBeatGridMs[bedBeatGridMs.length - 1]!) continue;
-    const errorMs = nearestBeatErrorMs(bedBeatMs, bedBeatGridMs);
-    if (!Number.isFinite(errorMs)) continue;
+  for (const pair of pairs) {
+    const predictedBedBeatMs = bedStartMs + (pair.donorMs - donorStartMs) * stretchRatio;
+    const errorMs = Math.abs(pair.bedMs - predictedBedBeatMs);
     comparedBeats += 1;
     errorTotal += errorMs;
     if (errorMs <= GROOVE_MATCH_TOLERANCE_MS) {
@@ -1422,6 +1421,194 @@ function scorePairedBeatPhase(
     meanErrorMs: errorTotal / comparedBeats,
     toleranceMs: GROOVE_MATCH_TOLERANCE_MS,
   };
+}
+
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = sorted.length >>> 1;
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
+
+function correspondingBeatPairs(
+  donorGrid: readonly number[],
+  bedGrid: readonly number[],
+  donorStartMs: number,
+  donorEndMs: number,
+  bedStartMs: number,
+  stretchRatio: number,
+): Array<{ donorMs: number; bedMs: number }> | null {
+  const donorBeats = donorGrid.filter((beat) => beat >= donorStartMs && beat <= donorEndMs);
+  if (donorBeats.length < 8 || bedGrid.length < 8) return null;
+  const donorIntervals = donorBeats.slice(1).map((beat, index) => beat - donorBeats[index]!);
+  const bedIntervals = bedGrid.slice(1).map((beat, index) => beat - bedGrid[index]!);
+  const donorPeriodMs = median(donorIntervals);
+  const bedPeriodMs = median(bedIntervals);
+  if (!(donorPeriodMs > 0) || !(bedPeriodMs > 0)) return null;
+  const intervalsAreConsistent = (intervals: readonly number[], typicalMs: number) =>
+    intervals.every((interval) => interval >= typicalMs * 0.55 && interval <= typicalMs * 1.75);
+  // A missing/doubled detection causes an ordinal cycle slip. Do not fabricate
+  // correspondence across it; the caller can keep the unwarped arrangement.
+  if (!intervalsAreConsistent(donorIntervals, donorPeriodMs)
+    || !intervalsAreConsistent(bedIntervals, bedPeriodMs)) return null;
+  const scaledPeriodRatio = donorPeriodMs * stretchRatio / bedPeriodMs;
+  const beatStride = [0.5, 1, 2].sort((left, right) =>
+    Math.abs(left - scaledPeriodRatio) - Math.abs(right - scaledPeriodRatio))[0]!;
+  if (Math.abs(beatStride - scaledPeriodRatio) > 0.08) return null;
+  const firstExpectedBedBeatMs = bedStartMs + (donorBeats[0]! - donorStartMs) * stretchRatio;
+  const bedStartIndex = nearestGridIndex(bedGrid, firstExpectedBedBeatMs);
+  const pairs: Array<{ donorMs: number; bedMs: number }> = [];
+  for (const [index, donorMs] of donorBeats.entries()) {
+    const bedMs = bedGrid[bedStartIndex + Math.round(index * beatStride)];
+    if (bedMs !== undefined) pairs.push({ donorMs, bedMs });
+  }
+  return pairs.length >= 8 ? pairs : null;
+}
+
+function outputTimeForSourceTime(
+  sourceMs: number,
+  points: readonly { sourceMs: number; outputMs: number }[],
+): number {
+  let low = 0;
+  let high = points.length - 1;
+  while (low + 1 < high) {
+    const middle = (low + high) >>> 1;
+    if (points[middle]!.sourceMs <= sourceMs) low = middle;
+    else high = middle;
+  }
+  const left = points[low]!;
+  const right = points[Math.min(points.length - 1, low + 1)]!;
+  const span = right.sourceMs - left.sourceMs;
+  const fraction = span > 0 ? (sourceMs - left.sourceMs) / span : 0;
+  return left.outputMs + fraction * (right.outputMs - left.outputMs);
+}
+
+function scorePairedBeatPhaseWithMap(
+  donorBeatGridMs: readonly number[],
+  bedBeatGridMs: readonly number[],
+  donorStartMs: number,
+  donorEndMs: number,
+  bedStartMs: number,
+  stretchRatio: number,
+  points: readonly { sourceMs: number; outputMs: number }[],
+): PairedBeatPhaseFit | null {
+  if (donorBeatGridMs.length < 8 || bedBeatGridMs.length < 8 || points.length < 2 || stretchRatio <= 0) return null;
+  const pairs = correspondingBeatPairs(donorBeatGridMs, bedBeatGridMs, donorStartMs, donorEndMs, bedStartMs, stretchRatio);
+  if (!pairs || pairs.length < 8) return null;
+  let matchedBeats = 0;
+  let errorTotal = 0;
+  let comparedBeats = 0;
+  for (const pair of pairs) {
+    const relativeSourceMs = pair.donorMs - donorStartMs;
+    if (relativeSourceMs < points[0]!.sourceMs || relativeSourceMs > points.at(-1)!.sourceMs) continue;
+    const mappedBedMs = bedStartMs + outputTimeForSourceTime(relativeSourceMs, points);
+    const errorMs = Math.abs(pair.bedMs - mappedBedMs);
+    comparedBeats += 1;
+    errorTotal += errorMs;
+    if (errorMs <= GROOVE_MATCH_TOLERANCE_MS) matchedBeats += 1;
+  }
+  return comparedBeats < 8 ? null : {
+    score: matchedBeats / comparedBeats,
+    matchedBeats,
+    comparedBeats,
+    meanErrorMs: errorTotal / comparedBeats,
+    toleranceMs: GROOVE_MATCH_TOLERANCE_MS,
+  };
+}
+
+/**
+ * Correct only slow, measured phase drift between the two trusted drum grids.
+ * The continuous vocal body remains one performance; rate changes are bounded
+ * to ±1.5% around the verified global BPM transform and smoothed over beats.
+ */
+function localTempoWarpForPair(
+  vocals: MashupSourceProfile,
+  bed: MashupSourceProfile,
+  body: { fromMs: number; toMs: number },
+  bedStartMs: number,
+  stretchRatio: number,
+): NonNullable<MashupSegment["localTempoMap"]> | null {
+  const donorGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
+  const bedGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  if (!donorGrid || !bedGrid || body.toMs <= body.fromMs || stretchRatio <= 0) return null;
+  const beatPairs = correspondingBeatPairs(donorGrid, bedGrid, body.fromMs, body.toMs, bedStartMs, stretchRatio);
+  if (!beatPairs || beatPairs.length < 24) return null;
+
+  const rawPhaseErrors = beatPairs.map((pair) =>
+    pair.bedMs - (bedStartMs + (pair.donorMs - body.fromMs) * stretchRatio));
+  const smoothedPhaseErrors = rawPhaseErrors.map((_error, index) => median(
+    rawPhaseErrors.slice(
+      Math.max(0, index - LOCAL_TEMPO_WARP_SMOOTHING_RADIUS_BEATS),
+      Math.min(rawPhaseErrors.length, index + LOCAL_TEMPO_WARP_SMOOTHING_RADIUS_BEATS + 1),
+    ),
+  ));
+  const initialPhase = smoothedPhaseErrors[0] ?? 0;
+  const anchorIndexes = new Set<number>([0, beatPairs.length - 1]);
+  for (let index = LOCAL_TEMPO_WARP_ANCHOR_EVERY_BEATS; index < beatPairs.length - 1; index += LOCAL_TEMPO_WARP_ANCHOR_EVERY_BEATS) {
+    anchorIndexes.add(index);
+  }
+
+  const sourceSpanMs = body.toMs - body.fromMs;
+  const beatAnchors = [...anchorIndexes].sort((left, right) => left - right).map((index) => ({
+    sourceMs: beatPairs[index]!.donorMs - body.fromMs,
+    requestedCorrectionMs: smoothedPhaseErrors[index]! - initialPhase,
+  }));
+  const anchors = [
+    { sourceMs: 0, requestedCorrectionMs: 0 },
+    ...beatAnchors.filter((anchor) => anchor.sourceMs > 0 && anchor.sourceMs < sourceSpanMs),
+    { sourceMs: sourceSpanMs, requestedCorrectionMs: smoothedPhaseErrors.at(-1)! - initialPhase },
+  ];
+  const points: Array<{ sourceMs: number; outputMs: number }> = [{ sourceMs: 0, outputMs: 0 }];
+  let previousCorrection = 0;
+  for (const anchor of anchors.slice(1)) {
+    const previous = points.at(-1)!;
+    const sourceDelta = anchor.sourceMs - previous.sourceMs;
+    if (sourceDelta <= 0) continue;
+    const correctionLimit = sourceDelta * stretchRatio * LOCAL_TEMPO_WARP_MAX_RATE_DEVIATION;
+    const correctionDelta = Math.max(-correctionLimit, Math.min(
+      correctionLimit,
+      anchor.requestedCorrectionMs - previousCorrection,
+    ));
+    const correction = previousCorrection + correctionDelta;
+    const outputMs = anchor.sourceMs * stretchRatio + correction;
+    if (outputMs <= previous.outputMs) return null;
+    points.push({ sourceMs: anchor.sourceMs, outputMs });
+    previousCorrection = correction;
+  }
+  if (points.length < 3 || points.at(-1)!.sourceMs !== sourceSpanMs) return null;
+
+  const baselinePoints = [
+    { sourceMs: 0, outputMs: 0 },
+    { sourceMs: sourceSpanMs, outputMs: sourceSpanMs * stretchRatio },
+  ];
+  const baselineFit = scorePairedBeatPhaseWithMap(donorGrid, bedGrid, body.fromMs, body.toMs, bedStartMs, stretchRatio, baselinePoints);
+  const correctedFit = scorePairedBeatPhaseWithMap(
+    donorGrid, bedGrid, body.fromMs, body.toMs, bedStartMs + initialPhase, stretchRatio, points,
+  );
+  if (!baselineFit || !correctedFit) return null;
+  const minimumGain = Math.max(3, Math.ceil(baselineFit.comparedBeats * 0.01));
+  if (correctedFit.matchedBeats < baselineFit.matchedBeats + minimumGain
+    || correctedFit.meanErrorMs > baselineFit.meanErrorMs - 3) return null;
+  return {
+    points,
+    baselineFit,
+    correctedFit,
+    maximumRateDeviationPercent: LOCAL_TEMPO_WARP_MAX_RATE_DEVIATION * 100,
+    entryShiftMs: initialPhase,
+  };
+}
+
+function nearestGridIndex(grid: readonly number[], timeMs: number): number {
+  let low = 0;
+  let high = grid.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (grid[middle]! < timeMs) low = middle + 1;
+    else high = middle;
+  }
+  const before = Math.max(0, low - 1);
+  const after = Math.min(grid.length - 1, low);
+  return Math.abs(grid[before]! - timeMs) <= Math.abs(grid[after]! - timeMs) ? before : after;
 }
 
 function arrangementFeatureScore(
@@ -2052,29 +2239,52 @@ export function planMashup(vocals: MashupSourceProfile, bed: MashupSourceProfile
     if (arrangement) {
       rationale.push(...arrangement.rationale);
       warnings.push(...arrangement.warnings);
+      if (arrangement.pairedBeatPhaseFit && arrangement.baselineBeatPhaseFit) {
+        rationale.push(
+          `paired beat-grid fit for the selected ${arrangement.selected} entry: ${arrangement.pairedBeatPhaseFit.matchedBeats}/${arrangement.pairedBeatPhaseFit.comparedBeats} beats within ${GROOVE_MATCH_TOLERANCE_MS} ms (mean ${arrangement.pairedBeatPhaseFit.meanErrorMs.toFixed(1)} ms); continuous baseline ${arrangement.baselineBeatPhaseFit.matchedBeats}/${arrangement.baselineBeatPhaseFit.comparedBeats} (mean ${arrangement.baselineBeatPhaseFit.meanErrorMs.toFixed(1)} ms)`,
+        );
+      }
     }
-    if (arrangement?.selected === "coherent-overlay" || stretchedMs >= bedRoomMs * 0.75) {
+    if (arrangement?.selected === "coherent-overlay" || stretchedMs >= bedRoomMs * 0.70) {
       // Keep the donor's full vocal body and all of its internal pauses in one
       // clip. Even when a different bed entry ranks better, move the whole
       // performance together rather than snapping short activity windows
       // independently and turning phrases into a sporadic sequence.
-      const selectedEntryMs = arrangement?.selected === "coherent-overlay"
+      const baseSelectedEntryMs = Math.round(arrangement?.selected === "coherent-overlay"
         ? arrangement.coherentEntryMs
-        : entry.at;
+        : entry.at);
+      const localTempoMap = localTempoWarpForPair(vocals, bed, body, baseSelectedEntryMs, stretchRatio);
+      const localEntryMs = Math.round(baseSelectedEntryMs + (localTempoMap?.entryShiftMs ?? 0));
+      const localWarpFitsBed = localTempoMap !== null && localEntryMs >= 0
+        && localEntryMs + Math.round(localTempoMap.points.at(-1)!.outputMs) <= bed.durationMs;
+      const acceptedTempoMap = localWarpFitsBed ? localTempoMap : null;
+      const selectedEntryMs = acceptedTempoMap ? localEntryMs : baseSelectedEntryMs;
       const selectedRoomMs = Math.max(0, bed.durationMs - selectedEntryMs);
-      const segEndMs = Math.min(bed.durationMs, selectedEntryMs + stretchedMs);
+      const effectiveVocalDurationMs = acceptedTempoMap
+        ? Math.round(acceptedTempoMap.points.at(-1)!.outputMs)
+        : stretchedMs;
+      const segEndMs = Math.round(Math.min(bed.durationMs, selectedEntryMs + effectiveVocalDurationMs));
       segments.push({
         mashupStartMs: selectedEntryMs,
         mashupEndMs: segEndMs,
         vocalsFromMs: body.fromMs,
         vocalsToMs: body.toMs,
         crossfadeMs: crossfadeForSegment(selectedEntryMs, segEndMs),
-        rationale: `complete vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(selectedEntryMs / 1000).toFixed(1)}s; internal donor timing is preserved`,
+        ...(acceptedTempoMap ? { localTempoMap: acceptedTempoMap } : {}),
+        rationale: acceptedTempoMap
+          ? `complete vocal body runs ${(effectiveVocalDurationMs / 1000).toFixed(1)}s from ${(selectedEntryMs / 1000).toFixed(1)}s; local WSOLA rate varies by at most ${acceptedTempoMap.maximumRateDeviationPercent.toFixed(1)}% to reduce paired-grid drift while preserving one continuous performance`
+          : `complete vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(selectedEntryMs / 1000).toFixed(1)}s; internal donor timing is preserved`,
         stemType: "vocals",
         sourceRole: "vocals",
       });
-      if (stretchedMs > selectedRoomMs) {
-        warnings.push(`The tempo-matched vocal (${(stretchedMs / 1000).toFixed(1)}s) is longer than the bed has room (${(selectedRoomMs / 1000).toFixed(1)}s) — it fades out at the bed's end.`);
+      if (acceptedTempoMap) {
+        rationale.push(
+          `bounded local beat correction shifted the entry ${acceptedTempoMap.entryShiftMs.toFixed(0)} ms and improved paired-grid fit from ${acceptedTempoMap.baselineFit.matchedBeats}/${acceptedTempoMap.baselineFit.comparedBeats} beats (mean ${acceptedTempoMap.baselineFit.meanErrorMs.toFixed(1)} ms) to ${acceptedTempoMap.correctedFit.matchedBeats}/${acceptedTempoMap.correctedFit.comparedBeats} (mean ${acceptedTempoMap.correctedFit.meanErrorMs.toFixed(1)} ms); this follows drum-grid timing, not lyric transcription or a subjective mix-quality score`,
+        );
+        warnings.push("Local beat correction uses a gently varying, pitch-preserving WSOLA rate on the complete vocal body. It does not identify lyric phrases or guarantee that the resulting mashup sounds good.");
+      }
+      if (effectiveVocalDurationMs > selectedRoomMs) {
+        warnings.push(`The tempo-matched vocal (${(effectiveVocalDurationMs / 1000).toFixed(1)}s) is longer than the bed has room (${(selectedRoomMs / 1000).toFixed(1)}s) — it fades out at the bed's end.`);
       }
     } else {
       // Bed is significantly longer than vocals. We build a structured multi-segment arrangement:
@@ -2239,7 +2449,22 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     if (span.length === 0) {
       return { segment, pcm: new Float32Array(0) };
     }
-    const stretched = timeStretch(span, plan.vocalsStretchRatio, sampleRate);
+    let stretched: StereoBuffer;
+    if (segment.localTempoMap) {
+      const inputFrames = span.length / 2;
+      const outputFrames = Math.max(1, Math.round(
+        segment.localTempoMap.points.at(-1)!.outputMs * sampleRate / 1000,
+      ));
+      const timeMap: TimeStretchMapPoint[] = segment.localTempoMap.points.map((point) => ({
+        outputFrame: Math.round(point.outputMs * sampleRate / 1000),
+        inputFrame: Math.round(point.sourceMs * sampleRate / 1000),
+      }));
+      timeMap[0] = { outputFrame: 0, inputFrame: 0 };
+      timeMap[timeMap.length - 1] = { outputFrame: outputFrames, inputFrame: inputFrames };
+      stretched = timeStretch(span, outputFrames / inputFrames, sampleRate, timeMap);
+    } else {
+      stretched = timeStretch(span, plan.vocalsStretchRatio, sampleRate);
+    }
     return { segment, pcm: pitchShift(stretched, plan.vocalsPitchSemitones, sampleRate) };
   });
 

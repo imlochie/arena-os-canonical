@@ -124,6 +124,23 @@ test("timeStretch preserves pitch: a 440 Hz sine stays 440 Hz", () => {
   }
 });
 
+test("timeStretch follows a validated local tempo map while preserving pitch and duration endpoints", () => {
+  const input = sine(2, 440, 0.3);
+  const outputFrames = Math.round(2.02 * FS);
+  const output = timeStretch(input, outputFrames / (input.length / 2), FS, [
+    { outputFrame: 0, inputFrame: 0 },
+    { outputFrame: FS, inputFrame: Math.round(0.99 * FS) },
+    { outputFrame: outputFrames, inputFrame: input.length / 2 },
+  ]);
+  assert.equal(output.length, outputFrames * 2);
+  assert.ok(Math.abs(dominantHz(output, FS) - 440) < 8);
+  assert.throws(() => timeStretch(input, outputFrames / (input.length / 2), FS, [
+    { outputFrame: 0, inputFrame: 0 },
+    { outputFrame: FS, inputFrame: Math.round(2.01 * FS) },
+    { outputFrame: outputFrames, inputFrame: input.length / 2 },
+  ]), /fit the audio buffers/);
+});
+
 test("timeStretch keeps a tone burst localised (transient preservation)", () => {
   // A 30 ms 1 kHz burst at 250 ms — a real transient with waveform to match,
   // unlike a single-sample impulse (degenerate for waveform similarity).

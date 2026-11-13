@@ -1582,3 +1582,141 @@ test("plan: donor vocal phase is preserved against both tracks' drum grids", () 
   assert.equal(result.plan.segments[0]!.mashupStartMs, 350);
   assert.ok(arrangement.rationale.some((line) => line.includes("donor drum beats are mapped to the bed drum grid")));
 });
+
+test("plan and render: bounded local tempo correction reduces slow donor-to-bed grid drift without cutting phrases", () => {
+  const donorBeats = Array.from({ length: 49 }, (_, index) => Math.round(index * 500 + index * index * 0.1));
+  const bedBeats = Array.from({ length: 61 }, (_, index) => index * 500);
+  const vocals = profile({
+    role: "vocals",
+    durationMs: 30_000,
+    bpm: 120,
+    bpmConfidence: 0.95,
+    beatConfidence: 0.95,
+    beatGridMs: donorBeats,
+    vocalActivityIntervals: Array.from({ length: 8 }, (_, index) => ({
+      startMs: 250 + index * 3_000,
+      endMs: 1_000 + index * 3_000,
+      confidence: 0.95,
+    })),
+  });
+  const bed = profile({
+    role: "instrumental",
+    durationMs: 30_000,
+    bpm: 120,
+    bpmConfidence: 0.95,
+    beatConfidence: 0.95,
+    beatGridMs: bedBeats,
+    drumEvents: Array.from({ length: 30 }, (_, index) => ({
+      timestampMs: index * 500,
+      strength: 0.8,
+      confidence: 0.95,
+    })),
+  });
+
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  const segment = result.plan.segments[0]!;
+  assert.ok(segment.localTempoMap, "a real local grid drift should earn a constrained time map");
+  assert.ok(Number.isInteger(segment.mashupStartMs) && Number.isInteger(segment.mashupEndMs),
+    "the planned clip timing must use integer milliseconds accepted by persisted Studio clips");
+  assert.equal(result.plan.segments.length, 1, "local correction must keep the vocal as one continuous performance");
+  assert.ok(segment.localTempoMap.correctedFit.matchedBeats > segment.localTempoMap.baselineFit.matchedBeats);
+  assert.ok(segment.localTempoMap.correctedFit.meanErrorMs < segment.localTempoMap.baselineFit.meanErrorMs);
+  assert.ok(segment.localTempoMap.maximumRateDeviationPercent <= 1.5);
+  const ratios = segment.localTempoMap.points.slice(1).map((point, index) =>
+    (point.outputMs - segment.localTempoMap!.points[index]!.outputMs)
+      / (point.sourceMs - segment.localTempoMap!.points[index]!.sourceMs));
+  assert.ok(ratios.every((ratio) => ratio >= result.plan.vocalsStretchRatio * 0.985 - 1e-6
+    && ratio <= result.plan.vocalsStretchRatio * 1.015 + 1e-6), "local tempo must stay inside the documented rate bound");
+
+  const donorClicks = new Float32Array(30 * RATE * 2);
+  for (const beatMs of donorBeats) {
+    const firstFrame = Math.round(beatMs * RATE / 1000);
+    for (let offset = 0; offset < Math.round(RATE * 0.012); offset += 1) {
+      const envelope = Math.sin(Math.PI * offset / (RATE * 0.012));
+      const sample = 0.75 * envelope * Math.sin(2 * Math.PI * 850 * offset / RATE);
+      donorClicks[(firstFrame + offset) * 2] = sample;
+      donorClicks[(firstFrame + offset) * 2 + 1] = sample;
+    }
+  }
+  const silentBed = new Float32Array(30 * RATE * 2);
+  const rendered = renderMashup(result.plan, {
+    vocals: donorClicks,
+    bed: silentBed,
+    sampleRate: RATE,
+  });
+  const baselinePlan = {
+    ...result.plan,
+    segments: result.plan.segments.map(({ localTempoMap: _localTempoMap, ...item }) => ({
+      ...item,
+      mashupStartMs: item.mashupStartMs - segment.localTempoMap!.entryShiftMs,
+      mashupEndMs: item.mashupStartMs - segment.localTempoMap!.entryShiftMs
+        + Math.round((item.vocalsToMs - item.vocalsFromMs) * result.plan.vocalsStretchRatio),
+    })),
+  };
+  const baselineRender = renderMashup(baselinePlan, {
+    vocals: donorClicks,
+    bed: silentBed,
+    sampleRate: RATE,
+  });
+  assert.ok(rendered.length > 0);
+  assert.equal(segment.mashupEndMs - segment.mashupStartMs, Math.round(segment.localTempoMap.points.at(-1)!.outputMs),
+    "the mapped output duration is the same duration persisted by the plan");
+  const targetBedBeatIndex = Math.round(segment.mashupStartMs / 500);
+  const inBodyBeats = donorBeats.filter((beat) => beat >= segment.vocalsFromMs && beat <= segment.vocalsToMs);
+  const alignmentError = (pcm: Float32Array) => inBodyBeats.slice(2, -2).map((_beat, offset) => {
+    const targetMs = bedBeats[targetBedBeatIndex + offset + 2]!;
+    const expectedFrame = Math.round(targetMs * RATE / 1000);
+    let peakFrame = expectedFrame;
+    let peak = 0;
+    const radius = Math.round(RATE * 0.2);
+    for (let frame = Math.max(0, expectedFrame - radius); frame < Math.min(pcm.length / 2, expectedFrame + radius); frame += 1) {
+      const magnitude = Math.max(Math.abs(pcm[frame * 2]!), Math.abs(pcm[frame * 2 + 1]!));
+      if (magnitude > peak) { peak = magnitude; peakFrame = frame; }
+    }
+    assert.ok(peak > 0.05, `mapped donor click is present near bed beat ${targetMs}ms`);
+    return Math.abs(peakFrame - expectedFrame) * 1000 / RATE;
+  });
+  const localMeanErrorMs = alignmentError(rendered).reduce((sum, error) => sum + error, 0) / (inBodyBeats.length - 4);
+  const globalMeanErrorMs = alignmentError(baselineRender).reduce((sum, error) => sum + error, 0) / (inBodyBeats.length - 4);
+  console.log(`WAVEYARD_LOCAL_TEMPO_ALIGNMENT ${JSON.stringify({ localMeanErrorMs, globalMeanErrorMs, pairedGridBefore: segment.localTempoMap.baselineFit, pairedGridAfter: segment.localTempoMap.correctedFit })}`);
+  assert.ok(localMeanErrorMs < globalMeanErrorMs,
+    `rendered local map should improve audible transient timing (${localMeanErrorMs.toFixed(1)}ms vs ${globalMeanErrorMs.toFixed(1)}ms)`);
+});
+
+test("plan: a missing beat detection disables ordinal pairing and keeps the safe continuous fallback", () => {
+  const donorBeats = Array.from({ length: 49 }, (_, index) => index * 500).filter((_beat, index) => index !== 24);
+  const bedBeats = Array.from({ length: 61 }, (_, index) => index * 500);
+  const vocals = profile({
+    role: "vocals",
+    durationMs: 24_000,
+    bpm: 120,
+    bpmConfidence: 0.95,
+    beatConfidence: 0.95,
+    beatGridMs: donorBeats,
+    vocalActivityIntervals: Array.from({ length: 8 }, (_, index) => ({
+      startMs: 250 + index * 2_500,
+      endMs: 900 + index * 2_500,
+      confidence: 0.95,
+    })),
+  });
+  const bed = profile({
+    role: "instrumental",
+    durationMs: 30_000,
+    bpm: 120,
+    bpmConfidence: 0.95,
+    beatConfidence: 0.95,
+    beatGridMs: bedBeats,
+    drumEvents: Array.from({ length: 60 }, (_, index) => ({
+      timestampMs: index * 500,
+      strength: 0.8,
+      confidence: 0.95,
+    })),
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  assert.equal(result.plan.arrangement?.evidence.pairedBeatGrids, false);
+  assert.equal(result.plan.segments.length, 1);
+  assert.equal(result.plan.segments[0]?.localTempoMap, undefined);
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("paired donor-and-bed beat-grid check was unavailable")));
+});

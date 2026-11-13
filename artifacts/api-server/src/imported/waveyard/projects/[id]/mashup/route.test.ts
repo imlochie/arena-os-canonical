@@ -1087,8 +1087,8 @@ test(
         "the whole-body candidate must retain every eligible vocal unit");
       assert.equal(realArrangement.unitsSkipped, 0,
         "no voice-bearing unit may be silently lost when a full placement fits");
-      assert.equal(realArrangement.selected, "coherent-overlay",
-        "the real evidence may move the full vocal body, but must never relocate fragments independently");
+      assert.ok(realArrangement.selected === "coherent-overlay" || realArrangement.selected === "continuous-overlay",
+        "the real evidence may move the full vocal body only when paired musical evidence earns the move; otherwise retain the continuous entry");
       assert.ok(planBody.evidence?.vocals.tempo,
         "the route exposes tempo evidence used to synchronize the donor");
       assert.equal(planBody.evidence?.vocals.tempo.persistence, "request");

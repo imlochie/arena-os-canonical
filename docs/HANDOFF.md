@@ -1,6 +1,46 @@
 # Arena handoff — read this first
 
-## Current: paired-drum-grid whole-body alignment (planner v10)
+## Current: paired-grid local WSOLA correction (planner v11)
+
+Waveyard now checks ordered donor/bed drum-beat correspondence across a whole
+vocal body and can apply a gentle, pitch-preserving local WSOLA rate map when
+the measured grids show recoverable drift. It does not independently move or
+cut vocal phrases. The local rate deviation is capped at 1.5%; missing,
+irregular, or incomplete grids retain the continuous fallback. Plan clip
+boundaries are rounded to integer milliseconds before persistence.
+
+Real full-track fixture: Queen's *Another One Bites the Dust* vocals over
+Earth, Wind & Fire's *September* separated bed. The complete route test passed:
+plan → render → save → reopen → versioned edit → restore → Studio WAV export.
+The route rendered a 215-second, 44.1 kHz stereo PCM16 WAV with no clipped
+frames. The returned plan retains the local time map in its version snapshot.
+
+On this pair, ordered corresponding-beat scoring found only 7/335 beats within
+90 ms (1,193 ms mean error) before local correction, then 174/335 (152 ms mean
+error) after it. This is a substantial measured reduction in drift, but 161/335
+beats remain outside the 90 ms window; it is not a reliable-alignment claim.
+The earlier v10 nearest-beat count is not directly comparable: it did not
+preserve beat order and could report a good fit after cycle slips.
+
+**Important remaining gap:** the direct mashup route WAV uses the local map.
+The separate editable Studio clip playback/export path still applies its
+clip-level global tempo operation and does not yet consume the map from the
+plan snapshot. The persisted route test proves the existing save/reopen/export
+workflow, not local-map parity in that separate export. Do not describe the
+Studio export as locally corrected until that path is integrated and tested.
+
+Verification: 54/54 elastic and mashup-planner tests; 1/1 real full-track
+production-route test including save/reopen/edit/restore/export;
+`pnpm run typecheck:libs`, API-server and ArenaForge typechecks, and
+`git diff --check` passed. The generated WAV and report are ignored local
+artifacts under `generated-artifacts/waveyard-real-world-acceptance/`.
+
+**Still unproven:** listening quality, lyric timing, verse/chorus accuracy,
+semantic structure, or consistent performance on other song pairs. The pair
+retains the honest continuous-placement fallback because no voice-bearing
+passage pair met all the measured rhythm, harmony and beat-phase requirements.
+
+## Previous: paired-drum-grid whole-body alignment (planner v10)
 
 The planner now compares timing from both songs instead of snapping vocal
 activity to the bed alone. When both checksum-current, completed drum stems
