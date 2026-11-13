@@ -1,6 +1,6 @@
 # Arena handoff — read this first
 
-## Current: connected vocal evidence, pitch fixes and all six recordings
+## Current: full-section form anchors and measured owner-note comparison
 
 The latest sweep includes all six owner uploads: September, Another One Bites
 the Dust, I Feel It Coming (80s remix), Stayin' Alive (Reflex revision),
@@ -14,40 +14,49 @@ the other four need real full-track separation before the same form path can
 evaluate them. The existing Queen full four-model CPU run took about 18 minutes;
 no additional long separation runs or model downloads were performed here.
 
-Three connected production corrections:
+Section engine 1.11 changes the form-recognition output, not the upstream pitch
+detector. Repeated eight-bar windows are treated as passage anchors, not as
+whole-section labels. The selected vocal/harmonic recurrence groups must still
+support an alternating verse→chorus→verse→chorus sequence and measured chorus
+lift. Each anchored interval ends at the next opposite-role anchor; a same-role
+hook reprise cannot extend a chorus through an unverified breakdown or outro.
+When there is no later opposite-role evidence, the final anchor is bounded to
+its directly observed eight bars. Other sections remain structural/unknown.
+Source-section IDs and timing are not rewritten.
 
-* Vocal pitch CMND now includes all lags from 1 and equal comparison support.
-  Valley selection checks the valley's value, not the next rising sample; the
-  old condition could miss a high-note fundamental and choose a subharmonic.
-  Fractional-period interpolation replaces integer-lag pitch quantization.
-  A new known-pitch regression failed before the correction (146.83 Hz was
-  estimated at 145.07 Hz) and passes below 15 cents across six notes from
-  73.42 to 987.77 Hz. Silence and unpitched noise remain unvoiced.
-* Form matching now consumes the already persisted, checksum-bound coarse
-  vocal activity **and** pitch-continuity timing. Coarse activity provides
-  coverage, preserving unpitched vocal activity; pitched runs provide separate
-  articulation timing. These remain audio observations, not words or lyrics.
-* Invalid optional timing is discarded without suppressing valid PCM-based
-  recurrence. No repair, semantic label or timing evidence is fabricated.
+The real persisted save/reopen/edit/restore/export route was rerun on the actual
+separated September and Queen files. Against the owner's approximate September
+section notes, the same full-song route changed from engine 1.10 to 1.11:
 
-Vocal analysis is version 1.2.0; section analysis is 1.10.0. Existing results
-need reanalysis; older pitch results are not relabeled as new. The existing
-vocal worker persists frames/runs and dispatches section refresh, which feeds
-the normal source profiles and planner. No separate model, schema or planner
-was added.
+* September's owner-note verse/chorus role-time score increased from **34.33%**
+  to **78.30%**; claimed coverage increased from **21.37%** to **51.57%**.
+* Precision among claims changed from **89.60%** to **84.69%**. This small
+  precision loss is a real tradeoff for roughly 2.3× more correctly covered
+  verse/chorus time; it should not be hidden.
+* Verse F1 changed **0.596→0.880** and chorus F1 **0.384→0.725**.
+* Queen still abstains with zero verse/chorus labels. The change does not claim
+  to solve all song forms or prove a reliable mashup.
 
-Verification: 31 DSP/form tests, 7 persisted stem/section tests, API typecheck,
-the six-full-track source acceptance, and the real separated-stem
-save/reopen/edit/restore/export route passed. Final captures are
-`generated-artifacts/waveyard-real-world-acceptance/form-route-acceptance-fused.json`
-and `six-track-current-sweep.json` (ignored, local audio evidence).
-Queen now has 1,193 voiced frames out of 7,438, versus 1,107 before; this is
-increased detector coverage, **not** verified pitch accuracy on the recording.
-The final provisional semantic results are unchanged: seven September labels,
-34.33% role-time overlap with owner notes, and zero Queen labels.
-**No verse/chorus accuracy gain or improved listening quality is demonstrated
-by this sweep.** Stronger signal correctness and connected evidence do not
-remove the need to improve and validate the form inference itself.
+These are **provisional**, owner-authored approximate boundaries from one
+annotated track, not two independent reviewers or a broad accuracy benchmark.
+They are useful comparative evidence for this iteration, not proof of Stem.fm
+parity, generalization, lyric recognition, or listening quality. The route
+test proves the new labels are produced from real persisted stems and survive
+the normal workflow. The final local reports are
+`generated-artifacts/waveyard-real-world-acceptance/form-route-acceptance-bounded.json`
+and `form-provisional-bounded.json` (ignored, local audio evidence).
+
+The earlier vocal correction remains in the section history: 1.2.0 pitch
+analysis stores pitch-continuity runs, including corrected CMND valley
+selection and fractional-period interpolation; coarse vocal activity keeps
+unpitched vocal coverage. These are audio observations, not words or lyrics.
+Invalid optional timing does not suppress valid PCM recurrence. Section 1.11
+consumes those existing persisted checksummed analyses and requires reanalysis;
+old results are not relabeled as new.
+
+Verification: 8 musical-form tests, 7 persisted stem/section tests, API
+typecheck, and the actual separated-stem save/reopen/edit/restore/export route
+passed. No new model, schema or planner was added.
 
 ## Previous: inferred verse/chorus roles and measured limitations
 

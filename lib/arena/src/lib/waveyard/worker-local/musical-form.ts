@@ -95,59 +95,39 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
   pairs.sort((a, b) => b.score - a.score);
   const best = pairs[0];
   if (!best) return [];
-  const groupSimilarity = (window: FormWindow, group: typeof groups[number]) =>
-    Math.max(-1, ...group.members.filter(member => member.startBar !== window.startBar)
-      .map(member => similarity(window, member)));
   const strength = Number(Math.min(0.7, 0.45 + best.score * 0.25).toFixed(3));
-  // Score every rolling window against both selected role families. This keeps
-  // the recurrence evidence that found the roles, but prevents overlapping
-  // eight-bar seed windows from being treated as separate, competing labels.
-  const assignments = usable.map(window => {
-    const verse = groupSimilarity(window, best.verse);
-    const chorus = groupSimilarity(window, best.chorus);
-    if (Math.max(verse, chorus) < MIN_REPEAT_SIMILARITY || verse === chorus) return null;
-    return { startBar: window.startBar, endBar: window.startBar + WINDOW_BARS,
-      label: verse > chorus ? "verse" as const : "chorus" as const, strength };
-  }).filter((event): event is NonNullable<typeof event> => event !== null);
-  const mergeSameRole = (events: typeof assignments) => {
-    const merged: NonNullable<(typeof assignments)[number]>[] = [];
-    for (const event of events) {
-      const previous = merged.at(-1);
-      if (previous?.label === event.label && event.startBar <= previous.endBar) {
-        previous.endBar = Math.max(previous.endBar, event.endBar);
-      } else merged.push({ ...event });
-    }
-    return merged;
-  };
-  const verseRuns = mergeSameRole(assignments.filter(p => p.label === "verse"));
-  const chorusRuns = mergeSameRole(assignments.filter(p => p.label === "chorus"));
-  const roleRuns = [...verseRuns, ...chorusRuns].sort((a, b) => a.startBar - b.startBar);
   // Competing, non-overlapping hook locations are ambiguous, not a tie to hide.
-  // Compare non-overlapping completed runs, not all sliding seed positions.
+  // Compare non-overlapping occurrences, not the many overlapping rolling
+  // windows around the same occurrence.
   const competitor = pairs.find(p => p.chorus.members.every(c =>
     best.chorus.members.every(b => Math.abs(c.startBar - b.startBar) >= WINDOW_BARS)));
   if (competitor && best.score - competitor.score < 0.05) return [];
-  const separated: FormPrediction[] = [];
-  for (const run of roleRuns) {
-    let fragments = [{ startBar: run.startBar, endBar: run.endBar }];
-    for (const other of roleRuns.filter(p => p.label !== run.label)) {
-      fragments = fragments.flatMap(fragment => {
-        if (other.endBar <= fragment.startBar || other.startBar >= fragment.endBar) return [fragment];
-        return [
-          { startBar: fragment.startBar, endBar: Math.min(fragment.endBar, other.startBar) },
-          { startBar: Math.max(fragment.startBar, other.endBar), endBar: fragment.endBar },
-        ].filter(part => part.endBar > part.startBar);
-      });
-    }
-    separated.push(...fragments.map(fragment => ({ ...fragment, label: run.label, strength })));
-  }
+  // A recurrent eight-bar observation identifies a passage, but is not itself
+  // the whole section. Use the next independently recurring role transition
+  // as its measured end. Do not fill beyond the last supported transition.
+  const anchors = [
+    ...best.verse.members.map(w => ({ startBar: w.startBar, label: "verse" as const })),
+    ...best.chorus.members.map(w => ({ startBar: w.startBar, label: "chorus" as const })),
+  ].sort((a, b) => a.startBar - b.startBar);
   const alternating: FormPrediction[] = [];
-  for (const event of separated.sort((a, b) => a.startBar - b.startBar)) {
+  for (let index = 0; index < anchors.length; index++) {
+    const anchor = anchors[index]!;
+    const nextOpposite = anchors.slice(index + 1).find(candidate => candidate.label !== anchor.label);
+    const event = { ...anchor,
+      // A second hook-like match does not prove the first chorus continued
+      // through a breakdown/outro. Without a following opposite-role anchor,
+      // keep only the directly observed eight-bar passage.
+      endBar: nextOpposite?.startBar ?? anchor.startBar + WINDOW_BARS, strength };
+    if (event.endBar <= event.startBar) continue;
     const expected = alternating.at(-1)?.label === "verse" ? "chorus" : "verse";
     if (event.label === expected) alternating.push(event);
   }
   // A later hook reprise without another observed verse is not automatically
   // a new chorus: it may be a breakdown or an outro.
+  // A trailing verse not followed by a chorus is not enough evidence to extend
+  // the form; the final repeated chorus may retain only its directly observed
+  // eight-bar passage.
+  if (alternating.at(-1)?.label === "verse") alternating.pop();
   return alternating;
 }
 

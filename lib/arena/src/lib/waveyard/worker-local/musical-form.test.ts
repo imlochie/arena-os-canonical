@@ -9,17 +9,17 @@ const window = (startBar: number, role: "a" | "b" | "c", energyDb = -20): FormWi
   vocal: role === "a" ? [1, 0, 0] : role === "b" ? [0, 1, 0] : [0, 0, 1],
   backing: [1, 0, 0], vocalCoverage: 0.9, energyDb,
 });
-const arrangement = () => [
-  window(0, "a"), window(8, "b", -15), window(16, "a"), window(24, "b", -15),
-  // More windows provide full-track coverage, not extra evidence for either family.
-  ...[4, 12, 20, 28].map(bar => ({ ...window(bar, "c", -30), vocalCoverage: 0 })),
-];
+const arrangement = () => Array.from({ length: 32 }, (_, startBar) => {
+  const phase = (startBar + 4) % 16;
+  return window(startBar, phase < 8 ? "a" : "b", phase < 8 ? -20 : -15);
+});
 
 test("infers both recurrent vocal roles from an alternating arrangement and measured lift", () => {
   const predictions = inferFormFromWindows(arrangement());
   assert.deepEqual(predictions.map(p => [p.startBar, p.label]), [
     [0, "verse"], [8, "chorus"], [16, "verse"], [24, "chorus"],
   ]);
+  assert.deepEqual(predictions.map(p => p.endBar), [8, 16, 24, 32]);
   assert.ok(predictions.every(p => p.strength <= 0.7));
 });
 
@@ -39,9 +39,11 @@ test("a repeated hook after the alternating form is not automatically another ch
   const predicted = inferFormFromWindows([...arrangement(), window(40, "b", -15), window(48, "b", -15)]);
   assert.ok(predicted.length >= 4);
   assert.ok(predicted.every(p => p.startBar < 40));
+  assert.ok(predicted.at(-1)!.endBar - predicted.at(-1)!.startBar <= 8,
+    "a second hook match must not stretch a chorus across an unverified breakdown or outro");
 });
 
-test("form windows extend to repeated section edges and leave conflicting time unknown", () => {
+test("overlapping role windows resolve to non-overlapping section timing", () => {
   const windows = Array.from({ length: 64 }, (_, startBar) => {
     const phase = startBar % 32;
     const isA = phase < 8 || (phase >= 16 && phase < 24);
@@ -61,8 +63,7 @@ test("form windows extend to repeated section edges and leave conflicting time u
     }
   }
   assert.ok(predictions.some(p => p.startBar === 0 && p.endBar === 8 && p.label === "verse"));
-  assert.ok(predictions.some(p => p.startBar === 8 && p.endBar === 16 && p.label === "chorus"),
-    JSON.stringify(predictions));
+  assert.ok(predictions.some(p => p.startBar === 8 && p.endBar === 16 && p.label === "chorus"));
 });
 
 test("provenance-checked vocal continuity timing strengthens repeated vocal-flow matches", () => {
