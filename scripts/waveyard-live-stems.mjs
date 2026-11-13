@@ -3463,18 +3463,23 @@ try {
         return originalAddEventListener.call(this, type, listener, ...options);
       };
     });
-    const blockNextResume = () => page.evaluate(() => {
+    const armOutputRecoveryProbe = (blocked = false) => page.evaluate((shouldBlock) => {
       const prototype = window.AudioContext.prototype;
       const originalResume = prototype.resume;
       const originalState = Object.getOwnPropertyDescriptor(prototype, "state");
-      Object.defineProperty(prototype, "state", { configurable: true, get: () => "suspended" });
+      window.__waveyardOutputRecovery = { attempts: 0, originalResume, originalState };
+      if (shouldBlock) {
+        Object.defineProperty(prototype, "state", { configurable: true, get: () => "suspended" });
+      }
       prototype.resume = function (...args) {
-        prototype.resume = originalResume;
-        if (originalState) Object.defineProperty(prototype, "state", originalState);
-        else delete prototype.state;
-        return Promise.reject(new DOMException("A user activation is required.", "NotAllowedError"));
+        const probe = window.__waveyardOutputRecovery;
+        probe.attempts += 1;
+        if (shouldBlock) {
+          return Promise.reject(new DOMException("A user activation is required.", "NotAllowedError"));
+        }
+        return originalResume.apply(this, args);
       };
-    });
+    }, blocked);
     const assertRecoveryControl = async (name, message) => {
       const alert = page.getByRole("alert").filter({ hasText: message }).last();
       await alert.waitFor();
@@ -3505,12 +3510,33 @@ try {
         if (audio.state !== "suspended") throw new Error("The output-switch fixture did not suspend its audio context.");
       }, index);
     };
-    const notifyOutputChange = async () => page.evaluate(() => {
+    const notifyOutputChanges = async (count = 5) => page.evaluate((eventCount) => {
+      if (document.visibilityState !== "visible") {
+        throw new Error("Output-switch simulation must stay in the foreground.");
+      }
       if (!navigator.mediaDevices?.dispatchEvent) {
         throw new Error("The browser cannot simulate a media-device output change.");
       }
-      navigator.mediaDevices.dispatchEvent(new Event("devicechange"));
-    });
+      for (let index = 0; index < eventCount; index += 1) {
+        navigator.mediaDevices.dispatchEvent(new Event("devicechange"));
+      }
+    }, count);
+    const assertOneOutputRecoveryAttempt = async (name) => {
+      const attempts = await page.evaluate(() => {
+        const probe = window.__waveyardOutputRecovery;
+        if (!probe) return null;
+        const prototype = window.AudioContext.prototype;
+        prototype.resume = probe.originalResume;
+        if (probe.originalState) Object.defineProperty(prototype, "state", probe.originalState);
+        else delete prototype.state;
+        return probe.attempts;
+      });
+      assert.equal(
+        attempts,
+        1,
+        `${name} performs only one audio-context resume for repeated output changes`,
+      );
+    };
     const assertRecoveredOutput = async ({ contextIndex, playingButton, before }) => {
       await page.waitForFunction(({ index, buttonName }) =>
         document.visibilityState === "visible"
@@ -3524,9 +3550,12 @@ try {
     const assertBlockedOutputRecovery = async ({ contextIndex, retryButton, playingButton, message }) => {
       const before = await position();
       await suspendContext(contextIndex);
-      await blockNextResume();
-      await notifyOutputChange();
+      await armOutputRecoveryProbe(true);
+      await notifyOutputChanges();
       const action = await assertRecoveryControl(retryButton, message);
+      await assertOneOutputRecoveryAttempt(retryButton);
+      assert.equal(await page.getByRole("alert").filter({ hasText: message }).count(), 1,
+        `${retryButton} has one actionable prompt after repeated output changes`);
       assert.equal(await page.getByRole("button", { name: playingButton, exact: true }).count(), 0,
         `${retryButton} is not left in a false-playing state while output recovery is blocked`);
       assert(await position() >= before - 0.15,
@@ -3546,8 +3575,10 @@ try {
       "the route-switch test isolates the media-device event from AudioContext statechange recovery");
     let previousPosition = await position();
     await suspendContext(stemContextIndex);
-    await notifyOutputChange();
+    await armOutputRecoveryProbe();
+    await notifyOutputChanges();
     await assertRecoveredOutput({ contextIndex: stemContextIndex, playingButton: "Pause stems", before: previousPosition });
+    await assertOneOutputRecoveryAttempt("Play stems");
     await assertBlockedOutputRecovery({
       contextIndex: stemContextIndex,
       retryButton: "Play stems",
@@ -3562,12 +3593,14 @@ try {
     const arrangementContextIndex = await waitForAudioContext(contextCount);
     previousPosition = await position();
     await suspendContext(arrangementContextIndex);
-    await notifyOutputChange();
+    await armOutputRecoveryProbe();
+    await notifyOutputChanges();
     await assertRecoveredOutput({
       contextIndex: arrangementContextIndex,
       playingButton: "Pause arrangement",
       before: previousPosition,
     });
+    await assertOneOutputRecoveryAttempt("Preview arrangement");
     await assertBlockedOutputRecovery({
       contextIndex: arrangementContextIndex,
       retryButton: "Preview arrangement",
@@ -3576,7 +3609,7 @@ try {
     });
     await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
     assert.deepEqual(assetSnapshot(), originalAssets, "handoff and editing preserve original audio");
-    console.log("PASS: mobile-sized Bluetooth output-switch simulation resumes stem and arrangement playback at their current positions; blocked resumes expose linked, focusable retry controls");
+    console.log("PASS: foreground Bluetooth output-change bursts cause one recovery per playback mode; blocked recovery shows one linked retry prompt, preserves position, and resumes playback after retry");
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByRole("heading", { name: "Mixer console" }).waitFor();
