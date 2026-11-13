@@ -41,6 +41,30 @@ test("a repeated hook after the alternating form is not automatically another ch
   assert.ok(predicted.every(p => p.startBar < 40));
 });
 
+test("form windows extend to repeated section edges and leave conflicting time unknown", () => {
+  const windows = Array.from({ length: 64 }, (_, startBar) => {
+    const phase = startBar % 32;
+    const isA = phase < 8 || (phase >= 16 && phase < 24);
+    return {
+      ...window(startBar, isA ? "a" : "b", isA ? -20 : -15),
+      vocal: isA ? [1, 0] : [0, 1],
+    };
+  });
+  const predictions = inferFormFromWindows(windows);
+  assert.ok(predictions.length > 4);
+  for (const left of predictions) {
+    for (const right of predictions) {
+      if (left.label !== right.label) {
+        assert.ok(left.endBar <= right.startBar || right.endBar <= left.startBar,
+          "overlapping role claims are left unlabelled rather than guessed");
+      }
+    }
+  }
+  assert.ok(predictions.some(p => p.startBar === 0 && p.endBar === 8 && p.label === "verse"));
+  assert.ok(predictions.some(p => p.startBar === 8 && p.endBar === 16 && p.label === "chorus"),
+    JSON.stringify(predictions));
+});
+
 test("provenance-checked vocal continuity timing strengthens repeated vocal-flow matches", () => {
   const verseA = window(0, "a");
   verseA.vocalPhraseTiming = [1, 0, 0];
