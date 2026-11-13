@@ -898,7 +898,15 @@ for (const rolling of [true, false]) {
       "later unsupported notes remain visible even though both discovery windows fit perfectly");
     assert.equal(result.plan.segments[0]?.mashupStartMs, 8_000);
     assert.equal(result.plan.segments[0]?.vocalsFromMs, 0);
-    assert.equal(result.plan.segments.at(-1)?.vocalsToMs, 7_700, "both vocal runs are retained");
+    // The late reprise is grounded in the donor's own final pitch-continuity run
+    // (4250–7450ms), not a replay of the opening material; the primary body
+    // segment already carries the full 0–7700ms body, so every run is audible.
+    assert.equal(result.plan.segments.at(-1)?.vocalsFromMs, 4_250);
+    assert.equal(result.plan.segments.at(-1)?.vocalsToMs, 7_450);
+    assert.ok(result.plan.segments.at(-1)?.rationale.includes("closing-vocal echo"),
+      "the reprise is labelled a closing echo, not an intelligent reprise of the opening");
+    assert.equal(result.plan.segments[0]?.vocalsFromMs, 0);
+    assert.equal(result.plan.segments[0]?.vocalsToMs, 7_700, "the complete vocal body is placed exactly once");
     const rendered = renderMashup(result.plan, {
       vocals: new Float32Array(8 * 8_000 * 2).fill(0.2),
       bed: new Float32Array(20 * 8_000 * 2),
@@ -1331,4 +1339,145 @@ test("extension: render appends the loops after the original, crossfaded", () =>
 
 test("extension: no sections → no plan (honest null)", () => {
   assert.equal(planSongExtension(profile({ bpm: 120, durationMs: 10_000, sections: [] })), null);
+});
+
+// --- full-track arrangement regressions (planner v7) -----------------------
+
+test("plan: full-track arrangement re-maps voiced units and records the segmented decision", () => {
+  const vocalFrames = Array.from({ length: 111 }, (_, index) => ({
+    timestampMs: 500 + index * 100,
+    frequencyHz: 261.625565,
+    midiFloat: 60,
+    nearestMidiNote: 60,
+    confidence: 0.95,
+    voiced: true,
+  }));
+  const vocals = profile({
+    role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 12_000,
+    beatGridMs: Array.from({ length: 25 }, (_, i) => i * 500), beatConfidence: 0.95, bpmConfidence: 0.95,
+    sections: [],
+    vocalPhrases: [
+      { startMs: 500, endMs: 5_500, confidence: 0.95 },
+      { startMs: 6_500, endMs: 11_500, confidence: 0.95 },
+    ],
+    vocalPitchFrames: vocalFrames,
+  });
+  // Every chord before 11s clashes with the C4-only phrase (F# major); only the
+  // bed's final C chord supports the vocal, so re-mapping the units beats the
+  // continuous overlay decisively while preserving vocal order.
+  const bed = profile({
+    role: "instrumental", sourceChecksumSha256: "b".repeat(64), durationMs: 15_000,
+    beatGridMs: Array.from({ length: 31 }, (_, i) => i * 500), beatConfidence: 0.95, bpmConfidence: 0.95,
+    sections: [section("verse", 0, 15_000)],
+    harmonyEvents: [
+      { startMs: 0, endMs: 4_000, root: "F#", quality: "major", confidence: 0.05 },
+      { startMs: 4_000, endMs: 8_000, root: "F#", quality: "major", confidence: 0.05 },
+      { startMs: 8_000, endMs: 11_000, root: "F#", quality: "major", confidence: 0.05 },
+      { startMs: 11_000, endMs: 13_250, root: "C", quality: "major", confidence: 0.05 },
+      { startMs: 13_250, endMs: 15_000, root: "C", quality: "major", confidence: 0.05 },
+    ],
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  const arrangement = result.plan.arrangement;
+  assert.ok(arrangement, "the full-track arrangement decision is recorded");
+  assert.equal(arrangement.selected, "segmented");
+  assert.equal(arrangement.unitsTotal, 2);
+  assert.equal(arrangement.unitsPlaced, 2);
+  assert.equal(arrangement.unitsSkipped, 0);
+  assert.ok(arrangement.segmentedScore > arrangement.overlayScore);
+  assert.equal(arrangement.placements.length, 2);
+  // Vocal order is preserved: units are never reordered, duplicated, or cropped.
+  assert.ok(arrangement.placements[0]!.donorFromMs < arrangement.placements[1]!.donorFromMs);
+  assert.equal(arrangement.placements[0]!.donorFromMs, 500);
+  assert.equal(arrangement.placements[0]!.donorToMs, 5_500);
+  assert.equal(arrangement.placements[1]!.donorFromMs, 6_500);
+  assert.equal(arrangement.placements[1]!.donorToMs, 11_500);
+  // Segments carry the same units in the same order.
+  assert.equal(result.plan.segments.length, 2);
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 500);
+  assert.equal(result.plan.segments[0]!.sourceRole, "vocals");
+  assert.equal(result.plan.segments[1]!.vocalsFromMs, 6_500);
+});
+
+test("plan: full-track arrangement keeps the continuous overlay when no re-placement wins decisively", () => {
+  const drumEvents = Array.from({ length: 61 }, (_, index) => ({
+    timestampMs: index * 250, confidence: 0.9, strength: 0.6,
+  }));
+  const vocals = profile({
+    role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 12_000,
+    bpmConfidence: 0.95,
+    vocalPhrases: [
+      { startMs: 500, endMs: 5_500, confidence: 0.95 },
+      { startMs: 6_500, endMs: 11_500, confidence: 0.95 },
+    ],
+  });
+  const bed = profile({
+    role: "instrumental", sourceChecksumSha256: "b".repeat(64), durationMs: 15_000,
+    bpmConfidence: 0.95,
+    sections: [],
+    drumEvents,
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  const arrangement = result.plan.arrangement;
+  assert.ok(arrangement, "the comparison is recorded even when the overlay wins");
+  assert.equal(arrangement.selected, "continuous-overlay");
+  assert.ok(arrangement.segmentedScore - arrangement.overlayScore <= Math.max(0.5, 0.03 * Math.abs(arrangement.overlayScore)) + 1e-9);
+  assert.equal(result.plan.segments.length, 1);
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 250, "the padded overlay body is kept intact");
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("continuous overlay")),
+    "the retained overlay is disclosed in the warnings");
+});
+
+test("plan: long bed with no donor grounding keeps one body segment and warns instead of replaying the opening", () => {
+  const vocals = profile({
+    role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 8_000,
+    beatGridMs: Array.from({ length: 17 }, (_, i) => i * 500), beatConfidence: 0.95, bpmConfidence: 0.95,
+    sections: [section("verse", 0, 7_500)],
+  });
+  const bed = profile({
+    role: "instrumental", sourceChecksumSha256: "b".repeat(64), durationMs: 60_000,
+    sections: [section("verse 1", 0, 30_000), section("chorus", 30_000, 60_000)],
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  assert.equal(result.plan.segments.length, 1,
+    "the opening body is placed exactly once — the bed continues instrumental rather than looping the verse");
+  assert.equal(result.plan.segments[0]!.vocalsFromMs, 0);
+  assert.equal(result.plan.segments[0]!.vocalsToMs, 7_500);
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("instrumental")),
+    "the missing reprise grounding is disclosed");
+  assert.equal(result.plan.segments.some((segment) => segment.vocalsFromMs === 0 && segment.mashupStartMs > 0), false,
+    "no segment replays the opening body later in the bed");
+});
+
+test("plan: a unit that cannot fit before the bed ends is reported, not silently dropped", () => {
+  const vocals = profile({
+    role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 12_000,
+    beatGridMs: Array.from({ length: 25 }, (_, i) => i * 500), beatConfidence: 0.95, bpmConfidence: 0.95,
+    vocalPhrases: [
+      { startMs: 500, endMs: 5_500, confidence: 0.95 },
+      { startMs: 6_500, endMs: 11_500, confidence: 0.95 },
+    ],
+  });
+  const bed = profile({
+    role: "instrumental", sourceChecksumSha256: "b".repeat(64), durationMs: 7_000,
+    sections: [],
+    drumEvents: Array.from({ length: 29 }, (_, index) => ({ timestampMs: index * 250, confidence: 0.9, strength: 0.5 })),
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  const arrangement = result.plan.arrangement;
+  assert.ok(arrangement, "the arrangement comparison is recorded");
+  assert.equal(arrangement.unitsPlaced, 1, "the first unit is placed; the second cannot fit before the bed ends");
+  assert.equal(arrangement.unitsSkipped, 1, "the unplaceable unit is counted as skipped, never silently re-placed");
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("did not fit")));
+  // The unplaceable unit's donor range never appears in the output — nothing
+  // is faked to cover it, and the bed's end is respected.
+  assert.equal(result.plan.segments.some((segment) =>
+    segment.vocalsFromMs < 11_500 && segment.vocalsToMs > 6_500), false,
+    "the unplaceable unit is absent from the segments, and its absence is disclosed");
+  assert.equal(result.plan.segments.some((segment) => segment.mashupEndMs > 7_000), false,
+    "no segment plays past the end of the bed");
 });

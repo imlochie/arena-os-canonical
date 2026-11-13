@@ -1,6 +1,88 @@
 # Arena handoff — read this first
 
-## Current: mashup planning consumes persisted vocal activity
+## Current: full-track mashup arrangement (planner v7)
+
+Mashup planner v7 replaces the two things that made a whole-track result
+impossible when no cross-song passage candidate existed: the continuous
+single-offset overlay and the unconditional "replay the opening as a reprise"
+after an instrumental pocket. Both remain in the code only when they are the
+honest outcome. Concretely:
+
+* `planMashup` now evaluates a **full-track arrangement** whenever the
+  stretched vocal body is at least ~75% of the bed's capacity and no
+  passage-search match was selected. Voiced material is merged into ordered
+  voiced units (≤120 units, ≥150 ms each, onsets capped per unit) and
+  monotonically assigned to bed slots (trusted beat-grid slots when a grid
+  with ≥8 measured beats exists, otherwise inferred section boundaries when
+  3–600 exist, otherwise 2-second ticks). Units are **never reordered,
+  duplicated, re-cropped, or overlapping**. Per unit, a feature score combines
+  measured vocal-to-bed chord-tone agreement (0.5), measured drum/bass onset
+  overlap (0.35), and a section-role hypothesis (0.15, explicitly not a
+  semantic label). A monotone dynamic program maximises the shared objective
+  and subtracts a small penalty for instrumental gaps longer than 1.5 s
+  (0.03 per bar, capped at 0.6). The final unit is never penalised for "gap
+  after the end of the chain".
+* The segmented arrangement is selected only when it places at least as many
+  units as the continuous overlay **and** beats the overlay's score by an
+  absolute 0.5 (or 3%, whichever is larger). Otherwise the continuous overlay
+  is kept and the comparison (`segmentedScore`, `overlayScore`,
+  `improvementRatio`) is recorded in `plan.arrangement` — either way the
+  decision, the evidence availability flags, and the per-unit placements are
+  part of the persisted plan (`MashupPlan.arrangement?: MashupArrangement`).
+* The renderer receives ordinary segments in both modes, so save/reopen/
+  edit/restore/export and every existing render path are unchanged. Segmented
+  placements that are contiguous in both donor and bed time are merged into
+  ordinary multi-second segments; `arrangement.placements` keeps the per-unit
+  record and `unitsPlaced`/`unitsSkipped` always describe units, not merged
+  segments.
+* Units that cannot end before the bed does are reported as skipped with an
+  explicit warning; the bed's end is respected and no material is invented to
+  fill it.
+* The long-bed second segment (bed significantly longer than the singable
+  body) no longer replays `body.fromMs`. It requires `chooseGroundedReprise`:
+  (1) a persisted repeated-passage section label (pattern/rhythm/
+  vocal-pattern recurrence, latest occurrence, duration agreement ≥50%, its
+  own 2× occurrence count disclosed as a *structural hypothesis, not a
+  semantic chorus claim*); (2) the donor's final sustained measured vocal
+  activity passage (≥1.5 s), (3) the donor's final pitch-continuity run
+  (≥1.5 s) — both labelled a **closing echo**, explicitly not an
+  evidence-backed recurrence; (4) the donor's final detected non-intro section
+  past the body midpoint, never identical to the opening window — labelled a
+  closing encore. When none of these exists, the bed runs instrumental and a
+  warning says so instead of replaying the opening verse. The previous
+  "intelligent reprise" was never asserted by any test and is gone.
+* Reprise semantics stay separate from timing, quality, and form evidence.
+  Recurrence labels are still unverified hypotheses about structure; words or
+  lyric meaning are still not analyzed.
+
+Verification for this change: **182 focused Waveyard studio tests** pass
+(ab-compare, analysis-reliability, donor-stem integrity, history, layer-edit,
+bed, full-length, regression, musical-evidence, palette, piano-roll,
+soul-chef, visualizer, viz-fx, viz-settings, vocal-chops, and the 36
+mashup planner tests — including four new regressions: segmented-arrangement
+wins and records its decision; continuous overlay retained when no
+re-placement wins decisively; long bed with no donor grounding keeps exactly
+one body segment with an explicit instrumental warning and never re-uses the
+opening window; a unit that cannot fit before the bed ends is counted as
+skipped and disclosed). `pnpm run typecheck:libs`, the ArenaForge typecheck,
+and the scripts typecheck pass; `git diff --check` passes. The two pre-existing failures are unchanged and unrelated:
+`mashup-db-acceptance.test.ts` cannot import `@workspace/db` in this sandbox
+(no `DATABASE_URL`; it fails identically on the base commit), and no
+real separated full-song pair was re-run in this change.
+
+**Not proven:** no real-pair acceptance was re-measured — the planner/render
+fixtures are synthetic and the arrangement objective is a relative evidence
+ranking, not a calibrated or listener-validated quality model. The segmented
+mode proves that ordered units *can* be re-mapped across the bed with measured
+evidence and full disclosure; it does not prove the result sounds good, that
+reprise material is a chorus, or that any live session benefits. The
+pre-existing real-pair diagnosis stands: the September/Queen route still has
+no calibrated cross-song candidate; this change removes the structural
+dependency on one (the plan no longer requires a selected `passageSearch`
+match to place a complete vocal body across a bed). Word/lyric recognition and
+verse/chorus semantics remain unimplemented.
+
+## Previous: mashup planning consumes persisted vocal activity
 
 Mashup planner v6 now loads the checksum-current `vocal_activity_intervals`
 from the same completed vocal analysis as pitch frames and pitch-continuity
