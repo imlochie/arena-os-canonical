@@ -1,5 +1,36 @@
 # Arena handoff — read this first
 
+## Verse/chorus accuracy baseline — not measurable yet
+
+At `75cdc0a1`, inspection of the production section worker and the real
+persisted profiles from the latest Queen/September route acceptance found:
+
+| Recording | Persisted windows | Labels | Verse/chorus predictions |
+| --- | ---: | --- | ---: |
+| Another One Bites the Dust | 30 | 28 section, 1 energy-rise, 1 energy-drop | 0 |
+| September | 30 | 27 section, 2 energy-rise, 1 energy-drop | 0 |
+
+These are structural/energy observations, not semantic classifications.
+Semantic prediction coverage is **0 of 60 windows** on this pair. Verse/chorus
+accuracy, precision, recall and F1 are **unavailable**, not established at 0%
+or any other percentage. No verse/chorus classifier is wired into this producer.
+Finding a nearby structural boundary does not count as correctly naming a verse.
+
+The existing evaluation command was rerun against the existing v2 capture and
+reference template. Prediction-format validation passed, but scoring remained
+blocked: both recordings lack documented reference rights, completed independent
+reviews and adjudication. That capture is historical, not a new current-revision
+prediction run. Current-output counts above come from the latest persisted route
+profiles, not the historical capture. Owner notes remain exploratory references,
+not adjudicated accuracy ground truth.
+
+To establish an accuracy claim requires **both** an actual semantic prediction
+path (with explicit unknown/abstention) **and** independently reviewed, source-pinned
+reference sections. Report per-class verse/chorus precision/recall/F1, confusion,
+time-weighted coverage and timing tolerance separately from structural-boundary
+metrics. Until those inputs exist, do not describe this as merely missing test
+coverage or publish a fabricated accuracy score.
+
 ## Current musical-intelligence change — score the vocal material actually placed
 
 Starting checkout was clean at `868ebec6` on
