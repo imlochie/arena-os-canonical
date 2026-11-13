@@ -560,6 +560,7 @@ function SessionDeck({
   attachingOriginalAudio,
   onApi,
   onPlaying,
+  onStarting,
   onProgress,
   onEnded,
   audioAssetPool,
@@ -616,6 +617,7 @@ function SessionDeck({
   attachingOriginalAudio?: boolean;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
+  onStarting: (deckIndex: number, starting: boolean) => void;
   onProgress: (deckIndex: number, position: number) => void;
   onEnded: (deckIndex: number, itemId: string) => void;
   audioAssetPool: SessionAudioAssetPool;
@@ -1003,6 +1005,9 @@ function SessionDeck({
   useEffect(() => {
     onPlaying(deckIndex, transport.playing);
   }, [deckIndex, transport.playing, onPlaying]);
+  useEffect(() => {
+    onStarting(deckIndex, transport.starting);
+  }, [deckIndex, transport.starting, onStarting]);
   useEffect(() => {
     onProgress(deckIndex, transport.position);
   }, [deckIndex, transport.position, onProgress]);
@@ -1789,6 +1794,7 @@ export default function SessionExperience({
   const fadeRef = useRef<{ raf: number; t0: number; fromDeck: 0 | 1; toDeck: 0 | 1; cfg: TransitionConfig; fromMix: Record<string, number> } | null>(null);
   const advancingRef = useRef(false);
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
+  const [startingByDeck, setStartingByDeck] = useState<[boolean, boolean]>([false, false]);
   const sessionRef = useRef<SessionDetail | null>(null);
   // All session GET paths share one order; committed edits invalidate older GETs.
   const sessionRequestVersion = useRef(0);
@@ -2258,6 +2264,14 @@ export default function SessionExperience({
       });
     }
   }, [clearRemoteTransport, publishTransport]);
+  const handleDeckStarting = useCallback((deckIndex: number, starting: boolean) => {
+    setStartingByDeck((previous) => {
+      if (previous[deckIndex] === starting) return previous;
+      const next: [boolean, boolean] = [previous[0], previous[1]];
+      next[deckIndex] = starting;
+      return next;
+    });
+  }, []);
   const handleDeckProgress = useCallback((deckIndex: number, position: number) => {
     setPositions((prev) => {
       if (Math.abs(prev[deckIndex] - position) < 0.25) return prev;
@@ -2787,6 +2801,10 @@ export default function SessionExperience({
     endTemporaryIsolation();
     const api = decksRef.current[activeDeck];
     if (api === null) return;
+    if (api.transport.starting) {
+      api.transport.pause();
+      return;
+    }
     const remote = remoteTransportRef.current;
     if (!api.transport.playing && remote?.sessionId === sessionId && remote.playing) {
       const paused = publishTransport({
@@ -4963,6 +4981,7 @@ export default function SessionExperience({
       attachingOriginalAudio: item !== null && restoringOriginalTrackId === item.id,
       onApi: handleDeckApi,
       onPlaying: handleDeckPlaying,
+      onStarting: handleDeckStarting,
       onProgress: handleDeckProgress,
       onEnded: handleDeckEnded,
     };
@@ -5011,7 +5030,7 @@ export default function SessionExperience({
           <button type="button" className="wy-icon" aria-label="Previous track" disabled={previousItem === null} onClick={() => previousItem && jumpTo(previousItem.id, playing)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
           </button>
-          <button type="button" className="wy-play" aria-label={playing ? "Pause" : "Play"} aria-pressed={playing} disabled={currentItem === null} onClick={() => void togglePlay()} data-testid="session-play">
+          <button type="button" className="wy-play" aria-label={startingByDeck[activeDeck] ? "Cancel playback start" : playing ? "Pause" : "Play"} aria-pressed={playing} aria-busy={startingByDeck[activeDeck]} disabled={currentItem === null} onClick={() => void togglePlay()} data-testid="session-play">
             {playing ? (
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
             ) : (

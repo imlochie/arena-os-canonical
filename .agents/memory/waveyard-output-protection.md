@@ -26,3 +26,9 @@ Reconstructed-peak tests must measure the limiter's output, including transient 
 **Why:** A time-varying gain curve can create new inter-sample overshoot even when input reconstruction is measured and sample peaks stay below the nominal ceiling.
 
 **How to apply:** Use an explicit oversampling method, test the post-limiter stereo PCM at supported sample rates, and keep browser analyser evidence separate from reconstructed-peak and physical-device claims.
+
+Failed session-output module loads must be retryable on the existing output group, and cancellation must invalidate any pending Play before a late load can start media.
+
+**Why:** The output group is shared across session decks; keeping a rejected readiness promise permanently cached strands playback, while a late async completion can otherwise outlive the user's cancellation.
+
+**How to apply:** Cache only an in-flight or successful readiness result, clear failed readiness so a later user gesture retries, and check the play-request identity after each async readiness wait before calling media `play()`.

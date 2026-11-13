@@ -370,6 +370,7 @@ export function useStemTransport(
   const wasBackgrounded = useRef(false);
   const recoverAudioContext = useRef<() => void>(() => undefined);
   const [playing, setPlaying] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [position, setPosition] = useState(0);
   // Commands such as seek(0); play() run in one event/effect. React state
   // has not rerendered between them, so playback must use a synchronous clock.
@@ -832,6 +833,7 @@ export function useStemTransport(
   const pause = useCallback(() => {
     playRequest.current += 1;
     wantsPlayback.current = false;
+    setStarting(false);
     for (const element of Object.values(media.current)) element?.pause();
     liveLayers.current?.pause();
     stopClock();
@@ -864,6 +866,7 @@ export function useStemTransport(
   const play = useCallback(async () => {
     const request = ++playRequest.current;
     wantsPlayback.current = true;
+    setStarting(true);
     try {
       setError(null);
       if (playbackIds.length === 0) {
@@ -944,6 +947,7 @@ export function useStemTransport(
         throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
       liveLayers.current?.sync(playbackIds);
+      setStarting(false);
       setPlaying(true);
     } catch (cause) {
       if (request !== playRequest.current) return;
@@ -1222,6 +1226,7 @@ export function useStemTransport(
     readSourceMeters,
     applyInserts,
     playing,
+    starting,
     position,
     currentPosition,
     contextTimeAtPosition,

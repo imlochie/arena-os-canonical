@@ -11,6 +11,7 @@ import {
   LIVE_STEM_TIMING_SAMPLE_COUNT,
 } from "./waveyard-live-stem-timing-budget.mjs";
 const timingOnly = process.argv.includes("--live-stem-timing-only");
+const outputProtectionOnly = process.argv.includes("--session-output-recovery-only");
 const mashupEvaluationOnly = process.argv.includes("--mashup-evaluation-only");
 const mashupManifestPath = process.env.WAVEYARD_MASHUP_MANIFEST?.trim();
 const mashupManifest = mashupEvaluationOnly
@@ -440,6 +441,7 @@ try {
     probeAutoFades,
     captureRenderedAudio,
     disableBroadcastChannel,
+    outputProtectionOnly,
     webkitAudioFixtures,
   }) => {
     if (disableBroadcastChannel) {
@@ -500,6 +502,8 @@ try {
       assetUrl: element => element?.dataset?.waveyardAssetUrl ?? element?.src ?? "",
       renderCaptureDestinations: [],
       workletLoads: [], workletSeeks: [], workletRates: [], workletPitchModes: [], keyShifts: [], transportMessages: [],
+      outputModuleFailuresRemaining: 0, outputModuleHoldNext: false, outputModulePending: false,
+      releaseOutputModule: null,
       storageTransportMessages: [], storageTransportReceives: [],
       storageQueueMessages: [], storageQueueReceives: [], contexts: [],
       // play() rejections, recorded below. This is the direct evidence for an
@@ -579,7 +583,23 @@ try {
           window.audioProbe.workletLoads.push(entry);
           let started;
           try {
-            started = nativeAddModule.apply(this, args);
+            const isOutputProcessor = /output-peak-worklet/i.test(String(args[0] ?? ""));
+            if (outputProtectionOnly && isOutputProcessor && window.audioProbe.outputModuleFailuresRemaining > 0) {
+              window.audioProbe.outputModuleFailuresRemaining -= 1;
+              started = Promise.reject(new Error("Simulated transient output processor load failure."));
+            } else if (outputProtectionOnly && isOutputProcessor && window.audioProbe.outputModuleHoldNext) {
+              window.audioProbe.outputModuleHoldNext = false;
+              window.audioProbe.outputModulePending = true;
+              started = new Promise((resolve, reject) => {
+                window.audioProbe.releaseOutputModule = () => {
+                  window.audioProbe.outputModulePending = false;
+                  window.audioProbe.releaseOutputModule = null;
+                  Promise.resolve(nativeAddModule.apply(this, args)).then(resolve, reject);
+                };
+              });
+            } else {
+              started = nativeAddModule.apply(this, args);
+            }
           } catch (error) {
             entry.outcome = "threw";
             entry.message = error?.message ?? null;
@@ -997,9 +1017,10 @@ try {
     }
   }, {
     fixtureSessionId: sessionId,
-    probeAutoFades: automaticFadesOnly || mashupEvaluationOnly,
+    probeAutoFades: automaticFadesOnly || mashupEvaluationOnly || outputProtectionOnly,
     captureRenderedAudio: mashupEvaluationOnly,
     disableBroadcastChannel,
+    outputProtectionOnly,
     webkitAudioFixtures,
   });
   let failAsset = null;
@@ -2209,6 +2230,107 @@ try {
       "the explicit draft restore survives reload");
     assert.deepEqual(assetSnapshot(), originalAssets, "conflict recovery leaves source and stem audio unchanged");
     console.log("PASS: competing Studio arrangement versions reject stale writes, retain the draft, and reload the selected state");
+    await context.close();
+    await browser.close();
+    process.exit(0);
+  } else if (outputProtectionOnly) {
+    session.tracks = tracks.slice(0, 2).map((item, index) => ({
+      ...item,
+      position: index,
+      stemMix: { vocals: 0.42, drums: 0.61, bass: 0.83, other: 1 },
+    }));
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    session.swaps = [];
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element => element.readyState === 4);
+    }, null, { timeout: 15_000 });
+    await page.getByLabel("Seek current track").evaluate((input) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(input, "4");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(() => Math.abs(
+      Number(document.querySelector('[data-testid="seek-deck-0"]')?.getAttribute("value") ?? 0) - 4,
+    ) < 0.1 || [...document.querySelectorAll('[data-role="current"] audio')]
+      .every(element => Math.abs(element.currentTime - 4) < 0.1));
+    assert.equal(await page.getByLabel("vocals level, current deck").inputValue(), "0.42");
+    assert.equal(await page.getByLabel("drums level, current deck").inputValue(), "0.61");
+    await page.evaluate(() => { window.audioProbe.outputModuleFailuresRemaining = 1; });
+    await page.getByTestId("session-play").click();
+    const failure = page.getByRole("alert").filter({
+      hasText: "Protected session output could not be loaded",
+    });
+    await failure.waitFor({ timeout: 5_000 });
+    assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "false",
+      "failed output preparation never shows the session as Playing");
+    assert.equal(await page.getByTestId("session-play").getAttribute("aria-label"), "Play",
+      "failed output preparation leaves a usable Play control");
+    const failedState = await page.evaluate(() => ({
+      playStarts: window.audioProbe.playStarts.length,
+      paused: [...document.querySelectorAll('[data-role="current"] audio')].every(audio => audio.paused),
+      loads: window.audioProbe.workletLoads
+        .filter(entry => /output-peak-worklet/i.test(entry.url))
+        .map(entry => entry.outcome),
+    }));
+    assert.equal(failedState.playStarts, 0, "the browser never starts media through an unprotected path");
+    assert.equal(failedState.paused, true, "all stems remain paused after protected output fails");
+    assert.deepEqual(failedState.loads, ["rejected"], "the output processor failure was injected");
+    assert.equal(await page.getByLabel("vocals level, current deck").inputValue(), "0.42",
+      "the saved vocals level survives the failure");
+    assert.equal(await page.getByLabel("drums level, current deck").inputValue(), "0.61",
+      "the saved drums level survives the failure");
+
+    await page.evaluate(() => { window.audioProbe.outputModuleHoldNext = true; });
+    await page.getByTestId("session-play").click();
+    await page.waitForFunction(() => window.audioProbe.outputModulePending);
+    const cancel = page.getByTestId("session-play");
+    assert.equal(await cancel.getAttribute("aria-label"), "Cancel playback start",
+      "the in-progress load has an explicit cancellation control");
+    assert.equal(await cancel.getAttribute("aria-pressed"), "false",
+      "pending output preparation is not represented as Playing");
+    await cancel.click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-label") === "Play",
+    );
+    await page.evaluate(() => window.audioProbe.releaseOutputModule?.());
+    await page.waitForFunction(() =>
+      window.audioProbe.workletLoads
+        .filter(entry => /output-peak-worklet/i.test(entry.url)).at(-1)?.outcome === "resolved",
+    );
+    await page.waitForTimeout(150);
+    const cancelledState = await page.evaluate(() => ({
+      playStarts: window.audioProbe.playStarts.length,
+      paused: [...document.querySelectorAll('[data-role="current"] audio')].every(audio => audio.paused),
+      pressed: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
+    }));
+    assert.equal(cancelledState.playStarts, 0, "cancelling the delayed load prevents later audio start");
+    assert.equal(cancelledState.paused, true, "all stems stay paused after the cancelled load resolves");
+    assert.equal(cancelledState.pressed, "false", "the cancelled session remains visibly paused");
+
+    await page.getByTestId("session-play").click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+    { timeout: 8_000 });
+    const recoveredState = await page.evaluate(() => ({
+      playStarts: window.audioProbe.playStarts.length,
+      playing: [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
+      positions: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => audio.currentTime),
+      vocalsGain: window.audioProbe.currentStemGain("vocals"),
+      drumsGain: window.audioProbe.currentStemGain("drums"),
+    }));
+    assert.ok(recoveredState.playStarts >= 4, "retry starts each stem only after the protected bus is ready");
+    assert.equal(recoveredState.playing, true, "the final retry recovers session playback");
+    assert.ok(recoveredState.positions.every(position => position >= 3.9 && position < 4.5),
+      `retry preserves the requested playhead: ${JSON.stringify(recoveredState.positions)}`);
+    assert.ok(Math.abs(recoveredState.vocalsGain - 0.42) < 0.01,
+      `retry preserves the saved vocals level: ${recoveredState.vocalsGain}`);
+    assert.ok(Math.abs(recoveredState.drumsGain - 0.61) < 0.01,
+      `retry preserves the saved drums level: ${recoveredState.drumsGain}`);
+    console.log("PASS: protected output failure is visible, cancellable, and retryable without losing the session mix or position");
     await context.close();
     await browser.close();
     process.exit(0);
