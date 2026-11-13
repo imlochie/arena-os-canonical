@@ -1660,6 +1660,7 @@ function planArrangement(
 
   return {
     engine: MASHUP_PLANNER_ENGINE,
+    mode: selected,
     selected,
     segmentedScore: Number(segmented.total.toFixed(4)),
     overlayScore: Number(overlayScore.toFixed(4)),

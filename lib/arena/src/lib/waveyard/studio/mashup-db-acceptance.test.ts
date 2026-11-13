@@ -397,6 +397,7 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
           durationMs: plan.durationMs,
           segments: plan.segments,
           passageSearch: plan.passageSearch,
+          arrangement: plan.arrangement ?? null,
           rationale: plan.rationale,
           warnings: plan.warnings,
         },
@@ -421,6 +422,7 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
     assert.ok(saveResult.clips.length >= 3);
     const initialSnapshot = JSON.parse(saveResult.version.snapshot) as {
       mashupPlan?: {
+        arrangement?: unknown;
         passageSearch?: {
           selectedDonorSectionId?: string | null;
           selectedBedSectionId?: string | null;
@@ -431,6 +433,8 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
         };
       };
     };
+    assert.deepEqual(initialSnapshot.mashupPlan?.arrangement ?? null, plan.arrangement ?? null,
+      "whole-track placement evidence survives the versioned database snapshot");
     assert.equal(initialSnapshot.mashupPlan?.passageSearch?.selectedDonorSectionId, "donor-chorus",
       "the version snapshot retains why and where the whole-track planner selected its later section");
     assert.equal(initialSnapshot.mashupPlan?.passageSearch?.selectedBedSectionId, "bed-chorus");

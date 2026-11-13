@@ -27,8 +27,11 @@ honest outcome. Concretely:
   absolute 0.5 (or 3%, whichever is larger). Otherwise the continuous overlay
   is kept and the comparison (`segmentedScore`, `overlayScore`,
   `improvementRatio`) is recorded in `plan.arrangement` — either way the
-  decision, the evidence availability flags, and the per-unit placements are
-  part of the persisted plan (`MashupPlan.arrangement?: MashupArrangement`).
+  decision, evidence availability flags, and per-unit placements are included
+  in the initial saved remix-version snapshot. Later version snapshots carry
+  that provenance forward. Mashup Studio also displays the chosen mode, scores,
+  available evidence channels, and donor-to-bed placements; the plan is no
+  longer hidden in a transient API response.
 * The renderer receives ordinary segments in both modes, so save/reopen/
   edit/restore/export and every existing render path are unchanged. Segmented
   placements that are contiguous in both donor and bed time are merged into
@@ -55,20 +58,11 @@ honest outcome. Concretely:
   Recurrence labels are still unverified hypotheses about structure; words or
   lyric meaning are still not analyzed.
 
-Verification for this change: **182 focused Waveyard studio tests** pass
-(ab-compare, analysis-reliability, donor-stem integrity, history, layer-edit,
-bed, full-length, regression, musical-evidence, palette, piano-roll,
-soul-chef, visualizer, viz-fx, viz-settings, vocal-chops, and the 36
-mashup planner tests — including four new regressions: segmented-arrangement
-wins and records its decision; continuous overlay retained when no
-re-placement wins decisively; long bed with no donor grounding keeps exactly
-one body segment with an explicit instrumental warning and never re-uses the
-opening window; a unit that cannot fit before the bed ends is counted as
-skipped and disclosed). `pnpm run typecheck:libs`, the ArenaForge typecheck,
-and the scripts typecheck pass; `git diff --check` passes. The two pre-existing failures are unchanged and unrelated:
-`mashup-db-acceptance.test.ts` cannot import `@workspace/db` in this sandbox
-(no `DATABASE_URL`; it fails identically on the base commit), and no
-real separated full-song pair was re-run in this change.
+Verification after the persistence/UI integration: **36/36** mashup planner
+tests, **2/2** isolated PGlite database round-trip tests, and **1/1** synthetic
+production-route acceptance test pass. Full `pnpm run typecheck` and
+`git diff --check` pass. The route acceptance exercises a disposable local
+PostgreSQL database; no user or production database was modified.
 
 **Not proven:** no real-pair acceptance was re-measured — the planner/render
 fixtures are synthetic and the arrangement objective is a relative evidence
@@ -80,7 +74,12 @@ pre-existing real-pair diagnosis stands: the September/Queen route still has
 no calibrated cross-song candidate; this change removes the structural
 dependency on one (the plan no longer requires a selected `passageSearch`
 match to place a complete vocal body across a bed). Word/lyric recognition and
-verse/chorus semantics remain unimplemented.
+verse/chorus semantics remain unimplemented. The production route can now
+persist and surface the arrangement object. The default route test's plan had
+no non-null placement decision, so positive non-null route persistence still
+needs a dedicated integration fixture. The UI code is typechecked but was not
+browser-verified here. No real-song sound quality or listener approval was
+established.
 
 ## Previous: mashup planning consumes persisted vocal activity
 

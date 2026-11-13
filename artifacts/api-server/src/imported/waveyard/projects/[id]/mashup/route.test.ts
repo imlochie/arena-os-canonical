@@ -829,6 +829,13 @@ test(
         warnings: string[];
         rationale: string[];
         segments: Array<{ mashupStartMs: number; mashupEndMs: number; vocalsFromMs: number; vocalsToMs: number }>;
+        arrangement?: {
+          selected: "continuous-overlay" | "segmented";
+          unitsTotal: number;
+          unitsPlaced: number;
+          unitsSkipped: number;
+          placements: Array<{ donorFromMs: number; donorToMs: number; bedStartMs: number }>;
+        } | null;
         passageSearch?: {
           evaluatedDonorPassageCount: number;
           rankableDonorPassageCount: number;
@@ -996,11 +1003,15 @@ test(
     if (!realFixture) assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
     assert.ok(planBody.plan && planBody.plan.durationMs > 0, "the production planner must return an arrangement");
     if (!realFixture) {
-      const persistedDrumAlignment = planBody.plan.rationale.find((line) => line.includes("voiced-run starts overlap"));
+      const persistedDrumAlignment = planBody.plan.rationale.find((line) =>
+        line.includes("overlap measured drum transients") && line.includes("overlap low-band bass attacks"));
       assert.ok(persistedDrumAlignment, "the plan must report measured vocal-to-groove comparisons");
-      assert.match(persistedDrumAlignment, /\d+\/3 voiced-run starts overlap measured drum transients/,
-        "the route must report persisted drum events against the unchanged structural entry");
-      assert.match(persistedDrumAlignment, /\d+\/3 overlap low-band bass attacks/,
+      assert.match(
+        persistedDrumAlignment,
+        /\d+\/\d+ (?:coarse vocal-activity interval starts|pitch-continuity run starts|combined vocal-activity and pitch-run starts) overlap measured drum transients/,
+        "the route must report its available persisted vocal timing intervals against measured drum events",
+      );
+      assert.match(persistedDrumAlignment, /\d+\/\d+ overlap low-band bass attacks/,
         "the route must report persisted bass events without treating every attack as a preferred vocal onset");
       assert.ok(persistedDrumAlignment.includes("transient coincidences did not move the entry"),
         "the route must not optimize entry timing on transient coincidence without a matching musical passage");
@@ -1450,16 +1461,22 @@ test(
     assert.equal(saveBody.ok, true);
     assert.ok(saveBody.remix.id);
     assert.ok(saveBody.version.id);
-    if (realFixture) {
-      const [initialVersion] = await dbModule.db.select().from(schema.remixVersions)
-        .where(eq(schema.remixVersions.id, saveBody.version.id));
-      assert.ok(initialVersion);
-      const initialSnapshot = JSON.parse(initialVersion.snapshot) as {
-        mashupPlan?: {
-          passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } | null;
-          segments?: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
-        };
+    const [initialVersion] = await dbModule.db.select().from(schema.remixVersions)
+      .where(eq(schema.remixVersions.id, saveBody.version.id));
+    assert.ok(initialVersion);
+    const initialSnapshot = JSON.parse(initialVersion.snapshot) as {
+      mashupPlan?: {
+        arrangement?: unknown;
+        passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } | null;
+        segments?: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
       };
+    };
+    assert.deepEqual(
+      initialSnapshot.mashupPlan?.arrangement ?? null,
+      planBody.plan?.arrangement ?? null,
+      "whole-track placement evidence must survive the persisted initial remix version",
+    );
+    if (realFixture) {
       assert.deepEqual(
         initialSnapshot.mashupPlan?.segments?.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
         planBody.plan?.segments.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),

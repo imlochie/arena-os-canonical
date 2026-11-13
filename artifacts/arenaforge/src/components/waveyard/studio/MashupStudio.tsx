@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import type { MashupArrangement } from "@workspace/arena/lib/waveyard/studio/mashup";
 import type { Source } from "./types";
 import { compactMusicAnalysisLabel } from "@workspace/arena/lib/waveyard/types";
 
@@ -61,6 +62,7 @@ type Plan = {
       reason: string;
     }>;
   };
+  arrangement?: MashupArrangement | null;
   durationMs: number;
   rationale: string[];
   warnings: string[];
@@ -354,6 +356,45 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                     ))}
                   </ol>
                 )}
+            </details>
+          )}
+          {plan.arrangement && (
+            <details className="mashup-arrangement" data-testid="details-mashup-arrangement">
+              <summary>
+                Whole-track placement · {plan.arrangement.selected === "segmented" ? "repositioned" : "kept continuous"}
+                {" · "}{plan.arrangement.unitsPlaced}/{plan.arrangement.unitsTotal} vocal units
+              </summary>
+              <p>
+                Relative placement evidence, not a quality prediction or verse/chorus label.
+                {" "}Segmented {plan.arrangement.segmentedScore.toFixed(2)} · continuous {plan.arrangement.overlayScore.toFixed(2)}
+                {plan.arrangement.improvementRatio === null
+                  ? ""
+                  : ` · difference ${(plan.arrangement.improvementRatio * 100).toFixed(1)}%`}
+              </p>
+              <p>
+                Available: {[
+                  plan.arrangement.evidence.chordTimeline ? "vocal/chord fit" : null,
+                  plan.arrangement.evidence.drumTransients ? "drum transients" : null,
+                  plan.arrangement.evidence.bassAttacks ? "bass attacks" : null,
+                  plan.arrangement.evidence.beatGrid ? "trusted beat grid" : null,
+                  plan.arrangement.evidence.sectionRoles ? "unverified section-role hints" : null,
+                ].filter(Boolean).join(", ") || "no independent placement channels"}
+              </p>
+              <ol>
+                {plan.arrangement.placements.map((placement, index) => (
+                  <li key={`${placement.donorFromMs}-${placement.bedStartMs}-${index}`}>
+                    Donor {formatPassageTime(placement.donorFromMs)}–{formatPassageTime(placement.donorToMs)}
+                    {" → "}bed {formatPassageTime(placement.bedStartMs)}
+                    {" · score "}{placement.unitScore.toFixed(2)}
+                    {placement.evidence.length > 0 && <small>{placement.evidence.join("; ")}</small>}
+                  </li>
+                ))}
+              </ol>
+              {plan.arrangement.unitsSkipped > 0 && (
+                <p role="status">
+                  {plan.arrangement.unitsSkipped} vocal unit{plan.arrangement.unitsSkipped === 1 ? "" : "s"} could not fit and were omitted.
+                </p>
+              )}
             </details>
           )}
           {evidence && (

@@ -928,6 +928,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               durationMs: planned.plan.durationMs,
               segments: planned.plan.segments,
               passageSearch: planned.plan.passageSearch ?? null,
+              arrangement: planned.plan.arrangement ?? null,
               rationale: planned.plan.rationale,
               warnings: planned.plan.warnings,
             },
