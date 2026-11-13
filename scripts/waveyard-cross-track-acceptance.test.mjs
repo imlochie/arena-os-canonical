@@ -26,7 +26,7 @@ const skipReason = tracks.length === 6
   ? false
   : "Set WAVEYARD_ACCEPTANCE_TRACKS to six full-length audio paths; the test deliberately does not substitute generated tones.";
 
-test("six full-track audio files produce persisted-feature comparisons without false compatibility claims", { skip: skipReason }, async (t) => {
+test("six full-track audio files produce source-bound comparisons without false compatibility claims", { skip: skipReason }, async (t) => {
   const requestedReportPath = process.env.WAVEYARD_ACCEPTANCE_REPORT?.trim();
   const outputDir = requestedReportPath
     ? null
@@ -65,6 +65,44 @@ test("six full-track audio files produce persisted-feature comparisons without f
     assert.ok(report.crossSourceCompatibility.evaluatedPassagePairs > 0);
     assert.equal(report.crossSourceCompatibility.coreEligibleMatches, 0,
       "the current six-track acceptance set has no pair that meets every independent compatibility gate");
+    const liveAlignmentProbe = report.liveStemAlignmentProbe;
+    assert.equal(liveAlignmentProbe.orderedTrackPairCount, 30);
+    assert.ok(liveAlignmentProbe.evaluatedWindowPositions > 0);
+    assert.equal(
+      liveAlignmentProbe.acceptedWindowAlignments,
+      0,
+      "the six full tracks currently produce no section-window alignment that meets the measured gates",
+    );
+    const primarySongPair = liveAlignmentProbe.orderedPairs.filter((pair) =>
+      (pair.recipient.includes("september") && pair.donor.includes("another_one_bites_the_dust"))
+      || (pair.recipient.includes("another_one_bites_the_dust") && pair.donor.includes("september")),
+    );
+    assert.equal(primarySongPair.length, 2);
+    assert.ok(primarySongPair.every((pair) =>
+      pair.evaluatedWindowPositions > 0
+        && pair.acceptedWindowAlignments === 0
+        && pair.beatFallbackWindowPositions === 0
+        && pair.status === "no-automatic-offset"),
+    `the September / Queen pair currently has no supported section-window alignment or beat fallback: ${JSON.stringify(primarySongPair)}`);
+    assert.equal(liveAlignmentProbe.groundTruth.status, "blocked-no-independent-phrase-pairs");
+    assert.deepEqual({
+      correctMatches: liveAlignmentProbe.groundTruth.correctMatches,
+      misses: liveAlignmentProbe.groundTruth.misses,
+      falseMatches: liveAlignmentProbe.groundTruth.falseMatches,
+      meanAbsoluteOffsetErrorMs: liveAlignmentProbe.groundTruth.meanAbsoluteOffsetErrorMs,
+    }, {
+      correctMatches: null,
+      misses: null,
+      falseMatches: null,
+      meanAbsoluteOffsetErrorMs: null,
+    }, "real-song performance metrics stay unavailable until phrase ground truth is independently annotated");
+    assert.equal(
+      liveAlignmentProbe.acceptedWindowAlignments
+        + liveAlignmentProbe.beatFallbackWindowPositions
+        + liveAlignmentProbe.noAutomaticOffsetWindowPositions,
+      liveAlignmentProbe.evaluatedWindowPositions,
+      "every real rolling window is accounted for as phrase match, verified beat fallback, or no automatic offset",
+    );
     t.diagnostic(JSON.stringify({
       report: requestedReportPath ?? "temporary report (removed after the run)",
       trackDurationsSeconds: report.tracks.map((track) => track.analyzedDurationSeconds),
@@ -72,6 +110,14 @@ test("six full-track audio files produce persisted-feature comparisons without f
       evaluatedPassagePairs: report.crossSourceCompatibility.evaluatedPassagePairs,
       eligibleMatches: report.crossSourceCompatibility.coreEligibleMatches,
       missingEvidence: report.crossSourceCompatibility.missingEvidence,
+      liveAlignmentProbe: {
+        orderedTrackPairCount: liveAlignmentProbe.orderedTrackPairCount,
+        evaluatedWindowPositions: liveAlignmentProbe.evaluatedWindowPositions,
+        acceptedWindowAlignments: liveAlignmentProbe.acceptedWindowAlignments,
+        beatFallbackWindowPositions: liveAlignmentProbe.beatFallbackWindowPositions,
+        noAutomaticOffsetWindowPositions: liveAlignmentProbe.noAutomaticOffsetWindowPositions,
+        groundTruth: liveAlignmentProbe.groundTruth,
+      },
     }));
   } finally {
     if (outputDir) await rm(outputDir, { recursive: true, force: true });

@@ -1,5 +1,35 @@
 # Arena handoff — read this first
 
+## Current real-song result — full-track live alignment probe
+
+* The current live section-alignment helper was exercised against all six complete uploaded
+  recordings, using their pinned source hashes: 215.14–405.93 seconds each,
+  255 detected sections total. The offline evaluator compared 26,825 section
+  pairs and tested 3,180 rolling-window positions across all 30 ordered
+  track-pair directions.
+* **Measured result:** no rolling feature window produced an accepted section
+  alignment. These eight-beat fingerprints are not vocal/lyric phrase
+  boundaries. Confidence gates allowed a beat-offset fallback for 197 positions
+  across two directions (September ↔ Stayin' Alive); the other 2,983 positions
+  had no automatic offset. On the primary September ↔ Another One Bites the
+  Dust pair, both directions had zero accepted section-window alignments and
+  zero beat-fallback positions across 155 rolling windows. The offline Queen source
+  analysis reported BPM confidence 0.426 and beat confidence 0.234, below the
+  current alignment gates.
+* **Interpretation limit:** this is a source-PCM/offline analysis run, not a
+  database-backed separation-to-mixer run or a lyric-phrase detector. Its zero
+  candidate count is not evidence of zero false matches or musical
+  incompatibility. The report keeps correct matches, misses, false matches,
+  and offset error null because no independent adjudicated phrase-pair labels
+  exist. The coarse owner section notes in chat do not supply phrase-pair
+  ground truth.
+* **Verification:** the six-full-track acceptance test passes, as do
+  `session-logic.test.ts` 56/56 and the ground-truth evaluator 12/12. The
+  ignored local report is
+  `generated-artifacts/waveyard-real-world-acceptance/alignment-probe-six-tracks-20261113.json`.
+  It contains the per-track-pair alignment/fallback counts and explicitly blocked
+  ground-truth metrics. No threshold was tuned to this dataset.
+
 ## Current verification — pitch lock with multiple live donors
 
 * The browser acceptance fixture now loads two different swapped stems on each
@@ -39,8 +69,8 @@
 * Migrations `lib/arena/drizzle/0029_source_analysis_downbeats.sql` and
   `lib/arena/desktop-migrations/0031_source_analysis_downbeats.sql` add nullable
   evidence columns. Existing analyses remain null; no broad reanalysis is
-  triggered. The development API cannot start until the normal post-merge
-  schema flow applies the new columns. Production is not migrated.
+  triggered. The additive columns were applied to the development database and
+  the API was restarted; production is not migrated.
 * **Real-file check:** full decodes of the supplied 215-second September and
   223-second Another One Bites the Dust recordings both produced no usable
   downbeat grid. September had BPM 126.048 and persisted beat confidence 0.805,
@@ -51,8 +81,7 @@
 * **Verification:** downbeat/DJ/session tests pass 84/84. The persisted session
   service, retry and recovery suites pass 58 tests; 5 optional heavy-separation
   cases are skipped. ArenaForge and API-server typechecks pass after rebuilding
-  the database project declarations. The API workflow is currently blocked on
-  the unapplied development migration, so the signed-in bar controls and browser
+  the database project declarations. The signed-in bar controls and browser
   smoke are not verified here. No manually verified real-song downbeat
   evaluation has been run; synthetic signal tests establish gating behavior,
   not musical accuracy.
@@ -563,11 +592,12 @@
   feature confidence was 0.907, which is not confidence that the mashup sounds
   good. The complete 215 s session saved, reopened, edited, restored, and
   exported as stereo 44.1 kHz WAV; the acceptance run passed.
-* **Ground-truth boundary:** no manually labelled section boundaries were
-  supplied for these recordings. Therefore this run cannot report passage
-  detection accuracy, missed/incorrect labels, or timing error against human
-  references. Analyzer windows do not prove verse/chorus understanding, and no
-  listener-rated mashup quality was measured.
+* **Ground-truth boundary:** the owner supplied coarse approximate section
+  notes in chat, but they are not committed/adjudicated phrase-pair labels and
+  do not cover the full candidate-usefulness review. Therefore this run cannot
+  report phrase-match accuracy, missed/false matches, or offset error against
+  independent references. Analyzer windows do not prove verse/chorus
+  understanding, and no listener-rated mashup quality was measured.
 * **Next missing capability:** the fingerprint worker currently gives chroma
   the beat-grid confidence; it does not independently quantify whether a
   passage's harmonic evidence is ambiguous or distinctive. The analysis also

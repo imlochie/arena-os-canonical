@@ -4,6 +4,31 @@
 
 This is a reproducible evaluation protocol and a versioned annotation template—not a completed ground-truth dataset. The exact user-provided MP3s are present in the current Replit workspace under `attached_assets/` (ignored by Git), and their SHA-256s match the production route manifest. They are not bundled in the repository and may be absent in other checkouts. The production route exports a complete source-bound prediction snapshot in this workspace, and its producer/source provenance validates. Rights evidence, two independent reviews, and adjudication are missing. The evaluator therefore emits a blocked report with null performance metrics instead of substituting algorithm-generated labels.
 
+### Latest full-track live-alignment probe
+
+On 2026-11-13, the opt-in acceptance runner analyzed all six owner-uploaded
+recordings (215.14–405.93 seconds; pinned hashes) and evaluated the current
+`liveStemSectionAlignment` helper over 3,180 rolling-window positions in 30
+directed song-pair combinations. These are eight-beat feature windows, not
+detected vocal or lyric phrases. The probe found **zero accepted section-window
+candidates**, 197 positions where confidence gates allowed a beat-offset
+fallback, and 2,983 positions with no automatic offset. The two directions
+with beat fallback were September ↔ Stayin' Alive. The primary September ↔
+Another One Bites the Dust pair had zero accepted section-window alignments
+and zero beat-fallback positions over 155 windows. The local Queen analysis reported
+0.426 BPM confidence and 0.234 beat confidence; this is the offline
+source-PCM analyzer's result, not the separate persisted API analysis value.
+
+This run is a real-audio capability check, **not** an accuracy score or a
+lyric-phrase evaluation. The source-only offline scan does not exercise
+separated stems or the persisted database route. Without independent
+vocal-phrase pairs and adjudicated
+usefulness judgments, correct matches, misses, false matches, and timing error
+remain `null`; a zero candidate count must not be read as zero false matches or
+as proof that the songs are incompatible. No thresholds were tuned to this
+recording set. The ignored detailed report is
+`generated-artifacts/waveyard-real-world-acceptance/alignment-probe-six-tracks-20261113.json`.
+
 The target pair and expected durations follow the production handoff: _Another One Bites the Dust_ (222.67 s) and _September_ (215.14 s). A database-backed production run captures 25 and 34 structural sections, 89 isolated-vocal pitch-continuity runs for the donor, and all 17 donor windows with ranked bed candidates. The local snapshot is `generated-artifacts/waveyard-real-world-acceptance/predictions-v2-captured.json`; the full acceptance report is `generated-artifacts/waveyard-real-world-acceptance/full-track-ground-truth-predictions-capture.json`. These files are ignored by Git. Persisted section endpoints are clamped to decoded PCM duration rather than whole-second database metadata; capture validation allows only the 50 ms source-metadata rounding difference. Pitch-continuity runs are not lyric-phrase boundaries, and no words or lyrics are detected. The section engine emits structural windows/repeats, not verse/chorus/bridge/breakdown labels.
 
 ### Full-track vocal-activity evidence (not semantic classification)
