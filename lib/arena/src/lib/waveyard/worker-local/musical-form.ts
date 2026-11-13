@@ -95,9 +95,37 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
   pairs.sort((a, b) => b.score - a.score);
   const best = pairs[0];
   if (!best) return [];
+  // A seed is only an eight-bar observation, not the entire musical section.
+  // Follow its recurrence diagonal at one-bar hops: every occurrence must
+  // continue to agree at the same relative offset. Never extrapolate a label
+  // just because the adjacent music is loud or because a verse is expected.
+  const byBar = new Map(usable.map(w => [w.startBar, w]));
+  const extentCache = new Map<typeof groups[number], { startBar: number; endBar: number }[]>();
+  const extend = (group: typeof groups[number]) => {
+    const cached = extentCache.get(group);
+    if (cached) return cached;
+    const supported = (offset: number) => {
+      const shifted = group.members.map(m => byBar.get(m.startBar + offset));
+      return shifted.every((a, i) => a !== undefined
+        && similarity(a, group.members[i]!) >= MIN_REPEAT_SIMILARITY
+        && shifted.slice(i + 1).every(b => b !== undefined
+          && similarity(a, b) >= MIN_REPEAT_SIMILARITY));
+    };
+    let left = 0, right = 0;
+    while (left > -WINDOW_BARS && supported(left - 1)) left--;
+    while (right < WINDOW_BARS && supported(right + 1)) right++;
+    const result = group.members.map(m => ({
+      startBar: m.startBar + left, endBar: m.startBar + WINDOW_BARS + right,
+    }));
+    extentCache.set(group, result);
+    return result;
+  };
+  const chorusExtent = extend(best.chorus);
   // Competing, non-overlapping hook locations are ambiguous, not a tie to hide.
-  const competitor = pairs.find(p => p.chorus.members.every(c =>
-    best.chorus.members.every(b => Math.abs(c.startBar - b.startBar) >= WINDOW_BARS)));
+  // Adjacent seeds on the same measured recurrence run are NOT competing
+  // choruses; previously this could discard a longer, consistently repeated hook.
+  const competitor = pairs.find(p => extend(p.chorus).every(c =>
+    chorusExtent.every(b => c.endBar <= b.startBar || c.startBar >= b.endBar)));
   if (competitor && best.score - competitor.score < 0.05) return [];
   const strength = Number(Math.min(0.7, 0.45 + best.score * 0.25).toFixed(3));
   const sequence = [
@@ -111,7 +139,26 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
   }
   // A later hook reprise without another observed verse is not automatically
   // a new chorus: it may be a breakdown or an outro.
-  return alternating.length >= 4 ? alternating : [];
+  if (alternating.length < 4) return [];
+  const expanded = alternating.map(event => {
+    const group = event.label === "verse" ? best.verse : best.chorus;
+    const member = group.members.findIndex(m => m.startBar === event.startBar);
+    return { ...event, ...extend(group)[member]! };
+  });
+  // Conflicting extensions are unknown, not an invented midpoint boundary.
+  return expanded.flatMap(event => {
+    let spans = [{ startBar: event.startBar, endBar: event.endBar }];
+    for (const other of expanded.filter(p => p.label !== event.label)) {
+      spans = spans.flatMap(span => {
+        if (other.endBar <= span.startBar || other.startBar >= span.endBar) return [span];
+        return [
+          { startBar: span.startBar, endBar: Math.min(span.endBar, other.startBar) },
+          { startBar: Math.max(span.startBar, other.endBar), endBar: span.endBar },
+        ].filter(s => s.endBar > s.startBar);
+      });
+    }
+    return spans.map(span => ({ ...event, ...span }));
+  }).sort((a, b) => a.startBar - b.startBar);
 }
 
 /** Bounded, beat-synchronous source + independently isolated vocal features. */
