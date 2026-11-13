@@ -43,6 +43,16 @@ section notes, the same full-song route changed from engine 1.10 to 1.11:
   separated-stem fixtures. This is a targeted logic correction, not a measured
   accuracy gain on the current two-track corpus.
 
+An exploratory full-track short-hook comparison is not production code. A
+shift-tolerant four-bar vocal/chroma/timing score found one Queen pair inside
+the annotated first and second choruses, but the same exploratory gates yielded
+176 September pairs, 137 crossing annotated section roles. Band-limited vocal
+onset flux did not remove the cross-role matches, and the existing stricter
+source phrase matcher found no repeats in either full track. Do not lower the
+repeat threshold or label a short motif as a whole chorus; the current signals
+do not separate repeated hooks from reused material in breakdowns/outros.
+Word/lyric transcription is not implemented in the local vocal-analysis path.
+
 These are **provisional**, owner-authored approximate boundaries from one
 annotated track, not two independent reviewers or a broad accuracy benchmark.
 They are useful comparative evidence for this iteration, not proof of Stem.fm
