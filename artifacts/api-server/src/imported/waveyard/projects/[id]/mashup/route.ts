@@ -72,6 +72,7 @@ import {
 } from "@workspace/arena/lib/waveyard/studio/musical-evidence";
 import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
+import { createPersistedClipTempoMap } from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
 
 export const dynamic = "force-dynamic";
 
@@ -948,6 +949,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           );
         }
 
+        const [vocalsStemRecord] = await db.select().from(stemAssets)
+          .where(eq(stemAssets.id, vocalsStem.id)).limit(1);
+        if (!vocalsStemRecord) {
+          return Response.json({ error: "The completed vocal stem is no longer available." }, { status: 409 });
+        }
+
         // Verify genuine analysis confidence before enabling transform and snap flags
         const vocalTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
         const vocalKeyTrusted = trustedAnalysisKey(vocals.musicalKey, vocals.keyConfidence) !== null;
@@ -1062,6 +1069,37 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
 
           const insertedClips = clipsToInsert.length ? await tx.insert(remixClips).values(clipsToInsert).returning() : [];
+          const clipTimingMaps = insertedClips.flatMap((clip) => {
+            if (clip.remixTrackId !== trackByStemId.get(vocalsStem.id)?.id
+              || !vocalsStemRecord
+              || vocalsStemRecord.projectId !== projectId
+              || vocalsStemRecord.sourceAssetId !== vocalsId
+              || vocalsStemRecord.format?.toLowerCase() !== "wav"
+              || vocalsStemRecord.channels !== 2
+              || !vocals.sourceChecksumSha256
+              || !vocalsStemRecord.checksumSha256) return [];
+            const segment = planned.plan.segments.find((candidate) =>
+              candidate.localTempoMap
+              && candidate.vocalsFromMs === clip.sourceOffsetMs
+              && candidate.mashupStartMs === clip.timelineStartMs
+              && candidate.mashupEndMs - candidate.mashupStartMs === clip.durationMs);
+            if (!segment?.localTempoMap) return [];
+            const map = createPersistedClipTempoMap({
+              clipId: clip.id,
+              remixTrackId: clip.remixTrackId,
+              stemAssetId: clip.stemAssetId,
+              sourceAssetId: vocalsStemRecord.sourceAssetId,
+              sourceChecksumSha256: vocals.sourceChecksumSha256,
+              stemChecksumSha256: vocalsStemRecord.checksumSha256,
+              sourceOffsetMs: clip.sourceOffsetMs,
+              timelineStartMs: clip.timelineStartMs,
+              durationMs: clip.durationMs,
+              sessionTempoBpm: planned.plan.masterBpm,
+              baseStretchRatio: planned.plan.vocalsStretchRatio,
+              map: segment.localTempoMap,
+            });
+            return map ? [map] : [];
+          });
 
           const snapshot = {
             name: remix.name,
@@ -1082,6 +1120,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               keyRelationship: planned.plan.keyRelationship,
               durationMs: planned.plan.durationMs,
               segments: planned.plan.segments,
+              clipTimingMaps,
               passageSearch: planned.plan.passageSearch ?? null,
               arrangement: planned.plan.arrangement ?? null,
               rationale: planned.plan.rationale,

@@ -14,6 +14,7 @@
  */
 
 import { pitchShift, timeStretch, type TimeStretchMapPoint } from "../elastic";
+import type { LocalTempoMap } from "./local-tempo-map";
 import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
@@ -92,13 +93,7 @@ export type MashupSegment = {
   crossfadeMs: number;
   rationale: string;
   /** Optional gentle source-relative WSOLA correction derived from both trusted beat grids. */
-  localTempoMap?: {
-    points: Array<{ sourceMs: number; outputMs: number }>;
-    baselineFit: { matchedBeats: number; comparedBeats: number; meanErrorMs: number };
-    correctedFit: { matchedBeats: number; comparedBeats: number; meanErrorMs: number };
-    maximumRateDeviationPercent: number;
-    entryShiftMs: number;
-  };
+  localTempoMap?: LocalTempoMap;
   /** Stem role for multi-stem arrangement (defaults to "vocals"). */
   stemType?: string;
   sourceRole?: "vocals" | "instrumental";

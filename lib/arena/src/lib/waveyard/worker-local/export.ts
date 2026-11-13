@@ -10,7 +10,7 @@
  * audio-to-MIDI route. Desktop-local DSP results are first-class inputs.
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, inArray } from "drizzle-orm";
@@ -19,6 +19,14 @@ import { db } from "@workspace/db";
 import { exportAssets, exportJobs, remixSessions, remixVersions, sourceAnalyses, sourceAssets, stemAssets,
   drumAnalyses, drumEvents, harmonyAnalyses, harmonyEvents, vocalAnalyses, vocalPitchFrames } from "@workspace/db/waveyardSchema";
 import { checksumFile, exec, validateAudio } from "@workspace/arena/lib/waveyard/audio";
+import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import {
+  clipTempoMapMatches,
+  makeLocalTempoMapWindow,
+  parsePersistedClipTempoMap,
+  renderLocalTempoMapRange,
+  type PersistedClipTempoMap,
+} from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import {
@@ -38,6 +46,7 @@ import { SOURCE_DURATION_ROUNDING_TOLERANCE_MS } from "../types/clip-editing";
 import { isClipFadeShape, type ClipFadeShape } from "../fades";
 
 type SnapshotClip = {
+  id: string | null;
   stemAssetId: string;
   timelineStartMs: number;
   durationMs: number;
@@ -49,6 +58,7 @@ type SnapshotClip = {
   tempoSyncEnabled: boolean;
   keySyncEnabled: boolean;
   beatSnapEnabled: boolean;
+  localTempoMap?: PersistedClipTempoMap;
 };
 type SnapshotTrack = {
   id: string | null;
@@ -78,6 +88,36 @@ export class ExportFailure extends Error {
   }
 }
 
+function encodeFloatWav32(samples: Float32Array, sampleRate: number): Uint8Array {
+  if (samples.length % 2 !== 0 || !Number.isSafeInteger(sampleRate) || sampleRate <= 0)
+    throw new ExportFailure("local_tempo_render_failed", "The locally stretched clip could not be encoded safely.");
+  const dataBytes = samples.length * 4;
+  const bytes = new Uint8Array(44 + dataBytes);
+  const view = new DataView(bytes.buffer);
+  const ascii = (offset: number, text: string) => {
+    for (let index = 0; index < text.length; index += 1) view.setUint8(offset + index, text.charCodeAt(index));
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 3, true);
+  view.setUint16(22, 2, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 8, true);
+  view.setUint16(32, 8, true);
+  view.setUint16(34, 32, true);
+  ascii(36, "data");
+  view.setUint32(40, dataBytes, true);
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index]!;
+    if (!Number.isFinite(sample)) throw new ExportFailure("local_tempo_render_failed", "The locally stretched clip contains invalid samples.");
+    view.setFloat32(44 + index * 4, sample, true);
+  }
+  return bytes;
+}
+
 function finite(value: unknown, lower: number, upper: number) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < lower || number > upper) throw new ExportFailure("invalid_snapshot", "Persisted remix version is invalid.");
@@ -94,12 +134,25 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   if (!parsed || typeof parsed !== "object") throw new ExportFailure("invalid_snapshot", "Persisted remix version is invalid.");
   const value = parsed as Record<string, unknown>;
   if (!Array.isArray(value.tracks)) throw new ExportFailure("invalid_snapshot", "Persisted remix tracks are missing.");
+  const tempoBpm = finite(value.tempoBpm ?? 120, 20, 300);
+  const rawMashupPlan = value.mashupPlan;
+  const rawBindings = rawMashupPlan && typeof rawMashupPlan === "object" && !Array.isArray(rawMashupPlan)
+    ? (rawMashupPlan as Record<string, unknown>).clipTimingMaps
+    : undefined;
+  const mapByClipId = new Map<string, PersistedClipTempoMap>();
+  if (Array.isArray(rawBindings)) {
+    for (const rawBinding of rawBindings) {
+      const map = parsePersistedClipTempoMap(rawBinding);
+      if (map && !mapByClipId.has(map.clipId)) mapByClipId.set(map.clipId, map);
+    }
+  }
   const tracks = value.tracks.map((track): SnapshotTrack => {
     if (!track || typeof track !== "object") throw new ExportFailure("invalid_snapshot", "Persisted remix track is invalid.");
     const candidate = track as Record<string, unknown>;
     if (typeof candidate.stemAssetId !== "string" || !Array.isArray(candidate.clips)) throw new ExportFailure("invalid_snapshot", "Persisted remix track is invalid.");
+    const trackId = typeof candidate.id === "string" ? candidate.id : null;
     return {
-      id: typeof candidate.id === "string" ? candidate.id : null,
+      id: trackId,
       stemAssetId: candidate.stemAssetId,
       sortOrder: finite(candidate.sortOrder, 0, 99),
       volume: finite(candidate.volume, 0, 2),
@@ -116,7 +169,8 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
         if (fadeInMs + fadeOutMs > durationMs) throw new ExportFailure("invalid_snapshot", "Persisted remix clip fades exceed its duration.");
         const fadeShape = item.fadeShape === undefined ? "linear" : item.fadeShape;
         if (!isClipFadeShape(fadeShape)) throw new ExportFailure("invalid_snapshot", "Persisted remix clip fade shape is invalid.");
-        return {
+        const snapshotClip: SnapshotClip = {
+          id: typeof item.id === "string" ? item.id : null,
           stemAssetId: item.stemAssetId,
           timelineStartMs: finite(item.timelineStartMs, 0, 86_400_000),
           durationMs,
@@ -129,6 +183,21 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
           keySyncEnabled: item.keySyncEnabled === true,
           beatSnapEnabled: item.beatSnapEnabled === true,
         };
+        const map = snapshotClip.id ? mapByClipId.get(snapshotClip.id) : undefined;
+        if (map && trackId && clipTempoMapMatches(map, {
+          clipId: snapshotClip.id!,
+          remixTrackId: trackId,
+          stemAssetId: snapshotClip.stemAssetId,
+          sourceAssetId: map.sourceAssetId,
+          sourceChecksumSha256: map.sourceChecksumSha256,
+          stemChecksumSha256: map.stemChecksumSha256,
+          sourceOffsetMs: snapshotClip.sourceOffsetMs,
+          timelineStartMs: snapshotClip.timelineStartMs,
+          durationMs: snapshotClip.durationMs,
+          sessionTempoBpm: tempoBpm,
+          stemDurationMs: snapshotClip.sourceOffsetMs + map.points.at(-1)!.sourceMs,
+        })) snapshotClip.localTempoMap = map;
+        return snapshotClip;
       }),
     };
   });
@@ -155,7 +224,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   }
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
-    tempoBpm: finite(value.tempoBpm ?? 120, 20, 300),
+    tempoBpm,
     targetKey: normaliseMusicalKey(value.targetKey),
     tracks,
     automation,
@@ -384,7 +453,81 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     if (stems.length !== stemIds.length)
       throw new ExportFailure("asset_missing", "The persisted remix references unavailable audio.");
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
-    const transformedSourceIds = [...new Set(clips.filter((clip) => clip.tempoSyncEnabled || clip.keySyncEnabled).map((clip) => stemById.get(clip.stemAssetId)!.sourceAssetId))];
+  const sourceIds = [...new Set(stems.map((stem) => stem.sourceAssetId))];
+  const sources = sourceIds.length
+    ? await db.select().from(sourceAssets).where(inArray(sourceAssets.id, sourceIds))
+    : [];
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  const inputPaths = new Map<string, string>();
+  for (const [index, stem] of stems.entries()) {
+    const inputPath = join(temporaryDirectory, `stem-${index}.wav`);
+    await storage.getToFile(stem.storageKey, inputPath);
+    inputPaths.set(stem.id, inputPath);
+  }
+
+  // A saved local map is used only when its clip, session tempo, source bytes,
+  // stem bytes, and decoded PCM window all still agree. Otherwise that clip
+  // returns to the existing BPM-based continuous tempo path.
+  const mappedInputByClipIndex = new Map<number, { path: string; inputIndex: number }>();
+  const actualStemChecksumById = new Map<string, string>();
+  let nextInputIndex = stems.length;
+  for (const [index, clip] of clips.entries()) {
+    const map = clip.localTempoMap;
+    if (!map || !clip.tempoSyncEnabled) continue;
+    const stem = stemById.get(clip.stemAssetId);
+    const source = stem ? sourceById.get(stem.sourceAssetId) : undefined;
+    if (!stem || !source || source.projectId !== stem.projectId
+      || map.sourceAssetId !== stem.sourceAssetId
+      || map.sourceChecksumSha256 !== source.checksumSha256
+      || map.stemChecksumSha256 !== stem.checksumSha256
+      || stem.channels !== 2
+      || stem.format?.toLowerCase() !== "wav") continue;
+    const matches = clipTempoMapMatches(map, {
+      clipId: clip.id ?? "",
+      remixTrackId: clip.track.id ?? "",
+      stemAssetId: clip.stemAssetId,
+      sourceAssetId: stem.sourceAssetId,
+      sourceChecksumSha256: source.checksumSha256,
+      stemChecksumSha256: stem.checksumSha256 ?? "",
+      sourceOffsetMs: clip.sourceOffsetMs,
+      timelineStartMs: clip.timelineStartMs,
+      durationMs: clip.durationMs,
+      sessionTempoBpm: snapshot.tempoBpm,
+      stemDurationMs: stem.durationSeconds * 1_000,
+    });
+    if (!matches) continue;
+    let actualChecksum = actualStemChecksumById.get(stem.id);
+    if (!actualChecksum) {
+      actualChecksum = await checksumFile(inputPaths.get(stem.id)!);
+      actualStemChecksumById.set(stem.id, actualChecksum);
+    }
+    if (actualChecksum !== stem.checksumSha256) continue;
+    let decoded;
+    try {
+      decoded = decodeWav16(new Uint8Array(await readFile(inputPaths.get(stem.id)!)));
+    } catch {
+      continue;
+    }
+    if (!decoded || decoded.channels !== 2 || decoded.frames <= 0
+      || Math.abs(decoded.frames * 1_000 / decoded.sampleRate - stem.durationSeconds * 1_000) > 1_100) continue;
+    const window = makeLocalTempoMapWindow(map, decoded.sampleRate, 0, clip.durationMs, 0);
+    if (!window || window.inputStartFrame !== 0) continue;
+    const sourceStartFrame = Math.round(clip.sourceOffsetMs * decoded.sampleRate / 1_000);
+    const sourceEndFrame = sourceStartFrame + window.inputEndFrame;
+    if (sourceStartFrame < 0 || sourceEndFrame > decoded.frames) continue;
+    const sourcePcm = decoded.samples.subarray(sourceStartFrame * 2, sourceEndFrame * 2);
+    const rendered = renderLocalTempoMapRange(sourcePcm, decoded.sampleRate, window);
+    if (!rendered) continue;
+    const mappedPath = join(temporaryDirectory, `mapped-clip-${index}.wav`);
+    await writeFile(mappedPath, encodeFloatWav32(rendered, decoded.sampleRate));
+    mappedInputByClipIndex.set(index, { path: mappedPath, inputIndex: nextInputIndex++ });
+  }
+
+  const transformedSourceIds = [...new Set(clips.flatMap((clip, index) =>
+    (clip.tempoSyncEnabled && !mappedInputByClipIndex.has(index) || clip.keySyncEnabled)
+      ? [stemById.get(clip.stemAssetId)!.sourceAssetId]
+      : [],
+  ))];
     const analyses = transformedSourceIds.length ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, transformedSourceIds)) : [];
     const analysisBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
     const tempoByClip = new Map<number, { ratio: number; sourceDurationMs: number }>();
@@ -392,7 +535,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     for (const [index, clip] of clips.entries()) {
       const stem = stemById.get(clip.stemAssetId)!;
       let sourceDurationMs = clip.durationMs;
-      if (clip.tempoSyncEnabled) {
+    if (clip.tempoSyncEnabled && !mappedInputByClipIndex.has(index)) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
         if (!analysis || analysis.projectId !== stem.projectId || analysis.status !== "complete") throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
         if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300) throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
@@ -410,24 +553,17 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
           );
         keyShiftByClip.set(index, resolution.semitones);
       }
-      if (!sourceDurationFits(
-        clip.sourceOffsetMs,
-        clip.durationMs,
-        clip.tempoSyncEnabled ? tempoByClip.get(index)!.ratio : 1,
-        stem.durationSeconds * 1000,
-        SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
-      ))
+    if (!mappedInputByClipIndex.has(index) && !sourceDurationFits(
+      clip.sourceOffsetMs,
+      clip.durationMs,
+      clip.tempoSyncEnabled ? tempoByClip.get(index)!.ratio : 1,
+      stem.durationSeconds * 1000,
+      SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
+    ))
         throw new ExportFailure(
           "invalid_snapshot",
           clip.tempoSyncEnabled ? "A tempo-synced clip requires more source audio than its stem contains." : "A persisted remix clip extends beyond its source stem.",
         );
-    }
-
-    const inputPaths = new Map<string, string>();
-    for (const [index, stem] of stems.entries()) {
-      const inputPath = join(temporaryDirectory, `stem-${index}.wav`);
-      await storage.getToFile(stem.storageKey, inputPath);
-      inputPaths.set(stem.id, inputPath);
     }
 
     await updateJob(job.id, { status: "processing", stage: "rendering" });
@@ -444,6 +580,10 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     const filters = clips.map((clip, index) => {
       const delay = Math.round(clip.timelineStartMs);
       const tempo = tempoByClip.get(index);
+      const mappedInput = mappedInputByClipIndex.get(index);
+      const sourceInputIndex = mappedInput?.inputIndex ?? inputIndex.get(clip.stemAssetId);
+      const sourceStartMs = mappedInput ? 0 : clip.sourceOffsetMs;
+      const sourceDurationMs = mappedInput ? clip.durationMs : (tempo?.sourceDurationMs ?? clip.durationMs);
       const keyShift = keyShiftByClip.get(index);
       const fades = ffmpegFadeFilters(clip);
       const fadeSegment = fades ? `,${fades}` : "";
@@ -452,18 +592,18 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       if (automated) {
         const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}` : "";
         if (keyShift === undefined)
-          return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+          return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
         const keyTempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
-        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${keyTempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+        return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${keyTempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
       }
       const gains = panGains(clip.track.pan);
       const volume = (clip.track.volume * clip.gain).toFixed(6);
       if (keyShift === undefined) {
         const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}` : "";
-        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+        return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
       }
       const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
-      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+      return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
     });
     const trackBusLabels = new Map<string, string>();
     for (const [trackId, trackIndex] of automatedTrackIndex) {
@@ -505,6 +645,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     const args = [
       "-y",
       ...stems.flatMap((stem) => ["-i", inputPaths.get(stem.id)!]),
+      ...[...mappedInputByClipIndex.values()].flatMap((mapped) => ["-i", mapped.path]),
       "-filter_complex",
       filters.join(";"),
       "-map",

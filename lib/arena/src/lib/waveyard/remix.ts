@@ -6,6 +6,7 @@ import {
   type RemixAutomationLane,
 } from "./types";
 import { INSERTS_FORMAT, parseInserts, type InsertChain } from "./mixer/inserts";
+import { parsePersistedClipTempoMap, type PersistedClipTempoMap } from "./studio/local-tempo-map";
 import {
   DEFAULT_TIMING,
   GRID_DIVISIONS,
@@ -35,6 +36,8 @@ export type RemixClipInput = {
   chopStepIndex?: number | null;
   /** Uncapped extracted sample length, used when the tempo changes. */
   chopSampleDurationMs?: number | null;
+  /** Checksum-bound local WSOLA map; absent on legacy or unverified clips. */
+  localTempoMap?: PersistedClipTempoMap;
 };
 export type RemixTrackInput = {
   id: string;
@@ -145,6 +148,10 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
       }
       const fadeShape = clip.fadeShape === undefined ? "linear" : clip.fadeShape;
       if (!isClipFadeShape(fadeShape)) return null;
+      const localTempoMap = clip.localTempoMap === undefined
+        ? undefined
+        : parsePersistedClipTempoMap(clip.localTempoMap);
+      if (clip.localTempoMap !== undefined && !localTempoMap) return null;
       clips.push({
         id: clip.id,
         stemAssetId: String(clip.stemAssetId),
@@ -155,6 +162,7 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
         fadeInMs,
         fadeOutMs,
         fadeShape,
+        ...(localTempoMap ? { localTempoMap } : {}),
         // Missing in historical snapshots preserves prior, untransformed export behavior.
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
         keySyncEnabled: clip.keySyncEnabled === true,

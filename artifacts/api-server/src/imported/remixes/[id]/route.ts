@@ -2,7 +2,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
 
 import { nearestBeat } from "@workspace/arena/lib/waveyard/types";
 import { SOURCE_DURATION_ROUNDING_TOLERANCE_MS } from "@workspace/arena/lib/waveyard/types/clip-editing";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { AutomaticRemixCompatibilityReport } from "@workspace/arena/lib/waveyard/types/automatic-remix";
 import { db } from "@workspace/db";
 import {
@@ -11,12 +11,18 @@ import {
   remixClips,
   remixSessions,
   remixTracks,
+  remixVersions,
+  sourceAssets,
   sourceAnalyses,
   stemAssets,
 } from "@workspace/db/waveyardSchema";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 import { crossfadeError, normaliseRemixState } from "@workspace/arena/lib/waveyard/remix";
+import {
+  clipTempoMapMatches,
+  parsePersistedClipTempoMap,
+} from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
 
 function persistedBeatGrid(value: string | null) {
   if (!value) return null;
@@ -99,6 +105,7 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
     ? await db
         .select({
           id: stemAssets.id,
+          projectId: stemAssets.projectId,
           sourceAssetId: stemAssets.sourceAssetId,
           stemType: stemAssets.stemType,
           durationSeconds: stemAssets.durationSeconds,
@@ -117,12 +124,74 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
           ),
         )
     : [];
+  const sourceIds = [...new Set(stems.map((stem) => stem.sourceAssetId))];
+  const [sources, mapVersions] = await Promise.all([
+    sourceIds.length
+      ? db.select({
+          id: sourceAssets.id,
+          checksumSha256: sourceAssets.checksumSha256,
+          projectId: sourceAssets.projectId,
+        }).from(sourceAssets).where(inArray(sourceAssets.id, sourceIds))
+      : Promise.resolve([]),
+    db.select({ snapshot: remixVersions.snapshot })
+      .from(remixVersions)
+      .where(eq(remixVersions.remixSessionId, remix.id))
+      .orderBy(desc(remixVersions.createdAt))
+      .limit(1),
+  ]);
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  const stemById = new Map(stems.map((stem) => [stem.id, stem]));
+  const mapByClipId = new Map<string, ReturnType<typeof parsePersistedClipTempoMap>>();
+  for (const { snapshot } of mapVersions) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(snapshot);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    const mashupPlan = (parsed as Record<string, unknown>).mashupPlan;
+    if (!mashupPlan || typeof mashupPlan !== "object" || Array.isArray(mashupPlan)) continue;
+    const bindings = (mashupPlan as Record<string, unknown>).clipTimingMaps;
+    if (!Array.isArray(bindings)) continue;
+    for (const rawBinding of bindings) {
+      const map = parsePersistedClipTempoMap(rawBinding);
+      if (map && !mapByClipId.has(map.clipId)) mapByClipId.set(map.clipId, map);
+    }
+  }
+  const clipWithLocalTempoMap = (
+    clip: typeof clips[number],
+    remixTrackId: string,
+  ) => {
+    const map = mapByClipId.get(clip.id);
+    if (!map) return clip;
+    const stem = stemById.get(clip.stemAssetId);
+    const source = stem ? sourceById.get(stem.sourceAssetId) : undefined;
+    if (!stem || !source || source.projectId !== stem.projectId || stem.projectId !== remix.projectId
+      || stem.format?.toLowerCase() !== "wav"
+      || stem.channels !== 2
+      || !clipTempoMapMatches(map, {
+        clipId: clip.id,
+        remixTrackId,
+        stemAssetId: clip.stemAssetId,
+        sourceAssetId: stem.sourceAssetId,
+        sourceChecksumSha256: source.checksumSha256,
+        stemChecksumSha256: stem.checksumSha256 ?? "",
+        sourceOffsetMs: clip.sourceOffsetMs,
+        timelineStartMs: clip.timelineStartMs,
+        durationMs: clip.durationMs,
+        sessionTempoBpm: remix.tempoBpm,
+        stemDurationMs: stem.durationSeconds * 1_000,
+      })) return clip;
+    return { ...clip, localTempoMap: map };
+  };
   return {
     remix,
     tracks: tracks.map((track) => ({
       ...track,
       inserts: parseStoredInserts(track.inserts),
-      clips: clips.filter((clip) => clip.remixTrackId === track.id),
+      clips: clips.filter((clip) => clip.remixTrackId === track.id)
+        .map((clip) => clipWithLocalTempoMap(clip, track.id)),
     })),
     generation: generation ? {
       engine: generation.engine,
@@ -230,6 +299,33 @@ export async function PUT(
         { error: "Remix tracks do not match this session." },
         { status: 409 },
       );
+    }
+    const existingClips = existingTracks.length
+      ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, existingTracks.map((track) => track.id)))
+      : [];
+    const requestedClipIds = input.tracks.flatMap((track) =>
+      track.clips.flatMap((clip) => clip.id ? [clip.id] : []),
+    );
+    const requestedClipIdSet = new Set(requestedClipIds);
+    if (requestedClipIds.length !== requestedClipIdSet.size || requestedClipIds.some((clipId) => !isUuid(clipId))) {
+      return Response.json({ error: "Remix clip identities are invalid." }, { status: 400 });
+    }
+    const existingClipById = new Map(existingClips.map((clip) => [clip.id, clip]));
+    const occupiedClipRows = requestedClipIds.length
+      ? await db.select({ id: remixClips.id, remixTrackId: remixClips.remixTrackId })
+        .from(remixClips).where(inArray(remixClips.id, requestedClipIds))
+      : [];
+    const occupiedClipById = new Map(occupiedClipRows.map((clip) => [clip.id, clip]));
+    for (const track of input.tracks) {
+      for (const clip of track.clips) {
+        if (!clip.id) continue;
+        const occupied = occupiedClipById.get(clip.id);
+        const existing = existingClipById.get(clip.id);
+        if ((occupied && !existing)
+          || (existing && (existing.remixTrackId !== track.id || existing.stemAssetId !== clip.stemAssetId))) {
+          return Response.json({ error: "A remix clip identity belongs to another arrangement or source." }, { status: 409 });
+        }
+      }
     }
     const projectStems = await db
       .select({
@@ -380,6 +476,7 @@ export async function PUT(
       );
       const clips = input.tracks.flatMap((track) =>
         track.clips.map((clip) => ({
+          ...(clip.id ? { id: clip.id } : {}),
           remixTrackId: track.id,
           stemAssetId: clip.stemAssetId,
           timelineStartMs: clip.timelineStartMs,

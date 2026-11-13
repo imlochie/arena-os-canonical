@@ -96,6 +96,7 @@ export async function POST(
       })));
       if (automationPoints.length) await tx.insert(remixAutomationPoints).values(automationPoints);
       const clips = state.tracks.flatMap((track) => track.clips.map((clip) => ({
+        ...(clip.id ? { id: clip.id } : {}),
         remixTrackId: track.id,
         stemAssetId: clip.stemAssetId,
         timelineStartMs: clip.timelineStartMs,

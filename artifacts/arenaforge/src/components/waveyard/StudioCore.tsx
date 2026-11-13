@@ -596,17 +596,23 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     ));
     const committed = {
       ...after,
-      tracks: after.tracks.map((track) => track.name !== CHOP_SEQUENCER_TRACK_NAME
-        ? track
-        : {
-            ...track,
-            clips: track.clips.map((clip) => {
-              const previous = clip.id ? previousClipById.get(clip.id) : undefined;
-              return previous?.timelineStartMs === clip.timelineStartMs
-                ? clip
-                : bindChopSequencerClipToTimeline(clip, track.name, after.tempoBpm);
-            }),
-          }),
+      tracks: after.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          const previous = clip.id ? previousClipById.get(clip.id) : undefined;
+          const timingUnchanged = previous !== undefined
+            && previous.timelineStartMs === clip.timelineStartMs
+            && previous.durationMs === clip.durationMs
+            && previous.sourceOffsetMs === clip.sourceOffsetMs
+            && before.tempoBpm === after.tempoBpm;
+          const retained = timingUnchanged
+            ? clip
+            : (({ localTempoMap: _staleMap, ...withoutMap }) => withoutMap)(clip);
+          return track.name === CHOP_SEQUENCER_TRACK_NAME && previous?.timelineStartMs !== clip.timelineStartMs
+            ? bindChopSequencerClipToTimeline(retained, track.name, after.tempoBpm)
+            : retained;
+        }),
+      })),
     };
     remixRef.current = committed;
     saveRevision.current += 1;

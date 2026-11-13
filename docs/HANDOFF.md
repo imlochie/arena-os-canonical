@@ -22,18 +22,38 @@ beats remain outside the 90 ms window; it is not a reliable-alignment claim.
 The earlier v10 nearest-beat count is not directly comparable: it did not
 preserve beat order and could report a good fit after cycle slips.
 
-**Important remaining gap:** the direct mashup route WAV uses the local map.
-The separate editable Studio clip playback/export path still applies its
-clip-level global tempo operation and does not yet consume the map from the
-plan snapshot. The persisted route test proves the existing save/reopen/export
-workflow, not local-map parity in that separate export. Do not describe the
-Studio export as locally corrected until that path is integrated and tested.
+**Studio integration is now implemented:** the map is stored in the versioned
+`mashupPlan.clipTimingMaps` snapshot and bound to the exact clip, track, stem,
+source, source/stem SHA-256 checksums, source offset, timeline start, duration,
+session tempo and base stretch ratio. Studio rehydrates it only while all those
+identities still match. The PUT route preserves clip IDs across unrelated edits;
+timing edits are invalidated in the UI and rejected as stale on reopen. Version
+restore reinstates the original clip IDs so its map can be revalidated.
 
-Verification: 54/54 elastic and mashup-planner tests; 1/1 real full-track
-production-route test including save/reopen/edit/restore/export;
+Editable playback now uses bounded PCM16 WAV range reads for each local-map
+window and the same pitch-preserving WSOLA renderer used by export. Mapped clips
+use segmented preview even when the full file would otherwise fit in memory.
+The export worker verifies checksums and decoded stereo PCM16 bounds, renders
+the mapped clip once to a float WAV input, and skips the clip's global tempo
+filter to avoid double-stretching. Invalid, absent, or stale maps return to the
+existing continuous global-tempo behavior.
+
+Verification in this checkout: 2/2 focused local-map tests passed; the measured
+pulse fixture reported 0 ms maximum full-render timing error and 0 ms maximum
+chunk-versus-full difference across four transients at a preview-window
+boundary. The
+production-route regression passed with deterministic PCM audio: it exercised
+map hydration, unrelated save, immutable versioning, one-millisecond stale-map
+rejection, restore, and a downloaded Studio WAV export whose mid-clip waveform
+had 1.0000 correlation with the same WSOLA-rendered preview reference. This is
+a test-fixture proof, not a listening-quality or real-song result.
+
 `pnpm run typecheck:libs`, API-server and ArenaForge typechecks, and
-`git diff --check` passed. The generated WAV and report are ignored local
-artifacts under `generated-artifacts/waveyard-real-world-acceptance/`.
+`git diff --check` pass. The real Queen-vocals/September-bed fixture is not
+configured in this checkout, so local-map playback/export parity on that
+full-length separated pair has **not** been rerun or verified here. The earlier
+215-second direct mashup-route evidence above remains historical route evidence;
+it is not proof of this new Studio path.
 
 **Still unproven:** listening quality, lyric timing, verse/chorus accuracy,
 semantic structure, or consistent performance on other song pairs. The pair

@@ -433,6 +433,8 @@
     "./lib/waveyard/studio/mashup-bed": "./src/lib/waveyard/studio/mashup-bed.ts",
     "./lib/waveyard/studio/mashup-bed.test": "./src/lib/waveyard/studio/mashup-bed.test.ts",
     "./lib/waveyard/studio/mashup.test": "./src/lib/waveyard/studio/mashup.test.ts",
+    "./lib/waveyard/studio/local-tempo-map": "./src/lib/waveyard/studio/local-tempo-map.ts",
+    "./lib/waveyard/studio/local-tempo-map.test": "./src/lib/waveyard/studio/local-tempo-map.test.ts",
     "./lib/waveyard/studio/mashup": "./src/lib/waveyard/studio/mashup.ts",
     "./lib/waveyard/studio/palette.test": "./src/lib/waveyard/studio/palette.test.ts",
     "./lib/waveyard/studio/palette": "./src/lib/waveyard/studio/palette.ts",

@@ -24,6 +24,11 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import {
+  createPersistedClipTempoMap,
+  makeLocalTempoMapWindow,
+  renderLocalTempoMapRange,
+} from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
+import {
   drumAnalysisIdempotencyKey,
   LOCAL_DRUM_ANALYSIS_ENGINE,
   LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
@@ -191,7 +196,7 @@ const hasRealMashupFixture = Boolean(process.env.WAVEYARD_MASHUP_REAL_FIXTURE_MA
 test(
   hasRealMashupFixture
     ? "Waveyard real-song mashup persists, reopens, edits, restores, and exports"
-    : "Waveyard synthetic-route fallback and Arena handoff regressions",
+    : "Waveyard synthetic routes, paired-grid Studio timing maps, and Arena handoff regressions",
   async (t) => {
   if (!postgresBinaries.initdb || !postgresBinaries.postgres || !postgresBinaries.pgCtl) {
     t.skip("PostgreSQL binaries are unavailable");
@@ -1073,7 +1078,7 @@ test(
       );
       assert.match(persistedDrumAlignment, /\d+\/\d+ overlap low-band bass attacks/,
         "the route must report persisted bass events without treating every attack as a preferred vocal onset");
-      assert.ok(persistedDrumAlignment.includes("transient coincidences did not move the entry"),
+       assert.ok(persistedDrumAlignment.includes("transient coincidences alone do not shift this passage-entry fallback"),
         "the route must not optimize entry timing on transient coincidence without a matching musical passage");
     } else {
       assert.equal(planBody.evidence?.bed.bassAttacks.persistence, "database",
@@ -1576,6 +1581,7 @@ test(
         arrangement?: unknown;
         passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } | null;
         segments?: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
+        clipTimingMaps?: Array<{ clipId: string; remixTrackId: string; stemAssetId: string }>;
       };
     };
     assert.deepEqual(
@@ -1584,6 +1590,13 @@ test(
       "whole-track placement evidence must survive the persisted initial remix version",
     );
     if (realFixture) {
+      const plannedLocalMaps = (planBody.plan?.segments ?? [])
+        .filter((segment) => segment.localTempoMap);
+      assert.equal(
+        initialSnapshot.mashupPlan?.clipTimingMaps?.length ?? 0,
+        plannedLocalMaps.length,
+        "the persisted Studio version must bind every planner WSOLA map to its exact saved vocal clip",
+      );
       assert.deepEqual(
         initialSnapshot.mashupPlan?.segments?.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
         planBody.plan?.segments.map((segment) => [segment.mashupStartMs, segment.vocalsFromMs]),
@@ -1863,6 +1876,257 @@ test(
         "the repeated chop must produce audio at its second assigned step");
       assert.ok(Math.abs(patternExport.frames / RATE - 2.5) < 0.1,
         "the export duration must come from the original clip and include the sequencer pattern");
+
+      // Force a validated, clip-bound paired-grid map through the real Studio
+      // route, immutable version snapshot, FFmpeg worker and downloadable WAV.
+      // This deterministic acceptance fixture exercises the production
+      // persistence/render path even when no external separated-song manifest
+      // is configured.
+      const vocalStemId = savedTrackStemProvenance.find((stem) =>
+        stem.sourceAssetId === vocalsSource.id && stem.stemType === "vocals")!.stemAssetId;
+      const vocalTrack = savedTracks.find((track) => track.stemAssetId === vocalStemId)!;
+      const vocalClip = savedClips.find((clip) => clip.stemAssetId === vocalStemId)!;
+      const [timingStem] = await dbModule.db.select().from(schema.stemAssets)
+        .where(eq(schema.stemAssets.id, vocalStemId));
+      const [timingSource] = await dbModule.db.select().from(schema.sourceAssets)
+        .where(eq(schema.sourceAssets.id, vocalsSource.id));
+      assert.ok(timingStem && timingSource?.checksumSha256);
+      const availableSourceMs = timingStem.durationSeconds * 1_000 - vocalClip.sourceOffsetMs;
+      const sourceSpanMs = Math.min(vocalClip.durationMs / 0.9, availableSourceMs - 2);
+      assert.ok(sourceSpanMs >= 500, "the persisted vocal clip must contain enough verified PCM for a local timing map");
+      const baseStretchRatio = vocalClip.durationMs / sourceSpanMs;
+      assert.ok(Math.abs(baseStretchRatio - 0.9) < 0.02,
+        "the export fixture must use a non-unit base tempo so double application is observable");
+      await dbModule.db.update(schema.remixSessions).set({ tempoBpm: 108, updatedAt: new Date() })
+        .where(eq(schema.remixSessions.id, saveBody.remix.id));
+      const midpointSourceMs = sourceSpanMs / 2;
+      const timingMap = createPersistedClipTempoMap({
+        clipId: vocalClip.id,
+        remixTrackId: vocalTrack.id,
+        stemAssetId: vocalStemId,
+        sourceAssetId: vocalsSource.id,
+        sourceChecksumSha256: timingSource.checksumSha256,
+        stemChecksumSha256: timingStem.checksumSha256!,
+        sourceOffsetMs: vocalClip.sourceOffsetMs,
+        timelineStartMs: vocalClip.timelineStartMs,
+        durationMs: vocalClip.durationMs,
+        sessionTempoBpm: 108,
+        baseStretchRatio,
+        map: {
+          points: [
+            { sourceMs: 0, outputMs: 0 },
+            { sourceMs: midpointSourceMs, outputMs: midpointSourceMs * baseStretchRatio * 0.995 },
+            { sourceMs: sourceSpanMs, outputMs: vocalClip.durationMs },
+          ],
+          baselineFit: { matchedBeats: 4, comparedBeats: 8, meanErrorMs: 42 },
+          correctedFit: { matchedBeats: 7, comparedBeats: 8, meanErrorMs: 11 },
+          maximumRateDeviationPercent: 0.5,
+          entryShiftMs: 0,
+        },
+      });
+      assert.ok(timingMap, "the persisted clip map must satisfy timing, checksum, and local-rate bounds");
+      const timingSnapshot = JSON.parse(initialVersion.snapshot) as Record<string, unknown> & {
+        tracks: Array<Record<string, unknown> & { stemAssetId: string; clips: Array<Record<string, unknown> & { id: string }> }>;
+        mashupPlan?: Record<string, unknown>;
+      };
+      timingSnapshot.tracks = timingSnapshot.tracks.map((track) => ({
+        ...track,
+        muted: track.stemAssetId !== vocalStemId,
+        solo: false,
+        volume: 1,
+        clips: track.clips.map((clip) => clip.id === vocalClip.id
+          ? { ...clip, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: true, keySyncEnabled: false }
+          : clip),
+      }));
+      timingSnapshot.mashupPlan = {
+        ...(timingSnapshot.mashupPlan ?? {}),
+        clipTimingMaps: [timingMap],
+      };
+      timingSnapshot.tempoBpm = 108;
+      const [timingVersion] = await dbModule.db.insert(schema.remixVersions).values({
+        remixSessionId: saveBody.remix.id,
+        createdById: savedSession.ownerId,
+        name: "Paired-grid local timing acceptance",
+        snapshot: JSON.stringify(timingSnapshot),
+      }).returning();
+      assert.ok(timingVersion);
+
+      const timingRemixRoute = await import("../../../../remixes/[id]/route");
+      const timingVersionsRoute = await import("../../../../remixes/[id]/versions/route");
+      const timingReload = await timingRemixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        { params: Promise.resolve({ id: saveBody.remix.id }) },
+      );
+      assert.equal(timingReload.status, 200);
+      const timingState = await timingReload.json() as {
+        remix: typeof savedSession;
+        tracks: Array<{ clips: Array<Record<string, unknown> & { id: string }> }>;
+        automation: unknown[];
+      };
+      const rehydratedMap = timingState.tracks.flatMap((track) => track.clips)
+        .find((clip) => clip.id === vocalClip.id)?.localTempoMap;
+      assert.deepEqual(rehydratedMap, timingMap,
+        "Studio must rehydrate the map only for the exact clip, source checksums, tempo and timing");
+      const harmlessTimingEdit = await timingRemixRoute.PUT(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...timingState.remix,
+            masterVolume: 0.9,
+            tracks: timingState.tracks,
+            automation: timingState.automation,
+            expectedVersion: timingState.remix.version,
+          }),
+        }),
+        { params: Promise.resolve({ id: saveBody.remix.id }) },
+      );
+      assert.equal(harmlessTimingEdit.status, 200, "an unrelated Studio edit must retain the bound clip identity");
+      const timingEditVersionResponse = await timingVersionsRoute.POST(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}/versions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Paired-grid local timing saved edit" }),
+        }),
+        { params: Promise.resolve({ id: saveBody.remix.id }) },
+      );
+      assert.equal(timingEditVersionResponse.status, 201);
+      const timingEditVersionBody = await timingEditVersionResponse.json() as { version: { id: string } };
+      const [timingEditVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, timingEditVersionBody.version.id));
+      assert.equal(
+        (JSON.parse(timingEditVersion!.snapshot) as { mashupPlan?: { clipTimingMaps?: unknown[] } })
+          .mashupPlan?.clipTimingMaps?.length,
+        1,
+        "unrelated edits must carry the map into the next immutable export version",
+      );
+      const afterHarmlessEdit = await (await timingRemixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        { params: Promise.resolve({ id: saveBody.remix.id }) },
+      )).json() as {
+        remix: typeof savedSession;
+        tracks: Array<{ clips: Array<Record<string, unknown> & { id: string; stemAssetId: string; timelineStartMs: number }> }>;
+        automation: unknown[];
+      };
+      assert.ok(afterHarmlessEdit.tracks.flatMap((track) => track.clips)
+        .find((clip) => clip.id === vocalClip.id)?.localTempoMap,
+      "the exact map must remain usable after a saved, unrelated Studio edit");
+      const staleTimingEdit = await timingRemixRoute.PUT(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...afterHarmlessEdit.remix,
+            tracks: afterHarmlessEdit.tracks.map((track) => ({
+              ...track,
+              clips: track.clips.map((clip) => clip.id === vocalClip.id
+                ? { ...clip, timelineStartMs: clip.timelineStartMs + 1 }
+                : clip),
+            })),
+            automation: afterHarmlessEdit.automation,
+            expectedVersion: afterHarmlessEdit.remix.version,
+          }),
+        }),
+        { params: Promise.resolve({ id: saveBody.remix.id }) },
+      );
+      assert.equal(staleTimingEdit.status, 200);
+      const staleTimingState = await (await timingRemixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        { params: Promise.resolve({ id: saveBody.remix.id }) },
+      )).json() as { tracks: Array<{ clips: Array<Record<string, unknown> & { id: string }> }> };
+      assert.equal(staleTimingState.tracks.flatMap((track) => track.clips)
+        .find((clip) => clip.id === vocalClip.id)?.localTempoMap, undefined,
+      "a changed clip boundary must never use a stale local map");
+      const timingRestoreRoute = await import("../../../../remixes/[id]/versions/[versionId]/restore/route");
+      const timingRestore = await timingRestoreRoute.POST(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}/versions/${timingEditVersionBody.version.id}/restore`, {
+          method: "POST",
+        }),
+        { params: Promise.resolve({ id: saveBody.remix.id, versionId: timingEditVersionBody.version.id }) },
+      );
+      assert.equal(timingRestore.status, 200);
+      const restoredTimingState = await (await timingRemixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        { params: Promise.resolve({ id: saveBody.remix.id }) },
+      )).json() as { tracks: Array<{ clips: Array<Record<string, unknown> & { id: string }> }> };
+      assert.deepEqual(restoredTimingState.tracks.flatMap((track) => track.clips)
+        .find((clip) => clip.id === vocalClip.id)?.localTempoMap, timingMap,
+      "version restore must restore clip identity and the original measured map");
+
+      const timingStemBytes = new Uint8Array(await storage.getBuffer(timingStem.storageKey, 256 * 1024 * 1024));
+      const decodedTimingStem = decodeWav16(timingStemBytes);
+      assert.ok(decodedTimingStem?.channels === 2);
+      const timingWindow = makeLocalTempoMapWindow(timingMap, RATE, 0, vocalClip.durationMs, 0);
+      assert.ok(timingWindow);
+      const sourceStartFrame = Math.round(vocalClip.sourceOffsetMs * RATE / 1_000);
+      const sourcePcm = decodedTimingStem.samples.subarray(
+        (sourceStartFrame + timingWindow.inputStartFrame) * 2,
+        (sourceStartFrame + timingWindow.inputEndFrame) * 2,
+      );
+      const expectedMappedPcm = renderLocalTempoMapRange(sourcePcm, RATE, timingWindow);
+      assert.ok(expectedMappedPcm);
+
+      const [timingExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: saveBody.remix.id,
+        remixVersionId: timingVersion.id,
+        requestedById: savedSession.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `paired-grid-local-map-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(timingExportJob);
+      const exportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await exportWorker.handleExportJob({
+        exportJobId: timingExportJob.id,
+        projectId: project.id,
+        remixSessionId: saveBody.remix.id,
+        remixVersionId: timingVersion.id,
+        format: "wav",
+      });
+      const [timingExportCompleted] = await dbModule.db.select().from(schema.exportJobs)
+        .where(eq(schema.exportJobs.id, timingExportJob.id));
+      assert.equal(timingExportCompleted.status, "complete",
+        "the real local export worker must render a map-bound clip instead of double-applying global tempo");
+      const timingExportMediaRoute = await import("../../../../exports/[id]/media/route");
+      const timingExportResponse = await timingExportMediaRoute.GET(
+        new Request(`http://localhost/api/exports/${timingExportJob.id}/media`),
+        { params: Promise.resolve({ id: timingExportJob.id }) },
+      );
+      assert.equal(timingExportResponse.status, 200);
+      const timingExported = decodeWav16(new Uint8Array(await timingExportResponse.arrayBuffer()));
+      assert.ok(timingExported?.channels === 2 && timingExported.sampleRate === RATE);
+      const clipStartFrame = Math.round(vocalClip.timelineStartMs * RATE / 1_000);
+      const comparisonStartFrame = Math.round(0.25 * RATE);
+      const comparisonEndFrame = Math.min(
+        expectedMappedPcm.length / 2 - Math.round(0.25 * RATE),
+        timingExported.frames - clipStartFrame - Math.round(0.25 * RATE),
+      );
+      let dot = 0;
+      let expectedEnergy = 0;
+      let actualEnergy = 0;
+      for (let frame = comparisonStartFrame; frame < comparisonEndFrame; frame += 17) {
+        const expectedSample = (expectedMappedPcm[frame * 2]! + expectedMappedPcm[frame * 2 + 1]!) / 2;
+        const actualFrame = clipStartFrame + frame;
+        const actualSample = (timingExported.samples[actualFrame * 2]! + timingExported.samples[actualFrame * 2 + 1]!) / 2;
+        dot += expectedSample * actualSample;
+        expectedEnergy += expectedSample * expectedSample;
+        actualEnergy += actualSample * actualSample;
+      }
+      const exportCorrelation = dot / Math.sqrt(expectedEnergy * actualEnergy);
+      assert.ok(Number.isFinite(exportCorrelation) && exportCorrelation > 0.94,
+        `downloaded WAV must render the same WSOLA waveform as Studio preview (mid-clip correlation ${exportCorrelation})`);
+      console.info(JSON.stringify({
+        waveyardLocalTempoMapStudioExport: {
+          clipId: vocalClip.id,
+          nonUnitBaseTempoRatio: baseStretchRatio,
+          exportDurationMs: vocalClip.durationMs,
+          midClipPreviewToDownloadCorrelation: Number(exportCorrelation.toFixed(4)),
+        },
+      }));
     }
 
     if (realFixture) {
@@ -1910,6 +2174,11 @@ test(
         .flatMap((track) => track.clips)
         .filter((clip) => clip.stemAssetId === savedTrackStemProvenance.find((stem) =>
           stem.sourceAssetId === vocalsSource.id && stem.stemType === "vocals")?.stemAssetId);
+      assert.equal(
+        reopenedVocalClips.filter((clip) => clip.localTempoMap).length,
+        plannedLocalMaps.length,
+        "the production reopen route must rehydrate only the source-current clip maps",
+      );
       assert.deepEqual(
         reopenedVocalClips.map((clip) => [clip.timelineStartMs, clip.sourceOffsetMs]),
         savedClips
@@ -1952,6 +2221,11 @@ test(
       const editedSnapshot = JSON.parse(editedVersion.snapshot) as {
         mashupPlan?: { passageSearch?: { selectedDonorSectionId?: string | null; selectedBedSectionId?: string | null } | null };
       };
+      assert.equal(
+        (editedSnapshot.mashupPlan as { clipTimingMaps?: unknown[] } | undefined)?.clipTimingMaps?.length ?? 0,
+        plannedLocalMaps.length,
+        "an unrelated mixer edit must retain the complete local timing-map provenance",
+      );
       assert.deepEqual(
         [
           editedSnapshot.mashupPlan?.passageSearch?.selectedDonorSectionId ?? null,
@@ -1967,15 +2241,28 @@ test(
       const editedReload = await (await remixRoute.GET(
         new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
         remixParams,
-      )).json() as { remix: typeof savedSession; tracks: Array<{ clips: unknown[] }> };
+      )).json() as {
+        remix: typeof savedSession;
+        tracks: Array<{ clips: Array<Record<string, unknown> & { id: string; stemAssetId: string; timelineStartMs: number }> }>;
+      };
       assert.equal(editedReload.remix.masterVolume, 0.85, "the Studio edit must survive a fresh API read");
       assert.ok(editedReload.tracks.reduce((sum, track) => sum + track.clips.length, 0) >= 2,
         "the saved real clips must survive reopening");
+      assert.equal(
+        editedReload.tracks.flatMap((track) => track.clips).filter((clip) => clip.localTempoMap).length,
+        plannedLocalMaps.length,
+        "a harmless gain/master edit must not discard the same persisted map",
+      );
 
       const divergentInput = {
         ...editedReload.remix,
         masterVolume: 0.35,
-        tracks: editedReload.tracks,
+        tracks: editedReload.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => clip.stemAssetId === reopenedVocalClips[0]?.stemAssetId
+            ? { ...clip, timelineStartMs: clip.timelineStartMs + 1 }
+            : clip),
+        })),
         automation: reopened.automation,
         expectedVersion: editedReload.remix.version,
       };
@@ -1988,6 +2275,16 @@ test(
         remixParams,
       );
       assert.equal(divergentSave.status, 200);
+      const staleMapReload = await (await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${saveBody.remix.id}`),
+        remixParams,
+      )).json() as { tracks: Array<{ clips: Array<Record<string, unknown> & { stemAssetId: string }> }> };
+      assert.equal(
+        staleMapReload.tracks.flatMap((track) => track.clips)
+          .filter((clip) => clip.stemAssetId === reopenedVocalClips[0]?.stemAssetId && clip.localTempoMap).length,
+        0,
+        "a timeline edit must reject the previously measured clip map and use continuous tempo fallback",
+      );
       const restoreResponse = await restoreRoute.POST(
         new Request(`http://localhost/api/remixes/${saveBody.remix.id}/versions/${versionBody.version.id}/restore`, {
           method: "POST",
@@ -2001,6 +2298,12 @@ test(
       )).json() as { remix: typeof savedSession; tracks: Array<{ clips: unknown[] }> };
       assert.equal(restored.remix.masterVolume, 0.85, "restore must recover the exact saved mixer level");
       assert.ok(restored.tracks.reduce((sum, track) => sum + track.clips.length, 0) >= 2);
+      assert.equal(
+        restored.tracks.flatMap((track) => track.clips)
+          .filter((clip) => (clip as Record<string, unknown>).localTempoMap).length,
+        plannedLocalMaps.length,
+        "restoring the measured version must reinstate its exact clip identity and local timing map",
+      );
 
       // Run the same local export worker that consumes versioned Studio state.
       // This avoids reporting a queued job as a rendered file when no queue is

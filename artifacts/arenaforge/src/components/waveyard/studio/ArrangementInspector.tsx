@@ -103,6 +103,7 @@ export function ArrangementInspector({
   const sourceRatio = clip.tempoSyncEnabled
     ? tempoRatioForBpm(remix.tempoBpm, sourceBpm ?? Number.NaN)
     : 1;
+  const localTempoMapActive = clip.tempoSyncEnabled && Boolean(clip.localTempoMap);
   const sourceAlignment = sourceAlignmentByStemId?.get(clip.stemAssetId);
   const clipTempoRatioValue = clipTempoRatio(clip.tempoSyncEnabled, sourceAlignment?.bpm, remix.tempoBpm);
   const sourceConsumedMs = clipTempoRatioValue
@@ -245,8 +246,12 @@ export function ArrangementInspector({
     <fieldset className="tempo-sync"><legend>Tempo sync</legend>
       <label><input aria-label="Tempo sync" type="checkbox" checked={clip.tempoSyncEnabled} onChange={(event) => update((item) => ({ ...item, tempoSyncEnabled: event.target.checked }))} /> {clip.tempoSyncEnabled ? "Sync to remix BPM" : "Off"}</label>
       {usableBpm
-        ? (clip.tempoSyncEnabled && <p>Source {sourceBpm!.toFixed(2)} BPM → remix {remix.tempoBpm.toFixed(2)} BPM · ratio {tempoRatio!.toFixed(4)}. Export-only; arrangement preview uses original audio.</p>)
-        : <p>Source tempo unavailable. {clip.tempoSyncEnabled ? "Export will fail until this source has complete BPM analysis." : "Tempo sync cannot be rendered until BPM analysis completes."}</p>}
+        ? (clip.tempoSyncEnabled
+          ? <p>Source {sourceBpm!.toFixed(2)} BPM → remix {remix.tempoBpm.toFixed(2)} BPM · ratio {tempoRatio!.toFixed(4)}. {localTempoMapActive ? "Studio preview and WAV export use the same persisted paired-grid WSOLA timing; global tempo is not applied twice." : "Global tempo sync is export-only; arrangement preview uses original audio."}</p>
+          : <p>Tempo sync is off; preview and export use the clip's original timing.</p>)
+        : <p>{localTempoMapActive
+          ? "Source BPM is unavailable, but the checksum-verified paired-grid timing map remains usable for preview and export."
+          : `Source tempo unavailable. ${clip.tempoSyncEnabled ? "Export will fail until this source has complete BPM analysis." : "Tempo sync cannot be rendered until BPM analysis completes."}`}</p>}
     </fieldset>
     <fieldset className="key-sync"><legend>Key Sync</legend>
       <label><input aria-label="Key sync" type="checkbox" checked={clip.keySyncEnabled} onChange={(event) => update((item) => ({ ...item, keySyncEnabled: event.target.checked }))} /> {clip.keySyncEnabled ? "Sync to remix key" : "Off"}</label>
