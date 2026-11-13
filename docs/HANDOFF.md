@@ -33,11 +33,13 @@ trade-off bound. These scores are uncalibrated and do not measure sound quality.
 The full production route completed plan → save → reopen → versioned edit →
 restore → WAV export using the real separated files. The restored Studio
 session contained 4 tracks and 4 clips (one vocal clip plus three bed stems).
-The saved export was 214.858 s, 44.1 kHz stereo PCM16, 37,901,026 bytes,
-checksum `52c58a9dae1a93296cd27018fab0e50d4b24fce705dc49ae511aac30cf61b003`.
-The request-time report is
-`generated-artifacts/waveyard-real-world-acceptance/full-song-route-planner-v10-paired-beats.json`;
-generated audio and analysis remain ignored local artifacts.
+The route render was 215.000 s, 44.1 kHz stereo PCM16, 37,926,044 bytes,
+checksum `7297f3d226152d07135389942f5b9075ab0865ff3c88a6ce6daf7403160c0bd9`.
+The saved Studio export was 214.858 s, 44.1 kHz stereo PCM16, 37,901,026
+bytes, checksum `52c58a9dae1a93296cd27018fab0e50d4b24fce705dc49ae511aac30cf61b003`.
+Both WAVs match the report checksums. The request-time report is
+`generated-artifacts/waveyard-real-world-acceptance/full-song-route-planner-v10-paired-beats-with-audio.json`;
+the WAVs and analysis remain ignored local artifacts.
 
 Verification: **38/38** mashup planner tests, including a synthetic regression
 that verifies preserving a vocal's offbeat phase while aligning the two drum
