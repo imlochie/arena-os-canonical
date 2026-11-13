@@ -26,6 +26,7 @@ import {
   currentKeyConfidence,
   isCurrentDesktopAnalysis,
 } from "../types/analysis-provenance";
+import { hasReliableMixingConfidence } from "../types/analysis-confidence";
 import {
   listenSessionSwaps,
   listenSessions,
@@ -56,6 +57,7 @@ import { desktopAnalysisIdempotencyKey, DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSI
 import { enqueueSourceAnalysis, enqueueWaveform } from "../queue";
 import { sourceSectionsAreValid, type SourceSection } from "../types/source-sections";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
+import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
 import {
   LOCAL_VOCAL_ANALYSIS_ENGINE,
   LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
@@ -557,6 +559,8 @@ export async function restoreSessionTrackOriginalAudio(
           keyConfidence: null,
           beatGrid: null,
           beatConfidence: null,
+          downbeatGrid: null,
+          downbeatConfidence: null,
           analysisError: null,
           errorCode: null,
           startedAt: null,
@@ -1535,9 +1539,11 @@ export interface SessionTrackAnalysis {
   bpm: number | null;
   bpmConfidence: number | null;
   beatConfidence: number | null;
+  downbeatConfidence: number | null;
   keyConfidence: number | null;
   musicalKey: string | null;
   beatGridMs: number[] | null;
+  downbeatGridMs: number[] | null;
   sections: SourceSection[] | null;
   /** Checksum-verified isolated-vocal activity starts; these are not lyric word boundaries. */
   vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
@@ -1564,6 +1570,8 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       bpm: sourceAnalyses.bpm,
       bpmConfidence: sourceAnalyses.bpmConfidence,
       beatConfidence: sourceAnalyses.beatConfidence,
+      downbeatGrid: sourceAnalyses.downbeatGrid,
+      downbeatConfidence: sourceAnalyses.downbeatConfidence,
       keyConfidence: sourceAnalyses.keyConfidence,
       analysisEngine: sourceAnalyses.analysisEngine,
       analysisEngineVersion: sourceAnalyses.analysisEngineVersion,
@@ -1579,9 +1587,11 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       bpm: null,
       bpmConfidence: null,
       beatConfidence: null,
+      downbeatConfidence: null,
       keyConfidence: null,
       musicalKey: null,
       beatGridMs: null,
+      downbeatGridMs: null,
       sections: null,
       vocalActivityStartsMs: null,
       voicedPhraseStartsMs: null,
@@ -1594,9 +1604,11 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       bpm: null,
       bpmConfidence: null,
       beatConfidence: null,
+      downbeatConfidence: null,
       keyConfidence: null,
       musicalKey: null,
       beatGridMs: null,
+      downbeatGridMs: null,
       sections: null,
       vocalActivityStartsMs: null,
       voicedPhraseStartsMs: null,
@@ -1610,6 +1622,33 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
   } catch {
     beatGridMs = null;
   }
+  let downbeatGridMs: number[] | null = null;
+  try {
+    const parsed = JSON.parse(analysisIsCurrent ? analysis.downbeatGrid ?? "null" : "null");
+    const beatIndices = Array.isArray(parsed)
+      ? parsed.map((beat) => beatGridMs?.indexOf(beat) ?? -1)
+      : [];
+    if (
+      Array.isArray(parsed)
+      && parsed.length >= 2
+      && beatIndices.every((index, offset) =>
+        index >= 0 && (offset === 0 || index - beatIndices[offset - 1]! === 4),
+      )
+    ) downbeatGridMs = parsed;
+  } catch {
+    downbeatGridMs = null;
+  }
+  const measuredBeatConfidence = currentBeatConfidence(analysis);
+  const downbeatConfidence = analysisIsCurrent
+    && hasReliableMixingConfidence(measuredBeatConfidence)
+    && measuredBeatConfidence !== null
+    && typeof analysis.downbeatConfidence === "number"
+    && Number.isFinite(analysis.downbeatConfidence)
+    && analysis.downbeatConfidence >= 0
+    && analysis.downbeatConfidence <= 1
+    ? Math.min(analysis.downbeatConfidence, measuredBeatConfidence)
+    : null;
+  if (!hasReliableSessionDownbeatEvidence(downbeatConfidence, downbeatGridMs)) downbeatGridMs = null;
 
   let sections: SourceSection[] | null = null;
   if (
@@ -1775,10 +1814,12 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
   return {
     bpm: analysis.bpm,
     bpmConfidence: currentBpmConfidence(analysis),
-    beatConfidence: currentBeatConfidence(analysis),
+    beatConfidence: measuredBeatConfidence,
+    downbeatConfidence,
     keyConfidence: currentKeyConfidence(analysis),
     musicalKey: analysis.musicalKey,
     beatGridMs,
+    downbeatGridMs,
     sections,
     vocalActivityStartsMs,
     voicedPhraseStartsMs,

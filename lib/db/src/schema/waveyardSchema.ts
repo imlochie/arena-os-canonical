@@ -183,6 +183,10 @@ export const sourceAnalyses = pgTable("source_analyses", {
   // metadata, deliberately independent from RemixSession's timing model.
   beatGrid: text("beat_grid"),
   beatConfidence: real("beat_confidence"),
+  // Downbeats are persisted separately because a pulse grid does not establish
+  // meter or bar phase. Null means no sufficiently supported 4/4 bar evidence.
+  downbeatGrid: text("downbeat_grid"),
+  downbeatConfidence: real("downbeat_confidence"),
   analysisError: text("analysis_error"),
   errorCode: text("error_code"),
   startedAt: timestamp("started_at", { withTimezone: true }),

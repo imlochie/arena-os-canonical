@@ -156,7 +156,6 @@ export type LiveStemSwapBoundaryPlan = {
   status: "off" | "unavailable" | "scheduled";
   targetPositionSeconds: number | null;
   activationTime: number | null;
-  usedBeatFallback: boolean;
 };
 
 /**
@@ -168,8 +167,10 @@ export function planLiveStemSwapBoundary(input: {
   snap: PerformanceSnap;
   playing: boolean;
   beatEvidenceReliable: boolean;
+  downbeatEvidenceReliable: boolean;
   positionSeconds: number;
   beatGridMs: unknown;
+  downbeatGridMs: unknown;
   contextTimeAtPosition: (positionSeconds: number) => number | null;
   minimumLeadSeconds?: number;
 }): LiveStemSwapBoundaryPlan {
@@ -178,20 +179,17 @@ export function planLiveStemSwapBoundary(input: {
     requested,
     targetPositionSeconds: null,
     activationTime: null,
-    usedBeatFallback: false,
   } as const;
   if (!requested) return { ...base, status: "off" };
   if (!input.beatEvidenceReliable) return { ...base, status: "unavailable" };
+  if (input.snap === "bar" && !input.downbeatEvidenceReliable) {
+    return { ...base, status: "unavailable" };
+  }
 
   const lead = input.minimumLeadSeconds ?? PERFORMANCE_MINIMUM_LEAD_SECONDS;
-  let target = nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, input.snap, undefined, lead);
-  let usedBeatFallback = false;
-  // The current analysis model does not establish bar downbeats. A configured
-  // bar snap therefore uses a measured beat only, and must not claim a downbeat.
-  if (target === null && input.snap === "bar") {
-    target = nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, "beat", undefined, lead);
-    usedBeatFallback = target !== null;
-  }
+  const target = input.snap === "bar"
+    ? nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, "bar", input.downbeatGridMs, lead)
+    : nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, input.snap, undefined, lead);
   if (target === null) return { ...base, status: "unavailable" };
 
   const activationTime = input.contextTimeAtPosition(target);
@@ -203,7 +201,6 @@ export function planLiveStemSwapBoundary(input: {
     status: "scheduled",
     targetPositionSeconds: target,
     activationTime,
-    usedBeatFallback,
   };
 }
 

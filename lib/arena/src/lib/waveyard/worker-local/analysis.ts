@@ -29,6 +29,7 @@ import {
   decodeMonoPcm,
   normaliseBeatGrid,
 } from "./analysis-engine";
+import { SESSION_MIN_DOWNBEAT_CONFIDENCE } from "../session-dj-controls";
 
 export { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 
@@ -335,6 +336,27 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       : beatConfidenceFromGrid(raw.bpmConfidence, beatGridMs, raw.beatConfidence);
     if (!beatGridMs && beatConfidence !== null)
       throw new Error("Desktop analysis reported beat confidence without a beat grid.");
+    let downbeatGridMs = raw.downbeatGridMs === null
+      ? null
+      : normaliseBeatGrid(raw.downbeatGridMs, source.durationSeconds);
+    if (raw.downbeatGridMs !== null && downbeatGridMs === null) {
+      throw new Error("Desktop analysis produced an invalid downbeat grid for this source.");
+    }
+    if (downbeatGridMs !== null) {
+      const beatIndexes = downbeatGridMs.map((downbeat) => beatGridMs?.indexOf(downbeat) ?? -1);
+      if (
+        beatIndexes.some((index) => index < 0)
+        || beatIndexes.some((index, offset) => offset > 0 && index - beatIndexes[offset - 1]! !== 4)
+      ) throw new Error("Desktop analysis downbeats do not follow a consistent four-beat phase.");
+    }
+    if (
+      raw.downbeatConfidence !== null
+      && (!Number.isFinite(raw.downbeatConfidence) || raw.downbeatConfidence < 0 || raw.downbeatConfidence > 1)
+    ) throw new Error("Desktop analysis reported invalid downbeat confidence.");
+    const downbeatConfidence = raw.downbeatConfidence === null
+      ? null
+      : Math.min(raw.downbeatConfidence, beatConfidence ?? 0);
+    if ((downbeatConfidence ?? 0) < SESSION_MIN_DOWNBEAT_CONFIDENCE) downbeatGridMs = null;
     const analyzedAt = new Date();
 
     const completed = await db.transaction(async (tx) => {
@@ -355,6 +377,8 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
         keyConfidence: raw.keyConfidence,
         beatGrid: beatGridMs ? JSON.stringify(beatGridMs) : null,
         beatConfidence,
+        downbeatGrid: downbeatGridMs ? JSON.stringify(downbeatGridMs) : null,
+        downbeatConfidence,
         analysisError: null,
         errorCode: null,
         analyzedAt,
@@ -385,6 +409,8 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       keyConfidence: null,
       beatGrid: null,
       beatConfidence: null,
+      downbeatGrid: null,
+      downbeatConfidence: null,
       analyzedAt: null,
       completedAt: new Date(),
     }, job.sourceChecksumSha256);

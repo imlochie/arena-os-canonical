@@ -1929,9 +1929,11 @@ test("session: a missing original can be restored without changing stems or sess
       bpm: null,
       bpmConfidence: null,
       beatConfidence: null,
+      downbeatConfidence: null,
       keyConfidence: null,
       musicalKey: null,
       beatGridMs: null,
+      downbeatGridMs: null,
       sections: null,
       vocalActivityStartsMs: null,
       voicedPhraseStartsMs: null,
@@ -3095,8 +3097,12 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
     sourceChecksumSha256: sourceAssetB.checksumSha256,
     idempotencyKey: `analysis-test-b:${sourceB}`,
     bpm: 129,
+    bpmConfidence: 0.9,
     musicalKey: "C major",
     beatGrid: JSON.stringify([0, 500, 1000, 1500, 2000]),
+    beatConfidence: 0.9,
+    downbeatGrid: JSON.stringify([0, 2000]),
+    downbeatConfidence: 0.9,
   });
 
   const [vocalAnalysisRow] = await db.db.insert(schema.vocalAnalyses).values({
@@ -3162,6 +3168,17 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
     assert.equal(analysisA?.bpm, 128.5);
     assert.equal(analysisA?.musicalKey, "A minor");
     assert.equal(analysisB?.bpm, 129);
+    assert.deepEqual(analysisB?.downbeatGridMs, [0, 2000],
+      "the session endpoint exposes persisted downbeats only on the current analysis beat grid");
+    assert.equal(analysisB?.downbeatConfidence, 0.9);
+    await db.db.update(schema.sourceAnalyses).set({ downbeatConfidence: 0.64 })
+      .where(eq(schema.sourceAnalyses.sourceAssetId, sourceB));
+    const weakDownbeatAnalysis = await sessions.sessionTrackAnalysis(OWNER, trackB.id);
+    assert.equal(weakDownbeatAnalysis?.downbeatGridMs, null,
+      "persisted candidate positions are suppressed when downbeat confidence falls below the bar-action threshold");
+    assert.equal(weakDownbeatAnalysis?.downbeatConfidence, 0.64);
+    await db.db.update(schema.sourceAnalyses).set({ downbeatConfidence: 0.9 })
+      .where(eq(schema.sourceAnalyses.sourceAssetId, sourceB));
     assert.deepEqual(analysisB?.vocalActivityStartsMs, [{ startMs: 250, confidence: 0.92 }],
       "session analysis exposes only current-checksum vocal activity that ends inside the source and stem");
     assert.deepEqual(analysisB?.voicedPhraseStartsMs, [{ startMs: 1_100, confidence: 0.7 }],

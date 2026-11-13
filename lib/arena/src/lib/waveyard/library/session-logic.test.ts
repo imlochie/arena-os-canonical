@@ -459,6 +459,7 @@ test("performance snap requires a measured grid and never guesses bar downbeats"
   assert.equal(nextPerformanceBoundary(0.1, grid, "half"), 0.25);
   assert.equal(nextPerformanceBoundary(0.1, grid, "quarter"), 0.125);
   assert.equal(nextPerformanceBoundary(0.1, grid, "bar"), null);
+  assert.equal(nextPerformanceBoundary(0.1, grid, "bar", [0, 2000, 4000]), 2);
   assert.equal(nextPerformanceBoundary(0.1, null, "beat"), null);
   assert.equal(nextPerformanceBoundary(0.1, [0, 500, 450], "beat"), null);
 });
@@ -475,8 +476,10 @@ test("live donor snap plans against the verified receiving beat and leaves snap-
     snap: "off",
     playing: true,
     beatEvidenceReliable: true,
+    downbeatEvidenceReliable: false,
     positionSeconds: 0.9,
     beatGridMs: [0, 500, 1000, 1500],
+    downbeatGridMs: null,
     contextTimeAtPosition: () => 12,
   });
   assert.deepEqual(off, {
@@ -484,15 +487,16 @@ test("live donor snap plans against the verified receiving beat and leaves snap-
     status: "off",
     targetPositionSeconds: null,
     activationTime: null,
-    usedBeatFallback: false,
   });
 
   const planned = planLiveStemSwapBoundary({
     snap: "beat",
     playing: true,
     beatEvidenceReliable: true,
+    downbeatEvidenceReliable: false,
     positionSeconds: 0.9,
     beatGridMs: [0, 500, 1000, 1500],
+    downbeatGridMs: null,
     contextTimeAtPosition: target => 12 + (target - 0.9),
   });
   assert.deepEqual(planned, {
@@ -500,7 +504,6 @@ test("live donor snap plans against the verified receiving beat and leaves snap-
     status: "scheduled",
     targetPositionSeconds: 1.5,
     activationTime: 12.6,
-    usedBeatFallback: false,
   });
 });
 
@@ -510,14 +513,43 @@ test("live donor snap refuses unreliable, missing, or unmappable beat evidence",
       snap: "beat",
       playing: true,
       beatEvidenceReliable: true,
+    downbeatEvidenceReliable: false,
       positionSeconds: 0.9,
       beatGridMs: [0, 500, 1000, 1500],
+    downbeatGridMs: null,
       contextTimeAtPosition: () => 12,
       ...overrides,
     });
   assert.equal(makePlan({ beatEvidenceReliable: false }).status, "unavailable");
   assert.equal(makePlan({ beatGridMs: null }).status, "unavailable");
   assert.equal(makePlan({ contextTimeAtPosition: () => null }).status, "unavailable");
+});
+
+test("bar donor snap requires verified downbeats and schedules on a measured bar boundary", () => {
+  const input = {
+    snap: "bar" as const,
+    playing: true,
+    beatEvidenceReliable: true,
+    downbeatEvidenceReliable: true,
+    positionSeconds: 1.1,
+    beatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+    downbeatGridMs: [0, 2000, 4000, 6000, 8000],
+    contextTimeAtPosition: (target: number) => 4 + (target - 1.1),
+  };
+  assert.deepEqual(planLiveStemSwapBoundary(input), {
+    requested: true,
+    status: "scheduled",
+    targetPositionSeconds: 2,
+    activationTime: 4.9,
+  });
+  assert.equal(planLiveStemSwapBoundary({
+    ...input,
+    downbeatEvidenceReliable: false,
+  }).status, "unavailable");
+  assert.equal(planLiveStemSwapBoundary({
+    ...input,
+    downbeatGridMs: null,
+  }).status, "unavailable");
 });
 
 test("performance boundary rejects late or interrupted source-clock callbacks", () => {

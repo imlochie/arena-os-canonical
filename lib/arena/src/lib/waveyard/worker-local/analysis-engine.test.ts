@@ -14,6 +14,7 @@ import {
   analysePcm,
   chromaFromPcm,
   estimateBeatGrid,
+  estimateDownbeatGrid,
   estimateBpm,
   estimateTrackTempo,
   keyFromChroma,
@@ -71,6 +72,20 @@ function accentedClickTrack(bpm: number, seconds: number): Float32Array {
   return samples;
 }
 
+function downbeatFixture(phase: number, beatCount = 33): { envelope: Float32Array; grid: number[] } {
+  const frameMs = 10;
+  const grid = Array.from({ length: beatCount }, (_, index) => index * 500);
+  const envelope = new Float32Array(Math.ceil(grid.at(-1)! / frameMs) + 16);
+  for (let index = 0; index < beatCount; index += 1) {
+    const center = Math.round(grid[index]! / frameMs);
+    const level = index % 4 === phase ? 1 : 0.1;
+    envelope[center] = level;
+    envelope[center - 1] = level * 0.5;
+    envelope[center + 1] = level * 0.5;
+  }
+  return { envelope, grid };
+}
+
 function graduallyDriftingClickTrack(seconds: number): { samples: Float32Array; beatsMs: number[] } {
   const samples = new Float32Array(Math.round(seconds * RATE));
   const beatsMs: number[] = [];
@@ -121,6 +136,66 @@ test("estimateBeatGrid returns evenly spaced beats near the true tempo", () => {
     const interval = beats[i] - beats[i - 1];
     assert.ok(Math.abs(interval - expected) < expected * 0.25, `interval ${interval} vs expected ${expected}`);
   }
+});
+
+test("downbeat analysis finds repeated 4/4 accents without assuming beat zero is bar one", () => {
+  const { envelope, grid } = downbeatFixture(3);
+  const result = estimateDownbeatGrid(envelope, 10, grid, 0.9);
+  assert.deepEqual(result.downbeatGridMs, [1500, 3500, 5500, 7500, 9500, 11500, 13500, 15500]);
+  assert.ok((result.downbeatConfidence ?? 0) >= 0.65);
+
+  const openingAccent = downbeatFixture(0);
+  const atZero = estimateDownbeatGrid(openingAccent.envelope, 10, openingAccent.grid, 0.9);
+  assert.deepEqual(atZero.downbeatGridMs, [0, 2000, 4000, 6000, 8000, 10000, 12000, 14000],
+    "the emitted grid stops at the last complete evidence window instead of extrapolating the tail");
+});
+
+test("downbeat analysis refuses a pickup/irregular opening instead of backfilling an invented bar phase", () => {
+  const { envelope, grid } = downbeatFixture(0);
+  for (let index = 0; index < 4; index += 1) {
+    const center = Math.round(grid[index]! / 10);
+    envelope[center] = index === 1 ? 1 : 0.1;
+    envelope[center - 1] = envelope[center] * 0.5;
+    envelope[center + 1] = envelope[center] * 0.5;
+  }
+  const result = estimateDownbeatGrid(envelope, 10, grid, 0.9);
+  assert.equal(result.downbeatGridMs, null);
+  assert.ok((result.downbeatConfidence ?? 1) < 0.65);
+});
+
+test("downbeat analysis rejects a confident phase change instead of flattening two arrangements into one bar grid", () => {
+  const { envelope, grid } = downbeatFixture(0, 49);
+  for (let index = 20; index < grid.length; index += 1) {
+    const center = Math.round(grid[index]! / 10);
+    const level = index % 4 === 2 ? 1 : 0.1;
+    envelope[center] = level;
+    envelope[center - 1] = level * 0.5;
+    envelope[center + 1] = level * 0.5;
+  }
+  const result = estimateDownbeatGrid(envelope, 10, grid, 0.9);
+  assert.equal(result.downbeatGridMs, null);
+});
+
+test("downbeat analysis leaves uniform pulses and weak beat grids unavailable", () => {
+  const { envelope, grid } = downbeatFixture(0);
+  for (const beat of grid) {
+    const center = Math.round(beat / 10);
+    envelope[center] = 0.5;
+    envelope[center - 1] = 0.25;
+    envelope[center + 1] = 0.25;
+  }
+  assert.equal(estimateDownbeatGrid(envelope, 10, grid, 0.9).downbeatGridMs, null);
+  assert.equal(estimateDownbeatGrid(envelope, 10, grid, 0.49).downbeatGridMs, null);
+
+  const tripleMeter = new Float32Array(envelope.length);
+  for (let index = 0; index < grid.length; index += 1) {
+    const center = Math.round(grid[index]! / 10);
+    const level = index % 3 === 0 ? 1 : 0.1;
+    tripleMeter[center] = level;
+    tripleMeter[center - 1] = level * 0.5;
+    tripleMeter[center + 1] = level * 0.5;
+  }
+  assert.equal(estimateDownbeatGrid(tripleMeter, 10, grid, 0.9).downbeatGridMs, null);
 });
 
 test("beat grid follows gradual tempo drift instead of forcing one constant period", () => {
@@ -198,6 +273,8 @@ test("silence produces honest nulls, never invented values", () => {
   assert.equal(result.bpm, null);
   assert.equal(result.musicalKey, null);
   assert.equal(result.beatGridMs, null);
+  assert.equal(result.downbeatGridMs, null);
+  assert.equal(result.downbeatConfidence, null);
 });
 
 test("key detection identifies a pure C major triad as C major-ish", () => {

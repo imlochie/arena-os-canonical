@@ -1,5 +1,45 @@
 # Arena handoff — read this first
 
+## Current implementation — bar actions require stable downbeat evidence
+
+* Source analysis now compares onset-envelope accents across the four phases of
+  a measured beat grid in overlapping four-bar windows. It emits a downbeat grid
+  only when every window supports the same phase and the measured beat evidence
+  is reliable; a pickup may begin on a non-zero phase. This identifies a
+  repeating four-beat accent pattern, not time signature or semantic song form.
+  Uniform pulses, weak evidence, short inputs and inconsistent openings produce
+  no usable grid. Confidence is an evidence score, not a probability of musical
+  correctness.
+* Accepted positions are persisted in `source_analyses.downbeat_grid` with
+  `downbeat_confidence`. The worker bounds them to the decoded source and checks
+  that they follow the measured beat grid at four-beat intervals. Session APIs
+  expose them only for current analysis provenance, a reliable beat grid and
+  downbeat confidence at or above 0.65.
+* Bar snap and one-/two-bar loops are disabled with an explanation when those
+  conditions are absent. Saved bar actions do not silently fall back to beat
+  snap; they apply immediately with an explicit unavailable message. Beat loops
+  and beat snap remain independently available from the measured pulse.
+* Migrations `lib/arena/drizzle/0029_source_analysis_downbeats.sql` and
+  `lib/arena/desktop-migrations/0031_source_analysis_downbeats.sql` add nullable
+  evidence columns. Existing analyses remain null; no broad reanalysis is
+  triggered. The development API cannot start until the normal post-merge
+  schema flow applies the new columns. Production is not migrated.
+* **Real-file check:** full decodes of the supplied 215-second September and
+  223-second Another One Bites the Dust recordings both produced no usable
+  downbeat grid. September had BPM 126.048 and persisted beat confidence 0.805,
+  but downbeat confidence was 0; Another One measured BPM 109.957 and beat
+  confidence 0.234, below the downbeat estimator's input gate. This shows the
+  current gate refuses these two recordings; it does not measure accuracy
+  against manually verified bar boundaries.
+* **Verification:** downbeat/DJ/session tests pass 84/84. The persisted session
+  service, retry and recovery suites pass 58 tests; 5 optional heavy-separation
+  cases are skipped. ArenaForge and API-server typechecks pass after rebuilding
+  the database project declarations. The API workflow is currently blocked on
+  the unapplied development migration, so the signed-in bar controls and browser
+  smoke are not verified here. No manually verified real-song downbeat
+  evaluation has been run; synthetic signal tests establish gating behavior,
+  not musical accuracy.
+
 ## Current implementation — live stem swaps honor beat snap
 
 * When Snap is enabled on a playing active deck with a reliable measured beat
@@ -13,9 +53,10 @@
   is prepared for resume without claiming a snapped activation. Cancellation
   before the boundary stops the future source and retains the currently audible
   layer.
-* A configured bar snap currently falls back to a measured beat because the
-  session analysis does not provide verified downbeats; it does not claim a bar
-  downbeat. Snap-off replacements remain immediate.
+* A configured bar snap uses the supported measured downbeat positions. If the
+  grid is absent, weak or cannot be mapped to the audio clock, no bar claim is
+  made and the swap follows the explicit unavailable/immediate path. Snap-off
+  replacements remain immediate.
 * **Verification:** focused live-stem and session-logic tests pass 187/187;
   ArenaForge typecheck and `git diff --check` pass. The Waveyard mobile smoke
   passes, including its existing browser audio and layout acceptance cases.

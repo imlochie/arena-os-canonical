@@ -23,7 +23,10 @@ import {
 } from "@workspace/arena/lib/waveyard/live-stem-layers";
 import {
   hasReliableSessionBeatEvidence,
+  hasReliableSessionDownbeatEvidence,
+  nextSessionBarLoop,
   nextSessionBeatLoop,
+  SESSION_DJ_BAR_LENGTHS,
   SESSION_DJ_LOOP_LENGTHS,
 } from "@workspace/arena/lib/waveyard/session-dj-controls";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
@@ -131,9 +134,11 @@ interface SessionTrackItem {
     bpm: number | null;
     bpmConfidence: number | null;
     beatConfidence: number | null;
+    downbeatConfidence: number | null;
     keyConfidence: number | null;
     musicalKey: string | null;
     beatGridMs: number[] | null;
+    downbeatGridMs: number[] | null;
     sections: SourceSection[] | null;
     vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
     voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
@@ -645,6 +650,7 @@ function SessionDeck({
   const transport = useStemTransport(transportIds, duration, assetIds, outputGroup, audioAssetPool);
   const [cuePosition, setCuePosition] = useState(0);
   const [selectedLoopBeats, setSelectedLoopBeats] = useState<number | null>(null);
+  const [selectedLoopBars, setSelectedLoopBars] = useState<number | null>(null);
   useEffect(() => {
     transport.setPlaybackRate(playbackRate);
   }, [playbackRate, transport.setPlaybackRate]);
@@ -667,12 +673,14 @@ function SessionDeck({
   useEffect(() => {
     setCuePosition(0);
     setSelectedLoopBeats(null);
+    setSelectedLoopBars(null);
     transport.setLoop({ enabled: false, start: 0, end: 0 });
   }, [item?.id, transport.setLoop]);
   const selectBeatLoop = (beats: number) => {
     if (transport.loop.enabled && selectedLoopBeats === beats) {
       transport.setLoop({ ...transport.loop, enabled: false });
       setSelectedLoopBeats(null);
+      setSelectedLoopBars(null);
       return;
     }
     const range = nextSessionBeatLoop(
@@ -684,6 +692,24 @@ function SessionDeck({
     if (!range) return;
     transport.setLoop({ enabled: true, ...range });
     setSelectedLoopBeats(beats);
+    setSelectedLoopBars(null);
+  };
+  const selectBarLoop = (bars: number) => {
+    if (transport.loop.enabled && selectedLoopBars === bars) {
+      transport.setLoop({ ...transport.loop, enabled: false });
+      setSelectedLoopBars(null);
+      return;
+    }
+    const range = nextSessionBarLoop(
+      item?.analysis?.downbeatGridMs,
+      transport.position,
+      bars,
+      item?.analysis?.downbeatConfidence,
+    );
+    if (!range) return;
+    transport.setLoop({ enabled: true, ...range });
+    setSelectedLoopBars(bars);
+    setSelectedLoopBeats(null);
   };
   const mediaElements = useRef<Record<string, HTMLAudioElement | null>>({});
   const mediaAssetLeases = useRef(new Map<string, SessionAudioMediaLease>());
@@ -774,8 +800,13 @@ function SessionDeck({
       snap: performanceSettings.snap,
       playing: active && transport.playing,
       beatEvidenceReliable: hasReliableSessionBeatEvidence(item?.analysis?.beatConfidence),
+      downbeatEvidenceReliable: hasReliableSessionDownbeatEvidence(
+        item?.analysis?.downbeatConfidence,
+        item?.analysis?.downbeatGridMs,
+      ),
       positionSeconds: transport.currentPosition(),
       beatGridMs: item?.analysis?.beatGridMs ?? null,
+      downbeatGridMs: item?.analysis?.downbeatGridMs ?? null,
       contextTimeAtPosition: transport.contextTimeAtPosition,
       minimumLeadSeconds: PERFORMANCE_MINIMUM_LEAD_SECONDS,
     });
@@ -836,6 +867,8 @@ function SessionDeck({
     item?.id,
     item?.analysis?.beatConfidence,
     item?.analysis?.beatGridMs,
+    item?.analysis?.downbeatConfidence,
+    item?.analysis?.downbeatGridMs,
     active,
     performanceSettings.snap,
     swapRetry,
@@ -1222,11 +1255,36 @@ function SessionDeck({
                   onClick={() => {
                     transport.setLoop({ ...transport.loop, enabled: false });
                     setSelectedLoopBeats(null);
+                  setSelectedLoopBars(null);
                   }}
                   data-testid="session-loop-off"
                 >
                   Off
                 </button>
+              </div>
+              <div className="wy-dj-loop-buttons" role="group" aria-label="Bar loops">
+                <span>Bars</span>
+                {SESSION_DJ_BAR_LENGTHS.map((bars) => {
+                  const range = nextSessionBarLoop(
+                    item.analysis?.downbeatGridMs,
+                    transport.position,
+                    bars,
+                    item.analysis?.downbeatConfidence,
+                  );
+                  return (
+                    <button
+                      key={`bar-${bars}`}
+                      type="button"
+                      aria-pressed={transport.loop.enabled && selectedLoopBars === bars}
+                      aria-label={`Loop ${bars} ${bars === 1 ? "bar" : "bars"}`}
+                      disabled={!range}
+                      onClick={() => selectBarLoop(bars)}
+                      data-testid={`session-loop-bar-${bars}`}
+                    >
+                      {bars} {bars === 1 ? "bar" : "bars"}
+                    </button>
+                  );
+                })}
               </div>
               <button
                 type="button"
@@ -1246,11 +1304,26 @@ function SessionDeck({
               </button>
               <small>
                 {hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)
-                  ? "Loops enter on the next measured beat."
+                  ? "Beat loops use the measured pulse; bar actions need stable repeated four-beat accents."
                   : item.analysis?.beatGridMs?.length
                     ? "Beat evidence is low confidence; beat loops are disabled."
-                    : "Analyze this track to enable beat loops."}
+                    : "No measured beat grid is stored; beat loops are disabled."}
               </small>
+              <small data-testid="session-bar-meter-limit">
+                Bar timing is based on rhythmic accents, not a detected time signature. A disabled loop length may also lack a full span before the track ends.
+              </small>
+              {!hasReliableSessionDownbeatEvidence(
+                item.analysis?.downbeatConfidence,
+                item.analysis?.downbeatGridMs,
+              ) && (
+                <small data-testid="session-bar-loop-unavailable">
+                  {typeof item.analysis?.downbeatConfidence === "number"
+                    ? "The accent pattern does not support a stable four-beat phase; bar snap and loops are disabled."
+                    : item.analysis?.beatGridMs?.length
+                      ? "This stored analysis has no supported downbeat grid. A beat grid or BPM alone cannot establish bars."
+                      : "No measured beat grid is stored. BPM alone cannot establish a bar."}
+                </small>
+              )}
             </div>
           )}
           {!active && <p className="wy-deck-note">Seeking here only previews the cue; a beat/bar transition re-cues from the grid.</p>}
@@ -1369,7 +1442,18 @@ function SessionDeck({
                       <option value="quarter" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>¼ beat</option>
                       <option value="half" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>½ beat</option>
                       <option value="beat" disabled={!hasReliableSessionBeatEvidence(item.analysis?.beatConfidence)}>Beat</option>
-                      <option value="bar" disabled>Bar unavailable</option>
+                      <option
+                        value="bar"
+                        disabled={!hasReliableSessionDownbeatEvidence(
+                          item.analysis?.downbeatConfidence,
+                          item.analysis?.downbeatGridMs,
+                        )}
+                      >
+                        {hasReliableSessionDownbeatEvidence(
+                          item.analysis?.downbeatConfidence,
+                          item.analysis?.downbeatGridMs,
+                        ) ? "Bar" : "Bar unavailable"}
+                      </option>
                     </select>
                   </label>
                   <label className="wy-performance-restore">
@@ -1391,8 +1475,11 @@ function SessionDeck({
                   {performanceSettings.snap !== "off" && !hasReliableSessionBeatEvidence(item.analysis?.beatConfidence) && (
                     <span className="wy-performance-note">Snap needs a beat grid with measured confidence of at least 0.50.</span>
                   )}
-                  {performanceSettings.snap === "bar" && (
-                    <span className="wy-performance-note">Bar snap needs verified downbeat data.</span>
+                  {performanceSettings.snap === "bar" && !hasReliableSessionDownbeatEvidence(
+                    item.analysis?.downbeatConfidence,
+                    item.analysis?.downbeatGridMs,
+                  ) && (
+                    <span className="wy-performance-note">No stable downbeat grid is available. Stem actions apply immediately; BPM alone cannot establish a bar.</span>
                   )}
                   <span className="wy-performance-note">Snaps use the analyzed source grid; they are not sample-locked.</span>
                 </div>
@@ -2350,15 +2437,22 @@ export default function SessionExperience({
       && item.id === currentIdRef.current
       && deck?.transport.playing === true
       && settings.snap !== "off";
-    const beatEvidenceReliable = hasReliableSessionBeatEvidence(item.analysis?.beatConfidence);
+    const snapEvidenceReliable = settings.snap === "bar"
+      ? hasReliableSessionDownbeatEvidence(
+        item.analysis?.downbeatConfidence,
+        item.analysis?.downbeatGridMs,
+      )
+      : hasReliableSessionBeatEvidence(item.analysis?.beatConfidence);
     const shouldSnap = wantsSnap
-      && beatEvidenceReliable
+      && snapEvidenceReliable
       && !(restoring && settings.instantRestore);
     if (!shouldSnap) {
       cancelPendingPerformance();
       applyPerformanceActions(item, deckIndex, [action]);
-      if (wantsSnap && !beatEvidenceReliable) {
-        setStatus("Beat snap unavailable: this track’s measured beat confidence is low. The stem change was applied immediately.");
+      if (wantsSnap && !snapEvidenceReliable) {
+        setStatus(settings.snap === "bar"
+          ? "Bar snap unavailable: no stable measured downbeat grid is available. The stem change was applied immediately."
+          : "Beat snap unavailable: this track’s measured beat confidence is low. The stem change was applied immediately.");
       }
       return;
     }
@@ -2368,24 +2462,14 @@ export default function SessionExperience({
       position,
       item.analysis?.beatGridMs,
       settings.snap,
-      undefined,
+      item.analysis?.downbeatGridMs,
       PERFORMANCE_MINIMUM_LEAD_SECONDS,
     );
-    if (target === null && settings.snap === "bar") {
-      target = nextPerformanceBoundary(
-        position,
-        item.analysis?.beatGridMs,
-        "beat",
-        undefined,
-        PERFORMANCE_MINIMUM_LEAD_SECONDS,
-      );
-      if (target !== null) setStatus("No verified bar boundary is available; using the next verified beat.");
-    }
     if (target === null) {
       cancelPendingPerformance();
       applyPerformanceActions(item, deckIndex, [action]);
       setStatus(settings.snap === "bar"
-        ? "No verified bar or beat boundary is available; applied immediately."
+        ? "No stable measured downbeat boundary is available; applied immediately."
         : "No upcoming verified beat is available; applied immediately.");
       return;
     }

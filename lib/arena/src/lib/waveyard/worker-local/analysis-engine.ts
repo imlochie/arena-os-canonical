@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { HARMONY_CHORD_TEMPLATES, HARMONY_TEMPLATE_MIN_MARGIN } from "../types/harmony-analysis";
+import { SESSION_MIN_DOWNBEAT_CONFIDENCE } from "../session-dj-controls";
 
 export { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 
@@ -29,6 +30,8 @@ export type AnalysisResult = {
   keyConfidence: number | null;
   beatGridMs: number[] | null;
   beatConfidence: number | null;
+  downbeatGridMs: number[] | null;
+  downbeatConfidence: number | null;
 };
 
 const TEMPO_WINDOW_MS = 30_000;
@@ -391,6 +394,119 @@ export function estimateBeatGrid(envelope: Float32Array, frameMs: number, bpm: n
   return { beatGridMs: grid, confidence: Math.round(confidence * 1000) / 1000 };
 }
 
+export type DownbeatGridEstimate = {
+  downbeatGridMs: number[] | null;
+  downbeatConfidence: number | null;
+};
+
+/**
+ * Infer a repeating four-beat accent phase only when the measured beat
+ * envelope supports one stable phase. This is rhythm evidence, not a semantic
+ * meter classifier. Uniform pulses, short tracks, unstable phases, and weak
+ * beat grids remain unavailable; BPM alone never labels a downbeat.
+ */
+export function estimateDownbeatGrid(
+  envelope: Float32Array,
+  frameMs: number,
+  beatGridMs: readonly number[] | null,
+  beatConfidence: number | null,
+): DownbeatGridEstimate {
+  const beatsPerBar = 4;
+  const confirmationBars = 4;
+  const confirmationBeats = beatsPerBar * confirmationBars;
+  if (
+    !Number.isFinite(frameMs) || frameMs <= 0
+    || !beatGridMs || beatGridMs.length < confirmationBeats + 1
+    || beatGridMs.some((beat, index) =>
+      !Number.isSafeInteger(beat) || beat < 0 || (index > 0 && beat <= beatGridMs[index - 1]!))
+    || typeof beatConfidence !== "number" || !Number.isFinite(beatConfidence)
+    || beatConfidence < 0.5 || beatConfidence > 1
+  ) return { downbeatGridMs: null, downbeatConfidence: null };
+
+  let envelopePeak = 0;
+  for (const value of envelope) {
+    if (Number.isFinite(value)) envelopePeak = Math.max(envelopePeak, value);
+  }
+  if (envelopePeak <= 1e-9) return { downbeatGridMs: null, downbeatConfidence: 0 };
+
+  const radiusFrames = Math.max(1, Math.ceil(45 / frameMs));
+  const beatStrengths = beatGridMs.map((beatMs) => {
+    const center = Math.round(beatMs / frameMs);
+    let strength = 0;
+    for (
+      let frame = Math.max(0, center - radiusFrames);
+      frame <= Math.min(envelope.length - 1, center + radiusFrames);
+      frame += 1
+    ) {
+      const value = envelope[frame] ?? 0;
+      if (Number.isFinite(value)) strength = Math.max(strength, value);
+    }
+    return strength;
+  });
+
+  const windows: Array<{ phase: number; confidence: number }> = [];
+  for (let start = 0; start + confirmationBeats < beatStrengths.length; start += beatsPerBar) {
+    const phaseStrengths = Array.from({ length: beatsPerBar }, (_, phase) =>
+      Array.from({ length: confirmationBars }, (_, bar) => beatStrengths[start + bar * beatsPerBar + phase] ?? 0),
+    );
+    const median = (values: number[]) => {
+      const sorted = [...values].sort((left, right) => left - right);
+      return sorted[Math.floor(sorted.length / 2)] ?? 0;
+    };
+    const ranked = phaseStrengths
+      .map((values, phase) => ({ phase, strength: median(values) }))
+      .sort((left, right) => right.strength - left.strength);
+    const strongest = ranked[0];
+    const runnerUp = ranked[1];
+    if (!strongest || !runnerUp || strongest.strength <= envelopePeak * 0.08) {
+      windows.push({ phase: strongest?.phase ?? 0, confidence: 0 });
+      continue;
+    }
+    const contrast = Math.max(0, (strongest.strength - runnerUp.strength) / strongest.strength);
+    const supportedBars = phaseStrengths[strongest.phase]!.filter((accent, bar) => {
+      const otherStrengths = phaseStrengths
+        .filter((_, phase) => phase !== strongest.phase)
+        .map((values) => values[bar] ?? 0);
+      const localMedian = median(otherStrengths);
+      return accent >= envelopePeak * 0.08 && accent >= localMedian * 1.2;
+    }).length;
+    const support = supportedBars / confirmationBars;
+    const confidence = Math.max(0, Math.min(1, contrast * support * beatConfidence));
+    windows.push({ phase: strongest.phase, confidence });
+  }
+  if (windows.length === 0) return { downbeatGridMs: null, downbeatConfidence: null };
+
+  const phaseCounts = Array.from({ length: beatsPerBar }, (_, phase) =>
+    windows.filter((window) => window.phase === phase && window.confidence >= SESSION_MIN_DOWNBEAT_CONFIDENCE).length,
+  );
+  const bestPhase = phaseCounts.indexOf(Math.max(...phaseCounts));
+  const accepted = windows.filter((window) => window.confidence >= SESSION_MIN_DOWNBEAT_CONFIDENCE);
+  const matching = accepted.filter((window) => window.phase === bestPhase);
+  const phaseAgreement = accepted.length > 0 ? matching.length / accepted.length : 0;
+  const meanConfidence = matching.length > 0
+    ? matching.reduce((sum, window) => sum + window.confidence, 0) / matching.length
+    : windows.reduce((sum, window) => sum + window.confidence, 0) / windows.length;
+  const weakestWindowConfidence = Math.min(...windows.map((window) => window.confidence));
+  const confidence = Math.round(Math.min(meanConfidence * phaseAgreement, weakestWindowConfidence) * 1000) / 1000;
+  if (
+    matching.length === 0
+    || accepted.length !== windows.length
+    || phaseAgreement < 1
+    || confidence < SESSION_MIN_DOWNBEAT_CONFIDENCE
+  ) return { downbeatGridMs: null, downbeatConfidence: confidence };
+
+  const lastConfirmedBeat = Math.min(
+    beatGridMs.length - 1,
+    (windows.length - 1) * beatsPerBar + confirmationBeats - 1,
+  );
+  const downbeatGridMs = beatGridMs.filter((_, index) =>
+    index <= lastConfirmedBeat && index % beatsPerBar === bestPhase,
+  );
+  return downbeatGridMs.length >= 2
+    ? { downbeatGridMs, downbeatConfidence: confidence }
+    : { downbeatGridMs: null, downbeatConfidence: confidence };
+}
+
 const PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
 const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
 const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
@@ -529,8 +645,13 @@ export function analysePcm(pcm: Float32Array): AnalysisResult {
     beatGridMs = grid.beatGridMs;
     beatConfidence = grid.confidence;
   }
+  const downbeats = estimateDownbeatGrid(envelope, frameMs, beatGridMs, beatConfidence);
   const { key, confidence: keyConfidence } = keyFromChroma(chromaFromPcm(pcm));
-  return { bpm, bpmConfidence, musicalKey: key, keyConfidence, beatGridMs, beatConfidence };
+  return {
+    bpm, bpmConfidence, musicalKey: key, keyConfidence, beatGridMs, beatConfidence,
+    downbeatGridMs: downbeats.downbeatGridMs,
+    downbeatConfidence: downbeats.downbeatConfidence,
+  };
 }
 
 export type LocalDrumTransient = {
