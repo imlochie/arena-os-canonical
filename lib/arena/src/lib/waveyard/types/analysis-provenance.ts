@@ -7,8 +7,8 @@ export const DESKTOP_STEM_ANALYSIS_ENGINE_VERSION = "1.0.0";
 /** Versioned separately because vocal activity is persisted independently from pitch runs. */
 export const DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION = "1.1.0";
 export const DESKTOP_SECTION_ENGINE = "arena-js-structure";
-// 1.7 adds source-bound vocal-activity evidence alongside pitch continuity.
-export const DESKTOP_SECTION_ENGINE_VERSION = "1.7.0";
+// 1.8 adds conservative, isolated-vocal recurrence/context form inference.
+export const DESKTOP_SECTION_ENGINE_VERSION = "1.8.0";
 
 export function isStaleDesktopAnalysis(analysis: {
   analysisEngine: string | null;

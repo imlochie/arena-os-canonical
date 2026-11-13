@@ -3,10 +3,12 @@
  * processSourceSectionAnalysis, with the structure engine reimplemented in
  * JS: conservative boundaries use source onset novelty plus sustained changes
  * from checksum-matched separated-stem and vocal-activity evidence; repeated
- * phrases remain supported. Repetition is not mislabeled as verse/chorus.
+ * phrases remain supported. Repetition alone is not a verse/chorus decision:
+ * optional isolated-vocal recurrence, alternating context and dynamic lift
+ * now support explicitly unverified musical-form hypotheses.
  * Persisted, source-checksum-bound phrase fingerprints may later be compared
  * across tracks for local live-swap alignment; that comparison is not a
- * semantic section classification.
+ * semantic section classification by itself.
  * Candidates flow through the app's own normalizeSourceSections/
  * sourceSectionsAreValid validators, so rows are indistinguishable in shape
  * and constraints from worker-produced sections; only the engine provenance
@@ -36,6 +38,7 @@ import {
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
+import { applyFormPredictions, inferFormFromWindows, measureFormWindows } from "./musical-form";
 import { ANALYSIS_PCM_RATE, decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
 import {
   buildPassageFingerprint,
@@ -110,6 +113,7 @@ async function loadStemActivityProfiles(input: {
   profiles: StemActivityProfile[];
   changes: StemActivityBoundaryChange[];
   vocalActivity: PassageVocalActivityEvidence | undefined;
+  vocalPcm?: Float32Array;
 }> {
   const rows = await input.database
     .select({ stem: stemAssets, job: processingJobs })
@@ -135,6 +139,7 @@ async function loadStemActivityProfiles(input: {
   }
 
   const profiles: StemActivityProfile[] = [];
+  let vocalPcm: Float32Array | undefined;
   const sourceDurationMs = (input.sourcePcm.length * 1000) / ANALYSIS_PCM_RATE;
   for (const stem of selected.values()) {
     const downloadedPath = join(input.temporaryDirectory, `stem-${stem.id}.wav`);
@@ -154,7 +159,10 @@ async function loadStemActivityProfiles(input: {
         separationJobId: latestCurrentJob.id,
         stemChecksumSha256: stem.checksumSha256,
       });
-      if (profile) profiles.push(profile);
+      if (profile) {
+        profiles.push(profile);
+        if (stem.stemType === "vocals") vocalPcm = pcm;
+      }
     } catch (error) {
       // A missing/corrupt optional stem must not block the source-only fallback.
       console.warn("Waveyard skipped unavailable stem activity evidence", {
@@ -233,7 +241,7 @@ async function loadStemActivityProfiles(input: {
       });
     }
   }
-  return { profiles, changes, vocalActivity };
+  return { profiles, changes, vocalActivity, vocalPcm };
 }
 
 /** Local structural analysis uses source audio and optional verified stem PCM. */
@@ -336,7 +344,10 @@ export async function handleSectionAnalysisJob(
       }, "processing");
       return;
     }
-    const fingerprintedCandidates = candidates.map((candidate) => ({
+    const formCandidates = stemActivity.vocalPcm
+      ? applyFormPredictions(candidates, inferFormFromWindows(measureFormWindows(pcm, stemActivity.vocalPcm, beatGrid)))
+      : candidates;
+    const fingerprintedCandidates = formCandidates.map((candidate) => ({
       ...candidate,
       passageFingerprint: buildPassageFingerprint({
         sourceChecksumSha256: source.checksumSha256,

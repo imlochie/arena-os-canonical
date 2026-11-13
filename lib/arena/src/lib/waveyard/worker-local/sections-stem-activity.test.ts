@@ -301,6 +301,8 @@ test("stems from a separation of different source bytes stay out of structural e
       .where(eq(sourceSections.sourceAssetId, fixture.source.id));
     assert.ok(sections.length > 0);
     assert.ok(sections.every((section) => section.label !== "stem-change"));
+    assert.ok(sections.every((section) => section.label !== "verse" && section.label !== "chorus"),
+      "stale separated audio must not produce semantic vocal roles");
     const fingerprint = parsePassageFingerprint(sections[0]?.passageFingerprint, {
       sourceChecksumSha256: sourceChecksum,
       startBeatIndex: sections[0]!.startBeatIndex,
@@ -318,6 +320,8 @@ test("a corrupt optional stem is skipped while source-only sections still comple
     await runSectionAnalysis(fixture, fixtureStorage("stem-key"));
     const sections = await fixture.database.select().from(sourceSections)
       .where(eq(sourceSections.sourceAssetId, fixture.source.id));
+    assert.ok(sections.every(section => section.label !== "verse" && section.label !== "chorus"),
+      "corrupt stem audio must not be used to infer verse or chorus");
     assert.ok(sections.length > 0);
     assert.ok(sections.every((section) => section.label !== "stem-change"));
     const fingerprint = parsePassageFingerprint(sections[0]?.passageFingerprint, {

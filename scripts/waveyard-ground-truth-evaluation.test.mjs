@@ -4,12 +4,45 @@ import {
   buildEvaluationReport,
   evaluateTrack,
   validateGroundTruth,
+  semanticFormMetrics,
 } from "./waveyard-ground-truth-evaluation.mjs";
 
 const hashes = {
   "another-one-bites-the-dust": "a".repeat(64),
   september: "b".repeat(64),
 };
+
+test("semantic scoring counts abstentions as misses rather than perfect selective accuracy", () => {
+  const reference = [
+    { startMs: 0, endMs: 1000, label: "verse" },
+    { startMs: 1000, endMs: 2000, label: "chorus" },
+  ];
+  const none = semanticFormMetrics([], reference, 2000);
+  assert.equal(none.timeWeightedVerseChorusAccuracy, 0);
+  assert.equal(none.accuracyAmongClaims, null);
+  assert.equal(none.classes.verse.recall, 0);
+  assert.equal(none.classes.chorus.recall, 0);
+  const perfect = semanticFormMetrics(reference, reference, 2000);
+  assert.equal(perfect.timeWeightedVerseChorusAccuracy, 1);
+  assert.equal(perfect.classes.chorus.f1, 1);
+});
+
+test("semantic precision penalizes instrumental/breakdown false positives and excludes unreviewed spans", () => {
+  const result = semanticFormMetrics([
+    { startMs: 0, endMs: 3000, label: "chorus" },
+  ], [
+    { startMs: 0, endMs: 1000, label: "chorus" },
+    { startMs: 1000, endMs: 2000, label: "breakdown" },
+    { startMs: 2000, endMs: 3000, label: "unknown" },
+  ], 3000);
+  assert.equal(result.classes.chorus.precision, 0.5);
+  assert.equal(result.classes.chorus.recall, 1);
+  assert.equal(result.reviewedMs, 2000);
+  assert.throws(() => semanticFormMetrics([
+    { startMs: 0, endMs: 2000, label: "verse" },
+    { startMs: 1000, endMs: 3000, label: "chorus" },
+  ], [], 3000), /non-overlapping/);
+});
 
 function recording(id, title, durationSeconds, adjudicated) {
   const resolved = {
@@ -235,6 +268,18 @@ test("independent ground truth computes structural boundaries, coverage, and adj
   assert.equal(result.tracks[0].coverage.annotatedSectionSeconds, 222.67);
   assert.equal(result.tracks[0].bedCandidateRanking.top1Accuracy, 1);
   assert.equal(result.tracks[0].bedCandidateRanking.recallAtK, 1);
+});
+
+test("adjudicated verse/chorus labels score real semantic predictions without using structural labels as substitutes", () => {
+  const predictions = structuredClone(validPredictions);
+  predictions.recordings["another-one-bites-the-dust"].sections[0].label = "verse";
+  const result = buildEvaluationReport(dataset({ queen, september: {} }), predictions);
+  assert.equal(result.status, "complete");
+  const semantic = result.tracks[0].semanticSectionClassification;
+  assert.equal(semantic.status, "evaluated");
+  assert.equal(semantic.classes.verse.truePositiveMs, 5000);
+  assert.equal(semantic.classes.verse.recall, 1);
+  assert.equal(result.tracks[0].structuralBoundaryDetection.truePositives, 1);
 });
 
 test("structural boundary matching is one-to-one and prefers the closest time", () => {

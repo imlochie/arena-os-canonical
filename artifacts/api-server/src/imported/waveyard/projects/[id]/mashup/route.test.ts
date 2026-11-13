@@ -448,6 +448,7 @@ test(
       attempts: 1,
       idempotencyKey: `mashup-vocals-${randomUUID()}`,
       model: realFixture?.vocals.separation.recipeModel ?? "test",
+      ...(realFixture ? { metadata: JSON.stringify({ sourceChecksumSha256: sha256(vocalsOriginal) }) } : {}),
       requestedDevice: "cpu",
       resolvedDevice: realFixture ? "cpu" : null,
       completedAt: new Date(),
@@ -461,6 +462,7 @@ test(
       attempts: 1,
       idempotencyKey: `mashup-bed-${randomUUID()}`,
       model: realFixture?.bed.separation.recipeModel ?? "test",
+      ...(realFixture ? { metadata: JSON.stringify({ sourceChecksumSha256: sha256(bedOriginal) }) } : {}),
       requestedDevice: "cpu",
       resolvedDevice: realFixture ? "cpu" : null,
       completedAt: new Date(),
@@ -918,6 +920,13 @@ test(
         assert.equal(completed?.status, "complete",
           "full-track real audio should produce current persisted section fingerprints for the acceptance pair");
         assert.ok(rows.length > 0, "the section worker must persist real source sections");
+        if (sourceAssetId === bedSource.id) {
+          assert.ok(rows.some(row => row.label === "verse") && rows.some(row => row.label === "chorus"),
+            "the real September separated-vocal analysis must persist both inferred semantic roles");
+          assert.ok(rows.filter(row => ["verse", "chorus"].includes(row.label))
+            .every(row => row.labelConfidence <= 0.7),
+          "uncalibrated form hypotheses must not be published as high-confidence truth");
+        }
         assert.ok(rows.every((row) => row.sourceChecksumSha256 === sourceAsset.checksumSha256),
           "every persisted section must remain bound to the original source checksum");
         realSectionsBySourceChecksum[sourceAsset.checksumSha256] = rows.map((row) => ({

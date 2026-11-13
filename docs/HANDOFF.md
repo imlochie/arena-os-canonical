@@ -1,6 +1,75 @@
 # Arena handoff — read this first
 
-## Verse/chorus accuracy baseline — not measurable yet
+## Current: inferred verse/chorus roles and measured limitations
+
+The local source-section worker now uses **checksum-verified isolated vocal PCM**
+and the original full-track PCM. It compares eight-bar vocal/harmonic contours
+across distant passages and requires two distinct recurring vocal arrangements,
+an alternating verse/chorus context and a measured dynamic lift before assigning
+either role. Repetition or energy alone does not count. Source-only/corrupt/missing
+stems and ambiguous songs retain their structural labels; no trained semantic
+model, third-party download or confidence-as-probability claim is involved.
+Section IDs and coordinates are not changed by this labeling pass. New roles
+are persisted through the existing section worker (engine 1.8), consumed by
+the existing label display/source-profile and selected-section paths, and
+displayed as **inferred, unverified hypotheses**, not certain form labels.
+
+**Real route verification:** completed separation assets for September and
+Another One Bites the Dust, a fresh isolated database, the production section
+worker, source/profile loader, plan/render and saved/reopened/edited/exported
+Studio arrangement all passed. The real fixture previously omitted the
+separation jobs' source checksum metadata, so its section worker had been
+silently exercising source-only analysis. The fixture now supplies the real
+checksum provenance, enabling the actual verified vocal stems. The stored
+September sections included **4 inferred verse + 3 inferred chorus windows**;
+the Queen sections abstained. No structurally inferred label was renamed
+simply because it was repeated. The 215-second render still had zero clipped
+frames; no improved audible mashup quality was demonstrated.
+
+**Before/after versus the owner's approximate notes:** v2 production capture
+from the prior section engine assigned zero roles to both songs. The new
+current-worktree capture's provisional role comparison finds:
+
+| Source | Correct verse ms / reference | Correct chorus ms / reference | Extra claimed ms | Role-time overlap |
+| --- | ---: | ---: | ---: | ---: |
+| September | 26,185 / 61,000 | 15,008 / 59,000 | 4,783 | 34.33% |
+| Queen | 0 / 26,000 | 0 / 62,000 | 0 | 0% |
+| Combined | 26,185 / 87,000 | 15,008 / 121,000 | 4,783 | **19.80%** |
+
+Precision among claimed, owner-reviewed time is **89.60%**, but it is only a
+selective hypothesis score: most reviewed verse/chorus time was **missed**.
+Queen produced no role predictions; precision there is undefined, not 100%.
+The metric counts abstentions as misses, and penalizes chorus predictions
+extending into the owner's breakdown and verse predictions outside a verse.
+The source-pinned single-listener notes are approximate, not independently
+adjudicated, and the analysis scale was developed while inspecting these
+recordings: **these numbers are in-sample diagnostics, not a validated or
+generalizable accuracy claim**. No boundary-tolerance credit is applied.
+Results can be reproduced using:
+
+```
+node scripts/waveyard-ground-truth-evaluation.mjs --provisional-form \
+  scripts/fixtures/waveyard-ground-truth/owner-form-notes-v1.json \
+  generated-artifacts/waveyard-real-world-acceptance/form-route-acceptance.json \
+  generated-artifacts/waveyard-real-world-acceptance/form-provisional-after.json
+```
+
+The full-audio manifest and production route capture in `generated-artifacts/`
+are intentionally ignored; they must be generated locally from the owner's
+authorized recordings before that command can run. Only the short timestamp
+reference and evaluator are committed, not the songs or rendered output.
+
+The normal evaluation still requires two blind independently reviewed,
+adjudicated, source-licensed references before formal precision/recall can
+be claimed. When genuine verse/chorus predictions and those references
+are supplied, its semantic scorer now measures exact-time per-class
+precision/recall/F1 independently of structural-boundary accuracy.
+The high-value gap is now Queen's complete abstention and the low recall on
+September. Do **not** tune thresholds against the same two recordings and
+advertise the increased in-sample score as musical understanding; obtain an
+independent held-out reference set first.
+
+## Previous verse/chorus baseline — no semantic predictions
 
 At `75cdc0a1`, inspection of the production section worker and the real
 persisted profiles from the latest Queen/September route acceptance found:

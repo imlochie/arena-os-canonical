@@ -61,4 +61,4 @@ Waveyard should function as a Stem.fm replacement with extra features. Live stem
 
 **Why:** The user explicitly requested meaningful musical intelligence and audible results, not another detector or UI redesign, while preserving arbitrary-song generation and honest uncertainty.
 
-**How to apply:** Reuse current analyzers, persisted provenance, planners and renderers. Keep unit, synthetic, real-song analytical, rendered-signal and independent listening evidence separate; do not introduce heavyweight dependencies without demonstrated practical value.
+**How to apply:** Reuse current analyzers, persisted provenance, planners and renderers. Keep unit, synthetic, real-song analytical, rendered-signal and independent listening evidence separate; do not introduce heavyweight dependencies without demonstrated practical value. When the user requests verse/chorus accuracy, implement an actual form inference path and measure its behavior; an audit that only says form recognition is absent does not fulfill that request. Report single-listener reference comparisons separately from independently reviewed accuracy.

@@ -928,12 +928,20 @@ export function evaluateTrack(recording, predictions, options = {}) {
       durationSeconds: recording.durationSeconds,
     },
     structuralBoundaryDetection,
-    semanticSectionClassification: {
+    semanticSectionClassification: predictions.sections?.some(section =>
+      section.label === "verse" || section.label === "chorus")
+      ? {
+        status: "evaluated",
+        ...semanticFormMetrics(predictions.sections, confidentlyLabeled,
+          Math.round(recording.durationSeconds * 1000)),
+        evidence: "Semantic hypotheses scored against independent reference segments; evidence strength is not calibrated accuracy.",
+      }
+      : {
       status: "unavailable",
       accuracy: null,
       evaluated: 0,
       reason:
-        "The production section engine emits structural windows and repetition labels, not semantic verse, chorus, bridge, or breakdown predictions.",
+        "This capture has no verse/chorus predictions. Structural/repetition labels are not semantic predictions.",
     },
     lyricPhraseTiming: {
       status: "unavailable",
@@ -1063,7 +1071,115 @@ export function buildEvaluationReport(dataset, predictions, options = {}) {
   };
 }
 
+/**
+ * Duration-weighted role scoring. Reference "unknown" spans are excluded;
+ * abstentions count as misses on reviewed verse/chorus spans. False positive
+ * role claims over reviewed intro/bridge/etc still reduce precision.
+ * Calling this helper on provisional notes does NOT adjudicate those notes.
+ */
+export function semanticFormMetrics(predictions, references, durationMs) {
+  assert.ok(Number.isFinite(durationMs) && durationMs > 0);
+  // Source durations are stored to whole milliseconds/seconds; allow only
+  // their sub-second decoded tail, then score on the persisted source timeline.
+  const validate = (intervals) => {
+    let end = 0;
+    return [...intervals].sort((a, b) => a.startMs - b.startMs).map(interval => {
+      assert.ok(Number.isSafeInteger(interval.startMs) && Number.isSafeInteger(interval.endMs)
+        && interval.startMs >= end && interval.endMs > interval.startMs
+        && interval.endMs < durationMs + 1000 && typeof interval.label === "string",
+      "semantic intervals must be ordered, non-overlapping and inside the recording");
+      end = interval.endMs;
+      return interval;
+    }).filter(interval => interval.startMs < durationMs)
+      .map(interval => ({ ...interval, endMs: Math.min(interval.endMs, durationMs) }));
+  };
+  const predicted = validate(predictions), reference = validate(references);
+  const edges = [...new Set([0, durationMs,
+    ...predicted.flatMap(p => [p.startMs, p.endMs]),
+    ...reference.flatMap(r => [r.startMs, r.endMs])])].sort((a, b) => a - b);
+  const confusionMs = {
+    verse: { verse: 0, chorus: 0, unknown: 0 },
+    chorus: { verse: 0, chorus: 0, unknown: 0 },
+    other: { verse: 0, chorus: 0, unknown: 0 },
+  };
+  let pi = 0, ri = 0, reviewedMs = 0;
+  for (let i = 0; i < edges.length - 1; i++) {
+    const from = edges[i], to = edges[i + 1], ms = to - from;
+    while (pi < predicted.length && predicted[pi].endMs <= from) pi++;
+    while (ri < reference.length && reference[ri].endMs <= from) ri++;
+    const truth = reference[ri]?.startMs <= from ? reference[ri].label : "unknown";
+    if (truth === "unknown") continue;
+    const label = predicted[pi]?.startMs <= from ? predicted[pi].label : "unknown";
+    const row = truth === "verse" || truth === "chorus" ? truth : "other";
+    const column = label === "verse" || label === "chorus" ? label : "unknown";
+    confusionMs[row][column] += ms;
+    reviewedMs += ms;
+  }
+  const classes = {};
+  let correctMs = 0, claimedMs = 0, targetMs = 0;
+  for (const label of ["verse", "chorus"]) {
+    const tp = confusionMs[label][label];
+    const fp = Object.keys(confusionMs).filter(r => r !== label)
+      .reduce((sum, r) => sum + confusionMs[r][label], 0);
+    const fn = Object.keys(confusionMs[label]).filter(c => c !== label)
+      .reduce((sum, c) => sum + confusionMs[label][c], 0);
+    classes[label] = {
+      truePositiveMs: tp, falsePositiveMs: fp, falseNegativeMs: fn,
+      precision: tp + fp ? tp / (tp + fp) : null,
+      recall: tp + fn ? tp / (tp + fn) : null,
+      f1: 2 * tp + fp + fn ? 2 * tp / (2 * tp + fp + fn) : null,
+    };
+    correctMs += tp; claimedMs += tp + fp; targetMs += tp + fn;
+  }
+  return {
+    classes, confusionMs, reviewedMs, verseChorusReferenceMs: targetMs,
+    timeWeightedVerseChorusAccuracy: targetMs ? correctMs / targetMs : null,
+    accuracyAmongClaims: claimedMs ? correctMs / claimedMs : null,
+    claimedCoverage: reviewedMs ? claimedMs / reviewedMs : null,
+    definition: "Exact-time overlap; accuracy denominator is reviewed verse/chorus duration, with abstentions counted as misses. Precision also penalizes claims over other reviewed roles. No boundary-tolerance credit or calibrated confidence.",
+  };
+}
+
 async function main() {
+  if (process.argv[2] === "--provisional-form") {
+    const [notesPath, capturePath, outputPath] = process.argv.slice(3);
+    assert.ok(notesPath && capturePath && outputPath,
+      "Usage: --provisional-form <owner-notes.json> <production-capture.json> <report.json>");
+    const notes = JSON.parse(await readFile(resolve(notesPath), "utf8"));
+    const document = JSON.parse(await readFile(resolve(capturePath), "utf8"));
+    const capture = document.predictionSnapshot ?? document;
+    assert.equal(notes.status, "provisional-single-listener-notes");
+    const tracks = {};
+    for (const [id, reference] of Object.entries(notes.recordings)) {
+      const prediction = capture.recordings?.[id];
+      assert.ok(prediction, `missing production recording ${id}`);
+      assert.equal(prediction.sourceSha256, reference.sourceSha256,
+        "reference notes and production predictions must refer to the exact same audio");
+      const duration = prediction.sourceDurationMs;
+      const crop = spans => spans.map(s => ({ ...s, endMs: Math.min(s.endMs, duration) }))
+        .filter(s => s.startMs < s.endMs);
+      const metrics = semanticFormMetrics(crop(prediction.sections ?? []),
+        crop(reference.sections), duration);
+      tracks[id] = { sourceSha256: reference.sourceSha256,
+        semanticPredictions: (prediction.sections ?? []).filter(s => ["verse", "chorus"].includes(s.label)),
+        metrics };
+    }
+    const report = {
+      status: "provisional-single-listener-comparison",
+      producerRevision: capture.producerRevision ?? null,
+      capturedAt: capture.capturedAt ?? null,
+      limitations: [
+        notes.scope,
+        "Exact overlaps are scored without tolerance credit. Approximate timestamps must not be treated as independently measured accuracy.",
+        "Reference end-of-file spans are cropped to the capture's declared source duration. Unknown reference spans are excluded.",
+      ],
+      tracks,
+    };
+    await mkdir(dirname(resolve(outputPath)), { recursive: true });
+    await writeFile(resolve(outputPath), `${JSON.stringify(report, null, 2)}\n`);
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
   const [datasetPath, predictionsPath, outputPath] = process.argv.slice(2);
   assert.ok(
     datasetPath && predictionsPath && outputPath,
