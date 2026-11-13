@@ -921,6 +921,12 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
     Number.isInteger(repetitions) && repetitions >= 6 && repetitions <= 12,
     "WAVEYARD_REAL_ORT_MEMORY_REPETITIONS must be an integer from 6 to 12",
   );
+  const requestedProvider = process.env.WAVEYARD_REAL_ORT_MEMORY_PROVIDER?.trim() || "auto";
+  assert.ok(
+    requestedProvider === "auto" || requestedProvider === "cpu",
+    "WAVEYARD_REAL_ORT_MEMORY_PROVIDER must be auto or cpu",
+  );
+  const providerSelectionMode = requestedProvider === "cpu" ? "forced" : "automatic";
   const warmupJobs = 3;
 
   const source = await createMemoryMeasurementSource(process.env.WAVEYARD_REAL_ORT_MEMORY_WAV?.trim());
@@ -947,6 +953,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         stage: "failed",
         errorCode: "separation_unavailable",
         errorMessage: "Memory measurement run initialized.",
+        requestedDevice: requestedProvider,
         completedAt: new Date(),
       })
       .where(eq(processingJobs.id, f.job.id));
@@ -1068,18 +1075,24 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       requestedDevices[0] && requestedDevices[0] !== "unknown",
       "the completed jobs must report their requested execution provider",
     );
+    if (requestedProvider === "cpu") {
+      assert.equal(resolvedDevices[0], "cpu", "forced CPU memory runs must resolve to CPU");
+    }
     if (process.platform === "win32") {
-      assert.ok(
-        ["dml", "cpu"].includes(resolvedDevices[0]!),
-        `Windows automatic selection must resolve to DirectML or CPU, not ${resolvedDevices[0]}`,
-      );
+      if (requestedProvider === "auto") {
+        assert.ok(
+          ["dml", "cpu"].includes(resolvedDevices[0]!),
+          `Windows automatic selection must resolve to DirectML or CPU, not ${resolvedDevices[0]}`,
+        );
+      }
     }
 
     const memoryReportPath = process.env.WAVEYARD_REAL_ORT_MEMORY_REPORT?.trim();
     if (memoryReportPath) {
       const memoryReport = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         benchmark: "repeated pinned four-model multi-chunk process memory",
+        providerSelectionMode,
         measuredMachine: {
           platform: process.platform,
           osType: osType(),
@@ -1125,7 +1138,8 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
     }
 
     t.diagnostic(
-      `Pinned four-model memory run on ${resolvedDevices[0]}: ${repetitions} completed jobs in ${Date.now() - startedAt} ms; ` +
+      `Pinned four-model ${providerSelectionMode} provider run (requested ${requestedProvider}, selected ${resolvedDevices[0]}) ` +
+        `completed ${repetitions} jobs in ${Date.now() - startedAt} ms; ` +
         `input ${source.kind} ${source.sampleCount / 44_100}s${source.checksum ? ` sha256=${source.checksum}` : ""}; ` +
         `RSS baseline ${toMiB(baseline.rss)} MiB; post-job RSS ${samples.map(({ rss }) => toMiB(rss)).join(" → ")} MiB; ` +
         `${warmupJobs} warm-up jobs retained ${toMiB(samples[warmupJobs - 1]!.rss - baseline.rss)} MiB; ` +

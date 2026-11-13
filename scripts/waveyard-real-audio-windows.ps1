@@ -43,10 +43,12 @@ Run only the pinned four-model repeated memory measurement.
 Optional 44.1 kHz stereo 16-bit PCM WAV input for memory-only mode.
 
 .PARAMETER MemoryReportPath
-Memory-only JSON report destination.
+Memory-only JSON report destination. Defaults to a separate path for automatic and CPU runs.
 
 .PARAMETER MemoryRepetitions
 Memory-only job count. Defaults to 7; accepts 6 to 12.
+.PARAMETER MemoryProvider
+Execution provider for memory-only mode. Defaults to automatic selection; use cpu to force CPU. Example: -MemoryOnly -MemoryProvider cpu
 
 .EXAMPLE
 .\scripts\waveyard-real-audio-windows.ps1 -AudioPath "C:\Music\sample.mp3"
@@ -76,9 +78,11 @@ param(
 
   [string]$MemoryWavPath,
 
-  [string]$MemoryReportPath = "generated-artifacts/waveyard-four-stem-memory-windows.json",
+  [string]$MemoryReportPath,
 
-  [int]$MemoryRepetitions = 7
+  [int]$MemoryRepetitions = 7,
+  [ValidateSet("auto", "cpu")]
+  [string]$MemoryProvider = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,6 +103,7 @@ if (-not $nodeExecutable) {
 }
 
 if ($MemoryOnly) {
+  $MemoryProvider = $MemoryProvider.ToLowerInvariant()
   if ($MemoryRepetitions -lt 6 -or $MemoryRepetitions -gt 12) {
     throw "MemoryRepetitions must be an integer from 6 to 12."
   }
@@ -108,10 +113,17 @@ if ($MemoryOnly) {
       throw "MemoryWavPath must be a 44.1 kHz stereo 16-bit PCM WAV file."
     }
   }
-  $resolvedMemoryReportPath = if ([System.IO.Path]::IsPathRooted($MemoryReportPath)) {
+  $effectiveMemoryReportPath = if ($MemoryReportPath) {
     $MemoryReportPath
+  } elseif ($MemoryProvider -eq "cpu") {
+    "generated-artifacts/waveyard-four-stem-memory-windows-cpu.json"
   } else {
-    Join-Path $repoRoot $MemoryReportPath
+    "generated-artifacts/waveyard-four-stem-memory-windows.json"
+  }
+  $resolvedMemoryReportPath = if ([System.IO.Path]::IsPathRooted($effectiveMemoryReportPath)) {
+    $effectiveMemoryReportPath
+  } else {
+    Join-Path $repoRoot $effectiveMemoryReportPath
   }
   $memoryReportDirectory = Split-Path -Parent $resolvedMemoryReportPath
   if ($memoryReportDirectory -and -not (Test-Path -LiteralPath $memoryReportDirectory)) {
@@ -125,6 +137,7 @@ if ($MemoryOnly) {
   $previousMemoryWav = $env:WAVEYARD_REAL_ORT_MEMORY_WAV
   $previousMemoryReport = $env:WAVEYARD_REAL_ORT_MEMORY_REPORT
   $previousMemoryRepetitions = $env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS
+  $previousMemoryProvider = $env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER
   Push-Location $repoRoot
   try {
     if ($resolvedMemoryWavPath) {
@@ -134,6 +147,7 @@ if ($MemoryOnly) {
     }
     $env:WAVEYARD_REAL_ORT_MEMORY_REPORT = $resolvedMemoryReportPath
     $env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS = [string]$MemoryRepetitions
+    $env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER = $MemoryProvider
 
     $runStartedAt = [DateTime]::UtcNow
     & $nodeExecutable $memoryTestRunner --test --test-name-pattern "repeated pinned four-model jobs" $testPath
@@ -155,10 +169,14 @@ if ($MemoryOnly) {
     if ($memoryReport.repetitions -ne $MemoryRepetitions -or @($memoryReport.jobs).Count -ne $MemoryRepetitions) {
       throw "The report does not contain all requested memory repetitions."
     }
-    if ($memoryReport.requestedProvider -ne "auto") {
-      throw "The report did not run with automatic provider selection."
+    $expectedSelectionMode = if ($MemoryProvider -eq "cpu") { "forced" } else { "automatic" }
+    if ($memoryReport.providerSelectionMode -ne $expectedSelectionMode -or $memoryReport.requestedProvider -ne $MemoryProvider) {
+      throw "The report does not identify the requested $expectedSelectionMode $MemoryProvider provider run."
     }
-    if (@("dml", "cpu") -notcontains $memoryReport.selectedProvider) {
+    if ($MemoryProvider -eq "cpu" -and $memoryReport.selectedProvider -ne "cpu") {
+      throw "The forced-CPU run selected '$($memoryReport.selectedProvider)' instead of cpu."
+    }
+    if ($MemoryProvider -eq "auto" -and @("dml", "cpu") -notcontains $memoryReport.selectedProvider) {
       throw "The Windows run selected unexpected provider '$($memoryReport.selectedProvider)'; expected dml or cpu."
     }
     if (-not $memoryReport.selectedProvider -or -not $memoryReport.summary.continuedGrowthBounded) {
@@ -168,8 +186,14 @@ if ($MemoryOnly) {
       throw "The report does not identify all four pinned models."
     }
     foreach ($job in $memoryReport.jobs) {
+      if ($job.requestedDevice -ne $MemoryProvider) {
+        throw "Repetition $($job.repetition) requested '$($job.requestedDevice)' instead of $MemoryProvider."
+      }
       if ($job.resolvedDevice -ne $memoryReport.selectedProvider) {
         throw "The selected provider changed between memory repetitions."
+      }
+      if ($null -eq $job.postReleaseMemory.rss -or $job.postReleaseMemory.rss -le 0) {
+        throw "Repetition $($job.repetition) does not include a valid post-job RSS measurement."
       }
       foreach ($model in $memoryReport.models) {
         $chunkCount = $job.chunkCounts.PSObject.Properties[$model.id].Value
@@ -179,9 +203,9 @@ if ($MemoryOnly) {
       }
     }
 
-    $rssSamples = @($memoryReport.jobs | ForEach-Object { [Math]::Round($_.memory.rss / 1MB, 1) })
+    $rssSamples = @($memoryReport.jobs | ForEach-Object { [Math]::Round($_.postReleaseMemory.rss / 1MB, 1) })
     Write-Host "Windows memory report saved to $resolvedMemoryReportPath"
-    Write-Host "Selected provider: $($memoryReport.selectedProvider)"
+    Write-Host "Provider selection: $($memoryReport.providerSelectionMode) ($($memoryReport.requestedProvider)); selected provider: $($memoryReport.selectedProvider)"
     Write-Host "Post-job RSS (MiB): $($rssSamples -join ' -> ')"
     Write-Host "Continued RSS growth after warm-up: $([Math]::Round($memoryReport.summary.continuedRssGrowthBytes / 1MB, 1)) MiB; bounded: $($memoryReport.summary.continuedGrowthBounded)"
   } finally {
@@ -199,6 +223,11 @@ if ($MemoryOnly) {
       Remove-Item Env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS -ErrorAction SilentlyContinue
     } else {
       $env:WAVEYARD_REAL_ORT_MEMORY_REPETITIONS = $previousMemoryRepetitions
+    }
+    if ($null -eq $previousMemoryProvider) {
+      Remove-Item Env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER -ErrorAction SilentlyContinue
+    } else {
+      $env:WAVEYARD_REAL_ORT_MEMORY_PROVIDER = $previousMemoryProvider
     }
     Pop-Location
   }
