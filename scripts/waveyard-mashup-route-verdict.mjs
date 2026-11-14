@@ -99,7 +99,17 @@ if (codeFailures.length > 0) {
   // Name the failing line: the stack's first application frame.
   const site = [...output.matchAll(/(route\.test\.ts:\d+:\d+)/g)].map((match) => match[1]);
   if (site.length > 0) console.error(`::error::assertion site -> ${[...new Set(site)].slice(0, 3).join(", ")}`);
-  if (unique.length === 0) console.error("::error::assertion -> (no message captured; see route.txt artifact)");
+  if (unique.length === 0) {
+    // Last resort: publish the raw failure block. Extracting "the assertion"
+    // heuristically has already produced one false positive (a stack frame
+    // belonging to swallowed teardown noise), so show the source instead.
+    const start = output.indexOf("not ok 1");
+    const block = start >= 0 ? output.slice(start, start + 4000) : output.slice(-4000);
+    const lines = block.split("\n").filter((line) => line.trim().length > 0);
+    for (const [index, line] of lines.slice(0, 12).entries()) {
+      console.error(`::error::raw[${index}] ${line.trim().slice(0, 800)}`);
+    }
+  }
   failOn(
     `Route acceptance failed ${codeFailures.length} assertion(s). This is a real failure, not the known teardown race.`,
   );
