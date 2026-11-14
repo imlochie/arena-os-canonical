@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   sumInstrumentalStems,
   InstrumentalBedError,
+  planStemComposition,
   type InstrumentalBedStem,
 } from "./mashup-bed";
 import {
@@ -381,5 +382,67 @@ describe("Stem replacement is audible, not just labelled", () => {
       bedDrumsReplaced < bedDrumsLayered / 5,
       `replacement must remove the bed's drums from the render: ${bedDrumsReplaced.toFixed(4)} vs ${bedDrumsLayered.toFixed(4)}`,
     );
+  });
+});
+
+describe("Stem composition fails closed", () => {
+  const base = {
+    stemLayerMode: "replace" as const,
+    requestedLayerStemTypes: ["drums"],
+    bedSeparableStemTypes: ["drums", "bass", "other"],
+    verifiedDonorStemTypes: ["drums"],
+  };
+
+  it("only reports a replacement when both halves are proven", () => {
+    const plan = planStemComposition(base);
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    assert.equal(plan.mode, "replace");
+    assert.deepEqual(plan.omittedBedStemTypes, ["drums"]);
+  });
+
+  it("refuses a replacement against a bed with no separable stems", () => {
+    const plan = planStemComposition({ ...base, bedSeparableStemTypes: [], bedIndivisibleReason: "premixed" });
+    assert.equal(plan.ok, false);
+    if (plan.ok) return;
+    assert.equal(plan.code, "replacement-not-separable");
+  });
+
+  it("refuses when the donor stem is missing, and omits nothing", () => {
+    const plan = planStemComposition({ ...base, verifiedDonorStemTypes: [] });
+    assert.equal(plan.ok, false);
+    if (plan.ok) return;
+    assert.equal(plan.code, "replacement-donor-missing");
+    // The failure must not carry an omission list a caller could act on.
+    assert.equal("omittedBedStemTypes" in plan, false);
+  });
+
+  it("refuses when the bed has no matching stem to remove", () => {
+    const plan = planStemComposition({ ...base, bedSeparableStemTypes: ["bass", "other"] });
+    assert.equal(plan.ok, false);
+    if (plan.ok) return;
+    assert.equal(plan.code, "replacement-bed-stem-missing");
+  });
+
+  it("keeps layering distinct: it requires the donor stem but removes nothing", () => {
+    const plan = planStemComposition({ ...base, stemLayerMode: "layer" });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    assert.equal(plan.mode, "layer");
+    assert.deepEqual(plan.omittedBedStemTypes, []);
+
+    const missing = planStemComposition({ ...base, stemLayerMode: "layer", verifiedDonorStemTypes: [] });
+    assert.equal(missing.ok, false);
+    if (missing.ok) return;
+    assert.equal(missing.code, "replacement-donor-missing");
+  });
+
+  it("reports no composition when nothing was asked for", () => {
+    const plan = planStemComposition({ ...base, requestedLayerStemTypes: [] });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    assert.equal(plan.mode, "none");
+    assert.deepEqual(plan.layerStemTypes, []);
+    assert.deepEqual(plan.omittedBedStemTypes, []);
   });
 });

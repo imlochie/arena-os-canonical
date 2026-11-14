@@ -48,8 +48,10 @@ import { loadSourceProfile } from "@workspace/arena/lib/waveyard/studio/mashup-s
 import {
   INSTRUMENTAL_BED_STEM_TYPES,
   InstrumentalBedError,
+  planStemComposition,
   sumInstrumentalStems,
   type InstrumentalBedStem,
+  type StemCompositionPlan,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import {
   analyseStereoPcm,
@@ -169,6 +171,25 @@ type BedSourceInfo = {
   /** Bed stems omitted because a donor layer replaces them. */
   replacedStemTypes?: string[];
   warning: string;
+};
+
+/**
+ * The composition that was actually rendered, as opposed to the one that was
+ * requested. Every response header and the Studio read this and nothing else,
+ * so a request that could not be honoured cannot be reported as if it had
+ * been.
+ */
+type RenderedComposition = {
+  stemLayerMode: "none" | "replace" | "layer";
+  /** Donor stem types actually in the mix. */
+  layeredStemTypes: string[];
+  /** Bed stem types actually left out of the instrumental sum. */
+  replacedBedStemTypes: string[];
+  /** Bed stem types actually present in the instrumental sum. */
+  bedStemTypes: string[];
+  /** True when the bed is one file/stem and therefore not separable. */
+  bedSeparable: boolean;
+  note: string;
 };
 
 type BedSource = {
@@ -676,6 +697,122 @@ async function inspectBed(projectId: string, bedId: string): Promise<BedSourceIn
   return info;
 }
 
+/**
+ * Decide — and prove — the stem composition before a single sample is summed.
+ *
+ * A donor stem is only "verified" when it was loaded from the donor's one
+ * authoritative completed separation run. A bed stem is only removable when
+ * the bed is synthesized from separate stems rather than being a premixed
+ * file or a single combined `instrumental` stem. Anything less fails closed:
+ * the caller gets an error and nothing is omitted, so no response can claim a
+ * replacement the audio does not contain.
+ */
+async function resolveStemComposition(input: {
+  projectId: string;
+  vocalsId: string;
+  vocalsSeparationJobId: string | undefined;
+  bedSource: BedSource;
+  stemLayerMode: "replace" | "layer";
+  requestedLayerStemTypes: readonly string[];
+}): Promise<
+  | { ok: true; composition: RenderedComposition; donorStems: Map<string, Float32Array> }
+  | { ok: false; status: number; error: string }
+> {
+  const { projectId, bedSource, stemLayerMode, requestedLayerStemTypes } = input;
+  const requested = [...new Set(requestedLayerStemTypes)];
+  if (requested.length === 0) {
+    return {
+      ok: true,
+      composition: {
+        stemLayerMode: "none",
+        layeredStemTypes: [],
+        replacedBedStemTypes: [],
+        bedStemTypes: bedSource.info.includedStemTypes ?? [],
+        bedSeparable: bedSource.stems.length > 0
+          && !(bedSource.stems.length === 1 && bedSource.stems[0]!.stemType === "instrumental"),
+        note: "Default composition: the donor supplies the vocal and the bed keeps its own drums, bass and other.",
+      },
+      donorStems: new Map(),
+    };
+  }
+
+  // 1. Which bed stems could actually be removed?
+  const indivisible = bedSource.stems.length === 0
+    || (bedSource.stems.length === 1 && bedSource.stems[0]!.stemType === "instrumental");
+  const bedSeparableStemTypes = indivisible
+    ? []
+    : bedSource.stems.map((stem) => stem.stemType).filter((type) => INSTRUMENTAL_BED_STEM_TYPES.includes(
+      type as (typeof INSTRUMENTAL_BED_STEM_TYPES)[number],
+    ));
+  const bedIndivisibleReason = bedSource.stems.length === 0
+    ? "The instrumental falls back to its original file (no completed stem separation), so there is no separate drum, bass or other stem to remove. A replacement would only add a second part on top. Run separation on the instrumental first, or choose deliberate layering."
+    : indivisible
+      ? "The instrumental uses a single combined instrumental stem, so it has no separate drum, bass or other stem to remove. A replacement would only add a second part on top. Separate the instrumental into stems first, or choose deliberate layering."
+      : null;
+
+  // 2. Which donor stems genuinely exist in the authoritative run?
+  const donorStems = new Map<string, Float32Array>();
+  const verifiedDonorStemTypes: string[] = [];
+  if (input.vocalsSeparationJobId) {
+    const donorStemRows = await db
+      .select({
+        stemType: stemAssets.stemType,
+        storageKey: stemAssets.storageKey,
+        separationJobId: stemAssets.separationJobId,
+      })
+      .from(stemAssets)
+      .where(
+        and(
+          eq(stemAssets.projectId, projectId),
+          eq(stemAssets.sourceAssetId, input.vocalsId),
+          eq(stemAssets.separationJobId, input.vocalsSeparationJobId),
+        ),
+      );
+    const seenTypes = new Set<string>();
+    for (const stemRow of donorStemRows) {
+      if (stemRow.stemType === "vocals" || !requested.includes(stemRow.stemType)) continue;
+      // Duplicate stem types cannot prove which bytes are authoritative.
+      if (seenTypes.has(stemRow.stemType)) continue;
+      seenTypes.add(stemRow.stemType);
+      // stemPcm returns null unless the bytes decode as 44.1 kHz stereo WAV,
+      // so format validation happens before a stem can count as verified.
+      const pcm = await stemPcm(stemRow.storageKey).catch(() => null);
+      if (pcm && pcm.length > 0) {
+        donorStems.set(`donor_${stemRow.stemType}`, pcm);
+        verifiedDonorStemTypes.push(stemRow.stemType);
+      }
+    }
+  }
+
+  // 3. Fail closed, or commit to an explicit composition.
+  const decision = planStemComposition({
+    stemLayerMode,
+    requestedLayerStemTypes: requested,
+    bedSeparableStemTypes,
+    bedIndivisibleReason,
+    verifiedDonorStemTypes,
+  });
+  if (!decision.ok) {
+    return { ok: false, status: 422, error: decision.error };
+  }
+
+  const replaced = decision.omittedBedStemTypes;
+  return {
+    ok: true,
+    composition: {
+      stemLayerMode: decision.mode === "none" ? "none" : decision.mode,
+      layeredStemTypes: decision.layerStemTypes,
+      replacedBedStemTypes: replaced,
+      bedStemTypes: bedSeparableStemTypes.filter((type) => !replaced.includes(type)),
+      bedSeparable: !indivisible,
+      note: decision.note,
+    },
+    // Only the donor stems that survived verification reach the renderer, so
+    // a requested-but-missing layer can never be silently half-applied.
+    donorStems: new Map([...donorStems].filter(([name]) => decision.layerStemTypes.includes(name.slice("donor_".length)))),
+  };
+}
+
 /** Decode a source's ORIGINAL file (any codec) via the pcm pipeline. */
 async function sourcePcm(projectId: string, sourceAssetId: string, tempDir: string): Promise<{ pcm: Float32Array; checksumSha256: string } | null> {
   const [asset] = await db
@@ -898,9 +1035,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: parsedLayerMode.error }, { status: 400 });
       }
       const stemLayerMode = parsedLayerMode.mode;
-      // In `replace` mode every layered stem type is taken out of the bed, so
-      // exactly one source provides that role.
-      const replacedBedStemTypes = stemLayerMode === "replace" ? layerStemTypes : [];
 
       const [resolvedVocalSource, resolvedBedSource] = await Promise.all([
         findBedSource(projectId, vocalsId),
@@ -1058,6 +1192,58 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           );
         }
 
+        // The saved session must be the arrangement that was rendered.
+        // Resolving the composition here applies the same fail-closed rules as
+        // the render path, so a request that cannot be honoured is refused
+        // instead of persisting a different mashup than the one heard.
+        const saveComposition = await resolveStemComposition({
+          projectId,
+          vocalsId,
+          vocalsSeparationJobId: vocalsStem.separationJobId,
+          bedSource: resolvedBedSource,
+          stemLayerMode,
+          requestedLayerStemTypes: layerStemTypes,
+        });
+        if (!saveComposition.ok) {
+          return Response.json(
+            { error: saveComposition.error, code: "stem-composition-unavailable" },
+            { status: saveComposition.status },
+          );
+        }
+        const composition = saveComposition.composition;
+
+        // Exactly the bed stems the render used: the replaced roles are
+        // omitted, so the reopened session cannot contain the removed drums.
+        const sessionBedStems = resolvedBedSource.stems.filter((stem) =>
+          stem.stemType !== "vocals"
+          && INSTRUMENTAL_BED_STEM_TYPES.includes(stem.stemType as (typeof INSTRUMENTAL_BED_STEM_TYPES)[number])
+          && !composition.replacedBedStemTypes.includes(stem.stemType));
+
+        // The donor's replacing stems become real Studio tracks, so the saved
+        // session carries the arrangement rather than losing it on reopen.
+        const donorReplacementStems = new Map<string, typeof stemAssets.$inferSelect>();
+        if (composition.layeredStemTypes.length > 0 && vocalsStem.separationJobId) {
+          const donorRows = await db.select().from(stemAssets).where(and(
+            eq(stemAssets.projectId, projectId),
+            eq(stemAssets.sourceAssetId, vocalsId),
+            eq(stemAssets.separationJobId, vocalsStem.separationJobId),
+          ));
+          for (const type of composition.layeredStemTypes) {
+            const [row] = donorRows.filter((candidate) => candidate.stemType === type);
+            if (row) donorReplacementStems.set(type, row);
+          }
+          const stillMissing = composition.layeredStemTypes.filter((type) => !donorReplacementStems.has(type));
+          if (stillMissing.length > 0) {
+            return Response.json(
+              {
+                error: `The donor's ${stillMissing.join(", ")} stem is no longer available, so the saved session would not reproduce the rendered replacement. Re-run the render or re-separate the donor.`,
+                code: "stem-composition-unavailable",
+              },
+              { status: 409 },
+            );
+          }
+        }
+
         const [vocalsStemRecord] = await db.select().from(stemAssets)
           .where(eq(stemAssets.id, vocalsStem.id)).limit(1);
         if (!vocalsStemRecord) {
@@ -1108,17 +1294,28 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
 
           let sortOrder = 1;
-          for (const bStem of bedStems) {
-            if (bStem.stemType !== "vocals") {
-              tracksToInsert.push({
-                remixSessionId: remix.id,
-                stemAssetId: bStem.id,
-                name: `${bStem.stemType[0].toUpperCase()}${bStem.stemType.slice(1)} (Bed)`,
-                sortOrder: sortOrder++,
-                volume: 0.8,
-                pan: 0,
-              });
-            }
+          for (const bStem of sessionBedStems) {
+            tracksToInsert.push({
+              remixSessionId: remix.id,
+              stemAssetId: bStem.id,
+              name: `${bStem.stemType[0].toUpperCase()}${bStem.stemType.slice(1)} (Bed)`,
+              sortOrder: sortOrder++,
+              volume: 0.8,
+              pan: 0,
+            });
+          }
+          // Donor replacement stems are part of the arrangement, not an
+          // optional extra: without them the reopened session is a different
+          // (and drumless) mashup.
+          for (const [type, stem] of donorReplacementStems) {
+            tracksToInsert.push({
+              remixSessionId: remix.id,
+              stemAssetId: stem.id,
+              name: `${type[0].toUpperCase()}${type.slice(1)} (Donor ${composition.stemLayerMode === "replace" ? "replacement" : "layer"})`,
+              sortOrder: sortOrder++,
+              volume: 0.8,
+              pan: 0,
+            });
           }
 
           const insertedTracks = tracksToInsert.length ? await tx.insert(remixTracks).values(tracksToInsert).returning() : [];
@@ -1159,8 +1356,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
 
           // Bed clips spanning full duration
-          for (const bStem of bedStems) {
-            if (bStem.stemType !== "vocals" && trackByStemId.has(bStem.id)) {
+          for (const bStem of sessionBedStems) {
+            if (trackByStemId.has(bStem.id)) {
               clipsToInsert.push({
                 remixTrackId: trackByStemId.get(bStem.id)!.id,
                 stemAssetId: bStem.id,
@@ -1175,6 +1372,34 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 beatSnapEnabled: bedGridTrusted,
               });
             }
+          }
+
+          // Donor replacement/layer clips mirror what the renderer does with
+          // them: the stem is trimmed by the phrase's own source offset and
+          // placed at the vocal entry. Keeping those offsets in the persisted
+          // clip is what makes reopen and export reproduce the render.
+          const firstSegment = planned.plan.segments[0];
+          for (const [type, stem] of donorReplacementStems) {
+            const track = trackByStemId.get(stem.id);
+            if (!track) continue;
+            clipsToInsert.push({
+              remixTrackId: track.id,
+              stemAssetId: stem.id,
+              timelineStartMs: firstSegment?.mashupStartMs ?? 0,
+              durationMs: Math.max(1, planned.plan.durationMs - (firstSegment?.mashupStartMs ?? 0)),
+              sourceOffsetMs: firstSegment?.vocalsFromMs ?? 0,
+              gain: 0.8,
+              fadeInMs: 50,
+              fadeOutMs: 150,
+              // The donor's own key/tempo are not re-measured here; the render
+              // applied the session tempo and kept native pitch. Syncing is
+              // therefore left off so the export cannot silently apply a
+              // different transform than the render did.
+              tempoSyncEnabled: false,
+              keySyncEnabled: false,
+              beatSnapEnabled: false,
+            });
+            void type;
           }
 
           const insertedClips = clipsToInsert.length ? await tx.insert(remixClips).values(clipsToInsert).returning() : [];
@@ -1224,6 +1449,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             mashupPlan: {
               engine: planned.plan.engine,
               alignmentStrategy: planned.plan.alignmentStrategy,
+              /**
+               * The composition that was actually saved, recorded next to the
+               * plan so a reopened session can be checked against the render
+               * it came from instead of assuming the request took effect.
+               */
+              stemComposition: {
+                stemLayerMode: composition.stemLayerMode,
+                layeredStemTypes: composition.layeredStemTypes,
+                replacedBedStemTypes: composition.replacedBedStemTypes,
+                bedStemTypes: composition.bedStemTypes,
+                bedSeparable: composition.bedSeparable,
+                note: composition.note,
+              },
               masterBpm: planned.plan.masterBpm,
               vocalsStretchRatio: planned.plan.vocalsStretchRatio,
               vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
@@ -1282,7 +1520,37 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         );
       }
 
-      const bedResult = await loadInstrumentalBed(projectId, bedId, resolvedBedSource, replacedBedStemTypes);
+      // Donor stems are a deliberate composition choice, never an automatic
+      // addition. The default render is: donor vocal over the chosen
+      // instrumental bed's own drums, bass and other.
+      //
+      // Replacement and layering are decided here, once, from verified stems.
+      // If either half of a replacement cannot be proven, the request fails
+      // instead of rendering something the response would misdescribe.
+      const composition = await resolveStemComposition({
+        projectId,
+        vocalsId,
+        vocalsSeparationJobId: vocalsStem?.separationJobId,
+        bedSource: resolvedBedSource,
+        stemLayerMode,
+        requestedLayerStemTypes: layerStemTypes,
+      });
+      if (!composition.ok) {
+        return Response.json(
+          { error: composition.error, code: "stem-composition-unavailable" },
+          { status: composition.status },
+        );
+      }
+      if (composition.composition.stemLayerMode !== "none") {
+        warnings.push(composition.composition.note);
+      }
+
+      const bedResult = await loadInstrumentalBed(
+        projectId,
+        bedId,
+        resolvedBedSource,
+        composition.composition.replacedBedStemTypes,
+      );
       let bedPcm: Float32Array;
       let bedInfo: BedSourceInfo;
       if (bedResult.ok) {
@@ -1297,68 +1565,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         bedInfo = bedResult.info;
       }
 
-      // Donor stems are a deliberate composition choice, never an automatic
-      // addition. The default render is: donor vocal over the chosen
-      // instrumental bed's own drums, bass and other. Extra donor layers are
-      // loaded only for stem types the caller explicitly asked to layer, and
-      // they are offset to the vocal entry inside renderMashup.
-      //
-      // Loading is strictly from the single authoritative completed
-      // separation run of the vocal stem. Pending, failed, cancelled or
-      // superseded runs are excluded and duplicate stem types are rejected
-      // rather than silently overwriting.
-      const complementaryDonorStems = new Map<string, Float32Array>();
-      if (layerStemTypes.length > 0 && vocalsStem?.separationJobId) {
-        try {
-          const donorStemRows = await db
-            .select({
-              stemType: stemAssets.stemType,
-              storageKey: stemAssets.storageKey,
-              separationJobId: stemAssets.separationJobId,
-            })
-            .from(stemAssets)
-            .where(
-              and(
-                eq(stemAssets.projectId, projectId),
-                eq(stemAssets.sourceAssetId, vocalsId),
-                eq(stemAssets.separationJobId, vocalsStem.separationJobId),
-              ),
-            );
-
-          const seenTypes = new Set<string>();
-          for (const stemRow of donorStemRows) {
-            if (stemRow.stemType === "vocals" || !layerStemTypes.includes(stemRow.stemType)) continue;
-            if (seenTypes.has(stemRow.stemType)) {
-              // Reject duplicate stem types rather than silently overwriting
-              continue;
-            }
-            seenTypes.add(stemRow.stemType);
-            const pcm = await stemPcm(stemRow.storageKey);
-            if (pcm && pcm.length > 0) {
-              complementaryDonorStems.set(`donor_${stemRow.stemType}`, pcm);
-            }
-          }
-        } catch {
-          // Fall back gracefully: the explicit request simply does not layer.
-          warnings.push("The requested donor stem layer could not be loaded; the render uses the vocal donor and the instrumental bed only.");
-        }
-        const missing = layerStemTypes.filter((type) => !complementaryDonorStems.has(`donor_${type}`));
-        if (missing.length > 0) {
-          warnings.push(`Requested donor layer(s) ${missing.join(", ")} were not available in the donor's completed separation run; only the vocal was taken from that source.`);
-        }
-        for (const type of layerStemTypes) {
-          if (!complementaryDonorStems.has(`donor_${type}`)) continue;
-          warnings.push(stemLayerMode === "replace"
-            ? `Donor ${type} replaces the bed's ${type} for this render. This is a deliberate replacement requested in the request; there is not yet a measured drum/bass compatibility check behind it.`
-            : `Donor ${type} is layered on top of the bed's own ${type}. Two sources now cover the same role; this is a deliberate choice made in the request, not an automatic match.`);
-        }
-      }
-
       const rendered = renderMashupWithBus(planned.plan, {
         vocals: vocalsPcm,
         bed: bedPcm,
-        stems: complementaryDonorStems.size > 0 ? complementaryDonorStems : undefined,
-        layerStemTypes,
+        stems: composition.donorStems.size > 0 ? composition.donorStems : undefined,
+        layerStemTypes: composition.composition.layeredStemTypes,
         sampleRate: RENDER_SAMPLE_RATE,
       });
       const mixed = rendered.pcm;
@@ -1376,9 +1587,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           ? rendered.mix.postLimit.truePeakDb.toFixed(2)
           : "not-measured",
         "x-waveyard-mix-clipped-regions": String(rendered.mix.postLimit.clippedRegions),
-        "x-waveyard-layer-stems": layerStemTypes.join(","),
-        "x-waveyard-stem-layer-mode": stemLayerMode,
-        "x-waveyard-replaced-bed-stems": replacedBedStemTypes.join(","),
+        "x-waveyard-layer-stems": composition.composition.layeredStemTypes.join(","),
+        "x-waveyard-stem-layer-mode": composition.composition.stemLayerMode,
+        "x-waveyard-replaced-bed-stems": composition.composition.replacedBedStemTypes.join(","),
+        "x-waveyard-bed-separable": String(composition.composition.bedSeparable),
       };
       return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy, renderHeaders);
     }

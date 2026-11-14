@@ -1411,53 +1411,290 @@ test(
     assert.ok(renderResponse.headers.get("x-waveyard-warning") !== null,
       "each render must carry the measured mix levels as an explicit warning entry");
 
-    // An explicit donor layer is a deliberate composition choice: the route
-    // loads exactly the requested stem type and announces it.
-    const layeredResponse = await routeModule.POST(renderRequest("continuous", { layerStemTypes: ["drums"] }), {
-      params: Promise.resolve({ id: project.id }),
-    });
-    assert.equal(layeredResponse.status, 200);
-    assert.equal(layeredResponse.headers.get("x-waveyard-layer-stems"), "drums",
-      "an explicit layer request must be honoured and reported");
-    assert.ok(
-      layeredResponse.headers.get("x-waveyard-warning") !== null,
-      "layering a donor drum track over the bed must be disclosed as a deliberate, unverified combination",
-    );
+    // The synthetic donor has a separated vocal but NO drum stem. Asking for
+    // its drums is therefore a request this route cannot honour, and the old
+    // behaviour — drop the bed's drums on request, find no donor drums, render
+    // a mashup with no drum part at all, and still answer 200 — was the bug.
+    // Both modes now fail closed and say which half is missing.
+    for (const mode of ["replace", "layer", undefined] as const) {
+      const unhonourable = await routeModule.POST(
+        renderRequest("continuous", { layerStemTypes: ["drums"], ...(mode ? { stemLayerMode: mode } : {}) }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(unhonourable.status, 422,
+        `requesting donor drums (${mode ?? "default replace"}) without a donor drum stem must fail closed`);
+      assert.equal(unhonourable.headers.get("x-waveyard-replaced-bed-stems"), null,
+        "a refused request must not report a replacement it did not perform");
+      const body = await unhonourable.json() as { error?: string };
+      assert.match(body.error ?? "", /donor/i,
+        "the refusal must name the missing donor stem so the user can act on it");
+    }
 
-    // Replacement semantics: a donor drum layer removes the bed's drums, so
-    // exactly one drum part is audible. This is the difference between a
-    // replacement and two competing rhythm sections.
-    const replaceResponse = await routeModule.POST(
-      renderRequest("continuous", { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
-      { params: Promise.resolve({ id: project.id }) },
-    );
-    assert.equal(replaceResponse.status, 200);
-    assert.equal(replaceResponse.headers.get("x-waveyard-stem-layer-mode"), "replace");
-    assert.equal(replaceResponse.headers.get("x-waveyard-replaced-bed-stems"), "drums",
-      "a replacing layer must be removed from the bed");
-    const replacedBedStems = (replaceResponse.headers.get("x-waveyard-bed-stems") ?? "")
-      .split(",").filter(Boolean).sort();
-    assert.deepEqual(replacedBedStems, ["bass", "other"],
-      "the bed must no longer carry its own drums when the donor replaces them");
-
-    // Deliberate doubling stays available, and says so.
-    const layerResponse = await routeModule.POST(
-      renderRequest("continuous", { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
-      { params: Promise.resolve({ id: project.id }) },
-    );
-    assert.equal(layerResponse.status, 200);
-    assert.equal(layerResponse.headers.get("x-waveyard-stem-layer-mode"), "layer");
-    assert.equal(layerResponse.headers.get("x-waveyard-replaced-bed-stems"), "");
-    const doubledBedStems = (layerResponse.headers.get("x-waveyard-bed-stems") ?? "")
-      .split(",").filter(Boolean).sort();
-    assert.deepEqual(doubledBedStems, ["bass", "drums", "other"],
-      "explicit layering keeps the bed's drums alongside the donor's");
+    // Positive replacement/layering cases live below, against fixtures whose
+    // donor really has a drum stem and whose bed really has drums to remove.
 
     const badModeResponse = await routeModule.POST(
       renderRequest("continuous", { layerStemTypes: ["drums"], stemLayerMode: "stack" }),
       { params: Promise.resolve({ id: project.id }) },
     );
     assert.equal(badModeResponse.status, 400);
+
+    // ---------------------------------------------------------------------
+    // Fail-closed replacement.
+    //
+    // A replacement is only legal when BOTH halves are provable: the donor's
+    // separable stem exists in its authoritative run, and the bed genuinely
+    // has a separate stem of that role to remove. Otherwise the route used to
+    // remove the bed's drums on request and then report
+    // `x-waveyard-replaced-bed-stems: drums` while the original drums were
+    // still audible — or, with a missing donor, leave no drum part at all.
+    // ---------------------------------------------------------------------
+    const stemAssetIdFor = async (sourceId: string, stemType: string): Promise<string> => {
+      const [row] = await dbModule.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, sourceId),
+        eq(schema.stemAssets.stemType, stemType),
+      ));
+      assert.ok(row, `fixture must have a ${stemType} stem for source ${sourceId}`);
+      return row.id;
+    };
+
+    /** Register an extra source with a completed separation run of its own. */
+    const addFixtureSource = async (
+      label: string,
+      stems: Array<{ stemType: FixtureStemType | "instrumental"; seconds: number }>,
+    ) => {
+      const audioBytes = encodeWav16(tone([440], Math.max(...stems.map((stem) => stem.seconds)), 0.15), RATE);
+      const storageKey = `mashup-fixture/${label}-original.wav`;
+      const filePath = path.join(fixtureRoot, `${label}-original.wav`);
+      await writeFile(filePath, audioBytes);
+      await storage.putFile(storageKey, filePath);
+      const [source] = await dbModule.db.insert(schema.sourceAssets).values({
+        projectId: project.id,
+        originalFilename: `${label}-original.wav`,
+        mimeType: "audio/wav",
+        storageKey,
+        checksumSha256: sha256(audioBytes),
+        durationSeconds: Math.max(...stems.map((stem) => stem.seconds)),
+        sampleRate: RATE,
+        channels: 2,
+        codec: "pcm_s16le",
+        fileSizeBytes: audioBytes.length,
+      }).returning({ id: schema.sourceAssets.id });
+      assert.ok(source);
+      const [job] = await dbModule.db.insert(schema.processingJobs).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        type: "separation",
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-${label}-${randomUUID()}`,
+        model: "test",
+        metadata: JSON.stringify({ sourceChecksumSha256: sha256(audioBytes) }),
+        requestedDevice: "cpu",
+        resolvedDevice: "cpu",
+        completedAt: new Date(),
+      }).returning({ id: schema.processingJobs.id });
+      assert.ok(job);
+      for (const { stemType, seconds } of stems) {
+        const stemWav = encodeWav16(tone([stemType === "drums" ? 260 : stemType === "bass" ? 70 : 110], seconds, 0.1), RATE);
+        const stemStorageKey = `mashup-fixture/${label}-${stemType}.wav`;
+        const stemPath = path.join(fixtureRoot, `${label}-${stemType}.wav`);
+        await writeFile(stemPath, stemWav);
+        await storage.putFile(stemStorageKey, stemPath);
+        await dbModule.db.insert(schema.stemAssets).values({
+          projectId: project.id,
+          sourceAssetId: source.id,
+          separationJobId: job.id,
+          stemType,
+          engine: "demucs",
+          model: "test",
+          modelVersion: "test",
+          storageKey: stemStorageKey,
+          checksumSha256: sha256(stemWav),
+          durationSeconds: seconds,
+          sampleRate: RATE,
+          channels: 2,
+          codec: "wav",
+          format: "wav",
+          fileSizeBytes: stemWav.length,
+        });
+      }
+      await dbModule.db.insert(schema.sourceAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-analysis-${randomUUID()}`,
+        analysisEngine: "test",
+        analysisEngineVersion: "test",
+        sourceChecksumSha256: sha256(audioBytes),
+        bpm: 120,
+        bpmConfidence: 0.9,
+        musicalKey: "C major",
+        keyConfidence: 0.9,
+        beatGrid: JSON.stringify([0, 500, 1000, 1500, 2000, 2500, 3000, 3500]),
+        beatConfidence: 0.9,
+        completedAt: new Date(),
+      });
+      return source.id;
+    };
+
+    // A bed whose separation run produced only a single combined
+    // `instrumental` stem: nothing can be removed from it.
+    const combinedInstrumentalBedId = await addFixtureSource("combined-instrumental-bed", [
+      { stemType: "instrumental", seconds: BED_SECONDS },
+    ]);
+    // A donor with a separated vocal but no drum stem.
+    const donorWithoutDrumsId = await addFixtureSource("donor-without-drums", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+    ]);
+    // A bed with drums and other but no bass stem.
+    const bedWithoutBassId = await addFixtureSource("bed-without-bass", [
+      { stemType: "drums", seconds: BED_SECONDS },
+      { stemType: "other", seconds: BED_SECONDS },
+    ]);
+    // A bed whose separation run produced only a vocal stem, so the bed falls
+    // back to its original premixed file: nothing can be removed from it.
+    const premixedBedId = await addFixtureSource("premixed-bed", [
+      { stemType: "vocals", seconds: BED_SECONDS },
+    ]);
+    // A bed with every stem, a donor with drums: the successful case.
+    const fullBedId = await addFixtureSource("full-bed", [
+      { stemType: "drums", seconds: BED_SECONDS },
+      { stemType: "bass", seconds: BED_SECONDS },
+      { stemType: "other", seconds: BED_SECONDS },
+    ]);
+    const donorWithDrumsId = await addFixtureSource("donor-with-drums", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+      { stemType: "drums", seconds: VOCAL_SECONDS },
+    ]);
+
+    const renderPair = (vocalsId: string, instrumentalId: string, extra: Record<string, unknown>) =>
+      new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "render",
+          vocalsSourceId: vocalsId,
+          instrumentalSourceId: instrumentalId,
+          alignmentStrategy: "continuous",
+          ...extra,
+        }),
+      });
+
+    // (1) Single combined instrumental stem + requested replacement: refuse,
+    // do not pretend, and do not silently layer instead.
+    const combinedBedReplace = await routeModule.POST(
+      renderPair(vocalsSource.id, combinedInstrumentalBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(combinedBedReplace.status, 422,
+      "a replacement against a single combined instrumental stem must be refused, not claimed");
+    const combinedBedReplaceBody = await combinedBedReplace.json() as { error?: string; code?: string };
+    assert.equal(combinedBedReplaceBody.code, "stem-composition-unavailable");
+    assert.match(combinedBedReplaceBody.error ?? "", /instrumental stem|separate/i,
+      "the refusal must say why it cannot remove anything");
+    assert.equal(combinedBedReplace.headers.get("x-waveyard-replaced-bed-stems"), null,
+      "a refused replacement must not emit a replacement header at all");
+
+    // (2) Premixed original-file bed + requested replacement: also refused.
+    // The bed falls back to its original file when its separation run has no
+    // usable instrumental stems, so the original drums are inside that file
+    // and cannot be removed. Reporting a replacement here would be a lie.
+    const premixedReplace = await routeModule.POST(
+      renderPair(donorWithDrumsId, premixedBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(premixedReplace.status, 422,
+      "a replacement against a premixed original-file bed must be refused, not claimed");
+    const premixedReplaceBody = await premixedReplace.json() as { error?: string };
+    assert.match(premixedReplaceBody.error ?? "", /original file|separation/i,
+      "the refusal must explain that the premixed file has no separable stems");
+    assert.equal(premixedReplace.headers.get("x-waveyard-replaced-bed-stems"), null);
+
+    // Layering against the same premixed bed is still allowed — it is an
+    // honest operation — and must say that nothing was removed.
+    const premixedLayer = await routeModule.POST(
+      renderPair(donorWithDrumsId, premixedBedId, { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(premixedLayer.status, 200,
+      "explicit layering does not need a separable bed, so it must still work");
+    assert.equal(premixedLayer.headers.get("x-waveyard-replaced-bed-stems"), "");
+    assert.equal(premixedLayer.headers.get("x-waveyard-bed-separable"), "false");
+
+    // (3) Missing donor replacement stem: the bed's drums must stay.
+    const missingDonor = await routeModule.POST(
+      renderPair(donorWithoutDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(missingDonor.status, 422,
+      "replacement without the donor's stem must fail closed rather than strip the bed");
+    const missingDonorBody = await missingDonor.json() as { error?: string };
+    assert.match(missingDonorBody.error ?? "", /donor/i,
+      "the refusal must name the missing donor stem");
+
+    // (4) Missing matching bed stem: replacing bass in a bed that has no bass.
+    const missingBedStem = await routeModule.POST(
+      renderPair(donorWithDrumsId, bedWithoutBassId, { layerStemTypes: ["bass"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(missingBedStem.status, 422,
+      "replacing a role the bed does not have separately must fail closed");
+    const missingBedStemBody = await missingBedStem.json() as { error?: string };
+    assert.match(missingBedStemBody.error ?? "", /bass/i);
+
+    // (5) Successful replacement with both halves verified.
+    const successfulReplace = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(successfulReplace.status, 200);
+    assert.equal(successfulReplace.headers.get("x-waveyard-stem-layer-mode"), "replace");
+    assert.equal(successfulReplace.headers.get("x-waveyard-replaced-bed-stems"), "drums");
+    assert.equal(successfulReplace.headers.get("x-waveyard-bed-separable"), "true");
+    assert.deepEqual(
+      (successfulReplace.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort(),
+      ["bass", "other"],
+      "the rendered bed must not carry its own drums when the donor replaces them",
+    );
+    const successfulReplaceWav = decodeWav16(new Uint8Array(await successfulReplace.arrayBuffer()));
+    assert.ok(successfulReplaceWav);
+    // The bed's drum tone (260 Hz) must be gone and the donor's drum content
+    // present, measured from the returned WAV rather than from a header.
+    assert.ok(energyAt(successfulReplaceWav!.samples, 260, 0, BED_SECONDS * 1000)
+      < energyAt(successfulReplaceWav!.samples, 70, 0, BED_SECONDS * 1000),
+      "the replaced bed drum tone must not dominate the render");
+
+    // (6) Explicit layering keeps both sources and reports no replacement.
+    const successfulLayer = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(successfulLayer.status, 200);
+    assert.equal(successfulLayer.headers.get("x-waveyard-stem-layer-mode"), "layer");
+    assert.equal(successfulLayer.headers.get("x-waveyard-replaced-bed-stems"), "");
+    assert.deepEqual(
+      (successfulLayer.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort(),
+      ["bass", "drums", "other"],
+      "explicit layering must keep the bed's drums alongside the donor's",
+    );
+
+    // A layering request whose donor stem is missing must also fail closed:
+    // an unhonourable request must not render a different arrangement.
+    const missingLayer = await routeModule.POST(
+      renderPair(donorWithoutDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(missingLayer.status, 422,
+      "layering a donor stem that does not exist must fail rather than render only the bed");
+
+    // fixture helper retained for the Studio persistence assertions below
+    void stemAssetIdFor;
+    void bedWithoutBassId;
 
     // Donor vocals are the donor's default contribution; asking to layer them
     // again is a request error, not a silently ignored field.
@@ -1662,6 +1899,214 @@ test(
       );
     }
 
+    // ---------------------------------------------------------------------
+    // Persistence parity: the saved session must be the rendered arrangement.
+    //
+    // Before this, `action: "save"` inserted every non-vocal bed stem and no
+    // donor stem, so a render with a replaced drum part could be saved as a
+    // session that still contained the bed's original drums and none of the
+    // donor's. Rendering one arrangement and saving another is the failure
+    // this checks for, end to end, through the production routes and the real
+    // export worker.
+    // ---------------------------------------------------------------------
+    {
+      const saveFor = (extra: Record<string, unknown>) => new Request(
+        `http://localhost/api/waveyard/projects/${project.id}/mashup`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: donorWithDrumsId,
+            instrumentalSourceId: fullBedId,
+            alignmentStrategy: "continuous",
+            ...extra,
+          }),
+        },
+      );
+      const donorDrumsStemId = await stemAssetIdFor(donorWithDrumsId, "drums");
+      const donorVocalsStemId = await stemAssetIdFor(donorWithDrumsId, "vocals");
+      const bedDrumsStemId = await stemAssetIdFor(fullBedId, "drums");
+      const bedBassStemId = await stemAssetIdFor(fullBedId, "bass");
+      const bedOtherStemId = await stemAssetIdFor(fullBedId, "other");
+
+      /** The stem types behind one saved session, by source. */
+      const savedProvenance = async (remixId: string) => {
+        const tracks = await dbModule.db.select().from(schema.remixTracks)
+          .where(eq(schema.remixTracks.remixSessionId, remixId));
+        const stems = tracks.length
+          ? await dbModule.db.select({
+            stemAssetId: schema.stemAssets.id,
+            sourceAssetId: schema.stemAssets.sourceAssetId,
+            stemType: schema.stemAssets.stemType,
+          }).from(schema.stemAssets).where(inArray(schema.stemAssets.id, tracks.map((track) => track.stemAssetId)))
+          : [];
+        return {
+          tracks,
+          stems,
+          stemIds: stems.map((stem) => stem.stemAssetId).sort(),
+          typesBySource: (sourceId: string) => stems
+            .filter((stem) => stem.sourceAssetId === sourceId)
+            .map((stem) => stem.stemType).sort(),
+        };
+      };
+
+      // --- Replacement -----------------------------------------------------
+      const replaceRender = await routeModule.POST(
+        renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(replaceRender.status, 200);
+      const renderedReplacePcm = decodeWav16(new Uint8Array(await replaceRender.arrayBuffer()));
+      assert.ok(renderedReplacePcm);
+
+      const replaceSave = await routeModule.POST(
+        saveFor({ layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(replaceSave.status, 201, "a verified replacement must be saveable");
+      const replaceSaveBody = await replaceSave.json() as { remix: { id: string }; version: { id: string } };
+
+      const savedReplace = await savedProvenance(replaceSaveBody.remix.id);
+      assert.deepEqual(savedReplace.typesBySource(fullBedId), ["bass", "other"],
+        "the saved bed must not contain the drums the render replaced");
+      assert.deepEqual(savedReplace.typesBySource(donorWithDrumsId), ["drums", "vocals"],
+        "the saved session must contain the donor's replacing drum stem");
+      assert.ok(savedReplace.stemIds.includes(bedDrumsStemId) === false,
+        "the bed's own drum stem must not be referenced by the saved session at all");
+
+      const [replaceVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, replaceSaveBody.version.id));
+      const replaceSnapshot = JSON.parse(replaceVersion!.snapshot) as {
+        mashupPlan?: { stemComposition?: { stemLayerMode?: string; replacedBedStemTypes?: string[]; layeredStemTypes?: string[] } };
+      };
+      assert.equal(replaceSnapshot.mashupPlan?.stemComposition?.stemLayerMode, "replace",
+        "the persisted snapshot must record the composition that was saved");
+      assert.deepEqual(replaceSnapshot.mashupPlan?.stemComposition?.replacedBedStemTypes, ["drums"]);
+      assert.deepEqual(replaceSnapshot.mashupPlan?.stemComposition?.layeredStemTypes, ["drums"]);
+
+      const replaceClips = savedReplace.tracks.length
+        ? await dbModule.db.select().from(schema.remixClips)
+          .where(inArray(schema.remixClips.remixTrackId, savedReplace.tracks.map((track) => track.id)))
+        : [];
+      const donorDrumClip = replaceClips.find((clip) => clip.stemAssetId === donorDrumsStemId);
+      assert.ok(donorDrumClip, "the donor drum stem must be placed as a real clip");
+      assert.equal(donorDrumClip!.sourceOffsetMs, continuousPlan.segments[0]!.vocalsFromMs,
+        "the donor clip must keep the same phrase-relative source offset the renderer used");
+      assert.equal(donorDrumClip!.timelineStartMs, continuousPlan.segments[0]!.mashupStartMs,
+        "the donor clip must start at the same timeline position the renderer used");
+
+      // Reopen through the production Studio route.
+      const remixRoute = await import("../../../../remixes/[id]/route");
+      const remixParams = { params: Promise.resolve({ id: replaceSaveBody.remix.id }) };
+      const reopenResponse = await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${replaceSaveBody.remix.id}`),
+        remixParams,
+      );
+      assert.equal(reopenResponse.status, 200);
+      const reopenedReplace = await reopenResponse.json() as {
+        remix: { id: string; version: number };
+        tracks: Array<{ id: string; stemAssetId: string; clips: Array<Record<string, unknown>> }>;
+        automation: unknown[];
+      };
+      const reopenedStemIds = reopenedReplace.tracks.map((track) => track.stemAssetId).sort();
+      assert.deepEqual(reopenedStemIds, savedReplace.stemIds,
+        "reopening must return exactly the stems that were saved");
+      assert.ok(reopenedStemIds.includes(donorDrumsStemId), "donor drums survive reopen");
+      assert.ok(!reopenedStemIds.includes(bedDrumsStemId), "bed drums do not come back on reopen");
+
+      // Export the reopened session with the real worker, then measure it.
+      const [replaceExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: replaceSaveBody.remix.id,
+        remixVersionId: replaceSaveBody.version.id,
+        requestedById: (await dbModule.db.select().from(schema.remixSessions)
+          .where(eq(schema.remixSessions.id, replaceSaveBody.remix.id)))[0]!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `replacement-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(replaceExportJob);
+      const exportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await exportWorker.handleExportJob({
+        exportJobId: replaceExportJob.id,
+        projectId: project.id,
+        remixSessionId: replaceSaveBody.remix.id,
+        remixVersionId: replaceSaveBody.version.id,
+        format: "wav",
+      });
+      const [replaceExportAsset] = await dbModule.db.select().from(schema.exportAssets)
+        .where(eq(schema.exportAssets.exportJobId, replaceExportJob.id));
+      assert.ok(replaceExportAsset, "the replaced arrangement must survive the real export worker");
+      const exportMedia = await (await import("../../../../exports/[id]/media/route")).GET(
+        new Request(`http://localhost/api/exports/${replaceExportJob.id}/media`),
+        { params: Promise.resolve({ id: replaceExportJob.id }) },
+      );
+      assert.equal(exportMedia.status, 200);
+      const exportedReplacePcm = decodeWav16(new Uint8Array(await exportMedia.arrayBuffer()));
+      assert.ok(exportedReplacePcm, "the exported replaced session must be a real WAV");
+
+      // The exported session must contain the donor's drum content and not be
+      // dominated by the bed's drum tone, measured from the audio itself.
+      // Measure the exported audio itself: the bed's drum tone must be gone
+      // while the bed's bass is still there, so the export is neither "the
+      // replacement silently didn't happen" nor "the bed was emptied".
+      const exportHead = exportedReplacePcm!.samples.subarray(0, RATE * 2 * 2);
+      const exportedBedDrum = energyAt(exportHead, 260, 0, 2000);
+      const exportedBass = energyAt(exportHead, 70, 0, 2000);
+      assert.ok(exportedBass > 0.001,
+        `the exported session must still contain the bed's bass (${exportedBass})`);
+      assert.ok(exportedBedDrum < exportedBass / 100,
+        `the exported session must not contain the replaced bed drums (${exportedBedDrum} vs bass ${exportedBass})`);
+      // The render and the export are the same arrangement: both must show the
+      // same absence of the bed's drum tone.
+      const renderedBedDrum = energyAt(renderedReplacePcm!.samples.subarray(0, RATE * 2 * 2), 260, 0, 2000);
+      assert.ok(renderedBedDrum < exportedBass / 100,
+        `the render that was saved must also be free of the replaced bed drums (${renderedBedDrum})`);
+      assert.ok(exportedReplacePcm!.frames > 0);
+
+      // --- Explicit layering -----------------------------------------------
+      const layerSave = await routeModule.POST(
+        saveFor({ layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(layerSave.status, 201);
+      const layerSaveBody = await layerSave.json() as { remix: { id: string }; version: { id: string } };
+      const savedLayer = await savedProvenance(layerSaveBody.remix.id);
+      assert.deepEqual(savedLayer.typesBySource(fullBedId), ["bass", "drums", "other"],
+        "explicit layering must keep the bed's drums in the saved session");
+      assert.deepEqual(savedLayer.typesBySource(donorWithDrumsId), ["drums", "vocals"],
+        "explicit layering must also keep the donor's drums");
+      assert.ok(savedLayer.stemIds.includes(bedDrumsStemId), "bed drums remain referenced");
+      assert.ok(savedLayer.stemIds.includes(donorDrumsStemId), "donor drums are referenced too");
+      void [bedBassStemId, bedOtherStemId, donorVocalsStemId];
+
+      // A request the render would refuse must not be saved either: saving is
+      // not a way to persist an arrangement the renderer would not produce.
+      const unhonourableSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: donorWithoutDrumsId,
+            instrumentalSourceId: fullBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(unhonourableSave.status, 422,
+        "a save whose composition cannot be honoured must be refused, not persisted");
+      const sessionCountAfterRefusal = (await dbModule.db.select().from(schema.remixSessions)).length;
+      assert.ok(sessionCountAfterRefusal >= 2);
+    }
+
     const saveRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1673,12 +2118,16 @@ test(
       }),
     });
     if (!realFixture) {
+      // Count before the attempt: earlier acceptance blocks legitimately create
+      // their own sessions, so "no session at all" is not the property under
+      // test — "no session from this refused save" is.
+      const sessionsBeforeRefusal = (await dbModule.db.select().from(schema.remixSessions)).length;
       const unavailableSave = await routeModule.POST(
         saveRequest(),
         { params: Promise.resolve({ id: project.id }) },
       );
       assert.equal(unavailableSave.status, 422, "an editable save refuses an unavailable separated bed");
-      assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, 0,
+      assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, sessionsBeforeRefusal,
         "a refused save does not leave a partial Studio session");
 
       await dbModule.db.update(schema.processingJobs)

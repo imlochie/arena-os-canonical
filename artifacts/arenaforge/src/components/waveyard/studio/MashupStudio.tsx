@@ -162,7 +162,26 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       replacedBedStems: response.headers.get("x-waveyard-replaced-bed-stems")?.split(",").filter(Boolean) ?? [],
     });
   };
+  /**
+   * Composition choice, surfaced explicitly because it changes which audio is
+   * rendered. "replace" removes the bed's matching stem; "layer" keeps both.
+   * It is sent to render, preview and save alike so the saved session cannot
+   * describe a different arrangement than the one heard.
+   */
+  const [layerStemTypes, setLayerStemTypes] = useState<string[]>([]);
+  const [stemLayerMode, setStemLayerMode] = useState<"replace" | "layer">("replace");
+  const compositionPayload = layerStemTypes.length > 0
+    ? { layerStemTypes, stemLayerMode }
+    : {};
   const [savingRemix, setSavingRemix] = useState(false);
+  // A composition change invalidates the previous render: the mix report and
+  // the saved-session claim describe audio that no longer matches the choice.
+  const setComposition = (types: string[], mode: "replace" | "layer") => {
+    setLayerStemTypes(types);
+    setStemLayerMode(mode);
+    setMixReport(null);
+    setSaveSuccess(null);
+  };
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
   const candidateRenderUrlsRef = useRef(new Map<CandidateAlignmentId, string>());
@@ -326,6 +345,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           vocalsSourceId: vocalsId,
           instrumentalSourceId: bedId,
           alignmentStrategy: id,
+          ...compositionPayload,
         }),
       });
       if (sourceGeneration !== sourceGenerationRef.current) return;
@@ -391,6 +411,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           vocalsSourceId: vocalsId,
           instrumentalSourceId: bedId,
           alignmentStrategy: selectedAlignment,
+          ...compositionPayload,
         }),
       });
       const data = await response.json();
@@ -738,6 +759,41 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           {mixReport.clippedRegions ?? "0"} clipped region(s). Measurements, not a quality score.
         </p>
       )}
+
+      <fieldset className="mashup-composition" style={{ fontSize: 13, marginTop: 12 }}>
+        <legend><b>Donor rhythm section</b></legend>
+        <p style={{ margin: "4px 0", opacity: 0.85 }}>
+          Default: the donor supplies the vocal and the bed keeps its own drums, bass and other.
+          Adding a donor stem either replaces the bed&apos;s copy or doubles it — never silently,
+          and never when either half cannot be verified.
+        </p>
+        {(["drums", "bass"] as const).map((stemType) => (
+          <label key={stemType} style={{ marginRight: 12 }}>
+            <input
+              type="checkbox"
+              checked={layerStemTypes.includes(stemType)}
+              onChange={(event) => setComposition(
+                event.target.checked
+                  ? [...layerStemTypes, stemType]
+                  : layerStemTypes.filter((type) => type !== stemType),
+                stemLayerMode,
+              )}
+            />{" "}
+            Donor {stemType}
+          </label>
+        ))}
+        <label style={{ marginLeft: 8 }}>
+          Applying as{" "}
+          <select
+            value={stemLayerMode}
+            disabled={layerStemTypes.length === 0}
+            onChange={(event) => setComposition(layerStemTypes, event.target.value === "layer" ? "layer" : "replace")}
+          >
+            <option value="replace">replace the bed&apos;s {layerStemTypes.join(" and ") || "stem"}</option>
+            <option value="layer">double it on top</option>
+          </select>
+        </label>
+      </fieldset>
 
       {canEdit && (
         <div className="remix-actions mashup-extend">

@@ -228,3 +228,115 @@ export function sumInstrumentalStems(
       "The bed is synthesized from separated stems. Separation is not perfect; residual vocal or instrument leakage may remain.",
   };
 }
+
+// ---------------------------------------------------------------------------
+// Fail-closed stem replacement
+// ---------------------------------------------------------------------------
+
+/**
+ * What a requested `layerStemTypes` list actually becomes for one bed.
+ *
+ * Replacement is only ever allowed to happen when *both* halves are proven:
+ * the donor stem was loaded from the authoritative separation run, and the
+ * bed genuinely carries a separate, removable stem of the same role. A bed
+ * that is one premixed file, or a single combined `instrumental` stem, has no
+ * separable drums to remove — a "replacement" against it can only double the
+ * part or silently do nothing, so it is refused instead of reported.
+ */
+export type StemCompositionPlan =
+  | {
+    ok: true;
+    mode: "none" | "replace" | "layer";
+    /** Donor types that are actually mixed in. */
+    layerStemTypes: string[];
+    /** Bed stem types actually omitted from the instrumental sum. */
+    omittedBedStemTypes: string[];
+    note: string;
+  }
+  | {
+    ok: false;
+    code:
+      | "replacement-not-separable"
+      | "replacement-donor-missing"
+      | "replacement-bed-stem-missing";
+    error: string;
+  };
+
+export function planStemComposition(input: {
+  stemLayerMode: "replace" | "layer";
+  requestedLayerStemTypes: readonly string[];
+  /** What the bed can actually have removed: its separable stem types. */
+  bedSeparableStemTypes: readonly string[];
+  /**
+   * Why the bed is not separable, when it is not. Used to say something
+   * actionable rather than "no".
+   */
+  bedIndivisibleReason?: string | null;
+  /** Donor stem types that were loaded and validated from the one run. */
+  verifiedDonorStemTypes: readonly string[];
+}): StemCompositionPlan {
+  const requested = [...new Set(input.requestedLayerStemTypes)];
+  if (requested.length === 0) {
+    return {
+      ok: true,
+      mode: "none",
+      layerStemTypes: [],
+      omittedBedStemTypes: [],
+      note: "Default composition: the donor supplies the vocal and the bed keeps its own drums, bass and other.",
+    };
+  }
+
+  if (input.stemLayerMode === "layer") {
+    const missing = requested.filter((type) => !input.verifiedDonorStemTypes.includes(type));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        code: "replacement-donor-missing",
+        error: `Layering ${missing.join(", ")} needs the donor's separated ${missing.join(", ")} stem, which was not available in the donor's completed separation run. Nothing was layered.`,
+      };
+    }
+    return {
+      ok: true,
+      mode: "layer",
+      layerStemTypes: requested,
+      omittedBedStemTypes: [],
+      note: `Deliberate doubling: donor ${requested.join(", ")} plays alongside the bed's own ${requested.join(", ")}. Two sources cover the same role.`,
+    };
+  }
+
+  // replace: both halves must be provable before anything is removed.
+  if (input.bedSeparableStemTypes.length === 0) {
+    return {
+      ok: false,
+      code: "replacement-not-separable",
+      error: input.bedIndivisibleReason
+        ?? "This instrumental has no separable drum, bass or other stems, so a replacement cannot remove anything. Choose deliberate layering, or separate the instrumental into stems first.",
+    };
+  }
+
+  const missingDonor = requested.filter((type) => !input.verifiedDonorStemTypes.includes(type));
+  if (missingDonor.length > 0) {
+    return {
+      ok: false,
+      code: "replacement-donor-missing",
+      error: `Replacing the bed's ${missingDonor.join(", ")} needs the donor's separated ${missingDonor.join(", ")} stem, which was not available in the donor's completed separation run. The bed's ${missingDonor.join(", ")} was left in place; nothing was replaced.`,
+    };
+  }
+
+  const missingBed = requested.filter((type) => !input.bedSeparableStemTypes.includes(type));
+  if (missingBed.length > 0) {
+    return {
+      ok: false,
+      code: "replacement-bed-stem-missing",
+      error: `Replacing the bed's ${missingBed.join(", ")} is not possible: this instrumental's separation run has no separate ${missingBed.join(", ")} stem. Nothing was removed.`,
+    };
+  }
+
+  return {
+    ok: true,
+    mode: "replace",
+    layerStemTypes: requested,
+    omittedBedStemTypes: requested,
+    note: `Replacement: donor ${requested.join(", ")} plays, and the bed's own ${requested.join(", ")} is removed so there is one ${requested.join(", ")} part rather than two. This is a deliberate request; no drum/bass compatibility measurement backs it yet.`,
+  };
+}

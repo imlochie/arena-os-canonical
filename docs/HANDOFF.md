@@ -1,6 +1,125 @@
 # Arena handoff — read this first
 
-## Current: measured mashup mix bus and deliberate stem composition (P0/P1)
+## Stem replacement now fails closed, and survives save/reopen/export
+
+Two correctness gaps in the previous commit were real and are now closed. Both
+were found by inspecting the route rather than the renderer, which is where the
+lie lived.
+
+### 1. Replacement could report success without replacing anything
+
+`replacedBedStemTypes` was computed from the *request* before the bed was
+loaded, so a render could answer `x-waveyard-replaced-bed-stems: drums` while
+the original drums were still audible — the bed was a premixed original file or
+a single combined `instrumental` stem and had nothing to remove. With a missing
+donor drum stem the route could also strip the bed's drums and end up with no
+drum part at all.
+
+The decision is now one function, `planStemComposition` in
+`lib/arena/src/lib/waveyard/studio/mashup-bed.ts`, called by
+`resolveStemComposition` in the route. A replacement is legal only when the
+donor stem was loaded from the donor's authoritative completed separation run
+and the bed genuinely has a separate stem of that role. Otherwise the request
+fails with 422 and `code: "stem-composition-unavailable"`, naming the missing
+half. Nothing is omitted on a failed request, and no replacement header is
+emitted (`x-waveyard-replaced-bed-stems` is absent, not empty-with-a-claim).
+Defaults are unchanged: no `layerStemTypes` still means the donor supplies the
+vocal only.
+
+Response headers now describe the composition that was *rendered* — layered
+stems, replaced bed stems, the bed stems actually summed — plus
+`x-waveyard-bed-separable`. `MashupStudio` gained explicit "Donor drums/bass"
+checkboxes with a replace/double selector, sends that choice to render, preview
+and save alike, and clears the previous mix report when the choice changes so a
+stale measurement cannot describe audio that no longer matches.
+
+### 2. Saved sessions dropped the replacement
+
+`action: "save"` inserted every non-vocal bed stem and no donor stem, so a
+render with replaced drums could be saved as a session that still contained the
+bed's drums and none of the donor's. Rendering one arrangement and saving
+another is exactly what the directive forbids.
+
+The save path now resolves the same composition the render would, then:
+
+- excludes the replaced bed stems from the session and from its clips;
+- adds the donor's replacing stems as real Studio tracks with real clips whose
+  `timelineStartMs` and `sourceOffsetMs` match what the renderer used (the
+  phrase's entry and its own source offset); tempo/key sync stay off so the
+  export cannot silently apply a transform the render did not;
+- records `mashupPlan.stemComposition` in the version snapshot;
+- refuses with 422 when the requested composition cannot be honoured, and
+  refuses with 409 if a donor stem disappears between render and save, rather
+  than persisting a session that would not reproduce the render.
+
+### Evidence: the PostgreSQL route test finally executes
+
+The earlier handoff said this test could not run here. That was an environment
+gap, not a fact about the code, and it is now closed. A PostgreSQL 16.2 binary
+was obtained inside the sandbox (`pgserver` wheel on PyPI extracts a
+self-contained manylinux build), and ffmpeg/ffprobe were obtained from PyPI and
+npm. With those on `PATH` / `ARENA_FFMPEG_PATH` / `ARENA_FFPROBE_PATH`:
+
+```
+artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.test.ts
+# tests 1  # pass 1  # fail 0
+```
+
+That single test is a long end-to-end scenario. It now covers, through the
+production routes and the real export worker (`docs/waveyard-route-acceptance-environment.md`
+records how to obtain those binaries in a sandbox without root):
+
+1. a replacement against a single combined instrumental stem → 422, no header;
+2. a replacement against a premixed original-file bed → 422; the matching
+   layering request → 200 with `x-waveyard-bed-separable: false`;
+3. a replacement whose donor has no drum stem → 422 naming the donor;
+4. a replacement of a role the bed does not have separately → 422 naming it;
+5. a verified replacement → 200, bed summed without drums, and the returned WAV
+   measured for the bed drum tone;
+6. explicit layering → 200, both drum sources present;
+7. render → save → inspect persisted tracks and clips → reopen → export, with
+   the bed's drum stem absent from every stage and the donor's present at every
+   stage, plus the exported WAV measured at the drum and bass frequencies;
+8. a save whose composition cannot be honoured → 422 with no session written.
+
+Two earlier assertions in that file had encoded the old bug (`donor has no
+drums … expect 200`); they now assert the fail-closed contract instead. The
+"refused save leaves no partial session" check counts sessions before and after
+rather than requiring the table to be globally empty, which is no longer true
+now that the lifecycle blocks create real sessions.
+
+**Mutation-checked.** Reintroducing either defect makes the suite fail:
+reverting the save-path filter fails at the persisted-stem assertion, and
+restoring the optimistic request-derived replacement fails at the 422
+assertions. Neither test passes by construction.
+
+### Test totals in this checkout
+
+- Mashup/limiter suites: `mashup.test.ts` 41, `mashup-mix-bus.test.ts` 12,
+  `donor-stem-integrity.test.ts` 18 (6 new fail-closed cases),
+  `mashup-full-length.test.ts` 4, `mashup-regression.test.ts` 6,
+  `output-peak-limiter.test.ts` 8 — **89/89 pass**.
+- PostgreSQL route acceptance: **1/1 pass**, not skipped.
+- `tsc` for the API server and ArenaForge report no errors in the changed
+  files. Both packages still report pre-existing `TS7006`/`TS2339` errors in
+  unrelated files (721 and 17 respectively), unchanged by this work.
+- A wider sweep of `lib/arena/src/lib/waveyard/**` gives 1,375 tests with 11
+  failures, all pre-existing and environmental: `DATABASE_URL` is unset for
+  several DB-backed suites, one suite needs a Vite `?worker&url` transform, and
+  the worker-local suites need the ONNX runtime. None touch mashup code.
+
+### Still not established
+
+- **N=0.** No one has listened to any of this. Everything above is measurement.
+- The synth fixtures use distinguishable pure tones; the real Queen/September
+  separated stems are still absent, so no real-song replacement has been
+  rendered or saved here.
+- Layering against a premixed bed is allowed and reported honestly, but no
+  compatibility measurement backs the choice — it remains a deliberate user
+  decision.
+- Phrase-aware arrangement (P2) is still untouched.
+
+## Previous: measured mashup mix bus and deliberate stem composition (P0/P1)
 
 The production mashup render no longer sums a second rhythm section on top of
 the bed and no longer hard-clips. Two concrete defects were fixed at the layer
