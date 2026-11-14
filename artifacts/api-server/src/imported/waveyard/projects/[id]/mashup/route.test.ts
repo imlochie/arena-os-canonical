@@ -1424,6 +1424,41 @@ test(
       "layering a donor drum track over the bed must be disclosed as a deliberate, unverified combination",
     );
 
+    // Replacement semantics: a donor drum layer removes the bed's drums, so
+    // exactly one drum part is audible. This is the difference between a
+    // replacement and two competing rhythm sections.
+    const replaceResponse = await routeModule.POST(
+      renderRequest("continuous", { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(replaceResponse.status, 200);
+    assert.equal(replaceResponse.headers.get("x-waveyard-stem-layer-mode"), "replace");
+    assert.equal(replaceResponse.headers.get("x-waveyard-replaced-bed-stems"), "drums",
+      "a replacing layer must be removed from the bed");
+    const replacedBedStems = (replaceResponse.headers.get("x-waveyard-bed-stems") ?? "")
+      .split(",").filter(Boolean).sort();
+    assert.deepEqual(replacedBedStems, ["bass", "other"],
+      "the bed must no longer carry its own drums when the donor replaces them");
+
+    // Deliberate doubling stays available, and says so.
+    const layerResponse = await routeModule.POST(
+      renderRequest("continuous", { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(layerResponse.status, 200);
+    assert.equal(layerResponse.headers.get("x-waveyard-stem-layer-mode"), "layer");
+    assert.equal(layerResponse.headers.get("x-waveyard-replaced-bed-stems"), "");
+    const doubledBedStems = (layerResponse.headers.get("x-waveyard-bed-stems") ?? "")
+      .split(",").filter(Boolean).sort();
+    assert.deepEqual(doubledBedStems, ["bass", "drums", "other"],
+      "explicit layering keeps the bed's drums alongside the donor's");
+
+    const badModeResponse = await routeModule.POST(
+      renderRequest("continuous", { layerStemTypes: ["drums"], stemLayerMode: "stack" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(badModeResponse.status, 400);
+
     // Donor vocals are the donor's default contribution; asking to layer them
     // again is a request error, not a silently ignored field.
     const invalidLayerResponse = await routeModule.POST(

@@ -143,6 +143,9 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     truePeakDb: string | null;
     layerStems: string[];
     clippedRegions: string | null;
+    /** "replace" removes the bed's matching stem; "layer" keeps both. */
+    stemLayerMode: string | null;
+    replacedBedStems: string[];
   } | null>(null);
 
   const readMixReport = (response: Response) => {
@@ -155,6 +158,8 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       truePeakDb: response.headers.get("x-waveyard-mix-true-peak-db"),
       layerStems: response.headers.get("x-waveyard-layer-stems")?.split(",").filter(Boolean) ?? [],
       clippedRegions: response.headers.get("x-waveyard-mix-clipped-regions"),
+      stemLayerMode: response.headers.get("x-waveyard-stem-layer-mode"),
+      replacedBedStems: response.headers.get("x-waveyard-replaced-bed-stems")?.split(",").filter(Boolean) ?? [],
     });
   };
   const [savingRemix, setSavingRemix] = useState(false);
@@ -718,7 +723,9 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           <b>Composition:</b>{" "}
           {mixReport.layerStems.length === 0
             ? "vocal donor over the bed's own drums, bass and other (no donor rhythm section added)."
-            : `vocal donor over the bed, plus deliberately layered donor ${mixReport.layerStems.join(", ")}.`}
+            : mixReport.stemLayerMode === "layer"
+              ? `vocal donor over the bed, plus deliberately doubled donor ${mixReport.layerStems.join(", ")} (two sources cover the same role).`
+              : `vocal donor over the bed, with donor ${mixReport.layerStems.join(", ")} replacing the bed's ${mixReport.replacedBedStems.length > 0 ? mixReport.replacedBedStems.join(", ") : "matching stems"}.`}
           <br />
           <b>Mix (measured from this render):</b>{" "}
           vocal-to-bed balance {mixReport.balanceDb !== null ? `${mixReport.balanceDb} dB` : "not measurable"}

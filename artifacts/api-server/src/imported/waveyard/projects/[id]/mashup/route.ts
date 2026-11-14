@@ -111,11 +111,20 @@ type MashupBody = {
   instrumentalSourceId?: unknown;
   alignmentStrategy?: unknown;
   /**
-   * Donor stem types the caller deliberately wants layered over the bed
-   * (e.g. `["drums"]`). Absent/empty means the default composition: the
-   * donor supplies only the vocal and the bed keeps its own rhythm section.
+   * Donor stem types the caller deliberately wants brought in (e.g.
+   * `["drums"]`). Absent/empty means the default composition: the donor
+   * supplies only the vocal and the bed keeps its own rhythm section.
    */
   layerStemTypes?: unknown;
+  /**
+   * What a requested donor layer does to the bed's matching stem.
+   *
+   * - `replace` (default): the bed's copy is removed, so there is one rhythm
+   *   section, not two.
+   * - `layer`: keep both deliberately (e.g. a percussion part that complements
+   *   the bed's drums).
+   */
+  stemLayerMode?: unknown;
   sourceAssetId?: unknown;
   sectionLabel?: unknown;
   repeats?: unknown;
@@ -124,6 +133,16 @@ type MashupBody = {
 /** Donor stem types that may ever be layered deliberately. Vocals are the
  *  donor's default contribution and are never accepted here. */
 const LAYERABLE_STEM_TYPES = ["drums", "bass", "other", "guitar", "piano", "percussion"] as const;
+
+type StemLayerMode = "replace" | "layer";
+
+function parseStemLayerMode(value: unknown): { ok: true; mode: StemLayerMode } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, mode: "replace" };
+  if (value !== "replace" && value !== "layer") {
+    return { ok: false, error: "stemLayerMode must be \"replace\" or \"layer\"." };
+  }
+  return { ok: true, mode: value };
+}
 
 function parseLayerStemTypes(value: unknown): { ok: true; types: string[] } | { ok: false; error: string } {
   if (value === undefined || value === null) return { ok: true, types: [] };
@@ -147,6 +166,8 @@ type BedSourceInfo = {
   source: "separated" | "original-fallback";
   separationJobId?: string;
   includedStemTypes?: string[];
+  /** Bed stems omitted because a donor layer replaces them. */
+  replacedStemTypes?: string[];
   warning: string;
 };
 
@@ -597,7 +618,12 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
  * undecodable, or their provenance or exact alignment cannot be established —
  * those must not be silently replaced with the original file.
  */
-async function loadInstrumentalBed(projectId: string, bedId: string, resolvedSource?: BedSource): Promise<BedLoadResult> {
+async function loadInstrumentalBed(
+  projectId: string,
+  bedId: string,
+  resolvedSource?: BedSource,
+  omitStemTypes: readonly string[] = [],
+): Promise<BedLoadResult> {
   const { info, stems } = resolvedSource ?? await findBedSource(projectId, bedId);
   if (info.source === "original-fallback" || stems.length === 0) {
     return { ok: false, info };
@@ -636,8 +662,13 @@ async function loadInstrumentalBed(projectId: string, bedId: string, resolvedSou
     });
   }
 
-  const bed = sumInstrumentalStems(decodedStems);
-  return { ok: true, pcm: bed.pcm, info };
+  const bed = sumInstrumentalStems(decodedStems, { omitStemTypes });
+  const infoWithStems: BedSourceInfo = {
+    ...info,
+    includedStemTypes: bed.includedStemTypes as string[],
+    replacedStemTypes: bed.replacedStemTypes,
+  };
+  return { ok: true, pcm: bed.pcm, info: infoWithStems };
 }
 
 async function inspectBed(projectId: string, bedId: string): Promise<BedSourceInfo> {
@@ -862,6 +893,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: parsedLayers.error }, { status: 400 });
       }
       const layerStemTypes = parsedLayers.types;
+      const parsedLayerMode = parseStemLayerMode(body.stemLayerMode);
+      if (!parsedLayerMode.ok) {
+        return Response.json({ error: parsedLayerMode.error }, { status: 400 });
+      }
+      const stemLayerMode = parsedLayerMode.mode;
+      // In `replace` mode every layered stem type is taken out of the bed, so
+      // exactly one source provides that role.
+      const replacedBedStemTypes = stemLayerMode === "replace" ? layerStemTypes : [];
 
       const [resolvedVocalSource, resolvedBedSource] = await Promise.all([
         findBedSource(projectId, vocalsId),
@@ -1243,7 +1282,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         );
       }
 
-      const bedResult = await loadInstrumentalBed(projectId, bedId, resolvedBedSource);
+      const bedResult = await loadInstrumentalBed(projectId, bedId, resolvedBedSource, replacedBedStemTypes);
       let bedPcm: Float32Array;
       let bedInfo: BedSourceInfo;
       if (bedResult.ok) {
@@ -1309,7 +1348,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         }
         for (const type of layerStemTypes) {
           if (!complementaryDonorStems.has(`donor_${type}`)) continue;
-          warnings.push(`Donor ${type} is layered deliberately on top of the bed's own ${type}; this is a choice made in the request, not an automatic match, and there is no combined-layer compatibility check yet.`);
+          warnings.push(stemLayerMode === "replace"
+            ? `Donor ${type} replaces the bed's ${type} for this render. This is a deliberate replacement requested in the request; there is not yet a measured drum/bass compatibility check behind it.`
+            : `Donor ${type} is layered on top of the bed's own ${type}. Two sources now cover the same role; this is a deliberate choice made in the request, not an automatic match.`);
         }
       }
 
@@ -1336,6 +1377,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           : "not-measured",
         "x-waveyard-mix-clipped-regions": String(rendered.mix.postLimit.clippedRegions),
         "x-waveyard-layer-stems": layerStemTypes.join(","),
+        "x-waveyard-stem-layer-mode": stemLayerMode,
+        "x-waveyard-replaced-bed-stems": replacedBedStemTypes.join(","),
       };
       return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy, renderHeaders);
     }
@@ -1397,6 +1440,9 @@ function wavResponse(
     if (bed.separationJobId) headers.set("x-waveyard-bed-job", bed.separationJobId);
     if (bed.includedStemTypes?.length) {
       headers.set("x-waveyard-bed-stems", bed.includedStemTypes.join(","));
+    }
+    if (bed.replacedStemTypes?.length) {
+      headers.set("x-waveyard-bed-replaced-stems", bed.replacedStemTypes.join(","));
     }
   }
   if (alignmentStrategy) headers.set("x-waveyard-alignment-strategy", alignmentStrategy);

@@ -23,6 +23,7 @@ import {
 } from "./mashup";
 import { MASHUP_MAX_BALANCE_CORRECTION_DB, measurePresentLoudness, planMashupBalance } from "./mashup-mix-bus";
 import { measureLoudness, samplePeak } from "../mixer/meters";
+import { InstrumentalBedError, sumInstrumentalStems } from "./mashup-bed";
 
 const RATE = 44_100;
 
@@ -355,4 +356,115 @@ test("a layered donor stem follows the session tempo map, not just the entry off
   // ±40 ms window, so this cannot pass by accident.
   assert.ok(Math.abs(expectedMs - (entryMs + 500)) > 150,
     "the fixture needs the mapped and unmapped positions to be clearly different");
+});
+
+test("a donor layer starts with the vocal phrase, not with the donor's own source lead-in", () => {
+  // The plan takes its vocal phrase from the middle of the donor source
+  // (vocalsFromMs > 0 means the first usable vocal arrives 2 s in). A donor
+  // drum part cut from the same take therefore also begins 2 s in, and the
+  // layer must begin at the phrase, not 2 s early — the "donor stem starts at
+  // its own zero" failure. The plan's own segments are used unchanged, so this
+  // is the production contract, not a fixture convenience.
+  const vocalProfile = profile({
+    role: "vocals",
+    bpm: 120,
+    bpmConfidence: 0.9,
+    durationMs: 12_000,
+    sections: [section("verse", 0, 12_000)],
+    vocalPhrases: [{ startMs: 2_000, endMs: 10_000, confidence: 0.9 }],
+  });
+  const bedProfile = profile({
+    bpm: 120,
+    bpmConfidence: 0.9,
+    durationMs: 16_000,
+    sections: [section("verse", 0, 16_000)],
+  });
+  const planned = planMashup(vocalProfile, bedProfile);
+  assert.ok(planned.ok);
+  const segment = planned.plan.segments[0]!;
+  // The planner pads a little before the detected phrase; the exact crop does
+  // not matter, only that it is a long way from the donor file's zero.
+  assert.ok(segment.vocalsFromMs > 1_000,
+    `fixture must plan a mid-source vocal phrase, got ${segment.vocalsFromMs} ms`);
+  assert.ok(Math.abs(planned.plan.vocalsStretchRatio - 1) < 1e-6, "no stretch, so placement is the only variable");
+
+  // One click at 0.5 s of donor source time, plus a loud marker at donor
+  // source 0 s that must NOT reach the mix.
+  const donorFrames = Math.round(12 * RATE);
+  const layer = new Float32Array(donorFrames * 2);
+  for (let i = 0; i < 400; i += 1) {
+    const value = 0.9 * Math.sin((Math.PI * i) / 400);
+    layer[i * 2] = value;
+    layer[i * 2 + 1] = value;
+  }
+  // 0.5 s of donor time into the phrase the plan actually crops.
+  const clickStart = Math.round((segment.vocalsFromMs + 500) * (RATE / 1000));
+  for (let i = 0; i < 200; i += 1) {
+    const value = 0.6 * Math.sin((Math.PI * i) / 200);
+    layer[(clickStart + i) * 2] = value;
+    layer[(clickStart + i) * 2 + 1] = value;
+  }
+
+  const rendered = renderMashupWithBus(planned.plan, {
+    vocals: silence(12),
+    bed: silence(16),
+    stems: new Map([["donor_drums", layer]]),
+    layerStemTypes: ["drums"],
+    sampleRate: RATE,
+    mix: { matchVocalLoudness: false, limit: false },
+  });
+
+  const peakBetween = (fromMs: number, toMs: number) => {
+    const from = Math.round((fromMs / 1000) * RATE) * 2;
+    const to = Math.round((toMs / 1000) * RATE) * 2;
+    let peak = 0;
+    for (let i = Math.max(0, from); i < Math.min(rendered.pcm.length, to); i += 1) {
+      peak = Math.max(peak, Math.abs(rendered.pcm[i]!));
+    }
+    return peak;
+  };
+
+  // Donor source 2.5 s is 0.5 s into the phrase, so it lands at the vocal
+  // entry (0 ms here) + 500 ms. The donor's own lead-in at source 0 s is
+  // dropped, so nothing appears at 0 ms.
+  const entryMs = segment.mashupStartMs;
+  // Threshold is well above the 0.05 silence floor and well below the click's
+  // rendered peak, so placement — not level — is what the assertion measures.
+  assert.ok(peakBetween(entryMs + 440, entryMs + 560) > 0.15,
+    "the phrase-relative click lands 500 ms after the vocal entry");
+  assert.ok(peakBetween(0, entryMs + 100) < 0.05,
+    "the donor's own source lead-in must not be prefixed to the phrase");
+});
+
+test("drum replacement leaves exactly one rhythm section, and refuses to leave none", () => {
+  const bedStems = (types: string[]) => types.map((stemType) => ({
+    stemType,
+    sourceAssetId: "source-a",
+    separationJobId: "job-a",
+    startMs: 0,
+    sampleRate: RATE,
+    channels: 2,
+    frames: Math.round(2 * RATE),
+    samples: tone(2, stemType === "bass" ? 60 : 90, 0.3),
+  }));
+
+  const all = ["drums", "bass", "other"];
+  // Default: the bed keeps its own rhythm section.
+  const complete = sumInstrumentalStems(bedStems(all));
+  assert.deepEqual(complete.includedStemTypes, ["drums", "bass", "other"]);
+  assert.deepEqual(complete.replacedStemTypes, []);
+
+  // Replacement: the bed's drums are gone, so the donor's drums are the only
+  // drum part. This is the difference between a replacement and a doubled
+  // rhythm section.
+  const replaced = sumInstrumentalStems(bedStems(all), { omitStemTypes: ["drums"] });
+  assert.deepEqual(replaced.includedStemTypes, ["bass", "other"]);
+  assert.deepEqual(replaced.replacedStemTypes, ["drums"]);
+
+  // A replacement that would remove every bed stem is refused explicitly
+  // rather than rendering a vocal over nothing.
+  assert.throws(
+    () => sumInstrumentalStems(bedStems(all), { omitStemTypes: all }),
+    (error: unknown) => error instanceof InstrumentalBedError && error.code === "all-stems-replaced",
+  );
 });

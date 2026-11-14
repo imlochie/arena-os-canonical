@@ -9,6 +9,7 @@ import {
 import {
   planMashup,
   renderMashup,
+  renderMashupWithBus,
   type MashupSourceProfile,
 } from "./mashup";
 
@@ -293,5 +294,92 @@ describe("Agent B Independent Regression Tests: Measurable Signal & Route Invari
       }
     }
     assert.equal(filteredRows.length, 1);
+  });
+});
+
+/** Energy at one frequency, measured from the rendered PCM itself. */
+function bandEnergy(pcm: Float32Array, hz: number, rate = RATE): number {
+  const n = Math.min(pcm.length / 2, rate);
+  const w = (2 * Math.PI * hz) / rate;
+  const coeff = 2 * Math.cos(w);
+  let s1 = 0;
+  let s2 = 0;
+  for (let i = 0; i < n; i += 1) {
+    const s0 = pcm[i * 2] + coeff * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  return Math.sqrt(s1 * s1 + s2 * s2 - coeff * s1 * s2) / n;
+}
+
+describe("Stem replacement is audible, not just labelled", () => {
+  it("removes the bed's drum energy while a deliberate layer keeps both", () => {
+    const drums = { ...makeStem("drums"), samples: createStereoPcm(5, 200, 0.4) };
+    const bass = { ...makeStem("bass"), samples: createStereoPcm(5, 60, 0.4) };
+
+    const doubled = sumInstrumentalStems([drums, bass]);
+    const replaced = sumInstrumentalStems([drums, bass], { omitStemTypes: ["drums"] });
+
+    const drumsInDoubled = bandEnergy(doubled.pcm, 200);
+    const drumsInReplaced = bandEnergy(replaced.pcm, 200);
+    const bassInDoubled = bandEnergy(doubled.pcm, 60);
+    const bassInReplaced = bandEnergy(replaced.pcm, 60);
+
+    assert.ok(drumsInDoubled > 0.05, `expected audible bed drums, got ${drumsInDoubled.toFixed(4)}`);
+    assert.ok(
+      drumsInReplaced < drumsInDoubled / 20,
+      `replaced bed lost its drums: ${drumsInReplaced.toFixed(4)} vs ${drumsInDoubled.toFixed(4)}`,
+    );
+    // The rest of the bed survives the replacement untouched.
+    assert.ok(
+      Math.abs(bassInReplaced - bassInDoubled) < bassInDoubled * 0.01,
+      "bass should be bit-for-bit unaffected by a drum replacement",
+    );
+  });
+
+  it("renders one rhythm section, not two, when the donor replaces the bed's drums", () => {
+    const vocalProfile: MashupSourceProfile = {
+      role: "vocals", bpm: 120, bpmConfidence: 0.9,
+      musicalKey: "C major", keyConfidence: 0.9,
+      durationMs: 8_000, sections: [{ label: "verse", startMs: 0, endMs: 8_000 }],
+    };
+    const bedProfile: MashupSourceProfile = {
+      role: "instrumental", bpm: 120, bpmConfidence: 0.9,
+      musicalKey: "C major", keyConfidence: 0.9,
+      durationMs: 8_000, sections: [{ label: "verse", startMs: 0, endMs: 8_000 }],
+    };
+    const plan = planMashup(vocalProfile, bedProfile);
+    assert.ok(plan.ok);
+
+    const bedDrums = { ...makeStem("drums"), frames: 8 * RATE, samples: createStereoPcm(8, 200, 0.35) };
+    const bedBass = { ...makeStem("bass"), frames: 8 * RATE, samples: createStereoPcm(8, 60, 0.35) };
+    const donorDrums = createStereoPcm(8, 500, 0.3);
+    const vocals = createStereoPcm(8, 440, 0.35);
+
+    const render = (omit: string[]) => {
+      const bed = sumInstrumentalStems([bedDrums, bedBass], { omitStemTypes: omit });
+      return renderMashupWithBus(plan.plan, {
+        vocals,
+        bed: bed.pcm,
+        stems: new Map([["donor_drums", donorDrums]]),
+        layerStemTypes: ["drums"],
+        sampleRate: RATE,
+        mix: { limit: false },
+      }).pcm;
+    };
+
+    const replaceMix = render(["drums"]);
+    const layerMix = render([]);
+
+    // The donor drum part is present in both, so the difference is the bed's
+    // own drum layer and nothing else.
+    assert.ok(bandEnergy(replaceMix, 500) > 0.005, "donor drums must be audible in both modes");
+    assert.ok(bandEnergy(layerMix, 500) > 0.005, "donor drums must be audible in both modes");
+    const bedDrumsReplaced = bandEnergy(replaceMix, 200);
+    const bedDrumsLayered = bandEnergy(layerMix, 200);
+    assert.ok(
+      bedDrumsReplaced < bedDrumsLayered / 5,
+      `replacement must remove the bed's drums from the render: ${bedDrumsReplaced.toFixed(4)} vs ${bedDrumsLayered.toFixed(4)}`,
+    );
   });
 });

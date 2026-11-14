@@ -51,6 +51,8 @@ export type InstrumentalBed = {
   frames: number;
   includedStemTypes: InstrumentalBedStemType[];
   excludedStemTypes: string[];
+  /** Bed stem types deliberately omitted because a donor layer replaces them. */
+  replacedStemTypes: string[];
   /** Gain actually applied to the summed bed (headroom + peak safety). */
   appliedGain: number;
   peak: number;
@@ -80,7 +82,21 @@ const BED_STEM_TYPE_SET = new Set<string>(INSTRUMENTAL_BED_STEM_TYPES);
  * Throws InstrumentalBedError when provenance or exact alignment cannot be
  * established. Never silently combines stems from different runs or formats.
  */
-export function sumInstrumentalStems(stems: readonly InstrumentalBedStem[]): InstrumentalBed {
+export function sumInstrumentalStems(
+  stems: readonly InstrumentalBedStem[],
+  options: {
+    /**
+     * Bed stem types to *omit* because a donor layer is replacing them.
+     *
+     * This is the difference between a replacement and a doubled section: if
+     * the donor's drums are layered while the bed keeps its own drums, two
+     * complete rhythm sections play at once, which is exactly the "chaotic,
+     * not deliberately produced" failure. Replacement drops the bed's copy.
+     */
+    omitStemTypes?: readonly string[];
+  } = {},
+): InstrumentalBed {
+  const omit = new Set(options.omitStemTypes ?? []);
   if (stems.length === 0) {
     throw new InstrumentalBedError(
       "no-stems",
@@ -88,7 +104,12 @@ export function sumInstrumentalStems(stems: readonly InstrumentalBedStem[]): Ins
     );
   }
 
-  const included = stems.filter((stem) => BED_STEM_TYPE_SET.has(stem.stemType));
+  const included = stems.filter((stem) => BED_STEM_TYPE_SET.has(stem.stemType) && !omit.has(stem.stemType));
+  const replacedStemTypes = [...new Set(
+    stems
+      .filter((stem) => BED_STEM_TYPE_SET.has(stem.stemType) && omit.has(stem.stemType))
+      .map((stem) => stem.stemType),
+  )];
   const excludedStemTypes = [...new Set(
     stems
       .filter((stem) => !BED_STEM_TYPE_SET.has(stem.stemType))
@@ -97,8 +118,10 @@ export function sumInstrumentalStems(stems: readonly InstrumentalBedStem[]): Ins
 
   if (included.length === 0) {
     throw new InstrumentalBedError(
-      "no-instrumental-stems",
-      "The separation run contains no instrumental stems (only vocals or unsupported stem types).",
+      replacedStemTypes.length > 0 ? "all-stems-replaced" : "no-instrumental-stems",
+      replacedStemTypes.length > 0
+        ? `Every instrumental bed stem (${replacedStemTypes.join(", ")}) was replaced by a donor layer, leaving no bed to place the vocal over.`
+        : "The separation run contains no instrumental stems (only vocals or unsupported stem types).",
     );
   }
 
@@ -198,6 +221,7 @@ export function sumInstrumentalStems(stems: readonly InstrumentalBedStem[]): Ins
     frames,
     includedStemTypes: included.map((stem) => stem.stemType as InstrumentalBedStemType),
     excludedStemTypes,
+    replacedStemTypes,
     appliedGain,
     peak,
     warning:

@@ -2656,22 +2656,34 @@ export function renderMashupWithBus(
   // Deliberately layered donor stems only. Everything else in the donor's
   // separation run stays out of the mix; the bed already carries those roles.
   const layerTypes = new Set((input.layerStemTypes ?? []).map((type) => String(type)));
-  const preparedStems: Array<{ type: string; pcm: StereoBuffer; offsetFrames: number }> = [];
+  const preparedStems: Array<{ type: string; pcm: StereoBuffer; offsetFrames: number; sourceLeadMs: number }> = [];
   if (input.stems && layerTypes.size > 0) {
-    const firstSegment = plan.segments[0];
     for (const [stemName, rawStemBuffer] of input.stems) {
       if (!stemName.startsWith("donor_")) continue;
       const type = stemName.slice("donor_".length);
       if (!layerTypes.has(type)) continue;
+      // A donor stem must be musically co-located with the vocal it
+      // accompanies. Two corrections, not one:
+      //
+      //   1. the donor's *own* source offset is dropped, so the stem starts
+      //      where the vocal phrase starts rather than at its file's timeline
+      //      zero (which for a late-entering part is silence or the wrong bar);
+      //   2. the remaining audio follows the session tempo map.
+      //
+      // Without (1) a late-entering phrase drags 2.5 s of donor instrumental in
+      // ahead of it; without (2) the layer drifts against the bed within a bar.
+      const entry = plan.segments[0];
+      const sourceLeadFrames = Math.round(((entry?.vocalsFromMs ?? 0) / 1000) * sampleRate) * 2;
+      const trimmed = sourceLeadFrames > 0 && sourceLeadFrames < rawStemBuffer.length
+        ? rawStemBuffer.subarray(sourceLeadFrames)
+        : rawStemBuffer;
       // Instrumental donor stems keep their native pitch. They follow the
       // session tempo like the bed does.
       const pcm = Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6
-        ? timeStretch(rawStemBuffer, plan.vocalsStretchRatio, sampleRate)
-        : Float32Array.from(rawStemBuffer);
-      // A layered donor stem must be musically co-located with the vocal it
-      // accompanies, not with timeline zero.
-      const offsetFrames = Math.max(0, Math.round(((firstSegment?.mashupStartMs ?? 0) / 1000) * sampleRate));
-      preparedStems.push({ type, pcm, offsetFrames });
+        ? timeStretch(trimmed, plan.vocalsStretchRatio, sampleRate)
+        : Float32Array.from(trimmed);
+      const offsetFrames = Math.max(0, Math.round(((entry?.mashupStartMs ?? 0) / 1000) * sampleRate));
+      preparedStems.push({ type, pcm, offsetFrames, sourceLeadMs: (entry?.vocalsFromMs ?? 0) });
     }
   }
 

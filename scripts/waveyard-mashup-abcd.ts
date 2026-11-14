@@ -33,8 +33,17 @@
  *                "sections": [{ "label": "chorus", "startMs": 0, "endMs": 60000 }] },
  *   "strategy": "continuous",
  *   "layerStemTypes": [],
- *   "donorStems": { "drums": "queen-drums.wav" }
+ *   "donorStems": { "drums": "queen-drums.wav" },
+ *   "bedStems": { "drums": "sept-drums.wav", "bass": "sept-bass.wav", "other": "sept-other.wav" },
+ *   "stemLayerMode": "replace"
  * }
+ *
+ * `bedStems` is optional. When present the bed is summed from the separated
+ * bed stems instead of read as one premixed file, which is what makes
+ * `stemLayerMode: "replace"` an actual audible replacement: the bed's own
+ * drums are omitted from the sum so the donor's drums are not doubled by a
+ * second rhythm section. Without `bedStems` there is nothing to omit and a
+ * replacement is reported as unsatisfiable rather than pretended.
  *
  * `sections` are optional but strongly affect the plan; the planner never
  * invents semantic labels. No file here is committed: the outputs are build
@@ -56,6 +65,10 @@ import {
 } from "../lib/arena/src/lib/waveyard/studio/mashup-mix-bus.ts";
 import { pitchShift, timeStretch, type TimeStretchMapPoint } from "../lib/arena/src/lib/waveyard/elastic.ts";
 import { decodeWav16, encodeWav16 } from "../lib/arena/src/lib/waveyard/mixer/synth.ts";
+import {
+  sumInstrumentalStems,
+  type InstrumentalBedStem,
+} from "../lib/arena/src/lib/waveyard/studio/mashup-bed.ts";
 import { clippedRegions, measureLoudness, samplePeak, truePeakDb } from "../lib/arena/src/lib/waveyard/mixer/meters.ts";
 
 const RATE = 44_100;
@@ -82,6 +95,10 @@ type Manifest = {
   strategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware";
   layerStemTypes?: string[];
   donorStems?: Record<string, string>;
+  /** Separated bed stems; enables real replacement instead of doubling. */
+  bedStems?: Record<string, string>;
+  /** "replace" (default) removes the bed's matching stem; "layer" doubles it. */
+  stemLayerMode?: "replace" | "layer";
   outputSeconds?: number;
 };
 
@@ -148,10 +165,19 @@ function renderLegacyComposition(
      * not isolated.
      */
     clamp?: boolean;
+    /**
+     * Vocal level applied during composition. The legacy renderer never did
+     * this by itself — that is precisely the old behaviour — but a controlled
+     * "mix only" render has to apply the same loudness match the production
+     * bus applies, or C is just A with a different limiter and the comparison
+     * silently measures nothing.
+     */
+    vocalGainDb?: number;
   },
 ): Float32Array {
   const totalFrames = Math.max(1, Math.round((plan.durationMs / 1000) * RATE));
   const out = new Float32Array(totalFrames * 2);
+  const vocalGain = 10 ** ((input.vocalGainDb ?? 0) / 20);
   const prepared = plan.segments.map((segment) => {
     const fromFrame = Math.max(0, Math.round((segment.vocalsFromMs / 1000) * RATE) * 2);
     const toFrame = Math.min(input.vocals.length, Math.max(fromFrame, Math.round((segment.vocalsToMs / 1000) * RATE) * 2));
@@ -198,8 +224,8 @@ function renderLegacyComposition(
       if (gain <= 0) continue;
       const vocalFrame = Math.round(((atMs - segment.mashupStartMs) / 1000) * RATE);
       if (vocalFrame < 0 || vocalFrame * 2 + 1 >= pcm.length) continue;
-      left += pcm[vocalFrame * 2]! * gain;
-      right += pcm[vocalFrame * 2 + 1]! * gain;
+      left += pcm[vocalFrame * 2]! * gain * vocalGain;
+      right += pcm[vocalFrame * 2 + 1]! * gain * vocalGain;
     }
     for (const stem of legacyStems) {
       if (frame * 2 + 1 < stem.length) {
@@ -231,10 +257,18 @@ function renderCorrectedCompositionOldMix(
     donorStems: Map<string, Float32Array>;
     layerStemTypes: readonly string[];
     clamp?: boolean;
+    /**
+     * Vocal level applied *during composition*, so the mix comparison is a
+     * real loudness match and not just a report of one. Both composition
+     * renderers accept it, which keeps composition placement identical
+     * between "old mix" and "corrected mix".
+     */
+    vocalGainDb?: number;
   },
 ): Float32Array {
   const totalFrames = Math.max(1, Math.round((plan.durationMs / 1000) * RATE));
   const out = new Float32Array(totalFrames * 2);
+  const vocalGain = 10 ** ((input.vocalGainDb ?? 0) / 20);
   const prepared = plan.segments.map((segment) => {
     const fromFrame = Math.max(0, Math.round((segment.vocalsFromMs / 1000) * RATE) * 2);
     const toFrame = Math.min(input.vocals.length, Math.max(fromFrame, Math.round((segment.vocalsToMs / 1000) * RATE) * 2));
@@ -249,9 +283,15 @@ function renderCorrectedCompositionOldMix(
   for (const type of input.layerStemTypes) {
     const buffer = input.donorStems.get(type);
     if (!buffer) continue;
+    // Mirrors renderMashupWithBus: drop the donor's own source lead-in so the
+    // layer starts with the vocal phrase, then follow the session tempo.
+    const sourceLeadFrames = Math.round(((firstSegment?.vocalsFromMs ?? 0) / 1000) * RATE) * 2;
+    const trimmed = sourceLeadFrames > 0 && sourceLeadFrames < buffer.length
+      ? buffer.subarray(sourceLeadFrames)
+      : buffer;
     layers.push(Math.abs(plan.vocalsStretchRatio - 1) > 1e-6
-      ? timeStretch(buffer, plan.vocalsStretchRatio, RATE)
-      : Float32Array.from(buffer));
+      ? timeStretch(trimmed, plan.vocalsStretchRatio, RATE)
+      : Float32Array.from(trimmed));
   }
   const bedFrames = Math.min(totalFrames, Math.floor(input.bed.length / 2));
   for (let frame = 0; frame < totalFrames; frame += 1) {
@@ -268,8 +308,8 @@ function renderCorrectedCompositionOldMix(
       if (gain <= 0) continue;
       const vocalFrame = Math.round(((atMs - segment.mashupStartMs) / 1000) * RATE);
       if (vocalFrame < 0 || vocalFrame * 2 + 1 >= pcm.length) continue;
-      left += pcm[vocalFrame * 2]! * gain;
-      right += pcm[vocalFrame * 2 + 1]! * gain;
+      left += pcm[vocalFrame * 2]! * gain * vocalGain;
+      right += pcm[vocalFrame * 2 + 1]! * gain * vocalGain;
     }
     for (const stem of layers) {
       const stemFrame = frame - offsetFrames;
@@ -340,12 +380,68 @@ function main() {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
 
   const vocalsPcm = readWav(resolve(root, manifest.vocals.path));
-  const bedPcm = readWav(resolve(root, manifest.bed.path));
+  const stemLayerMode = manifest.stemLayerMode ?? "replace";
+  const layerStemTypesForBed = manifest.layerStemTypes ?? [];
+
+  // The bed is either one premixed file or a real stem sum, depending on what
+  // the manifest supplies. Only the stem sum can honour a replacement.
+  let bedPcm: Float32Array;
+  let bedComposition: {
+    mode: "premixed-file" | "separated-stem-sum";
+    includedStemTypes: string[] | null;
+    replacedStemTypes: string[];
+    appliedGain: number | null;
+    note: string | null;
+  };
+  if (manifest.bedStems && Object.keys(manifest.bedStems).length > 0) {
+    const stems: InstrumentalBedStem[] = Object.entries(manifest.bedStems).map(([stemType, path]) => {
+      const resolved = resolve(root, path);
+      const pcm = readWav(resolved);
+      return {
+        stemType,
+        // One separation run is asserted, not inferred: every bed stem here
+        // comes from the same manifest entry and must be the same source.
+        sourceAssetId: sha256(readFileSync(resolve(root, manifest.bed.path))).slice(0, 16),
+        separationJobId: "abcd-manifest-bed-stems",
+        startMs: 0,
+        sampleRate: RATE,
+        channels: 2,
+        frames: pcm.length / 2,
+        samples: pcm,
+      };
+    });
+    const omit = stemLayerMode === "replace" ? layerStemTypesForBed : [];
+    const bed = sumInstrumentalStems(stems, { omitStemTypes: omit });
+    bedPcm = bed.pcm;
+    bedComposition = {
+      mode: "separated-stem-sum",
+      includedStemTypes: bed.includedStemTypes,
+      replacedStemTypes: bed.replacedStemTypes,
+      appliedGain: bed.appliedGain,
+      note: bed.replacedStemTypes.length > 0
+        ? `Bed stems ${bed.replacedStemTypes.join(", ")} were omitted because the donor replaces them.`
+        : null,
+    };
+  } else {
+    bedPcm = readWav(resolve(root, manifest.bed.path));
+    bedComposition = {
+      mode: "premixed-file",
+      includedStemTypes: null,
+      replacedStemTypes: [],
+      appliedGain: null,
+      note: stemLayerMode === "layer"
+        ? null
+        : layerStemTypesForBed.length > 0
+          ? `stemLayerMode is "replace" but no bedStems were supplied, so the bed's ${layerStemTypesForBed.join(", ")} could not be removed; the render doubles them. Supply bedStems for a real replacement.`
+          : null,
+    };
+  }
+  if (bedComposition.note) console.warn(`[abcd] ${bedComposition.note}`);
   const donorStems = new Map<string, Float32Array>();
   for (const [type, path] of Object.entries(manifest.donorStems ?? {})) {
     donorStems.set(type, readWav(resolve(root, path)));
   }
-  const layerStemTypes = manifest.layerStemTypes ?? [];
+  const layerStemTypes = layerStemTypesForBed;
 
   const vocals = toProfile(manifest.vocals, "vocals", vocalsPcm);
   const bed = toProfile(manifest.bed, "instrumental", bedPcm);
@@ -392,6 +488,11 @@ function main() {
     },
   ];
 
+  // The loudness balance is part of the mix, so it is applied while
+  // composing — that is the only way "corrected mix" is audible in C and D
+  // rather than a number in a report.
+  const balancePlan = planMashupBalance({ vocals: vocalsPcm, bed: bedPcm, sampleRate: RATE });
+
   // The mix bus only exists once: C and D go through the real production path
   // by asking the renderer for the corrected composition and re-running the
   // legacy composition through the same bus.
@@ -399,13 +500,14 @@ function main() {
     if (variant.mix !== "corrected") continue;
     // Unclamped on purpose: the corrected bus must receive the real sum so it
     // can attenuate an overshoot instead of inheriting a clamp.
+    const vocalGainDb = balancePlan.vocalGainDb;
     const summed = variant.composition === "legacy"
-      ? renderLegacyComposition(plan, { vocals: vocalsPcm, bed: bedPcm, donorStems, layerStemTypes, clamp: false })
-      : renderCorrectedCompositionOldMix(plan, { vocals: vocalsPcm, bed: bedPcm, donorStems, layerStemTypes, clamp: false });
+      ? renderLegacyComposition(plan, { vocals: vocalsPcm, bed: bedPcm, donorStems, layerStemTypes, clamp: false, vocalGainDb })
+      : renderCorrectedCompositionOldMix(plan, { vocals: vocalsPcm, bed: bedPcm, donorStems, layerStemTypes, clamp: false, vocalGainDb });
     const finished = finishMashupMix({ summed, sampleRate: RATE });
     variant.pcm = finished.pcm;
     variant.mixReport = finished;
-    variant.balance = planMashupBalance({ vocals: vocalsPcm, bed: bedPcm, sampleRate: RATE });
+    variant.balance = balancePlan;
   }
 
   const finishedVariants = variants.filter((variant) => variant.pcm !== null) as Array<
@@ -427,6 +529,8 @@ function main() {
         { path, sha256: sha256(readFileSync(resolve(root, path))) },
       ])),
       layerStemTypes,
+      stemLayerMode,
+      bedComposition,
       strategy: plan.alignmentStrategy,
     },
     plan: {
