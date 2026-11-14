@@ -3415,6 +3415,21 @@ test(
       /* already closed */
     }
     if (postgresProcess && postgresProcess.exitCode === null) {
+      if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+        // Name the connections that outlive pool.end(). Without this, a
+        // teardown race is indistinguishable from a real route failure in CI.
+        try {
+          const probe = new Client({ connectionString: `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}` });
+          await probe.connect();
+          const live = await probe.query(
+            "select pid, application_name, state, backend_start from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() order by backend_start",
+          );
+          console.error(`TEARDOWN_DIAGNOSTICS live_backends=${JSON.stringify(live.rows)}`);
+          await probe.end();
+        } catch (error) {
+          console.error(`TEARDOWN_DIAGNOSTICS probe_failed=${String(error)}`);
+        }
+      }
       spawnSync(postgresBinaries.pgCtl!, ["-D", dataDir, "-m", "fast", "-w", "-t", "20", "stop"], { timeout: 30_000 });
       postgresProcess.kill();
       postgresProcess = undefined;

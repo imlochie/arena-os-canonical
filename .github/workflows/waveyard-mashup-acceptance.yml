@@ -124,6 +124,7 @@ jobs:
         shell: bash
         env:
           DATABASE_URL: postgres://unit@127.0.0.1:1/unit
+          WAVEYARD_TEARDOWN_DIAGNOSTICS: "1"
         run: |
           set -uo pipefail
           evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
