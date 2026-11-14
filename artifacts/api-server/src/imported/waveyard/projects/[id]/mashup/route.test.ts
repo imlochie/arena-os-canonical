@@ -193,6 +193,16 @@ function sha256(bytes: Uint8Array): string {
 }
 
 const hasRealMashupFixture = Boolean(process.env.WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST?.trim());
+// CI runs this suite where a connection dropped by cluster shutdown surfaces
+// as an uncaughtException with no attributable site. Rather than guess, record
+// the origin when the environment asks for it; the log is the evidence.
+if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+  process.on("uncaughtException", (error: unknown) => {
+    const trace = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    console.error(`UNCAUGHT_DIAGNOSTICS ${trace.split("\n").slice(0, 12).join(" | ")}`);
+  });
+}
+
 test(
   hasRealMashupFixture
     ? "Waveyard real-song mashup persists, reopens, edits, restores, and exports"
