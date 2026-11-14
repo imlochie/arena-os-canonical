@@ -322,3 +322,73 @@ musical evidence, so a track whose true tempo is the *higher* octave will be
 placed a half-time low. That is a defensible default, not a solved problem, and
 it needs real recordings to evaluate. No real audio has been analysed yet; the
 corpus is CC-licensed material to be sourced next. Listener count remains N=0.
+
+---
+
+## 7. Real-audio acceptance benchmark — first run (2026-11-14)
+
+Step 2 of the directive. The corpus is sourced, reproducible and real.
+
+**Corpus.** 13 instrumental recordings released **CC0 1.0** (public domain) by
+AERIS MUSIC, pinned to upstream commit `51ab767`. Audio is not committed
+(36 MB); `scripts/waveyard-real-audio-corpus.ts` refetches it and verifies every
+file against a sha256 manifest (`scripts/fixtures/waveyard-real-audio/corpus.json`)
+into the git-ignored `generated-artifacts/waveyard-real-audio/`. 13/13 verified.
+No commercial recording is used, and no listening test has been performed.
+
+**Runner.** `scripts/waveyard-real-audio-acceptance.ts` decodes each track with
+ffmpeg, runs the production `analysePcm` and `planMashup`, and records what the
+engine actually decided for all 156 ordered pairs. Sections are synthesised
+deterministically (the DB normally supplies them) — this is stated because it
+means structure evidence here is **not** real, so arrangement behaviour on this
+run is indicative only.
+
+**Measured results (N=0 listeners, no quality claim):**
+
+| Measure | Result |
+| --- | --- |
+| Tracks analysed | 13 |
+| Pairs planned / refused | **156 / 0** |
+| Tracks with trusted tempo (conf ≥ 0.5) | 11 / 13 |
+| Tracks with trusted key (conf ≥ 0.5) | **0 / 13** |
+| Distinct keys reported across 13 tracks | **2** (C major, C minor) |
+| Pairs where the octave was resolved | 54 |
+| Pairs where the octave was genuinely ambiguous | 110 |
+| Vocal pitch shifts applied | **0 — all 156 pairs** |
+| Key relationships | `unknown` — all 156 pairs |
+| Segments per plan | 1–2 |
+| Full-track arrangements produced | **0 / 156** |
+| Pairs needing >25% tempo warp | 44 / 156 |
+
+**What this establishes.**
+
+1. **The octave fix engages on real music**: 54 of 156 pairs resolved an octave
+   the raw readings would have got wrong. But **110 pairs remain flagged
+   ambiguous**, so on real material the ambiguity is the common case, not the
+   exception. The warning is honest, but two thirds of pairs still rest on a
+   warp-cost heuristic rather than musical evidence. This is the fix's limit and
+   is not presented as more.
+2. **Harmonic intelligence is entirely inactive on real audio.** Zero trusted
+   keys ⇒ zero trusted key relationships ⇒ zero pitch shifts. Nothing is damaged
+   (the safe failure), but the compatibility layer does nothing. Every pair is
+   planned as if the keys were unknown, because to the engine they are.
+3. **Arrangement does not happen.** 0/156 produced a full-track arrangement;
+   plans fall back to 1–2 whole-body segments. Some of this is the synthesised
+   section data, so it is not yet a proven arrangement defect — but the fallback
+   path is what real pairs would hit whenever section or passage evidence is
+   thin, and it is the least musical output the planner can produce.
+4. **Tempo is the healthiest layer.** 11/13 trusted, 12/13 agreeing with
+   librosa within an octave, and 112/156 pairs within ±20% so a light or no warp
+   is chosen.
+
+**Defect priority, revised by measurement.** The directive's ordering was
+compatibility → tempo → key → composition → arrangement → audio quality. Real
+audio moves key to the top: it is the one layer that is entirely inert, and it
+blocks both harmonic compatibility and pitch decisions for every pair. Tempo
+sinks below it — the octave defect is fixed and the remaining weakness is
+honest. Arrangement is the next suspect but needs true section data before it
+can be called broken.
+
+**Not claimed.** These are measurements of internal decisions. They say nothing
+about whether any pair sounds good, and none was heard by a human. Automated
+planning success is explicitly not evidence of musical quality.
