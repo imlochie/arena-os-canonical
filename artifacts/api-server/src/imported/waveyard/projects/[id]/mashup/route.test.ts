@@ -223,6 +223,12 @@ process.on("uncaughtException", (error: unknown) => {
     }
     return;
   }
+  // Anything that is not cluster-shutdown noise. Name it explicitly: the node
+  // runner reports an uncaughtException as a bare "test failed" with the error
+  // folded into a stack, which lost the message entirely in CI. Log first, then
+  // rethrow so the failure still counts.
+  const trace = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  console.error(`UNCAUGHT_UNEXPECTED active=${teardownState.active} ${trace.split("\n").slice(0, 8).join(" | ")}`);
   throw error;
 });
 
