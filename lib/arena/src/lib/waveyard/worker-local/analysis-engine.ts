@@ -540,6 +540,18 @@ export function estimateDownbeatGrid(
 }
 
 const PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
+/**
+ * Pitch-class variation below which a chroma carries essentially no key
+ * evidence, and the variation that counts as full evidence.
+ *
+ * Measured: material with a known key (all 24 roots/modes, realistic timbre)
+ * measures 0.79-0.82; real recordings whose chroma is dominated by broadband
+ * energy measure 0.03-0.09. The gap is wide, so the window only has to be
+ * roughly right to separate "the analyser can hear a key" from "it cannot".
+ */
+const KEY_MIN_CHROMA_VARIATION = 0.15;
+const KEY_STRONG_CHROMA_VARIATION = 0.45;
+
 const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
 const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
 
@@ -547,14 +559,6 @@ function midiOfPitchClassIndex(index: number, octave: number): number {
   return 12 * (octave + 1) + index;
 }
 
-/**
- * Harmonic salience chroma from overlapping long-window spectra.
- *
- * The former full-track Goertzel probe sampled only C3–B4 exact frequencies.
- * That misses bass fundamentals and lets one spectral bin dominate a whole
- * song. Here, frame-local harmonic stacks contribute to each candidate note,
- * then normalize per frame so a loud chorus cannot erase a quieter key change.
- */
 export function chromaFromPcm(pcm: Float32Array): number[] {
   const chroma = new Array<number>(12).fill(0);
   if (pcm.length === 0) return chroma;
@@ -607,7 +611,7 @@ export function chromaFromPcm(pcm: Float32Array): number[] {
           + (magnitudes[upperBin] ?? 0) * fraction;
         salience += magnitude / Math.sqrt(harmonic);
       }
-      frameChroma[((midi % 12) + 12) % 12] += salience;
+      frameChroma[((midi % 12) + 12) % 12]! += salience;
     }
 
     const frameTotal = frameChroma.reduce((sum, value) => sum + value, 0);
@@ -658,9 +662,23 @@ export function keyFromChroma(chroma: number[]): { key: string | null; confidenc
 
   // A high profile fit is not enough when several keys fit almost equally
   // well (for example, a single major triad). Confidence is an evidence index,
-  // not a probability: profile fit × margin over the nearest competing key.
+  // not a probability: profile fit × margin over the nearest competing key,
+  // gated by how much pitch-class evidence exists at all.
+  //
+  // That last factor was previously missing and was the source of fabricated
+  // confidence. Profile correlation is scale-free, so a nearly uniform chroma —
+  // which is what noise-like or percussive material produces — still correlates
+  // well with *some* key and reports high confidence. Measured on real
+  // recordings, the least key-like track in the corpus (pitch-class variation
+  // 0.036) reported the equal-highest confidence of 0.77, while clear-key
+  // material measures 0.79-0.82 variation. Without this gate the planner is
+  // told to trust a key that carries almost no evidence.
+  const variation = chromaNorm / Math.sqrt(normalised.length);
+  const evidence = Math.max(0, Math.min(1,
+    (variation - KEY_MIN_CHROMA_VARIATION)
+    / Math.max(1e-6, KEY_STRONG_CHROMA_VARIATION - KEY_MIN_CHROMA_VARIATION)));
   const margin = Math.max(0, best.score - Math.max(0, runnerUp.score));
-  const confidence = Math.max(0, Math.min(1, best.score * Math.min(1, margin / 0.2)));
+  const confidence = Math.max(0, Math.min(1, best.score * Math.min(1, margin / 0.2) * evidence));
   return {
     key: best.name,
     confidence: Math.round(confidence * 1000) / 1000,

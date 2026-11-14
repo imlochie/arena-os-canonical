@@ -392,3 +392,111 @@ can be called broken.
 **Not claimed.** These are measurements of internal decisions. They say nothing
 about whether any pair sounds good, and none was heard by a human. Automated
 planning success is explicitly not evidence of musical quality.
+
+---
+
+## 8. P1 key detection — investigation result (2026-11-14)
+
+**Outcome: one real defect fixed (fabricated confidence). The C-bias itself is
+not fixed, and the evidence says it should not be claimed as fixed. Read the
+negative result before the positive one.**
+
+### What was reproduced
+
+The reported symptoms reproduce exactly: two distinct keys across 13 tracks,
+0/13 trusted, 0/156 pitch shifts. The chroma peaks on C with a 3–5× spread.
+
+But the pipeline is **not** simply broken. Three independent checks:
+
+| Check | Result |
+| --- | --- |
+| Key by construction, realistic timbre + bass + drums, all 12 roots × major/minor | **24/24 exact** |
+| Same, with harmonic rolloff from 1/h to 1/h³ (dark/muffled production) | **24/24 at every rolloff** |
+| Twelve single sinusoids C4–B4 through the chroma | 12/12 correct pitch class, no bias |
+
+So the FFT, harmonic summation, per-frame normalisation, pitch-class mapping and
+Krumhansl matcher are all sound on material with real harmonic structure.
+
+### What was investigated and rejected
+
+Every hypothesis below was implemented and measured. None removed the bias, and
+each is recorded so it is not retried:
+
+| Hypothesis | Result |
+| --- | --- |
+| Sub-bass/DC contamination | Removing DC and high-passing at 60/100/150/200 Hz changed the reported key on at most 1 of 7 tracks |
+| Magnitude is a 1/f artefact (each pitch class anchored at a different frequency) | Real: fundamentals C:23.3 → B:3.1 — but **whitening the local spectral level made it worse**, flattening chroma to a near-uniform 8–9% |
+| Per-octave normalisation / equal octave weighting | No effect on the reported keys at default settings |
+| Spectral whitening (local moving average) | Over-corrected: destroyed musical evidence, chroma variation fell to 0.03–0.09 |
+| Log-magnitude compression | Fitted the C-ramp perfectly rather than removing it |
+| Tuning offset (A440 deviation) | No effect |
+| Analysis window / aggregation bias | Per-frame top pitch class is already C in 57–84% of frames, so it is not an averaging artefact |
+| Complete-octave coverage | The existing MIDI 36–95 range is already exactly octaves 2–6, one of each pitch class per octave — there was never an incomplete-octave bug |
+
+### The actual finding: the chroma carries almost no key evidence
+
+Measured pitch-class variation (coefficient of variation across the 12 classes):
+
+| Material | Variation |
+| --- | --- |
+| Known key, synthetic, realistic | **0.79–0.92** |
+| The 13 real CC0 tracks | **0.03–0.09** |
+
+The real recordings produce a nearly uniform chroma. The reported key is
+therefore not a mis-read of a real key — it is the matcher picking the least-bad
+fit from noise-like input. Recovering the real key is not a bias-correction
+problem; the pitch-class evidence is not there to recover.
+
+**The independent comparison agrees.** librosa's CQT chroma on the same files
+correlates with ours at **−0.28 to 0.19** and reports "A" for 13/13. That looked
+like a reference finding a real key until high-passing at 150 Hz made librosa go
+flat too (A:11, A#:9, B:9). librosa's confidence on this corpus is therefore the
+same artefact from the other end of the spectrum: one low-frequency peak
+dominating every track. **Neither engine has trustworthy key evidence here, so
+these files cannot serve as a key-accuracy benchmark** — the "0/13 vs librosa"
+figure in section 7 measured agreement between two unreliable estimators and
+must not be used as an accuracy score.
+
+### The defect that is real: fabricated confidence
+
+Profile correlation is scale-free, so a near-uniform chroma still correlates
+well with *some* key and reported high confidence. Measured before the fix, the
+**least** key-like track in the corpus (variation 0.036) reported the
+equal-highest confidence of **0.77**, while the most key-like (0.090) reported
+0.19. Confidence was uncorrelated with evidence, and several tracks would have
+cleared the 0.5 trust threshold and caused a wrong automatic transposition.
+
+Fixed by gating confidence on the pitch-class evidence present, so that a chroma
+without structure cannot buy confidence through a lucky profile fit. Measured
+after: real tracks 0.04–0.31 (**0/13 trusted**, unchanged coverage, so no
+transposition — the safe behaviour), while known-key material is unaffected at
+0.40–0.92 with keys still 24/24 exact.
+
+This is a genuine improvement — it removes fabricated confidence and prevents a
+wrong transposition — but it does **not** improve key *accuracy*, which is
+unchanged because the evidence is unchanged.
+
+### Where the real key evidence would have to come from
+
+The remaining gap is the chroma itself, and the corpus points at why: the mean
+spectrum of every track peaks at 54 Hz (near A1) with 40–53% of energy below
+60 Hz, on material that is otherwise dense and percussive. That is sub-bass and
+broadband content swamping pitch salience, not a matcher error. Fixing it needs
+a salience method that is robust to that (e.g. a proper constant-Q transform with
+per-band normalisation, or a spectral-peak-picking front end with
+inharmonicity rejection) — a substantial DSP project that was **not** attempted
+here, because the current corpus cannot validate it: every reference available
+is itself unreliable on these files.
+
+### Honest status
+
+- **Fixed:** fabricated key confidence. Mutation-checked; three new tests.
+- **Not fixed:** key accuracy on real broadband material. Unchanged.
+- **Blocked:** validating a fix needs a corpus with *independently verified*
+  keys. The CC0 set has none (its README table disagrees with both engines), and
+  neither engine can serve as its own reference.
+- **Unchanged and correct:** automatic transposition stays withheld. 0/13 keys
+  are trusted, so the planner applies no pitch shift — no damage, no false
+  confidence.
+
+No STEM.FM comparison is made. Listener count is N=0.

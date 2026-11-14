@@ -426,6 +426,48 @@ test("key confidence separates clear tonal evidence from ambiguous chords", () =
   assert.ok((cMajorScale.confidence ?? 0) >= 0.5, "a broader diatonic pitch profile supports the key more strongly");
 });
 
+test("key confidence collapses when the chroma carries almost no pitch-class evidence", () => {
+  // Real broadband material measured chroma variation 0.03-0.09 while material
+  // with a known key measured 0.79-0.92. Profile correlation is scale-free, so
+  // before this gate a nearly uniform chroma still matched *some* key and
+  // reported high confidence: the least key-like track in the corpus reported
+  // the equal-highest confidence of 0.77, and the planner was told to trust it.
+  const nearlyUniform = Array.from({ length: 12 }, (_, index) => 1 + 0.02 * Math.sin(index * 1.7));
+  const weak = keyFromChroma(nearlyUniform);
+  assert.notEqual(weak.confidence, null);
+  assert.ok((weak.confidence ?? 1) < 0.1,
+    `a near-uniform chroma must not report confidence, got ${weak.confidence}`);
+
+  // The same near-uniform shape with a real, if faint, tonic emphasis still
+  // must not be presented as trustworthy.
+  const faint = [1.06, 0.99, 1.0, 0.98, 1.02, 0.99, 0.97, 1.01, 0.98, 1.0, 0.99, 0.99];
+  assert.ok((keyFromChroma(faint).confidence ?? 1) < 0.35,
+    "faint evidence must stay well below the 0.5 mixing threshold");
+});
+
+test("key confidence stays high for clear tonal evidence after the evidence gate", () => {
+  // The gate must not penalise material the analyser can actually hear. These
+  // are the shapes that measured 0.85+ variation.
+  const cMajorScale = keyFromChroma([2, 0.3, 1, 0.2, 2, 1, 0.2, 2, 0.3, 1, 0.2, 0.8]);
+  assert.equal(cMajorScale.key, "C major");
+  assert.ok((cMajorScale.confidence ?? 0) >= 0.5, "a broad diatonic profile must still be trusted");
+});
+
+test("a broadband, non-tonal signal does not produce a trusted key", () => {
+  // Deterministic pseudo-noise: broadband energy with no pitch structure. This
+  // is the failure mode that made every real recording in the CC0 corpus look
+  // like C major/minor with usable confidence.
+  let seed = 12345;
+  const noise = new Float32Array(RATE * 6);
+  for (let index = 0; index < noise.length; index += 1) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    noise[index] = (seed / 0x7fffffff) * 2 - 1;
+  }
+  const { confidence } = keyFromChroma(chromaFromPcm(noise));
+  assert.ok((confidence ?? 1) < 0.5,
+    `broadband noise must not yield a trusted key, got confidence ${confidence}`);
+});
+
 test("legacy key confidence is not trusted under the revised key-analysis version", () => {
   const current = {
     analysisEngine: DESKTOP_ANALYSIS_ENGINE,
