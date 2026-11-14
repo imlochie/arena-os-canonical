@@ -61,6 +61,41 @@ Still unproven: behaviour on real material with differing groove. Passage
 selection quality, half-time misreads (71.8/43.4 BPM observed earlier) and the
 zero-accepted-candidate ground-truth probe all remain open.
 
+**Tempo octave error — found and measured (2026-11-14).** The half-time
+misreads were not a tuning issue; the octave is destroyed *inside* the
+analyser. `estimateBpm` reports whichever autocorrelation peak scores highest,
+and `foldTempoForMixing` then forces it into 70–180 BPM. Because a true tempo
+outside that band is *only* reachable through the folded value, the original
+octave never reaches the planner. Measured on synthetic onset tracks (hats on
+8ths, kick on beats, snare on 2 and 4):
+
+| true BPM | reported | reported confidence | bar length error |
+| --- | --- | --- | --- |
+| 60 | 120.185 | **1.0** | 0.499× |
+| 72 | 143.555 | **1.0** | 0.502× |
+| 90 | 178.206 | **1.0** | 0.505× |
+| 100 | 99.384 | 0.992 | 1.006× |
+
+The consequence reaches the planner's stretch decision. `warpRatioForTempos`
+has no octave knowledge in its signature, so pairing a 72 BPM vocal with a
+100 BPM bed yields a ratio of **0.692** where the truth is **1.389** — a 50%
+error, i.e. the vocal plays at half the intended speed against the bed:
+
+| bed | vocal | true ratio | planned ratio | error |
+| --- | --- | --- | --- | --- |
+| 72 | 100 | 1.389 | 0.692 | 50.2% |
+| 60 | 100 | 1.667 | 0.827 | 50.4% |
+| 68 | 92 | 1.353 | 0.679 | 49.8% |
+| 90 | 128 | 1.422 | 0.725 | 49.0% |
+| 85 | 100 | 1.176 | 1.173 | 0.3% |
+
+The error is pattern-dependent, which is why it has been so hard to pin down:
+the *same* 72 BPM pulse read 71.78 (correct) when the track had no 8th-note
+hats and 143.56 when it did. The confidence score does not drop when this
+happens — all three folding cases report 1.0 — so "trusted BPM" gates let the
+wrong octave straight through. This is confident-and-wrong, the failure mode
+the directives single out, and it is the highest-damage defect found so far.
+
 ### P2 — Stem compatibility intelligence: **partially implemented, no decisions made**
 
 Implemented: harmonic/key analysis with confidence gates, drum-transient and
@@ -130,3 +165,39 @@ engine layer is now trustworthy enough to build on.
 
 Each step should carry the same rule used here: if a claim cannot be
 mutation-checked or heard, it is not finished.
+
+---
+
+## 5. Mashup generation parity V1 — audit pass (2026-11-14)
+
+Audited at `7c4057a`, from the code, by executing the analyser rather than
+reading it. Four areas were examined this pass.
+
+| Area | Verdict | Basis |
+| --- | --- | --- |
+| Tempo estimation / octave | **fails on real music** | measured above; 50% stretch error, confidence 1.0 |
+| Key detection | **works** | 7/7 synthetic progressions correct (C, Dm, G, Am, F, Em, B), confidence 0.87–0.97 |
+| Key-relationship logic | **works** | relative major/minor ⇒ 0 semitones by design; unknown keys ⇒ 0 semitones, `relationship: "unknown"` |
+| Passage compatibility / phrase alignment | **implemented, unvalidated** | real scoring (`comparePassageCompatibility`, `rankPassagePair`, chord-tone fit, transient scoring), but never run on real stems |
+| Fallback tempo | **honest** | always `confidence: 0.0` (`source: "default"` ⇒ 120 BPM); only used when no analysis exists, always with a warning, and never treated as verified by `trustedAnalysisBpm` |
+
+Key findings:
+
+1. **Confidently-wrong tempo (P0).** Detailed above. This is the dominant cause
+   of unusable mashups on real material and it is invisible to every existing
+   test: the tests assert that reported BPM *relates* to the true tempo via
+   `bpm*2`/`bpm/2` (see `analysis-engine.test.ts:115`), which accepts exactly
+   the wrong answer. Synthetic fixtures cannot detect it because they were
+   built from the same assumption.
+2. **Half/double folding happens before any pairwise decision.** The planner
+   receives one folded number and cannot recover the octave. Fixing this in
+   `warpRatioForTempos` alone is impossible — the information is already gone.
+3. **No real audio exists in the checkout.** `find` for `*.wav|*.mp3|*.flac|
+   *.m4a` returns nothing and no fixture manifests are present, so the directive's
+   real-song benchmark cannot be run against in-repo material.
+4. **The reported whistle remains unexplained** and cannot be reproduced from
+   synthetic fixtures; `waveyard-mashup-mix-diagnostic.ts` says so itself.
+
+Still not established after this pass: N=0 listeners; synthetic material only;
+P2 makes no compatibility *decisions*; P3 arrangement intelligence untouched;
+the A/B/C/D harness has still never been run on real songs.
