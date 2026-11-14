@@ -215,7 +215,11 @@ process.on("uncaughtException", (error: unknown) => {
       const appFrames = trace
         .split("\n")
         .filter((line) => !/pg-protocol|node_modules\/pg\/|node:internal|node:events/.test(line));
-      console.error(`TEARDOWN_SWALLOWED ${teardownState.swallowed} ${appFrames.slice(0, 6).join(" | ")}`);
+      // This line is known to reach the check-run, so it carries the cluster
+      // state too: it reveals whether the server had already exited (polling
+      // skipped) or was stopped by pg_ctl.
+      const cluster = `postgres=${postgresProcess === undefined ? "undefined" : postgresProcess.exitCode === null ? "running" : `exited(${postgresProcess.exitCode})`} port=${postgresPort ?? "none"}`;
+      console.error(`TEARDOWN_SWALLOWED ${teardownState.swallowed} ${cluster} ${appFrames.slice(0, 4).join(" | ")}`);
     }
     return;
   }
