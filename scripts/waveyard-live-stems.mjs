@@ -2483,10 +2483,40 @@ try {
     assert.ok(Math.abs(settledPausedClock - pausedClock) < 0.08,
       `${engineName}: pausing freezes the actual session audio clock`);
     await play.click();
-    await page.waitForFunction(() =>
-      document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true"
-        && [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
-    null, { timeout: 10_000 });
+    // Resume after a pause. The deck renders the control with aria-busy while
+    // `play()` is starting, and `play()` returns early without setting
+    // playing when its request token is superseded. A failure here therefore
+    // has several distinct causes that look identical from the assertion, so
+    // capture which one it was before rethrowing. WebKit failed exactly this
+    // wait while Chromium and Firefox passed it, and without the state there
+    // is nothing to act on.
+    try {
+      await page.waitForFunction(() =>
+        document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true"
+          && [...document.querySelectorAll('[data-role="current"] audio')].every(audio => !audio.paused),
+      null, { timeout: 10_000 });
+    } catch (error) {
+      const resumeState = await page.evaluate(() => {
+        const button = document.querySelector('[data-testid="session-play"]');
+        return {
+          pressed: button?.getAttribute("aria-pressed"),
+          busy: button?.getAttribute("aria-busy"),
+          label: button?.getAttribute("aria-label"),
+          disabled: button?.getAttribute("disabled"),
+          audio: [...document.querySelectorAll('[data-role="current"] audio')].map(audio => ({
+            paused: audio.paused, readyState: audio.readyState, currentTime: audio.currentTime,
+            ended: audio.ended, src: window.audioProbe.assetUrl(audio), error: audio.error?.code ?? null,
+          })),
+          contexts: window.audioProbe.contexts.map(context => ({ state: context.state, currentTime: context.currentTime })),
+          playRejections: window.audioProbe.playRejections.slice(-6),
+          contextResumes: window.audioProbe.contextResumes.slice(-6),
+          status: document.querySelector('[data-testid="session-status"]')?.textContent,
+          alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent),
+        };
+      }).catch(captureError => ({ captureFailed: String(captureError) }));
+      console.error(`SESSION_RESUME_STATE ${engineName} ${JSON.stringify(resumeState)}`);
+      throw error;
+    }
 
     await currentDeck.getByTestId("quick-isolate-vocals").click();
     await page.waitForFunction(() => {
