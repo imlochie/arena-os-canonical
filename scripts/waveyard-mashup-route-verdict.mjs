@@ -89,15 +89,17 @@ if (codeFailures.length > 0) {
   // Publish the assertion text itself: job logs are not retrievable from the
   // environment triaging this workflow, so "1 assertion failed" without the
   // message is not actionable.
-  const reported = [...output.matchAll(/^\s*error:\s*(.+)$/gm)]
-    .map((match) => match[1].trim())
-    .filter((line) => line.length > 0)
-    .slice(0, 6);
-  for (const line of reported) console.error(`::error::assertion -> ${line.slice(0, 900)}`);
-  if (reported.length === 0) {
-    const firstFrame = output.split("\n").find((line) => /route\.test\.ts:\d+/.test(line));
-    if (firstFrame) console.error(`::error::assertion site -> ${firstFrame.trim().slice(0, 300)}`);
-  }
+  // The first `error:` is usually the outer TAP wrapper ("test failed"). Take
+  // every distinct message, drop that wrapper, and keep the specific ones.
+  const errors = [...output.matchAll(/error:\s*'((?:[^'\\]|\\.)*)'/g)]
+    .map((match) => match[1].replace(/\\'/g, "'").trim())
+    .filter((line) => line.length > 0 && !/^test failed$/i.test(line));
+  const unique = [...new Set(errors)].slice(0, 6);
+  for (const line of unique) console.error(`::error::assertion -> ${line.slice(0, 900)}`);
+  // Name the failing line: the stack's first application frame.
+  const site = [...output.matchAll(/(route\.test\.ts:\d+:\d+)/g)].map((match) => match[1]);
+  if (site.length > 0) console.error(`::error::assertion site -> ${[...new Set(site)].slice(0, 3).join(", ")}`);
+  if (unique.length === 0) console.error("::error::assertion -> (no message captured; see route.txt artifact)");
   failOn(
     `Route acceptance failed ${codeFailures.length} assertion(s). This is a real failure, not the known teardown race.`,
   );
