@@ -831,7 +831,10 @@ test(
         .where(eq(schema.bassAnalyses.id, bassAnalysis.id)))[0]?.status, "complete");
     }
 
-    const renderRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const renderRequest = (
+      alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware",
+      donorStemTypes: string[] = [],
+    ) => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -839,6 +842,7 @@ test(
         vocalsSourceId: vocalsSource.id,
         instrumentalSourceId: bedSource.id,
         ...(alignmentStrategy ? { alignmentStrategy } : {}),
+        donorStemTypes,
       }),
     });
 
@@ -1354,6 +1358,7 @@ test(
     );
     assert.equal(compareResponse.status, 200, "the production route must compare the real planner strategies");
     const compareBody = await compareResponse.json() as {
+      availableDonorStemTypes?: string[];
       candidates?: Array<{
         id: string;
         available: boolean;
@@ -1366,6 +1371,8 @@ test(
         } | null;
       }>;
     };
+    assert.deepEqual(compareBody.availableDonorStemTypes, ["drums"],
+      "the route exposes only role types separated for both songs");
     assert.deepEqual(
       compareBody.candidates?.map((candidate) => candidate.id),
       ["continuous", "paired-grid", "downbeat", "phrase-aware"],
@@ -1380,13 +1387,13 @@ test(
     const continuousPlan = continuousCandidate.plan;
 
     // Actual production route render of the selected candidate strategy.
-    const renderResponse = await routeModule.POST(renderRequest("continuous"), { params: Promise.resolve({ id: project.id }) });
+    const renderResponse = await routeModule.POST(renderRequest("continuous", ["drums"]), { params: Promise.resolve({ id: project.id }) });
     assert.equal(renderResponse.status, 200, "the render route must succeed");
     assert.match(renderResponse.headers.get("content-type") ?? "", /audio\/wav/);
     assert.equal(renderResponse.headers.get("x-waveyard-alignment-strategy"), "continuous");
     assert.equal(renderResponse.headers.get("x-waveyard-bed-source"), "separated", "the route must use the synthesized bed");
     const bedStemsHeader = (renderResponse.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort();
-    assert.deepEqual(bedStemsHeader, ["bass", "drums", "other"], "the bed must be drums + bass + other, not vocals");
+    assert.deepEqual(bedStemsHeader, ["bass", "other"], "the selected donor drum role replaces, rather than stacks on, the bed drum stem");
     const bedWarning = renderResponse.headers.get("x-waveyard-bed-warning");
     if (!realFixture) {
       assert.ok(bedWarning, "the route must expose the leakage warning");
@@ -1587,7 +1594,10 @@ test(
       );
     }
 
-    const saveRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const saveRequest = (
+      alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware",
+      donorStemTypes: string[] = [],
+    ) => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1595,6 +1605,7 @@ test(
         vocalsSourceId: vocalsSource.id,
         instrumentalSourceId: bedSource.id,
         ...(alignmentStrategy ? { alignmentStrategy } : {}),
+        donorStemTypes,
       }),
     });
     if (!realFixture) {
@@ -1611,7 +1622,7 @@ test(
         .where(eq(schema.processingJobs.id, bedJob.id));
     }
     // Save action: persists the planned mashup into remixSessions, remixTracks, and remixClips.
-    const saveResponse = await routeModule.POST(saveRequest("continuous"), { params: Promise.resolve({ id: project.id }) });
+    const saveResponse = await routeModule.POST(saveRequest("continuous", ["drums"]), { params: Promise.resolve({ id: project.id }) });
     assert.equal(saveResponse.status, 201, "save action must return 201 Created");
     const saveBody = (await saveResponse.json()) as { ok: boolean; remix: { id: string; name: string }; version: { id: string } };
     assert.equal(saveBody.ok, true);
@@ -1690,8 +1701,8 @@ test(
       );
       assert.deepEqual(
         savedTrackStemProvenance.filter((stem) => stem.sourceAssetId === bedSource.id).map((stem) => stem.stemType).sort(),
-        ["bass", "drums", "other"],
-        "the saved bed must contain the chosen instrumental's three non-vocal stems only",
+        ["bass", "other"],
+        "the saved bed must retain the unselected instrumental roles only",
       );
     }
 

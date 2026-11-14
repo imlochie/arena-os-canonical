@@ -135,7 +135,7 @@ type BedLoadResult =
 /** Latest stem of a type for a source whose separation job completed, or null. */
 async function latestStem(projectId: string, sourceAssetId: string, stemType: string) {
   const [stem] = await db
-    .select({ id: stemAssets.id, storageKey: stemAssets.storageKey, separationJobId: stemAssets.separationJobId })
+    .select()
     .from(stemAssets)
     .where(
       and(
@@ -1047,9 +1047,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (action === "save") {
         const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
         const bedSource = resolvedBedSource;
-        const bedStems = bedSource.stems;
+        const replacedStemTypeSet = new Set(selectedDonorStemTypes);
+        const bedStems = bedSource.stems.filter((stem) => !replacedStemTypeSet.has(stem.stemType));
 
-        if (!vocalsStem || bedStems.length === 0) {
+        if (!vocalsStem || (bedStems.length === 0 && selectedDonorStemTypes.length === 0)) {
           return Response.json(
             { error: "Both a completed separated vocal stem and an instrumental bed are required to save an editable Studio remix." },
             { status: 422 },
@@ -1063,7 +1064,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         }
         const donorStemRecords = vocalsStemRecord.separationJobId
           ? (await loadComplementaryDonorStemRecords(projectId, vocalsId, vocalsStemRecord.separationJobId)).filter((stem) =>
-            stem.format?.toLowerCase() === "wav"
+            selectedDonorStemTypes.includes(stem.stemType)
+            && stem.format?.toLowerCase() === "wav"
             && stem.channels === 2
             && stem.sampleRate === RENDER_SAMPLE_RATE
             && Math.abs(stem.durationSeconds - vocalsStemRecord.durationSeconds) <= 0.001)
@@ -1265,6 +1267,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             mashupPlan: {
               engine: planned.plan.engine,
               alignmentStrategy: planned.plan.alignmentStrategy,
+              replacedBedStemTypes: selectedDonorStemTypes,
+              donorStemAssetIds: donorStemRecords.map((stem) => stem.id),
               masterBpm: planned.plan.masterBpm,
               vocalsStretchRatio: planned.plan.vocalsStretchRatio,
               vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
@@ -1323,7 +1327,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         );
       }
 
-      const bedResult = await loadInstrumentalBed(projectId, bedId, resolvedBedSource);
+      const bedResult = await loadInstrumentalBed(
+        projectId,
+        bedId,
+        resolvedBedSource,
+        new Set(selectedDonorStemTypes),
+      );
       let bedPcm: Float32Array;
       let bedInfo: BedSourceInfo;
       if (bedResult.ok) {
@@ -1340,30 +1349,30 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
       // Load complementary layers only from the exact completed run that supplied the vocal.
       // The renderer crops and aligns these layers to the vocal segment; mismatched PCM
-      // frame counts are omitted rather than allowed to drift.
-      const complementaryDonorStems = new Map<string, Float32Array>();
+      // frame counts are rejected rather than allowed to drift.
+      const complementaryDonorStemPcm = new Map<string, Float32Array>();
       if (vocalsStem?.separationJobId) {
-        try {
-          const donorStemRows = await loadComplementaryDonorStemRecords(projectId, vocalsId, vocalsStem.separationJobId);
-          for (const stemRow of donorStemRows) {
-            const pcm = await stemPcm(stemRow.storageKey);
-            if (pcm === null || pcm.length === 0) {
-              warnings.push(`The donor ${stemRow.stemType} stem could not be decoded and was omitted from the render.`);
-            } else if (pcm.length !== vocalsPcm.length) {
-              warnings.push(`The donor ${stemRow.stemType} stem does not match the vocal source's frame count and was omitted to prevent timing drift.`);
-            } else {
-              complementaryDonorStems.set(`donor_${stemRow.stemType}`, pcm);
-            }
+        const donorStemRows = await loadComplementaryDonorStemRecords(projectId, vocalsId, vocalsStem.separationJobId);
+        for (const stemRow of donorStemRows.filter((stem) => selectedDonorStemTypes.includes(stem.stemType))) {
+          const pcm = await stemPcm(stemRow.storageKey);
+          if (pcm === null || pcm.length === 0) {
+            return Response.json({
+              error: `The selected donor ${stemRow.stemType} stem could not be decoded as 44.1 kHz stereo WAV; no bed role was removed.`,
+            }, { status: 422 });
           }
-        } catch {
-          warnings.push("Some donor accompaniment stems could not be loaded; they were omitted while the vocal and bed render continued.");
+          if (pcm.length !== vocalsPcm.length) {
+            return Response.json({
+              error: `The selected donor ${stemRow.stemType} stem does not match the vocal source frame count; no bed role was removed.`,
+            }, { status: 422 });
+          }
+          complementaryDonorStemPcm.set(`donor_${stemRow.stemType}`, pcm);
         }
       }
 
       const mixed = renderMashup(planned.plan, {
         vocals: vocalsPcm,
         bed: bedPcm,
-        stems: complementaryDonorStems.size > 0 ? complementaryDonorStems : undefined,
+        stems: complementaryDonorStemPcm.size > 0 ? complementaryDonorStemPcm : undefined,
         sampleRate: RENDER_SAMPLE_RATE,
       });
       return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy);

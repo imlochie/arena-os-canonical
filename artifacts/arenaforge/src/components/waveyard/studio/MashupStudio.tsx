@@ -86,6 +86,15 @@ type AlignmentCandidatePlan = {
   plan: Plan | null;
 };
 
+const DONOR_ROLE_LABELS: Record<string, string> = {
+  drums: "Drums",
+  bass: "Bass",
+  other: "Other",
+  guitar: "Guitar",
+  piano: "Piano",
+  percussion: "Percussion",
+};
+
 type EvidenceFeatureSummary =
   | { status: "measured"; analysisEngine: string; analysisEngineVersion: string; persistence: "database" | "request" }
   | { status: "unavailable"; reason: string };
@@ -123,6 +132,8 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [renderKind, setRenderKind] = useState<"mashup" | "extended" | null>(null);
   const [alignmentCandidates, setAlignmentCandidates] = useState<AlignmentCandidatePlan[]>([]);
   const [selectedAlignment, setSelectedAlignment] = useState<CandidateAlignmentId | null>(null);
+  const [availableDonorStemTypes, setAvailableDonorStemTypes] = useState<string[]>([]);
+  const [selectedDonorStemTypes, setSelectedDonorStemTypes] = useState<string[]>([]);
   const [candidateRendering, setCandidateRendering] = useState<CandidateAlignmentId | null>(null);
   const [renderedCandidateUrls, setRenderedCandidateUrls] = useState<Partial<Record<CandidateAlignmentId, string>>>({});
   const [bedInfo, setBedInfo] = useState<{
@@ -154,6 +165,8 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setRenderedCandidateUrls({});
     setAlignmentCandidates([]);
     setSelectedAlignment(null);
+    setAvailableDonorStemTypes([]);
+    setSelectedDonorStemTypes([]);
     setPlan(null);
     setEvidence(null);
     setBedInfo(null);
@@ -248,6 +261,9 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
         return;
       }
       if (body.bed) setBedInfo(body.bed as { source: string; warning: string; includedStemTypes?: string[] });
+      setAvailableDonorStemTypes(Array.isArray(body.availableDonorStemTypes)
+        ? body.availableDonorStemTypes.filter((stemType: unknown): stemType is string => typeof stemType === "string")
+        : []);
       setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
       const candidates = Array.isArray(body.candidates) ? body.candidates as AlignmentCandidatePlan[] : [];
       setAlignmentCandidates(candidates);
@@ -293,6 +309,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           vocalsSourceId: vocalsId,
           instrumentalSourceId: bedId,
           alignmentStrategy: id,
+          donorStemTypes: selectedDonorStemTypes,
         }),
       });
       if (sourceGeneration !== sourceGenerationRef.current) return;
@@ -357,6 +374,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           vocalsSourceId: vocalsId,
           instrumentalSourceId: bedId,
           alignmentStrategy: selectedAlignment,
+          donorStemTypes: selectedDonorStemTypes,
         }),
       });
       const data = await response.json();
@@ -370,6 +388,17 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     } finally {
       setSavingRemix(false);
     }
+  };
+
+  const toggleDonorStemType = (stemType: string) => {
+    for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
+    candidateRenderUrlsRef.current.clear();
+    candidateRenderOrderRef.current = [];
+    setRenderedCandidateUrls({});
+    setSaveSuccess(null);
+    setSelectedDonorStemTypes((selected) => selected.includes(stemType)
+      ? selected.filter((candidate) => candidate !== stemType)
+      : [...selected, stemType]);
   };
 
   const extendTrack = async () => {
@@ -469,6 +498,32 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
         </div>
       )}
       {error && <p className="form-error" role="alert">{error}</p>}
+      {canEdit && alignmentCandidates.length > 0 && (
+        <section className="mashup-donor-swaps" aria-labelledby="mashup-donor-swaps-title" data-testid="mashup-donor-swaps">
+          <div>
+            <h3 id="mashup-donor-swaps-title">Optional stem swaps</h3>
+            <p>Replace a matching bed stem with that role from the vocal song. Unselected bed stems stay in place.</p>
+          </div>
+          {availableDonorStemTypes.length > 0 ? (
+            <div className="mashup-donor-role-options">
+              {availableDonorStemTypes.map((stemType) => (
+                <label key={stemType}>
+                  <input
+                    type="checkbox"
+                    checked={selectedDonorStemTypes.includes(stemType)}
+                    disabled={candidateRendering !== null || rendering !== null || savingRemix}
+                    onChange={() => toggleDonorStemType(stemType)}
+                    data-testid={`mashup-donor-role-${stemType}`}
+                  />
+                  <span>{DONOR_ROLE_LABELS[stemType] ?? stemType}</span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p>No matching separated roles are available. Choose songs with completed, aligned stem separation to swap individual roles.</p>
+          )}
+        </section>
+      )}
       {canEdit && (
         <CandidateAlignmentLab
           candidates={candidateViews}
