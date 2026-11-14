@@ -131,7 +131,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
    * previous auto-select list omitted "full-length" entirely, so Full Length was
    * reachable through the API but never actually selected in production.
    */
-  const [arrangementMode, setArrangementMode] = useState<CandidateAlignmentId>("phrase-aware");
+  const [arrangementMode, setArrangementMode] = useState<CandidateAlignmentId>("full-length");
   const [candidateRendering, setCandidateRendering] = useState<CandidateAlignmentId | null>(null);
   const [renderedCandidateUrls, setRenderedCandidateUrls] = useState<Partial<Record<CandidateAlignmentId, string>>>({});
   const [bedInfo, setBedInfo] = useState<{
