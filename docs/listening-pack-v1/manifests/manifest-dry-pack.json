@@ -1,0 +1,508 @@
+{
+  "purpose": "Listening pack of real Waveyard mashups for human assessment. These are actual renders from the production planner and mix bus, not synthetic fixtures.",
+  "listeners": 0,
+  "listenerAssessment": "NOT PERFORMED — this pack exists so a human can do it. No automated score here is a quality claim.",
+  "inputs": "Vocals: MTG turkish-makam-solo-voice dataset (CC BY 4.0, https://github.com/MTG/turkish-makam-acapella-sections-dataset). Beds: AERIS MUSIC CC0 instrumentals (https://github.com/farmmer938-lgtm/aeris-cc0-music).",
+  "inputsArePreSeparated": "The vocal side is unaccompanied singing and the bed side is an instrumental, so both are already isolated. No separation model was run — none could be downloaded in this environment — and that is recorded here so nobody assumes the separation stage was exercised.",
+  "renderRate": 44100,
+  "entries": [
+    {
+      "label": "01-similar-tempo",
+      "note": "vocals ~103 BPM against a ~112 BPM bed; a light stretch is expected",
+      "vocals": "02_Gel_2_zemin",
+      "bed": "horizon-monolith",
+      "vocalsAnalysis": {
+        "bpm": 103.36,
+        "bpmConfidence": 0.172,
+        "key": "D minor",
+        "keyConfidence": 0.08
+      },
+      "bedAnalysis": {
+        "bpm": 112.347,
+        "bpmConfidence": 0.621,
+        "key": "C major",
+        "keyConfidence": 0.116
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/01-similar-tempo.wav",
+      "seconds": 68.6,
+      "masterBpm": 112.347,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.883,
+      "rmsDb": -15.5,
+      "clippedSamples": 0,
+      "limiterApplied": true,
+      "staticGainDb": -1.01,
+      "vocalSourceActiveFraction": 0.92,
+      "vocalGainDb": 6,
+      "balanceCorrectionClamped": true,
+      "balanceNote": "Measured BS.1770 difference is 7.18 dB; applied 6.00 dB and clamped to ±6 dB. A clamped correction means this pair needs a bigger change than a mix balance should make — the pairing or the phrase selection is the open question, not the gain.",
+      "rationale": [
+        "master tempo = the instrumental's verified 112.347 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 5.5s); the padded vocal crop enters on a measured bed beat at 5.88s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–10.3s)",
+        "second vocal placement grounded in the donor's own persisted section “outro” — an encore of its closing passage, not a recurrence or semantic detection"
+      ],
+      "warnings": [
+        "Vocal tempo (103.36 BPM) has low confidence (0.172).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result."
+      ]
+    },
+    {
+      "label": "02-different-tempo",
+      "note": "vocals ~112 BPM against an ~88 BPM bed; the largest warp in the pack",
+      "vocals": "02_Gel_4_nakarat",
+      "bed": "ash",
+      "vocalsAnalysis": {
+        "bpm": 112.347,
+        "bpmConfidence": 0.245,
+        "key": "C major",
+        "keyConfidence": 0.009
+      },
+      "bedAnalysis": {
+        "bpm": 87.593,
+        "bpmConfidence": 0.759,
+        "key": "C minor",
+        "keyConfidence": 0.162
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/02-different-tempo.wav",
+      "seconds": 87.3,
+      "masterBpm": 87.593,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.911,
+      "rmsDb": -13.3,
+      "clippedSamples": 0,
+      "limiterApplied": false,
+      "staticGainDb": 0,
+      "vocalSourceActiveFraction": 0.84,
+      "vocalGainDb": 6,
+      "balanceCorrectionClamped": true,
+      "balanceNote": "Measured BS.1770 difference is 6.51 dB; applied 6.00 dB and clamped to ±6 dB. A clamped correction means this pair needs a bigger change than a mix balance should make — the pairing or the phrase selection is the open question, not the gain.",
+      "rationale": [
+        "master tempo = the instrumental's verified 87.593 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 7.0s); the padded vocal crop enters on a measured bed beat at 7.49s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–10.4s)",
+        "second vocal placement grounded in the donor's own persisted section “outro” — an encore of its closing passage, not a recurrence or semantic detection"
+      ],
+      "warnings": [
+        "Vocal tempo (112.347 BPM) has low confidence (0.245).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result."
+      ]
+    },
+    {
+      "label": "03-long-vocal",
+      "note": "a 104 s vocal phrase over a ~128 BPM bed",
+      "vocals": "02_Hicran_Part1_T1",
+      "bed": "overdrive-signal-lost",
+      "vocalsAnalysis": {
+        "bpm": 117.454,
+        "bpmConfidence": 0.132,
+        "key": "E minor",
+        "keyConfidence": 0.06
+      },
+      "bedAnalysis": {
+        "bpm": 127.604,
+        "bpmConfidence": 0.684,
+        "key": "C major",
+        "keyConfidence": 0.15
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/03-long-vocal.wav",
+      "seconds": 60,
+      "masterBpm": 127.604,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.91,
+      "rmsDb": -15.6,
+      "clippedSamples": 0,
+      "limiterApplied": true,
+      "staticGainDb": -1.8,
+      "vocalSourceActiveFraction": 0.857,
+      "vocalGainDb": 5.54,
+      "balanceCorrectionClamped": false,
+      "balanceNote": "Vocal fitted to the bed's measured loudness: -19.55 → -14.01 LUFS, 5.54 dB.",
+      "rationale": [
+        "master tempo = the instrumental's verified 127.604 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 4.8s); the padded vocal crop enters on a measured bed beat at 5.14s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–103.6s)"
+      ],
+      "warnings": [
+        "Vocal tempo (117.454 BPM) has low confidence (0.132).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The tempo-matched vocal (103.6s) is longer than the bed has room (54.9s) — it fades out at the bed's end."
+      ]
+    },
+    {
+      "label": "04-full-song-vocal",
+      "note": "a 214 s vocal over a ~96 BPM bed; the longest output",
+      "vocals": "02_Kimseye",
+      "bed": "overdrive-signal-lost",
+      "vocalsAnalysis": {
+        "bpm": 103.359,
+        "bpmConfidence": 0.175,
+        "key": "C minor",
+        "keyConfidence": 0.023
+      },
+      "bedAnalysis": {
+        "bpm": 127.604,
+        "bpmConfidence": 0.684,
+        "key": "C major",
+        "keyConfidence": 0.15
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/04-full-song-vocal.wav",
+      "seconds": 60,
+      "masterBpm": 127.604,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.911,
+      "rmsDb": -16.2,
+      "clippedSamples": 0,
+      "limiterApplied": false,
+      "staticGainDb": 0,
+      "vocalSourceActiveFraction": 0.664,
+      "vocalGainDb": 4.87,
+      "balanceCorrectionClamped": false,
+      "balanceNote": "Vocal fitted to the bed's measured loudness: -18.88 → -14.01 LUFS, 4.87 dB.",
+      "rationale": [
+        "master tempo = the instrumental's verified 127.604 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 4.8s); the padded vocal crop enters on a measured bed beat at 5.14s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–214.2s)"
+      ],
+      "warnings": [
+        "Vocal tempo (103.359 BPM) has low confidence (0.175).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The tempo-matched vocal (214.2s) is longer than the bed has room (54.9s) — it fades out at the bed's end."
+      ]
+    },
+    {
+      "label": "05-uncertain-tempo",
+      "note": "vocal tempo confidence is low, so stretching should be withheld",
+      "vocals": "02_Gel_5_nakarat2",
+      "bed": "beneath",
+      "vocalsAnalysis": {
+        "bpm": 103.36,
+        "bpmConfidence": 0.232,
+        "key": "D minor",
+        "keyConfidence": 0.087
+      },
+      "bedAnalysis": {
+        "bpm": 95.703,
+        "bpmConfidence": 0.655,
+        "key": "C minor",
+        "keyConfidence": 0.062
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/05-uncertain-tempo.wav",
+      "seconds": 80,
+      "masterBpm": 95.703,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.911,
+      "rmsDb": -16.9,
+      "clippedSamples": 0,
+      "limiterApplied": true,
+      "staticGainDb": -1.91,
+      "vocalSourceActiveFraction": 0.846,
+      "vocalGainDb": 3.95,
+      "balanceCorrectionClamped": false,
+      "balanceNote": "Vocal fitted to the bed's measured loudness: -17.86 → -13.91 LUFS, 3.95 dB.",
+      "rationale": [
+        "master tempo = the instrumental's verified 95.703 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 6.4s); the padded vocal crop enters on a measured bed beat at 6.86s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–10.5s)",
+        "second vocal placement grounded in the donor's own persisted section “outro” — an encore of its closing passage, not a recurrence or semantic detection"
+      ],
+      "warnings": [
+        "Vocal tempo (103.36 BPM) has low confidence (0.232).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result."
+      ]
+    },
+    {
+      "label": "06-different-style",
+      "note": "rubato-like singing against a driving electronic bed",
+      "vocals": "02_Gel_6_meyan",
+      "bed": "overdrive-signal-lost",
+      "vocalsAnalysis": {
+        "bpm": 120.185,
+        "bpmConfidence": 0.165,
+        "key": "A# major",
+        "keyConfidence": 0.07
+      },
+      "bedAnalysis": {
+        "bpm": 127.604,
+        "bpmConfidence": 0.684,
+        "key": "C major",
+        "keyConfidence": 0.15
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/06-different-style.wav",
+      "seconds": 60,
+      "masterBpm": 127.604,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.911,
+      "rmsDb": -15.3,
+      "clippedSamples": 0,
+      "limiterApplied": true,
+      "staticGainDb": -1.19,
+      "vocalSourceActiveFraction": 0.88,
+      "vocalGainDb": 4.72,
+      "balanceCorrectionClamped": false,
+      "balanceNote": "Vocal fitted to the bed's measured loudness: -18.73 → -14.01 LUFS, 4.72 dB.",
+      "rationale": [
+        "master tempo = the instrumental's verified 127.604 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 4.8s); the padded vocal crop enters on a measured bed beat at 5.14s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–10.4s)",
+        "second vocal placement grounded in the donor's own persisted section “outro” — an encore of its closing passage, not a recurrence or semantic detection"
+      ],
+      "warnings": [
+        "Vocal tempo (120.185 BPM) has low confidence (0.165).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result."
+      ]
+    },
+    {
+      "label": "07-bed-slow",
+      "note": "the slowest bed (~68-83 BPM) in the corpus",
+      "vocals": "02_Gel_7_meyan2",
+      "bed": "quiet-room",
+      "vocalsAnalysis": {
+        "bpm": 105.469,
+        "bpmConfidence": 0.142,
+        "key": "F major",
+        "keyConfidence": 0.049
+      },
+      "bedAnalysis": {
+        "bpm": 83.354,
+        "bpmConfidence": 0.484,
+        "key": "C major",
+        "keyConfidence": 0.164
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/07-bed-slow.wav",
+      "seconds": 57.1,
+      "masterBpm": 83.354,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.911,
+      "rmsDb": -15.2,
+      "clippedSamples": 0,
+      "limiterApplied": true,
+      "staticGainDb": -0.43,
+      "vocalSourceActiveFraction": 0.889,
+      "vocalGainDb": 0.52,
+      "balanceCorrectionClamped": false,
+      "balanceNote": "Vocal fitted to the bed's measured loudness: -14.74 → -14.21 LUFS, 0.52 dB.",
+      "rationale": [
+        "master tempo = the instrumental's 83.354 BPM (low confidence).",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 4.6s); null; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–10.9s)",
+        "second vocal placement grounded in the donor's own persisted section “outro” — an encore of its closing passage, not a recurrence or semantic detection"
+      ],
+      "warnings": [
+        "Instrumental tempo (83.354 BPM) has low confidence (0.484); beat synchronization may drift.",
+        "Vocal tempo (105.469 BPM) has low confidence (0.142).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No trusted bed beat grid was available. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result."
+      ]
+    },
+    {
+      "label": "08-bed-lofi",
+      "note": "lofi/hazy bed at ~74 BPM",
+      "vocals": "02_Gel_8_nakarat",
+      "bed": "bedroom-window-vast",
+      "vocalsAnalysis": {
+        "bpm": 103.36,
+        "bpmConfidence": 0.145,
+        "key": "A# minor",
+        "keyConfidence": 0.04
+      },
+      "bedAnalysis": {
+        "bpm": 73.828,
+        "bpmConfidence": 0.514,
+        "key": "C major",
+        "keyConfidence": 0.246
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/08-bed-lofi.wav",
+      "seconds": 103.8,
+      "masterBpm": 73.828,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.911,
+      "rmsDb": -15.9,
+      "clippedSamples": 0,
+      "limiterApplied": true,
+      "staticGainDb": -0.72,
+      "vocalSourceActiveFraction": 0.92,
+      "vocalGainDb": 3.56,
+      "balanceCorrectionClamped": false,
+      "balanceNote": "Vocal fitted to the bed's measured loudness: -17.86 → -14.31 LUFS, 3.56 dB.",
+      "rationale": [
+        "master tempo = the instrumental's verified 73.828 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 8.3s); the padded vocal crop enters on a measured bed beat at 8.90s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–10.4s)",
+        "second vocal placement grounded in the donor's own persisted section “outro” — an encore of its closing passage, not a recurrence or semantic detection"
+      ],
+      "warnings": [
+        "Vocal tempo (103.36 BPM) has low confidence (0.145).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result."
+      ]
+    },
+    {
+      "label": "09-dense-bed",
+      "note": "dense warm pad bed; checks whether the vocal stays intelligible",
+      "vocals": "02_Hicran_Part2_T1",
+      "bed": "afterglow-vast",
+      "vocalsAnalysis": {
+        "bpm": 120.185,
+        "bpmConfidence": 0.144,
+        "key": "E minor",
+        "keyConfidence": 0.031
+      },
+      "bedAnalysis": {
+        "bpm": 83.354,
+        "bpmConfidence": 0.522,
+        "key": "C major",
+        "keyConfidence": 0.069
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/09-dense-bed.wav",
+      "seconds": 91.4,
+      "masterBpm": 83.354,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.911,
+      "rmsDb": -17.4,
+      "clippedSamples": 0,
+      "limiterApplied": true,
+      "staticGainDb": -2.75,
+      "vocalSourceActiveFraction": 0.859,
+      "vocalGainDb": 5.45,
+      "balanceCorrectionClamped": false,
+      "balanceNote": "Vocal fitted to the bed's measured loudness: -19.75 → -14.30 LUFS, 5.45 dB.",
+      "rationale": [
+        "master tempo = the instrumental's verified 83.354 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 7.3s); the padded vocal crop enters on a measured bed beat at 7.85s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–104.9s)"
+      ],
+      "warnings": [
+        "Vocal tempo (120.185 BPM) has low confidence (0.144).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The tempo-matched vocal (104.9s) is longer than the bed has room (83.6s) — it fades out at the bed's end."
+      ]
+    },
+    {
+      "label": "10-leftover-pair",
+      "note": "a short section; checks a short vocal body over a full bed",
+      "vocals": "02_Kimseye_4_nakarat",
+      "bed": "old-photos-outlands",
+      "vocalsAnalysis": {
+        "bpm": 99.384,
+        "bpmConfidence": 0.254,
+        "key": "C major",
+        "keyConfidence": 0.009
+      },
+      "bedAnalysis": {
+        "bpm": 73.828,
+        "bpmConfidence": 0.534,
+        "key": "C major",
+        "keyConfidence": 0.314
+      },
+      "planned": true,
+      "file": "/home/user/arena-os-canonical/generated-artifacts/listening-pack/10-leftover-pair.wav",
+      "seconds": 103.8,
+      "masterBpm": 73.828,
+      "stretchRatio": 1,
+      "pitchSemitones": 0,
+      "keyRelationship": "unknown",
+      "peak": 0.902,
+      "rmsDb": -15.3,
+      "clippedSamples": 0,
+      "limiterApplied": false,
+      "staticGainDb": 0,
+      "vocalSourceActiveFraction": 0.9,
+      "vocalGainDb": 6,
+      "balanceCorrectionClamped": true,
+      "balanceNote": "Measured BS.1770 difference is 8.82 dB; applied 6.00 dB and clamped to ±6 dB. A clamped correction means this pair needs a bigger change than a mix balance should make — the pairing or the phrase selection is the open question, not the gain.",
+      "rationale": [
+        "master tempo = the instrumental's verified 73.828 BPM.",
+        "vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.",
+        "vocals enter at the bed's first body section (“verse” at 8.3s); the padded vocal crop enters on a measured bed beat at 8.90s; no confidence-qualified vocal activity or pitch interval starts were available for transient comparison; no confidence-qualified vocal activity or pitch runs are available for passage evaluation, so transient coincidences alone do not shift this passage-entry fallback",
+        "phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.",
+        "vocal body spans 4 sections (0.0s–20.1s)",
+        "second vocal placement grounded in the donor's own persisted section “outro” — an encore of its closing passage, not a recurrence or semantic detection"
+      ],
+      "warnings": [
+        "Vocal tempo (99.384 BPM) has low confidence (0.254).",
+        "Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.",
+        "Key analysis confidence is below the trusted threshold (0.5) — automatic pitch move withheld (0 semitones).",
+        "Passage matching remains a measured-beat fallback because no confidence-qualified vocal activity or pitch runs are available for passage evaluation. No current isolated-vocal activity or pitch intervals were available. A separate whole-body fit may move the complete performance using its combined evidence; these observations are not lyric phrases, and event timing does not establish musical fit or listening quality.",
+        "No current isolated-vocal voicing intervals are available; the entry is not lyric-aware and the full vocal source window is retained.",
+        "The closing encore re-places the donor's final detected section over the late bed; it is NOT an evidence-backed recurrence or semantic reprise. Treat it as a deliberate design choice, not a detection result."
+      ]
+    }
+  ]
+}
