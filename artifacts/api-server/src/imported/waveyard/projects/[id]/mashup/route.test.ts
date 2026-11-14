@@ -199,7 +199,11 @@ const hasRealMashupFixture = Boolean(process.env.WAVEYARD_MASHUP_REAL_FIXTURE_MA
 if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
   process.on("uncaughtException", (error: unknown) => {
     const trace = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    console.error(`UNCAUGHT_DIAGNOSTICS ${trace.split("\n").slice(0, 12).join(" | ")}`);
+    // The interesting frames are our own; pg-protocol's parser frames fill the
+    // top of the stack and would otherwise consume the whole annotation.
+    const frames = trace.split("\n");
+    const appFrames = frames.filter((line) => !/pg-protocol|node_modules\/pg\/|node:internal|node:events/.test(line));
+    console.error(`UNCAUGHT_DIAGNOSTICS ${appFrames.slice(0, 14).join(" | ")}`);
   });
 }
 
