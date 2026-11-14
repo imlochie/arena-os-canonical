@@ -18,7 +18,7 @@ import type { LocalTempoMap } from "./local-tempo-map";
 import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
-import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
+import { analysePcm, tempoCandidates, type AnalysisResult } from "../worker-local/analysis-engine";
 import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
 import { comparePassageCompatibility, type PassageFingerprint, type PassageRollingWindow } from "../types/passage-compatibility";
 import {
@@ -28,6 +28,15 @@ import {
 } from "../types/harmony-analysis";
 import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
+import {
+  finishMashupMix,
+  measureMashupMixStage,
+  planMashupBalance,
+  unmeasuredBalance,
+  MASHUP_LIMITER_CEILING,
+  FULL_TRUE_PEAK_MAX_SECONDS,
+  type MashupMixResult,
+} from "./mashup-mix-bus";
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v12";
@@ -55,6 +64,12 @@ export type MashupSourceProfile = {
   sourceChecksumSha256?: string;
   bpm: number | null;
   bpmConfidence?: number | null;
+  /**
+   * Plausible tempi in the same pulse family as `bpm`, strongest first. Used to
+   * avoid stretching a vocal to twice the intended speed when a reading is an
+   * octave high; absent means "trust `bpm` alone".
+   */
+  bpmCandidates?: number[] | null;
   musicalKey: string | null;
   keyConfidence?: number | null;
   beatGridMs?: number[] | null;
@@ -227,7 +242,13 @@ export type MashupPlanResult =
   | { ok: true; plan: MashupPlan }
   | { ok: false; reason: string };
 
-export type MashupAlignmentStrategy = "continuous" | "paired-grid" | "downbeat" | "phrase-aware";
+export type MashupAlignmentStrategy =
+  | "continuous"
+  | "paired-grid"
+  | "downbeat"
+  | "phrase-aware"
+  /** Reproduce the complete source performance, looping it when the bed has room. */
+  | "full-length";
 
 export const MASHUP_ALIGNMENT_CANDIDATES: ReadonlyArray<{
   id: MashupAlignmentStrategy;
@@ -237,6 +258,7 @@ export const MASHUP_ALIGNMENT_CANDIDATES: ReadonlyArray<{
   { id: "paired-grid", title: "Paired beat-grid" },
   { id: "downbeat", title: "Measured downbeat" },
   { id: "phrase-aware", title: "Fingerprint-ranked passage" },
+  { id: "full-length", title: "Full Length — complete performance, looped if the bed has room" },
 ];
 
 const LOCK_TOLERANCE = 0.03;
@@ -263,6 +285,94 @@ function isOutro(label: string): boolean {
  * would only degrade it. Anything else stretches to match the bed's tempo,
  * clamped to 0.5–2.
  */
+/**
+ * Octave-aware stretch choice.
+ *
+ * `warpRatioForTempos` sees one number per track, which is enough when both
+ * readings are unambiguous but produces a wrong result when either tempo was
+ * reported one octave high: a 143.555 BPM reading for a 72 BPM bed yields a
+ * 0.697 ratio where the truth is 1.389, so the vocal is stretched twice as far
+ * as it should be. Given the pulse family for each side we can pick the pairing
+ * that needs the least warp, which is both the smallest audible artefact and
+ * the most likely musical intent — a 2:1 pairing is a half-time feel, not a
+ * reason to halve a vocal.
+ *
+ * Least warp alone is not sufficient: two octave pairings can cost exactly the
+ * same (100/71.777 and 200/143.555 both give 1.393). Ties are broken in favour
+ * of leaving the *bed* at its own reading, because the resolved bed tempo is
+ * also the master tempo the arrangement measures bars and entry points with.
+ * Inventing an octave for the bed on a tie would halve or double every bar
+ * length in the plan, which is a far larger musical change than the warp — and
+ * an equal-cost tie means the warp itself is unaffected either way.
+ *
+ * Falls back to the single readings when no family is supplied, so callers
+ * without candidate evidence keep the previous behaviour exactly.
+ */
+export function warpRatioForTempoCandidates(
+  vocalCandidates: readonly number[] | null | undefined,
+  bedCandidates: readonly number[] | null | undefined,
+  vocalBpm: number,
+  bedBpm: number,
+): { ratio: number; vocalBpm: number; bedBpm: number; ambiguous: boolean; consideredPairs: number } {
+  const vocals = usableCandidates(vocalCandidates, vocalBpm);
+  const beds = usableCandidates(bedCandidates, bedBpm);
+  if (vocals.length === 0 || beds.length === 0) {
+    return { ratio: 1, vocalBpm, bedBpm, ambiguous: false, consideredPairs: 0 };
+  }
+  const octaveJumps = (candidate: number, raw: number) =>
+    raw > 0 ? Math.abs(Math.log2(candidate / raw)) : 0;
+  type Choice = { ratio: number; vocalBpm: number; bedBpm: number; cost: number; vocalJumps: number; bedJumps: number };
+  const choices: Choice[] = [];
+  for (const v of vocals) {
+    for (const b of beds) {
+      const ratio = warpRatioForTempos(v, b);
+      choices.push({
+        ratio,
+        vocalBpm: v,
+        bedBpm: b,
+        // Rounded so that mathematically identical pairings tie instead of
+        // being separated by floating-point noise.
+        cost: Math.round(Math.abs(Math.log(ratio)) * 1e6) / 1e6,
+        vocalJumps: octaveJumps(v, vocalBpm),
+        bedJumps: octaveJumps(b, bedBpm),
+      });
+    }
+  }
+  const ranked = [...choices].sort((left, right) =>
+    left.cost - right.cost
+    || left.bedJumps - right.bedJumps
+    || left.vocalJumps - right.vocalJumps
+    || left.bedBpm - right.bedBpm,
+  );
+  const best = ranked[0]!;
+  // Ambiguous when a different octave pairing would need the same amount of
+  // warp, so the envelope genuinely cannot justify the choice. The octave is
+  // reported as uncertain rather than being presented as measured.
+  const ambiguous = ranked.some((choice) =>
+    Math.abs(choice.cost - best.cost) <= 1e-3
+    && (Math.abs(choice.vocalBpm - best.vocalBpm) > 0.5 || Math.abs(choice.bedBpm - best.bedBpm) > 0.5),
+  );
+  return {
+    ratio: best.ratio,
+    vocalBpm: best.vocalBpm,
+    bedBpm: best.bedBpm,
+    ambiguous,
+    consideredPairs: choices.length,
+  };
+}
+
+function usableCandidates(candidates: readonly number[] | null | undefined, fallback: number): number[] {
+  const source = candidates && candidates.length > 0 ? candidates : [fallback];
+  const seen: number[] = [];
+  for (const candidate of source) {
+    if (!Number.isFinite(candidate) || candidate <= 0) continue;
+    if (candidate < 40 || candidate > 300) continue;
+    if (seen.some((existing) => Math.abs(existing - candidate) <= 0.5)) continue;
+    seen.push(candidate);
+  }
+  return seen;
+}
+
 export function warpRatioForTempos(vocalBpm: number, bedBpm: number): number {
   if (vocalBpm <= 0 || bedBpm <= 0) return 1;
   const raw = vocalBpm / bedBpm;
@@ -518,6 +628,70 @@ function vocalBodySpan(vocals: MashupSourceProfile): {
     why: "no current vocal activity or pitch timing — the full vocal source is used",
     vocalActivityEvidence: false,
   };
+}
+
+/**
+ * Minimum loop length the planner will place.
+ *
+ * Two bars of the master tempo, floored at 4s. A shorter repeat is not heard as
+ * a musical reprise — it is heard as a stutter, and the owner's spec is explicit
+ * that a loop must never be forced into an awkward transition. When the
+ * remaining bed is shorter than this, Full Length finishes naturally instead.
+ */
+export const MIN_FULL_LENGTH_LOOP_MS = 4_000;
+
+/**
+ * Plan the repeats for Full Length mode: the complete vocal body, then the same
+ * body again from its beginning, repeated while the bed has room.
+ *
+ * This is deliberately different from `chooseGroundedReprise`, which echoes the
+ * donor's *closing* material and never replays the opening. Full Length mode is
+ * defined by reproducing the source performance, so the repeat starts at the
+ * body start again — but only when a full minimum-length pass fits, and the loop
+ * is always bar-aligned so the repeat re-enters on a musical boundary.
+ */
+function planFullLengthLoops(input: {
+  bodyMs: number;
+  firstEndMs: number;
+  bedDurationMs: number;
+  barMs: number;
+  /** The first pass's start, so repeats keep the entry's bar phase. */
+  entryMs: number;
+}): { startMs: number; endMs: number; sourceFromMs: number; sourceToMs: number; index: number }[] {
+  const loops: { startMs: number; endMs: number; sourceFromMs: number; sourceToMs: number; index: number }[] = [];
+  const { bodyMs, bedDurationMs, barMs, entryMs } = input;
+  if (bodyMs <= 0) return loops;
+  // Only complete passes are placed. A partial pass would cut the performance
+  // mid-phrase at the bed's end, which is the awkward transition FL-5 forbids;
+  // the bed finishes naturally instead.
+  if (bodyMs < MIN_FULL_LENGTH_LOOP_MS) return loops;
+  let cursor = input.firstEndMs;
+
+  // Snap to a bar boundary *measured from the first pass's entry*, not from
+  // zero: the bed's bar grid and the entry's phase are different things, and a
+  // repeat that lands on bar 14 from zero may sit a beat off the phase the
+  // first pass established.
+  const snapFromEntry = (ms: number): number => {
+    if (!(barMs > 0)) return Math.round(ms);
+    const bars = Math.ceil((ms - entryMs) / barMs);
+    return Math.round(entryMs + bars * barMs);
+  };
+
+  for (let index = 1; index < 64; index += 1) {
+    const start = snapFromEntry(cursor);
+    if (start < 0) break;
+    const room = bedDurationMs - start;
+    if (room < bodyMs) break;
+    loops.push({
+      startMs: start,
+      endMs: Math.round(start + bodyMs),
+      sourceFromMs: 0,
+      sourceToMs: bodyMs,
+      index,
+    });
+    cursor = start + bodyMs;
+  }
+  return loops;
 }
 
 const GROOVE_MATCH_TOLERANCE_MS = 90;
@@ -2195,7 +2369,39 @@ export function planMashup(
   // Otherwise preserve natural speed (1.0), mark alignment unverified, and explain honestly.
   let stretchRatio = 1.0;
   if (trustedBedBpm !== null && trustedVocalBpm !== null) {
-    stretchRatio = warpRatioForTempos(effectiveVocalBpm, masterBpm);
+    // A single confidence number cannot express octave ambiguity, and a
+    // hats-heavy part reads high with confidence 1.0. Choose the pulse-family
+    // pairing that needs the least warp instead of taking both readings at face
+    // value; identical readings reproduce the previous ratio exactly.
+    const octaveChoice = warpRatioForTempoCandidates(
+      vocals.bpmCandidates, bed.bpmCandidates, effectiveVocalBpm, masterBpm,
+    );
+    stretchRatio = octaveChoice.ratio;
+    // Bar and entry decisions are derived from masterBpm. If the pulse family
+    // resolved the bed to a different octave than the raw reading, the master
+    // tempo has to move with it or the vocal would be warped for one tempo
+    // while the arrangement used bars measured at another.
+    if (Math.abs(octaveChoice.bedBpm - masterBpm) > 0.5) {
+      rationale.push(
+        `master tempo ${masterBpm} BPM is an octave reading; using ${octaveChoice.bedBpm} BPM `
+        + `so bar and entry decisions match the vocal warp.`,
+      );
+      masterBpm = octaveChoice.bedBpm;
+    }
+    if (octaveChoice.ambiguous) {
+      warnings.push(
+        `Tempo octave is ambiguous (${octaveChoice.vocalBpm} vs ${octaveChoice.bedBpm} BPM both fit); `
+        + `using the pairing that needs the least stretch (×${stretchRatio.toFixed(3)}).`,
+      );
+    }
+    const rawRatio = warpRatioForTempos(effectiveVocalBpm, trustedBedBpm);
+    if (Math.abs(octaveChoice.ratio - rawRatio) > 1e-6) {
+      rationale.push(
+        `tempo octave resolved from the pulse family: ${octaveChoice.vocalBpm} BPM over `
+        + `${octaveChoice.bedBpm} BPM needs ×${stretchRatio.toFixed(3)}, against `
+        + `×${rawRatio.toFixed(3)} for the raw readings.`,
+      );
+    }
     if (Math.abs(stretchRatio - 1) < 1e-9) {
       rationale.push(`vocals stay at natural speed (${effectiveVocalBpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
     } else {
@@ -2278,6 +2484,8 @@ export function planMashup(
     rationale.push("downbeat comparison: entry is anchored to an independently measured bed downbeat; no 4/4 phase is inferred from ordinary beat positions.");
   } else if (strategy === "phrase-aware") {
     rationale.push("phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.");
+  } else if (strategy === "full-length") {
+    rationale.push("full-length mode: the complete vocal performance is reproduced from its natural beginning to its natural ending, and repeated from the beginning at a bar boundary only while the bed has room for at least one musical unit.");
   }
   warnings.push(...(vocals.grooveWarnings ?? []), ...(bed.grooveWarnings ?? []));
 
@@ -2293,6 +2501,27 @@ export function planMashup(
   const stretchedMs = Math.round(vocalSpanMs * stretchRatio);
   const bedRoomMs = Math.max(0, bed.durationMs - entry.at);
 
+  // A segment's declared source range must not exceed what its timeline span can
+  // carry at the planned stretch ratio. Declaring 214.2s of source inside a
+  // 94.9s segment at ratio 1.0 makes the plan unusable as a description of the
+  // output: any consumer reading vocalsToMs computes the wrong thing, and a loop
+  // built on those ranges would inherit the error. The renderer already clamps to
+  // the timeline, so this makes the plan agree with what is actually rendered.
+  const clampSourceToTimeline = (
+    fromMs: number,
+    toMs: number,
+    timelineMs: number,
+  ): { toMs: number; trimmed: boolean } => {
+    // Outside full-length mode the plan keeps declaring the source window it
+    // selected and discloses the bed-end truncation in a warning — that is the
+    // established contract those strategies' tests pin. Full Length mode builds
+    // loops from these ranges, so there the range must fit the timeline.
+    if (strategy !== "full-length") return { toMs, trimmed: false };
+    const carriedMs = Math.max(0, Math.round(timelineMs / Math.max(1e-9, stretchRatio)));
+    if (toMs - fromMs <= carriedMs) return { toMs, trimmed: false };
+    return { toMs: fromMs + carriedMs, trimmed: true };
+  };
+
   const segments: MashupSegment[] = [];
   let arrangement: MashupArrangement | null = null;
 
@@ -2300,13 +2529,58 @@ export function planMashup(
   // First compare coherent whole-body offsets even when the donor is shorter:
   // moving one complete performance can improve its musical fit without
   // destroying its internal pace. Only use a reprise when no coherent move wins.
-  if ((strategy === "continuous" || strategy === "downbeat") && stretchedMs > 0 && bedRoomMs > 0) {
+  if (strategy === "full-length" && stretchedMs > 0 && bedRoomMs > 0) {
+    // Full Length mode: reproduce the complete performance, then repeat it from
+    // its beginning while the bed has room, never forcing an awkward loop.
+    const firstEnd = Math.round(Math.min(bed.durationMs, entry.at + stretchedMs));
+    const firstCarried = clampSourceToTimeline(body.fromMs, body.toMs, firstEnd - entry.at);
+    segments.push({
+      mashupStartMs: entry.at,
+      mashupEndMs: firstEnd,
+      vocalsFromMs: body.fromMs,
+      vocalsToMs: firstCarried.toMs,
+      crossfadeMs: crossfadeForSegment(entry.at, firstEnd),
+      rationale: `full-length pass: complete vocal body runs ${((firstEnd - entry.at) / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s`,
+      stemType: "vocals",
+      sourceRole: "vocals",
+    });
+    const loops = planFullLengthLoops({
+      bodyMs: stretchedMs,
+      firstEndMs: firstEnd,
+      bedDurationMs: bed.durationMs,
+      barMs,
+      entryMs: entry.at,
+    });
+    for (const loop of loops) {
+      segments.push({
+        mashupStartMs: loop.startMs,
+        mashupEndMs: loop.endMs,
+        vocalsFromMs: body.fromMs,
+        vocalsToMs: body.toMs,
+        crossfadeMs: crossfadeForSegment(loop.startMs, loop.endMs),
+        rationale: `full-length repeat ${loop.index}: the complete vocal body replays from its beginning (${(loop.startMs / 1000).toFixed(1)}s–${(loop.endMs / 1000).toFixed(1)}s), bar-aligned to the bed`,
+        stemType: "vocals",
+        sourceRole: "vocals",
+      });
+    }
+    const loopedMs = loops.reduce((sum, loop) => sum + (loop.endMs - loop.startMs), 0);
+    if (loops.length > 0) {
+      rationale.push(`full-length loop: ${loops.length} repeat${loops.length === 1 ? "" : "s"} of the complete body add ${(loopedMs / 1000).toFixed(1)}s of vocal`);
+    }
+    if (firstEnd >= Math.round(bed.durationMs) && stretchedMs > bedRoomMs) {
+      warnings.push(`The complete vocal body (${((body.toMs - body.fromMs) / 1000).toFixed(1)}s) is longer than the bed has room (${(bedRoomMs / 1000).toFixed(1)}s) — it runs to the bed's end and the performance ends with the bed.`);
+    }
+    if (loops.length === 0 && firstEnd < Math.round(bed.durationMs)) {
+      warnings.push(`The bed outlasts the vocal body and no repeat had room for at least ${(MIN_FULL_LENGTH_LOOP_MS / 1000).toFixed(0)}s, so the remaining bed runs instrumental rather than forcing a loop shorter than a musical unit.`);
+    }
+  } else if ((strategy === "continuous" || strategy === "downbeat") && stretchedMs > 0 && bedRoomMs > 0) {
     const endMs = Math.round(Math.min(bed.durationMs, entry.at + stretchedMs));
+    const carried = clampSourceToTimeline(body.fromMs, body.toMs, endMs - entry.at);
     segments.push({
       mashupStartMs: entry.at,
       mashupEndMs: endMs,
       vocalsFromMs: body.fromMs,
-      vocalsToMs: body.toMs,
+      vocalsToMs: carried.toMs,
       crossfadeMs: crossfadeForSegment(entry.at, endMs),
       rationale: `complete vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s; no local timing map is applied`,
       stemType: "vocals",
@@ -2348,11 +2622,14 @@ export function planMashup(
         ? Math.round(acceptedTempoMap.points.at(-1)!.outputMs)
         : stretchedMs;
       const segEndMs = Math.round(Math.min(bed.durationMs, selectedEntryMs + effectiveVocalDurationMs));
+      const overlayCarried = acceptedTempoMap
+        ? { toMs: body.toMs, trimmed: false }
+        : clampSourceToTimeline(body.fromMs, body.toMs, segEndMs - selectedEntryMs);
       segments.push({
         mashupStartMs: selectedEntryMs,
         mashupEndMs: segEndMs,
         vocalsFromMs: body.fromMs,
-        vocalsToMs: body.toMs,
+        vocalsToMs: overlayCarried.toMs,
         crossfadeMs: crossfadeForSegment(selectedEntryMs, segEndMs),
         ...(acceptedTempoMap ? { localTempoMap: acceptedTempoMap } : {}),
         rationale: acceptedTempoMap
@@ -2418,11 +2695,13 @@ export function planMashup(
     }
   } else {
     // Fallback: minimal single segment
+    const fallbackEnd = Math.min(bed.durationMs, entry.at + stretchedMs);
+    const fallbackCarried = clampSourceToTimeline(body.fromMs, body.toMs, fallbackEnd - entry.at);
     segments.push({
       mashupStartMs: entry.at,
-      mashupEndMs: Math.min(bed.durationMs, entry.at + stretchedMs),
+      mashupEndMs: fallbackEnd,
       vocalsFromMs: body.fromMs,
-      vocalsToMs: body.toMs,
+      vocalsToMs: fallbackCarried.toMs,
       crossfadeMs: crossfadeForSegment(entry.at, Math.min(bed.durationMs, entry.at + stretchedMs)),
       rationale: `vocals run ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
       stemType: "vocals",
@@ -2529,6 +2808,9 @@ function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceP
     sourceChecksumSha256: sourceChecksum,
     bpm: tempo?.bpm ?? profile.bpm,
     bpmConfidence: tempo?.confidence ?? profile.bpmConfidence ?? null,
+    // Evidence packets carry a single tempo; only a profile that was analysed
+    // directly can carry a pulse family, so never invent one here.
+    bpmCandidates: tempo !== null ? tempoCandidates(tempo.bpm ?? null) : profile.bpmCandidates ?? null,
     musicalKey: key?.key ?? profile.musicalKey,
     keyConfidence: key?.confidence ?? profile.keyConfidence ?? null,
     beatGridMs: beatGrid?.beatsMs ?? profile.beatGridMs ?? null,
@@ -2554,10 +2836,33 @@ export type MashupPcmInput = {
   vocals: StereoBuffer;
   /** Interleaved stereo bed (instrumental) PCM. */
   bed: StereoBuffer;
-  /** Optional discrete stems from both songs for stem-level mixing. */
+  /**
+   * Optional complementary **donor** stems for deliberate layering, keyed
+   * `donor_<stemType>`. These are never added automatically: only the stem
+   * types named in `layerStemTypes` are summed, and each starts at the
+   * planned vocal entry rather than at timeline zero.
+   */
   stems?: Map<string, StereoBuffer>;
+  /**
+   * Donor stem types the caller deliberately chose to layer (e.g. `drums`).
+   * Empty/absent means the default composition: vocal donor over the
+   * instrumental bed only, with no second rhythm section.
+   */
+  layerStemTypes?: readonly string[];
   sampleRate: number;
+  /**
+   * Mix-bus controls. Defaults are the conservative production values; a
+   * caller may disable balance matching or limiting only for a controlled
+   * A/B render.
+   */
+  mix?: {
+    matchVocalLoudness?: boolean;
+    limit?: boolean;
+  };
 };
+
+/** Donor stem gains when a caller explicitly layers one over the bed. */
+const DONOR_LAYER_GAIN = 0.6;
 
 function trapezoidGain(atMs: number, startMs: number, endMs: number, crossfadeMs: number): number {
   if (atMs < startMs || atMs > endMs) return 0;
@@ -2569,11 +2874,30 @@ function trapezoidGain(atMs: number, startMs: number, endMs: number, crossfadeMs
 }
 
 /** Mix the plan: bed (ducked under vocals) + stretched/pitched vocal
- *  segments with trapezoid fades. Deterministic from the plan. */
-export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuffer {
+ *  segments with trapezoid fades, then a measured mix bus.
+ *
+ *  Composition rule (the product default): the vocal donor supplies the
+ *  vocal and the instrumental bed supplies drums, bass and everything else.
+ *  Donor stems are only summed when the caller names them in
+ *  `layerStemTypes`, and each one is offset to the planned vocal entry so a
+ *  late-entering vocal never drags an unaligned second drum kit in from
+ *  timeline zero.
+ *
+ *  Mix rule: the vocal is gain-matched to the bed's measured loudness and
+ *  the sum is scaled into headroom and passed through the existing
+ *  stereo-linked true-peak limiter. Nothing is hard-clipped. */
+export function renderMashupWithBus(
+  plan: MashupPlan,
+  input: MashupPcmInput,
+): { pcm: StereoBuffer; mix: MashupMixResult } {
   const { sampleRate } = input;
   const totalFrames = Math.max(1, Math.round((plan.durationMs / 1000) * sampleRate));
-  const out = new Float32Array(totalFrames * 2);
+  const summed = new Float32Array(totalFrames * 2);
+
+  const balance = input.mix?.matchVocalLoudness === false
+    ? null
+    : planMashupBalance({ vocals: input.vocals, bed: input.bed, sampleRate });
+  const vocalGain = balance === null ? 1 : 10 ** (balance.vocalGainDb / 20);
 
   // Prepared vocal segments (stretched once, then pitched once each).
   const prepared = plan.segments.map((segment) => {
@@ -2602,21 +2926,63 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     return { segment, pcm: pitchShift(stretched, plan.vocalsPitchSemitones, sampleRate) };
   });
 
-  // Pre-process complementary donor stems ONCE before the rendering loop.
-  // Instrumental stems (drums, bass, guitar, keys, other) must NEVER inherit vocal-specific
-  // pitch transposition or vocal transformations. Preserve their native pitch.
-  // Time-stretching is applied only when beat synchronization is mutually trusted.
-  const preparedStems: Array<{ name: string; pcm: StereoBuffer }> = [];
-  if (input.stems) {
+  // Deliberately layered donor stems only. Everything else in the donor's
+  // separation run stays out of the mix; the bed already carries those roles.
+  const layerTypes = new Set((input.layerStemTypes ?? []).map((type) => String(type)));
+  const preparedStems: Array<{ type: string; pcm: StereoBuffer; offsetFrames: number; sourceLeadMs: number }> = [];
+  if (input.stems && layerTypes.size > 0) {
     for (const [stemName, rawStemBuffer] of input.stems) {
-      if (stemName !== "vocals") {
-        // Instrumental donor stems preserve native pitch (0 semitones shift).
-        // Only time-stretch to match master tempo if tempo stretch ratio differs from 1.0.
-        const pcm = (stemName.startsWith("donor_") && Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6)
-          ? timeStretch(rawStemBuffer, plan.vocalsStretchRatio, sampleRate)
-          : rawStemBuffer;
-        preparedStems.push({ name: stemName, pcm });
+      if (!stemName.startsWith("donor_")) continue;
+      const type = stemName.slice("donor_".length);
+      if (!layerTypes.has(type)) continue;
+      // A donor stem must be musically co-located with the vocal it
+      // accompanies. Two corrections, not one:
+      //
+      //   1. the donor's *own* source offset is dropped, so the stem starts
+      //      where the vocal phrase starts rather than at its file's timeline
+      //      zero (which for a late-entering part is silence or the wrong bar);
+      //   2. the remaining audio follows the session tempo map.
+      //
+      // Without (1) a late-entering phrase drags 2.5 s of donor instrumental in
+      // ahead of it; without (2) the layer drifts against the bed within a bar.
+      const entry = plan.segments[0];
+      const sourceLeadFrames = Math.round(((entry?.vocalsFromMs ?? 0) / 1000) * sampleRate) * 2;
+      const trimmed = sourceLeadFrames > 0 && sourceLeadFrames < rawStemBuffer.length
+        ? rawStemBuffer.subarray(sourceLeadFrames)
+        : rawStemBuffer;
+      // Instrumental donor stems keep their native pitch. They follow the
+      // session tempo like the bed does — and like the vocal does.
+      //
+      // A constant stretch ratio is only correct when the plan accepted a
+      // constant tempo. When a piecewise `localTempoMap` was measured and
+      // accepted, the vocal is warped through that map; stretching the donor
+      // by the constant ratio instead makes the two drift apart *within* the
+      // phrase even though they start together. So the donor is given the same
+      // map, minus the vocal's pitch shift, which would be wrong for drums.
+      const donorTempoMap = entry?.localTempoMap;
+      let pcm: StereoBuffer;
+      if (donorTempoMap) {
+        const inputFrames = trimmed.length / 2;
+        const outputFrames = Math.max(1, Math.round(
+          (donorTempoMap.points.at(-1)!.outputMs / 1000) * sampleRate,
+        ));
+        const timeMap: TimeStretchMapPoint[] = donorTempoMap.points.map((point) => ({
+          outputFrame: Math.round((point.outputMs / 1000) * sampleRate),
+          inputFrame: Math.round((point.sourceMs / 1000) * sampleRate),
+        }));
+        timeMap[0] = { outputFrame: 0, inputFrame: 0 };
+        timeMap[timeMap.length - 1] = { outputFrame: outputFrames, inputFrame: inputFrames };
+        pcm = timeStretch(trimmed, outputFrames / inputFrames, sampleRate, timeMap);
+      } else if (Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6) {
+        pcm = timeStretch(trimmed, plan.vocalsStretchRatio, sampleRate);
+      } else {
+        pcm = Float32Array.from(trimmed);
       }
+      // `mashupStartMs` is already the map-corrected entry (the planner folds
+      // `entryShiftMs` into it), so the layer starts exactly where the vocal
+      // starts. Adding the shift again would double-count it.
+      const offsetFrames = Math.max(0, Math.round(((entry?.mashupStartMs ?? 0) / 1000) * sampleRate));
+      preparedStems.push({ type, pcm, offsetFrames, sourceLeadMs: (entry?.vocalsFromMs ?? 0) });
     }
   }
 
@@ -2634,8 +3000,8 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     let left = 0;
     let right = 0;
     if (frame < bedFrames) {
-      left = input.bed[frame * 2] * bedGain;
-      right = input.bed[frame * 2 + 1] * bedGain;
+      left = input.bed[frame * 2]! * bedGain;
+      right = input.bed[frame * 2 + 1]! * bedGain;
     }
 
     for (const { segment, pcm } of prepared) {
@@ -2643,25 +3009,54 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
       if (gain <= 0) continue;
       const vocalFrame = Math.round(((atMs - segment.mashupStartMs) / 1000) * sampleRate);
       if (vocalFrame < 0 || vocalFrame * 2 + 1 >= pcm.length) continue;
-      left += pcm[vocalFrame * 2] * gain;
-      right += pcm[vocalFrame * 2 + 1] * gain;
+      left += pcm[vocalFrame * 2]! * gain * vocalGain;
+      right += pcm[vocalFrame * 2 + 1]! * gain * vocalGain;
     }
 
-    // Mix prepared discrete stems with dynamic ducking into the vocal pocket
-    for (const { pcm: stemBuffer } of preparedStems) {
-      if (frame * 2 + 1 < stemBuffer.length) {
-        const stemGain = 0.6;
-        const stemDuck = DUCK_DEPTH;
-        const dynamicGain = stemGain * (1 - stemDuck * duck);
-        left += stemBuffer[frame * 2] * dynamicGain;
-        right += stemBuffer[frame * 2 + 1] * dynamicGain;
-      }
+    for (const { pcm: stemBuffer, offsetFrames } of preparedStems) {
+      const stemFrame = frame - offsetFrames;
+      if (stemFrame < 0 || stemFrame * 2 + 1 >= stemBuffer.length) continue;
+      const stemGain = DONOR_LAYER_GAIN * (1 - DUCK_DEPTH * duck);
+      left += stemBuffer[stemFrame * 2]! * stemGain;
+      right += stemBuffer[stemFrame * 2 + 1]! * stemGain;
     }
 
-    out[frame * 2] = Math.max(-1, Math.min(1, left));
-    out[frame * 2 + 1] = Math.max(-1, Math.min(1, right));
+    // No clamp here: the mix bus limits the summed signal properly.
+    summed[frame * 2] = left;
+    summed[frame * 2 + 1] = right;
   }
-  return out;
+
+  if (input.mix?.limit === false) {
+    // Controlled A/B render: no attenuation and no ceiling, so a comparison
+    // can attribute a difference to composition rather than to limiting.
+    const pcm = Float32Array.from(summed);
+    const fullTruePeak = pcm.length / 2 / sampleRate <= FULL_TRUE_PEAK_MAX_SECONDS;
+    const stage = measureMashupMixStage(pcm, sampleRate, { fullTruePeak });
+    return {
+      pcm,
+      mix: {
+        pcm,
+        balance: balance ?? unmeasuredBalance("Loudness matching was disabled for this render."),
+        preLimit: stage,
+        postLimit: stage,
+        staticGainDb: 0,
+        postTruePeakMeasured: fullTruePeak,
+        limiter: { ceiling: MASHUP_LIMITER_CEILING, delayFrames: 0, applied: false },
+      },
+    };
+  }
+
+  const finished = finishMashupMix({ summed, sampleRate });
+  return {
+    pcm: finished.pcm,
+    mix: { ...finished, balance: balance ?? unmeasuredBalance("Loudness matching was disabled for this render.") },
+  };
+}
+
+/** Plan-and-render entry point retained for existing callers: exactly the
+ *  production mix bus, PCM only. */
+export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuffer {
+  return renderMashupWithBus(plan, input).pcm;
 }
 
 // ---------------------------------------------------------------------------

@@ -48,8 +48,10 @@ import { loadSourceProfile } from "@workspace/arena/lib/waveyard/studio/mashup-s
 import {
   INSTRUMENTAL_BED_STEM_TYPES,
   InstrumentalBedError,
+  planStemComposition,
   sumInstrumentalStems,
   type InstrumentalBedStem,
+  type StemCompositionPlan,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import {
   analyseStereoPcm,
@@ -57,7 +59,7 @@ import {
   MASHUP_ALIGNMENT_CANDIDATES,
   planMashup,
   planSongExtension,
-  renderMashup,
+  renderMashupWithBus,
   renderSongExtension,
   type MashupAlignmentStrategy,
   type MashupTransientEvent,
@@ -110,16 +112,84 @@ type MashupBody = {
   vocalsSourceId?: unknown;
   instrumentalSourceId?: unknown;
   alignmentStrategy?: unknown;
+  /**
+   * Donor stem types the caller deliberately wants brought in (e.g.
+   * `["drums"]`). Absent/empty means the default composition: the donor
+   * supplies only the vocal and the bed keeps its own rhythm section.
+   */
+  layerStemTypes?: unknown;
+  /**
+   * What a requested donor layer does to the bed's matching stem.
+   *
+   * - `replace` (default): the bed's copy is removed, so there is one rhythm
+   *   section, not two.
+   * - `layer`: keep both deliberately (e.g. a percussion part that complements
+   *   the bed's drums).
+   */
+  stemLayerMode?: unknown;
   sourceAssetId?: unknown;
   sectionLabel?: unknown;
   repeats?: unknown;
 };
 
+/** Donor stem types that may ever be layered deliberately. Vocals are the
+ *  donor's default contribution and are never accepted here. */
+const LAYERABLE_STEM_TYPES = ["drums", "bass", "other", "guitar", "piano", "percussion"] as const;
+
+type StemLayerMode = "replace" | "layer";
+
+function parseStemLayerMode(value: unknown): { ok: true; mode: StemLayerMode } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, mode: "replace" };
+  if (value !== "replace" && value !== "layer") {
+    return { ok: false, error: "stemLayerMode must be \"replace\" or \"layer\"." };
+  }
+  return { ok: true, mode: value };
+}
+
+function parseLayerStemTypes(value: unknown): { ok: true; types: string[] } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, types: [] };
+  if (!Array.isArray(value)) {
+    return { ok: false, error: "layerStemTypes must be an array of donor stem types." };
+  }
+  const types: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !LAYERABLE_STEM_TYPES.includes(entry as typeof LAYERABLE_STEM_TYPES[number])) {
+      return {
+        ok: false,
+        error: `layerStemTypes may only contain ${LAYERABLE_STEM_TYPES.join(", ")}; received ${JSON.stringify(entry)}.`,
+      };
+    }
+    if (!types.includes(entry)) types.push(entry);
+  }
+  return { ok: true, types };
+}
+
 type BedSourceInfo = {
   source: "separated" | "original-fallback";
   separationJobId?: string;
   includedStemTypes?: string[];
+  /** Bed stems omitted because a donor layer replaces them. */
+  replacedStemTypes?: string[];
   warning: string;
+};
+
+/**
+ * The composition that was actually rendered, as opposed to the one that was
+ * requested. Every response header and the Studio read this and nothing else,
+ * so a request that could not be honoured cannot be reported as if it had
+ * been.
+ */
+type RenderedComposition = {
+  stemLayerMode: "none" | "replace" | "layer";
+  /** Donor stem types actually in the mix. */
+  layeredStemTypes: string[];
+  /** Bed stem types actually left out of the instrumental sum. */
+  replacedBedStemTypes: string[];
+  /** Bed stem types actually present in the instrumental sum. */
+  bedStemTypes: string[];
+  /** True when the bed is one file/stem and therefore not separable. */
+  bedSeparable: boolean;
+  note: string;
 };
 
 type BedSource = {
@@ -569,7 +639,12 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
  * undecodable, or their provenance or exact alignment cannot be established —
  * those must not be silently replaced with the original file.
  */
-async function loadInstrumentalBed(projectId: string, bedId: string, resolvedSource?: BedSource): Promise<BedLoadResult> {
+async function loadInstrumentalBed(
+  projectId: string,
+  bedId: string,
+  resolvedSource?: BedSource,
+  omitStemTypes: readonly string[] = [],
+): Promise<BedLoadResult> {
   const { info, stems } = resolvedSource ?? await findBedSource(projectId, bedId);
   if (info.source === "original-fallback" || stems.length === 0) {
     return { ok: false, info };
@@ -608,13 +683,201 @@ async function loadInstrumentalBed(projectId: string, bedId: string, resolvedSou
     });
   }
 
-  const bed = sumInstrumentalStems(decodedStems);
-  return { ok: true, pcm: bed.pcm, info };
+  const bed = sumInstrumentalStems(decodedStems, { omitStemTypes });
+  const infoWithStems: BedSourceInfo = {
+    ...info,
+    includedStemTypes: bed.includedStemTypes as string[],
+    replacedStemTypes: bed.replacedStemTypes,
+  };
+  return { ok: true, pcm: bed.pcm, info: infoWithStems };
 }
 
 async function inspectBed(projectId: string, bedId: string): Promise<BedSourceInfo> {
   const { info } = await findBedSource(projectId, bedId);
   return info;
+}
+
+/**
+ * Decide — and prove — the stem composition before a single sample is summed.
+ *
+ * A donor stem is only "verified" when it was loaded from the donor's one
+ * authoritative completed separation run. A bed stem is only removable when
+ * the bed is synthesized from separate stems rather than being a premixed
+ * file or a single combined `instrumental` stem. Anything less fails closed:
+ * the caller gets an error and nothing is omitted, so no response can claim a
+ * replacement the audio does not contain.
+ */
+/**
+ * Build the bed profile the planner must use **after** a stem swap.
+ *
+ * The owner's requirement is explicit: a replacement must not be analysed in
+ * isolation and used as if it were the new bed. The planner has to see the
+ * *resulting composition* — the retained stems plus the replacement — because
+ * that is what the listener hears. `loadInstrumentalBed` already sums the
+ * retained stems while omitting the replaced roles, so its PCM is exactly that
+ * composition.
+ *
+ * Tempo, key, beat grid and downbeats are therefore re-measured from the summed
+ * composition rather than inherited from the original mix. Everything the swap
+ * does not touch (duration, sections, harmony events already derived from the
+ * original analysis) is preserved, because "recompute what is affected and
+ * preserve what remains valid".
+ *
+ * When the composition cannot be analysed, this returns the original profile
+ * with a explicit warning rather than fabricating a grid — honest fallback.
+ */
+function bedProfileFromComposition(
+  original: NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>>,
+  compositionPcm: Float32Array,
+  replacedStemTypes: readonly string[],
+): NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>> {
+  // No musical material changed: keep the existing analysis untouched.
+  if (replacedStemTypes.length === 0) return original;
+
+  let analysis: ReturnType<typeof analyseStereoPcm>;
+  try {
+    analysis = analyseStereoPcm(compositionPcm);
+  } catch {
+    return {
+      ...original,
+      grooveWarnings: [
+        ...(original.grooveWarnings ?? []),
+        `The stem replacement (${replacedStemTypes.join(", ")}) could not be re-analysed, so the arrangement was planned against the original bed's analysis. Treat the result as unverified.`,
+      ],
+    };
+  }
+
+  const measuredDurationMs = Math.round((compositionPcm.length / 2 / RENDER_SAMPLE_RATE) * 1000);
+  // A replacement that changes the musical material must invalidate the beat
+  // evidence that was derived from the old material. The old grid is kept only
+  // when the new measurement is genuinely absent, and then it is labelled.
+  const hasNewBeatGrid = Array.isArray(analysis.beatGridMs) && analysis.beatGridMs.length > 1;
+  return {
+    ...original,
+    bpm: analysis.bpm ?? null,
+    bpmConfidence: analysis.bpmConfidence ?? null,
+    bpmCandidates: analysis.bpmCandidates ?? null,
+    musicalKey: analysis.musicalKey ?? null,
+    keyConfidence: analysis.keyConfidence ?? null,
+    beatGridMs: hasNewBeatGrid ? analysis.beatGridMs : original.beatGridMs,
+    beatConfidence: hasNewBeatGrid ? analysis.beatConfidence : original.beatConfidence,
+    downbeatGridMs: analysis.downbeatGridMs ?? original.downbeatGridMs,
+    downbeatConfidence: analysis.downbeatConfidence ?? original.downbeatConfidence,
+    durationMs: measuredDurationMs > 0 ? measuredDurationMs : original.durationMs,
+    grooveWarnings: [
+      ...(original.grooveWarnings ?? []),
+      ...(hasNewBeatGrid ? [] : [
+        "The replacement composition produced no measurable beat grid, so the previous beat grid was retained and is labelled as unverified.",
+      ]),
+      `Beat grid, tempo and key were re-measured from the resulting stem composition after replacing ${replacedStemTypes.join(", ")}.`,
+    ],
+  };
+}
+
+async function resolveStemComposition(input: {
+  projectId: string;
+  vocalsId: string;
+  vocalsSeparationJobId: string | undefined;
+  bedSource: BedSource;
+  stemLayerMode: "replace" | "layer";
+  requestedLayerStemTypes: readonly string[];
+}): Promise<
+  | { ok: true; composition: RenderedComposition; donorStems: Map<string, Float32Array> }
+  | { ok: false; status: number; error: string }
+> {
+  const { projectId, bedSource, stemLayerMode, requestedLayerStemTypes } = input;
+  const requested = [...new Set(requestedLayerStemTypes)];
+  if (requested.length === 0) {
+    return {
+      ok: true,
+      composition: {
+        stemLayerMode: "none",
+        layeredStemTypes: [],
+        replacedBedStemTypes: [],
+        bedStemTypes: bedSource.info.includedStemTypes ?? [],
+        bedSeparable: bedSource.stems.length > 0
+          && !(bedSource.stems.length === 1 && bedSource.stems[0]!.stemType === "instrumental"),
+        note: "Default composition: the donor supplies the vocal and the bed keeps its own drums, bass and other.",
+      },
+      donorStems: new Map(),
+    };
+  }
+
+  // 1. Which bed stems could actually be removed?
+  const indivisible = bedSource.stems.length === 0
+    || (bedSource.stems.length === 1 && bedSource.stems[0]!.stemType === "instrumental");
+  const bedSeparableStemTypes = indivisible
+    ? []
+    : bedSource.stems.map((stem) => stem.stemType).filter((type) => INSTRUMENTAL_BED_STEM_TYPES.includes(
+      type as (typeof INSTRUMENTAL_BED_STEM_TYPES)[number],
+    ));
+  const bedIndivisibleReason = bedSource.stems.length === 0
+    ? "The instrumental falls back to its original file (no completed stem separation), so there is no separate drum, bass or other stem to remove. A replacement would only add a second part on top. Run separation on the instrumental first, or choose deliberate layering."
+    : indivisible
+      ? "The instrumental uses a single combined instrumental stem, so it has no separate drum, bass or other stem to remove. A replacement would only add a second part on top. Separate the instrumental into stems first, or choose deliberate layering."
+      : null;
+
+  // 2. Which donor stems genuinely exist in the authoritative run?
+  const donorStems = new Map<string, Float32Array>();
+  const verifiedDonorStemTypes: string[] = [];
+  if (input.vocalsSeparationJobId) {
+    const donorStemRows = await db
+      .select({
+        stemType: stemAssets.stemType,
+        storageKey: stemAssets.storageKey,
+        separationJobId: stemAssets.separationJobId,
+      })
+      .from(stemAssets)
+      .where(
+        and(
+          eq(stemAssets.projectId, projectId),
+          eq(stemAssets.sourceAssetId, input.vocalsId),
+          eq(stemAssets.separationJobId, input.vocalsSeparationJobId),
+        ),
+      );
+    const seenTypes = new Set<string>();
+    for (const stemRow of donorStemRows) {
+      if (stemRow.stemType === "vocals" || !requested.includes(stemRow.stemType)) continue;
+      // Duplicate stem types cannot prove which bytes are authoritative.
+      if (seenTypes.has(stemRow.stemType)) continue;
+      seenTypes.add(stemRow.stemType);
+      // stemPcm returns null unless the bytes decode as 44.1 kHz stereo WAV,
+      // so format validation happens before a stem can count as verified.
+      const pcm = await stemPcm(stemRow.storageKey).catch(() => null);
+      if (pcm && pcm.length > 0) {
+        donorStems.set(`donor_${stemRow.stemType}`, pcm);
+        verifiedDonorStemTypes.push(stemRow.stemType);
+      }
+    }
+  }
+
+  // 3. Fail closed, or commit to an explicit composition.
+  const decision = planStemComposition({
+    stemLayerMode,
+    requestedLayerStemTypes: requested,
+    bedSeparableStemTypes,
+    bedIndivisibleReason,
+    verifiedDonorStemTypes,
+  });
+  if (!decision.ok) {
+    return { ok: false, status: 422, error: decision.error };
+  }
+
+  const replaced = decision.omittedBedStemTypes;
+  return {
+    ok: true,
+    composition: {
+      stemLayerMode: decision.mode === "none" ? "none" : decision.mode,
+      layeredStemTypes: decision.layerStemTypes,
+      replacedBedStemTypes: replaced,
+      bedStemTypes: bedSeparableStemTypes.filter((type) => !replaced.includes(type)),
+      bedSeparable: !indivisible,
+      note: decision.note,
+    },
+    // Only the donor stems that survived verification reach the renderer, so
+    // a requested-but-missing layer can never be silently half-applied.
+    donorStems: new Map([...donorStems].filter(([name]) => decision.layerStemTypes.includes(name.slice("donor_".length)))),
+  };
 }
 
 /** Decode a source's ORIGINAL file (any codec) via the pcm pipeline. */
@@ -829,12 +1092,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: "Choose a supported mashup alignment strategy." }, { status: 400 });
       }
       const alignmentStrategy = (requestedStrategy ?? "phrase-aware") as MashupAlignmentStrategy;
+      const parsedLayers = parseLayerStemTypes(body.layerStemTypes);
+      if (!parsedLayers.ok) {
+        return Response.json({ error: parsedLayers.error }, { status: 400 });
+      }
+      const layerStemTypes = parsedLayers.types;
+      const parsedLayerMode = parseStemLayerMode(body.stemLayerMode);
+      if (!parsedLayerMode.ok) {
+        return Response.json({ error: parsedLayerMode.error }, { status: 400 });
+      }
+      const stemLayerMode = parsedLayerMode.mode;
 
       const [resolvedVocalSource, resolvedBedSource] = await Promise.all([
         findBedSource(projectId, vocalsId),
         findBedSource(projectId, bedId),
       ]);
-      const [vocals, bed] = await Promise.all([
+      // `bed` is deliberately reassignable: when a stem replacement changes the
+      // musical material, the planner must see the profile of the RESULTING
+      // composition, not the original bed's analysis.
+      const [vocals, originalBed] = await Promise.all([
         loadSourceProfile(projectId, vocalsId, "vocals", db, {
           separationJobId: resolvedVocalSource.info.separationJobId,
         }),
@@ -842,9 +1118,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           separationJobId: resolvedBedSource.info.separationJobId,
         }),
       ]);
-      if (vocals === null || bed === null) {
+      if (vocals === null || originalBed === null) {
         return Response.json({ error: "One of the tracks is not in this project." }, { status: 404 });
       }
+      let bed = originalBed;
       await Promise.all([
         applySeparatedDrumTiming(projectId, vocals, resolvedVocalSource),
         applySeparatedDrumTiming(projectId, bed, resolvedBedSource),
@@ -947,6 +1224,77 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           : unavailableEvidence("No checksum-current low-band bass attack evidence is available.");
       }
 
+      // ---------------------------------------------------------------------
+      // Composition resolution MUST happen before planning.
+      //
+      // Previously the route planned against the original bed (above), then
+      // resolved the stem composition and loaded the replacement bed afterwards
+      // and rendered it under a plan that was never recomputed. A stem swap is an
+      // input to composition, not an audio substitution performed after it.
+      //
+      // Order now: resolve the user's composition -> load the retained and
+      // replacement stems -> build the resulting composition -> analyse it ->
+      // plan against it. The user's explicit selection is never discarded.
+      // ---------------------------------------------------------------------
+      let compositionForPlan: RenderedComposition | null = null;
+      let donorStemsForPlan = new Map<string, Float32Array>();
+      /**
+       * Which analysis actually drove planning. Recorded so the acceptance tests
+       * can prove the replacement reached the planner BEFORE planning, rather
+       * than inferring it from the audio after the fact.
+       */
+      let plannedAgainstComposition: {
+        replacedStemTypes: string[];
+        plannedBpm: number | null;
+        plannedBeatGridPoints: number;
+        plannedBeatConfidence: number | null;
+      } | null = null;
+      {
+        const planningVocalsStem = await latestStem(projectId, vocalsId, "vocals");
+        const resolved = await resolveStemComposition({
+          projectId,
+          vocalsId,
+          vocalsSeparationJobId: planningVocalsStem?.separationJobId,
+          bedSource: resolvedBedSource,
+          stemLayerMode,
+          requestedLayerStemTypes: layerStemTypes,
+        });
+        if (!resolved.ok) {
+          return Response.json(
+            { error: resolved.error, code: "stem-composition-unavailable" },
+            { status: resolved.status },
+          );
+        }
+        compositionForPlan = resolved.composition;
+        donorStemsForPlan = resolved.donorStems;
+        if (resolved.composition.replacedBedStemTypes.length > 0) {
+          // Analyse the ACTUAL resulting composition, not the replacement stem in
+          // isolation: loadInstrumentalBed sums the retained stems and omits the
+          // replaced roles, which is precisely what the listener will hear.
+          const composedBed = await loadInstrumentalBed(
+            projectId,
+            bedId,
+            resolvedBedSource,
+            resolved.composition.replacedBedStemTypes,
+          ).catch(() => null);
+          if (composedBed?.ok) {
+            bed = bedProfileFromComposition(bed, composedBed.pcm, resolved.composition.replacedBedStemTypes);
+            plannedAgainstComposition = {
+              replacedStemTypes: [...resolved.composition.replacedBedStemTypes],
+              plannedBpm: bed.bpm,
+              plannedBeatGridPoints: Array.isArray(bed.beatGridMs) ? bed.beatGridMs.length : 0,
+              plannedBeatConfidence: bed.beatConfidence ?? null,
+            };
+            compositionForPlan = resolved.composition;
+          } else {
+            bed.grooveWarnings = [
+              ...(bed.grooveWarnings ?? []),
+              `The stem replacement (${resolved.composition.replacedBedStemTypes.join(", ")}) could not be loaded, so the arrangement was planned against the original bed. Treat the timing as unverified.`,
+            ];
+          }
+        }
+      }
+
       if (action === "compare") {
         const bedInfo = await inspectBed(projectId, bedId);
         return Response.json({
@@ -966,6 +1314,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const bedInfo = await inspectBed(projectId, bedId);
         return Response.json({
           plan: planned.plan,
+          plannedAgainst: plannedAgainstComposition ? { kind: "composition", ...plannedAgainstComposition } : { kind: "original-bed" },
           bed: bedInfo,
           evidence: {
             vocals: vocals.evidence ? summarizeEvidencePacket(vocals.evidence) : null,
@@ -984,6 +1333,61 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             { error: "Both a completed separated vocal stem and an instrumental bed are required to save an editable Studio remix." },
             { status: 422 },
           );
+        }
+
+        // The saved session must be the arrangement that was rendered.
+        // Resolving the composition here applies the same fail-closed rules as
+        // the render path, so a request that cannot be honoured is refused
+        // instead of persisting a different mashup than the one heard.
+        const saveComposition = await resolveStemComposition({
+          projectId,
+          vocalsId,
+          vocalsSeparationJobId: vocalsStem.separationJobId,
+          bedSource: resolvedBedSource,
+          stemLayerMode,
+          requestedLayerStemTypes: layerStemTypes,
+        });
+        if (!saveComposition.ok) {
+          return Response.json(
+            { error: saveComposition.error, code: "stem-composition-unavailable" },
+            { status: saveComposition.status },
+          );
+        }
+        const composition = saveComposition.composition;
+        /** Non-fatal truths about the saved composition, raised to the client. */
+        const compositionWarnings: string[] = [];
+        if (composition.stemLayerMode !== "none") compositionWarnings.push(composition.note);
+
+        // Exactly the bed stems the render used: the replaced roles are
+        // omitted, so the reopened session cannot contain the removed drums.
+        const sessionBedStems = resolvedBedSource.stems.filter((stem) =>
+          stem.stemType !== "vocals"
+          && INSTRUMENTAL_BED_STEM_TYPES.includes(stem.stemType as (typeof INSTRUMENTAL_BED_STEM_TYPES)[number])
+          && !composition.replacedBedStemTypes.includes(stem.stemType));
+
+        // The donor's replacing stems become real Studio tracks, so the saved
+        // session carries the arrangement rather than losing it on reopen.
+        const donorReplacementStems = new Map<string, typeof stemAssets.$inferSelect>();
+        if (composition.layeredStemTypes.length > 0 && vocalsStem.separationJobId) {
+          const donorRows = await db.select().from(stemAssets).where(and(
+            eq(stemAssets.projectId, projectId),
+            eq(stemAssets.sourceAssetId, vocalsId),
+            eq(stemAssets.separationJobId, vocalsStem.separationJobId),
+          ));
+          for (const type of composition.layeredStemTypes) {
+            const [row] = donorRows.filter((candidate) => candidate.stemType === type);
+            if (row) donorReplacementStems.set(type, row);
+          }
+          const stillMissing = composition.layeredStemTypes.filter((type) => !donorReplacementStems.has(type));
+          if (stillMissing.length > 0) {
+            return Response.json(
+              {
+                error: `The donor's ${stillMissing.join(", ")} stem is no longer available, so the saved session would not reproduce the rendered replacement. Re-run the render or re-separate the donor.`,
+                code: "stem-composition-unavailable",
+              },
+              { status: 409 },
+            );
+          }
         }
 
         const [vocalsStemRecord] = await db.select().from(stemAssets)
@@ -1036,17 +1440,28 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
 
           let sortOrder = 1;
-          for (const bStem of bedStems) {
-            if (bStem.stemType !== "vocals") {
-              tracksToInsert.push({
-                remixSessionId: remix.id,
-                stemAssetId: bStem.id,
-                name: `${bStem.stemType[0].toUpperCase()}${bStem.stemType.slice(1)} (Bed)`,
-                sortOrder: sortOrder++,
-                volume: 0.8,
-                pan: 0,
-              });
-            }
+          for (const bStem of sessionBedStems) {
+            tracksToInsert.push({
+              remixSessionId: remix.id,
+              stemAssetId: bStem.id,
+              name: `${bStem.stemType[0].toUpperCase()}${bStem.stemType.slice(1)} (Bed)`,
+              sortOrder: sortOrder++,
+              volume: 0.8,
+              pan: 0,
+            });
+          }
+          // Donor replacement stems are part of the arrangement, not an
+          // optional extra: without them the reopened session is a different
+          // (and drumless) mashup.
+          for (const [type, stem] of donorReplacementStems) {
+            tracksToInsert.push({
+              remixSessionId: remix.id,
+              stemAssetId: stem.id,
+              name: `${type[0].toUpperCase()}${type.slice(1)} (Donor ${composition.stemLayerMode === "replace" ? "replacement" : "layer"})`,
+              sortOrder: sortOrder++,
+              volume: 0.8,
+              pan: 0,
+            });
           }
 
           const insertedTracks = tracksToInsert.length ? await tx.insert(remixTracks).values(tracksToInsert).returning() : [];
@@ -1087,8 +1502,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
 
           // Bed clips spanning full duration
-          for (const bStem of bedStems) {
-            if (bStem.stemType !== "vocals" && trackByStemId.has(bStem.id)) {
+          for (const bStem of sessionBedStems) {
+            if (trackByStemId.has(bStem.id)) {
               clipsToInsert.push({
                 remixTrackId: trackByStemId.get(bStem.id)!.id,
                 stemAssetId: bStem.id,
@@ -1103,6 +1518,38 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 beatSnapEnabled: bedGridTrusted,
               });
             }
+          }
+
+          // Donor replacement/layer clips mirror what the renderer does with
+          // them: the stem is trimmed by the phrase's own source offset, placed
+          // at the vocal entry, and warped to the session tempo. Keeping all
+          // three in the persisted clip is what makes reopen and export
+          // reproduce the render rather than play the donor at its native rate.
+          const firstSegment = planned.plan.segments[0];
+          const donorTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
+          for (const [type, stem] of donorReplacementStems) {
+            const track = trackByStemId.get(stem.id);
+            if (!track) continue;
+            clipsToInsert.push({
+              remixTrackId: track.id,
+              stemAssetId: stem.id,
+              timelineStartMs: firstSegment?.mashupStartMs ?? 0,
+              durationMs: Math.max(1, planned.plan.durationMs - (firstSegment?.mashupStartMs ?? 0)),
+              sourceOffsetMs: firstSegment?.vocalsFromMs ?? 0,
+              gain: 0.8,
+              fadeInMs: 50,
+              fadeOutMs: 150,
+              // The renderer stretches the donor to the session tempo, so the
+              // export must too. That requires the donor's own analysed BPM,
+              // which may be MISSING even on sources the vocal plan could
+              // stretch — vocal tempo can come from the bed. Claiming sync
+              // without the evidence would make the export fail late, so the
+              // case is detected here and reported instead.
+              tempoSyncEnabled: donorTempoTrusted,
+              keySyncEnabled: false,
+              beatSnapEnabled: false,
+            });
+            void type;
           }
 
           const insertedClips = clipsToInsert.length ? await tx.insert(remixClips).values(clipsToInsert).returning() : [];
@@ -1152,6 +1599,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             mashupPlan: {
               engine: planned.plan.engine,
               alignmentStrategy: planned.plan.alignmentStrategy,
+              /**
+               * The composition that was actually saved, recorded next to the
+               * plan so a reopened session can be checked against the render
+               * it came from instead of assuming the request took effect.
+               */
+              stemComposition: {
+                stemLayerMode: composition.stemLayerMode,
+                layeredStemTypes: composition.layeredStemTypes,
+                replacedBedStemTypes: composition.replacedBedStemTypes,
+                bedStemTypes: composition.bedStemTypes,
+                bedSeparable: composition.bedSeparable,
+                note: composition.note,
+              },
               masterBpm: planned.plan.masterBpm,
               vocalsStretchRatio: planned.plan.vocalsStretchRatio,
               vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
@@ -1171,17 +1631,39 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             automation: [],
           };
 
-          const [version] = await tx.insert(remixVersions).values({
+          const donorClipsNeedingTempo = insertedClips.filter((clip) =>
+          [...donorReplacementStems.values()].some((stem) => stem.id === clip.stemAssetId)
+          && !clip.tempoSyncEnabled
+          && Math.abs(planned.plan.vocalsStretchRatio - 1) > 1e-6);
+        if (donorClipsNeedingTempo.length > 0) {
+          compositionWarnings.push(
+            `The donor stem is warped to the session tempo in the render (${planned.plan.vocalsStretchRatio.toFixed(3)}×), but its own tempo could not be verified, so the saved Studio clips are not tempo-synced. Export would play the donor at its native rate. Run tempo analysis on the donor before saving to keep render and export identical.`,
+          );
+        }
+
+        const [version] = await tx.insert(remixVersions).values({
             remixSessionId: remix.id,
             createdById: user.id,
             name: "Initial mashup arrangement",
             snapshot: JSON.stringify(snapshot),
           }).returning();
 
-          return { remix, version };
+          return { remix, version, warnings: compositionWarnings };
         });
 
-        return Response.json({ ok: true, remix: result.remix, version: result.version }, { status: 201 });
+        return Response.json(
+          {
+            ok: true,
+            remix: result.remix,
+            version: result.version,
+            warnings: result.warnings,
+            // Which analysis the persisted plan was built from. A reopened
+            // session must reproduce this, not a pre-swap arrangement.
+            plannedAgainst: plannedAgainstComposition ? "composition" : "original-bed",
+            replacedBedStemTypes: plannedAgainstComposition?.replacedStemTypes ?? [],
+          },
+          { status: 201 },
+        );
       }
 
       // Render: donor vocal over a clean instrumental bed. The bed is built
@@ -1210,7 +1692,49 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         );
       }
 
-      const bedResult = await loadInstrumentalBed(projectId, bedId, resolvedBedSource);
+      // Donor stems are a deliberate composition choice, never an automatic
+      // addition. The default render is: donor vocal over the chosen
+      // instrumental bed's own drums, bass and other.
+      //
+      // Replacement and layering are decided here, once, from verified stems.
+      // If either half of a replacement cannot be proven, the request fails
+      // instead of rendering something the response would misdescribe.
+      // Reuse the composition resolved BEFORE planning. Resolving it twice would
+      // reintroduce exactly the bug this milestone removes: the render would be
+      // free to use a different composition than the one the plan was built for.
+      const composition = {
+        ok: true as const,
+        composition: compositionForPlan ?? (await (async () => {
+          const resolved = await resolveStemComposition({
+            projectId,
+            vocalsId,
+            vocalsSeparationJobId: vocalsStem?.separationJobId,
+            bedSource: resolvedBedSource,
+            stemLayerMode,
+            requestedLayerStemTypes: layerStemTypes,
+          });
+          if (!resolved.ok) throw new Error(resolved.error);
+          return resolved.composition;
+        })()),
+        // Carry the real donor stems from the pre-plan resolution. Layering must
+        // use the audio the plan was built with, not an empty map.
+        donorStems: donorStemsForPlan,
+      };
+      if (composition.composition.stemLayerMode !== "none") {
+        warnings.push(composition.composition.note);
+      }
+      if (composition.composition.replacedBedStemTypes.length > 0) {
+        warnings.push(
+          `The arrangement was planned against the resulting composition after replacing ${composition.composition.replacedBedStemTypes.join(", ")}: tempo, beat grid and key were re-measured from the summed retained-plus-replacement stems, not from the original bed or the replacement in isolation.`,
+        );
+      }
+
+      const bedResult = await loadInstrumentalBed(
+        projectId,
+        bedId,
+        resolvedBedSource,
+        composition.composition.replacedBedStemTypes,
+      );
       let bedPcm: Float32Array;
       let bedInfo: BedSourceInfo;
       if (bedResult.ok) {
@@ -1225,53 +1749,45 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         bedInfo = bedResult.info;
       }
 
-      // Load available complementary stems from the donor vocal track (e.g. guitar/keys/other)
-      // strictly from the single authoritative completed separation run of the vocal stem.
-      // Exclude pending, failed, cancelled, or superseded runs, and reject duplicate stem types.
-      const complementaryDonorStems = new Map<string, Float32Array>();
-      if (vocalsStem?.separationJobId) {
-        try {
-          const donorStemRows = await db
-            .select({
-              stemType: stemAssets.stemType,
-              storageKey: stemAssets.storageKey,
-              separationJobId: stemAssets.separationJobId,
-            })
-            .from(stemAssets)
-            .where(
-              and(
-                eq(stemAssets.projectId, projectId),
-                eq(stemAssets.sourceAssetId, vocalsId),
-                eq(stemAssets.separationJobId, vocalsStem.separationJobId),
-              ),
-            );
-
-          const seenTypes = new Set<string>();
-          for (const stemRow of donorStemRows) {
-            if (stemRow.stemType !== "vocals") {
-              if (seenTypes.has(stemRow.stemType)) {
-                // Reject duplicate stem types rather than silently overwriting
-                continue;
-              }
-              seenTypes.add(stemRow.stemType);
-              const pcm = await stemPcm(stemRow.storageKey);
-              if (pcm && pcm.length > 0) {
-                complementaryDonorStems.set(`donor_${stemRow.stemType}`, pcm);
-              }
-            }
-          }
-        } catch {
-          // Fall back gracefully
-        }
-      }
-
-      const mixed = renderMashup(planned.plan, {
+      const rendered = renderMashupWithBus(planned.plan, {
         vocals: vocalsPcm,
         bed: bedPcm,
-        stems: complementaryDonorStems.size > 0 ? complementaryDonorStems : undefined,
+        stems: composition.donorStems.size > 0 ? composition.donorStems : undefined,
+        layerStemTypes: composition.composition.layeredStemTypes,
         sampleRate: RENDER_SAMPLE_RATE,
       });
-      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy);
+      const mixed = rendered.pcm;
+      const mixWarnings = [
+        rendered.mix.balance.note,
+        `Render measured after limiting: ${rendered.mix.postLimit.lufsIntegrated === null ? "loudness not measurable" : `${rendered.mix.postLimit.lufsIntegrated.toFixed(1)} LUFS`}, sample peak ${rendered.mix.postLimit.samplePeakDb.toFixed(2)} dBFS, ${rendered.mix.postTruePeakMeasured ? `true peak ${rendered.mix.postLimit.truePeakDb.toFixed(2)} dBTP` : "true peak not re-measured on a render this long"}, ${rendered.mix.postLimit.clippedRegions} clipped region(s), static gain ${rendered.mix.staticGainDb.toFixed(2)} dB, limiter ${rendered.mix.limiter.applied ? "active" : "not required"}. These are measurements, not a quality claim.`,
+      ];
+      warnings.push(...mixWarnings);
+      const renderHeaders = {
+        "x-waveyard-mix-balance-db": rendered.mix.balance.vocalGainDb.toFixed(2),
+        "x-waveyard-mix-balance-clamped": String(rendered.mix.balance.correctionClamped),
+        "x-waveyard-mix-static-gain-db": rendered.mix.staticGainDb.toFixed(2),
+        "x-waveyard-mix-limiter": rendered.mix.limiter.applied ? "active" : "not-required",
+        "x-waveyard-mix-true-peak-db": rendered.mix.postTruePeakMeasured
+          ? rendered.mix.postLimit.truePeakDb.toFixed(2)
+          : "not-measured",
+        "x-waveyard-mix-clipped-regions": String(rendered.mix.postLimit.clippedRegions),
+        "x-waveyard-layer-stems": composition.composition.layeredStemTypes.join(","),
+        "x-waveyard-stem-layer-mode": composition.composition.stemLayerMode,
+        "x-waveyard-replaced-bed-stems": composition.composition.replacedBedStemTypes.join(","),
+        "x-waveyard-bed-separable": String(composition.composition.bedSeparable),
+        // Provenance of the analysis the arrangement was planned against. A
+        // replacement that never reached the planner cannot produce this header.
+        "x-waveyard-planned-against": plannedAgainstComposition ? "composition" : "original-bed",
+        ...(plannedAgainstComposition
+          ? {
+            "x-waveyard-planned-bpm": plannedAgainstComposition.plannedBpm === null
+              ? "none"
+              : plannedAgainstComposition.plannedBpm.toFixed(2),
+            "x-waveyard-planned-beat-grid-points": String(plannedAgainstComposition.plannedBeatGridPoints),
+          }
+          : {}),
+      };
+      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy, renderHeaders);
     }
 
     if (action === "extend") {
@@ -1318,6 +1834,7 @@ function wavResponse(
   bed?: BedSourceInfo,
   warnings: string[] = [],
   alignmentStrategy?: MashupAlignmentStrategy,
+  extraHeaders?: Record<string, string>,
 ): Response {
   const headers = new Headers({
     "content-type": "audio/wav",
@@ -1331,8 +1848,12 @@ function wavResponse(
     if (bed.includedStemTypes?.length) {
       headers.set("x-waveyard-bed-stems", bed.includedStemTypes.join(","));
     }
+    if (bed.replacedStemTypes?.length) {
+      headers.set("x-waveyard-bed-replaced-stems", bed.replacedStemTypes.join(","));
+    }
   }
   if (alignmentStrategy) headers.set("x-waveyard-alignment-strategy", alignmentStrategy);
+  for (const [name, value] of Object.entries(extraHeaders ?? {})) headers.set(name, value);
   for (const warning of warnings) {
     headers.append("x-waveyard-warning", encodeURIComponent(warning));
   }

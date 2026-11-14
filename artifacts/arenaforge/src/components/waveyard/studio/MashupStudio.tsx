@@ -123,6 +123,15 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [renderKind, setRenderKind] = useState<"mashup" | "extended" | null>(null);
   const [alignmentCandidates, setAlignmentCandidates] = useState<AlignmentCandidatePlan[]>([]);
   const [selectedAlignment, setSelectedAlignment] = useState<CandidateAlignmentId | null>(null);
+  /**
+   * The user's chosen arrangement mode.
+   *
+   * "Full Length" is a first-class mode, not just another entry in the lab: when
+   * the user picks it, this strategy must be the one planned and rendered. The
+   * previous auto-select list omitted "full-length" entirely, so Full Length was
+   * reachable through the API but never actually selected in production.
+   */
+  const [arrangementMode, setArrangementMode] = useState<CandidateAlignmentId>("full-length");
   const [candidateRendering, setCandidateRendering] = useState<CandidateAlignmentId | null>(null);
   const [renderedCandidateUrls, setRenderedCandidateUrls] = useState<Partial<Record<CandidateAlignmentId, string>>>({});
   const [bedInfo, setBedInfo] = useState<{
@@ -130,7 +139,58 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     warning: string;
     includedStemTypes?: string[];
   } | null>(null);
+  /**
+   * What the mix bus actually did to the last render, read from response
+   * headers so the numbers come from the rendered PCM rather than from the
+   * plan. These are measurements, never a quality score.
+   */
+  const [mixReport, setMixReport] = useState<{
+    balanceDb: string | null;
+    balanceClamped: boolean;
+    staticGainDb: string | null;
+    limiter: string | null;
+    truePeakDb: string | null;
+    layerStems: string[];
+    clippedRegions: string | null;
+    /** "replace" removes the bed's matching stem; "layer" keeps both. */
+    stemLayerMode: string | null;
+    replacedBedStems: string[];
+  } | null>(null);
+
+  const readMixReport = (response: Response) => {
+    if (!response.headers.get("x-waveyard-mix-static-gain-db")) return;
+    setMixReport({
+      balanceDb: response.headers.get("x-waveyard-mix-balance-db"),
+      balanceClamped: response.headers.get("x-waveyard-mix-balance-clamped") === "true",
+      staticGainDb: response.headers.get("x-waveyard-mix-static-gain-db"),
+      limiter: response.headers.get("x-waveyard-mix-limiter"),
+      truePeakDb: response.headers.get("x-waveyard-mix-true-peak-db"),
+      layerStems: response.headers.get("x-waveyard-layer-stems")?.split(",").filter(Boolean) ?? [],
+      clippedRegions: response.headers.get("x-waveyard-mix-clipped-regions"),
+      stemLayerMode: response.headers.get("x-waveyard-stem-layer-mode"),
+      replacedBedStems: response.headers.get("x-waveyard-replaced-bed-stems")?.split(",").filter(Boolean) ?? [],
+    });
+  };
+  /**
+   * Composition choice, surfaced explicitly because it changes which audio is
+   * rendered. "replace" removes the bed's matching stem; "layer" keeps both.
+   * It is sent to render, preview and save alike so the saved session cannot
+   * describe a different arrangement than the one heard.
+   */
+  const [layerStemTypes, setLayerStemTypes] = useState<string[]>([]);
+  const [stemLayerMode, setStemLayerMode] = useState<"replace" | "layer">("replace");
+  const compositionPayload = layerStemTypes.length > 0
+    ? { layerStemTypes, stemLayerMode }
+    : {};
   const [savingRemix, setSavingRemix] = useState(false);
+  // A composition change invalidates the previous render: the mix report and
+  // the saved-session claim describe audio that no longer matches the choice.
+  const setComposition = (types: string[], mode: "replace" | "layer") => {
+    setLayerStemTypes(types);
+    setStemLayerMode(mode);
+    setMixReport(null);
+    setSaveSuccess(null);
+  };
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
   const candidateRenderUrlsRef = useRef(new Map<CandidateAlignmentId, string>());
@@ -203,6 +263,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
         });
       }
+      readMixReport(response);
       const url = URL.createObjectURL(await response.blob());
       if (sourceGeneration !== sourceGenerationRef.current) {
         URL.revokeObjectURL(url);
@@ -251,12 +312,24 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
       const candidates = Array.isArray(body.candidates) ? body.candidates as AlignmentCandidatePlan[] : [];
       setAlignmentCandidates(candidates);
-      const selected = (["phrase-aware", "paired-grid", "downbeat", "continuous"] as CandidateAlignmentId[])
-        .map((id) => candidates.find((candidate) => candidate.id === id && candidate.available))
-        .find((candidate) => candidate !== undefined);
+      // Honour the chosen mode first. Only if it is genuinely unavailable does the
+      // fallback chain run, and the UI must say which mode it actually used.
+      const preferred = candidates.find((candidate) => candidate.id === arrangementMode && candidate.available);
+      const selected = preferred
+        ?? (["phrase-aware", "paired-grid", "downbeat", "continuous"] as CandidateAlignmentId[])
+          .map((id) => candidates.find((candidate) => candidate.id === id && candidate.available))
+          .find((candidate) => candidate !== undefined);
       if (selected) {
         setSelectedAlignment(selected.id);
         setPlan(selected.plan);
+        if (selected.id !== arrangementMode) {
+          setError(
+            `Full Length was unavailable for this pair: ${
+              candidates.find((candidate) => candidate.id === arrangementMode)?.unavailableReason
+              ?? "the planner could not place the performance"
+            } Using ${selected.title} instead.`,
+          );
+        }
       } else {
         setError("No alignment option could place a vocal segment. Check the selected sources and their analysis.");
       }
@@ -293,6 +366,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           vocalsSourceId: vocalsId,
           instrumentalSourceId: bedId,
           alignmentStrategy: id,
+          ...compositionPayload,
         }),
       });
       if (sourceGeneration !== sourceGenerationRef.current) return;
@@ -310,6 +384,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
         });
       }
+      readMixReport(response);
       const url = URL.createObjectURL(await response.blob());
       if (sourceGeneration !== sourceGenerationRef.current) {
         URL.revokeObjectURL(url);
@@ -357,6 +432,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           vocalsSourceId: vocalsId,
           instrumentalSourceId: bedId,
           alignmentStrategy: selectedAlignment,
+          ...compositionPayload,
         }),
       });
       const data = await response.json();
@@ -461,6 +537,31 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                   {source.originalFilename} · {compactMusicAnalysisLabel(source.analysis)}
                 </option>
               ))}
+            </select>
+          </label>
+          <label>
+            Arrangement
+            <select
+              aria-label="Arrangement mode"
+              value={arrangementMode}
+              onChange={(event) => {
+                const next = event.target.value as CandidateAlignmentId;
+                setArrangementMode(next);
+                // The mode is the user's intent: a composition change must not
+                // quietly drop it back to the default.
+                const candidate = alignmentCandidates.find((item) => item.id === next && item.available);
+                if (candidate) {
+                  setSelectedAlignment(next);
+                  setPlan(candidate.plan);
+                  setSaveSuccess(null);
+                }
+              }}
+            >
+              <option value="full-length">Full Length — complete performance, looped if the bed has room</option>
+              <option value="phrase-aware">Fingerprint-ranked passage</option>
+              <option value="continuous">Continuous baseline</option>
+              <option value="paired-grid">Paired beat-grid</option>
+              <option value="downbeat">Measured downbeat</option>
             </select>
           </label>
           <button className="button" disabled={planning || candidateRendering !== null || rendering !== null || vocalsId === "" || bedId === "" || vocalsId === bedId} onClick={() => void planMashup()}>
@@ -683,6 +784,62 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           . {bedInfo.warning}
         </p>
       )}
+
+      {mixReport && (
+        <p className="mashup-mix-report" role="status" style={{ fontSize: 13 }}>
+          <b>Composition:</b>{" "}
+          {mixReport.layerStems.length === 0
+            ? "vocal donor over the bed's own drums, bass and other (no donor rhythm section added)."
+            : mixReport.stemLayerMode === "layer"
+              ? `vocal donor over the bed, plus deliberately doubled donor ${mixReport.layerStems.join(", ")} (two sources cover the same role).`
+              : `vocal donor over the bed, with donor ${mixReport.layerStems.join(", ")} replacing the bed's ${mixReport.replacedBedStems.length > 0 ? mixReport.replacedBedStems.join(", ") : "matching stems"}.`}
+          <br />
+          <b>Mix (measured from this render):</b>{" "}
+          vocal-to-bed balance {mixReport.balanceDb !== null ? `${mixReport.balanceDb} dB` : "not measurable"}
+          {mixReport.balanceClamped ? " (clamped — the pair is very unbalanced)" : ""}; static gain{" "}
+          {mixReport.staticGainDb ?? "n/a"} dB; limiter{" "}
+          {mixReport.limiter === "active" ? "active" : "not required"}; true peak{" "}
+          {mixReport.truePeakDb === "not-measured" || mixReport.truePeakDb === null
+            ? "true peak not re-measured on a render this long"
+            : `${mixReport.truePeakDb} dBTP`};{" "}
+          {mixReport.clippedRegions ?? "0"} clipped region(s). Measurements, not a quality score.
+        </p>
+      )}
+
+      <fieldset className="mashup-composition" style={{ fontSize: 13, marginTop: 12 }}>
+        <legend><b>Donor rhythm section</b></legend>
+        <p style={{ margin: "4px 0", opacity: 0.85 }}>
+          Default: the donor supplies the vocal and the bed keeps its own drums, bass and other.
+          Adding a donor stem either replaces the bed&apos;s copy or doubles it — never silently,
+          and never when either half cannot be verified.
+        </p>
+        {(["drums", "bass"] as const).map((stemType) => (
+          <label key={stemType} style={{ marginRight: 12 }}>
+            <input
+              type="checkbox"
+              checked={layerStemTypes.includes(stemType)}
+              onChange={(event) => setComposition(
+                event.target.checked
+                  ? [...layerStemTypes, stemType]
+                  : layerStemTypes.filter((type) => type !== stemType),
+                stemLayerMode,
+              )}
+            />{" "}
+            Donor {stemType}
+          </label>
+        ))}
+        <label style={{ marginLeft: 8 }}>
+          Applying as{" "}
+          <select
+            value={stemLayerMode}
+            disabled={layerStemTypes.length === 0}
+            onChange={(event) => setComposition(layerStemTypes, event.target.value === "layer" ? "layer" : "replace")}
+          >
+            <option value="replace">replace the bed&apos;s {layerStemTypes.join(" and ") || "stem"}</option>
+            <option value="layer">double it on top</option>
+          </select>
+        </label>
+      </fieldset>
 
       {canEdit && (
         <div className="remix-actions mashup-extend">

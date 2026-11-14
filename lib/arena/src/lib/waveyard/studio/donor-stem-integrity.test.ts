@@ -4,11 +4,13 @@ import { randomUUID } from "node:crypto";
 import {
   sumInstrumentalStems,
   InstrumentalBedError,
+  planStemComposition,
   type InstrumentalBedStem,
 } from "./mashup-bed";
 import {
   planMashup,
   renderMashup,
+  renderMashupWithBus,
   type MashupSourceProfile,
 } from "./mashup";
 
@@ -158,7 +160,7 @@ describe("Waveyard Donor-Stem Integrity & Provenance Guarantees", () => {
     assert.deepEqual(bed.excludedStemTypes, ["vocals"]);
   });
 
-  it("7. Instrumental transformation safety: complementary bed stems do not receive vocal pitch transposition", () => {
+  it("7. Instrumental transformation safety: an explicitly layered donor stem does not receive the vocal's pitch transposition", () => {
     const vocalProfile: MashupSourceProfile = {
       role: "vocals",
       bpm: 120,
@@ -188,15 +190,17 @@ describe("Waveyard Donor-Stem Integrity & Provenance Guarantees", () => {
     const vocalPcm = createStereoPcm(10, 440, 0.4);
     const bedPcm = createStereoPcm(10, 110, 0.4);
 
+    // Layering is deliberate: donor stems are only summed when requested.
     const stemsMap = new Map<string, Float32Array>([
-      ["drums", createStereoPcm(10, 80, 0.3)],
-      ["bass", createStereoPcm(10, 110, 0.3)],
+      ["donor_drums", createStereoPcm(10, 80, 0.3)],
+      ["donor_bass", createStereoPcm(10, 110, 0.3)],
     ]);
 
     const rendered = renderMashup(plan.plan, {
       vocals: vocalPcm,
       bed: bedPcm,
       stems: stemsMap,
+      layerStemTypes: ["drums", "bass"],
       sampleRate: RATE,
     });
 
@@ -257,6 +261,7 @@ describe("Agent B Independent Regression Tests: Measurable Signal & Route Invari
       vocals: new Float32Array(5 * RATE * 2),
       bed: new Float32Array(5 * RATE * 2),
       stems: stemsMap,
+      layerStemTypes: ["drums", "bass"],
       sampleRate: RATE,
     });
 
@@ -290,5 +295,154 @@ describe("Agent B Independent Regression Tests: Measurable Signal & Route Invari
       }
     }
     assert.equal(filteredRows.length, 1);
+  });
+});
+
+/** Energy at one frequency, measured from the rendered PCM itself. */
+function bandEnergy(pcm: Float32Array, hz: number, rate = RATE): number {
+  const n = Math.min(pcm.length / 2, rate);
+  const w = (2 * Math.PI * hz) / rate;
+  const coeff = 2 * Math.cos(w);
+  let s1 = 0;
+  let s2 = 0;
+  for (let i = 0; i < n; i += 1) {
+    const s0 = pcm[i * 2] + coeff * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  return Math.sqrt(s1 * s1 + s2 * s2 - coeff * s1 * s2) / n;
+}
+
+describe("Stem replacement is audible, not just labelled", () => {
+  it("removes the bed's drum energy while a deliberate layer keeps both", () => {
+    const drums = { ...makeStem("drums"), samples: createStereoPcm(5, 200, 0.4) };
+    const bass = { ...makeStem("bass"), samples: createStereoPcm(5, 60, 0.4) };
+
+    const doubled = sumInstrumentalStems([drums, bass]);
+    const replaced = sumInstrumentalStems([drums, bass], { omitStemTypes: ["drums"] });
+
+    const drumsInDoubled = bandEnergy(doubled.pcm, 200);
+    const drumsInReplaced = bandEnergy(replaced.pcm, 200);
+    const bassInDoubled = bandEnergy(doubled.pcm, 60);
+    const bassInReplaced = bandEnergy(replaced.pcm, 60);
+
+    assert.ok(drumsInDoubled > 0.05, `expected audible bed drums, got ${drumsInDoubled.toFixed(4)}`);
+    assert.ok(
+      drumsInReplaced < drumsInDoubled / 20,
+      `replaced bed lost its drums: ${drumsInReplaced.toFixed(4)} vs ${drumsInDoubled.toFixed(4)}`,
+    );
+    // The rest of the bed survives the replacement untouched.
+    assert.ok(
+      Math.abs(bassInReplaced - bassInDoubled) < bassInDoubled * 0.01,
+      "bass should be bit-for-bit unaffected by a drum replacement",
+    );
+  });
+
+  it("renders one rhythm section, not two, when the donor replaces the bed's drums", () => {
+    const vocalProfile: MashupSourceProfile = {
+      role: "vocals", bpm: 120, bpmConfidence: 0.9,
+      musicalKey: "C major", keyConfidence: 0.9,
+      durationMs: 8_000, sections: [{ label: "verse", startMs: 0, endMs: 8_000 }],
+    };
+    const bedProfile: MashupSourceProfile = {
+      role: "instrumental", bpm: 120, bpmConfidence: 0.9,
+      musicalKey: "C major", keyConfidence: 0.9,
+      durationMs: 8_000, sections: [{ label: "verse", startMs: 0, endMs: 8_000 }],
+    };
+    const plan = planMashup(vocalProfile, bedProfile);
+    assert.ok(plan.ok);
+
+    const bedDrums = { ...makeStem("drums"), frames: 8 * RATE, samples: createStereoPcm(8, 200, 0.35) };
+    const bedBass = { ...makeStem("bass"), frames: 8 * RATE, samples: createStereoPcm(8, 60, 0.35) };
+    const donorDrums = createStereoPcm(8, 500, 0.3);
+    const vocals = createStereoPcm(8, 440, 0.35);
+
+    const render = (omit: string[]) => {
+      const bed = sumInstrumentalStems([bedDrums, bedBass], { omitStemTypes: omit });
+      return renderMashupWithBus(plan.plan, {
+        vocals,
+        bed: bed.pcm,
+        stems: new Map([["donor_drums", donorDrums]]),
+        layerStemTypes: ["drums"],
+        sampleRate: RATE,
+        mix: { limit: false },
+      }).pcm;
+    };
+
+    const replaceMix = render(["drums"]);
+    const layerMix = render([]);
+
+    // The donor drum part is present in both, so the difference is the bed's
+    // own drum layer and nothing else.
+    assert.ok(bandEnergy(replaceMix, 500) > 0.005, "donor drums must be audible in both modes");
+    assert.ok(bandEnergy(layerMix, 500) > 0.005, "donor drums must be audible in both modes");
+    const bedDrumsReplaced = bandEnergy(replaceMix, 200);
+    const bedDrumsLayered = bandEnergy(layerMix, 200);
+    assert.ok(
+      bedDrumsReplaced < bedDrumsLayered / 5,
+      `replacement must remove the bed's drums from the render: ${bedDrumsReplaced.toFixed(4)} vs ${bedDrumsLayered.toFixed(4)}`,
+    );
+  });
+});
+
+describe("Stem composition fails closed", () => {
+  const base = {
+    stemLayerMode: "replace" as const,
+    requestedLayerStemTypes: ["drums"],
+    bedSeparableStemTypes: ["drums", "bass", "other"],
+    verifiedDonorStemTypes: ["drums"],
+  };
+
+  it("only reports a replacement when both halves are proven", () => {
+    const plan = planStemComposition(base);
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    assert.equal(plan.mode, "replace");
+    assert.deepEqual(plan.omittedBedStemTypes, ["drums"]);
+  });
+
+  it("refuses a replacement against a bed with no separable stems", () => {
+    const plan = planStemComposition({ ...base, bedSeparableStemTypes: [], bedIndivisibleReason: "premixed" });
+    assert.equal(plan.ok, false);
+    if (plan.ok) return;
+    assert.equal(plan.code, "replacement-not-separable");
+  });
+
+  it("refuses when the donor stem is missing, and omits nothing", () => {
+    const plan = planStemComposition({ ...base, verifiedDonorStemTypes: [] });
+    assert.equal(plan.ok, false);
+    if (plan.ok) return;
+    assert.equal(plan.code, "replacement-donor-missing");
+    // The failure must not carry an omission list a caller could act on.
+    assert.equal("omittedBedStemTypes" in plan, false);
+  });
+
+  it("refuses when the bed has no matching stem to remove", () => {
+    const plan = planStemComposition({ ...base, bedSeparableStemTypes: ["bass", "other"] });
+    assert.equal(plan.ok, false);
+    if (plan.ok) return;
+    assert.equal(plan.code, "replacement-bed-stem-missing");
+  });
+
+  it("keeps layering distinct: it requires the donor stem but removes nothing", () => {
+    const plan = planStemComposition({ ...base, stemLayerMode: "layer" });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    assert.equal(plan.mode, "layer");
+    assert.deepEqual(plan.omittedBedStemTypes, []);
+
+    const missing = planStemComposition({ ...base, stemLayerMode: "layer", verifiedDonorStemTypes: [] });
+    assert.equal(missing.ok, false);
+    if (missing.ok) return;
+    assert.equal(missing.code, "replacement-donor-missing");
+  });
+
+  it("reports no composition when nothing was asked for", () => {
+    const plan = planStemComposition({ ...base, requestedLayerStemTypes: [] });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    assert.equal(plan.mode, "none");
+    assert.deepEqual(plan.layerStemTypes, []);
+    assert.deepEqual(plan.omittedBedStemTypes, []);
   });
 });
