@@ -27,6 +27,14 @@ export const ANALYSIS_PCM_RATE = 22_050; // mono analysis rate (enough to 10 kHz
 export type AnalysisResult = {
   bpm: number | null;
   bpmConfidence: number | null;
+  /**
+   * Plausible tempi in the same pulse family as `bpm`, strongest first, each in
+   * 40-300 BPM. A hats-heavy part can read one octave high with high
+   * confidence, so `bpm` alone is not enough to decide how hard a vocal must be
+   * stretched. Consumers that warp audio should prefer the candidate that costs
+   * the least stretch instead of trusting `bpm` verbatim.
+   */
+  bpmCandidates: number[] | null;
   musicalKey: string | null;
   keyConfidence: number | null;
   beatGridMs: number[] | null;
@@ -280,6 +288,29 @@ export function estimateTrackTempo(
     bpm: Math.round(bpm * 1000) / 1000,
     confidence: Math.round(Math.max(0, Math.min(1, averageConfidence * support)) * 1000) / 1000,
   };
+}
+
+/**
+ * Plausible tempi in the same pulse family as `bpm`, strongest first.
+ *
+ * The detector picks the strongest autocorrelation peak, and a part with loud
+ * off-beat hats or a busy subdivision can score higher at twice the musical
+ * tempo. That is a genuine ambiguity: at 72 BPM with 8th-note hats every
+ * position of both the 72 and the 143.5 BPM grid lands on an onset, so the
+ * envelope cannot say which one is the beat. Rather than pretend one is right,
+ * report the family and let the caller pick the computationally cheapest
+ * interpretation. `bpm` always stays first so existing behaviour is preserved.
+ */
+export function tempoCandidates(bpm: number | null): number[] | null {
+  if (bpm === null || !Number.isFinite(bpm) || bpm <= 0) return null;
+  const family: number[] = [];
+  for (const multiplier of [1, 0.5, 2, 0.25, 4]) {
+    const candidate = Math.round(bpm * multiplier * 1000) / 1000;
+    if (candidate < 40 || candidate > 300) continue;
+    if (family.some((existing) => Math.abs(existing - candidate) <= 0.5)) continue;
+    family.push(candidate);
+  }
+  return family.length > 0 ? family : null;
 }
 
 /** Beat grid: phase of the envelope against the detected period. */
@@ -649,7 +680,7 @@ export function analysePcm(pcm: Float32Array): AnalysisResult {
   const downbeats = estimateDownbeatGrid(envelope, frameMs, beatGridMs, beatConfidence);
   const { key, confidence: keyConfidence } = keyFromChroma(chromaFromPcm(pcm));
   return {
-    bpm, bpmConfidence, musicalKey: key, keyConfidence, beatGridMs, beatConfidence,
+    bpm, bpmConfidence, bpmCandidates: tempoCandidates(bpm), musicalKey: key, keyConfidence, beatGridMs, beatConfidence,
     downbeatGridMs: downbeats.downbeatGridMs,
     downbeatConfidence: downbeats.downbeatConfidence,
   };

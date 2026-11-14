@@ -18,7 +18,7 @@ import type { LocalTempoMap } from "./local-tempo-map";
 import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
-import { analysePcm, type AnalysisResult } from "../worker-local/analysis-engine";
+import { analysePcm, tempoCandidates, type AnalysisResult } from "../worker-local/analysis-engine";
 import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
 import { comparePassageCompatibility, type PassageFingerprint, type PassageRollingWindow } from "../types/passage-compatibility";
 import {
@@ -64,6 +64,12 @@ export type MashupSourceProfile = {
   sourceChecksumSha256?: string;
   bpm: number | null;
   bpmConfidence?: number | null;
+  /**
+   * Plausible tempi in the same pulse family as `bpm`, strongest first. Used to
+   * avoid stretching a vocal to twice the intended speed when a reading is an
+   * octave high; absent means "trust `bpm` alone".
+   */
+  bpmCandidates?: number[] | null;
   musicalKey: string | null;
   keyConfidence?: number | null;
   beatGridMs?: number[] | null;
@@ -272,6 +278,94 @@ function isOutro(label: string): boolean {
  * would only degrade it. Anything else stretches to match the bed's tempo,
  * clamped to 0.5–2.
  */
+/**
+ * Octave-aware stretch choice.
+ *
+ * `warpRatioForTempos` sees one number per track, which is enough when both
+ * readings are unambiguous but produces a wrong result when either tempo was
+ * reported one octave high: a 143.555 BPM reading for a 72 BPM bed yields a
+ * 0.697 ratio where the truth is 1.389, so the vocal is stretched twice as far
+ * as it should be. Given the pulse family for each side we can pick the pairing
+ * that needs the least warp, which is both the smallest audible artefact and
+ * the most likely musical intent — a 2:1 pairing is a half-time feel, not a
+ * reason to halve a vocal.
+ *
+ * Least warp alone is not sufficient: two octave pairings can cost exactly the
+ * same (100/71.777 and 200/143.555 both give 1.393). Ties are broken in favour
+ * of leaving the *bed* at its own reading, because the resolved bed tempo is
+ * also the master tempo the arrangement measures bars and entry points with.
+ * Inventing an octave for the bed on a tie would halve or double every bar
+ * length in the plan, which is a far larger musical change than the warp — and
+ * an equal-cost tie means the warp itself is unaffected either way.
+ *
+ * Falls back to the single readings when no family is supplied, so callers
+ * without candidate evidence keep the previous behaviour exactly.
+ */
+export function warpRatioForTempoCandidates(
+  vocalCandidates: readonly number[] | null | undefined,
+  bedCandidates: readonly number[] | null | undefined,
+  vocalBpm: number,
+  bedBpm: number,
+): { ratio: number; vocalBpm: number; bedBpm: number; ambiguous: boolean; consideredPairs: number } {
+  const vocals = usableCandidates(vocalCandidates, vocalBpm);
+  const beds = usableCandidates(bedCandidates, bedBpm);
+  if (vocals.length === 0 || beds.length === 0) {
+    return { ratio: 1, vocalBpm, bedBpm, ambiguous: false, consideredPairs: 0 };
+  }
+  const octaveJumps = (candidate: number, raw: number) =>
+    raw > 0 ? Math.abs(Math.log2(candidate / raw)) : 0;
+  type Choice = { ratio: number; vocalBpm: number; bedBpm: number; cost: number; vocalJumps: number; bedJumps: number };
+  const choices: Choice[] = [];
+  for (const v of vocals) {
+    for (const b of beds) {
+      const ratio = warpRatioForTempos(v, b);
+      choices.push({
+        ratio,
+        vocalBpm: v,
+        bedBpm: b,
+        // Rounded so that mathematically identical pairings tie instead of
+        // being separated by floating-point noise.
+        cost: Math.round(Math.abs(Math.log(ratio)) * 1e6) / 1e6,
+        vocalJumps: octaveJumps(v, vocalBpm),
+        bedJumps: octaveJumps(b, bedBpm),
+      });
+    }
+  }
+  const ranked = [...choices].sort((left, right) =>
+    left.cost - right.cost
+    || left.bedJumps - right.bedJumps
+    || left.vocalJumps - right.vocalJumps
+    || left.bedBpm - right.bedBpm,
+  );
+  const best = ranked[0]!;
+  // Ambiguous when a different octave pairing would need the same amount of
+  // warp, so the envelope genuinely cannot justify the choice. The octave is
+  // reported as uncertain rather than being presented as measured.
+  const ambiguous = ranked.some((choice) =>
+    Math.abs(choice.cost - best.cost) <= 1e-3
+    && (Math.abs(choice.vocalBpm - best.vocalBpm) > 0.5 || Math.abs(choice.bedBpm - best.bedBpm) > 0.5),
+  );
+  return {
+    ratio: best.ratio,
+    vocalBpm: best.vocalBpm,
+    bedBpm: best.bedBpm,
+    ambiguous,
+    consideredPairs: choices.length,
+  };
+}
+
+function usableCandidates(candidates: readonly number[] | null | undefined, fallback: number): number[] {
+  const source = candidates && candidates.length > 0 ? candidates : [fallback];
+  const seen: number[] = [];
+  for (const candidate of source) {
+    if (!Number.isFinite(candidate) || candidate <= 0) continue;
+    if (candidate < 40 || candidate > 300) continue;
+    if (seen.some((existing) => Math.abs(existing - candidate) <= 0.5)) continue;
+    seen.push(candidate);
+  }
+  return seen;
+}
+
 export function warpRatioForTempos(vocalBpm: number, bedBpm: number): number {
   if (vocalBpm <= 0 || bedBpm <= 0) return 1;
   const raw = vocalBpm / bedBpm;
@@ -2204,7 +2298,39 @@ export function planMashup(
   // Otherwise preserve natural speed (1.0), mark alignment unverified, and explain honestly.
   let stretchRatio = 1.0;
   if (trustedBedBpm !== null && trustedVocalBpm !== null) {
-    stretchRatio = warpRatioForTempos(effectiveVocalBpm, masterBpm);
+    // A single confidence number cannot express octave ambiguity, and a
+    // hats-heavy part reads high with confidence 1.0. Choose the pulse-family
+    // pairing that needs the least warp instead of taking both readings at face
+    // value; identical readings reproduce the previous ratio exactly.
+    const octaveChoice = warpRatioForTempoCandidates(
+      vocals.bpmCandidates, bed.bpmCandidates, effectiveVocalBpm, masterBpm,
+    );
+    stretchRatio = octaveChoice.ratio;
+    // Bar and entry decisions are derived from masterBpm. If the pulse family
+    // resolved the bed to a different octave than the raw reading, the master
+    // tempo has to move with it or the vocal would be warped for one tempo
+    // while the arrangement used bars measured at another.
+    if (Math.abs(octaveChoice.bedBpm - masterBpm) > 0.5) {
+      rationale.push(
+        `master tempo ${masterBpm} BPM is an octave reading; using ${octaveChoice.bedBpm} BPM `
+        + `so bar and entry decisions match the vocal warp.`,
+      );
+      masterBpm = octaveChoice.bedBpm;
+    }
+    if (octaveChoice.ambiguous) {
+      warnings.push(
+        `Tempo octave is ambiguous (${octaveChoice.vocalBpm} vs ${octaveChoice.bedBpm} BPM both fit); `
+        + `using the pairing that needs the least stretch (×${stretchRatio.toFixed(3)}).`,
+      );
+    }
+    const rawRatio = warpRatioForTempos(effectiveVocalBpm, trustedBedBpm);
+    if (Math.abs(octaveChoice.ratio - rawRatio) > 1e-6) {
+      rationale.push(
+        `tempo octave resolved from the pulse family: ${octaveChoice.vocalBpm} BPM over `
+        + `${octaveChoice.bedBpm} BPM needs ×${stretchRatio.toFixed(3)}, against `
+        + `×${rawRatio.toFixed(3)} for the raw readings.`,
+      );
+    }
     if (Math.abs(stretchRatio - 1) < 1e-9) {
       rationale.push(`vocals stay at natural speed (${effectiveVocalBpm} BPM syncs to ${masterBpm} BPM as-is or via a double/half lock).`);
     } else {
@@ -2538,6 +2664,9 @@ function profileFromCurrentEvidence(profile: MashupSourceProfile): MashupSourceP
     sourceChecksumSha256: sourceChecksum,
     bpm: tempo?.bpm ?? profile.bpm,
     bpmConfidence: tempo?.confidence ?? profile.bpmConfidence ?? null,
+    // Evidence packets carry a single tempo; only a profile that was analysed
+    // directly can carry a pulse family, so never invent one here.
+    bpmCandidates: tempo !== null ? tempoCandidates(tempo.bpm ?? null) : profile.bpmCandidates ?? null,
     musicalKey: key?.key ?? profile.musicalKey,
     keyConfidence: key?.confidence ?? profile.keyConfidence ?? null,
     beatGridMs: beatGrid?.beatsMs ?? profile.beatGridMs ?? null,

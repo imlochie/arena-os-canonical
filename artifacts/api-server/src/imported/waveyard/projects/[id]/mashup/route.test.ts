@@ -1074,6 +1074,17 @@ test(
     if (!realFixture) assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
     assert.ok(planBody.plan && planBody.plan.durationMs > 0, "the production planner must return an arrangement");
     if (!realFixture) {
+      // The planner only sees tempo numbers that survived persistence. If the
+      // pulse family (the octave alternatives of a measured tempo) were dropped
+      // on the way from the database to the profile, a hats-heavy track stored
+      // an octave high would halve or double the vocal's stretch and no unit
+      // test would notice. Assert the production loader still carries it.
+      const { loadSourceProfile: loadProfile } = await import("@workspace/arena/lib/waveyard/studio/mashup-sources");
+      const loadedBed = await loadProfile(project.id, bedSource.id, "instrumental", dbModule.db, { separationJobId: bedJob.id });
+      assert.ok(loadedBed?.bpm && loadedBed.bpmCandidates && loadedBed.bpmCandidates.length > 0,
+        "the persisted-tempo profile must expose its pulse family so octave ambiguity stays resolvable");
+      assert.equal(loadedBed.bpmCandidates[0], loadedBed.bpm,
+        "the measured tempo must remain the first candidate for existing consumers");
       const persistedDrumAlignment = planBody.plan.rationale.find((line) =>
         line.includes("overlap measured drum transients") && line.includes("overlap low-band bass attacks"));
       assert.ok(persistedDrumAlignment, "the plan must report measured vocal-to-groove comparisons");

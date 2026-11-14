@@ -17,6 +17,7 @@ import {
   estimateDownbeatGrid,
   estimateBpm,
   estimateTrackTempo,
+  tempoCandidates,
   keyFromChroma,
   normaliseBeatGrid,
   onsetEnvelope,
@@ -473,4 +474,30 @@ test("decodeMonoPcm decodes real audio through bundled ffmpeg (or PATH)", async 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("tempo candidates expose the octave ambiguity of a hats-heavy part", () => {
+  // Measured on this analyser: 72 BPM with 8th-note hats reports 143.555 BPM at
+  // confidence 1.0, because the strongest autocorrelation peak is the
+  // subdivision. The reading is not wrong so much as incomplete, and the
+  // octave it lost has to be recoverable or the planner stretches the vocal for
+  // a tempo the music never had.
+  const { bpm, bpmCandidates, bpmConfidence } = analysePcm(clickTrack(72, 30));
+  assert.notEqual(bpm, null);
+  assert.ok((bpmConfidence ?? 0) > 0.9, "the misreading is reported with high confidence");
+  assert.notEqual(bpmCandidates, null);
+  const candidates = bpmCandidates!;
+  assert.equal(candidates[0], bpm, "the reported tempo stays first for existing consumers");
+  const hasTrueOctave = candidates.some((candidate) => Math.abs(candidate - 72) < 2);
+  assert.ok(hasTrueOctave, `72 BPM should be recoverable from ${candidates.join(", ")}`);
+  for (const candidate of candidates) {
+    assert.ok(candidate >= 40 && candidate <= 300, `candidate ${candidate} is outside the usable range`);
+  }
+});
+
+test("tempo candidates reject degenerate readings", () => {
+  assert.equal(tempoCandidates(null), null);
+  assert.equal(tempoCandidates(0), null);
+  assert.equal(tempoCandidates(Number.NaN), null);
+  assert.deepEqual(tempoCandidates(120), [120, 60, 240, 30].filter((value) => value >= 40 && value <= 300));
 });

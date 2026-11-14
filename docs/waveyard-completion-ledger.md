@@ -78,8 +78,9 @@ octave never reaches the planner. Measured on synthetic onset tracks (hats on
 
 The consequence reaches the planner's stretch decision. `warpRatioForTempos`
 has no octave knowledge in its signature, so pairing a 72 BPM vocal with a
-100 BPM bed yields a ratio of **0.692** where the truth is **1.389** — a 50%
-error, i.e. the vocal plays at half the intended speed against the bed:
+100 BPM bed yields a ratio of **0.692** where the truth is **1.389**. The
+output is half the intended length, i.e. the vocal is compressed twice as hard
+and runs at roughly **twice** the intended speed against the bed:
 
 | bed | vocal | true ratio | planned ratio | error |
 | --- | --- | --- | --- | --- |
@@ -88,6 +89,15 @@ error, i.e. the vocal plays at half the intended speed against the bed:
 | 68 | 92 | 1.353 | 0.679 | 49.8% |
 | 90 | 128 | 1.422 | 0.725 | 49.0% |
 | 85 | 100 | 1.176 | 1.173 | 0.3% |
+
+Planning the same 72 BPM bed both ways confirms this is not cosmetic — the
+whole plan changes shape:
+
+| | corrected 72 BPM | reported 143.555 BPM |
+| --- | --- | --- |
+| master BPM | 72 | 143.555 |
+| stretch ratio | 1.389 | **0.697** |
+| segment count | 1 | **2** |
 
 The error is pattern-dependent, which is why it has been so hard to pin down:
 the *same* 72 BPM pulse read 71.78 (correct) when the track had no 8th-note
@@ -201,3 +211,72 @@ Key findings:
 Still not established after this pass: N=0 listeners; synthetic material only;
 P2 makes no compatibility *decisions*; P3 arrangement intelligence untouched;
 the A/B/C/D harness has still never been run on real songs.
+
+---
+
+## 6. Tempo octave ambiguity — fixed (2026-11-14)
+
+The P0 defect from section 5 is fixed. Nothing here is a listening claim (N=0);
+all measurements are synthetic and the musical verdict on the result is still
+unmade.
+
+**What changed, and why in this shape.** The octave is destroyed inside
+`estimateBpm`, so no planner-side fix could recover it. Three attempts were
+measured before choosing:
+
+1. *Rank octaves by autocorrelation strength* — **rejected.** At 72 BPM with
+   8th-note hats the doubled lag scores *higher* (0.761 vs 0.732), so this
+   makes the error worse.
+2. *Rank octaves by grid accent (do beat slots carry stronger onsets than
+   subdivisions?)* — **rejected.** Every octave's grid lands on onsets
+   (median-slot strength 1.000 for all three), so the envelope genuinely cannot
+   distinguish them.
+3. *Report the pulse family and choose the pairing needing the least warp* —
+   **adopted.** Least warp is the smallest audible artefact and preserves the
+   legitimate 2:1 half-time lock instead of refusing it.
+
+Because the ambiguity is real rather than a tuning problem, the fix does **not**
+claim to know the answer. It exposes `bpmCandidates` from the analyser
+(`bpm` stays first, so existing consumers are unchanged), carries the family
+through the production loader as a pure function of the stored tempo, picks the
+cheapest pairing in the planner, and moves `masterBpm` with the resolved bed
+octave so bar/entry decisions cannot disagree with the vocal warp. Genuinely
+tied octaves are reported as **ambiguous** rather than presented as measured.
+
+**Measured effect** — nine synthetic bed/vocal pairs, pulse error in semitones
+of tempo after warping (a locked pair is < 0.6):
+
+| bed | vocal | before | after |
+| --- | --- | --- | --- |
+| 72 | 100 | 5.6 off | **0.05 locked** |
+| 60 | 100 | 5.6 off | **0.13 locked** |
+| 85 | 100 | off | **0.05 locked** |
+| 68 | 92 | off | **0.05 locked** |
+| 90 | 128 | off | **0.33 locked** |
+| 100 | 128 | off | **0.27 locked** |
+| 128 | 174 | off | **0.33 locked** |
+| 90 | 140 | off | **0.13 locked** |
+| 72 | 96 | off | **0.00 locked** |
+
+**Tests added (all mutation-checked).** `mashup.test.ts` 41 → 46:
+folded-bed warp, unchanged behaviour without candidates, never-more-stretch
+than the raw readings, octave resolution reaching the plan, and the ambiguity
+warning. `analysis-engine.test.ts` 24 → 26: the family exposes the lost octave
+and rejects degenerate readings. `route.test.ts` gains a production-path
+assertion that the persisted-tempo profile still carries its pulse family.
+
+Mutation checks: passing `null` families to the candidate selector fails tests
+45/46; removing the loader's `bpmCandidates` fails the route assertion with
+*"the persisted-tempo profile must expose its pulse family"*.
+
+**Suites at this commit:** mashup 46/46, mix-bus 13/13, donor-stem-integrity
+18/18, full-length 4/4, regression 6/6, peak-limiter 8/8, analysis-engine 25/26
+(the one failure is the pre-existing `decodeMonoPcm` ffmpeg-environment test,
+unrelated to this change), route acceptance 1/1 with 0 skipped against real
+PostgreSQL + ffmpeg.
+
+**Still open.** The alternative octave is still chosen by warp cost, not by
+musical evidence, so a track whose true tempo is the *higher* octave will be
+placed a half-time low. That is a defensible default, not a solved problem, and
+it needs real recordings to evaluate. No real audio has been analysed yet; the
+corpus is CC-licensed material to be sourced next. Listener count remains N=0.
