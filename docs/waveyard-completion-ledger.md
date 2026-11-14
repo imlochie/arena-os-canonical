@@ -1278,3 +1278,74 @@ clean pass exit 0.
 in the sense that the job succeeds, and that must not be reported as "the route
 test passes on CI" without the caveat: the assertions pass, the harness does
 not, and the warning on every run says so.
+
+## 15. Two reliability tasks from the owner's review (2026-11-14)
+
+### 15.1 WebKit session-control timeout: provenance established
+
+The owner asked whether the WebKit timeout is really pre-existing, rather than
+taking my earlier assertion for it. It is, and now on the owner's own standard
+of evidence — the same failure on the commits this branch was built from:
+
+| Commit | Relationship | Result |
+|---|---|---|
+| `1c7145a` | PR base / branch point | `webkit: TimeoutError` at `waveyard-live-stems.mjs:2486:16` |
+| `368b8f3` | earlier base | `webkit: TimeoutError` at `waveyard-live-stems.mjs:2486:16` |
+| `f7b26ae` | this branch head | `webkit: TimeoutError` at `waveyard-live-stems.mjs:2486:16` |
+
+Identical file, line and assertion in all three.
+
+**What it actually is.** Line 2486 is the wait for playback to *resume after a
+pause*, not a timing-budget measurement. Chromium and Firefox pass it; WebKit
+does not. The owner's reading was right, and my earlier "flaky timing budget"
+label was too vague — the budget assertions pass on all three engines.
+
+**Not fixed.** WebKit cannot be installed here (its browser CDN is blocked, and
+the workflow installs three engines plus a PulseAudio null sink), so I could not
+iterate against the failing engine. What I added is the diagnostic the run was
+missing: on that timeout it now records the button's `aria-pressed`/`aria-busy`
+state, every current audio element (`paused`, `readyState`, `ended`, error
+code), AudioContext states, recent play rejections and context resumes, and the
+status text. From the raw timeout alone, four distinct causes are
+indistinguishable — suspended context, element refusing to restart, superseded
+play token, or an error path that pauses again. **No timeout, assertion or
+acceptance criterion was relaxed.**
+
+### 15.2 The teardown race: three wrong hypotheses, then my own bug
+
+I attempted, in order: ordered teardown, `pg_terminate_backend` before
+`pool.end()`, a queue drain, `pool.on("error")`, and `--test-force-exit`. None
+changed the CI result. Two of those were actively wrong and I reverted them:
+
+- Terminating backends **before** `pool.end()` kills connections the pool still
+  believes are healthy — it is the thing it was meant to prevent.
+- The suite-level `uncaughtException` handler **manufactured the failure it was
+  meant to explain**. It was registered at module scope but referenced
+  `postgresProcess`/`postgresPort`, declared inside the test callback. Reading
+  them threw a `ReferenceError` from inside Node's internal uncaught-exception
+  path, which exits with code 7 and is reported as `test failed` at
+  `route.test.ts:1:1`. That is why a "real assertion failure" appeared and then
+  vanished when the handler was removed.
+
+**Diagnostics that did work, and why they were needed.** Job logs and
+artifacts are not retrievable from this environment (Azure blob host blocked),
+so every diagnostic was invisible until routed through the check-run. Two
+findings came out of publishing them:
+
+- `backends_before_stop=1`: on PostgreSQL 14 one idle backend survives
+  `pool.end()`. A client acquired from the pool and never released is invisible
+  to `pool.end()`, so stopping the cluster disconnects a live reader. Teardown
+  now polls `pg_stat_activity` until no backend remains while the server still
+  runs, terminates any straggler after a one-second grace, and reports the
+  counts. It does **not** eliminate the race on CI.
+- A heuristic that extracted "the failing assertion" reported line 221, which
+  is this file's own diagnostic template — a stack frame belonging to swallowed
+  noise, not a failure. The verdict script now dumps the raw failure block
+  rather than guessing.
+
+**Where it stands: still open, and still quarantined.** The `pull_request` run
+builds a merged tree that differs from the branch head; both green only through
+the verdict script's quarantine, which emits a warning naming it unresolved on
+every run. Assertions pass locally 1/1 with `backends_before_stop=0`
+(PostgreSQL 16). The honest summary remains: route assertions pass, the harness
+race is open, CI success here is not evidence that the suite passes.
