@@ -59,6 +59,15 @@ const failOn = (reason) => {
   process.exit(1);
 };
 
+// Surface teardown diagnostics as annotations. Job logs and artifacts are not
+// retrievable from the environment that triages this workflow, so anything the
+// suite reports about the race has to travel through the check-run itself.
+for (const line of output.split("\n")) {
+  if (!/TEARDOWN_DIAGNOSTICS|TEARDOWN_SWALLOWED|SESSION_RESUME_STATE/.test(line)) continue;
+  const cleaned = line.replace(/^#\s*/, "").trim().slice(0, 900);
+  console.error(`::warning::${cleaned}`);
+}
+
 if (tests === null || pass === null || fail === null || skipped === null) {
   failOn("Route acceptance produced no test summary; the suite did not run.");
 }
