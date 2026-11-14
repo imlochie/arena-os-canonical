@@ -679,6 +679,12 @@ by WSOLA" is true rather than assumed.
 
 ### 10.4 The biggest weakness visible in the measurements
 
+> **Corrected in section 11.0.** The coverage figures below came from 10–20 s
+> extracted sections, not complete performances, so they describe the inputs
+> rather than the engine. Measured on a genuinely complete 214.2 s vocal the
+> engine reaches 91 %. The paragraph is kept for the record; the conclusion
+> drawn from it at the time was not supported.
+
 Vocal coverage is low. In three of the five synced cases the vocal is audible for
 only **13–21 % of the runtime** — 9.9 s of 68.6 s in case 11. Case 13 (a
 214 s full-song vocal) reaches 91 %. A 69 s bed with a 10 s vocal cameo is a
@@ -739,3 +745,178 @@ donor-integrity 18, full-length 4, peak-limiter 8, analysis-confidence 4 — all
 pass, 0 fail. `analysis-engine` 28 pass / 1 fail, the pre-existing bundled-ffmpeg
 decode test. Both pack scripts and the two key scripts typecheck under a config
 that was verified to reject a deliberate type error.
+
+## 11. STEM.FM Full Length + Adaptive Stem Swap Parity — milestone definition (2026-11-14)
+
+The owner redefined the target. This section defines the milestone in **observable
+behaviours** and records what was measured before any code changed.
+
+### 11.0 Correction accepted: section 10.4 overreached
+
+Section 10.4 reported 13–21 % vocal coverage and called it "the biggest weakness".
+**That conclusion was not supported.** Those figures came from 10–20 s extracted
+sections, not from complete song-length stems. Measuring a 10 s section against a
+104 s bed can only produce ~10 % coverage — that describes the input, not the
+engine. The correction is recorded here rather than quietly deleted.
+
+Measured on a genuinely complete 214.2 s vocal (`02_Kimseye.wav`) the engine
+reaches **91 % coverage**, not 21 %. The engine is not truncating by default.
+
+### 11.1 Corpus limit that blocks the primary spec case
+
+The owner's primary example is *vocal shorter than instrumental → loop the vocal
+from its beginning*. **That case cannot be built from real audio in this
+environment.** The only complete performance available is 214.2 s; every CC0 bed
+is ≤ 103.8 s. The inverse case (vocal longer than bed) is what the corpus can
+actually exercise. Constructing the shorter-vocal case would require a complete
+vocal shorter than the bed, i.e. a different corpus. Stated so the gap is not
+mistaken for a passing test.
+
+### 11.2 Defect A — the vocal ending is not preserved when the bed outlasts it
+
+Measured, 19.9 s vocal over a 103.8 s bed:
+
+```
+seg0 timeline   8.9 -  28.8s | source 0.0 - 19.9s   (the complete body)
+seg1 timeline  51.5 -  53.1s | source 18.3 - 19.9s   (a 1.6s tail echo)
+COVERAGE 21.5s of 103.8s = 21%
+```
+
+The second placement re-uses only the **last 1.6 s** of the performance. That is
+the existing `chooseGroundedReprise` closing-echo design, which deliberately
+avoids replaying the opening ("never replay the identical window"). The owner's
+spec requires the opposite: **repeat the complete vocal from its beginning at a
+suitable musical boundary.** The failure is not that a loop is missing — it is
+that the loop takes the wrong material and is far too short to be a loop at all.
+81 s of bed runs with no vocal over a corpus where the vocal is complete.
+
+### 11.3 Defect B — a segment can claim more source than the timeline can hold
+
+Measured, 214.2 s vocal over a 103.8 s bed:
+
+```
+seg0 timeline  8.9 - 103.8s  (94.9s on the timeline) | source 0.0 - 214.2s
+```
+
+The segment declares 214.2 s of source in 94.9 s of timeline at `stretch × 1.000`.
+That is internally inconsistent — either the stretch is unreported or the source
+range is. The *audible* result is acceptable (the vocal plays 94.9 s and fades at
+the bed's end, and the renderer clamps to the timeline), but the plan object
+cannot be trusted as a description of the output, and any consumer reading
+`vocalsToMs` would compute the wrong thing. This matters directly for defect A:
+a loop built on top of these ranges would inherit the inconsistency.
+
+### 11.4 Defect C — stem swaps do not reach the planner (requirement 2)
+
+This is the structural finding, and it is the one the owner called "arguably more
+important". In `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`:
+
+| Line | Action |
+|---|---|
+| 1167 | `planMashup(vocals, bed, …)` — **plan is decided here** |
+| 1551 | `resolveStemComposition(...)` — replacement/layer decided here |
+| 1558 | `loadInstrumentalBed(..., replacedBedStemTypes)` — replacement bed loaded here |
+| 1588 | `renderMashupWithBus(planned.plan, …)` — new audio substituted under the old plan |
+
+The arrangement is planned against the **original** bed, and a replacement stem is
+loaded **afterwards** and dropped into a plan that was never recomputed. Beat grid,
+entry point, bars, `masterBpm`, passage ranking and the vocal's phrase placement
+are all inherited from the pre-swap analysis. Requirement 2 asks for the opposite:
+the swapped stem must become the new input to planning.
+
+This is exactly "insert new drums into the existing arrangement" rather than
+"reconsider whether the bass still complements the drums".
+
+### 11.5 Acceptance criteria — observable behaviours
+
+Each criterion is stated so it can be settled by measuring the plan object or by
+listening. No criterion is a claim of quality, and none may be satisfied by a
+synthetic fixture alone.
+
+**Full Length mode**
+
+| # | Criterion | How it is observed |
+|---|---|---|
+| FL-1 | When the vocal is shorter than the bed, the **complete** vocal is placed, not a fragment | sum of distinct source ranges spans ≥ 95 % of the vocal body |
+| FL-2 | The performance **starts at its natural beginning** | first segment `vocalsFromMs` is the body start, not a later passage |
+| FL-3 | The performance **ends at its natural ending** | some segment reaches the body end and is not cut by the bed's end |
+| FL-4 | When the bed outlasts the vocal, the vocal is **looped from its beginning** at a bar boundary | a later segment repeats the body start; loop count ≥ 1 when room allows |
+| FL-5 | A loop is **never forced** when it would produce an awkward transition | no loop shorter than a minimum musical unit; a disclosed warning instead of a broken edit |
+| FL-6 | Stretching preserves the vocal's duration faithfully | `stretch × 1.0` ⇒ source span ≈ timeline span (defect B invariant) |
+| FL-7 | The bed finishes naturally | render length equals bed length; no vocal tail cut mid-phrase |
+
+**Adaptive stem swap**
+
+| # | Criterion | How it is observed |
+|---|---|---|
+| AS-1 | A stem swap **re-plans** the arrangement against the new stem | planned `masterBpm`/entry/bars derived from post-swap analysis, not pre-swap |
+| AS-2 | A swapped drum stem's beat grid **drives** the vocal placement | vocal entry tracks the new grid |
+| AS-3 | Gains are **re-measured** after the swap | mix-bus balance computed post-swap |
+| AS-4 | The render is reproducible and honest when re-planning is not possible | disclosed refusal, never a silent substitution |
+| AS-5 | Existing replace/layer distinction is preserved | no merge of the two operations |
+
+### 11.6 What this milestone is not
+
+Not a new philosophy of mashup creation, per the owner. Not an AI critic, not
+autonomous refinement, not preference learning. It is two engineering behaviours
+plus the tests that pin them.
+
+### 11.7 Full Length mode — implemented and measured
+
+A `full-length` alignment strategy now exists. It is reachable through the
+existing route with no contract change, because the route validates against
+`MASHUP_ALIGNMENT_CANDIDATES` and the new id is in that list.
+
+**What it does.** Places the complete vocal body once, then repeats *that same
+complete body from its beginning* — bar-aligned from the entry's phase, not from
+zero — while the bed has room for at least one full pass. Only complete passes are
+placed; a partial pass would cut the performance mid-phrase, which is the awkward
+transition FL-5 forbids, so the bed finishes naturally instead and the reason is
+recorded.
+
+**Measured on real audio** (19.9 s vocal over a 103.8 s bed, identical inputs):
+
+| Strategy | Segments | Vocal coverage | Length | Peak | Clipped |
+|---|---|---|---|---|---|
+| `phrase-aware` (before) | 2 | 21.5 s = **21 %** | 103.8 s | 0.902 | 0 |
+| `full-length` (after) | 4 | 79.5 s = **77 %** | 103.8 s | 0.911 | 0 |
+
+Also measured on a second pair, 21.3 s vocal over an 87.3 s bed: **73 %** coverage,
+3 passes, ending preserved. Coverage rose because the loop is now the whole
+performance rather than a 1.6 s closing echo.
+
+**Defect B fixed for this mode only.** In `full-length`, a segment's declared source
+range is clamped to what its timeline can carry at the planned ratio, so
+`vocalsToMs` describes what is actually rendered. The clamp is deliberately **not**
+applied to the other strategies: they intentionally declare the selected source
+window and disclose bed-end truncation in a warning, which their own tests pin.
+Applying it globally broke three existing tests — including a real `RangeError`
+where clamping desynchronised a WSOLA time map from the audio buffers — so the
+invariant was scoped rather than forced.
+
+**Ten regression tests** in `mashup-full-length-mode.test.ts` cover FL-1…FL-6 and
+the honesty case. Each was confirmed to fail when its fix is disabled: neutralising
+the loop planner fails 2 tests, neutralising the clamp fails the FL-6 test.
+
+### 11.8 Requirement 2 (adaptive stem swap) — diagnosed, NOT implemented
+
+No fix is claimed. The defect in 11.4 stands as written. The change needed is a
+route restructure, not a planner tweak:
+
+1. resolve the stem composition **before** loading the source profiles, so the bed
+   profile is built from the post-swap stems rather than the original mix;
+2. re-analyse the replacement bed's beat grid and re-derive `masterBpm` from it;
+3. then plan, so entry, bars and phrase placement follow the new grid (AS-1/AS-2);
+4. the mix bus already re-measures balance per render, so AS-3 follows once 1–3
+   are in place.
+
+This touches `artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.ts`
+and the PostgreSQL-backed acceptance test, and was not attempted here rather than
+landed unverified. AS-1…AS-5 remain open acceptance criteria.
+
+### 11.9 Corpus gap (unchanged)
+
+The primary spec case — a complete vocal *shorter* than the bed — still cannot be
+built from real audio in this environment (11.1). The loop behaviour is therefore
+verified on real audio only through extracted 20 s sections plus synthetic
+complete-pass fixtures. That is a real limit on the evidence, not a formality.

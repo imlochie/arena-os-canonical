@@ -242,7 +242,13 @@ export type MashupPlanResult =
   | { ok: true; plan: MashupPlan }
   | { ok: false; reason: string };
 
-export type MashupAlignmentStrategy = "continuous" | "paired-grid" | "downbeat" | "phrase-aware";
+export type MashupAlignmentStrategy =
+  | "continuous"
+  | "paired-grid"
+  | "downbeat"
+  | "phrase-aware"
+  /** Reproduce the complete source performance, looping it when the bed has room. */
+  | "full-length";
 
 export const MASHUP_ALIGNMENT_CANDIDATES: ReadonlyArray<{
   id: MashupAlignmentStrategy;
@@ -252,6 +258,7 @@ export const MASHUP_ALIGNMENT_CANDIDATES: ReadonlyArray<{
   { id: "paired-grid", title: "Paired beat-grid" },
   { id: "downbeat", title: "Measured downbeat" },
   { id: "phrase-aware", title: "Fingerprint-ranked passage" },
+  { id: "full-length", title: "Full Length — complete performance, looped if the bed has room" },
 ];
 
 const LOCK_TOLERANCE = 0.03;
@@ -621,6 +628,70 @@ function vocalBodySpan(vocals: MashupSourceProfile): {
     why: "no current vocal activity or pitch timing — the full vocal source is used",
     vocalActivityEvidence: false,
   };
+}
+
+/**
+ * Minimum loop length the planner will place.
+ *
+ * Two bars of the master tempo, floored at 4s. A shorter repeat is not heard as
+ * a musical reprise — it is heard as a stutter, and the owner's spec is explicit
+ * that a loop must never be forced into an awkward transition. When the
+ * remaining bed is shorter than this, Full Length finishes naturally instead.
+ */
+export const MIN_FULL_LENGTH_LOOP_MS = 4_000;
+
+/**
+ * Plan the repeats for Full Length mode: the complete vocal body, then the same
+ * body again from its beginning, repeated while the bed has room.
+ *
+ * This is deliberately different from `chooseGroundedReprise`, which echoes the
+ * donor's *closing* material and never replays the opening. Full Length mode is
+ * defined by reproducing the source performance, so the repeat starts at the
+ * body start again — but only when a full minimum-length pass fits, and the loop
+ * is always bar-aligned so the repeat re-enters on a musical boundary.
+ */
+function planFullLengthLoops(input: {
+  bodyMs: number;
+  firstEndMs: number;
+  bedDurationMs: number;
+  barMs: number;
+  /** The first pass's start, so repeats keep the entry's bar phase. */
+  entryMs: number;
+}): { startMs: number; endMs: number; sourceFromMs: number; sourceToMs: number; index: number }[] {
+  const loops: { startMs: number; endMs: number; sourceFromMs: number; sourceToMs: number; index: number }[] = [];
+  const { bodyMs, bedDurationMs, barMs, entryMs } = input;
+  if (bodyMs <= 0) return loops;
+  // Only complete passes are placed. A partial pass would cut the performance
+  // mid-phrase at the bed's end, which is the awkward transition FL-5 forbids;
+  // the bed finishes naturally instead.
+  if (bodyMs < MIN_FULL_LENGTH_LOOP_MS) return loops;
+  let cursor = input.firstEndMs;
+
+  // Snap to a bar boundary *measured from the first pass's entry*, not from
+  // zero: the bed's bar grid and the entry's phase are different things, and a
+  // repeat that lands on bar 14 from zero may sit a beat off the phase the
+  // first pass established.
+  const snapFromEntry = (ms: number): number => {
+    if (!(barMs > 0)) return Math.round(ms);
+    const bars = Math.ceil((ms - entryMs) / barMs);
+    return Math.round(entryMs + bars * barMs);
+  };
+
+  for (let index = 1; index < 64; index += 1) {
+    const start = snapFromEntry(cursor);
+    if (start < 0) break;
+    const room = bedDurationMs - start;
+    if (room < bodyMs) break;
+    loops.push({
+      startMs: start,
+      endMs: Math.round(start + bodyMs),
+      sourceFromMs: 0,
+      sourceToMs: bodyMs,
+      index,
+    });
+    cursor = start + bodyMs;
+  }
+  return loops;
 }
 
 const GROOVE_MATCH_TOLERANCE_MS = 90;
@@ -2413,6 +2484,8 @@ export function planMashup(
     rationale.push("downbeat comparison: entry is anchored to an independently measured bed downbeat; no 4/4 phase is inferred from ordinary beat positions.");
   } else if (strategy === "phrase-aware") {
     rationale.push("phrase-aware comparison: only checksum-current vocal passage fingerprints and their measured bed alternatives can select a different donor passage.");
+  } else if (strategy === "full-length") {
+    rationale.push("full-length mode: the complete vocal performance is reproduced from its natural beginning to its natural ending, and repeated from the beginning at a bar boundary only while the bed has room for at least one musical unit.");
   }
   warnings.push(...(vocals.grooveWarnings ?? []), ...(bed.grooveWarnings ?? []));
 
@@ -2428,6 +2501,27 @@ export function planMashup(
   const stretchedMs = Math.round(vocalSpanMs * stretchRatio);
   const bedRoomMs = Math.max(0, bed.durationMs - entry.at);
 
+  // A segment's declared source range must not exceed what its timeline span can
+  // carry at the planned stretch ratio. Declaring 214.2s of source inside a
+  // 94.9s segment at ratio 1.0 makes the plan unusable as a description of the
+  // output: any consumer reading vocalsToMs computes the wrong thing, and a loop
+  // built on those ranges would inherit the error. The renderer already clamps to
+  // the timeline, so this makes the plan agree with what is actually rendered.
+  const clampSourceToTimeline = (
+    fromMs: number,
+    toMs: number,
+    timelineMs: number,
+  ): { toMs: number; trimmed: boolean } => {
+    // Outside full-length mode the plan keeps declaring the source window it
+    // selected and discloses the bed-end truncation in a warning — that is the
+    // established contract those strategies' tests pin. Full Length mode builds
+    // loops from these ranges, so there the range must fit the timeline.
+    if (strategy !== "full-length") return { toMs, trimmed: false };
+    const carriedMs = Math.max(0, Math.round(timelineMs / Math.max(1e-9, stretchRatio)));
+    if (toMs - fromMs <= carriedMs) return { toMs, trimmed: false };
+    return { toMs: fromMs + carriedMs, trimmed: true };
+  };
+
   const segments: MashupSegment[] = [];
   let arrangement: MashupArrangement | null = null;
 
@@ -2435,13 +2529,58 @@ export function planMashup(
   // First compare coherent whole-body offsets even when the donor is shorter:
   // moving one complete performance can improve its musical fit without
   // destroying its internal pace. Only use a reprise when no coherent move wins.
-  if ((strategy === "continuous" || strategy === "downbeat") && stretchedMs > 0 && bedRoomMs > 0) {
+  if (strategy === "full-length" && stretchedMs > 0 && bedRoomMs > 0) {
+    // Full Length mode: reproduce the complete performance, then repeat it from
+    // its beginning while the bed has room, never forcing an awkward loop.
+    const firstEnd = Math.round(Math.min(bed.durationMs, entry.at + stretchedMs));
+    const firstCarried = clampSourceToTimeline(body.fromMs, body.toMs, firstEnd - entry.at);
+    segments.push({
+      mashupStartMs: entry.at,
+      mashupEndMs: firstEnd,
+      vocalsFromMs: body.fromMs,
+      vocalsToMs: firstCarried.toMs,
+      crossfadeMs: crossfadeForSegment(entry.at, firstEnd),
+      rationale: `full-length pass: complete vocal body runs ${((firstEnd - entry.at) / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s`,
+      stemType: "vocals",
+      sourceRole: "vocals",
+    });
+    const loops = planFullLengthLoops({
+      bodyMs: stretchedMs,
+      firstEndMs: firstEnd,
+      bedDurationMs: bed.durationMs,
+      barMs,
+      entryMs: entry.at,
+    });
+    for (const loop of loops) {
+      segments.push({
+        mashupStartMs: loop.startMs,
+        mashupEndMs: loop.endMs,
+        vocalsFromMs: body.fromMs,
+        vocalsToMs: body.toMs,
+        crossfadeMs: crossfadeForSegment(loop.startMs, loop.endMs),
+        rationale: `full-length repeat ${loop.index}: the complete vocal body replays from its beginning (${(loop.startMs / 1000).toFixed(1)}s–${(loop.endMs / 1000).toFixed(1)}s), bar-aligned to the bed`,
+        stemType: "vocals",
+        sourceRole: "vocals",
+      });
+    }
+    const loopedMs = loops.reduce((sum, loop) => sum + (loop.endMs - loop.startMs), 0);
+    if (loops.length > 0) {
+      rationale.push(`full-length loop: ${loops.length} repeat${loops.length === 1 ? "" : "s"} of the complete body add ${(loopedMs / 1000).toFixed(1)}s of vocal`);
+    }
+    if (firstEnd >= Math.round(bed.durationMs) && stretchedMs > bedRoomMs) {
+      warnings.push(`The complete vocal body (${((body.toMs - body.fromMs) / 1000).toFixed(1)}s) is longer than the bed has room (${(bedRoomMs / 1000).toFixed(1)}s) — it runs to the bed's end and the performance ends with the bed.`);
+    }
+    if (loops.length === 0 && firstEnd < Math.round(bed.durationMs)) {
+      warnings.push(`The bed outlasts the vocal body and no repeat had room for at least ${(MIN_FULL_LENGTH_LOOP_MS / 1000).toFixed(0)}s, so the remaining bed runs instrumental rather than forcing a loop shorter than a musical unit.`);
+    }
+  } else if ((strategy === "continuous" || strategy === "downbeat") && stretchedMs > 0 && bedRoomMs > 0) {
     const endMs = Math.round(Math.min(bed.durationMs, entry.at + stretchedMs));
+    const carried = clampSourceToTimeline(body.fromMs, body.toMs, endMs - entry.at);
     segments.push({
       mashupStartMs: entry.at,
       mashupEndMs: endMs,
       vocalsFromMs: body.fromMs,
-      vocalsToMs: body.toMs,
+      vocalsToMs: carried.toMs,
       crossfadeMs: crossfadeForSegment(entry.at, endMs),
       rationale: `complete vocal body runs ${(stretchedMs / 1000).toFixed(1)}s from ${(entry.at / 1000).toFixed(1)}s; no local timing map is applied`,
       stemType: "vocals",
@@ -2483,11 +2622,14 @@ export function planMashup(
         ? Math.round(acceptedTempoMap.points.at(-1)!.outputMs)
         : stretchedMs;
       const segEndMs = Math.round(Math.min(bed.durationMs, selectedEntryMs + effectiveVocalDurationMs));
+      const overlayCarried = acceptedTempoMap
+        ? { toMs: body.toMs, trimmed: false }
+        : clampSourceToTimeline(body.fromMs, body.toMs, segEndMs - selectedEntryMs);
       segments.push({
         mashupStartMs: selectedEntryMs,
         mashupEndMs: segEndMs,
         vocalsFromMs: body.fromMs,
-        vocalsToMs: body.toMs,
+        vocalsToMs: overlayCarried.toMs,
         crossfadeMs: crossfadeForSegment(selectedEntryMs, segEndMs),
         ...(acceptedTempoMap ? { localTempoMap: acceptedTempoMap } : {}),
         rationale: acceptedTempoMap
@@ -2553,11 +2695,13 @@ export function planMashup(
     }
   } else {
     // Fallback: minimal single segment
+    const fallbackEnd = Math.min(bed.durationMs, entry.at + stretchedMs);
+    const fallbackCarried = clampSourceToTimeline(body.fromMs, body.toMs, fallbackEnd - entry.at);
     segments.push({
       mashupStartMs: entry.at,
-      mashupEndMs: Math.min(bed.durationMs, entry.at + stretchedMs),
+      mashupEndMs: fallbackEnd,
       vocalsFromMs: body.fromMs,
-      vocalsToMs: body.toMs,
+      vocalsToMs: fallbackCarried.toMs,
       crossfadeMs: crossfadeForSegment(entry.at, Math.min(bed.durationMs, entry.at + stretchedMs)),
       rationale: `vocals run ${(stretchedMs / 1000).toFixed(1)}s over the bed`,
       stemType: "vocals",
