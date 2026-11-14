@@ -920,3 +920,142 @@ The primary spec case — a complete vocal *shorter* than the bed — still cann
 built from real audio in this environment (11.1). The loop behaviour is therefore
 verified on real audio only through extracted 20 s sections plus synthetic
 complete-pass fixtures. That is a real limit on the evidence, not a formality.
+
+## 12. Adaptive Stem Swap Parity — implemented (2026-11-14)
+
+The owner assigned this as the next milestone and said it is "the difference
+between a mashup generator that swaps audio files and one that actually
+understands that changing a musical part changes the mix". This section records
+what changed, what is proven, and what still is not.
+
+### 12.0 Full Length was reachable but not selectable — the owner's check was right
+
+The owner asked to verify that choosing Full Length in the UI actually invokes
+the new strategy, noting "being reachable through an API does not necessarily mean
+the interface uses it". That suspicion was correct, and the defect was real:
+
+| Layer | State before |
+|---|---|
+| Planner `MASHUP_ALIGNMENT_CANDIDATES` | contained `full-length` |
+| Route validation | accepted `full-length` |
+| `CandidateAlignmentLab.tsx` | **hardcoded union omitting `full-length`** |
+| `MashupStudio.tsx` auto-select list | **`["phrase-aware","paired-grid","downbeat","continuous"]`, no `full-length`** |
+| Any UI control offering Full Length | **none existed** |
+
+So the strategy could be requested over HTTP and could never be chosen in the
+product. Two fixes:
+
+1. `CandidateAlignmentId` is now **derived from `MASHUP_ALIGNMENT_CANDIDATES`**
+   rather than a hand-written union, so the UI cannot drift out of sync with the
+   planner again.
+2. An explicit **Arrangement mode** selector offers Full Length first. The chosen
+   mode is honoured when candidates are planned; if Full Length is genuinely
+   unavailable for a pair the UI says so and names the reason and the fallback,
+   instead of silently using a different strategy.
+3. A composition change (stem swap) does not reset the mode — the user's
+   arrangement intent survives the swap, per the owner's "preserve the user's
+   selected Full Length arrangement mode".
+
+### 12.1 The pipeline order was the bug — now corrected
+
+The owner asked for this exact order: resolve composition → load retained and
+replacement stems → construct the resulting composition → analyse it →
+recalculate evidence → plan → render → persist → reproduce. The route now does
+that.
+
+**Before:** `planMashup(vocals, bed)` ran against the original bed at line 1167;
+`resolveStemComposition` ran at 1551 and `loadInstrumentalBed(..., replaced)`
+at 1558, so a replacement was substituted underneath a plan that was never
+recomputed.
+
+**After:** composition resolution and composition-derived analysis happen
+**before** `planMashup` for `compare`, `plan`, `render` and `save`. The replace
+path loads the composed bed and re-measures tempo, key, beat grid, downbeats and
+duration from the **summed retained-plus-replacement stems**.
+`loadInstrumentalBed` already sums retained stems while omitting the replaced
+roles, so its PCM *is* the resulting composition — the replacement is never
+analysed in isolation, which is exactly the distinction the owner drew.
+
+The render path now **reuses** that pre-plan composition instead of resolving a
+second time. Resolving twice would have reintroduced the same class of bug: the
+render could use a different composition than the plan was built for.
+
+### 12.2 What is recomputed vs preserved
+
+Per "recompute what is affected and preserve what remains valid":
+
+| Evidence | After a replacement |
+|---|---|
+| Tempo (`bpm`, confidence, candidates) | **re-measured** from the composition |
+| Beat grid, downbeat grid | **re-measured**; the old grid is kept only when the new measurement is empty, and then labelled unverified |
+| Key | **re-measured** |
+| Duration | **re-measured** from the composed PCM |
+| Sections, harmony events | preserved (not changed by a role swap) |
+| Retained stems | untouched; only the replaced role is omitted |
+
+Honest fallback: if the composed bed cannot be loaded or analysed, the original
+profile is kept **with an explicit warning that the timing is unverified** — the
+route does not fabricate a grid, and does not silently claim recomposition.
+
+### 12.3 Provenance is observable, not inferred
+
+The route now reports which analysis drove planning, so a test can prove the
+order rather than infer it from audio after the fact:
+
+- `x-waveyard-planned-against: composition | original-bed`
+- `x-waveyard-planned-bpm`, `x-waveyard-planned-beat-grid-points`
+- `plan` responses carry `plannedAgainst`
+- `save` responses carry `plannedAgainst` and `replacedBedStemTypes`
+
+### 12.4 Acceptance tests — and the one that initially proved nothing
+
+Seven route-level acceptance criteria are asserted against real handler output in
+`route.test.ts`, including: the replacement reaches the planner before planning;
+composition-derived analysis supplies tempo and a beat grid; planning **without**
+a replacement still reports `original-bed` (otherwise the header proves nothing);
+retained stems survive; replaced stems are not duplicated; unhonourable
+replacements fail closed; and the persisted plan records that it was planned
+against the composition, in both the `plan` action and the saved snapshot.
+
+**A first attempt at these tests passed even with the old behaviour.** They only
+asserted response headers describing the composition, which the old code also
+produced — the swap changed the audio but the assertions never touched *which
+analysis the planner used*. The provenance headers were added specifically to
+close that hole. The tests were then re-run against a deliberately reverted route
+(`plannedAgainstComposition` disabled) and **failed**, confirming they detect the
+real defect. This is recorded because a test that passes against the bug is worse
+than no test.
+
+Save/reopen/export parity was already covered by the existing test and still
+passes: the saved bed has drums, bass and other minus the replaced role, the
+donor's drum stem is a real clip at the renderer's source offset and timeline
+position, bed drums do not return on reopen, and the persisted snapshot records
+the composition.
+
+### 12.5 What is still not proven
+
+| Claim | Status |
+|---|---|
+| A replacement re-plans against the resulting composition | **proven** — provenance headers + audio assertions |
+| Old plan is not reused | **proven** — `plan` action re-plans against composition |
+| Retained stems intact, replacements not duplicated | **proven** |
+| Honest fallback when audio/analysis is unavailable | **proven** — fail-closed plus labelled unverified grid |
+| Save/reopen/export preserve the composition | **proven** — existing test still green |
+| The result *sounds* better than substituting after planning | **unknown — N = 0 listeners.** No audio was rendered for listening in this milestone. |
+| Works on real separated stems | **not yet** — acceptance ran on synthetic tone fixtures and the PG harness. The real-audio path runs only when `WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST` is supplied, which is not available here. |
+| STEM.FM parity | **not claimed** — no comparative output evidence exists |
+
+The owner asked for real-audio tests "wherever the available licensed material
+permits". The licensed material is a-cappella vocals plus CC0 instrumental beds,
+which arrive **pre-separated and without per-role stem sets** for a bed. A real
+stem swap needs a bed whose drums/bass/other exist as separate licensed stems;
+that data is not downloadable in this environment (same constraint as section 11.1).
+This is a genuine evidence gap and is recorded rather than papered over.
+
+### 12.6 Regression
+
+mashup 46/46, full-length-mode 10/10, full-length 4/4, regression 8/8, mix-bus
+13/13, donor-stem-integrity 18/18, peak-limiter 8/8, analysis-confidence 4/4,
+PG route acceptance 1/1 (0 skipped, includes the new swap assertions).
+`analysis-engine` 28/29, the pre-existing bundled-ffmpeg decode failure.
+Monorepo `tsc --build --force` clean.

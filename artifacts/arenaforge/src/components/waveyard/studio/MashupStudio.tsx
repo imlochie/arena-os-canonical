@@ -123,6 +123,15 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [renderKind, setRenderKind] = useState<"mashup" | "extended" | null>(null);
   const [alignmentCandidates, setAlignmentCandidates] = useState<AlignmentCandidatePlan[]>([]);
   const [selectedAlignment, setSelectedAlignment] = useState<CandidateAlignmentId | null>(null);
+  /**
+   * The user's chosen arrangement mode.
+   *
+   * "Full Length" is a first-class mode, not just another entry in the lab: when
+   * the user picks it, this strategy must be the one planned and rendered. The
+   * previous auto-select list omitted "full-length" entirely, so Full Length was
+   * reachable through the API but never actually selected in production.
+   */
+  const [arrangementMode, setArrangementMode] = useState<CandidateAlignmentId>("phrase-aware");
   const [candidateRendering, setCandidateRendering] = useState<CandidateAlignmentId | null>(null);
   const [renderedCandidateUrls, setRenderedCandidateUrls] = useState<Partial<Record<CandidateAlignmentId, string>>>({});
   const [bedInfo, setBedInfo] = useState<{
@@ -303,12 +312,24 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
       const candidates = Array.isArray(body.candidates) ? body.candidates as AlignmentCandidatePlan[] : [];
       setAlignmentCandidates(candidates);
-      const selected = (["phrase-aware", "paired-grid", "downbeat", "continuous"] as CandidateAlignmentId[])
-        .map((id) => candidates.find((candidate) => candidate.id === id && candidate.available))
-        .find((candidate) => candidate !== undefined);
+      // Honour the chosen mode first. Only if it is genuinely unavailable does the
+      // fallback chain run, and the UI must say which mode it actually used.
+      const preferred = candidates.find((candidate) => candidate.id === arrangementMode && candidate.available);
+      const selected = preferred
+        ?? (["phrase-aware", "paired-grid", "downbeat", "continuous"] as CandidateAlignmentId[])
+          .map((id) => candidates.find((candidate) => candidate.id === id && candidate.available))
+          .find((candidate) => candidate !== undefined);
       if (selected) {
         setSelectedAlignment(selected.id);
         setPlan(selected.plan);
+        if (selected.id !== arrangementMode) {
+          setError(
+            `Full Length was unavailable for this pair: ${
+              candidates.find((candidate) => candidate.id === arrangementMode)?.unavailableReason
+              ?? "the planner could not place the performance"
+            } Using ${selected.title} instead.`,
+          );
+        }
       } else {
         setError("No alignment option could place a vocal segment. Check the selected sources and their analysis.");
       }
@@ -516,6 +537,31 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                   {source.originalFilename} · {compactMusicAnalysisLabel(source.analysis)}
                 </option>
               ))}
+            </select>
+          </label>
+          <label>
+            Arrangement
+            <select
+              aria-label="Arrangement mode"
+              value={arrangementMode}
+              onChange={(event) => {
+                const next = event.target.value as CandidateAlignmentId;
+                setArrangementMode(next);
+                // The mode is the user's intent: a composition change must not
+                // quietly drop it back to the default.
+                const candidate = alignmentCandidates.find((item) => item.id === next && item.available);
+                if (candidate) {
+                  setSelectedAlignment(next);
+                  setPlan(candidate.plan);
+                  setSaveSuccess(null);
+                }
+              }}
+            >
+              <option value="full-length">Full Length — complete performance, looped if the bed has room</option>
+              <option value="phrase-aware">Fingerprint-ranked passage</option>
+              <option value="continuous">Continuous baseline</option>
+              <option value="paired-grid">Paired beat-grid</option>
+              <option value="downbeat">Measured downbeat</option>
             </select>
           </label>
           <button className="button" disabled={planning || candidateRendering !== null || rendering !== null || vocalsId === "" || bedId === "" || vocalsId === bedId} onClick={() => void planMashup()}>

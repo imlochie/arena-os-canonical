@@ -1382,8 +1382,13 @@ test(
     };
     assert.deepEqual(
       compareBody.candidates?.map((candidate) => candidate.id),
-      ["continuous", "paired-grid", "downbeat", "phrase-aware"],
+      ["continuous", "paired-grid", "downbeat", "phrase-aware", "full-length"],
       "all distinct alignment strategies must be returned in a stable presentation order",
+    );
+    assert.equal(
+      compareBody.candidates?.find((candidate) => candidate.id === "full-length") !== undefined,
+      true,
+      "Full Length must be a selectable strategy, not only an internal planner mode",
     );
     assert.equal(compareBody.candidates?.find((candidate) => candidate.id === "continuous")?.available, true,
       "the continuous fallback must remain available when higher-evidence candidates cannot be proven");
@@ -1724,6 +1729,103 @@ test(
     assert.equal(missingLayer.status, 422,
       "layering a donor stem that does not exist must fail rather than render only the bed");
 
+    // ---------------------------------------------------------------------
+    // Adaptive stem swap acceptance (ledger section 12).
+    //
+    // These prove the ORDER change: a replacement must reach the planner before
+    // planning happens, the planner must see the resulting composition, and the
+    // old plan must not be reused. They are route-level assertions on real
+    // handler output, not unit tests of a helper.
+    // ---------------------------------------------------------------------
+
+    // (AS-1/AS-2) A replacement changes the evidence the planner sees. The
+    // full-bed's stems are all 110/70/260 Hz tones; replacing drums with the
+    // donor's 260 Hz drum stem must remove the bed's own drum tone from the
+    // composition the planner analyses, so the rendered bed cannot contain it.
+    const planBefore = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, {}),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(planBefore.status, 200);
+
+    const planAfterSwap = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(planAfterSwap.status, 200,
+      "a verified replacement must still render");
+
+    // AS-1/AS-3: the arrangement must be planned against the RESULTING
+    // COMPOSITION, and the route must say so. This is the observable proof that
+    // the swap reached planning rather than being substituted afterwards — a
+    // replacement that only ran after planning cannot produce this header.
+    assert.equal(
+      planAfterSwap.headers.get("x-waveyard-planned-against"),
+      "composition",
+      "the replacement must reach the planner before planning occurs",
+    );
+    const plannedBpm = planAfterSwap.headers.get("x-waveyard-planned-bpm");
+    assert.ok(plannedBpm && plannedBpm !== "none",
+      "the composition-derived analysis must supply a tempo to plan against");
+    assert.ok(
+      Number(planAfterSwap.headers.get("x-waveyard-planned-beat-grid-points") ?? 0) > 1,
+      "the composition-derived analysis must supply a beat grid to plan against",
+    );
+
+    // The same request WITHOUT the replacement must plan against the original
+    // bed. If both said "composition" the header would prove nothing.
+    assert.equal(
+      planBefore.headers.get("x-waveyard-planned-against"),
+      "original-bed",
+      "with no replacement there is nothing to recompose, so planning must use the original bed",
+    );
+
+    // AS-3: the route must disclose that the arrangement was planned against the
+    // resulting composition. This is the observable proof that the swap reached
+    // planning rather than being substituted afterwards.
+    const swapWav = decodeWav16(new Uint8Array(await planAfterSwap.arrayBuffer()));
+    assert.ok(swapWav, "the swapped render must be a decodable WAV");
+
+    // AS-4: the donor's drums are present and the bed's own drums are gone.
+    const swapBody = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(swapBody.headers.get("x-waveyard-replaced-bed-stems"), "drums");
+
+    // AS-5: retained stems survive. bass + other remain in the rendered bed.
+    assert.deepEqual(
+      (swapBody.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort(),
+      ["bass", "other"],
+      "retained stems must remain intact after replacing drums",
+    );
+
+    // AS-6: no duplication. A replacement must not leave two drum parts: the
+    // bed reports drums as replaced, and the composed bed stems exclude it.
+    assert.equal(
+      (swapBody.headers.get("x-waveyard-bed-stems") ?? "").includes("drums"),
+      false,
+      "a replaced stem must not also appear among the retained bed stems",
+    );
+
+    // AS-7: honest fallback. Replacing a role the bed does not have as a
+    // separate stem cannot produce a real composition, so the route must refuse
+    // rather than plan against a composition it cannot build. `bedWithoutBassId`
+    // has drums + other only, so a bass replacement is unhonourable.
+    const unhonourable = await routeModule.POST(
+      renderPair(donorWithDrumsId, bedWithoutBassId, { layerStemTypes: ["bass"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(unhonourable.status, 422,
+      "a replacement the resulting composition cannot honour must fail closed, not plan against the original bed");
+    // A premixed bed that fell back to its original file also cannot be composed.
+    const premixed = await routeModule.POST(
+      renderPair(donorWithDrumsId, premixedBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(premixed.status, 422,
+      "a bed with no separable stems must refuse a replacement instead of substituting audio");
+
     // fixture helper retained for the Studio persistence assertions below
     void stemAssetIdFor;
     void bedWithoutBassId;
@@ -2020,6 +2122,27 @@ test(
         "the persisted snapshot must record the composition that was saved");
       assert.deepEqual(replaceSnapshot.mashupPlan?.stemComposition?.replacedBedStemTypes, ["drums"]);
       assert.deepEqual(replaceSnapshot.mashupPlan?.stemComposition?.layeredStemTypes, ["drums"]);
+      // AS: the persisted plan must be the one planned against the RESULTING
+      // composition. A reopened session must not revert to an arrangement that
+      // was decided before the swap.
+      assert.equal(replaceSaveBody.plannedAgainst, "composition",
+        "the saved plan must record that it was planned against the resulting composition");
+      const replacePlanResponse = await routeModule.POST(
+        renderPair(donorWithDrumsId, fullBedId, {
+          action: "plan",
+          layerStemTypes: ["drums"],
+          stemLayerMode: "replace",
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      const replacePlanBody = await replacePlanResponse.json() as {
+        plannedAgainst?: { kind: string; replacedStemTypes?: string[] };
+        plan: { alignmentStrategy: string };
+      };
+      assert.equal(replacePlanBody.plannedAgainst?.kind, "composition",
+        "planning alone must also use the resulting composition, not only rendering");
+      assert.deepEqual(replacePlanBody.plannedAgainst?.replacedStemTypes, ["drums"],
+        "the plan must name which roles were recomposed");
 
       const replaceClips = savedReplace.tracks.length
         ? await dbModule.db.select().from(schema.remixClips)
