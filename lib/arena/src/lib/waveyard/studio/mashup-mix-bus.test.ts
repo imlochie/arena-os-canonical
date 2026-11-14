@@ -21,6 +21,7 @@ import {
   renderMashupWithBus,
   type MashupSourceProfile,
 } from "./mashup";
+import { MASHUP_MAX_BALANCE_CORRECTION_DB, measurePresentLoudness, planMashupBalance } from "./mashup-mix-bus";
 import { measureLoudness, samplePeak } from "../mixer/meters";
 
 const RATE = 44_100;
@@ -181,9 +182,14 @@ test("the vocal is fitted to the bed's measured loudness, and the correction is 
   const balance = rendered.mix.balance;
   assert.ok(balance.vocalLufs !== null && balance.bedLufs !== null, "both sides must be measured");
   assert.ok(balance.bedLufs! > balance.vocalLufs!, "fixture needs a quieter vocal than bed");
-  assert.equal(balance.vocalGainDb, 9, "the correction is clamped to the documented window");
+  assert.equal(balance.vocalGainDb, MASHUP_MAX_BALANCE_CORRECTION_DB,
+    "the correction is clamped to the documented window");
   assert.equal(balance.correctionClamped, true, "a clamped correction must be reported, not hidden");
   assert.match(balance.note, /clamped/);
+  // The report must carry the evidence the owner asked for, not just a number.
+  assert.ok(balance.vocalIntegratedLufs !== null, "whole-programme loudness is reported for comparison");
+  assert.ok(balance.bedActiveFraction !== null && balance.bedActiveFraction! > 0.9,
+    "a continuous bed reads as present throughout");
 
   // The applied correction is exactly the measured loudness difference,
   // never a fixed guess: this is the property that makes the balance
@@ -212,4 +218,141 @@ test("measured render levels are reported from the audio, not asserted from the 
     "the reported LUFS must come from the finished PCM");
   assert.ok(rendered.mix.postLimit.truePeakDb < 1,
     `post-limit true peak ${rendered.mix.postLimit.truePeakDb} dBFS must respect the ceiling`);
+});
+
+test("BS.1770 gating already handles silence and bleed, so the balance statistic stays boring", () => {
+  // Regression against re-inventing a loudness gate: a sparse phrase and a
+  // bleed-padded phrase must both read at their phrase level. This pins the
+  // existing meter's behaviour so the mix bus does not silently need a second
+  // hand-rolled statistic on top of it.
+  const frames = Math.round(30 * RATE);
+  const build = (bleedAmplitude: number) => {
+    const out = new Float32Array(frames * 2);
+    for (let frame = 0; frame < frames; frame += 1) {
+      const t = frame / RATE;
+      const phrase = t > 5 && t < 6.5 ? 0.3 * Math.sin(2 * Math.PI * 330 * t) : 0;
+      const blevel = bleedAmplitude * Math.sin(2 * Math.PI * 1200 * t);
+      const value = phrase + blevel;
+      out[frame * 2] = value;
+      out[frame * 2 + 1] = value;
+    }
+    return out;
+  };
+  const silentElsewhere = build(0);
+  const bleedPadded = build(0.003); // ≈ −50 dBFS floor, typical separation bleed
+  const silent = measureLoudness(silentElsewhere, RATE).integrated;
+  const bleed = measureLoudness(bleedPadded, RATE).integrated;
+  assert.ok(silent !== null && bleed !== null);
+  assert.ok(Math.abs(bleed! - silent!) < 0.5,
+    `a −50 dB bleed floor must not dilute the phrase loudness (${bleed!.toFixed(2)} vs ${silent!.toFixed(2)} LUFS)`);
+
+  // The report still exposes how much of the stem was actually active, so a
+  // mostly-empty vocal stem is visible to whoever reads the render.
+  const presence = measurePresentLoudness(bleedPadded, RATE);
+  assert.ok(presence !== null && presence!.activeFraction < 0.2);
+
+  const balance = planMashupBalance({ vocals: bleedPadded, bed: silentElsewhere, sampleRate: RATE });
+  assert.equal(balance.method, "integrated");
+  assert.ok(balance.vocalActiveFraction !== null && balance.bedActiveFraction !== null,
+    "active-block fractions are reported alongside the correction");
+  assert.ok(Math.abs(balance.vocalGainDb - (balance.bedLufs! - balance.vocalLufs!)) < 1e-3,
+    "the applied correction is exactly the measured difference");
+});
+
+test("the applied gain is exact and the correction is reported with the evidence behind it", () => {
+  const frames = Math.round(8 * RATE);
+  const tone = (frequency: number, amplitude: number) => {
+    const out = new Float32Array(frames * 2);
+    for (let frame = 0; frame < frames; frame += 1) {
+      const value = amplitude * Math.sin((2 * Math.PI * frequency * frame) / RATE);
+      out[frame * 2] = value;
+      out[frame * 2 + 1] = value;
+    }
+    return out;
+  };
+  const result = renderMashupWithBus(plan(), {
+    vocals: tone(220, 0.15),
+    bed: tone(80, 0.15),
+    sampleRate: RATE,
+  });
+  const { balance } = result.mix;
+  assert.ok(Math.abs(balance.vocalGainDb - (balance.bedLufs! - balance.vocalLufs!)) < 1e-3,
+    "the applied correction must equal the measured difference, not a rounded stand-in");
+  assert.ok(balance.vocalActiveFraction !== null && balance.bedActiveFraction !== null);
+  assert.ok(result.mix.postLimit.stereoCorrelation !== null, "stereo integrity must be reported");
+});
+
+test("long renders skip the post-limit true-peak pass but say so, instead of implying one", () => {
+  // 70 s of bed needs a 70 s *bed profile*, otherwise the planner's own
+  // duration (12 s from the shared fixture) decides the render length.
+  const longPlan = planMashup(
+    profile({ role: "vocals", bpm: 100, durationMs: 70_000, sections: [section("verse", 0, 70_000)] }),
+    profile({ bpm: 100, durationMs: 70_000, sections: [section("verse", 0, 70_000)] }),
+  );
+  assert.ok(longPlan.ok);
+  const frames = Math.round(70 * RATE); // just over the 60 s measurement ceiling
+  const bed = new Float32Array(frames * 2);
+  for (let frame = 0; frame < frames; frame += 1) {
+    const value = 0.2 * Math.sin((2 * Math.PI * 90 * frame) / RATE);
+    bed[frame * 2] = value;
+    bed[frame * 2 + 1] = value;
+  }
+  const result = renderMashupWithBus(longPlan.plan, {
+    vocals: new Float32Array(frames * 2),
+    bed,
+    sampleRate: RATE,
+    mix: { matchVocalLoudness: false },
+  });
+  assert.equal(result.mix.postTruePeakMeasured, false,
+    "a multi-minute render must not claim a post-limit true-peak measurement it did not take");
+  assert.ok(Number.isFinite(result.mix.postLimit.samplePeakDb));
+  assert.equal(result.mix.postLimit.clippedRegions, 0);
+});
+
+test("a layered donor stem follows the session tempo map, not just the entry offset", () => {
+  // A donor at 140 BPM over a 100 BPM bed: the vocal is stretched by 1.4 and a
+  // layered donor stem must receive the same treatment, otherwise the layer
+  // and the bed drift apart within a bar.
+  const planned = planMashup(
+    profile({ role: "vocals", bpm: 140, bpmConfidence: 0.9, durationMs: 10_000, sections: [section("verse", 0, 10_000)] }),
+    profile({ bpm: 100, bpmConfidence: 0.9, durationMs: 16_000, sections: [section("verse", 0, 16_000)] }),
+  );
+  assert.ok(planned.ok);
+  assert.ok(Math.abs(planned.plan.vocalsStretchRatio - 1.4) < 1e-6,
+    `fixture must require a real stretch, got ${planned.plan.vocalsStretchRatio}`);
+
+  // The layered stem carries one click at 0.5 s of donor source time.
+  const donorFrames = Math.round(10 * RATE);
+  const layer = new Float32Array(donorFrames * 2);
+  const clickStart = Math.round(0.5 * RATE);
+  for (let i = 0; i < 200; i += 1) {
+    const value = 0.9 * Math.sin((Math.PI * i) / 200);
+    layer[(clickStart + i) * 2] = value;
+    layer[(clickStart + i) * 2 + 1] = value;
+  }
+
+  const rendered = renderMashupWithBus(planned.plan, {
+    vocals: silence(10),
+    bed: silence(16),
+    stems: new Map([["donor_drums", layer]]),
+    layerStemTypes: ["drums"],
+    sampleRate: RATE,
+    mix: { matchVocalLoudness: false, limit: false },
+  });
+
+  const entryMs = planned.plan.segments[0]!.mashupStartMs;
+  const stretch = planned.plan.vocalsStretchRatio;
+  const expectedMs = entryMs + 500 * stretch;
+  const assertClickNear = (atMs: number, label: string) => {
+    const from = Math.round(((atMs - 40) / 1000) * RATE) * 2;
+    const to = Math.round(((atMs + 40) / 1000) * RATE) * 2;
+    let peak = 0;
+    for (let i = from; i < to; i += 2) peak = Math.max(peak, Math.abs(rendered.pcm[i]!));
+    assert.ok(peak > 0.05, `${label} click must be audible at ${atMs.toFixed(0)}ms (peak ${peak.toFixed(3)})`);
+  };
+  assertClickNear(expectedMs, "tempo-mapped");
+  // The un-stretched position is 0.5 s × 1.4 = 200 ms away — far outside the
+  // ±40 ms window, so this cannot pass by accident.
+  assert.ok(Math.abs(expectedMs - (entryMs + 500)) > 150,
+    "the fixture needs the mapped and unmapped positions to be clearly different");
 });

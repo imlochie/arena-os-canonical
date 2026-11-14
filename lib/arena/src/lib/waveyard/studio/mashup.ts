@@ -34,6 +34,7 @@ import {
   planMashupBalance,
   unmeasuredBalance,
   MASHUP_LIMITER_CEILING,
+  FULL_TRUE_PEAK_MAX_SECONDS,
   type MashupMixResult,
 } from "./mashup-mix-bus";
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
@@ -2718,7 +2719,8 @@ export function renderMashupWithBus(
     // Controlled A/B render: no attenuation and no ceiling, so a comparison
     // can attribute a difference to composition rather than to limiting.
     const pcm = Float32Array.from(summed);
-    const stage = measureMashupMixStage(pcm, sampleRate);
+    const fullTruePeak = pcm.length / 2 / sampleRate <= FULL_TRUE_PEAK_MAX_SECONDS;
+    const stage = measureMashupMixStage(pcm, sampleRate, { fullTruePeak });
     return {
       pcm,
       mix: {
@@ -2727,6 +2729,7 @@ export function renderMashupWithBus(
         preLimit: stage,
         postLimit: stage,
         staticGainDb: 0,
+        postTruePeakMeasured: fullTruePeak,
         limiter: { ceiling: MASHUP_LIMITER_CEILING, delayFrames: 0, applied: false },
       },
     };

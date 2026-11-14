@@ -142,6 +142,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     limiter: string | null;
     truePeakDb: string | null;
     layerStems: string[];
+    clippedRegions: string | null;
   } | null>(null);
 
   const readMixReport = (response: Response) => {
@@ -153,6 +154,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       limiter: response.headers.get("x-waveyard-mix-limiter"),
       truePeakDb: response.headers.get("x-waveyard-mix-true-peak-db"),
       layerStems: response.headers.get("x-waveyard-layer-stems")?.split(",").filter(Boolean) ?? [],
+      clippedRegions: response.headers.get("x-waveyard-mix-clipped-regions"),
     });
   };
   const [savingRemix, setSavingRemix] = useState(false);
@@ -723,7 +725,10 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           {mixReport.balanceClamped ? " (clamped — the pair is very unbalanced)" : ""}; static gain{" "}
           {mixReport.staticGainDb ?? "n/a"} dB; limiter{" "}
           {mixReport.limiter === "active" ? "active" : "not required"}; true peak{" "}
-          {mixReport.truePeakDb ?? "n/a"} dBFS. Measurements, not a quality score.
+          {mixReport.truePeakDb === "not-measured" || mixReport.truePeakDb === null
+            ? "true peak not re-measured on a render this long"
+            : `${mixReport.truePeakDb} dBTP`};{" "}
+          {mixReport.clippedRegions ?? "0"} clipped region(s). Measurements, not a quality score.
         </p>
       )}
 

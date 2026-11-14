@@ -1323,7 +1323,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const mixed = rendered.pcm;
       const mixWarnings = [
         rendered.mix.balance.note,
-        `Render measured after limiting: ${rendered.mix.postLimit.lufsIntegrated === null ? "loudness not measurable" : `${rendered.mix.postLimit.lufsIntegrated.toFixed(1)} LUFS`}, sample peak ${rendered.mix.postLimit.samplePeakDb.toFixed(2)} dBFS, true peak ${rendered.mix.postLimit.truePeakDb.toFixed(2)} dBTP; static gain ${rendered.mix.staticGainDb.toFixed(2)} dB, limiter ${rendered.mix.limiter.applied ? "active" : "not required"}. These are measurements, not a quality claim.`,
+        `Render measured after limiting: ${rendered.mix.postLimit.lufsIntegrated === null ? "loudness not measurable" : `${rendered.mix.postLimit.lufsIntegrated.toFixed(1)} LUFS`}, sample peak ${rendered.mix.postLimit.samplePeakDb.toFixed(2)} dBFS, ${rendered.mix.postTruePeakMeasured ? `true peak ${rendered.mix.postLimit.truePeakDb.toFixed(2)} dBTP` : "true peak not re-measured on a render this long"}, ${rendered.mix.postLimit.clippedRegions} clipped region(s), static gain ${rendered.mix.staticGainDb.toFixed(2)} dB, limiter ${rendered.mix.limiter.applied ? "active" : "not required"}. These are measurements, not a quality claim.`,
       ];
       warnings.push(...mixWarnings);
       const renderHeaders = {
@@ -1331,7 +1331,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         "x-waveyard-mix-balance-clamped": String(rendered.mix.balance.correctionClamped),
         "x-waveyard-mix-static-gain-db": rendered.mix.staticGainDb.toFixed(2),
         "x-waveyard-mix-limiter": rendered.mix.limiter.applied ? "active" : "not-required",
-        "x-waveyard-mix-true-peak-db": rendered.mix.postLimit.truePeakDb.toFixed(2),
+        "x-waveyard-mix-true-peak-db": rendered.mix.postTruePeakMeasured
+          ? rendered.mix.postLimit.truePeakDb.toFixed(2)
+          : "not-measured",
+        "x-waveyard-mix-clipped-regions": String(rendered.mix.postLimit.clippedRegions),
         "x-waveyard-layer-stems": layerStemTypes.join(","),
       };
       return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy, renderHeaders);

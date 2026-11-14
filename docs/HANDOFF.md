@@ -60,7 +60,75 @@ changed is that variants B and D are now possible to render at all: previously
 intelligence (P2) is untouched: the planner still places one continuous vocal
 body, and phrase/section placement remains future work.
 
+## Acceptance evidence for the mix bus, and the A/B/C/D harness
+
+Measurements taken on this checkout, all reproducible from the commands below.
+
+**Full-length cost.** A 215 s render (the real Queen-over-September bed length)
+completed in 157 s. Measurements are not free: whole-programme loudness and
+4× true-peak reconstruction cost roughly 3 s each on 215 s of stereo. The bus
+therefore takes true peak **before** limiting (that is where the decision is
+made), and re-measures true peak **after** limiting only for renders up to
+`FULL_TRUE_PEAK_MAX_SECONDS` (60 s). Longer renders report the post-limit
+sample peak, clipped-region count and `postTruePeakMeasured: false` rather than
+implying a measurement that was not taken.
+
+**Loudness matching on awkward stems.** Fixtures in `mashup-mix-bus.test.ts`:
+a 1.5 s phrase inside 30 s of near-silence, a −50 dBFS separation-bleed floor,
+a one-hit bed, and vocals both much quieter and much louder than the bed. A
+hand-rolled presence gate was implemented and then **removed**: BS.1770's own
+absolute and relative gates already give the phrase its own level (measured
+difference < 0.5 LU), so the extra statistic changed nothing. The correction
+window was tightened from ±9 dB to **±6 dB**, and a clamped correction is
+reported with the measured difference and an explicit instruction that the
+pairing or phrase selection, not the gain, is the open question. Sparse-stem
+active-block fractions are reported alongside, so a mostly-empty vocal stem is
+visible.
+
+**Limiter.** `OutputPeakLimiter` reports sample peak, true peak, loudness,
+stereo correlation and clipped-region count at both stages. A genuinely
+clipping fixture shows the difference: the legacy render leaves 65,873 samples
+pinned at full scale with a +0.30 dBFS reconstructed peak; the corrected bus
+reports 0 clipped regions at −0.81 dBFS sample peak.
+
+**Donor layers follow the tempo map, not just the entry.** A 140→100 BPM pair
+(stretch 1.4) with a click at 0.5 s of donor source time lands at the
+tempo-mapped position and 200 ms away from the un-stretched one, pinned by
+test.
+
+**Four-way A/B/C/D harness — `scripts/waveyard-mashup-abcd.ts`.** Renders
+baseline, composition-only, mix-only and both, from a JSON manifest of real
+WAV paths, and loudness-matches every variant for playback (matched gain is
+reported, and a trim prevents the matched file clipping). It was exercised on a
+synthetic overload fixture: A and B pinned at 0.00 dBFS (the legacy clamp,
+65k+ clipped samples), C and D at −0.81 dBFS with zero clipped regions, static
+gain −3.6/−3.25 dB, limiter active and a +3.34 dB vocal-to-bed correction.
+That is a check that each variant isolates one change — **not** a listening
+result.
+
+**Still blocked, and honestly so.**
+
+- `route.test.ts` now actually loads when invoked by absolute path; it was
+  previously matching zero tests under a bracketed glob. It **skips** in this
+  sandbox (`PostgreSQL binaries are unavailable`) and there is no network to
+  fetch them. Merging still requires that run.
+- `mashup-db-acceptance.test.ts` does run here (PGlite) and passes 2/2 once
+  `DATABASE_URL` is set; without it, the harness fails at import.
+- No real Queen/September stems exist in this checkout, so the A/B/C/D harness
+  has not been run on the pair the decision depends on. Listener count is **0**.
+
+Reproduce:
+
+```sh
+DATABASE_URL=postgres://localhost:5432/arena_test \
+  ./scripts/node_modules/.bin/tsx --test lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts
+./scripts/node_modules/.bin/tsx --test lib/arena/src/lib/waveyard/studio/mashup-mix-bus.test.ts
+./scripts/node_modules/.bin/tsx scripts/waveyard-mashup-mix-diagnostic.ts
+./scripts/node_modules/.bin/tsx scripts/waveyard-mashup-abcd.ts --manifest <manifest.json> --out <dir>
+```
+
 ## Previous: auditionable mashup alignment candidates (planner v12)
+
 
 Waveyard now compares four distinct real planner paths for the same vocal/bed
 pair: a continuous baseline, paired beat-grid alignment, measured-downbeat
