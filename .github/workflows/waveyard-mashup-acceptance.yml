@@ -1,0 +1,153 @@
+name: Waveyard mashup acceptance (Linux)
+
+# The Studio mashup planner and the mashup route had no CI coverage at all.
+# A grep of the other workflows shows why: `waveyard-worker-local-db.yml` runs
+# only worker-local suites, `windows-recovered-stack.yml` runs only
+# `studio/mashup-bed.test.ts`, and `waveyard-browser-timing.yml` runs a
+# browser/DSP matrix. Full Length arrangement (`studio/mashup.ts`), the
+# composition-first stem swap, and the route that serves both were verified
+# only by hand.
+#
+# That gap is not hypothetical. It hid a real export bug: the desktop ffmpeg
+# graph never pinned a sample format before `amerge`, so any render containing
+# a key-shifted clip failed with "The following filters could not choose their
+# formats" — and the one test that would have caught it skips itself when
+# ffmpeg/ffprobe or PostgreSQL binaries are missing.
+#
+# So this job provisions those tools and refuses to pass on a skip: a skipped
+# suite would reproduce exactly the blind spot it exists to close.
+#
+# Honest limits: the route suite uses its synthetic fixture path unless
+# WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST is set (it is not, here), so it proves
+# route and planning behaviour, not musical quality. No audible playback, no
+# real stem separation, no listener assessment. Nothing here claims STEM.FM
+# parity.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mashup-acceptance:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..."
+
+      - name: Provide PostgreSQL server binaries and ffmpeg/ffprobe
+        shell: bash
+        run: |
+          set -uo pipefail
+          evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
+          mkdir -p "$evidence"
+
+          # The route suite boots a disposable cluster, so it needs the server
+          # binaries (initdb/postgres/pg_ctl), not the client tools.
+          pgbin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$pgbin" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends postgresql || true
+            pgbin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ -z "$pgbin" ] || [ ! -x "$pgbin/initdb" ] || [ ! -x "$pgbin/postgres" ]; then
+            echo "::error::No PostgreSQL server binaries. The route suite would skip, which is the gap this job closes."
+            exit 1
+          fi
+          echo "$pgbin" >> "$GITHUB_PATH"
+          "$pgbin/postgres" --version | tee -a "$evidence/environment.txt"
+
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            echo "::error::ffmpeg/ffprobe are required: the route suite renders and probes real audio."
+            exit 1
+          fi
+          ffmpeg -version | head -1 | tee -a "$evidence/environment.txt"
+          echo "::notice::mashup environment: $(paste -sd ';' "$evidence/environment.txt")"
+
+      # Full Length arrangement, song extension, loop planning, and the
+      # composition-first mix bus. These are the owner's two acceptance
+      # requirements; they are pure planner tests and must never skip.
+      - name: Full Length arrangement and stem-swap composition
+        shell: bash
+        run: |
+          set -uo pipefail
+          evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
+          mkdir -p "$evidence"
+          cd scripts
+          ./node_modules/.bin/tsx --test \
+            ../lib/arena/src/lib/waveyard/studio/mashup.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/mashup-full-length-mode.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/mashup-mix-bus.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/mashup-regression.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/donor-stem-integrity.test.ts \
+            ../lib/arena/src/lib/waveyard/worker-local/render-helpers.test.ts \
+            2>&1 | tee "$evidence/studio-suites.txt"
+          # tee masks the exit status, so read the summary back explicitly.
+          grep -qE '^# fail 0$' "$evidence/studio-suites.txt" || {
+            echo "::error::Studio mashup suites failed or did not report a clean summary."
+            exit 1
+          }
+          grep -qE '^# skipped 0$' "$evidence/studio-suites.txt" || {
+            echo "::error::Studio mashup suites skipped tests. A skip here is the blind spot this job exists to close."
+            exit 1
+          }
+
+      # The route that serves the Studio. Runs its synthetic fixture path and
+      # must report a pass, not a skip.
+      - name: Mashup route acceptance
+        shell: bash
+        env:
+          DATABASE_URL: postgres://unit@127.0.0.1:1/unit
+        run: |
+          set -uo pipefail
+          evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
+          mkdir -p "$evidence"
+          # scripts/ is where tsx lives; the bracketed directory must be cd'd
+          # into, because globbing that path collects zero tests and reads as
+          # success.
+          tsx="$PWD/scripts/node_modules/.bin/tsx"
+          cd "artifacts/api-server/src/imported/waveyard/projects/[id]/mashup"
+          "$tsx" --test route.test.ts 2>&1 | tee "$evidence/route.txt" || true
+          grep -qE '^# fail 0$' "$evidence/route.txt" || {
+            echo "::error::Mashup route acceptance failed."
+            exit 1
+          }
+          grep -qE '^# skipped 0$' "$evidence/route.txt" || {
+            echo "::error::Mashup route acceptance skipped. Missing PostgreSQL or ffmpeg would leave the route unproven."
+            exit 1
+          }
+          grep -qE '^# pass 1$' "$evidence/route.txt" || {
+            echo "::error::Expected exactly one passing route acceptance test."
+            exit 1
+          }
+
+      - name: Retain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveyard-mashup-linux
+          path: generated-artifacts/mashup-linux
+          if-no-files-found: warn
