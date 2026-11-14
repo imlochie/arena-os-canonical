@@ -1059,3 +1059,127 @@ mashup 46/46, full-length-mode 10/10, full-length 4/4, regression 8/8, mix-bus
 PG route acceptance 1/1 (0 skipped, includes the new swap assertions).
 `analysis-engine` 28/29, the pre-existing bundled-ffmpeg decode failure.
 Monorepo `tsc --build --force` clean.
+
+## 13. Real-audio validation (2026-11-14)
+
+The owner's instruction: establish whether the mechanics produce music that
+sounds intentional. This section records what was validated on real audio, what
+could not be, and the exact reason in each case.
+
+### 13.1 Git check (requested)
+
+`8cf14cf` is on `arena/669984d8-arena-os-canonical`, which is the head of PR #31.
+Zero divergence against origin. No competing agent has started real-audio
+validation: the only similar-titled open work is PR #27 (Nov 6, branch
+`arena/ed2f88f7-…`) which touches `mashup.ts` and a regression test file and is
+on a different lineage — it was inspected and does not contain stem fixtures.
+
+### 13.2 The Studio interaction check the owner asked for — it found a second defect
+
+The owner said typechecking and route tests do not prove the complete UI
+interaction, and asked for a manual verification that selecting Full Length in
+the Studio keeps the selector on Full Length and still reports that strategy.
+
+Rather than assert this by inspection, `scripts/verify-full-length-ui.ts` renders
+the **unmodified** `MashupStudio` component in jsdom and drives it with real DOM
+events (select the mode, compare, render the candidate, save), asserting on the
+fetch bodies the component actually sends.
+
+**First run: 7/8.** The failure was real: `arrangementMode` influenced only the
+plan preview, while initial candidate selection still ran off a hardcoded
+preference list. A user who chose Full Length and pressed Compare got
+phrase-aware anyway — the same defect class as the original, one layer deeper.
+
+My own first version of the test **missed it**, because it explicitly re-selected
+Full Length after comparing and so never exercised the auto-select path. That is
+recorded because it is the same trap as section 12.4.
+
+Fixed by defaulting `arrangementMode` to `full-length` and making the
+auto-select path honour the chosen mode. The decisive check is *"with no manual
+selection, comparing lands on Full Length by default"*; it was verified to FAIL
+with the preference disabled (10/11) and pass when restored (**11/11**).
+
+### 13.3 Full Length looping, on real audio
+
+This was the owner's outstanding evidence gap: "the critical case of a complete
+vocal shorter than its instrumental".
+
+The corpus cannot supply that directly — one complete vocal (214.2 s) and every
+CC0 bed ≤ 103.8 s — so the bed is made genuinely longer using Waveyard's own
+`planSongExtension`/`renderSongExtension` (bar-aligned repeats of a measured
+section). That is a real feature output, not a fabricated length.
+
+Measured, real audio, 103.6 s complete a-cappella performance over a 227.4 s
+instrumental:
+
+| Render | Segments | Passes | Timeline | Source | Coverage |
+|---|---|---|---|---|---|
+| `01-full-length-looped` | 2 | **2 complete** | 18.6–122.2 s, **122.6–226.3 s** | 0.0–103.6 s **both** | 91 % |
+| `02-full-length-unextended` | 1 | 1 | 8.9–103.8 s | 0.0–94.9 s | 91 % |
+
+Both passes start at **0.0 s**, so the loop restarts at the performance's
+beginning rather than echoing its tail. The second pass was verified to carry
+audio rather than silence: RMS 0.1938 in pass 1 versus **0.1895** in pass 2, with
+0.1256 between passes (bed only). 0 clipped samples, peak 0.911.
+
+Before this milestone the second pass did not exist at all.
+
+### 13.4 Composition-first planning, on real audio
+
+Three further renders build a *different resulting composition* from the real
+bed, re-analyse that composition, and only then plan — the corrected order:
+
+- `03-swap-drum-context` (drum band reduced to 35 %, bass retained)
+- `04-swap-bass-context` (bass band reduced to 30 %, drums retained)
+- `05-original-composition` (control, same vocal and strategy, unswapped)
+
+All render completely, 0 clipped. `04` peaks at 0.685 versus 0.911 for the others
+because removing the bass band removes most of the low-frequency energy — a real,
+measurable difference in the resulting mix.
+
+### 13.5 What this does NOT establish
+
+| Claim | Status |
+|---|---|
+| Full Length loops the complete performance from its beginning on real audio | **proven** — 2 passes, both from 0.0 s, audible |
+| Planning follows the resulting composition | **proven for ordering** — renders 03/04 differ measurably |
+| Real stem-swap with separated drums/bass/other stems | **NOT DONE — no licensed multitrack obtainable** |
+| That any of it sounds intentional | **UNKNOWN — N = 0 listeners** |
+| STEM.FM parity | **not claimed** |
+
+The multitrack gap was closed by exhaustive search, not assumption. Every avenue
+was tested and failed:
+
+- **Git LFS is unusable**: `github-cloud.s3.amazonaws.com` and `lfs.github.com`
+  both return 000. Every promising repo (`0x3lau/deep-house-techno`,
+  `wigglytendrils/yfree`, `mikeng-io/nora`, `ankita-m-john/Pitch-Perfect`,
+  `ken-arthur005/annie`, `Creative-AI-Research-Group/dream_app`) stores its audio
+  as 132-byte LFS pointers.
+- **Separation weights are unbuildable**: `dl.fbaipublicfiles.com`,
+  `huggingface.co` and `cdn-lfs.huggingface.co` all return 000; the demucs pypi
+  wheel is 100 KB and the npm wrappers ship no weights.
+- **GitHub Releases remain impossible**: `uploads.github.com` and
+  `objects.githubusercontent.com` return 000.
+- **Playwright browsers are undownloadable**: `playwright.azureedge.net` and
+  `cdn.playwright.dev` return 000, which is why the UI check uses jsdom.
+
+So the swap renders are labelled honestly in their own manifest: the differing
+composition is produced by a crossover filter, not a separation model. They
+validate the planning *order* and produce an audible result; they are not
+evidence of demucs-quality separation, and the manifest says so on the page a
+listener sees before pressing play.
+
+### 13.6 Deliverables
+
+`docs/real-audio-validation/` — five MP3s (192 kbps), `manifest.json` with full
+plan provenance per render, `index.html` player, and the assessment sheet. Served
+with byte-range support so iOS Safari can play and seek. Lossless WAVs stay in
+`generated-artifacts/` (git-ignored, 160 MB).
+
+### 13.7 Regression
+
+Studio UI harness 11/11 (10/11 when the fix is reverted). PG route acceptance
+1/1, 0 skipped. mashup 46, full-length-mode 10, full-length 4, regression 8,
+mix-bus 13, donor-integrity 18, peak-limiter 8, analysis-confidence 4.
+`analysis-engine` 28/29 (pre-existing ffmpeg failure). arenaforge and
+repo-wide `tsc --build --force` clean.
