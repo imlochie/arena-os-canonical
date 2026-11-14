@@ -238,6 +238,11 @@ test(
   const databasePassword = "mashup-route-test-password";
   const port = await freePort();
   let postgresProcess: ReturnType<typeof spawn> | undefined;
+  // Hoisted so `finally` can address the cluster it started. They were scoped
+  // inside `try`, which left teardown unable to inspect or reach the server.
+  let postgresPort: number | undefined;
+  let postgresPassword: string | undefined;
+  let postgresDatabase: string | undefined;
   let dbModule: typeof import("@workspace/db") | undefined;
   let routeModule: typeof import("./route") | undefined;
   let realVocalAnalysisId: string | null = null;
@@ -289,6 +294,9 @@ test(
       postgresOutput = (postgresOutput + chunk.toString()).slice(-4000);
     });
 
+    postgresPort = port;
+    postgresPassword = databasePassword;
+    postgresDatabase = databaseName;
     const adminUrl = `postgres://arena:${databasePassword}@127.0.0.1:${port}/postgres`;
     const deadline = Date.now() + 30_000;
     let databaseCreated = false;
@@ -3467,6 +3475,34 @@ test(
       }
     };
     await settle();
+    // Wait until no backend from this test is left, *while the server is still
+    // running*. Every client that could observe the shutdown is then already
+    // gone, so stopping the cluster cannot raise "terminating connection due to
+    // administrator command" in anybody. Closing the pool alone is not enough:
+    // it resolves once the pool stops issuing work, not when its sockets are
+    // closed.
+    if (postgresProcess && postgresProcess.exitCode === null && postgresPort !== undefined && postgresPassword && postgresDatabase) {
+      const deadline = Date.now() + 10_000;
+      let remaining = -1;
+      while (Date.now() < deadline) {
+        try {
+          const observer = new Client({ connectionString: `postgres://arena:${postgresPassword}@127.0.0.1:${postgresPort}/${postgresDatabase}` });
+          await observer.connect();
+          const result = await observer.query(
+            "select count(*)::int as count from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
+          );
+          await observer.end();
+          remaining = result.rows[0]?.count ?? -1;
+          if (remaining === 0) break;
+        } catch {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+        console.error(`TEARDOWN_DIAGNOSTICS backends_before_stop=${remaining}`);
+      }
+    }
     if (postgresProcess && postgresProcess.exitCode === null) {
       if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
         // Name the connections that outlive pool.end(). Without this, a
