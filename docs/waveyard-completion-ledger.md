@@ -1349,3 +1349,44 @@ the verdict script's quarantine, which emits a warning naming it unresolved on
 every run. Assertions pass locally 1/1 with `backends_before_stop=0`
 (PostgreSQL 16). The honest summary remains: route assertions pass, the harness
 race is open, CI success here is not evidence that the suite passes.
+
+### 15.3 Both tasks: where they actually stand
+
+I was asked to do these two. Neither is resolved, and further CI archaeology
+stopped being productive, so this records the state rather than another attempt.
+
+**What shipped and is verified locally**
+
+- Export `amerge` format-negotiation fix (a real defect: any key-shifted export
+  failed outright) plus a regression test proven to fail without the fix.
+- CI coverage for the mashup planner and route, where there was none, failing on
+  skips and on any non-quarantined failure.
+- Teardown: cluster coordinates hoisted so `finally` can address the server it
+  started; teardown waits for zero backends while the server still runs,
+  terminates a straggler after a grace period, and reports counts.
+- Pool connections tagged `application_name=suite-pool` so a straggler is
+  attributable rather than anonymous.
+- WebKit resume diagnostic at the failing wait (button, element, context and
+  rejection state), with no timeout or assertion relaxed.
+
+Locally: route 1/1 twice, studio suites 81/81 with 0 skipped, api-server
+typecheck clean, both workflow scripts parse.
+
+**What is not resolved**
+
+- The WebKit session-control timeout. Proven present on `1c7145a` and `368b8f3`
+  (identical file/line/assertion), so it predates this branch. Cannot be
+  iterated on here: WebKit's browser CDN is unreachable and the workflow needs
+  three engines plus a PulseAudio null sink.
+- The PostgreSQL teardown race. Narrowed, not closed: one idle backend on
+  PostgreSQL 14 survives `pool.end()`, and the runner turns the resulting
+  disconnect into a test failure. `mashup-acceptance` is therefore green only
+  through the verdict script's quarantine, which warns on every run.
+
+**A caveat about my own diagnostics.** Every diagnostic added for the teardown
+race is exercised only locally (PostgreSQL 16, where zero backends remain).
+`backends_before_stop=1` was observed once on CI; `polled=true` and the tagged
+`application_name` have never been seen on the runner. Three separate diagnostic
+channels — job logs, artifacts, check-run annotations, step summary — have each
+failed to deliver on this runner at least once. Treat any single CI diagnostic
+here as unconfirmed until a second channel agrees.
