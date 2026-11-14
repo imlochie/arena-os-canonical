@@ -3526,6 +3526,14 @@ test(
         console.error(`TEARDOWN_DIAGNOSTICS backends_before_stop=${remaining} terminated=${terminated}`);
       }
     }
+    if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+      // Printed unconditionally so a missing line is itself information: it
+      // tells us the polling block was skipped, which is the difference between
+      // "zero backends remained" and "we never looked".
+      console.error(
+        `TEARDOWN_DIAGNOSTICS polled=${postgresProcess !== undefined && postgresProcess.exitCode === null && postgresPort !== undefined && Boolean(postgresPassword) && Boolean(postgresDatabase)}`,
+      );
+    }
     if (postgresProcess && postgresProcess.exitCode === null) {
       if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
         // Name the connections that outlive pool.end(). Without this, a
