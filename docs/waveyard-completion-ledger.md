@@ -592,3 +592,150 @@ distinction between *key analysis missing* and *key confidence too low*).
 
 Still open: listener count is N=0 everywhere; no STEM.FM comparison is made; the
 key-accuracy defect from section 8 is unchanged.
+
+## 10. Listening pack — real mashups you can actually play (2026-11-14)
+
+The owner's directive superseded the key-detection order: stop building
+infrastructure around a dataset that cannot be accessed, and produce a small
+reproducible pack of real outputs plus a separate human-assessment record. This
+section is that pack and its honest limits. **No claim of musical quality is
+made here. N = 0 listeners.**
+
+### 10.1 What was blocked, and what unblocked it
+
+Every annotated-audio dataset (Zenodo, SIGSEP MUS, MedleyDB, MoisesDB,
+Mixing Secrets, Beatport previews) is unreachable from this environment — the
+network allowlist is GitHub/PyPI/npm only, verified with 000 responses. So the
+pack does not use a benchmark corpus. It uses two **licensed, reachable** sources:
+
+| Role | Source | Licence | Verification |
+|---|---|---|---|
+| Vocals | `MTG/turkish-makam-acapella-sections-dataset` | **CC BY 4.0** | `LICENSE` read directly; attribution embedded in both manifests |
+| Beds | `farmmer938-lgtm/aeris-cc0-music`, 13 tracks | **CC0 1.0** | licence file verified earlier |
+
+100 a-cappella sections, 375 MB. Because the singing is *unaccompanied*, the
+vocal side is genuinely isolated without running a separation model. **No
+separation stage ran in any render here** — the inputs are pre-separated, and
+both manifests say so. Separation models are not obtainable in this environment
+(`onnxruntime-node` is installed but no weights can be downloaded).
+
+Only downloadable via `git clone --depth 1 --filter=blob:none --sparse` +
+`git sparse-checkout set goekhan idil`. The `contents` API, `download_url` and
+`curl` all returned nothing for the large WAVs.
+
+### 10.2 The finding that matters: the first pack was not synced
+
+`scripts/waveyard-listening-pack.ts` renders 10 pairs labelled by condition
+(similar tempo, different tempo, long vocal, full-song vocal, uncertain tempo,
+different style, slow bed, lo-fi bed, dense bed, leftover pair). All 10 rendered
+complete, peak 0.88–0.911, **0 clipped samples**, RMS −13.3 … −17.4 dB, 57–104 s.
+
+But **every one used `stretch × 1.000` and pitch 0**. Nothing was synced.
+
+This is *not* a bug. Rubato a-cappella singing yields `bpmConfidence`
+0.132–0.245, far below the 0.5 gate, so the planner withheld stretching on every
+pair — exactly the fail-safe behaviour the previous milestone pinned as a
+regression test. It is correct, and it means pack v1 demonstrates **honesty, not
+mashup competence**. Lowering the 0.5 threshold to make the pack *look* synced
+would have been the wrong fix and was not done.
+
+### 10.3 Pack v2 — declared evidence, for listening only
+
+To let a human judge arrangement, transitions and rhythmic stability at all, the
+sync has to be exercised. `scripts/waveyard-listening-pack-synced.ts` supplies
+**tempo (and in two cases key) confidence as declared input** and leaves
+everything else to production code: stretching, beat grids, entry placement,
+arrangement, pitch decisions and the mix bus are untouched.
+
+| Case | Sources | Declared | Result | Peak | Clipped |
+|---|---|---|---|---|---|
+| 11-synced-close | Gel_2_zemin / horizon-monolith | 100 vs 112 BPM | ×0.893 | 0.911 | 0 |
+| 12-synced-half-time | Gel_4_nakarat / ash | 70 vs 140 BPM | **×1.000** (half-time lock) | 0.911 | 0 |
+| 13-synced-large-warp | Hicran_Part1 / overdrive | 96 vs 128 BPM | ×0.750 | 0.911 | 0 |
+| 14-control-dry | Gel_2_zemin / horizon-monolith | **real** analysis | ×1.000 (withheld) | 0.883 | 0 |
+| 15-hostile-untrusted-keys | Gel_6_meyan / quiet-room | 92 vs 84 BPM, keys 3 st apart | ×1.095, **0 st** | 0.911 | 0 |
+
+Every ratio matches the intended arithmetic exactly (100/112 = 0.893, 96/128 =
+0.750, 92/84 = 1.095). 12 correctly resolves 70/140 as a **half-time lock rather
+than halving the vocal**. 15 confirms that keys 3 semitones apart with untrusted
+evidence still produce **0 semitones** of pitch move. `14-control-dry` is the
+same pair as case 11 with the real confidence, so the cost of *not* syncing is
+audible A/B.
+
+Two bugs in the harness were found and fixed while doing this, and both were
+real rather than cosmetic:
+
+1. `bpmCandidates` was taken from the *measured* analysis while the declared BPM
+   said something else, so the planner's (correct) octave resolution silently
+   overrode the case under test — 11 and 13 both collapsed to ×0.920. Candidates
+   now derive from the declared tempo.
+2. `mix.limiterApplied` does not exist; the field is `mix.limiter.applied`. The
+   manifest had been writing `undefined` for every entry.
+
+The stretch claim itself was then verified independently of the plan object:
+`timeStretch` at 0.893/0.75/1.095 turns 4.000 s into 3.572/3.000/4.380 s and
+**holds the 440 Hz fundamental at 440 Hz**, so the rationale's "pitch preserved
+by WSOLA" is true rather than assumed.
+
+### 10.4 The biggest weakness visible in the measurements
+
+Vocal coverage is low. In three of the five synced cases the vocal is audible for
+only **13–21 % of the runtime** — 9.9 s of 68.6 s in case 11. Case 13 (a
+214 s full-song vocal) reaches 91 %. A 69 s bed with a 10 s vocal cameo is a
+different musical object from a duet, and no amount of correct bar arithmetic
+fixes that; it is an arrangement-selection problem, and it is the single most
+likely reason a listener would rate these poorly.
+
+Mix balance is also weaker than it looks. `planMashupBalance` measures
+**whole source files**, not the placed material, so a vocal that plays on 14 % of
+the timeline is balanced as if it filled the track. The correction hit the
+**±6 dB clamp in 6 of the 15 rendered cases**, which the bus itself reports as
+"this pair needs a different arrangement, not a bigger gain". This is a known,
+documented limitation of the measurement window, not a new bug — but it means
+the manifests' gain numbers are not evidence that the finished mix is balanced.
+
+### 10.5 Human assessment, kept strictly separate
+
+`docs/waveyard-listening-assessment-sheet.md` is the blank record: five
+dimensions (arrangement, vocal clarity, transitions, rhythmic stability, audio
+quality) plus free text. It is **deliberately empty**. The measurement context is
+placed *after* the listening instructions, and the sheet says not to read the
+manifests first, because knowing the stretch ratio biases the ear.
+
+The owner asked for **the five biggest musical weaknesses**, not a score. The
+sheet instructs collecting the free-text "biggest single weakness" lines and
+counting them, rather than averaging ratings and calling that a finding.
+
+### 10.6 What this does and does not establish
+
+| Claim | Status |
+|---|---|
+| 15 complete mashup renders exist and are playable | **done** — 188 MB in `generated-artifacts/listening-pack/`, git-ignored |
+| Tempo stretching works and preserves pitch | **done and measured** — arithmetic exact, 440 Hz verified |
+| The planner refuses to fabricate sync from untrusted evidence | **done** — 10/10 withheld, by design |
+| Half-time locks instead of halving the vocal | **done** — case 12 |
+| Untrusted keys never trigger a pitch move | **done** — case 15 |
+| The mixes are good | **unknown — N = 0 listeners** |
+| Waveyard matches STEM.FM | **not claimed, no comparison made** |
+| Works on arbitrary songs | **not claimed** — 2 small, stylistically narrow corpora |
+| Separation is exercised | **no** — inputs are pre-separated, models unobtainable |
+
+Reproduce with:
+
+```
+ARENA_FFMPEG_PATH=<ffmpeg> tsx scripts/waveyard-listening-pack.ts \
+  --vocals generated-artifacts/listening-pack-inputs/vocals \
+  --beds generated-artifacts/waveyard-real-audio \
+  --out generated-artifacts/listening-pack
+# and the same flags with scripts/waveyard-listening-pack-synced.ts
+```
+
+Both manifests are git-ignored along with the audio: the pack is reproducible
+from the scripts and the two licensed sources, and 188 MB of WAVs does not
+belong in Git.
+
+Regression suites after these changes: mashup 46, mix-bus 13, regression 8,
+donor-integrity 18, full-length 4, peak-limiter 8, analysis-confidence 4 — all
+pass, 0 fail. `analysis-engine` 28 pass / 1 fail, the pre-existing bundled-ffmpeg
+decode test. Both pack scripts and the two key scripts typecheck under a config
+that was verified to reject a deliberate type error.

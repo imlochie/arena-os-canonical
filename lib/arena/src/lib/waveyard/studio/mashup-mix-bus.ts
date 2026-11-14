@@ -81,7 +81,7 @@ export type MashupMixBalance = {
   vocalGainDb: number;
   /** Bed gain is fixed at 1.0; recorded so a report is explicit. */
   bedGainDb: number;
-  /** True when the measured correction was clamped to the ±9 LU window. */
+  /** True when the measured correction was clamped to `MASHUP_MAX_BALANCE_CORRECTION_DB`. */
   correctionClamped: boolean;
   /** Human-readable reason the correction is 0 or clamped. */
   note: string;

@@ -172,7 +172,7 @@ test("a mix that already fits is not made quieter just because a limiter exists"
 test("the vocal is fitted to the bed's measured loudness, and the correction is bounded", () => {
   const mashed = plan();
   // A quietly separated vocal over a loud bed: +12 dB would be needed, so the
-  // bus must clamp to its ±9 dB window and say so.
+  // bus must clamp to its documented correction window and say so.
   const quietVocal = tone(12, 220, 0.03);
   const loudBed = tone(12, 80, 0.6);
   const rendered = renderMashupWithBus(mashed, {
