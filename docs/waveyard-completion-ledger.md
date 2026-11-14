@@ -1183,3 +1183,79 @@ Studio UI harness 11/11 (10/11 when the fix is reverted). PG route acceptance
 mix-bus 13, donor-integrity 18, peak-limiter 8, analysis-confidence 4.
 `analysis-engine` 28/29 (pre-existing ffmpeg failure). arenaforge and
 repo-wide `tsc --build --force` clean.
+
+## 14. Export-graph defect found by actually running the route test (2026-11-14)
+
+### 14.1 The test was reporting success without running
+
+§13.7 recorded "PG route acceptance 1/1, 0 skipped". Re-running the same command
+in a fresh shell produced `# skipped 1`. The test skips when PostgreSQL server
+binaries are absent *or* when `ARENA_FFMPEG_PATH` / `ARENA_FFPROBE_PATH` are not
+set, and this sandbox's tooling lives outside the repository. The earlier claim
+was therefore true only of a shell that had those variables set; in a plain
+shell the suite proves nothing.
+
+Rule going forward: a route-acceptance run counts only if the summary says
+`# pass 1` **and** `# skipped 0`. A bare `not ok` is not the failure mode to
+watch for here — a silent skip is.
+
+### 14.2 With the tools present it failed, and the cause was real
+
+```
+[AVFilterGraph] The following filters could not choose their formats: Parsed_amerge_43
+Error reinitializing filters! ... Conversion failed!
+```
+
+The desktop export graph pins sample rate and channel layout per clip but not
+sample format. `atrim`/`adelay` preserve the source format (`pcm_s16le`), while
+the pitch chain (`asetrate` → `aresample` → `atempo`) and `pan` emit `fltp`.
+ffmpeg 4.1 — the version the desktop bundles, and whose limitations the graph is
+explicitly written around — cannot negotiate between them at `amerge`.
+
+**Consequence: any export containing a key-shifted clip failed outright.** Not a
+degraded mix — no file. Reproduced standalone against ffmpeg 4.1 and fixed by
+appending an explicit `aformat=...:sample_fmts=fltp` to all four clip graph
+variants before their merge labels. `fltp` matches what `pan` already emits, so
+the unnormalized sum keeps float precision and mixes that already worked are
+unchanged.
+
+### 14.3 Why no test caught it
+
+Every existing test asserts the *shape* of the filter strings (`mixSumFilters`
+chunks labels, `amerge=inputs=32`, …). None executes the graph, and the one test
+that would have — the route acceptance test — was skipping. A string-shape test
+can never see a format-negotiation failure.
+
+Added `render-helpers.test.ts` assertion that every pre-merge `aformat` pins a
+sample format. Verified it fails when the fix is reverted and passes with it.
+
+### 14.4 CI covered none of this
+
+No workflow ran `studio/mashup.ts`, the mix bus, or the mashup route.
+`worker-local-db` runs worker-local suites, `windows-recovered-stack` runs
+`mashup-bed.test.ts`, `waveyard-browser-timing` runs a browser matrix. So the
+branch's central planner had zero automated coverage on the remote.
+
+Added `.github/workflows/waveyard-mashup-acceptance.yml`: installs PostgreSQL
+server binaries and ffmpeg/ffprobe, then **fails on a skip**, because a skip is
+exactly the condition that hid the defect above. It also asserts
+`# fail 0` and exactly one passing route test. Studio suites 107/107, 0 skipped.
+Honest limit recorded in the workflow header: the route suite takes its
+synthetic fixture path, so this proves route and planning behaviour, not
+musical quality.
+
+### 14.5 Outstanding: teardown race on the runner's PostgreSQL
+
+The new job fails on CI with `terminating connection due to administrator
+command` surfacing as an `uncaughtException` attributed to the route test. The
+same suite passes 3/3 locally on PostgreSQL 16 with no live backends at
+teardown. Four attempts did not change the CI result: ordered teardown,
+`pg_terminate_backend` (which made it worse — it kills connections the pool
+still believes are healthy), a `pool.on("error")` listener, and
+`--test-force-exit`.
+
+This is recorded as **unresolved and open**, not fixed. The next run captures
+the uncaught exception's stack to name the leaking caller. Until it is resolved
+the new job is red on CI, and a red job is the honest state: it says the
+remote coverage exists but does not yet pass. It must not be described as green,
+and it does not indicate a route defect — the assertions themselves pass.
