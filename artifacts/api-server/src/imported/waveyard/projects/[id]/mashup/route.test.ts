@@ -3484,23 +3484,46 @@ test(
     if (postgresProcess && postgresProcess.exitCode === null && postgresPort !== undefined && postgresPassword && postgresDatabase) {
       const deadline = Date.now() + 10_000;
       let remaining = -1;
+      let terminated = 0;
+      let grantedGrace = false;
       while (Date.now() < deadline) {
         try {
           const observer = new Client({ connectionString: `postgres://arena:${postgresPassword}@127.0.0.1:${postgresPort}/${postgresDatabase}` });
           await observer.connect();
           const result = await observer.query(
-            "select count(*)::int as count from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
+            "select pid from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
           );
+          const pids = result.rows.map((row: { pid: number }) => row.pid);
+          remaining = pids.length;
+          if (remaining === 0) {
+            await observer.end();
+            break;
+          }
+          // A client is still checked out after pool.end(). That means it was
+          // never released, so the pool cannot close it and stopping the
+          // cluster would disconnect it under a live reader. Give the owner a
+          // short grace period, then terminate the remaining backends: by now
+          // every pool socket has already been closed, so this cannot break a
+          // healthy connection the way terminating before pool.end() did.
+          if (!grantedGrace && Date.now() > deadline - 8_000) {
+            grantedGrace = true;
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            continue;
+          }
+          if (grantedGrace) {
+            await observer.query(
+              "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
+            );
+            terminated += pids.length;
+          }
           await observer.end();
-          remaining = result.rows[0]?.count ?? -1;
-          if (remaining === 0) break;
         } catch {
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
-        console.error(`TEARDOWN_DIAGNOSTICS backends_before_stop=${remaining}`);
+        console.error(`TEARDOWN_DIAGNOSTICS backends_before_stop=${remaining} terminated=${terminated}`);
       }
     }
     if (postgresProcess && postgresProcess.exitCode === null) {
