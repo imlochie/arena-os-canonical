@@ -1,6 +1,66 @@
 # Arena handoff — read this first
 
-## Current: auditionable mashup alignment candidates (planner v12)
+## Current: measured mashup mix bus and deliberate stem composition (P0/P1)
+
+The production mashup render no longer sums a second rhythm section on top of
+the bed and no longer hard-clips. Two concrete defects were fixed at the layer
+they occur, both in `lib/arena/src/lib/waveyard/studio/mashup.ts`:
+
+1. **Donor stems were additive and unaligned.** `renderMashup` summed every
+   non-vocal donor stem from the donor's separation run at a fixed 0.6 gain,
+   indexed from timeline frame 0. A vocal that entered at 20 s therefore
+   arrived with a second drum kit and bass that started at 0 s and ignored the
+   alignment strategy entirely. Donor stems are now summed **only** for stem
+   types the caller names in `layerStemTypes`, and each is offset to the
+   planned vocal entry. The default composition is the one the product wants:
+   donor vocal over the bed's own drums, bass and other.
+2. **The mix had no reference and clipped.** Vocal and bed were summed at
+   unity and the total clamped with `Math.max(-1, Math.min(1, …))`, even though
+   `OutputPeakLimiter` already existed (only the live output worklet used it).
+   `renderMashupWithBus` (new) now measures both sides with BS.1770 gated
+   loudness, applies a bounded (±9 LU, reported when clamped) vocal-to-bed
+   correction, attenuates only when the sum genuinely overshoots, and passes the
+   result through the existing stereo-linked 4× true-peak limiter. A mix that
+   already fitted keeps unity gain, so this is not blanket attenuation.
+
+The API route honours an explicit `layerStemTypes` array (400 for unknown or
+`vocals`), reports `x-waveyard-layer-stems`, `x-waveyard-mix-balance-db`,
+`x-waveyard-mix-balance-clamped`, `x-waveyard-mix-static-gain-db`,
+`x-waveyard-mix-limiter` and `x-waveyard-mix-true-peak-db`, and adds the
+measured post-limit level as a warning entry. `MashupStudio` displays the
+composition and those measurements; it still shows no composite quality score.
+
+**The whistle is investigated, not explained away.** A stage-isolating
+diagnostic now exists (`scripts/waveyard-mashup-mix-diagnostic.ts`): it renders
+the same fixture through untouched stems → WSOLA stretch → stretch + pitch →
+summed pre-limit → final mix → exported WAV, and reports narrow components that
+gain ≥6 dB over the comparison stage plus 8 k/12 k band fractions. On that
+synthetic fixture no stage adds a strong stationary component. The measured
+high-band movement is entirely from the deliberate pitch move (12 k+ fraction
+−49.2 dB → −30.4 dB), which is relocated tonal content, not a whistle. **The
+reported whistle is therefore still unexplained and needs real separated stems
+to reproduce**; the previous handoff's habit of attributing it to WSOLA was not
+evidence and is not repeated here.
+
+Verification in this checkout: `tsx --test` on the mashed-planner suites passed
+**84/84** (`mashup.test.ts` 41, `mashup-mix-bus.test.ts` 6 new,
+`donor-stem-integrity.test.ts` 10, `mashup-full-length`, `mashup-regression`,
+`mashup-bed`, `output-peak-limiter`); API-server and ArenaForge typechecks pass.
+The route acceptance test (`route.test.ts`) was extended to assert the default
+composition, the honoured explicit layer, the rejected `vocals` layer and the
+reported mix headers, but **it was not executed here** because this sandbox has
+no PostgreSQL server or bundled binaries. It must be run before merge.
+
+**Not established:** no listening test was performed, responses remain
+**N=0**, and this checkout has no real source audio, no `generated-artifacts/`,
+and no separated Queen/September stems. The four-way A/B/C/D render that the
+product decision depends on is therefore **not** produced by this change. What
+changed is that variants B and D are now possible to render at all: previously
+"corrected composition" and "corrected mix" could not be expressed. Arrangement
+intelligence (P2) is untouched: the planner still places one continuous vocal
+body, and phrase/section placement remains future work.
+
+## Previous: auditionable mashup alignment candidates (planner v12)
 
 Waveyard now compares four distinct real planner paths for the same vocal/bed
 pair: a continuous baseline, paired beat-grid alignment, measured-downbeat

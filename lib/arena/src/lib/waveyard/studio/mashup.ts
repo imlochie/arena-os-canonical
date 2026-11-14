@@ -28,6 +28,14 @@ import {
 } from "../types/harmony-analysis";
 import type { VocalActivityInterval, VocalPhrase, VocalPitchFrame } from "../types/vocal-analysis";
 import { currentEvidenceValue, type MusicalEvidencePacket } from "./musical-evidence";
+import {
+  finishMashupMix,
+  measureMashupMixStage,
+  planMashupBalance,
+  unmeasuredBalance,
+  MASHUP_LIMITER_CEILING,
+  type MashupMixResult,
+} from "./mashup-mix-bus";
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v12";
@@ -2554,10 +2562,33 @@ export type MashupPcmInput = {
   vocals: StereoBuffer;
   /** Interleaved stereo bed (instrumental) PCM. */
   bed: StereoBuffer;
-  /** Optional discrete stems from both songs for stem-level mixing. */
+  /**
+   * Optional complementary **donor** stems for deliberate layering, keyed
+   * `donor_<stemType>`. These are never added automatically: only the stem
+   * types named in `layerStemTypes` are summed, and each starts at the
+   * planned vocal entry rather than at timeline zero.
+   */
   stems?: Map<string, StereoBuffer>;
+  /**
+   * Donor stem types the caller deliberately chose to layer (e.g. `drums`).
+   * Empty/absent means the default composition: vocal donor over the
+   * instrumental bed only, with no second rhythm section.
+   */
+  layerStemTypes?: readonly string[];
   sampleRate: number;
+  /**
+   * Mix-bus controls. Defaults are the conservative production values; a
+   * caller may disable balance matching or limiting only for a controlled
+   * A/B render.
+   */
+  mix?: {
+    matchVocalLoudness?: boolean;
+    limit?: boolean;
+  };
 };
+
+/** Donor stem gains when a caller explicitly layers one over the bed. */
+const DONOR_LAYER_GAIN = 0.6;
 
 function trapezoidGain(atMs: number, startMs: number, endMs: number, crossfadeMs: number): number {
   if (atMs < startMs || atMs > endMs) return 0;
@@ -2569,11 +2600,30 @@ function trapezoidGain(atMs: number, startMs: number, endMs: number, crossfadeMs
 }
 
 /** Mix the plan: bed (ducked under vocals) + stretched/pitched vocal
- *  segments with trapezoid fades. Deterministic from the plan. */
-export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuffer {
+ *  segments with trapezoid fades, then a measured mix bus.
+ *
+ *  Composition rule (the product default): the vocal donor supplies the
+ *  vocal and the instrumental bed supplies drums, bass and everything else.
+ *  Donor stems are only summed when the caller names them in
+ *  `layerStemTypes`, and each one is offset to the planned vocal entry so a
+ *  late-entering vocal never drags an unaligned second drum kit in from
+ *  timeline zero.
+ *
+ *  Mix rule: the vocal is gain-matched to the bed's measured loudness and
+ *  the sum is scaled into headroom and passed through the existing
+ *  stereo-linked true-peak limiter. Nothing is hard-clipped. */
+export function renderMashupWithBus(
+  plan: MashupPlan,
+  input: MashupPcmInput,
+): { pcm: StereoBuffer; mix: MashupMixResult } {
   const { sampleRate } = input;
   const totalFrames = Math.max(1, Math.round((plan.durationMs / 1000) * sampleRate));
-  const out = new Float32Array(totalFrames * 2);
+  const summed = new Float32Array(totalFrames * 2);
+
+  const balance = input.mix?.matchVocalLoudness === false
+    ? null
+    : planMashupBalance({ vocals: input.vocals, bed: input.bed, sampleRate });
+  const vocalGain = balance === null ? 1 : 10 ** (balance.vocalGainDb / 20);
 
   // Prepared vocal segments (stretched once, then pitched once each).
   const prepared = plan.segments.map((segment) => {
@@ -2602,21 +2652,25 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     return { segment, pcm: pitchShift(stretched, plan.vocalsPitchSemitones, sampleRate) };
   });
 
-  // Pre-process complementary donor stems ONCE before the rendering loop.
-  // Instrumental stems (drums, bass, guitar, keys, other) must NEVER inherit vocal-specific
-  // pitch transposition or vocal transformations. Preserve their native pitch.
-  // Time-stretching is applied only when beat synchronization is mutually trusted.
-  const preparedStems: Array<{ name: string; pcm: StereoBuffer }> = [];
-  if (input.stems) {
+  // Deliberately layered donor stems only. Everything else in the donor's
+  // separation run stays out of the mix; the bed already carries those roles.
+  const layerTypes = new Set((input.layerStemTypes ?? []).map((type) => String(type)));
+  const preparedStems: Array<{ type: string; pcm: StereoBuffer; offsetFrames: number }> = [];
+  if (input.stems && layerTypes.size > 0) {
+    const firstSegment = plan.segments[0];
     for (const [stemName, rawStemBuffer] of input.stems) {
-      if (stemName !== "vocals") {
-        // Instrumental donor stems preserve native pitch (0 semitones shift).
-        // Only time-stretch to match master tempo if tempo stretch ratio differs from 1.0.
-        const pcm = (stemName.startsWith("donor_") && Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6)
-          ? timeStretch(rawStemBuffer, plan.vocalsStretchRatio, sampleRate)
-          : rawStemBuffer;
-        preparedStems.push({ name: stemName, pcm });
-      }
+      if (!stemName.startsWith("donor_")) continue;
+      const type = stemName.slice("donor_".length);
+      if (!layerTypes.has(type)) continue;
+      // Instrumental donor stems keep their native pitch. They follow the
+      // session tempo like the bed does.
+      const pcm = Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6
+        ? timeStretch(rawStemBuffer, plan.vocalsStretchRatio, sampleRate)
+        : Float32Array.from(rawStemBuffer);
+      // A layered donor stem must be musically co-located with the vocal it
+      // accompanies, not with timeline zero.
+      const offsetFrames = Math.max(0, Math.round(((firstSegment?.mashupStartMs ?? 0) / 1000) * sampleRate));
+      preparedStems.push({ type, pcm, offsetFrames });
     }
   }
 
@@ -2634,8 +2688,8 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     let left = 0;
     let right = 0;
     if (frame < bedFrames) {
-      left = input.bed[frame * 2] * bedGain;
-      right = input.bed[frame * 2 + 1] * bedGain;
+      left = input.bed[frame * 2]! * bedGain;
+      right = input.bed[frame * 2 + 1]! * bedGain;
     }
 
     for (const { segment, pcm } of prepared) {
@@ -2643,25 +2697,52 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
       if (gain <= 0) continue;
       const vocalFrame = Math.round(((atMs - segment.mashupStartMs) / 1000) * sampleRate);
       if (vocalFrame < 0 || vocalFrame * 2 + 1 >= pcm.length) continue;
-      left += pcm[vocalFrame * 2] * gain;
-      right += pcm[vocalFrame * 2 + 1] * gain;
+      left += pcm[vocalFrame * 2]! * gain * vocalGain;
+      right += pcm[vocalFrame * 2 + 1]! * gain * vocalGain;
     }
 
-    // Mix prepared discrete stems with dynamic ducking into the vocal pocket
-    for (const { pcm: stemBuffer } of preparedStems) {
-      if (frame * 2 + 1 < stemBuffer.length) {
-        const stemGain = 0.6;
-        const stemDuck = DUCK_DEPTH;
-        const dynamicGain = stemGain * (1 - stemDuck * duck);
-        left += stemBuffer[frame * 2] * dynamicGain;
-        right += stemBuffer[frame * 2 + 1] * dynamicGain;
-      }
+    for (const { pcm: stemBuffer, offsetFrames } of preparedStems) {
+      const stemFrame = frame - offsetFrames;
+      if (stemFrame < 0 || stemFrame * 2 + 1 >= stemBuffer.length) continue;
+      const stemGain = DONOR_LAYER_GAIN * (1 - DUCK_DEPTH * duck);
+      left += stemBuffer[stemFrame * 2]! * stemGain;
+      right += stemBuffer[stemFrame * 2 + 1]! * stemGain;
     }
 
-    out[frame * 2] = Math.max(-1, Math.min(1, left));
-    out[frame * 2 + 1] = Math.max(-1, Math.min(1, right));
+    // No clamp here: the mix bus limits the summed signal properly.
+    summed[frame * 2] = left;
+    summed[frame * 2 + 1] = right;
   }
-  return out;
+
+  if (input.mix?.limit === false) {
+    // Controlled A/B render: no attenuation and no ceiling, so a comparison
+    // can attribute a difference to composition rather than to limiting.
+    const pcm = Float32Array.from(summed);
+    const stage = measureMashupMixStage(pcm, sampleRate);
+    return {
+      pcm,
+      mix: {
+        pcm,
+        balance: balance ?? unmeasuredBalance("Loudness matching was disabled for this render."),
+        preLimit: stage,
+        postLimit: stage,
+        staticGainDb: 0,
+        limiter: { ceiling: MASHUP_LIMITER_CEILING, delayFrames: 0, applied: false },
+      },
+    };
+  }
+
+  const finished = finishMashupMix({ summed, sampleRate });
+  return {
+    pcm: finished.pcm,
+    mix: { ...finished, balance: balance ?? unmeasuredBalance("Loudness matching was disabled for this render.") },
+  };
+}
+
+/** Plan-and-render entry point retained for existing callers: exactly the
+ *  production mix bus, PCM only. */
+export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuffer {
+  return renderMashupWithBus(plan, input).pcm;
 }
 
 // ---------------------------------------------------------------------------

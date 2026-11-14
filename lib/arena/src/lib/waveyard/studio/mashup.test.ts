@@ -15,6 +15,7 @@ import {
   planMashup,
   planSongExtension,
   renderMashup,
+  renderMashupWithBus,
   renderSongExtension,
   scoreVocalChordToneFit,
   warpRatioForTempos,
@@ -1280,10 +1281,14 @@ test("REASSURANCE: half-lock leaves the vocal unsynchronized but beat-consistent
   assert.ok(result.ok);
   assert.equal(result.plan.vocalsStretchRatio, 1);
 
+  // Half-lock is a timing claim, so it is measured on a composition-only
+  // render: loudness matching and limiting are disabled so the mix bus cannot
+  // move the clicks this assertion is about.
   const out = renderMashup(result.plan, {
     vocals: clicksAtBpm(vocalSeconds, 70, 0.6),
     bed: bedTone(bedSeconds),
     sampleRate: RATE,
+    mix: { matchVocalLoudness: false, limit: false },
   });
   const bedBeatMs = 60_000 / 140;
   const clickPeriodMs = 60_000 / 70;
@@ -1321,7 +1326,7 @@ function windowPeak(buffer: Float32Array, fromMs: number, toMs: number): number 
   return peak;
 }
 
-test("render: bed ducks under active vocals, crossfades, never clips", () => {
+test("render: bed ducks under active vocals, crossfades, and is limited rather than hard-clipped", () => {
   const result = planMashup(
     profile({ role: "vocals", bpm: 100, durationMs: 10_000, sections: [section("verse", 0, 10_000)] }),
     profile({ bpm: 100, durationMs: 10_000, sections: [section("verse", 0, 10_000)] }),
@@ -1329,16 +1334,45 @@ test("render: bed ducks under active vocals, crossfades, never clips", () => {
   assert.ok(result.ok);
   const loudBed = new Float32Array(10 * RATE * 2).fill(0.9);
   const loudVocal = new Float32Array(10 * RATE * 2).fill(0.9);
-  const out = renderMashup(result.plan, { vocals: loudVocal, bed: loudBed, sampleRate: RATE });
+  const out = renderMashupWithBus(result.plan, { vocals: loudVocal, bed: loudBed, sampleRate: RATE });
 
-  // Mid-segment: bed 0.9×0.72 + vocal 0.9 = 1.548 → clamped at 1.0 (no clip
-  // past full scale, values sane).
-  const mid = out[5 * RATE * 2];
-  assert.ok(mid <= 1.0001 && mid >= -1.0001);
-  // Before the vocal segment's crossfade completes, bed is near full.
-  const early = out[Math.round(0.02 * RATE) * 2];
-  assert.ok(early > 0.8, `early bed ${early}`);
-  for (const value of out) assert.ok(value >= -1.0001 && value <= 1.0001);
+  // This fixture genuinely overloads: 0.9 bed + 0.9 vocal ≈ +3.8 dB over the
+  // ceiling. The mix bus attenuates that overshoot once, statically, instead
+  // of clamping every sample at full scale.
+  assert.ok(out.mix.staticGainDb < -3 && out.mix.staticGainDb > -5,
+    `static attenuation ${out.mix.staticGainDb} dB should recover the overshoot`);
+  assert.equal(out.mix.limiter.applied, false,
+    "after static attenuation the true peak already fits, so the limiter need not act");
+
+  // Nothing exceeds full scale, and — unlike the previous clamp — nothing is
+  // pinned at full scale either, which is what a hard-clipped mix looks like.
+  let atFullScale = 0;
+  for (const value of out.pcm) {
+    assert.ok(value >= -1.0001 && value <= 1.0001);
+    if (Math.abs(value) > 0.9999) atFullScale += 1;
+  }
+  assert.equal(atFullScale, 0, "hard-clipped samples must not appear in a limited mix");
+
+  // Ducking still behaves: the bed at the top, before the vocal crossfade
+  // completes, is louder than the ducked bed under the vocal once the
+  // vocal's own contribution is removed by rendering the bed alone.
+  // Loudness matching is disabled here so the bed-only render is comparable
+  // with the mixed render: otherwise the vocal (silence) would measure no
+  // loudness and a real vocal would be gain-matched, changing absolute gain.
+  const bedOnly = renderMashupWithBus(result.plan, {
+    vocals: new Float32Array(10 * RATE * 2),
+    bed: loudBed,
+    sampleRate: RATE,
+    mix: { matchVocalLoudness: false },
+  });
+  const staticGain = 10 ** (bedOnly.mix.staticGainDb / 20);
+  const bedMid = bedOnly.pcm[5 * RATE * 2]!;
+  const expectedDuckedBed = 0.9 * staticGain * (1 - 0.28);
+  assert.ok(Math.abs(bedMid - expectedDuckedBed) < 0.01,
+    `bed must sit 28% down under the vocal: ${bedMid.toFixed(3)} vs ${expectedDuckedBed.toFixed(3)}`);
+  const bedEarly = bedOnly.pcm[Math.round(0.05 * RATE) * 2]!;
+  assert.ok(bedEarly > bedMid * 1.15,
+    `bed starts unducked and drops into the vocal pocket: ${bedEarly.toFixed(3)} → ${bedMid.toFixed(3)}`);
 });
 
 // --- extension -------------------------------------------------------------

@@ -130,6 +130,31 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     warning: string;
     includedStemTypes?: string[];
   } | null>(null);
+  /**
+   * What the mix bus actually did to the last render, read from response
+   * headers so the numbers come from the rendered PCM rather than from the
+   * plan. These are measurements, never a quality score.
+   */
+  const [mixReport, setMixReport] = useState<{
+    balanceDb: string | null;
+    balanceClamped: boolean;
+    staticGainDb: string | null;
+    limiter: string | null;
+    truePeakDb: string | null;
+    layerStems: string[];
+  } | null>(null);
+
+  const readMixReport = (response: Response) => {
+    if (!response.headers.get("x-waveyard-mix-static-gain-db")) return;
+    setMixReport({
+      balanceDb: response.headers.get("x-waveyard-mix-balance-db"),
+      balanceClamped: response.headers.get("x-waveyard-mix-balance-clamped") === "true",
+      staticGainDb: response.headers.get("x-waveyard-mix-static-gain-db"),
+      limiter: response.headers.get("x-waveyard-mix-limiter"),
+      truePeakDb: response.headers.get("x-waveyard-mix-true-peak-db"),
+      layerStems: response.headers.get("x-waveyard-layer-stems")?.split(",").filter(Boolean) ?? [],
+    });
+  };
   const [savingRemix, setSavingRemix] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
@@ -203,6 +228,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
         });
       }
+      readMixReport(response);
       const url = URL.createObjectURL(await response.blob());
       if (sourceGeneration !== sourceGenerationRef.current) {
         URL.revokeObjectURL(url);
@@ -310,6 +336,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           includedStemTypes: response.headers.get("x-waveyard-bed-stems")?.split(",").filter(Boolean),
         });
       }
+      readMixReport(response);
       const url = URL.createObjectURL(await response.blob());
       if (sourceGeneration !== sourceGenerationRef.current) {
         URL.revokeObjectURL(url);
@@ -681,6 +708,22 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             ? `separated stems${bedInfo.includedStemTypes?.length ? ` (${bedInfo.includedStemTypes.join(", ")})` : ""}`
             : "original file fallback"}
           . {bedInfo.warning}
+        </p>
+      )}
+
+      {mixReport && (
+        <p className="mashup-mix-report" role="status" style={{ fontSize: 13 }}>
+          <b>Composition:</b>{" "}
+          {mixReport.layerStems.length === 0
+            ? "vocal donor over the bed's own drums, bass and other (no donor rhythm section added)."
+            : `vocal donor over the bed, plus deliberately layered donor ${mixReport.layerStems.join(", ")}.`}
+          <br />
+          <b>Mix (measured from this render):</b>{" "}
+          vocal-to-bed balance {mixReport.balanceDb !== null ? `${mixReport.balanceDb} dB` : "not measurable"}
+          {mixReport.balanceClamped ? " (clamped — the pair is very unbalanced)" : ""}; static gain{" "}
+          {mixReport.staticGainDb ?? "n/a"} dB; limiter{" "}
+          {mixReport.limiter === "active" ? "active" : "not required"}; true peak{" "}
+          {mixReport.truePeakDb ?? "n/a"} dBFS. Measurements, not a quality score.
         </p>
       )}
 

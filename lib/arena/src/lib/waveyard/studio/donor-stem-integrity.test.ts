@@ -158,7 +158,7 @@ describe("Waveyard Donor-Stem Integrity & Provenance Guarantees", () => {
     assert.deepEqual(bed.excludedStemTypes, ["vocals"]);
   });
 
-  it("7. Instrumental transformation safety: complementary bed stems do not receive vocal pitch transposition", () => {
+  it("7. Instrumental transformation safety: an explicitly layered donor stem does not receive the vocal's pitch transposition", () => {
     const vocalProfile: MashupSourceProfile = {
       role: "vocals",
       bpm: 120,
@@ -188,15 +188,17 @@ describe("Waveyard Donor-Stem Integrity & Provenance Guarantees", () => {
     const vocalPcm = createStereoPcm(10, 440, 0.4);
     const bedPcm = createStereoPcm(10, 110, 0.4);
 
+    // Layering is deliberate: donor stems are only summed when requested.
     const stemsMap = new Map<string, Float32Array>([
-      ["drums", createStereoPcm(10, 80, 0.3)],
-      ["bass", createStereoPcm(10, 110, 0.3)],
+      ["donor_drums", createStereoPcm(10, 80, 0.3)],
+      ["donor_bass", createStereoPcm(10, 110, 0.3)],
     ]);
 
     const rendered = renderMashup(plan.plan, {
       vocals: vocalPcm,
       bed: bedPcm,
       stems: stemsMap,
+      layerStemTypes: ["drums", "bass"],
       sampleRate: RATE,
     });
 
@@ -257,6 +259,7 @@ describe("Agent B Independent Regression Tests: Measurable Signal & Route Invari
       vocals: new Float32Array(5 * RATE * 2),
       bed: new Float32Array(5 * RATE * 2),
       stems: stemsMap,
+      layerStemTypes: ["drums", "bass"],
       sampleRate: RATE,
     });
 

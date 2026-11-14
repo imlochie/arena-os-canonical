@@ -57,7 +57,7 @@ import {
   MASHUP_ALIGNMENT_CANDIDATES,
   planMashup,
   planSongExtension,
-  renderMashup,
+  renderMashupWithBus,
   renderSongExtension,
   type MashupAlignmentStrategy,
   type MashupTransientEvent,
@@ -110,10 +110,38 @@ type MashupBody = {
   vocalsSourceId?: unknown;
   instrumentalSourceId?: unknown;
   alignmentStrategy?: unknown;
+  /**
+   * Donor stem types the caller deliberately wants layered over the bed
+   * (e.g. `["drums"]`). Absent/empty means the default composition: the
+   * donor supplies only the vocal and the bed keeps its own rhythm section.
+   */
+  layerStemTypes?: unknown;
   sourceAssetId?: unknown;
   sectionLabel?: unknown;
   repeats?: unknown;
 };
+
+/** Donor stem types that may ever be layered deliberately. Vocals are the
+ *  donor's default contribution and are never accepted here. */
+const LAYERABLE_STEM_TYPES = ["drums", "bass", "other", "guitar", "piano", "percussion"] as const;
+
+function parseLayerStemTypes(value: unknown): { ok: true; types: string[] } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, types: [] };
+  if (!Array.isArray(value)) {
+    return { ok: false, error: "layerStemTypes must be an array of donor stem types." };
+  }
+  const types: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !LAYERABLE_STEM_TYPES.includes(entry as typeof LAYERABLE_STEM_TYPES[number])) {
+      return {
+        ok: false,
+        error: `layerStemTypes may only contain ${LAYERABLE_STEM_TYPES.join(", ")}; received ${JSON.stringify(entry)}.`,
+      };
+    }
+    if (!types.includes(entry)) types.push(entry);
+  }
+  return { ok: true, types };
+}
 
 type BedSourceInfo = {
   source: "separated" | "original-fallback";
@@ -829,6 +857,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: "Choose a supported mashup alignment strategy." }, { status: 400 });
       }
       const alignmentStrategy = (requestedStrategy ?? "phrase-aware") as MashupAlignmentStrategy;
+      const parsedLayers = parseLayerStemTypes(body.layerStemTypes);
+      if (!parsedLayers.ok) {
+        return Response.json({ error: parsedLayers.error }, { status: 400 });
+      }
+      const layerStemTypes = parsedLayers.types;
 
       const [resolvedVocalSource, resolvedBedSource] = await Promise.all([
         findBedSource(projectId, vocalsId),
@@ -1225,11 +1258,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         bedInfo = bedResult.info;
       }
 
-      // Load available complementary stems from the donor vocal track (e.g. guitar/keys/other)
-      // strictly from the single authoritative completed separation run of the vocal stem.
-      // Exclude pending, failed, cancelled, or superseded runs, and reject duplicate stem types.
+      // Donor stems are a deliberate composition choice, never an automatic
+      // addition. The default render is: donor vocal over the chosen
+      // instrumental bed's own drums, bass and other. Extra donor layers are
+      // loaded only for stem types the caller explicitly asked to layer, and
+      // they are offset to the vocal entry inside renderMashup.
+      //
+      // Loading is strictly from the single authoritative completed
+      // separation run of the vocal stem. Pending, failed, cancelled or
+      // superseded runs are excluded and duplicate stem types are rejected
+      // rather than silently overwriting.
       const complementaryDonorStems = new Map<string, Float32Array>();
-      if (vocalsStem?.separationJobId) {
+      if (layerStemTypes.length > 0 && vocalsStem?.separationJobId) {
         try {
           const donorStemRows = await db
             .select({
@@ -1248,30 +1288,53 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
           const seenTypes = new Set<string>();
           for (const stemRow of donorStemRows) {
-            if (stemRow.stemType !== "vocals") {
-              if (seenTypes.has(stemRow.stemType)) {
-                // Reject duplicate stem types rather than silently overwriting
-                continue;
-              }
-              seenTypes.add(stemRow.stemType);
-              const pcm = await stemPcm(stemRow.storageKey);
-              if (pcm && pcm.length > 0) {
-                complementaryDonorStems.set(`donor_${stemRow.stemType}`, pcm);
-              }
+            if (stemRow.stemType === "vocals" || !layerStemTypes.includes(stemRow.stemType)) continue;
+            if (seenTypes.has(stemRow.stemType)) {
+              // Reject duplicate stem types rather than silently overwriting
+              continue;
+            }
+            seenTypes.add(stemRow.stemType);
+            const pcm = await stemPcm(stemRow.storageKey);
+            if (pcm && pcm.length > 0) {
+              complementaryDonorStems.set(`donor_${stemRow.stemType}`, pcm);
             }
           }
         } catch {
-          // Fall back gracefully
+          // Fall back gracefully: the explicit request simply does not layer.
+          warnings.push("The requested donor stem layer could not be loaded; the render uses the vocal donor and the instrumental bed only.");
+        }
+        const missing = layerStemTypes.filter((type) => !complementaryDonorStems.has(`donor_${type}`));
+        if (missing.length > 0) {
+          warnings.push(`Requested donor layer(s) ${missing.join(", ")} were not available in the donor's completed separation run; only the vocal was taken from that source.`);
+        }
+        for (const type of layerStemTypes) {
+          if (!complementaryDonorStems.has(`donor_${type}`)) continue;
+          warnings.push(`Donor ${type} is layered deliberately on top of the bed's own ${type}; this is a choice made in the request, not an automatic match, and there is no combined-layer compatibility check yet.`);
         }
       }
 
-      const mixed = renderMashup(planned.plan, {
+      const rendered = renderMashupWithBus(planned.plan, {
         vocals: vocalsPcm,
         bed: bedPcm,
         stems: complementaryDonorStems.size > 0 ? complementaryDonorStems : undefined,
+        layerStemTypes,
         sampleRate: RENDER_SAMPLE_RATE,
       });
-      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy);
+      const mixed = rendered.pcm;
+      const mixWarnings = [
+        rendered.mix.balance.note,
+        `Render measured after limiting: ${rendered.mix.postLimit.lufsIntegrated === null ? "loudness not measurable" : `${rendered.mix.postLimit.lufsIntegrated.toFixed(1)} LUFS`}, sample peak ${rendered.mix.postLimit.samplePeakDb.toFixed(2)} dBFS, true peak ${rendered.mix.postLimit.truePeakDb.toFixed(2)} dBTP; static gain ${rendered.mix.staticGainDb.toFixed(2)} dB, limiter ${rendered.mix.limiter.applied ? "active" : "not required"}. These are measurements, not a quality claim.`,
+      ];
+      warnings.push(...mixWarnings);
+      const renderHeaders = {
+        "x-waveyard-mix-balance-db": rendered.mix.balance.vocalGainDb.toFixed(2),
+        "x-waveyard-mix-balance-clamped": String(rendered.mix.balance.correctionClamped),
+        "x-waveyard-mix-static-gain-db": rendered.mix.staticGainDb.toFixed(2),
+        "x-waveyard-mix-limiter": rendered.mix.limiter.applied ? "active" : "not-required",
+        "x-waveyard-mix-true-peak-db": rendered.mix.postLimit.truePeakDb.toFixed(2),
+        "x-waveyard-layer-stems": layerStemTypes.join(","),
+      };
+      return wavResponse(encodeWav16(mixed, RENDER_SAMPLE_RATE), "mashup", bedInfo, warnings, alignmentStrategy, renderHeaders);
     }
 
     if (action === "extend") {
@@ -1318,6 +1381,7 @@ function wavResponse(
   bed?: BedSourceInfo,
   warnings: string[] = [],
   alignmentStrategy?: MashupAlignmentStrategy,
+  extraHeaders?: Record<string, string>,
 ): Response {
   const headers = new Headers({
     "content-type": "audio/wav",
@@ -1333,6 +1397,7 @@ function wavResponse(
     }
   }
   if (alignmentStrategy) headers.set("x-waveyard-alignment-strategy", alignmentStrategy);
+  for (const [name, value] of Object.entries(extraHeaders ?? {})) headers.set(name, value);
   for (const warning of warnings) {
     headers.append("x-waveyard-warning", encodeURIComponent(warning));
   }

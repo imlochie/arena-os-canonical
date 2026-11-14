@@ -830,7 +830,10 @@ test(
         .where(eq(schema.bassAnalyses.id, bassAnalysis.id)))[0]?.status, "complete");
     }
 
-    const renderRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const renderRequest = (
+      alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware",
+      extra?: Record<string, unknown>,
+    ) => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -838,6 +841,7 @@ test(
         vocalsSourceId: vocalsSource.id,
         instrumentalSourceId: bedSource.id,
         ...(alignmentStrategy ? { alignmentStrategy } : {}),
+        ...(extra ?? {}),
       }),
     });
 
@@ -1391,6 +1395,43 @@ test(
       assert.ok(bedWarning, "the route must expose the leakage warning");
       assert.match(decodeURIComponent(bedWarning!), /leakage/i);
     }
+
+    // Composition default: the donor supplies the vocal only. The donor's own
+    // drums/bass/other are NOT added on top of the bed's rhythm section unless
+    // the request names them, and the response says so.
+    assert.equal(renderResponse.headers.get("x-waveyard-layer-stems"), "",
+      "a default render must not layer any donor stem over the bed");
+    assert.equal(renderResponse.headers.get("x-waveyard-mix-static-gain-db") !== null, true,
+      "the route must report the static mix gain measured from the rendered PCM");
+    assert.ok(["active", "not-required"].includes(renderResponse.headers.get("x-waveyard-mix-limiter") ?? ""),
+      "the route must report whether the true-peak limiter acted");
+    const balanceDb = Number(renderResponse.headers.get("x-waveyard-mix-balance-db"));
+    assert.ok(Number.isFinite(balanceDb) && Math.abs(balanceDb) <= 9.0001,
+      `the vocal-to-bed balance correction must be measured and bounded, got ${balanceDb}`);
+    assert.ok(renderResponse.headers.get("x-waveyard-warning") !== null,
+      "each render must carry the measured mix levels as an explicit warning entry");
+
+    // An explicit donor layer is a deliberate composition choice: the route
+    // loads exactly the requested stem type and announces it.
+    const layeredResponse = await routeModule.POST(renderRequest("continuous", { layerStemTypes: ["drums"] }), {
+      params: Promise.resolve({ id: project.id }),
+    });
+    assert.equal(layeredResponse.status, 200);
+    assert.equal(layeredResponse.headers.get("x-waveyard-layer-stems"), "drums",
+      "an explicit layer request must be honoured and reported");
+    assert.ok(
+      layeredResponse.headers.get("x-waveyard-warning") !== null,
+      "layering a donor drum track over the bed must be disclosed as a deliberate, unverified combination",
+    );
+
+    // Donor vocals are the donor's default contribution; asking to layer them
+    // again is a request error, not a silently ignored field.
+    const invalidLayerResponse = await routeModule.POST(
+      renderRequest("continuous", { layerStemTypes: ["vocals"] }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(invalidLayerResponse.status, 400,
+      "donor vocals are the donor's default contribution and cannot be layered as an extra stem");
 
     const renderedBytes = new Uint8Array(await renderResponse.arrayBuffer());
     const rendered = decodeWav16(renderedBytes);
