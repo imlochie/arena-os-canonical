@@ -508,35 +508,36 @@ test(
     }).returning({ id: schema.stemAssets.id });
     assert.ok(vocalsStemRow);
 
-    if (realFixture) {
-      const donorDrumsWav = await readRealStem(realFixture.vocals, "drums");
-      const donorDrumsPath = path.join(fixtureRoot, "donor-drums-stem.wav");
-      await writeFile(donorDrumsPath, donorDrumsWav);
-      await storage.putFile("mashup-fixture/donor-drums-stem.wav", donorDrumsPath);
-      const decodedDonorDrums = decodeWav16(donorDrumsWav);
-      assert.ok(decodedDonorDrums, "the donor's real separated drum stem must be decodable");
-      assert.equal(decodedDonorDrums.sampleRate, RATE);
-      assert.equal(decodedDonorDrums.channels, 2);
-      assert.ok(Math.abs(decodedDonorDrums.frames / RATE - vocalsDurationSeconds) < 1.1,
-        "the donor drum timing evidence must cover the source timeline");
-      await dbModule.db.insert(schema.stemAssets).values({
-        projectId: project.id,
-        sourceAssetId: vocalsSource.id,
-        separationJobId: vocalsJob.id,
-        stemType: "drums",
-        engine: realFixture.vocals.separation.engine,
-        model: realFixture.vocals.separation.models.drums.id,
-        modelVersion: realFixture.vocals.separation.models.drums.sha256,
-        storageKey: "mashup-fixture/donor-drums-stem.wav",
-        checksumSha256: sha256(donorDrumsWav),
-        durationSeconds: vocalsDurationSeconds,
-        sampleRate: RATE,
-        channels: 2,
-        codec: "wav",
-        format: "wav",
-        fileSizeBytes: donorDrumsWav.length,
-      });
-    }
+    const donorDrumsWav = realFixture
+      ? await readRealStem(realFixture.vocals, "drums")
+      : encodeWav16(tone([80], VOCAL_SECONDS, 0.1), RATE);
+    const donorDrumsPath = path.join(fixtureRoot, "donor-drums-stem.wav");
+    await writeFile(donorDrumsPath, donorDrumsWav);
+    await storage.putFile("mashup-fixture/donor-drums-stem.wav", donorDrumsPath);
+    const decodedDonorDrums = decodeWav16(donorDrumsWav);
+    assert.ok(decodedDonorDrums, "the donor's separated drum stem must be decodable");
+    assert.equal(decodedDonorDrums.sampleRate, RATE);
+    assert.equal(decodedDonorDrums.channels, 2);
+    assert.ok(Math.abs(decodedDonorDrums.frames / RATE - vocalsDurationSeconds) < 1.1,
+      "the donor drum timing evidence must cover the source timeline");
+    const [donorDrumsStemRow] = await dbModule.db.insert(schema.stemAssets).values({
+      projectId: project.id,
+      sourceAssetId: vocalsSource.id,
+      separationJobId: vocalsJob.id,
+      stemType: "drums",
+      engine: realFixture?.vocals.separation.engine ?? "test",
+      model: realFixture?.vocals.separation.models.drums.id ?? "test",
+      modelVersion: realFixture?.vocals.separation.models.drums.sha256 ?? "test",
+      storageKey: "mashup-fixture/donor-drums-stem.wav",
+      checksumSha256: sha256(donorDrumsWav),
+      durationSeconds: vocalsDurationSeconds,
+      sampleRate: RATE,
+      channels: 2,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: donorDrumsWav.length,
+    }).returning({ id: schema.stemAssets.id });
+    assert.ok(donorDrumsStemRow);
 
     if (realFixture && vocalsStemRow) {
       const [{
@@ -1684,8 +1685,8 @@ test(
     if (realFixture) {
       assert.deepEqual(
         savedTrackStemProvenance.filter((stem) => stem.sourceAssetId === vocalsSource.id).map((stem) => stem.stemType).sort(),
-        ["vocals"],
-        "the saved vocal track must point to the distinct donor song's separated vocal stem",
+        ["drums", "vocals"],
+        "the saved vocal-donor tracks must preserve the lead vocal and its exact-run drum layer",
       );
       assert.deepEqual(
         savedTrackStemProvenance.filter((stem) => stem.sourceAssetId === bedSource.id).map((stem) => stem.stemType).sort(),
@@ -1698,7 +1699,18 @@ test(
       .select()
       .from(schema.remixClips)
       .where(inArray(schema.remixClips.remixTrackId, savedTracks.map((t) => t.id)));
-    assert.ok(savedClips.length >= 2, "remix must have persisted vocal and bed clips");
+    assert.ok(savedClips.length >= 3, "remix must have persisted vocal, aligned donor, and bed clips");
+    const savedVocalTrack = savedTracks.find((track) => track.stemAssetId === vocalsStemRow.id);
+    const savedDonorDrumsTrack = savedTracks.find((track) => track.stemAssetId === donorDrumsStemRow.id);
+    assert.ok(savedVocalTrack && savedDonorDrumsTrack);
+    const savedVocalClip = savedClips.find((clip) => clip.remixTrackId === savedVocalTrack.id);
+    const savedDonorDrumsClip = savedClips.find((clip) => clip.remixTrackId === savedDonorDrumsTrack.id);
+    assert.ok(savedVocalClip && savedDonorDrumsClip);
+    assert.deepEqual(
+      [savedDonorDrumsClip.timelineStartMs, savedDonorDrumsClip.sourceOffsetMs, savedDonorDrumsClip.durationMs],
+      [savedVocalClip.timelineStartMs, savedVocalClip.sourceOffsetMs, savedVocalClip.durationMs],
+      "the donor's separate Studio clip must use the vocal plan's exact entry, crop, and timeline duration",
+    );
 
     // Exercise the user-facing blank sequencer-track -> save -> reopen -> versioned
     // WAV path independently of the optional full-song fixture. The existing

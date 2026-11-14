@@ -197,6 +197,49 @@ test("alignment lab keeps continuous timing separate and requires real downbeat 
   assert.match(candidates.find((candidate) => candidate.id === "downbeat")?.unavailableReason ?? "", /confidence of at least 0.65/i);
 });
 
+test("donor accompaniment follows the vocal source crop and planned entry without pitch shifting", () => {
+  const vocals = profile({
+    role: "vocals",
+    durationMs: 5_000,
+    vocalActivityIntervals: [{ startMs: 1_000, endMs: 2_500, confidence: 0.95 }],
+  });
+  const bed = profile({
+    role: "instrumental",
+    durationMs: 5_000,
+    sections: [section("verse", 2_000, 5_000)],
+  });
+  const result = planMashup(vocals, bed, { strategy: "continuous" });
+  assert.ok(result.ok);
+  const segment = result.plan.segments[0]!;
+  assert.equal(segment.vocalsFromMs, 750);
+  assert.equal(segment.mashupStartMs, 2_000);
+
+  const donor = new Float32Array(5 * RATE * 2);
+  for (let frame = RATE; frame < RATE * 2.5; frame += 1) {
+    const sample = Math.sin((2 * Math.PI * 220 * frame) / RATE) * 0.4;
+    donor[frame * 2] = sample;
+    donor[frame * 2 + 1] = sample;
+  }
+  const rendered = renderMashup(result.plan, {
+    vocals: new Float32Array(donor.length),
+    bed: new Float32Array(donor.length),
+    stems: new Map([["donor_bass", donor]]),
+    sampleRate: RATE,
+  });
+  const energy = (startMs: number, endMs: number) => {
+    const start = Math.round(startMs * RATE / 1000) * 2;
+    const end = Math.round(endMs * RATE / 1000) * 2;
+    let sum = 0;
+    for (let index = start; index < end; index += 2) sum += rendered[index]! ** 2;
+    return sum / Math.max(1, (end - start) / 2);
+  };
+
+  assert.equal(energy(0, 1_900), 0, "donor instruments must not play from timeline zero before the vocal entry");
+  assert.equal(energy(2_020, 2_180), 0, "the donor must preserve the crop offset relative to the vocal");
+  assert.ok(energy(2_500, 3_500) > 0.001, "the donor must become audible at the same planned source-relative time as the vocal");
+  assert.equal(energy(4_100, 4_900), 0, "donor accompaniment must stop with the planned vocal segment");
+});
+
 test("plan labels source-mix harmony fallback instead of implying isolated-bed analysis", () => {
   const result = planMashup(
     profile({ role: "vocals", bpm: 120, musicalKey: "C major" }),

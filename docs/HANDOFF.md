@@ -18,15 +18,23 @@ without evidence the candidate is disabled with a reason. Paired-grid and
 phrase-aware candidates likewise remain unavailable when their required
 measurements are missing. The continuous fallback remains usable.
 
-Verification in this checkout: `pnpm run typecheck` passed; the focused
-`mashup.test.ts` and PGlite `mashup-db-acceptance.test.ts` passed 43/43; the
+Donor-source accompaniment now follows each planned vocal segment's exact
+source crop, timeline entry, global stretch or local timing map, and fades;
+instrumental donor layers retain their native pitch. PCM whose frame count
+differs from the vocal source is omitted with an explicit render warning. Save
+creates separate editable donor-stem tracks/clips from the same completed
+separation run and records local timing maps against each exact stem asset.
+
+Verification in this checkout: full `pnpm run typecheck` passed after the final
+changes. Focused mashup, PGlite, and donor-stem tests passed 54/54, including a
+known-signal test proving donor audio stays silent before the planned vocal
+entry, follows the source crop, and stops at the vocal segment boundary. The
 production route acceptance passed with synthetic audio, including candidate
-comparison, actual continuous-candidate WAV rendering, and persistence of the
-selected strategy. The page-level preview loads, but no saved Studio
-arrangement was present to visually exercise the candidate panel. This turn
-did not render or audition candidates from the real Queen-vocals/September-bed
-pair, so it does **not** establish that the candidates sound good or that the
-musical matching is accurate.
+comparison, real route WAV rendering, and persisted aligned donor clips. The
+page-level preview loads, but no saved Studio arrangement was present to
+visually exercise the candidate panel. No candidate was rendered or auditioned
+from the real Queen-vocals/September-bed pair, so this does **not** establish
+that the candidates sound good or that the musical matching is accurate.
 
 ## Previous: paired-grid local WSOLA correction (planner v11)
 

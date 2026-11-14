@@ -363,7 +363,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       if (!response.ok) {
         setError(data.error ?? "Could not save mashup as remix.");
       } else {
-          setSaveSuccess(`The ${alignmentCandidates.find((candidate) => candidate.id === selectedAlignment)?.title ?? "selected"} plan was saved to the project arrangement timeline as an editable remix.`);
+        setSaveSuccess(`The ${alignmentCandidates.find((candidate) => candidate.id === selectedAlignment)?.title ?? "selected"} plan was saved to the project arrangement timeline as an editable remix.`);
       }
     } catch {
       setError("Failed to save mashup as remix.");

@@ -2568,6 +2568,31 @@ function trapezoidGain(atMs: number, startMs: number, endMs: number, crossfadeMs
   return 1;
 }
 
+function stretchMashupSegment(
+  source: StereoBuffer,
+  segment: MashupSegment,
+  stretchRatio: number,
+  sampleRate: number,
+): StereoBuffer {
+  const fromFrame = Math.max(0, Math.round((segment.vocalsFromMs / 1000) * sampleRate) * 2);
+  const toFrame = Math.min(source.length, Math.max(fromFrame, Math.round((segment.vocalsToMs / 1000) * sampleRate) * 2));
+  const span = source.slice(fromFrame, toFrame);
+  if (span.length === 0) return new Float32Array(0);
+  if (!segment.localTempoMap) return timeStretch(span, stretchRatio, sampleRate);
+
+  const inputFrames = span.length / 2;
+  const outputFrames = Math.max(1, Math.round(
+    segment.localTempoMap.points.at(-1)!.outputMs * sampleRate / 1000,
+  ));
+  const timeMap: TimeStretchMapPoint[] = segment.localTempoMap.points.map((point) => ({
+    outputFrame: Math.round(point.outputMs * sampleRate / 1000),
+    inputFrame: Math.round(point.sourceMs * sampleRate / 1000),
+  }));
+  timeMap[0] = { outputFrame: 0, inputFrame: 0 };
+  timeMap[timeMap.length - 1] = { outputFrame: outputFrames, inputFrame: inputFrames };
+  return timeStretch(span, outputFrames / inputFrames, sampleRate, timeMap);
+}
+
 /** Mix the plan: bed (ducked under vocals) + stretched/pitched vocal
  *  segments with trapezoid fades. Deterministic from the plan. */
 export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuffer {
@@ -2577,45 +2602,28 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
 
   // Prepared vocal segments (stretched once, then pitched once each).
   const prepared = plan.segments.map((segment) => {
-    const fromFrame = Math.max(0, Math.round((segment.vocalsFromMs / 1000) * sampleRate) * 2);
-    const toFrame = Math.min(input.vocals.length, Math.max(fromFrame, Math.round((segment.vocalsToMs / 1000) * sampleRate) * 2));
-    const span = input.vocals.slice(fromFrame, toFrame);
-    if (span.length === 0) {
+    const stretched = stretchMashupSegment(input.vocals, segment, plan.vocalsStretchRatio, sampleRate);
+    if (stretched.length === 0) {
       return { segment, pcm: new Float32Array(0) };
-    }
-    let stretched: StereoBuffer;
-    if (segment.localTempoMap) {
-      const inputFrames = span.length / 2;
-      const outputFrames = Math.max(1, Math.round(
-        segment.localTempoMap.points.at(-1)!.outputMs * sampleRate / 1000,
-      ));
-      const timeMap: TimeStretchMapPoint[] = segment.localTempoMap.points.map((point) => ({
-        outputFrame: Math.round(point.outputMs * sampleRate / 1000),
-        inputFrame: Math.round(point.sourceMs * sampleRate / 1000),
-      }));
-      timeMap[0] = { outputFrame: 0, inputFrame: 0 };
-      timeMap[timeMap.length - 1] = { outputFrame: outputFrames, inputFrame: inputFrames };
-      stretched = timeStretch(span, outputFrames / inputFrames, sampleRate, timeMap);
-    } else {
-      stretched = timeStretch(span, plan.vocalsStretchRatio, sampleRate);
     }
     return { segment, pcm: pitchShift(stretched, plan.vocalsPitchSemitones, sampleRate) };
   });
 
-  // Pre-process complementary donor stems ONCE before the rendering loop.
-  // Instrumental stems (drums, bass, guitar, keys, other) must NEVER inherit vocal-specific
-  // pitch transposition or vocal transformations. Preserve their native pitch.
-  // Time-stretching is applied only when beat synchronization is mutually trusted.
-  const preparedStems: Array<{ name: string; pcm: StereoBuffer }> = [];
+  // Donor-source accompaniment must follow the exact vocal source crop and
+  // timeline placement. Stretch it with the vocal timing map, but never pitch
+  // shift it. Other discrete stems keep their existing full-timeline behavior.
+  const preparedStems: Array<{ name: string; pcm: StereoBuffer; segment?: MashupSegment }> = [];
   if (input.stems) {
     for (const [stemName, rawStemBuffer] of input.stems) {
       if (stemName !== "vocals") {
-        // Instrumental donor stems preserve native pitch (0 semitones shift).
-        // Only time-stretch to match master tempo if tempo stretch ratio differs from 1.0.
-        const pcm = (stemName.startsWith("donor_") && Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6)
-          ? timeStretch(rawStemBuffer, plan.vocalsStretchRatio, sampleRate)
-          : rawStemBuffer;
-        preparedStems.push({ name: stemName, pcm });
+        if (stemName.startsWith("donor_")) {
+          for (const segment of plan.segments) {
+            const pcm = stretchMashupSegment(rawStemBuffer, segment, plan.vocalsStretchRatio, sampleRate);
+            if (pcm.length > 0) preparedStems.push({ name: stemName, pcm, segment });
+          }
+        } else {
+          preparedStems.push({ name: stemName, pcm: rawStemBuffer });
+        }
       }
     }
   }
@@ -2648,13 +2656,18 @@ export function renderMashup(plan: MashupPlan, input: MashupPcmInput): StereoBuf
     }
 
     // Mix prepared discrete stems with dynamic ducking into the vocal pocket
-    for (const { pcm: stemBuffer } of preparedStems) {
-      if (frame * 2 + 1 < stemBuffer.length) {
-        const stemGain = 0.6;
-        const stemDuck = DUCK_DEPTH;
-        const dynamicGain = stemGain * (1 - stemDuck * duck);
-        left += stemBuffer[frame * 2] * dynamicGain;
-        right += stemBuffer[frame * 2 + 1] * dynamicGain;
+    for (const { pcm: stemBuffer, segment } of preparedStems) {
+      const segmentGain = segment
+        ? trapezoidGain(atMs, segment.mashupStartMs, segment.mashupEndMs, segment.crossfadeMs)
+        : 1;
+      if (segmentGain <= 0) continue;
+      const stemFrame = segment
+        ? Math.round(((atMs - segment.mashupStartMs) / 1000) * sampleRate)
+        : frame;
+      if (stemFrame >= 0 && stemFrame * 2 + 1 < stemBuffer.length) {
+        const dynamicGain = 0.6 * (1 - DUCK_DEPTH * duck) * segmentGain;
+        left += stemBuffer[stemFrame * 2] * dynamicGain;
+        right += stemBuffer[stemFrame * 2 + 1] * dynamicGain;
       }
     }
 
