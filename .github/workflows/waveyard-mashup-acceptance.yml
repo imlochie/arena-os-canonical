@@ -125,6 +125,9 @@ jobs:
         env:
           DATABASE_URL: postgres://unit@127.0.0.1:1/unit
           WAVEYARD_TEARDOWN_DIAGNOSTICS: "1"
+          # The suite prints "# TEARDOWN_DIAGNOSTICS ..." from inside the
+          # reporter's own stream. Published to $GITHUB_STEP_SUMMARY so the
+          # evidence survives even when only the summary is retrievable.
         run: |
           set -uo pipefail
           evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
@@ -144,6 +147,14 @@ jobs:
           # real failures or leave the job permanently red for a known harness
           # race; this script fails on everything except that exact shape and
           # announces the quarantine as a warning, not a pass.
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### Mashup route acceptance"
+              echo '```'
+              grep -E "TEARDOWN_DIAGNOSTICS|TEARDOWN_SWALLOWED|not ok|^# (tests|pass|fail|skipped)" "$evidence/route.txt" || echo "(no diagnostics captured)"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           node scripts/waveyard-mashup-route-verdict.mjs "$evidence/route.txt"
 
       - name: Retain evidence
