@@ -500,3 +500,95 @@ is itself unreliable on these files.
   confidence.
 
 No STEM.FM comparison is made. Listener count is N=0.
+
+---
+
+## 9. Validation corpus + generation resilience (2026-11-14)
+
+Two deliverables this pass: the corpus infrastructure the previous milestone was
+blocked on, and the resilience guarantee that stops key detection blocking the
+parity milestone.
+
+### 9.1 The corpus that is reachable, and the one that is not
+
+**Environment limit, verified.** This sandbox reaches `github.com`, `api.github.com`,
+`codeload.github.com`, `pypi.org` and `registry.npmjs.org` only. Zenodo,
+HuggingFace, archive.org, FMA, sigsep.github.io, medleydb and every other audio
+or dataset host return `000` (connection refused). So **no annotated audio
+dataset can be downloaded here**, and the *audio* half of this milestone cannot be
+completed by the agent alone. That is a hard environmental constraint, not a
+choice.
+
+**What was obtained instead: 604 independently annotated keys, with no audio.**
+
+| Property | Value |
+| --- | --- |
+| Source | GiantSteps key dataset (Knees et al., ISMIR 2015) |
+| Tracks | **604** |
+| Distinct key classes | **24 / 24** — every major and minor |
+| Missing classes | **none** |
+| Label method | professional annotation correcting automated estimates |
+| Annotation distribution | 511 minor / 93 major; F minor 73 … C# major 1 |
+| Modulating tracks | 0 (each preview carries one label) |
+| Audio | **not included, by design** |
+
+`scripts/waveyard-key-corpus-annotations.ts` scrapes the annotations to a pinned
+commit into the git-ignored `generated-artifacts/waveyard-key-annotations/`. A
+parser bug initially dropped 78 tracks (78 unparsed, and C#/F# missing): the
+dataset spells those keys enharmonically as `Db`/`Bb`/`Eb`, and the first version
+mangled the flat sign. Fixed with a proper enharmonic map — now 604/604 parse and
+all 24 classes are present.
+
+**Why the audio is absent and will stay absent.** The dataset ships 2-minute
+Beatport previews of commercial releases. Committing or redistributing that audio
+breaches Beatport's terms and the dataset's own licence. The repo therefore holds
+annotations only, and the audio is a local, user-supplied input. This is the same
+rule the earlier CC0 corpus respected, for the same reason.
+
+**The evaluation harness refuses to fake a score.**
+`scripts/waveyard-key-evaluation.ts` has two explicit states. Without audio it
+prints `scored: false` with a reason and the statement *"an accuracy figure
+without audio would be fabricated"*. With audio it reports exact accuracy,
+relative major/minor confusion, perfect-fifth confusion, a pitch-class confusion
+matrix, confidence calibration (mean confidence on correct vs incorrect), and
+trusted-coverage accuracy.
+
+*Scoring path verified end to end* by generating 24 audio files with keys known by
+construction, named with real annotation track IDs: result **24/24 exact, 20/24
+trusted, trusted accuracy 1.0, relative confusion 0, fifth confusion 0**. That
+proves the harness measures what it claims. It is **not** a key-detection accuracy
+result — the audio was synthesised, so it is the same evidence class as the
+existing synthetic tests and must not be reported as real-music performance.
+
+### 9.2 Generation resilience — measured on real audio
+
+The strategic risk was that a missing key quietly degrades generation. It does
+not. Three real CC0 beds (full 44.1 kHz stereo) mashed with a pitched vocal line,
+with both keys forced below the trust threshold — the exact real-world condition:
+
+| measure | result |
+| --- | --- |
+| plans refused | 0 / 3 |
+| output length | 60.0 s each — complete |
+| peak sample | 0.84 (all three) |
+| clipped samples | **0** |
+| transposition | withheld, 0 semitones, and explained in the warnings |
+
+So a missing key costs the transposition and nothing else: the render is complete,
+level-safe and honest about why it made no pitch move. This is the "a missing key
+estimate must not mean a missing mashup" requirement, now pinned by two
+regression tests (a complete non-clipping render with untrusted keys, and the
+distinction between *key analysis missing* and *key confidence too low*).
+
+### 9.3 Status against the requested milestone
+
+| Requested | Status |
+| --- | --- |
+| Build a defensible evaluation corpus | **done for annotations** (604 tracks, 24/24 classes); **blocked for audio** by the network limit |
+| Validate key detection against it | **blocked** — needs audio only the user can supply |
+| Improve harmonic analysis only where measurable | **not attempted** — nothing measurable until the corpus has audio, which is the honest answer rather than another unvalidated DSP change |
+| Generation remains useful without key confidence | **done and measured** — section 9.2 |
+| Test complete outputs with actual listening | **not done** — N=0. Needs either the user to listen, or an audio deliverable the user can play |
+
+Still open: listener count is N=0 everywhere; no STEM.FM comparison is made; the
+key-accuracy defect from section 8 is unchanged.
