@@ -51,8 +51,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      # The route suite lives under artifacts/api-server and imports the
+      # server's own dependencies (drizzle-orm, @workspace/db), so the
+      # api-server graph has to be installed, not just scripts and arena.
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..."
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..." --filter "@workspace/api-server..."
 
       - name: Provide PostgreSQL server binaries and ffmpeg/ffprobe
         shell: bash
@@ -133,6 +136,10 @@ jobs:
           "$tsx" --test route.test.ts 2>&1 | tee "$evidence/route.txt" || true
           grep -qE '^# fail 0$' "$evidence/route.txt" || {
             echo "::error::Mashup route acceptance failed."
+            # Surface the reason instead of a bare "failed": the whole point of
+            # this job is that a silent problem looked green before.
+            grep -iE "not ok|error:|AssertionError|Cannot find|exited [1-9]" "$evidence/route.txt" \
+              | head -20 | while IFS= read -r line; do echo "::error::route -> ${line:0:400}"; done
             exit 1
           }
           grep -qE '^# skipped 0$' "$evidence/route.txt" || {
