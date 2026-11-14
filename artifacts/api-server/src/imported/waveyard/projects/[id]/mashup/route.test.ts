@@ -193,19 +193,34 @@ function sha256(bytes: Uint8Array): string {
 }
 
 const hasRealMashupFixture = Boolean(process.env.WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST?.trim());
-// CI runs this suite where a connection dropped by cluster shutdown surfaces
-// as an uncaughtException with no attributable site. Rather than guess, record
-// the origin when the environment asks for it; the log is the evidence.
-if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
-  process.on("uncaughtException", (error: unknown) => {
-    const trace = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    // The interesting frames are our own; pg-protocol's parser frames fill the
-    // top of the stack and would otherwise consume the whole annotation.
-    const frames = trace.split("\n");
-    const appFrames = frames.filter((line) => !/pg-protocol|node_modules\/pg\/|node:internal|node:events/.test(line));
-    console.error(`UNCAUGHT_DIAGNOSTICS ${appFrames.slice(0, 14).join(" | ")}`);
-  });
-}
+// This suite owns a disposable PostgreSQL cluster and stops it in `finally`.
+// On the CI runner (PostgreSQL 14) a client that is idle when the cluster stops
+// observes "terminating connection due to administrator command" with no
+// application frames in its stack -- a `pg` connection error from a socket,
+// not from our code, arriving after every assertion has already passed. The
+// node test runner treats that uncaught exception as a test failure.
+//
+// Rather than suppress exceptions broadly, this closes a narrow window: while
+// `tearingDown` is set, and only for the two messages a stopped cluster
+// produces, the exception is swallowed and logged. Anything else -- and any
+// assertion failure, which is not an uncaughtException -- still fails the run.
+const teardownState = { active: false, swallowed: 0 };
+const TEARDOWN_NOISE = /terminating connection due to administrator command|Connection terminated/i;
+process.on("uncaughtException", (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (teardownState.active && TEARDOWN_NOISE.test(message)) {
+    teardownState.swallowed += 1;
+    if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+      const trace = error instanceof Error ? (error.stack ?? message) : message;
+      const appFrames = trace
+        .split("\n")
+        .filter((line) => !/pg-protocol|node_modules\/pg\/|node:internal|node:events/.test(line));
+      console.error(`TEARDOWN_SWALLOWED ${teardownState.swallowed} ${appFrames.slice(0, 6).join(" | ")}`);
+    }
+    return;
+  }
+  throw error;
+});
 
 test(
   hasRealMashupFixture
@@ -3413,6 +3428,7 @@ test(
       assert.equal(updatedSession.masterVolume, 0.9);
     }
   } finally {
+    teardownState.active = true;
     // Close the pool before stopping the server, then clear the handle so a
     // retry can spawn a fresh cluster instead of skipping teardown against a
     // dead process. Order matters: stopping the cluster while a pooled client
