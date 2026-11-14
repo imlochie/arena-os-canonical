@@ -3399,14 +3399,36 @@ test(
       assert.equal(updatedSession.masterVolume, 0.9);
     }
   } finally {
+    // Tear down in an order that cannot leave a live socket behind.
+    // `pool.end()` only drains *this* pool; a backend still held by anything
+    // else (an in-flight query, a second pool instance from a re-imported
+    // module) would see the server disappear and surface as an
+    // uncaughtException "Connection terminated unexpectedly" *after* the test
+    // reported pass -- which the node runner turns into a test failure. So:
+    // close what we own, then terminate what is left, then stop the server.
     try {
       await dbModule?.pool.end();
     } catch {
       /* already closed */
     }
     if (postgresProcess && postgresProcess.exitCode === null) {
+      try {
+        const admin = new Client({ connectionString: `postgres://arena:${databasePassword}@127.0.0.1:${port}/postgres` });
+        await admin.connect();
+        await admin.query(
+          "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()",
+          [databaseName],
+        );
+        await admin.end();
+      } catch {
+        /* cluster is already going down */
+      }
       spawnSync(postgresBinaries.pgCtl!, ["-D", dataDir, "-m", "fast", "-w", "-t", "20", "stop"], { timeout: 30_000 });
+      // Let any straggler observe the closed socket while the test is still
+      // running, so its error is attributable instead of escaping the runner.
+      await new Promise((resolve) => setTimeout(resolve, 250));
       postgresProcess.kill();
+      postgresProcess = undefined;
     }
     await rm(fixtureRoot, { recursive: true, force: true }).catch(() => undefined);
   }
