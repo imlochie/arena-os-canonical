@@ -185,8 +185,8 @@ reading it. Four areas were examined this pass.
 
 | Area | Verdict | Basis |
 | --- | --- | --- |
-| Tempo estimation / octave | **fails on real music** | measured above; 50% stretch error, confidence 1.0 |
-| Key detection | **works** | 7/7 synthetic progressions correct (C, Dm, G, Am, F, Em, B), confidence 0.87–0.97 |
+| Tempo estimation / octave | **works modulo octave; octave loss was real** | synthetic: 50% stretch error at confidence 1.0. Real audio (13 CC0 tracks): 12/13 octave-equivalent agreement with librosa, now fixed in section 6 |
+| Key detection | **fails on real music** | synthetic: 7/7 correct at 0.87–0.97. Real audio: **0/13** agree with librosa (4/13 only relative), and it reports C major/minor for 13/13 tracks |
 | Key-relationship logic | **works** | relative major/minor ⇒ 0 semitones by design; unknown keys ⇒ 0 semitones, `relationship: "unknown"` |
 | Passage compatibility / phrase alignment | **implemented, unvalidated** | real scoring (`comparePassageCompatibility`, `rankPassagePair`, chord-tone fit, transient scoring), but never run on real stems |
 | Fallback tempo | **honest** | always `confidence: 0.0` (`source: "default"` ⇒ 120 BPM); only used when no analysis exists, always with a warning, and never treated as verified by `trustedAnalysisBpm` |
@@ -211,6 +211,48 @@ Key findings:
 Still not established after this pass: N=0 listeners; synthetic material only;
 P2 makes no compatibility *decisions*; P3 arrangement intelligence untouched;
 the A/B/C/D harness has still never been run on real songs.
+
+### Real-audio addendum (same day, 13 CC0 tracks)
+
+Synthetic material alone was misleading in both directions, so the analyser was
+run on real recordings: 13 instrumental tracks released **CC0 / public domain**
+by AERIS MUSIC (`farmmer938-lgtm/aeris-cc0-music`), decoded through ffmpeg at
+22,050 Hz mono and passed straight to `analysePcm`. The repo's own metadata was
+**not** trusted as ground truth — see below.
+
+**Tempo is better than the synthetic results suggested.** Against librosa
+(`beat_track`, an independent implementation) the local analyser agrees within
+an octave on **12/13** tracks and exactly on 2/13; every reading was
+0.48–0.76 confidence. The single disagreement (`overdrive-signal-lost`, 127.6 vs
+86.1 BPM, factor 1.48) is not an octave relation, so it is a genuine tempo
+disagreement rather than a folding artefact. The earlier "fails on real music"
+wording was too strong and is corrected above: the octave defect was real and is
+now fixed, but tempo estimation on real material is broadly sound.
+
+**Key detection is the real defect.** It reports **C major for six tracks and
+C minor for four** — 13/13 land on C. Against librosa: 0/13 exact, 4/13
+relative major/minor, 9/13 unrelated. Confidences were 0.04–0.31, i.e. every
+one below the 0.5 mixing threshold, which has two consequences:
+
+1. **Harmless but useless.** `trustedAnalysisKey` returns null, so no pitch
+   shift is ever applied. Mashups render un-transposed, which is the safe
+   failure — no needless pitch damage, and no fabricated confidence.
+2. **Harmonic compatibility can never engage.** A key signal that is never
+   trustworthy means the "compatible keys" half of compatibility decisions is
+   dead on real material. That is a functional gap, not a cosmetic one.
+
+Partial validation: on clean synthetic chords the same code is correct and
+unbiased — C major triad, A minor triad, and all twelve single sinusoids
+(C4–B4) map to the right pitch class. So the chroma pipeline is not
+structurally broken; the failure is specific to real, broadband, bass-heavy
+material.
+
+**The corpus metadata is unverified, and that matters.** The repository's
+README publishes a BPM and key per track, but it disagrees with both our
+analyser and librosa, and the two engines disagree with each other in different
+directions (ours peaks at C, librosa at A). Since two independent implementations
+reject the published table and agree with each other on tempo, the README values
+cannot be used as ground truth. No key claim in this document rests on them.
 
 ---
 
