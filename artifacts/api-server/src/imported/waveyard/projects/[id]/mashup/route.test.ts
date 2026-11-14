@@ -193,45 +193,6 @@ function sha256(bytes: Uint8Array): string {
 }
 
 const hasRealMashupFixture = Boolean(process.env.WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST?.trim());
-// This suite owns a disposable PostgreSQL cluster and stops it in `finally`.
-// On the CI runner (PostgreSQL 14) a client that is idle when the cluster stops
-// observes "terminating connection due to administrator command" with no
-// application frames in its stack -- a `pg` connection error from a socket,
-// not from our code, arriving after every assertion has already passed. The
-// node test runner treats that uncaught exception as a test failure.
-//
-// Rather than suppress exceptions broadly, this closes a narrow window: while
-// `tearingDown` is set, and only for the two messages a stopped cluster
-// produces, the exception is swallowed and logged. Anything else -- and any
-// assertion failure, which is not an uncaughtException -- still fails the run.
-const teardownState = { active: false, swallowed: 0 };
-const TEARDOWN_NOISE = /terminating connection due to administrator command|Connection terminated/i;
-process.on("uncaughtException", (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  if (teardownState.active && TEARDOWN_NOISE.test(message)) {
-    teardownState.swallowed += 1;
-    if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
-      const trace = error instanceof Error ? (error.stack ?? message) : message;
-      const appFrames = trace
-        .split("\n")
-        .filter((line) => !/pg-protocol|node_modules\/pg\/|node:internal|node:events/.test(line));
-      // This line is known to reach the check-run, so it carries the cluster
-      // state too: it reveals whether the server had already exited (polling
-      // skipped) or was stopped by pg_ctl.
-      const cluster = `postgres=${postgresProcess === undefined ? "undefined" : postgresProcess.exitCode === null ? "running" : `exited(${postgresProcess.exitCode})`} port=${postgresPort ?? "none"}`;
-      console.error(`TEARDOWN_SWALLOWED ${teardownState.swallowed} ${cluster} ${appFrames.slice(0, 4).join(" | ")}`);
-    }
-    return;
-  }
-  // Anything that is not cluster-shutdown noise. Name it explicitly: the node
-  // runner reports an uncaughtException as a bare "test failed" with the error
-  // folded into a stack, which lost the message entirely in CI. Log first, then
-  // rethrow so the failure still counts.
-  const trace = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  console.error(`UNCAUGHT_UNEXPECTED active=${teardownState.active} ${trace.split("\n").slice(0, 8).join(" | ")}`);
-  throw error;
-});
-
 test(
   hasRealMashupFixture
     ? "Waveyard real-song mashup persists, reopens, edits, restores, and exports"
@@ -3446,7 +3407,6 @@ test(
       assert.equal(updatedSession.masterVolume, 0.9);
     }
   } finally {
-    teardownState.active = true;
     // Close the pool before stopping the server, then clear the handle so a
     // retry can spawn a fresh cluster instead of skipping teardown against a
     // dead process. Order matters: stopping the cluster while a pooled client
