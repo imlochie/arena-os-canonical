@@ -3409,11 +3409,34 @@ test(
     // test ends, which the runner reports as an uncaught exception. CI runs the
     // suite with --test-force-exit for that harness race; the assertions
     // themselves pass.
+    // pg.Pool re-emits an idle client's socket error as a pool "error" event.
+    // An EventEmitter with no "error" listener throws, which is how a
+    // connection that dies during cluster shutdown becomes an uncaught
+    // exception attributed to this test. Attaching a listener is the standard
+    // pg practice and only affects teardown.
+    try {
+      dbModule?.pool.on("error", () => undefined);
+    } catch {
+      /* pool already gone */
+    }
     try {
       await dbModule?.pool.end();
     } catch {
       /* already closed */
     }
+    // pool.end() resolves once the pool stops issuing work, but a client's
+    // socket can still emit its close event afterwards. If pg_ctl stops the
+    // server first, that client reports "terminating connection due to
+    // administrator command" as an uncaught exception, which the runner turns
+    // into a test failure even though every assertion passed. Let those events
+    // settle while the test is still running.
+    const settle = async () => {
+      for (let turn = 0; turn < 3; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    };
+    await settle();
     if (postgresProcess && postgresProcess.exitCode === null) {
       if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
         // Name the connections that outlive pool.end(). Without this, a
@@ -3431,6 +3454,7 @@ test(
         }
       }
       spawnSync(postgresBinaries.pgCtl!, ["-D", dataDir, "-m", "fast", "-w", "-t", "20", "stop"], { timeout: 30_000 });
+      await settle();
       postgresProcess.kill();
       postgresProcess = undefined;
     }
