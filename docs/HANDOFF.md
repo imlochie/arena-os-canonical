@@ -1,5 +1,39 @@
 # Arena handoff — read this first
 
+## Completion ledger — engine vs intelligence vs proof
+
+`docs/waveyard-completion-ledger.md` now maps the whole directive against the
+evidence, area by area, and separates what is *implemented* from what is
+*proven*. Two findings from that pass are worth surfacing here because they
+were bugs, not gaps:
+
+1. **Donor layers did not follow the local tempo map.** `renderMashupWithBus`
+   warped the vocal through `segment.localTempoMap` but stretched donor stems by
+   the constant `vocalsStretchRatio`. A layer therefore started with the vocal
+   and then slid against it inside the phrase — a flam that grows, invisible to
+   any check taken at the entry. Donor stems now receive the same map (without
+   the vocal's pitch shift, which would be wrong for drums). The regression test
+   measures click placement at four points across the phrase against the map and
+   asserts that the constant-ratio placement would be >400 ms away, so it cannot
+   pass by measuring the old behaviour. Mutation-checked.
+2. **Donor clips were saved as not tempo-synced**, whatever the renderer did.
+   With a 140 BPM donor over a 100 BPM bed the render warped the donor 1.4x and
+   the export played it at its native rate — render and export disagreed, which
+   is the exact failure the previous pass claimed to have closed. Donor clips
+   are now tempo-synced when the donor's own tempo is verified; when it is not,
+   the save response reports that export will differ instead of silently
+   persisting a different arrangement. Mutation-checked, and the stretched
+   session is exported through the real export worker rather than only having
+   its flag inspected.
+
+Current evidence: **90/90** across the six mashup/limiter suites and **1/1** for
+the PostgreSQL route acceptance (0 skipped). Typechecks report nothing in the
+changed files.
+
+Unchanged and still the binding constraint: **N=0 listeners, no real stems in
+this checkout**. P2 stem-compatibility intelligence remains unimplemented, and
+P3 arrangement stays deferred.
+
 ## Stem replacement now fails closed, and survives save/reopen/export
 
 Two correctness gaps in the previous commit were real and are now closed. Both

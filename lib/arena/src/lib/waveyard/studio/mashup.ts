@@ -2678,10 +2678,36 @@ export function renderMashupWithBus(
         ? rawStemBuffer.subarray(sourceLeadFrames)
         : rawStemBuffer;
       // Instrumental donor stems keep their native pitch. They follow the
-      // session tempo like the bed does.
-      const pcm = Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6
-        ? timeStretch(trimmed, plan.vocalsStretchRatio, sampleRate)
-        : Float32Array.from(trimmed);
+      // session tempo like the bed does — and like the vocal does.
+      //
+      // A constant stretch ratio is only correct when the plan accepted a
+      // constant tempo. When a piecewise `localTempoMap` was measured and
+      // accepted, the vocal is warped through that map; stretching the donor
+      // by the constant ratio instead makes the two drift apart *within* the
+      // phrase even though they start together. So the donor is given the same
+      // map, minus the vocal's pitch shift, which would be wrong for drums.
+      const donorTempoMap = entry?.localTempoMap;
+      let pcm: StereoBuffer;
+      if (donorTempoMap) {
+        const inputFrames = trimmed.length / 2;
+        const outputFrames = Math.max(1, Math.round(
+          (donorTempoMap.points.at(-1)!.outputMs / 1000) * sampleRate,
+        ));
+        const timeMap: TimeStretchMapPoint[] = donorTempoMap.points.map((point) => ({
+          outputFrame: Math.round((point.outputMs / 1000) * sampleRate),
+          inputFrame: Math.round((point.sourceMs / 1000) * sampleRate),
+        }));
+        timeMap[0] = { outputFrame: 0, inputFrame: 0 };
+        timeMap[timeMap.length - 1] = { outputFrame: outputFrames, inputFrame: inputFrames };
+        pcm = timeStretch(trimmed, outputFrames / inputFrames, sampleRate, timeMap);
+      } else if (Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6) {
+        pcm = timeStretch(trimmed, plan.vocalsStretchRatio, sampleRate);
+      } else {
+        pcm = Float32Array.from(trimmed);
+      }
+      // `mashupStartMs` is already the map-corrected entry (the planner folds
+      // `entryShiftMs` into it), so the layer starts exactly where the vocal
+      // starts. Adding the shift again would double-count it.
       const offsetFrames = Math.max(0, Math.round(((entry?.mashupStartMs ?? 0) / 1000) * sampleRate));
       preparedStems.push({ type, pcm, offsetFrames, sourceLeadMs: (entry?.vocalsFromMs ?? 0) });
     }

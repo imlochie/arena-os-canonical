@@ -1211,6 +1211,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           );
         }
         const composition = saveComposition.composition;
+        /** Non-fatal truths about the saved composition, raised to the client. */
+        const compositionWarnings: string[] = [];
+        if (composition.stemLayerMode !== "none") compositionWarnings.push(composition.note);
 
         // Exactly the bed stems the render used: the replaced roles are
         // omitted, so the reopened session cannot contain the removed drums.
@@ -1375,10 +1378,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
 
           // Donor replacement/layer clips mirror what the renderer does with
-          // them: the stem is trimmed by the phrase's own source offset and
-          // placed at the vocal entry. Keeping those offsets in the persisted
-          // clip is what makes reopen and export reproduce the render.
+          // them: the stem is trimmed by the phrase's own source offset, placed
+          // at the vocal entry, and warped to the session tempo. Keeping all
+          // three in the persisted clip is what makes reopen and export
+          // reproduce the render rather than play the donor at its native rate.
           const firstSegment = planned.plan.segments[0];
+          const donorTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
           for (const [type, stem] of donorReplacementStems) {
             const track = trackByStemId.get(stem.id);
             if (!track) continue;
@@ -1391,11 +1396,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               gain: 0.8,
               fadeInMs: 50,
               fadeOutMs: 150,
-              // The donor's own key/tempo are not re-measured here; the render
-              // applied the session tempo and kept native pitch. Syncing is
-              // therefore left off so the export cannot silently apply a
-              // different transform than the render did.
-              tempoSyncEnabled: false,
+              // The renderer stretches the donor to the session tempo, so the
+              // export must too. That requires the donor's own analysed BPM,
+              // which may be MISSING even on sources the vocal plan could
+              // stretch — vocal tempo can come from the bed. Claiming sync
+              // without the evidence would make the export fail late, so the
+              // case is detected here and reported instead.
+              tempoSyncEnabled: donorTempoTrusted,
               keySyncEnabled: false,
               beatSnapEnabled: false,
             });
@@ -1481,17 +1488,30 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             automation: [],
           };
 
-          const [version] = await tx.insert(remixVersions).values({
+          const donorClipsNeedingTempo = insertedClips.filter((clip) =>
+          [...donorReplacementStems.values()].some((stem) => stem.id === clip.stemAssetId)
+          && !clip.tempoSyncEnabled
+          && Math.abs(planned.plan.vocalsStretchRatio - 1) > 1e-6);
+        if (donorClipsNeedingTempo.length > 0) {
+          compositionWarnings.push(
+            `The donor stem is warped to the session tempo in the render (${planned.plan.vocalsStretchRatio.toFixed(3)}×), but its own tempo could not be verified, so the saved Studio clips are not tempo-synced. Export would play the donor at its native rate. Run tempo analysis on the donor before saving to keep render and export identical.`,
+          );
+        }
+
+        const [version] = await tx.insert(remixVersions).values({
             remixSessionId: remix.id,
             createdById: user.id,
             name: "Initial mashup arrangement",
             snapshot: JSON.stringify(snapshot),
           }).returning();
 
-          return { remix, version };
+          return { remix, version, warnings: compositionWarnings };
         });
 
-        return Response.json({ ok: true, remix: result.remix, version: result.version }, { status: 201 });
+        return Response.json(
+          { ok: true, remix: result.remix, version: result.version, warnings: result.warnings },
+          { status: 201 },
+        );
       }
 
       // Render: donor vocal over a clean instrumental bed. The bed is built

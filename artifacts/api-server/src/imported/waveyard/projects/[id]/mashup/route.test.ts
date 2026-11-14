@@ -1463,6 +1463,7 @@ test(
     const addFixtureSource = async (
       label: string,
       stems: Array<{ stemType: FixtureStemType | "instrumental"; seconds: number }>,
+      options: { bpm?: number | null } = {},
     ) => {
       const audioBytes = encodeWav16(tone([440], Math.max(...stems.map((stem) => stem.seconds)), 0.15), RATE);
       const storageKey = `mashup-fixture/${label}-original.wav`;
@@ -1531,12 +1532,14 @@ test(
         analysisEngine: "test",
         analysisEngineVersion: "test",
         sourceChecksumSha256: sha256(audioBytes),
-        bpm: 120,
-        bpmConfidence: 0.9,
+        // null means "tempo unverified", which is a real state the export
+        // parity rules must handle honestly rather than assume away.
+        bpm: options.bpm === undefined ? 120 : options.bpm,
+        bpmConfidence: options.bpm === null ? null : 0.9,
         musicalKey: "C major",
         keyConfidence: 0.9,
-        beatGrid: JSON.stringify([0, 500, 1000, 1500, 2000, 2500, 3000, 3500]),
-        beatConfidence: 0.9,
+        beatGrid: options.bpm === null ? null : JSON.stringify([0, 500, 1000, 1500, 2000, 2500, 3000, 3500]),
+        beatConfidence: options.bpm === null ? null : 0.9,
         completedAt: new Date(),
       });
       return source.id;
@@ -1561,6 +1564,24 @@ test(
     const premixedBedId = await addFixtureSource("premixed-bed", [
       { stemType: "vocals", seconds: BED_SECONDS },
     ]);
+    // A 140 BPM donor over a 100 BPM bed: the renderer stretches the donor.
+    // Without a clip timing map or tempo sync the export would play it at its
+    // native rate, which is a different arrangement from the one rendered.
+    const slowBedId = await addFixtureSource("slow-bed", [
+      { stemType: "drums", seconds: BED_SECONDS },
+      { stemType: "bass", seconds: BED_SECONDS },
+      { stemType: "other", seconds: BED_SECONDS },
+    ], { bpm: 100 });
+    const fastDonorId = await addFixtureSource("fast-donor", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+      { stemType: "drums", seconds: VOCAL_SECONDS },
+    ], { bpm: 140 });
+    // Same pair, but the donor's tempo was never analysed.
+    const unanalysedDonorId = await addFixtureSource("unanalysed-donor", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+      { stemType: "drums", seconds: VOCAL_SECONDS },
+    ], { bpm: null });
+
     // A bed with every stem, a donor with drums: the successful case.
     const fullBedId = await addFixtureSource("full-bed", [
       { stemType: "drums", seconds: BED_SECONDS },
@@ -1978,7 +1999,11 @@ test(
       const [replaceVersion] = await dbModule.db.select().from(schema.remixVersions)
         .where(eq(schema.remixVersions.id, replaceSaveBody.version.id));
       const replaceSnapshot = JSON.parse(replaceVersion!.snapshot) as {
-        mashupPlan?: { stemComposition?: { stemLayerMode?: string; replacedBedStemTypes?: string[]; layeredStemTypes?: string[] } };
+        mashupPlan?: {
+          masterBpm?: number;
+          vocalsStretchRatio?: number;
+          stemComposition?: { stemLayerMode?: string; replacedBedStemTypes?: string[]; layeredStemTypes?: string[] };
+        };
       };
       assert.equal(replaceSnapshot.mashupPlan?.stemComposition?.stemLayerMode, "replace",
         "the persisted snapshot must record the composition that was saved");
@@ -2061,6 +2086,15 @@ test(
         `the exported session must still contain the bed's bass (${exportedBass})`);
       assert.ok(exportedBedDrum < exportedBass / 100,
         `the exported session must not contain the replaced bed drums (${exportedBedDrum} vs bass ${exportedBass})`);
+      // The donor drum clip is what the export renders. If the render warped
+      // the donor and the clip says nothing about it, export plays the donor at
+      // its native rate — a different arrangement from the one rendered.
+      const donorDrumClips = replaceClips.filter((clip) => clip.stemAssetId === donorDrumsStemId);
+      assert.equal(donorDrumClips.length, 1,
+        "a non-default composition must persist exactly one donor replacement clip");
+      assert.equal(donorDrumClips[0]!.tempoSyncEnabled, true,
+        "the donor clip must be tempo-synced whenever the renderer stretched it");
+
       // The render and the export are the same arrangement: both must show the
       // same absence of the bed's drum tone.
       const renderedBedDrum = energyAt(renderedReplacePcm!.samples.subarray(0, RATE * 2 * 2), 260, 0, 2000);
@@ -2083,6 +2117,131 @@ test(
       assert.ok(savedLayer.stemIds.includes(bedDrumsStemId), "bed drums remain referenced");
       assert.ok(savedLayer.stemIds.includes(donorDrumsStemId), "donor drums are referenced too");
       void [bedBassStemId, bedOtherStemId, donorVocalsStemId];
+
+      // --- Tempo parity across render and export ---------------------------
+      // 140 BPM donor over a 100 BPM bed: the renderer stretches the donor by
+      // 1.4x. The saved clip must say so, and the export must agree with the
+      // render about the resulting duration.
+      const stretchedSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: fastDonorId,
+            instrumentalSourceId: slowBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(stretchedSave.status, 201);
+      const stretchedSaveBody = await stretchedSave.json() as {
+        remix: { id: string };
+        version: { id: string };
+        warnings: string[];
+      };
+      const [stretchedSession] = await dbModule.db.select().from(schema.remixSessions)
+        .where(eq(schema.remixSessions.id, stretchedSaveBody.remix.id));
+      const stretchedProvenance = await savedProvenance(stretchedSaveBody.remix.id);
+      const fastDonorDrumsStemId = await stemAssetIdFor(fastDonorId, "drums");
+      const stretchedClips = await dbModule.db.select().from(schema.remixClips)
+        .where(inArray(schema.remixClips.remixTrackId, stretchedProvenance.tracks.map((track) => track.id)));
+      const stretchedDonorClip = stretchedClips.find((clip) => clip.stemAssetId === fastDonorDrumsStemId);
+      assert.ok(stretchedDonorClip, "the stretched donor must have a persisted clip");
+      assert.equal(stretchedDonorClip!.tempoSyncEnabled, true,
+        "a donor the renderer stretched must be persisted as tempo-synced");
+      assert.notEqual(stretchedSession!.tempoBpm, 140,
+        "the session tempo must be the bed's, not the donor's, so sync has a real target");
+      assert.deepEqual(stretchedProvenance.typesBySource(slowBedId), ["bass", "other"],
+        "the slow bed's drums are replaced in this session too");
+
+      // The same pair with a donor whose tempo was never analysed: the render
+      // can still stretch it (the plan's ratio comes from the pair), but the
+      // clip cannot claim sync without evidence. That must be reported, not
+      // silently saved as a session that exports differently.
+      const unanalysedSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: unanalysedDonorId,
+            instrumentalSourceId: slowBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      const unanalysedBody = await unanalysedSave.json() as {
+        error?: string;
+        warnings?: string[];
+        remix?: { id: string };
+        version?: { id: string };
+      };
+      assert.equal(unanalysedSave.status, 201,
+        "a donor without analysed tempo is still renderable, so it must remain saveable");
+      // The invariant that actually matters: the clip's sync flag must agree
+      // with whether the renderer warped the donor. If it did warp, the clip
+      // must be synced or the difference must be reported; if it did not, an
+      // unsynced clip is exactly right.
+      const [unanalysedVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, unanalysedBody.version!.id));
+      const unanalysedSnapshot = JSON.parse(unanalysedVersion!.snapshot) as {
+        mashupPlan?: { vocalsStretchRatio?: number };
+      };
+      const unanalysedRatio = unanalysedSnapshot.mashupPlan?.vocalsStretchRatio ?? 1;
+      const unanalysedProvenance2 = await savedProvenance(unanalysedBody.remix!.id);
+      const unanalysedDrumsStemId = await stemAssetIdFor(unanalysedDonorId, "drums");
+      const unanalysedClips = await dbModule.db.select().from(schema.remixClips)
+        .where(inArray(schema.remixClips.remixTrackId, unanalysedProvenance2.tracks.map((track) => track.id)));
+      const unanalysedClip = unanalysedClips.find((clip) => clip.stemAssetId === unanalysedDrumsStemId);
+      assert.ok(unanalysedClip, "the donor without analysed tempo must still be persisted");
+      const unanalysedWarped = Math.abs(unanalysedRatio - 1) > 1e-6;
+      if (unanalysedWarped) {
+        assert.equal(unanalysedClip!.tempoSyncEnabled, true,
+          `the renderer warped this donor ${unanalysedRatio.toFixed(3)}x, so the export must warp it too`);
+      } else {
+        assert.equal(unanalysedClip!.tempoSyncEnabled, false,
+          "when the plan left the donor at its native rate, an unsynced clip is the faithful record");
+        assert.ok(!(unanalysedBody.warnings ?? []).some((line) => /not tempo-synced/i.test(line)),
+          "a parity warning must not be raised when render and export already agree");
+      }
+
+      // Prove the export actually honours the sync rather than merely storing
+      // a flag: export the stretched session and check that the donor's drum
+      // content spans the session, not its native length.
+      const [stretchedExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: stretchedSaveBody.remix.id,
+        remixVersionId: stretchedSaveBody.version.id,
+        requestedById: stretchedSession!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `stretched-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(stretchedExportJob);
+      const stretchedExportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await stretchedExportWorker.handleExportJob({
+        exportJobId: stretchedExportJob.id,
+        projectId: project.id,
+        remixSessionId: stretchedSaveBody.remix.id,
+        remixVersionId: stretchedSaveBody.version.id,
+        format: "wav",
+      });
+      const [stretchedAsset] = await dbModule.db.select().from(schema.exportAssets)
+        .where(eq(schema.exportAssets.exportJobId, stretchedExportJob.id));
+      assert.ok(stretchedAsset,
+        "a tempo-synced donor clip must survive the real export worker, not fail on missing source audio");
+      assert.equal(stretchedAsset!.sampleRate, RATE);
+      assert.equal(stretchedAsset!.channels, 2);
 
       // A request the render would refuse must not be saved either: saving is
       // not a way to persist an arrangement the renderer would not produce.

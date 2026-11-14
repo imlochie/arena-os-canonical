@@ -436,6 +436,122 @@ test("a donor layer starts with the vocal phrase, not with the donor's own sourc
     "the donor's own source lead-in must not be prefixed to the phrase");
 });
 
+test("a layered donor follows the accepted local tempo map, not just a constant ratio", () => {
+  // The planner can accept a piecewise local tempo map, in which case the
+  // vocal is warped through that map and drifts away from a constant stretch.
+  // A layered donor that used the constant ratio would start correctly and
+  // then slide against the vocal it accompanies — audible as a flam that grows
+  // through the phrase, and invisible to any measurement taken at the entry.
+  const basePlan = (() => {
+    const planned = planMashup(
+      profile({ role: "vocals", bpm: 140, bpmConfidence: 0.9, durationMs: 10_000, sections: [section("verse", 0, 10_000)] }),
+      profile({ bpm: 100, bpmConfidence: 0.9, durationMs: 16_000, sections: [section("verse", 0, 16_000)] }),
+    );
+    assert.ok(planned.ok);
+    return planned.plan;
+  })();
+
+  // A map that removes the constant bias: the first half runs faster than the
+  // constant ratio and the second half slower. Net duration is unchanged, so
+  // only *within-phrase* placement can distinguish the two strategies.
+  const entryShiftMs = 120;
+  const localTempoMap = {
+    points: [
+      { sourceMs: 0, outputMs: 0 },
+      { sourceMs: 2_500, outputMs: 1_750 },
+      { sourceMs: 5_000, outputMs: 5_250 },
+      { sourceMs: 7_500, outputMs: 7_300 },
+      { sourceMs: 10_000, outputMs: 14_000 },
+    ],
+    baselineFit: { matchedBeats: 10, comparedBeats: 20, meanErrorMs: 40 },
+    correctedFit: { matchedBeats: 19, comparedBeats: 20, meanErrorMs: 9 },
+    maximumRateDeviationPercent: 6,
+    entryShiftMs,
+  };
+  const plan = {
+    ...basePlan,
+    segments: [{ ...basePlan.segments[0]!, mashupStartMs: entryShiftMs, localTempoMap }],
+  };
+
+  // One click per second of donor source time, so drift is measurable at
+  // several points instead of only at the entry.
+  const donorFrames = Math.round(10 * RATE);
+  const layer = new Float32Array(donorFrames * 2);
+  const clickSourceMs = [1_000, 2_000, 5_000, 7_500];
+  for (const atMs of clickSourceMs) {
+    const start = Math.round((atMs / 1000) * RATE);
+    for (let i = 0; i < 120; i += 1) {
+      const value = 0.7 * Math.sin((Math.PI * i) / 120);
+      layer[(start + i) * 2] = value;
+      layer[(start + i) * 2 + 1] = value;
+    }
+  }
+
+  const rendered = renderMashupWithBus(plan, {
+    vocals: silence(10),
+    bed: silence(16),
+    stems: new Map([["donor_drums", layer]]),
+    layerStemTypes: ["drums"],
+    sampleRate: RATE,
+    mix: { matchVocalLoudness: false, limit: false },
+  });
+
+  const clickMs = (nearMs: number): number | null => {
+    const from = Math.max(0, Math.round(((nearMs - 250) / 1000) * RATE) * 2);
+    const to = Math.min(rendered.pcm.length, Math.round(((nearMs + 250) / 1000) * RATE) * 2);
+    let best: number | null = null;
+    let bestValue = 0.05;
+    for (let i = from; i < to; i += 2) {
+      const value = Math.abs(rendered.pcm[i]!);
+      if (value > bestValue) {
+        bestValue = value;
+        best = (i / 2 / RATE) * 1000;
+      }
+    }
+    return best;
+  };
+
+  // The map is the contract: a click at donor source time T must land at the
+  // mapped output time plus the (map-corrected) entry. A constant-ratio layer
+  // passes at 1 s and fails badly by 7.5 s.
+  const mappedOffset = (sourceMs: number): number => {
+    for (let index = 1; index < localTempoMap.points.length; index += 1) {
+      const previous = localTempoMap.points[index - 1]!;
+      const next = localTempoMap.points[index]!;
+      if (sourceMs <= next.sourceMs) {
+        const span = next.sourceMs - previous.sourceMs;
+        const fraction = span === 0 ? 0 : (sourceMs - previous.sourceMs) / span;
+        return previous.outputMs + fraction * (next.outputMs - previous.outputMs);
+      }
+    }
+    return localTempoMap.points.at(-1)!.outputMs;
+  };
+
+  const deviations: number[] = [];
+  for (const atMs of clickSourceMs) {
+    const expected = entryShiftMs + mappedOffset(atMs);
+    const actual = clickMs(expected);
+    assert.ok(actual !== null, `a click must be audible near ${expected.toFixed(0)} ms`);
+    const deviation = Math.abs(actual! - expected);
+    deviations.push(deviation);
+    assert.ok(deviation <= 40,
+      `donor click from source ${atMs} ms must land at ${expected.toFixed(0)} ms, got ${actual!.toFixed(0)} ms (${deviation.toFixed(0)} ms off)`);
+  }
+
+  // Prove the assertion has teeth: a constant-ratio layer would put these
+  // clicks somewhere else by a wide margin, so this test cannot pass by
+  // accidentally measuring the old behaviour.
+  const constantDeviations = clickSourceMs.map((atMs) => {
+    const expected = entryShiftMs + mappedOffset(atMs);
+    const constant = entryShiftMs + atMs * basePlan.vocalsStretchRatio;
+    return Math.abs(constant - expected);
+  });
+  assert.ok(Math.max(...constantDeviations) > 400,
+    "the map and the constant ratio must be far apart, or this test measures nothing");
+  assert.ok(Math.max(...deviations) < Math.min(...constantDeviations),
+    "the mapped placement must be closer than a constant stretch at every click");
+});
+
 test("drum replacement leaves exactly one rhythm section, and refuses to leave none", () => {
   const bedStems = (types: string[]) => types.map((stemType) => ({
     stemType,
