@@ -294,7 +294,11 @@ test(
     await migrate(client, path.join(root, "lib/arena/desktop-migrations"));
     await client.end();
 
-    process.env.DATABASE_URL = `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}`;
+    // Tag every connection the shared pool opens, so teardown can tell a pool
+    // client from anything else. Without this, "one idle backend survives
+    // pool.end()" is unattributable: it could be an unreleased pool client or a
+    // connection the pool never owned.
+    process.env.DATABASE_URL = `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}?application_name=suite-pool`;
     process.env.WAVEYARD_STORAGE_DIR = path.join(fixtureRoot, "waveyard", "storage");
     process.env.NODE_ENV = "test";
 
@@ -3512,7 +3516,7 @@ test(
           const probe = new Client({ connectionString: `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}` });
           await probe.connect();
           const live = await probe.query(
-            "select pid, application_name, state, backend_start from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() order by backend_start",
+            "select pid, application_name, state, backend_start, query from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() order by backend_start",
           );
           console.error(`TEARDOWN_DIAGNOSTICS live_backends=${JSON.stringify(live.rows)}`);
           await probe.end();
