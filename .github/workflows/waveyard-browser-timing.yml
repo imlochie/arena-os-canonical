@@ -178,8 +178,10 @@ jobs:
             # workflow, so the diagnostic has to travel through annotations.
             # Publish the transport trace and resume state verbatim: they are
             # the only evidence of which await the Play control is stuck on.
+            # Only the most recent events matter (the earlier requests in the
+            # trace are noise), and the annotation cap is about ten lines.
             grep -E 'SESSION_RESUME_TRACE|SESSION_RESUME_STATE' "$RUNNER_TEMP/waveyard-session-controls.log" \
-              | head -20 | while IFS= read -r line; do
+              | tail -10 | while IFS= read -r line; do
                 echo "::warning::${line:0:900}"
               done
             echo "::error::Firefox or WebKit session controls were not fully verified; see the failing engine or incomplete-coverage diagnostic above."

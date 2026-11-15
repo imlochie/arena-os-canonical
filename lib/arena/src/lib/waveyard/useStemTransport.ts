@@ -932,8 +932,17 @@ export function useStemTransport(
       }
       // Resume inside the user's activation before waiting on module I/O
       // (important on mobile). There is no destination bypass while loading.
-      console.error(`TRANSPORT_TRACE ready-await:start request=${request} current=${playRequest.current}`);
-      await sessionOutput.current?.ready;
+      console.error(`TRANSPORT_TRACE ready-await:start request=${request} current=${playRequest.current} ${sessionOutput.current?.debug() ?? "no-output"}`);
+      // Temporary watchdog: if this await never settles, report the bus state
+      // instead of stalling silently. It does not change the await.
+      const readyWatchdog = setTimeout(() => {
+        console.error(`TRANSPORT_TRACE ready-await:watchdog request=${request} current=${playRequest.current} ${sessionOutput.current?.debug() ?? "no-output"}`);
+      }, 2500);
+      try {
+        await sessionOutput.current?.ready;
+      } finally {
+        clearTimeout(readyWatchdog);
+      }
       console.error(`TRANSPORT_TRACE ready-await:done request=${request} current=${playRequest.current} wants=${wantsPlayback.current}`);
       // A superseded request must never leave the control stuck in "starting".
       // WebKit fires this path: `play()` is awaited while another call (the
