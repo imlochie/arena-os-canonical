@@ -2428,12 +2428,16 @@ test(
       // bar-structured with alternating sparse sections, so the composed bed
       // has genuine transitions for section detection to find.
       // =====================================================================
+      /** Progress marker, republished by the CI verdict script as an annotation. */
+      const accMark = (step: string) => console.error(`ACCEPTANCE_PROGRESS ${step}`);
+
       const acceptanceSwapRequest = (extra: Record<string, unknown>) => renderPair(
         acceptanceVocalId,
         acceptanceBedId,
         { layerStemTypes: ["drums"], stemLayerMode: "replace", ...extra },
       );
 
+      accMark("baseline-plan:start");
       // What the original bed alone would have planned, for comparison.
       const acceptanceOriginalPlanResponse = await routeModule.POST(
         renderPair(acceptanceVocalId, acceptanceBedId, { action: "plan" }),
@@ -2447,6 +2451,8 @@ test(
       assert.ok(acceptanceOriginalPlan.plan,
         `the original bed must still plan, for comparison; got ${JSON.stringify(acceptanceOriginalPlan)}`);
       // What the composed bed (bed minus drums, plus the donor's drums) plans.
+      accMark("baseline-plan:done");
+      accMark("composed-plan:start");
       const acceptancePlanResponse = await routeModule.POST(
         acceptanceSwapRequest({ action: "plan" }),
         { params: Promise.resolve({ id: project.id }) },
@@ -2511,6 +2517,8 @@ test(
           && segment.mashupEndMs <= acceptancePlan.plan.durationMs),
         "every planned segment must lie inside the arrangement",
       );
+      accMark("composed-plan:done");
+      accMark("render:start");
       const acceptanceRender = await routeModule.POST(
         acceptanceSwapRequest({}),
         { params: Promise.resolve({ id: project.id }) },
@@ -2594,6 +2602,8 @@ test(
       // older full-bed fixtures, so the acceptance composition is saved from
       // its own sources; otherwise the persisted session would describe a
       // different arrangement than the one heard.
+      accMark("render:done");
+      accMark("save:start");
       const acceptanceSave = await routeModule.POST(
         new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
           method: "POST",
@@ -2636,6 +2646,8 @@ test(
         `the composed bed must be genuinely re-analysed, not fall back with a warning; got ${JSON.stringify(acceptanceWarnings)}`,
       );
 
+      accMark("save:done");
+      accMark("reopen:start");
       const acceptanceReopen = await (await import("../../../../remixes/[id]/route")).GET(
         new Request(`http://localhost/api/remixes/${acceptanceSaveBody.remix.id}`),
         { params: Promise.resolve({ id: acceptanceSaveBody.remix.id }) },
@@ -2656,6 +2668,8 @@ test(
       assert.ok(accReopenedStemIds.has(acceptanceDonorDrumsStemId),
         "the reopened session must carry the donor drums that replaced them");
 
+      accMark("reopen:done");
+      accMark("export:start");
       // Export the reopened session through the real export worker.
       const [acceptanceExportJob] = await dbModule.db.insert(schema.exportJobs).values({
         projectId: project.id,
@@ -2689,6 +2703,7 @@ test(
       assert.equal(acceptanceExportMedia.status, 200);
       const acceptanceExportBytes = new Uint8Array(await acceptanceExportMedia.arrayBuffer());
       if (evidenceDir) await writeFile(path.join(evidenceDir, "acceptance-export.wav"), Buffer.from(acceptanceExportBytes));
+      accMark("export:media-ready");
       const acceptanceExportWav = decodeWav16(acceptanceExportBytes);
       assert.ok(acceptanceExportWav && acceptanceExportWav.frames > 0, "the export must be real audio");
 

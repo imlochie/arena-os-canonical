@@ -63,7 +63,7 @@ const failOn = (reason) => {
 // retrievable from the environment that triages this workflow, so anything the
 // suite reports about the race has to travel through the check-run itself.
 for (const line of output.split("\n")) {
-  if (!/TEARDOWN_DIAGNOSTICS|TEARDOWN_SWALLOWED|UNCAUGHT_UNEXPECTED|SESSION_RESUME_STATE/.test(line)) continue;
+  if (!/TEARDOWN_DIAGNOSTICS|TEARDOWN_SWALLOWED|UNCAUGHT_UNEXPECTED|SESSION_RESUME_STATE|ACCEPTANCE_PROGRESS|ACCEPTANCE_ARTIFACTS/.test(line)) continue;
   const cleaned = line.replace(/^#\s*/, "").trim().slice(0, 900);
   console.error(`::warning::${cleaned}`);
 }
