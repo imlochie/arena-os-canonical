@@ -1,5 +1,20 @@
 # Waveyard completion ledger
 
+## Latest increment: composition evidence invalidation
+
+Replacement planning now clears previous mix measurements in both the profile
+and evidence packet before remeasurement. Unavailable fresh measurements cannot
+restore old grids, downbeats, sections/fingerprints, harmony, drum/bass events or
+vocal evidence. Unloadable composition PCM returns 422 rather than planning
+against the original mix. Four new deterministic regressions and a production
+route assertion cover this boundary. Latest targeted run: 81/81 unit tests,
+1/1 PostgreSQL route acceptance (zero skipped), full typecheck passed.
+
+This closes a correctness defect, not universal adaptation. Joint master-tempo
+selection, independent per-role transformation plans, layer-only recomputation,
+phrase-preserving duration alternatives and analysis of the actual transformed
+timeline remain incomplete. No new musical/listener acceptance is claimed.
+
 Status of the master directive, area by area, with the evidence behind each
 claim. This is deliberately split three ways — **engine**, **intelligence**,
 **proof** — because most of the remaining risk is in the last two and it is

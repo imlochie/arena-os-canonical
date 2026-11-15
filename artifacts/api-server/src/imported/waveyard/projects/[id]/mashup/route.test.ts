@@ -2907,6 +2907,7 @@ test(
       );
       const replacePlanBody = await replacePlanResponse.json() as {
         plannedAgainst?: { kind: string; replacedStemTypes?: string[] };
+        evidence?: { bed?: Record<string, { status: string }> };
         plan: {
           alignmentStrategy: string;
           segments: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
@@ -2916,6 +2917,10 @@ test(
         "planning alone must also use the resulting composition, not only rendering");
       assert.deepEqual(replacePlanBody.plannedAgainst?.replacedStemTypes, ["drums"],
         "the plan must name which roles were recomposed");
+      for (const feature of ["harmony", "drumEvents", "bassAttacks", "vocalPhrases"]) {
+        assert.equal(replacePlanBody.evidence?.bed?.[feature]?.status, "unavailable",
+          `post-swap ${feature} must not reuse measurements of the previous bed mix`);
+      }
 
       const replaceClips = savedReplace.tracks.length
         ? await dbModule.db.select().from(schema.remixClips)

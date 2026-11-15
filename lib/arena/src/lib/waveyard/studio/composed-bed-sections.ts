@@ -20,10 +20,10 @@
  * conservative bar-aligned engine the worker uses, and falls back rather than
  * inventing structure:
  *
- *  - If the composed bed yields no usable beat grid, no sections are produced
- *    and the caller must keep the old ones *and say so*. Section boundaries
- *    derived from replaced percussion are not silently presented as current.
- *  - If re-derivation throws, the same honest fallback applies.
+ *  - If the composed bed yields no usable beat grid, no sections are produced.
+ *    The caller must invalidate the old ones and use an explicitly unverified
+ *    placement fallback, not structure derived from removed percussion.
+ *  - If re-derivation throws, the same evidence invalidation applies.
  *
  * Deliberately no semantics are invented: no verse/chorus claims. Labels come
  * from the engine's own conservative vocabulary.

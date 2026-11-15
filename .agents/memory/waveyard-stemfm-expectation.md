@@ -3,6 +3,12 @@ name: Waveyard product expectation
 description: The user's core product expectation for Waveyard playback and Studio handoff.
 ---
 
+Every stem should adapt and influence the shared composition. No source should automatically become the master because it was uploaded first, is longest, or is the instrumental. Replacing any role must reconsider dependent timing, harmony and arrangement decisions across the other stems.
+
+**Why:** the user explicitly required universal cross-stem adaptation built on the existing architecture, not a separate mashup engine or a sequence of isolated adjustments.
+
+**How to apply:** Evaluate coordinated tempo, phrase, structural and harmonic alternatives; preserve source identity and complete phrases. Explain when the available transformations cannot make a combination coherent, and separate deterministic correctness tests from real rendered-audio listening acceptance.
+
 Automatically producing complete, listenable mashups from arbitrary songs is the acceptance goal: replacing a stem, overlaying contrasting drums, or producing a technically valid export is not sufficient. Vocal flow is equally important to the backing arrangement: when lyrics enter, phrase/cadence timing, and how vocals adapt to drums, bass, and instrumental changes must be measured and used. Acoustic fit outranks lyric semantics. Tempo matching must include measured beat-phase alignment; musical fit, downbeats and phrase selection need their own evidence.
 
 **Why:** the user explicitly rejected the native-tempo drum replacement demonstration as unsynchronised, not the requested intelligent mashup, and clarified that Waveyard's primary purpose is to transform arbitrary songs into complete mashups—not only separate, edit, or find compatible passages. They later clarified that vocal/lyric flow and its timing against drums, bass, and instrumentals matter just as much as the backing music, while audible musical fit must remain decisive.

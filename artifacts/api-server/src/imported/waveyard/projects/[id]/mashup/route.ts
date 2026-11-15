@@ -65,6 +65,7 @@ import {
   type MashupTransientEvent,
 } from "@workspace/arena/lib/waveyard/studio/mashup";
 import { deriveSectionsForComposition } from "@workspace/arena/lib/waveyard/studio/composed-bed-sections";
+import { invalidateCompositionEvidence } from "@workspace/arena/lib/waveyard/studio/composition-evidence";
 import { detectBassAttacks, detectDrumTransients } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
   DESKTOP_ANALYSIS_ENGINE,
@@ -770,8 +771,8 @@ async function inspectBed(projectId: string, bedId: string): Promise<BedSourceIn
  * derived from the vocal) is preserved, because "recompute what is affected and
  * preserve what remains valid".
  *
- * When the composition cannot be analysed, this returns the original profile
- * with a explicit warning rather than fabricating a grid — honest fallback.
+ * When the composition cannot be analysed, retain source identity but clear
+ * previous measurements. A warning alone must not authorize a stale grid.
  */
 function bedProfileFromComposition(
   original: NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>>,
@@ -780,6 +781,7 @@ function bedProfileFromComposition(
 ): NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>> {
   // No musical material changed: keep the existing analysis untouched.
   if (replacedStemTypes.length === 0) return original;
+  original = invalidateCompositionEvidence(original, replacedStemTypes);
 
   let analysis: ReturnType<typeof analyseStereoPcm>;
   try {
@@ -789,7 +791,7 @@ function bedProfileFromComposition(
       ...original,
       grooveWarnings: [
         ...(original.grooveWarnings ?? []),
-        `The stem replacement (${replacedStemTypes.join(", ")}) could not be re-analysed, so the arrangement was planned against the original bed's analysis. Treat the result as unverified.`,
+        `The stem change (${replacedStemTypes.join(", ")}) could not be re-analysed. Previous mix evidence was invalidated; the planner must use its unverified continuous fallback.`,
       ],
     };
   }
@@ -802,11 +804,10 @@ function bedProfileFromComposition(
   // replacement with a stale arrangement, which is the exact defect
   // composition-first planning exists to prevent.
   const derivedSections = deriveSectionsForComposition(compositionPcm, { sampleRate: RENDER_SAMPLE_RATE });
-  // A replacement that changes the musical material must invalidate the beat
-  // evidence that was derived from the old material. The old grid is kept only
-  // when the new measurement is genuinely absent, and then it is labelled.
+  // Missing replacement measurements remain unavailable. The planner must not
+  // restore an old confident grid merely because the source file ID survives.
   const hasNewBeatGrid = Array.isArray(analysis.beatGridMs) && analysis.beatGridMs.length > 1;
-  const composedSections = derivedSections.ok ? derivedSections.sections : original.sections;
+  const composedSections = derivedSections.ok ? derivedSections.sections : [];
 
   /**
    * The re-measured values MUST also be written into the evidence packet.
@@ -871,20 +872,20 @@ function bedProfileFromComposition(
     musicalKey: analysis.musicalKey ?? null,
     keyConfidence: analysis.keyConfidence ?? null,
     sections: composedSections,
-    beatGridMs: hasNewBeatGrid ? analysis.beatGridMs : original.beatGridMs,
-    beatConfidence: hasNewBeatGrid ? analysis.beatConfidence : original.beatConfidence,
-    downbeatGridMs: analysis.downbeatGridMs ?? original.downbeatGridMs,
-    downbeatConfidence: analysis.downbeatConfidence ?? original.downbeatConfidence,
+    beatGridMs: hasNewBeatGrid ? analysis.beatGridMs : null,
+    beatConfidence: hasNewBeatGrid ? analysis.beatConfidence : null,
+    downbeatGridMs: analysis.downbeatGridMs ?? null,
+    downbeatConfidence: analysis.downbeatConfidence ?? null,
     durationMs: measuredDurationMs > 0 ? measuredDurationMs : original.durationMs,
     grooveWarnings: [
       ...(original.grooveWarnings ?? []),
       ...(hasNewBeatGrid ? [] : [
-        "The replacement composition produced no measurable beat grid, so the previous beat grid was retained and is labelled as unverified.",
+        "The changed composition produced no measurable beat grid; previous beat and downbeat grids are unavailable, not timing evidence for this mix.",
       ]),
       `Beat grid, tempo and key were re-measured from the resulting stem composition after replacing ${replacedStemTypes.join(", ")}.`,
       derivedSections.ok
         ? derivedSections.note
-        : `Section boundaries could NOT be re-derived for the resulting composition (${derivedSections.reason}). The original bed's sections were retained and the vocal entry is therefore planned against structure detected from the replaced material; treat the arrangement as unverified.`,
+        : `Section boundaries could NOT be re-derived for the resulting composition (${derivedSections.reason}). Previous sections and passage fingerprints were invalidated; entry uses the planner's unverified fallback.`,
     ],
   };
 }
@@ -1403,10 +1404,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             };
             compositionForPlan = resolved.composition;
           } else {
-            bed.grooveWarnings = [
-              ...(bed.grooveWarnings ?? []),
-              `The stem replacement (${resolved.composition.replacedBedStemTypes.join(", ")}) could not be loaded, so the arrangement was planned against the original bed. Treat the timing as unverified.`,
-            ];
+            return Response.json({
+              error: `The replacement composition (${resolved.composition.replacedBedStemTypes.join(", ")}) could not be loaded for planning. No arrangement was saved or rendered against the previous mix.`,
+              code: "stem-composition-unavailable",
+            }, { status: 422 });
           }
         }
       }

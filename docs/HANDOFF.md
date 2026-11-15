@@ -1,5 +1,58 @@
 # Arena handoff — read this first
 
+## Current: universal cross-stem adaptation — first correctness increment
+
+Started from clean branch `arena/669984d8-arena-os-canonical`, revision
+`0f754bcd`; fetched origin and confirmed its tracked head matched. The older
+PR-30 checkout described in chat is not the current workspace. No branch was
+reset, switched, or merged; prior work was preserved.
+
+### Audit and implementation plan
+
+The current production flow already is:
+`resolveStemComposition` / `planStemComposition` → retained/replacement PCM →
+`bedProfileFromComposition` → `planMashup` / candidate comparison →
+`renderMashupWithBus` → saved remix tracks, clips and versioned timing maps →
+Studio reopen and the export worker. Extend these paths, not a new engine.
+`deriveSectionsForComposition`, passage fingerprints, trusted analysis gates,
+local WSOLA maps and the existing mix bus remain the shared primitives.
+
+1. **Implemented in this increment:** invalidate both flat profile fields and
+   the canonical evidence packet when replacement changes the composition.
+   Previously, absent fresh measurements restored the removed material's
+   confident tempo/grid/sections, while its harmony, drum/bass events and vocal
+   evidence survived outright. A warning did not prevent the planner from
+   consuming them. Old downbeats, octave candidates, passage fingerprints and
+   all other mix-derived features are now cleared before remeasurement.
+   Missing measurements retain the existing unverified creation fallback, not
+   old musical evidence. Failed composition PCM loading now returns 422 before
+   saving/rendering rather than planning against the previous mix.
+2. **Next:** coordinate timeline/tempo candidates across all participating
+   stems. The existing planner still privileges the bed; donor instrumental
+   roles follow the vocal segment's placement/warp rather than having their
+   own jointly solved transformations. Layer-only edits also need the same
+   composition-wide recomputation path.
+3. **Then:** add phrase-preserving duration alternatives and role-specific
+   harmonic/groove assessment using the existing compatibility and timing
+   systems. Pre-plan replacement analysis currently sums native donor audio at
+   source time zero; this is not identical to its later warped/offset render.
+   Evaluate candidate renders on the actual coordinated timeline rather than
+   treating that preliminary sum as final-composition evidence.
+4. **Acceptance:** exercise all replacement directions, multi-role and rapid
+   changes, then save/reopen/export with real separated audio and preserved
+   listening candidates. Current tests do not establish universal adaptation,
+   semantic form accuracy, STEM.FM parity, or musical quality.
+
+Verification: **81/81** across composition-evidence, mashup, mix-bus and donor
+integrity tests; **1/1**, zero skipped, for the PostgreSQL production route
+acceptance including save/reopen and the FFmpeg export worker. The route now
+asserts that original-mix harmony/rhythm/vocal features are unavailable in a
+replacement plan. Full `pnpm run typecheck` passed. These runs used synthetic
+fixtures, no real separated recordings were available, and no audio was heard
+or preserved for listening in this increment. Ground-truth documentation
+contains historical real-audio findings; it does not prove those assets exist
+in this checkout.
+
 ## Completion ledger — engine vs intelligence vs proof
 
 `docs/waveyard-completion-ledger.md` now maps the whole directive against the
