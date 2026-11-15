@@ -370,7 +370,10 @@ test(
     ? "Waveyard real-song mashup persists, reopens, edits, restores, and exports"
     : "Waveyard synthetic routes, paired-grid Studio timing maps, and Arena handoff regressions",
   async (t) => {
+  const accTrace = (step: string) => console.error(`ACCEPTANCE_PROGRESS ${step}`);
+  accTrace("test:start");
   if (!postgresBinaries.initdb || !postgresBinaries.postgres || !postgresBinaries.pgCtl) {
+    accTrace("test:skip-no-postgres");
     t.skip("PostgreSQL binaries are unavailable");
     return;
   }
@@ -1886,6 +1889,7 @@ test(
       return source.id;
     };
 
+    accTrace("fixtures:acceptance-start");
     const acceptanceBedId = await addAcceptanceSource("acceptance-bed", [
       { stemType: "drums", pcm: percussiveStem(ACCEPTANCE.originalBedDrumsHz, ACCEPTANCE.bedSeconds) },
       { stemType: "bass", pcm: sustainedStem(ACCEPTANCE.bedBassHz, ACCEPTANCE.bedSeconds) },
@@ -1919,6 +1923,7 @@ test(
       },
     ]);
 
+    accTrace("fixtures:acceptance-done");
     const stemIdForAcceptance = async (sourceId: string, stemType: FixtureStemType) => {
       const [row] = await dbModule.db.select().from(schema.stemAssets).where(and(
         eq(schema.stemAssets.projectId, project.id),
@@ -2848,6 +2853,7 @@ test(
             containsDonorDrums: accReopenedStemIds.has(acceptanceDonorDrumsStemId),
           },
         }, null, 2));
+        accTrace("acceptance:complete-with-artifacts");
         console.error(`ACCEPTANCE_ARTIFACTS ${evidenceDir}`);
       } else {
         console.error("ACCEPTANCE_ARTIFACTS skipped: WAVEYARD_ACCEPTANCE_ARTIFACT_DIR is not set, so the rendered and exported audio were not preserved for listening");

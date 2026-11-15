@@ -119,8 +119,14 @@ const uncaught = output.includes("failureType: 'uncaughtException'");
 const noise = TEARDOWN_NOISE.test(output);
 
 if (fail === 1 && pass === 0 && uncaught && noise && tests === 1) {
+  // Say only what was observed. "After its assertions passed" was an
+  // assumption: an uncaughtException anywhere in the test body produces the
+  // same shape, including before any assertion ran. The acceptance progress
+  // markers, when present, say how far it actually got.
+  const reached = [...output.matchAll(/ACCEPTANCE_PROGRESS ([a-z0-9:-]+)/g)]
+    .map((match) => match[1]).slice(-3).join(" -> ") || "none reported";
   console.error(
-    "::warning::Route acceptance quarantined: the single test failed only with a teardown-time uncaughtException from a pg client observing the disposable cluster stop, after its assertions passed. No assertion failed. This is tracked as unresolved in docs/waveyard-completion-ledger.md §14.5 and is NOT a green result.",
+    `::warning::Route acceptance quarantined: the single test failed only with a teardown-time uncaughtException from a pg client observing the disposable cluster stop. No assertion failure was reported. Last acceptance stages reached: ${reached}. This is tracked as unresolved in docs/waveyard-completion-ledger.md §14.5 and is NOT a green result.`,
   );
   console.log(
     "QUARANTINED: teardown race only, no assertion failure. See ledger §14.5.",
