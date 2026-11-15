@@ -2528,6 +2528,11 @@ try {
           transportTrace: window.audioProbe.transportTrace.slice(-12),
         };
       }).catch(captureError => ({ captureFailed: String(captureError) }));
+      // Emitted separately and first: the resume state object is large and CI
+      // annotations are truncated, so a trace nested inside it is unreadable.
+      const trace = await page.evaluate(() => window.audioProbe?.transportTrace?.slice(-14) ?? [])
+        .catch(() => []);
+      for (const line of trace) console.error(`SESSION_RESUME_TRACE ${engineName} ${line}`);
       console.error(`SESSION_RESUME_STATE ${engineName} ${JSON.stringify(resumeState)}`);
       throw error;
     }

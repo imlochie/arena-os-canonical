@@ -173,7 +173,15 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::session-controls-matrix"
-          if ! node scripts/waveyard-live-stems.mjs --session-controls-matrix; then
+          if ! node scripts/waveyard-live-stems.mjs --session-controls-matrix 2>&1 | tee "$RUNNER_TEMP/waveyard-session-controls.log"; then
+            # Job logs are not readable from the environment triaging this
+            # workflow, so the diagnostic has to travel through annotations.
+            # Publish the transport trace and resume state verbatim: they are
+            # the only evidence of which await the Play control is stuck on.
+            grep -E 'SESSION_RESUME_TRACE|SESSION_RESUME_STATE' "$RUNNER_TEMP/waveyard-session-controls.log" \
+              | head -20 | while IFS= read -r line; do
+                echo "::warning::${line:0:900}"
+              done
             echo "::error::Firefox or WebKit session controls were not fully verified; see the failing engine or incomplete-coverage diagnostic above."
             echo "--- vite log ---"
             cat "$RUNNER_TEMP/waveyard-vite.log" || true
