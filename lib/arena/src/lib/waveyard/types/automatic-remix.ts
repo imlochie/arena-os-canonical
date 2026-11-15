@@ -12,7 +12,7 @@ import {
 } from "./analysis-confidence";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
-export const AUTOMATIC_REMIX_ENGINE_VERSION = "3";
+export const AUTOMATIC_REMIX_ENGINE_VERSION = "4";
 export const AUTOMATIC_REMIX_VARIANTS = ["original", "hybrid"] as const;
 export type AutomaticRemixVariant = (typeof AUTOMATIC_REMIX_VARIANTS)[number];
 
@@ -171,10 +171,6 @@ function roleRank(stem: AutomaticRemixStem) {
   return index === -1 ? roleOrder.length : index;
 }
 
-const semanticRoles = new Set(["intro", "verse", "pre-chorus", "chorus", "post-chorus", "bridge", "breakdown", "instrumental", "outro"]);
-const STRUCTURAL_ROLE_CONFIDENCE = 0.75;
-const MAX_RELATIVE_POSITION_ERROR = 0.25;
-
 function confidenceAtLeast(value: number | null | undefined, minimum: number): boolean {
   return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= 1;
 }
@@ -185,76 +181,6 @@ function trustedBpm(source: AutomaticRemixSource): number | null {
 
 function trustedKey(source: AutomaticRemixSource): MusicalKey | null {
   return normaliseMusicalKey(trustedAnalysisKey(source.analysis?.musicalKey, source.analysis?.keyConfidence));
-}
-
-function semanticRole(section: AutomaticRemixSection): string | null {
-  if (
-    !confidenceAtLeast(section.labelConfidence, STRUCTURAL_ROLE_CONFIDENCE)
-    || !confidenceAtLeast(section.structuralConfidence, 0.5)
-  ) return null;
-  const normalized = section.label.trim().toLowerCase().replace(/[_\s]+/g, "-").replace(/-(?:[ivx]+|\d+)$/i, "");
-  return semanticRoles.has(normalized) ? normalized : null;
-}
-
-/**
- * Cross-source section matching requires explicit, high-confidence musical
- * roles. Same-index or repeated-rhythm labels alone are never correspondence.
- * When a role repeats, prefer the instance with the closest relative position
- * and tempo-adjusted duration, and never reuse one donor section twice.
- */
-function matchStructuralCounterparts(
-  anchor: AutomaticRemixSource,
-  candidate: AutomaticRemixSource,
-  anchorSections: AutomaticRemixSection[],
-  candidateSections: AutomaticRemixSection[],
-  tempoRatio: number,
-): Map<string, AutomaticRemixSection> | null {
-  const available = new Set(candidateSections.filter((section) => semanticRole(section)).map((section) => section.id));
-  const matches = new Map<string, AutomaticRemixSection>();
-  let lastCandidateStartMs = -1;
-  for (const anchorSection of anchorSections) {
-    const role = semanticRole(anchorSection);
-    if (!role) return null;
-    const anchorDuration = anchorSection.endMs - anchorSection.startMs;
-    const anchorCenter = (anchorSection.startMs + anchorSection.endMs) / (2 * anchor.durationMs);
-    const choices = candidateSections.flatMap((section) => {
-      if (!available.has(section.id) || semanticRole(section) !== role || section.startMs < lastCandidateStartMs) return [];
-      const durationAfterStretch = (section.endMs - section.startMs) / tempoRatio;
-      const durationTolerance = Math.max(750, anchorDuration * 0.12);
-      const durationError = Math.abs(durationAfterStretch - anchorDuration);
-      if (durationError > durationTolerance) return [];
-      const candidateCenter = (section.startMs + section.endMs) / (2 * candidate.durationMs);
-      const relativePositionError = Math.abs(candidateCenter - anchorCenter);
-      if (relativePositionError > MAX_RELATIVE_POSITION_ERROR) return [];
-      return [{ section, score: durationError / durationTolerance + relativePositionError }];
-    }).sort((left, right) => left.score - right.score);
-    const selected = choices[0]?.section;
-    if (!selected) return null;
-    available.delete(selected.id);
-    lastCandidateStartMs = selected.startMs;
-    matches.set(anchorSection.id, selected);
-  }
-  return matches;
-}
-
-/**
- * A second source is admitted only when the existing analysis can explain both
- * tempo/key intent and one-to-one section correspondence. This deliberately
- * falls back to a complete faithful arrangement instead of guessing.
- */
-function compatibleHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
-  if (anchor.id === candidate.id || !sourceCanStructure(anchor) || !sourceCanStructure(candidate)) return null;
-  const anchorBpm = trustedBpm(anchor);
-  const candidateBpm = trustedBpm(candidate);
-  const anchorKey = trustedKey(anchor);
-  const candidateKey = trustedKey(candidate);
-  if (!anchorBpm || !candidateBpm || !anchorKey || !candidateKey) return null;
-  const tempoRatio = anchorBpm / candidateBpm;
-  const keyShift = semitoneShift(candidateKey, anchorKey);
-  if (tempoRatio < 0.92 || tempoRatio > 1.08 || keyShift === null || Math.abs(keyShift) > 2) return null;
-  const anchorSections = usableSections(anchor);
-  const candidateSections = usableSections(candidate);
-  return matchStructuralCounterparts(anchor, candidate, anchorSections, candidateSections, tempoRatio);
 }
 
 function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
@@ -412,36 +338,6 @@ function completeConstraints(constraints: AutomaticRemixConstraints, variant: Au
   };
 }
 
-function conservativeFallbackWindows(sources: AutomaticRemixSource[]): Map<string, Omit<AutomaticRemixClipPlan, "stemAssetId">[]> {
-  const windows = new Map<string, Omit<AutomaticRemixClipPlan, "stemAssetId">[]>();
-  const totalDuration = sources.reduce((total, source) => total + source.durationMs, 0);
-  let timelineStartMs = 0;
-  for (const source of sources) {
-    const halfDuration = Math.max(1, Math.floor(source.durationMs / 2));
-    const clips = [0, halfDuration].map((sourceOffsetMs, index) => {
-      const durationMs = index === 0 ? halfDuration : source.durationMs - halfDuration;
-      const clip = {
-        timelineStartMs,
-        durationMs,
-        sourceOffsetMs,
-        gain: 0.78,
-        fadeInMs: 250,
-        fadeOutMs: 250,
-        tempoSyncEnabled: false,
-        keySyncEnabled: false,
-        beatSnapEnabled: false,
-      } satisfies Omit<AutomaticRemixClipPlan, "stemAssetId">;
-      timelineStartMs += durationMs;
-      return clip;
-    });
-    windows.set(source.id, clips);
-  }
-  if (timelineStartMs !== totalDuration) {
-    throw new Error("Conservative fallback timeline must equal the complete source duration");
-  }
-  return windows;
-}
-
 function combinedCompatibilityReport(reports: AutomaticRemixCompatibilityReport[]): AutomaticRemixCompatibilityReport | undefined {
   if (!reports.length) return undefined;
   const pairs = reports.flatMap((report) => report.pairs)
@@ -480,17 +376,11 @@ export function buildAutomaticRemixPlan(
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
   const counterpartsBySource = new Map<string, ReadonlyMap<string, AutomaticRemixSection>>();
   const compatibilityBySource = new Map<string, AutomaticRemixCompatibilityReport>();
-  let fallbackWindowsBySource: Map<string, Omit<AutomaticRemixClipPlan, "stemAssetId">[]> | null = null;
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
 
   if (variant === "hybrid" && !sourceCanStructure(anchor)) {
-    fallbackWindowsBySource = conservativeFallbackWindows(usableSources);
-    selected.clear();
-    for (const source of usableSources) {
-      for (const stem of source.stems) selected.set(`${source.id}:${stem.id}`, { source, stem });
-    }
-    notices.push("Musical evidence was incomplete, so Waveyard used conservative alternating full-song passages without claiming beat or key alignment.");
-    decisions.push("arranged both complete sources as alternating half-song passages");
+    const compatibility = combinedCompatibilityReport(usableSources.map(unavailablePassageReport));
+    return { ok: false, reason: "hybrid_evidence_unavailable", ...(compatibility ? { compatibility } : {}) };
   }
 
   if (variant === "hybrid" && sourceCanStructure(anchor)) {
@@ -508,11 +398,6 @@ export function buildAutomaticRemixPlan(
     for (const source of usableSources) {
       const stem = firstStem(source, "vocals");
       if (!stem || source.id === anchor.id) continue;
-      const semantic = compatibleHybridCounterparts(anchor, source);
-      if (semantic) {
-        defaultVocalCandidates.push({ source, stem, counterparts: semantic });
-        continue;
-      }
       const passage = passageHybridCounterparts(anchor, source);
       if (passage) {
         compatibilityBySource.set(source.id, passage.report);
@@ -525,14 +410,10 @@ export function buildAutomaticRemixPlan(
       counterpartsBySource.set(defaultVocal.source.id, defaultVocal.counterparts);
     }
     for (const candidate of candidates.values()) {
-      let counterparts = compatibleHybridCounterparts(anchor, candidate.source);
-      if (!counterparts) {
-        const passage = passageHybridCounterparts(anchor, candidate.source);
-        if (passage) {
-          compatibilityBySource.set(candidate.source.id, passage.report);
-          if (passage.matches.size) counterparts = passage.matches;
-        } else compatibilityBySource.set(candidate.source.id, unavailablePassageReport(candidate.source));
-      }
+      const passage = passageHybridCounterparts(anchor, candidate.source);
+      const counterparts = passage?.matches.size ? passage.matches : null;
+      if (passage) compatibilityBySource.set(candidate.source.id, passage.report);
+      else compatibilityBySource.set(candidate.source.id, unavailablePassageReport(candidate.source));
       if (!counterparts) {
         notices.push(`${candidate.source.originalFilename} was kept out of the hybrid because no section pair passed the measured tempo, rhythm, chroma, and beat-phase checks.`);
         continue;
@@ -544,13 +425,11 @@ export function buildAutomaticRemixPlan(
     }
     if ([...selected.values()].some((choice) => choice.source.id !== anchor.id)) decisions.push("replaced only verified, structurally compatible featured stems");
     else {
-      fallbackWindowsBySource = conservativeFallbackWindows(usableSources);
-      selected.clear();
-      for (const source of usableSources) {
-        for (const stem of source.stems) selected.set(`${source.id}:${stem.id}`, { source, stem });
-      }
-      notices.push("No cross-song passage passed every confidence gate, so Waveyard used conservative alternating full-song passages instead of rejecting the pairing.");
-      decisions.push("arranged both complete sources as alternating half-song passages");
+      const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
+      const reason = compatibility && compatibility.evaluatedPairs > 0
+        ? "no_compatible_hybrid_source"
+        : "hybrid_evidence_unavailable";
+      return { ok: false, reason, ...(compatibility ? { compatibility } : {}) };
     }
     if (compatibilityBySource.size) {
       const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
@@ -571,8 +450,7 @@ export function buildAutomaticRemixPlan(
   const ordered = [...selected.values()].sort((left, right) => roleRank(left.stem) - roleRank(right.stem) || left.stem.id.localeCompare(right.stem.id));
   const tracks: AutomaticRemixTrackPlan[] = [];
   for (const [sortOrder, { source, stem }] of ordered.entries()) {
-    const clips = fallbackWindowsBySource?.get(source.id)
-      ?? clipWindows(source, anchor, anchorBpm, counterpartsBySource.get(source.id));
+    const clips = clipWindows(source, anchor, anchorBpm, counterpartsBySource.get(source.id));
     if (!clips) return { ok: false, reason: "unsafe_hybrid_alignment" };
     tracks.push({
       stemAssetId: stem.id,

@@ -86,52 +86,40 @@ describe("deterministic automatic remix arranger", () => {
     expect(buildAutomaticRemixPlan(inputs, { variant: "hybrid" })).toEqual(buildAutomaticRemixPlan(inputs, { variant: "hybrid" }));
   });
 
-  it("uses a compatible alternate vocal with explicit transform intent", () => {
+  it("does not admit an alternate vocal from global key and role labels without passage evidence", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({
       id: "b",
       analysis: { id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 124, musicalKey: "D major", beatGridMs: Array.from({ length: 33 }, (_, index) => index * 484) },
     }));
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const vocals = result.plan.tracks.find((track) => track.stemType === "vocals");
-    expect(vocals?.stemAssetId).toBe("b-vocals");
-    expect(vocals?.clips.every((clip) => clip.tempoSyncEnabled && clip.keySyncEnabled && clip.beatSnapEnabled)).toBe(true);
-    expect(result.plan.provenance.decisions).toContain("replaced only verified, structurally compatible featured stems");
+    expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
+    if (!result.ok) expect(result.compatibility?.missingEvidence.some((reason) => reason.includes("passage fingerprints"))).toBe(true);
   });
 
-  it("falls back to a complete alternating arrangement when passage evidence is unavailable", () => {
+  it("withholds a hybrid when passage evidence is unavailable", () => {
     const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b" })], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.plan.tracks).toHaveLength(8);
-    expect(result.plan.tracks.every((track) => track.clips.length === 2)).toBe(true);
-    expect(result.plan.tracks[0].clips[0]).toMatchObject({ timelineStartMs: 0, durationMs: 8_000, sourceOffsetMs: 0, beatSnapEnabled: false });
-    const donorTrack = result.plan.tracks.find((track) => track.stemAssetId === "b-drums");
-    expect(donorTrack?.clips[0]).toMatchObject({ timelineStartMs: 16_000, durationMs: 8_000, sourceOffsetMs: 0, beatSnapEnabled: false });
-    expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
+    expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
+    if (!result.ok) expect(result.compatibility?.missingEvidence.join(" ").includes("passage fingerprints")).toBe(true);
   });
 
-  it("uses conservative fallback when semantic role evidence is unavailable", () => {
+  it("withholds a hybrid when neither semantic roles nor passage fingerprints support a pairing", () => {
     for (const structuralLabel of ["pattern-repeat-a", "rhythm-repeat-a", "energy-rise", "energy-drop"]) {
       const anchor = withRoles(source({ id: "a" }), [structuralLabel, structuralLabel]);
       const donor = withRoles(source({ id: "b" }), [structuralLabel, structuralLabel]);
       const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.plan.provenance.decisions).toContain("arranged both complete sources as alternating half-song passages");
+      expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
     }
   });
 
-  it("uses fallback instead of mapping reversed role order by ordinal position", () => {
+  it("withholds a hybrid instead of mapping reversed unsupported role order by ordinal position", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({ id: "b" }), ["chorus", "verse"]);
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.plan.tracks).toHaveLength(8);
+    expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
   });
 
-  it("does not enable transforms from low-confidence tempo, key, or beat analysis", () => {
+  it("withholds a hybrid when low-confidence tempo, key, or beat evidence cannot support alignment", () => {
     const anchor = withRoles(source({ id: "a" }));
     const donor = withRoles(source({
       id: "b",
@@ -141,11 +129,7 @@ describe("deterministic automatic remix arranger", () => {
       },
     }));
     const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.plan.tracks).toHaveLength(8);
-      expect(result.plan.tracks.every((track) => track.clips.every((clip) => !clip.tempoSyncEnabled && !clip.keySyncEnabled && !clip.beatSnapEnabled))).toBe(true);
-    }
+    expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
   });
 
   it("does not beat-snap an anchor whose BPM confidence is below the trusted threshold", () => {
@@ -163,17 +147,13 @@ describe("deterministic automatic remix arranger", () => {
     expect(result.plan.notices).toContain("Tempo confidence is insufficient, so Waveyard will not claim BPM matching or beat snapping for this arrangement.");
   });
 
-  it("does not force an incompatible second source into a hybrid", () => {
+  it("withholds a hybrid when an incompatible source lacks passage evidence for a fit", () => {
     const incompatible = source({ id: "b", analysis: { id: "b-analysis", status: "complete", sourceChecksumSha256: "b-checksum", bpm: 168, musicalKey: "F# minor", beatGridMs: Array.from({ length: 33 }, (_, index) => index * 357) } });
     const result = buildAutomaticRemixPlan([source({ id: "a" }), incompatible], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.plan.tracks).toHaveLength(8);
-      expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
-    }
+    expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
   });
 
-  it("shows missing donor provenance instead of hiding the failed comparison", () => {
+  it("shows missing donor provenance and withholds the hybrid", () => {
     const donor = source({
       id: "b",
       analysis: {
@@ -186,23 +166,15 @@ describe("deterministic automatic remix arranger", () => {
       },
     });
     const result = buildAutomaticRemixPlan([source({ id: "a" }), donor], { variant: "hybrid" });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.plan.tracks).toHaveLength(8);
-      expect(result.plan.notices.some((notice) => notice.includes("conservative alternating full-song passages"))).toBe(true);
-    }
+    expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
+    if (!result.ok) expect(result.compatibility?.missingEvidence.join(" ").includes("current checksum-verified source analysis")).toBe(true);
   });
 
   it("refuses a hybrid when anchor structural evidence is incomplete", () => {
     const unknown = source({ id: "unproven", analysis: { id: "unproven-analysis", status: "processing", sourceChecksumSha256: "unproven-checksum", bpm: null, musicalKey: null, beatGridMs: null }, sections: [] });
     const result = buildAutomaticRemixPlan([unknown], { variant: "hybrid", instrumental: true });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.plan.tracks).toHaveLength(3);
-      expect(result.plan.tracks.every((track) => track.stemType !== "vocals")).toBe(true);
-      expect(result.plan.provenance.decisions).toContain("arranged both complete sources as alternating half-song passages");
-      expect(result.plan.tracks.every((track) => track.stemType !== "vocals")).toBe(true);
-    }
+    expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
+    if (!result.ok) expect(result.compatibility?.missingEvidence.join(" ").includes("current checksum-verified source analysis")).toBe(true);
   });
 
   it("rejects an empty source set rather than inventing material", () => {

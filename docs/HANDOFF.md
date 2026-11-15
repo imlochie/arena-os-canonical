@@ -1,5 +1,25 @@
 # Arena handoff — read this first
 
+## Latest increment: evidence-gated automatic hybrid planning
+
+Work is on the existing PR #31 branch, `arena/669984d8-arena-os-canonical`,
+as a descendant of its published head. No new branch was created and no
+production chord detector threshold or selection path changed. The automatic
+hybrid planner no longer substitutes alternating full-song clips when it
+cannot establish a cross-song passage match. It reports
+`hybrid_evidence_unavailable` or `no_compatible_hybrid_source` with the
+compatibility evidence available. Global key/tempo and semantic labels alone
+do not establish a pairing; measured passage rhythm, chroma, beat phase and
+trusted tempo must support it. The planner provenance version is now 4.
+
+The end-to-end analysis-to-audio dependency map and evidence limitations are
+documented in [`waveyard-harmonic-acceptance-readiness.md`](waveyard-harmonic-acceptance-readiness.md).
+Focused automatic-remix and passage-compatibility tests pass **25/25**;
+workspace typecheck, workspace build and `git diff --check` pass. The build
+emitted existing source-map resolution and large-chunk warnings. Keep v0.2.0
+offline: exact pinned stems and independently reviewed chord timelines remain
+unavailable, so no real-song chord-accuracy decision can be made.
+
 ## Latest increment: v0.2.0 evidence pipeline and acceptance blockers
 
 The candidate remains offline and production remains unchanged. The runner now

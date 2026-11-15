@@ -56,6 +56,32 @@ The evaluator compares candidate and production on the same reference and
 reports paired, song-level candidate-minus-production macro-F1. The held-out
 partition contains two songs, so its interval is descriptive only.
 
+## Current analysis-to-audio dependency map
+
+| Stage | Current implementation | Outputs that affect downstream decisions | Limit that remains |
+|---|---|---|---|
+| Import and provenance | `artifacts/api-server/src/imported/waveyard/projects/[id]/source-intake/route.ts`; source assets carry checksum and duration | Asset identity and checksum anchor later source analyses | Private originals and licensed stems are external to this repo |
+| Separation | Waveyard separation routes, local worker and `stem_assets` persistence | Versioned stem IDs and source/separation association | Historical stem hashes are unavailable in this checkout |
+| Source analysis | `lib/arena/src/lib/waveyard/worker-local/analysis-engine.ts` and `worker-local/stem-analysis.ts` | BPM/key confidence, beat/downbeat grids, section fingerprints, local HarmonyEvents | Chord labels still lack independent accuracy references |
+| Evidence loading | `lib/arena/src/lib/waveyard/studio/mashup-sources.ts` verifies current checksums and engine versions; `chooseStemForHarmony` selects instrumental/other/piano/guitar evidence | Current source-mix or selected non-vocal-stem harmony timeline; isolated vocal pitch/activity | It loads one preferred harmony stem, not a bass/drums/other evidence fusion with conflict reporting |
+| Automatic pairing | `lib/arena/src/lib/waveyard/types/automatic-remix.ts` uses passage-level onset/rhythm, chroma, beat-phase, and trusted tempo; the API route reports refusal reasons and persists accepted plans | Cross-song section pair selection and clip transform intent | It does not yet consume chord-event progressions or compare donor vocal melody against the target bed |
+| Manual mashup planning | `planMashup` and `scoreVocalChordToneFit` in `lib/arena/src/lib/waveyard/studio/mashup.ts` | Section/entry ranking, trusted tempo/key transforms, optional placed-vocal vs bed-chord ranking cue | Chord-tone fit is a ranking cue when coverage exists, not a calibrated dissonance or harmonic-change acceptance gate |
+| Persistence and editing | `projects/[id]/automatic-remixes/route.ts`, remix session/track/clip records, and `StudioCore.tsx` | Persisted tracks, clips, provenance and user edits | No persisted post-render harmonic re-analysis or automatic rollback on a musical clash |
+| Rendering and playback | `renderMashupWithBus`/`renderMashup` in `studio/mashup.ts`, export workers/routes, and `SessionExperience.tsx` | Actual WSOLA/pitch-shifted PCM, mix bus, saved render and playback | Render quality and musical success require an actual listener; no listening acceptance is recorded |
+
+## Highest-priority planner correction in this increment
+
+The automatic hybrid planner previously substituted alternating full-song clips
+when it had no usable cross-song passage evidence or when every measured passage
+conflicted. That produced a saved “hybrid” without a compatible pairing. The
+planner now returns the existing `hybrid_evidence_unavailable` or
+`no_compatible_hybrid_source` failure with its compatibility report, so the API
+can explain the missing evidence or measured conflict. Semantic roles plus
+global key/tempo are no longer enough to admit a donor; measured passage chroma,
+rhythm, beat-phase and trusted tempo must support the pair. Successful evidence
+based plans and the renderer remain intact. The planner provenance version is
+now 4. Production chord detector and its thresholds are unchanged.
+
 ## Production use path and evidence boundary
 
 Production still calls `detectHarmonyTimeline` in
@@ -70,9 +96,11 @@ real-source mashup, completed separation-to-database route, or listening test.
 
 ## Engineering validation
 
-This increment passed the 12 focused packet/evaluator tests and the workspace
-typecheck. Previous focused harmonic/planner and build evidence is recorded in
-[`HANDOFF.md`](./HANDOFF.md). The broad repository test sweep remains
+This increment passed the focused automatic-remix and passage-compatibility
+tests (25/25), workspace typecheck, workspace build, and `git diff --check`.
+The build emitted source-map resolution and large-chunk warnings. The prior
+12 focused packet/evaluator tests and earlier candidate/harmonic results are
+recorded in [`HANDOFF.md`](./HANDOFF.md). The broad repository test sweep remains
 incomplete. Its known failure classes are PostgreSQL/service prerequisites,
 network-dependent assertions, Windows sandbox filesystem restrictions,
 route/test-harness assumptions and a worker URL import failure. The test batch
