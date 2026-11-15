@@ -7,19 +7,21 @@ production. All six exact original sources were recovered and hash verified;
 the production named-window counts reproduced the prior source baseline. The
 candidate ran across all six sources in 2.17–3.86 seconds per track, with at
 most 31.1 MiB sampled additional RSS. These variable-window original-mix
-results do not establish musical accuracy. The combined candidate,
-analysis-engine and mashup suites pass 88/88; the six ground-truth evaluator
-tests also pass. The broader repository suite could not complete because this
-worktree has no `node_modules`, offline install metadata for `@babel/core` is
-missing, and attempted tests report unresolved `drizzle-orm`. No full-repository
-test, typecheck, lint or build pass is claimed. The targeted strict typecheck
-for candidate and measurement files passed; `mashup.test.ts` still reports
-three unrelated assertion/narrowing errors.
+results do not establish musical accuracy. Candidate and analysis-engine tests
+pass 38/38, the full mashup suite passes 50/50 after three test-only
+type-narrowing fixes, and the targeted strict check passes. Packet and
+evaluator tests pass 10/10. Restored frozen dependencies support a passing full
+workspace typecheck and build (with local Vite environment values); no lint
+script is defined. The broader 226-file Arena test sweep remains incomplete:
+multiple batches require PostgreSQL or external network access, Windows
+sandbox permissions reject temporary symlink/rename operations, and batch 15
+stalled. Do not claim a full-repository test pass.
 
 All eight pinned stem files remain missing, so no individual-stem or
 recombined-bed evaluation was performed. Independent chord references are also
 absent; chord accuracy and unsupported-prediction rate remain null. The
-annotation template/evaluator are in place. See
+annotation template/evaluator and prediction-free reviewer packet
+prepare/merge tool are in place. See
 `waveyard-harmonic-candidate-findings.md`, `waveyard-harmonic-annotation-protocol.md`,
 the run report and `HANDOFF.md`. The harmonic-perception upgrade remains
 incomplete and production promotion is not supported.

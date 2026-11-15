@@ -24,19 +24,25 @@ workspace's `generated-artifacts/waveyard-real-world-acceptance/` directories;
 the connected Replit tool has no file-level download action. The ground-truth
 template and evaluator are ready, but independent chord reviews are absent, so
 F1, precision/recall, unsupported-prediction rate and musical quality remain
-unknown. Do not promote the candidate. See the annotation protocol for the
-precise remaining human review and stem-access requirements.
+unknown. `waveyard-harmonic-annotation-packets.mjs` creates prediction-free
+blind packets and merges two locked, hash-verified reviews while leaving
+adjudication to a human. Do not promote the candidate. See the annotation
+protocol for the human review and stem-access requirements.
 
-Verification boundary: the broader repository test run could not complete in
-this worktree because it has no `node_modules`; the offline dependency install
-also stops on missing pnpm metadata for `@babel/core`, and attempted suites
-report unresolved `drizzle-orm`. A targeted strict TypeScript check passed for
-the candidate, candidate tests, and measurement runner/worker. Typechecking
-`mashup.test.ts` also reports three existing unrelated assertion/narrowing
-errors (two discriminated-union assertions and one possibly-undefined value).
-No full-repository test, typecheck, lint or build pass is claimed. The focused
-88-test run and six evaluator tests are the completed checks for this
-increment.
+Engineering validation: the full workspace dependency tree was restored from
+the frozen lockfile with lifecycle scripts disabled. `pnpm run typecheck`
+passes; `pnpm run build` passes with local `PORT=3000` and `BASE_PATH=/`.
+The three reported `mashup.test.ts` type errors were fixed with explicit
+discriminant and optional-value guards; its strict typecheck and all 50 tests
+pass. Candidate and analysis-engine tests pass 38/38; together with mashup,
+the focused harmonic/planner set passes 88/88. Packet/evaluator tests pass
+10/10. The repository defines no lint script.
+
+The broader 226-file Arena test sweep is incomplete: several batches require a
+PostgreSQL `DATABASE_URL` or server, some tests expect external network access,
+and Windows sandbox permissions reject test-created symlinks/atomic renames.
+Batch 15 did not finish within the bounded run and was stopped. Do not describe
+the repository-wide test suite as passing.
 
 ## Current: harmonic-perception audit rejected the proposed replacement
 

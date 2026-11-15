@@ -45,6 +45,42 @@ whole songs, never time bins. Metrics remain null while annotation is incomplete
 The test fixture for evaluator arithmetic is synthetic and is not musical
 accuracy evidence.
 
+## Creating and importing blind reviewer packets
+
+Create two independent, blank packets from the pinned template:
+
+```sh
+node scripts/waveyard-harmonic-annotation-packets.mjs prepare \
+  scripts/fixtures/waveyard-ground-truth/harmonic-chords-v1.template.json \
+  generated-artifacts/waveyard-harmonic-reviews
+```
+
+The packets contain exact source hashes and durations, but omit song titles,
+the development/held-out split, chord predictions and candidate output. The
+owner must deliver the matching hash-verified source audio separately, after
+recording the rights basis. Reviewers fill their own packet, including reviewer
+ID, rights basis, labels, coverage and a lock timestamp. The command refuses to
+overwrite existing packet files so an accidental regeneration cannot discard
+review work.
+
+After both reviewers have independently completed and locked their packets,
+merge them into a new annotation template:
+
+```sh
+node scripts/waveyard-harmonic-annotation-packets.mjs merge \
+  scripts/fixtures/waveyard-ground-truth/harmonic-chords-v1.template.json \
+  generated-artifacts/waveyard-harmonic-reviews/waveyard-harmonic-chords-v1-reviewer-1.json \
+  generated-artifacts/waveyard-harmonic-reviews/waveyard-harmonic-chords-v1-reviewer-2.json \
+  generated-artifacts/waveyard-harmonic-reviews/harmonic-chords-v1-reviewed.json
+```
+
+Merge validates reviewer independence, source hashes, chord labels, locked
+status and the 95% minimum coverage; it preserves both source timelines and
+leaves `adjudicated` null. A qualified adjudicator must resolve disagreements
+in the merged file before the existing evaluator can score it. Keep reviewer
+packets and the merged file as restricted, private evidence. Never regenerate
+packets into a directory that contains completed reviews.
+
 ## Remaining human review
 
 The owner or reviewers must provide two locked, independent full-song chord

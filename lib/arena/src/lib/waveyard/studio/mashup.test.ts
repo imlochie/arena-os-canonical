@@ -327,6 +327,7 @@ test("plan labels source-mix harmony fallback instead of implying isolated-bed a
     profile({ role: "vocals", bpm: 120, musicalKey: "C major" }),
     profile({ role: "instrumental", bpm: 120, musicalKey: "C major", harmonyEvidenceSource: "source-mix" }),
   );
+  if (!result.ok) throw new Error(result.reason);
   assert.ok(result.plan.warnings.some((warning) => warning.includes("full source mix")
     && warning.includes("separated bed-stem chord analysis")));
 });
@@ -341,6 +342,7 @@ test("plan discloses when chord fit comes from one isolated layer rather than a 
       harmonyEvidenceStemType: "other",
     }),
   );
+  if (!result.ok) throw new Error(result.reason);
   assert.ok(result.plan.warnings.some((warning) => warning.includes("separated other stem")
     && warning.includes("complete summed instrumental bed")));
 });
@@ -727,10 +729,13 @@ test("plan: time-normalized shape evidence can rank a 4-bar vocal passage agains
     }),
   );
 
-  assert.ok(result.ok);
+  if (!result.ok) throw new Error(result.reason);
   assert.equal(result.plan.passageSearch?.selectedDonorSectionId, "donor-four-bars");
   assert.equal(result.plan.passageSearch?.selectedBedSectionId, "bed-five-bars");
-  assert.ok(result.plan.passageSearch?.evaluations[0]?.rankedBedCandidates[0]?.relativeScore,
+  const topRankedBedCandidate = result.plan.passageSearch?.evaluations.at(0)?.rankedBedCandidates?.at(0);
+  assert.ok(topRankedBedCandidate
+    && typeof topRankedBedCandidate.relativeScore === "number"
+    && topRankedBedCandidate.relativeScore > 0,
     "a non-identical but measured window should receive a relative score");
   assert.ok(result.plan.rationale.some((line) =>
     line.includes("duration similarity") && line.includes("0.800"),
