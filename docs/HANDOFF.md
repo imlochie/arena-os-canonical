@@ -1,5 +1,107 @@
 # Arena handoff — read this first
 
+## Current: note-duration ranking, chord-template correction and real-song evidence
+
+### Reused, not rebuilt
+
+The canonical pipeline already has isolated-vocal monophonic pitch frames,
+MIDI note conversion, source/stem chord templates, section/passage fingerprints
+and vocal-to-chord arrangement ranking. The gap addressed here is narrower:
+the harmonic ranker previously counted sampled frame membership, not stable
+note durations split across actual chord changes.
+
+`studio/note-harmony.ts` reuses the MIDI converter to segment confidence-qualified
+stable pitches, without merging adjacent semitones or bridging missing-frame
+gaps over 100ms. The weak cache is tied to the immutable frame-array identity.
+The scorer measures note/chord overlap duration after candidate stretch and
+transposition, including a held note crossing multiple chord windows. It does
+not infer that non-chord tones are mistakes or change individual pitches.
+
+The existing `scoreVocalChordToneFit` now uses this duration basis when stable
+notes cover sufficient voiced evidence; sparse/noisy notes retain the existing
+frame-based fallback. Passage and whole-performance arrangement ranking already
+call that scorer, so the new evidence affects existing candidate decisions.
+Saved rationale identifies the basis. No extra compatibility subsystem or
+database schema was introduced. Earlier groove/timing-map work stays intact.
+
+This ranking cue uses the candidate's constant tempo ratio. It is **not** a
+final post-local-warp/export harmonic validation; the old comment implying local
+mapping was corrected. Independent polyphonic melodic notes, reliable motif/
+semantic phrase recognition, calibrated chord accuracy and listener quality
+remain unverified or missing.
+
+### Concrete chord-template defect corrected
+
+The real-recording probe exposed sparse harmonic availability. Inspection found
+an independent scoring defect: additive pitch-class support rewards seventh
+chord supersets even when their added tone is absent, so clean triads can tie
+them and become unknown. Template/observation length normalisation now compares
+cosine similarity. The 0.04 template-margin requirement and 0.28 score floor
+remain in place; unknown-window confidence now reports the actual margin,
+not the old winning-template score.
+
+Reference tests cover all seven template families across twelve roots,
+preserve unknown for symmetric augmented-root ambiguity/uniform chroma, and
+check amplitude invariance. Local source and stem harmony are versioned
+**1.1.0** separately from drum/bass, vocal, BPM/key and structure engines.
+Older local harmony must be recomputed through existing readiness/recovery
+paths. Python-worker provenance is unchanged. No source analysis was deleted.
+
+One legacy PCM regression accepted *any* named chord for known C-major/F-major
+triads; it could pass on a wrong D-minor7 label. It now requires C major for
+the first window and an honest abstention for the second: the current chroma
+extractor leaks D energy into the F triad and its competing-template margin
+is below policy. That is a known feature-extraction limitation, not F-chord
+recognition achieved. Do not lower the threshold to disguise it.
+
+### Real-recording evaluation preparation
+
+`scripts/fixtures/waveyard-musical-evaluation.json` pins all **six** owner uploads,
+not just September and Queen. It also pins the existing full-length four-stem
+WAVs for those two songs; the other four tracks await pinned stems. Audio remains
+private and is not added to Git. Container durations are labelled as such.
+Existing single-listener form notes are reused, not promoted to adjudicated
+pitch/chord ground truth.
+
+`scripts/waveyard-note-harmony-evaluation.ts` verifies all pinned bytes, rejects
+short/misaligned stems, and runs the production vocal detector, chord detector,
+MIDI segmentation and actual harmonic scorer across both full stem recordings.
+It retains isolated-`other` controls, measures the bass/drums/other bed sum, and
+evaluates provisional owner sections separately. Those supplied boundaries
+are not detector predictions or training labels.
+It never launches another separation. Historical stem/source association is
+explicitly not revalidated through completed-run API publication; this is
+component evidence, not persisted-route or listening acceptance. Report:
+`generated-artifacts/waveyard-note-harmony/report.json` (ignored).
+
+Run from the scripts workspace using the absolute path:
+`pnpm --filter @workspace/scripts exec tsx /home/runner/workspace/scripts/waveyard-note-harmony-evaluation.ts`
+with `ARENA_FFMPEG_PATH` set to the available FFmpeg executable if not on PATH.
+Full-recording results: **248** stable vocal-note estimates over **215.137 s**
+of September, **54** over **222.673 s** of Queen. These are estimates without
+reference-label accuracy. Complete-bed named-chord availability remains
+**18/108** and **7/112** windows, respectively, after the correction.
+Neither whole-recording fit qualifies. Among provisional owner sections only
+Queen's opening unknown-labelled region has a frame-based fit; no annotated
+section activates the stable-note harmonic basis. Real-song harmonic
+understanding has **not** been established.
+
+Earlier isolated-`other` controls named 36/108 and 15/112 windows; the corrected
+matcher names 31/108 and 10/112. More labels are not the acceptance objective.
+The before-fix report remains at
+`generated-artifacts/waveyard-note-harmony/report-before-template-fix.json`.
+Sparse pitch/harmonic evidence is a genuine remaining limitation. Investigate
+and reference-label better harmonic features/progression tracking before
+claiming reliable musical compatibility; do not add speculative form labels.
+
+Verification: 148 checks passed in the expanded 149-check run; the weak legacy
+assertion above was corrected, and its focused rerun plus the chord-template
+regression passed (2/2). Unchanged passing checks were not repeated. PostgreSQL
+mashup/save/reopen/export acceptance passed (1/1, zero skipped), and persisted
+source/stem harmony worker, recovery and versioned-output checks passed (2/2).
+Full typecheck and diff check passed. This is engineering/component evidence,
+not listening-quality or persisted real-song publication acceptance.
+
 ## Current: preserve vocal delivery while admitting melodic-layer attacks
 
 The previous drum/bass increment is retained. The existing broadband attack

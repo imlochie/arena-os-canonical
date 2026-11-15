@@ -15,6 +15,7 @@
 
 import { pitchShift, timeStretch, type TimeStretchMapPoint } from "../elastic";
 import { donorClipTempoMap, type LocalTempoMap } from "./local-tempo-map";
+import { scoreStableNoteHarmony } from "./note-harmony";
 import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
@@ -773,6 +774,9 @@ type VocalChordToneFit = {
   coverage: number;
   confidence: number;
   matchedFrames: number;
+  basis?: "stable-note-duration" | "pitch-frames";
+  stableNoteCount?: number;
+  coveredNoteDurationMs?: number;
 };
 
 function lowerBoundPitchFrame(frames: readonly VocalPitchFrame[], timestampMs: number): number {
@@ -800,7 +804,7 @@ function chordAt(events: readonly HarmonyEvent[], timestampMs: number): HarmonyE
 
 /**
  * Compare measured isolated-vocal notes with the bed's current chord timeline
- * after the plan's pitch shift and local tempo mapping. This is a ranking cue,
+ * after the candidate's pitch shift and constant tempo ratio. This is a ranking cue,
  * not a dissonance classifier: passing tones and intentionally unresolved notes
  * are not declared wrong.
  */
@@ -853,11 +857,22 @@ export function scoreVocalChordToneFit(input: {
 
   const coverage = matchedFrames / selected.length;
   if (matchedFrames < 6 || coverage < 0.5 || eligibleWeight <= 0) return null;
+  const frameSteps = selected.slice(1).map((frame, index) => frame.timestampMs - selected[index]!.timestampMs)
+    .filter((step) => step > 0 && step <= 100).sort((a, b) => a - b);
+  const frameStep = frameSteps[Math.floor(frameSteps.length / 2)];
+  const notes = frameStep ? scoreStableNoteHarmony({
+    frames: vocalFrames, chords: bedChords,
+    sourceStartMs: donorStartMs, sourceEndMs: donorEndMs,
+    targetStartMs: bedStartMs, targetEndMs: bedEndMs,
+    stretchRatio, pitchShiftSemitones, voicedDurationMs: selected.length * frameStep,
+  }) : null;
   return {
-    similarity: chordToneWeight / eligibleWeight,
-    coverage,
-    confidence: coverage * (matchedConfidenceWeight / matchedFrames),
+    similarity: notes?.similarity ?? chordToneWeight / eligibleWeight,
+    coverage: notes?.coverage ?? coverage,
+    confidence: (notes?.coverage ?? coverage) * (matchedConfidenceWeight / matchedFrames),
     matchedFrames,
+    basis: notes ? "stable-note-duration" : "pitch-frames",
+    ...(notes ? { stableNoteCount: notes.stableNoteCount, coveredNoteDurationMs: notes.coveredDurationMs } : {}),
   };
 }
 
@@ -955,7 +970,7 @@ function rankPassagePair(
   const details = features.map((feature) => `${feature.label} similarity ${feature.score.toFixed(3)}`);
   if (vocalChordFit) {
     details.push(
-      `placed vocal body: ${vocalChordFit.matchedFrames} voiced pitch frames covered ${Math.round(vocalChordFit.coverage * 100)}% by measured bed chords (not just the discovery window)`,
+      `placed vocal body: ${vocalChordFit.stableNoteCount ? `${vocalChordFit.stableNoteCount} stable estimated notes, duration-weighted` : `${vocalChordFit.matchedFrames} voiced pitch frames`} covered ${Math.round(vocalChordFit.coverage * 100)}% by measured bed chords (not just the discovery window)`,
     );
   }
   return {
@@ -1860,7 +1875,7 @@ function arrangementFeatureScore(
     channels.push({
       score: chord.similarity,
       weight: 0.5,
-      label: `vocal-to-bed chord-tone agreement ${(chord.similarity * 100).toFixed(0)}% across ${chord.matchedFrames} voiced frames`,
+      label: `vocal-to-bed chord-tone agreement ${(chord.similarity * 100).toFixed(0)}% across ${chord.stableNoteCount ? `${chord.stableNoteCount} stable estimated notes, duration-weighted` : `${chord.matchedFrames} voiced frames`}`,
     });
   }
   if (transient !== null) {

@@ -353,7 +353,7 @@ test("bass attack analysis measures only low-band changes and leaves silence or 
   assert.equal(detectBassAttacks(new Float32Array(RATE * 4)).length, 0, "silence must not create bass attacks");
 });
 
-test("local harmony analysis returns timed chord evidence and unknowns for silence", () => {
+test("local harmony analysis names supported chords and abstains on measured ambiguity", () => {
   const pcm = new Float32Array(RATE * 4);
   const chords = [[261.63, 329.63, 392], [349.23, 440, 523.25]];
   for (let index = 0; index < pcm.length; index += 1) {
@@ -362,9 +362,17 @@ test("local harmony analysis returns timed chord evidence and unknowns for silen
   }
   const events = detectHarmonyTimeline(pcm, 2);
   assert.equal(events.length, 2);
-  assert.ok(events.every((event) => event.root && event.quality !== "unknown"), JSON.stringify(events));
-  assert.ok(events.every((event) => event.confidence >= HARMONY_TEMPLATE_MIN_MARGIN),
-    "the persisted confidence value is the accepted template margin, not a calibrated 0–1 probability");
+  assert.equal(events[0]!.root, "C");
+  assert.equal(events[0]!.quality, "major", "do not accept any named chord for a known C-major fixture");
+  assert.ok(events[0]!.confidence >= HARMONY_TEMPLATE_MIN_MARGIN);
+  // The current F-triad chroma leaks D energy. Its F-major/D-minor7 margin is
+  // below policy. The old additive matcher confidently named D-minor7 here,
+  // and the old test accepted it merely because it was not unknown.
+  // This remains a known front-end feature limitation, not F-chord accuracy.
+  assert.equal(events[1]!.root, null);
+  assert.equal(events[1]!.quality, "unknown");
+  assert.ok(events[1]!.confidence >= 0 && events[1]!.confidence < HARMONY_TEMPLATE_MIN_MARGIN,
+    "ambiguity must persist its actual margin, not the winning template's score");
   assert.deepEqual(detectHarmonyTimeline(new Float32Array(RATE * 2), 2).map((event) => event.quality), ["unknown"]);
 });
 

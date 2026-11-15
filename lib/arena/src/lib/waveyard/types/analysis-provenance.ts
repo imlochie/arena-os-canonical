@@ -4,6 +4,8 @@ export const DESKTOP_ANALYSIS_ENGINE_VERSION = "1.4.0";
  * NumPy worker provenance persisted by remote Python workers. */
 export const DESKTOP_STEM_ANALYSIS_ENGINE = "arena-js-stem-analysis";
 export const DESKTOP_STEM_ANALYSIS_ENGINE_VERSION = "1.0.0";
+/** Chord matching evolves independently of drum/bass and vocal analysis. */
+export const DESKTOP_HARMONY_ANALYSIS_ENGINE_VERSION = "1.1.0";
 /** Versioned separately because vocal activity is persisted independently from pitch runs. */
 export const DESKTOP_VOCAL_ANALYSIS_ENGINE_VERSION = "1.2.0";
 export const DESKTOP_SECTION_ENGINE = "arena-js-structure";

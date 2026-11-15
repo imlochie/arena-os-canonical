@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
-import { HARMONY_CHORD_TEMPLATES, HARMONY_TEMPLATE_MIN_MARGIN } from "../types/harmony-analysis";
+import { matchHarmonyChroma } from "../types/harmony-analysis";
 import type { VocalActivityInterval } from "../types/vocal-analysis";
 import { SESSION_MIN_DOWNBEAT_CONFIDENCE } from "../session-dj-controls";
 
@@ -800,36 +800,15 @@ export function detectHarmonyTimeline(pcm: Float32Array, windowSeconds = 2): Loc
   for (let start = 0; start < pcm.length; start += windowSamples) {
     const end = Math.min(pcm.length, start + windowSamples);
     const chroma = chromaFromPcm(pcm.subarray(start, end));
-    const total = chroma.reduce((sum, value) => sum + value, 0);
-    let best: { root: number; quality: LocalHarmonyEvent["quality"]; score: number } | null = null;
-    let runner = 0;
-    if (total > 1e-8) {
-      const normalized = chroma.map((value) => value / total);
-      for (let root = 0; root < 12; root += 1) {
-        for (const template of HARMONY_CHORD_TEMPLATES) {
-          let score = 0;
-          for (let pitch = 0; pitch < 12; pitch += 1) {
-            const interval = (pitch - root + 12) % 12;
-            const weight = template.intervals.includes(interval) ? 1 : 0.08;
-            score += normalized[pitch] * weight;
-          }
-          if (!best || score > best.score) {
-            runner = best?.score ?? 0;
-            best = { root, quality: template.quality, score };
-          } else if (score > runner) runner = score;
-        }
-      }
-    }
-    const margin = best ? Math.max(0, (best.score - runner) / Math.max(best.score, 1e-9)) : 0;
-    const confident = best !== null && best.score >= 0.28 && margin >= HARMONY_TEMPLATE_MIN_MARGIN;
+    const match = matchHarmonyChroma(chroma);
     const startMs = Math.round((start / ANALYSIS_PCM_RATE) * 1000);
     const endMs = Math.min(durationMs, Math.round((end / ANALYSIS_PCM_RATE) * 1000));
     if (endMs > startMs) events.push({
       startMs,
       endMs,
-      root: confident && best ? PITCH_CLASSES[best.root]! : null,
-      quality: confident && best ? best.quality : "unknown",
-      confidence: Math.round((confident ? Math.min(1, margin) : Math.max(0, Math.min(1, best?.score ?? 0))) * 1_000_000) / 1_000_000,
+      root: match.root === null ? null : PITCH_CLASSES[match.root]!,
+      quality: match.quality,
+      confidence: Math.round(match.confidence * 1_000_000) / 1_000_000,
     });
   }
   return events;

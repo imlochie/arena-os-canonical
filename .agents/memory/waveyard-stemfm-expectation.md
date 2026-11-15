@@ -19,7 +19,9 @@ score, or claim that a shared tempo or synthetic onset test proves musical quali
 assessing a singer's delivery, not proximity to the nearest target beat.
 
 **Why:** The user specifically warned that moving every vocal onset to a beat
-would erase expressive timing; a deliberate offbeat is not an error.
+would erase expressive timing; a deliberate offbeat is not an error. They
+endorsed adapting the arrangement around ahead/behind-beat delivery and
+phrasing across bar boundaries, rather than erasing those decisions.
 
 **How to apply:** Treat activity/pitch-run starts as coarse observations, not
 lyric timestamps. Keep whole performances together unless stronger phrase-level

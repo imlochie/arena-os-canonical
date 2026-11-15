@@ -2,7 +2,7 @@ import { CANONICAL_PITCH_CLASSES, normaliseMusicalKey } from "./musical-key";
 
 export const HARMONY_ANALYSIS_ENGINE = "waveyard-numpy-chroma-chords";
 export const HARMONY_ANALYSIS_ENGINE_VERSION = "1.0.0";
-export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_HARMONY_ANALYSIS_ENGINE, DESKTOP_STEM_ANALYSIS_ENGINE_VERSION as LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
+export { DESKTOP_STEM_ANALYSIS_ENGINE as LOCAL_HARMONY_ANALYSIS_ENGINE, DESKTOP_HARMONY_ANALYSIS_ENGINE_VERSION as LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
 export const CHORD_QUALITIES = ["major", "minor", "dominant7", "minor7", "major7", "diminished", "augmented", "unknown"] as const;
 export type ChordQuality = (typeof CHORD_QUALITIES)[number];
 /** The local template matcher emits a named chord only when its top-two margin reaches this value. */
@@ -33,6 +33,42 @@ export const HARMONY_CHORD_TEMPLATES: ReadonlyArray<{
   { quality: "diminished", intervals: [0, 3, 6] },
   { quality: "augmented", intervals: [0, 4, 8] },
 ];
+
+/**
+ * Cosine template matching penalises expected-but-absent tones. An additive
+ * pitch-class sum alone always favours a seventh-chord superset over its triad.
+ * Margin remains discrimination between templates, not calibrated accuracy.
+ */
+export function matchHarmonyChroma(chroma: readonly number[]): {
+  root: number | null; quality: ChordQuality; confidence: number;
+} {
+  const unknown = { root: null, quality: "unknown" as const, confidence: 0 };
+  if (chroma.length !== 12 || chroma.some((value) => !Number.isFinite(value) || value < 0)
+    || chroma.reduce((sum, value) => sum + value, 0) <= 1e-8) return unknown;
+  const peak = Math.max(...chroma);
+  const observed = chroma.map((value) => value / peak);
+  const observedNorm = Math.hypot(...observed);
+  let best: { root: number; quality: Exclude<ChordQuality, "unknown">; score: number } | null = null;
+  let runner = 0;
+  for (let root = 0; root < 12; root++) {
+    for (const template of HARMONY_CHORD_TEMPLATES) {
+      let dot = 0, templatePower = 0;
+      for (let pitch = 0; pitch < 12; pitch++) {
+        const weight = template.intervals.includes((pitch - root + 12) % 12) ? 1 : 0.08;
+        dot += observed[pitch]! * weight;
+        templatePower += weight * weight;
+      }
+      const score = dot / (observedNorm * Math.sqrt(templatePower));
+      if (!best || score > best.score) {
+        runner = best?.score ?? 0;
+        best = { root, quality: template.quality, score };
+      } else if (score > runner) runner = score;
+    }
+  }
+  const margin = best ? Math.max(0, Math.min(1, (best.score - runner) / Math.max(best.score, 1e-9))) : 0;
+  if (!best || best.score < 0.28 || margin < HARMONY_TEMPLATE_MIN_MARGIN) return { ...unknown, confidence: margin };
+  return { root: best.root, quality: best.quality, confidence: margin };
+}
 
 /** Return the chord's measured pitch classes; unknown chords have no guessed notes. */
 export function harmonyPitchClasses(event: Pick<HarmonyEvent, "root" | "quality">): number[] | null {

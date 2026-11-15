@@ -1,7 +1,8 @@
 import { normaliseHarmonyEvents, type HarmonyEvent } from "./harmony-analysis";
+import { DESKTOP_HARMONY_ANALYSIS_ENGINE_VERSION } from "./analysis-provenance";
 
 export const LOCAL_STEM_HARMONY_ANALYSIS_ENGINE = "arena-js-stem-harmony";
-export const LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION = "1.0.0";
+export const LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION = DESKTOP_HARMONY_ANALYSIS_ENGINE_VERSION;
 
 export const STEM_HARMONY_STEM_TYPES = ["instrumental", "other", "guitar", "piano"] as const;
 export type StemHarmonyStemType = (typeof STEM_HARMONY_STEM_TYPES)[number];

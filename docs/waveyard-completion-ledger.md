@@ -1,5 +1,29 @@
 # Waveyard completion ledger
 
+## Latest increment: note-duration harmonic ranking and six-track inventory
+
+Existing monophonic vocal pitch/MIDI and changing chord estimates now feed a
+duration-based note overlap cue in the existing passage/arrangement ranker.
+Stable note evidence is distinct from spectral attacks; unavailable stable
+notes preserve the earlier frame fallback. A sustained note can span chord
+changes without being assigned wholly to its starting chord. No per-note
+retuning or performance quantisation was added.
+
+An additive-template superset bias was also corrected with cosine matching,
+without lowering the margin threshold. Local harmonic analysis alone advances
+to version 1.1.0. A weak old synthetic assertion was strengthened: any named
+chord is no longer considered success for a known signal.
+
+The owner evaluation inventory now pins all six supplied songs and the existing
+full four-stem sets for two. The component runner uses the real production
+scorer; it is not canonical persisted publication or a listening test. Four
+tracks await stems and none has verified note/chord accuracy labels. Existing
+single-owner form annotations remain provisional. See `HANDOFF.md`.
+The real probe does **not** establish better song understanding: complete-bed
+harmonic coverage is still sparse and no annotated section activates the new
+stable-note score. This is a documented next capability gap, not a green
+musical acceptance result.
+
 ## Latest increment: human-performance timing protection
 
 Separated melodic (`other`) layers now reuse the existing spectral-attack
