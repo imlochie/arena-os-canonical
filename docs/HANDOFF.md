@@ -1,24 +1,38 @@
 # Arena handoff — read this first
 
-## Latest increment: offline harmonic candidate and input gate
+## Latest increment: verified-source harmonic candidate study
 
-An isolated `waveyard-multires-overtone-context-candidate` (0.1.0) and nine
-synthetic regressions now live under `worker-local/`; no production analysis,
-persistence or promotion path imports it. The synthetic suite passes 9/9, and
-the existing analysis-engine suite passes 29/29. Tests cover overtone-only
-abstention, triads/inversion, arpeggio context and silence, tuning ambiguity,
-transients, adjacent changes, low-register evidence and the existing vocal
-chord-fit scorer. For a synthetic C1 triad, the candidate retains bass evidence
-but abstains because its 0.0381 top margin is below the unchanged 0.04 gate.
+The offline candidate is now version 0.2.0. It retains no full-track spectra,
+uses temporal change points with one-second bounds, and abstains when a
+sequential arpeggio does not supply simultaneous chord evidence. It remains
+outside every production analysis, persistence and selection path. The
+combined candidate, analysis-engine and mashup suites passed 88/88, including
+nine candidate regressions and the planner-ranking regression. Six
+ground-truth evaluator tests pass.
 
-`scripts/waveyard-harmonic-candidate-evaluation.mjs` reproduces the asset/hash
-gate and `docs/waveyard-harmonic-candidate-report.json` records its result.
-All six pinned original sources and eight pinned stems are absent here, so no
-candidate real-audio counts, recombined-bed rerun, memory or responsiveness
-measurement is available. Historical baseline counts below remain prior
-documentation evidence only. Independent chord accuracy remains unknown.
-Production stays at `2b0781e2`; this offline candidate is not a validated
-replacement and must not be promoted on synthetic results.
+All six source recordings were recovered locally and verified against the
+manifest SHA-256s. The unchanged production detector reproduced all six prior
+named-window counts. The candidate ran on each exact full source in 2.17–3.86s;
+its highest sampled additional RSS was 31.1 MiB, below the 128 MiB target.
+These are original-mix diagnostics with different window sizes, not accuracy or
+instrumental-bed evidence. See `waveyard-harmonic-candidate-findings.md` and the
+detailed `waveyard-harmonic-candidate-run-report.json`.
+
+The eight exact pinned stems remain unavailable across the checked local
+artifact stores and Dropbox. The manifest points to the canonical Replit
+workspace's `generated-artifacts/waveyard-real-world-acceptance/` directories;
+the connected Replit tool has no file-level download action. The ground-truth
+template and evaluator are ready, but independent chord reviews are absent, so
+F1, precision/recall, unsupported-prediction rate and musical quality remain
+unknown. Do not promote the candidate. See the annotation protocol for the
+precise remaining human review and stem-access requirements.
+
+Verification boundary: the broader repository test run could not complete in
+this worktree because it has no `node_modules`; the offline dependency install
+also stops on missing pnpm metadata for `@babel/core`, and attempted suites
+report unresolved `drizzle-orm`. No full-repository test, lint or build pass is
+claimed. The focused 88-test run and six evaluator tests are the completed
+checks for this increment.
 
 ## Current: harmonic-perception audit rejected the proposed replacement
 

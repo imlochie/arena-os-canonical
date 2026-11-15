@@ -27,7 +27,7 @@ function named(event: HarmonyEvent | undefined): string | null {
 
 test("single pitched note and its upper partials do not become a chord", () => {
   const result = analyzeHarmonicCandidate(notes(2, [48])); // C3 with a rich overtone series.
-  assert.ok(result.events.length >= 2);
+  assert.ok(result.events.length >= 1);
   assert.ok(result.events.every((event) => event.quality === "unknown"), JSON.stringify(result.events));
 });
 
@@ -38,7 +38,7 @@ test("polyphonic triads and inversions retain the chord pitch classes", () => {
   assert.equal(named(inversion.events[0]), "C:major");
 });
 
-test("arpeggio note order is pooled inside its passage without inventing evidence in silence", () => {
+test("sequential arpeggio notes do not become a simultaneous chord or carry through silence", () => {
   const pcm = new Float32Array(3 * RATE);
   for (let cycle = 0; cycle < 2; cycle += 1) {
     const start = cycle * 1.15;
@@ -47,11 +47,12 @@ test("arpeggio note order is pooled inside its passage without inventing evidenc
     addNote(pcm, start + 0.58, start + 0.87, 55);
   }
   const result = analyzeHarmonicCandidate(pcm);
-  assert.equal(named(result.events[0]), "C:major");
+  assert.equal(named(result.events[0]), null);
+  assert.equal(named(result.events[1]), null);
   assert.equal(named(result.events[2]), null);
 });
 
-test("low-register evidence below C2 is retained while ambiguous chord identity abstains", () => {
+test("a synthetic C1 triad retains low-register evidence but abstains on an ambiguous one-second segment", () => {
   const result = analyzeHarmonicCandidate(notes(2, [24, 28, 31]));
   assert.equal(result.diagnostics.bassFundamentalHzRange[0] < 35, true);
   assert.ok(result.frames.some((frame) => frame.bassPitchClasses[0]! > 0));
@@ -92,8 +93,9 @@ test("adjacent chord changes remain distinct rather than being smoothed away", (
   for (const note of [48, 52, 55]) addNote(pcm, 0.02, 0.96, note);
   for (const note of [53, 57, 60]) addNote(pcm, 1.04, 1.98, note);
   const result = analyzeHarmonicCandidate(pcm);
-  assert.equal(named(result.events[0]), "C:major");
-  assert.equal(named(result.events[1]), "F:major");
+  assert.equal(named(result.events[0]), "C:major", JSON.stringify({ events: result.events, hypotheses: result.hypotheses, diagnostics: result.diagnostics }));
+  assert.equal(named(result.events[1]), "F:major", JSON.stringify({ events: result.events, hypotheses: result.hypotheses, diagnostics: result.diagnostics }));
+  assert.ok(result.diagnostics.detectedChangePointCount >= 1);
 });
 
 test("candidate events feed the existing passage scorer without changing its trust boundary", () => {

@@ -12,7 +12,7 @@ import {
 } from "../types/harmony-analysis";
 
 export const HARMONIC_CANDIDATE_ENGINE = "waveyard-multires-overtone-context-candidate";
-export const HARMONIC_CANDIDATE_VERSION = "0.1.0";
+export const HARMONIC_CANDIDATE_VERSION = "0.2.0";
 export const HARMONIC_CANDIDATE_WINDOW_MS = 1_000;
 const HOP_SAMPLES = Math.round(ANALYSIS_PCM_RATE * 0.25);
 const BASS_FFT_SIZE = 16_384;
@@ -51,12 +51,12 @@ export type HarmonicCandidateAnalysis = {
     transientFrameCount: number;
     activeFrameCount: number;
     abstainedWindowCount: number;
+    detectedChangePointCount: number;
   };
 };
 
 type Spectrum = { magnitudes: Float64Array; fftSize: number; noiseFloor: number; flatness: number };
 type Resolution = { spectrum: Spectrum; direct: Float64Array; explained: Uint8Array; chroma: number[] };
-type RawFrame = { timestampMs: number; bass: Resolution; upper: Resolution; transientWeight: number; active: boolean; tuningCents: number | null };
 
 function spectrumFor(pcm: Float32Array, center: number, fftSize: number): Spectrum {
   const real = new Float64Array(fftSize);
@@ -235,54 +235,113 @@ export function analyzeHarmonicCandidate(pcm: Float32Array): HarmonicCandidateAn
   if (!(pcm instanceof Float32Array) || pcm.some((sample) => !Number.isFinite(sample))) throw new TypeError("Candidate input must be finite mono Float32 PCM.");
   const durationMs = Math.round(pcm.length * 1000 / ANALYSIS_PCM_RATE);
   if (pcm.length === 0) return emptyAnalysis();
-  const raw: Array<{ timestampMs: number; bassSpectrum: Spectrum; upperSpectrum: Spectrum; observations: Array<{ cents: number; midi: number }>; transientWeight: number }> = [];
+
+  // First pass samples one spectrum per second for a cautious track-wide tuning
+  // estimate. Do not retain full-track spectra: at 250ms hops, two Float64
+  // spectra per frame otherwise exceed the memory budget on long songs.
+  const tuningObservations: Array<{ cents: number; midi: number }> = [];
+  const tuningHop = HOP_SAMPLES * 4;
+  for (let center = 0; center < pcm.length; center += tuningHop) {
+    const bassSpectrum = spectrumFor(pcm, center, BASS_FFT_SIZE);
+    const upperSpectrum = spectrumFor(pcm, center, UPPER_FFT_SIZE);
+    tuningObservations.push(...estimateFrameTuning(bassSpectrum).observations, ...estimateFrameTuning(upperSpectrum).observations);
+  }
+  const tuning = robustTuning(tuningObservations);
+
+  // Second pass extracts evidence and releases each pair of spectra on the next
+  // iteration. Public frame diagnostics retain only twelve-class summaries.
+  const frameEvidence: CandidateFrameEvidence[] = [];
+  const frameVectors: number[][] = [];
   let previousUpper: Spectrum | null = null;
+  let transientCount = 0;
+  let activeCount = 0;
+  let disagreements = 0;
   for (let center = 0; center < pcm.length; center += HOP_SAMPLES) {
     const bassSpectrum = spectrumFor(pcm, center, BASS_FFT_SIZE);
     const upperSpectrum = spectrumFor(pcm, center, UPPER_FFT_SIZE);
-    const peaks = estimateFrameTuning(bassSpectrum).observations.concat(estimateFrameTuning(upperSpectrum).observations);
     const flux = spectralFlux(previousUpper, upperSpectrum);
     const transientWeight = upperSpectrum.flatness > 0.82 ? 0.2
       : upperSpectrum.flatness > 0.62 && flux > 0.45 ? 0.12
       : upperSpectrum.flatness > 0.42 && flux > 0.6 ? 0.35 : 1;
-    raw.push({ timestampMs: Math.round(center * 1000 / ANALYSIS_PCM_RATE), bassSpectrum, upperSpectrum, observations: peaks, transientWeight });
+    const timestampMs = Math.round(center * 1000 / ANALYSIS_PCM_RATE);
+    const bass = resolutionFor(bassSpectrum, tuning.cents ?? 0);
+    const upper = resolutionFor(upperSpectrum, tuning.cents ?? 0);
+    const mix = combineFrame(bass, upper);
+    const spectralEnergy = bassSpectrum.magnitudes.reduce((sum, value) => sum + value, 0);
+    const active = spectralEnergy > 1e-6 && mix.pitchClasses.reduce((sum, value) => sum + value, 0) > 0;
+    const vector = mix.pitchClasses;
+    frameVectors.push(vector);
+    frameEvidence.push({ timestampMs, bassPitchClasses: bass.chroma, upperPitchClasses: upper.chroma,
+      independentPitchClasses: vector, active, transientWeight, tuningCents: tuning.cents });
+    if (active) activeCount += 1;
+    if (transientWeight < 0.5) transientCount += 1;
+    if (active && mix.disagreement) disagreements += 1;
     previousUpper = upperSpectrum;
   }
-  const tuning = robustTuning(raw.flatMap((frame) => frame.observations));
-  const frames: RawFrame[] = raw.map((frame) => {
-    const bass = resolutionFor(frame.bassSpectrum, tuning.cents ?? 0);
-    const upper = resolutionFor(frame.upperSpectrum, tuning.cents ?? 0);
-    const mix = combineFrame(bass, upper);
-    const energy = frame.bassSpectrum.magnitudes.reduce((sum, value) => sum + value, 0);
-    return { timestampMs: frame.timestampMs, bass, upper, transientWeight: frame.transientWeight,
-      active: energy > 1e-6 && mix.pitchClasses.reduce((sum, value) => sum + value, 0) > 0, tuningCents: tuning.cents };
-  });
+
   const events: HarmonyEvent[] = [];
   const hypotheses: HarmonicCandidateAnalysis["hypotheses"] = [];
-  let disagreements = 0; let transientCount = 0; let activeCount = 0; let abstained = 0;
+  let abstained = 0;
   const windowSamples = Math.round(ANALYSIS_PCM_RATE * HARMONIC_CANDIDATE_WINDOW_MS / 1000);
-  for (let start = 0; start < pcm.length; start += windowSamples) {
-    const end = Math.min(pcm.length, start + windowSamples);
-    const firstMs = Math.round(start * 1000 / ANALYSIS_PCM_RATE);
-    const lastMs = Math.min(durationMs, Math.round(end * 1000 / ANALYSIS_PCM_RATE));
-    const selected = frames.filter((frame) => frame.timestampMs >= firstMs && frame.timestampMs < lastMs);
-    const active = selected.filter((frame) => frame.active && frame.transientWeight >= 0.5);
-    if (selected.some((frame) => frame.transientWeight < 0.5)) transientCount += selected.filter((frame) => frame.transientWeight < 0.5).length;
-    activeCount += active.length;
-    const summed = new Array<number>(12).fill(0);
-    for (const frame of active) {
-      const mix = combineFrame(frame.bass, frame.upper);
-      if (mix.disagreement) disagreements += 1;
-      for (let pc = 0; pc < 12; pc += 1) summed[pc] += mix.pitchClasses[pc]!;
+  const segments: Array<{ startMs: number; endMs: number }> = [];
+  let lastChangeMs = 0;
+  const changePointCandidates: number[] = [];
+  const frameStepMs = HOP_SAMPLES * 1000 / ANALYSIS_PCM_RATE;
+  for (let index = 1; index < frameEvidence.length; index += 1) {
+    const before = frameEvidence[index - 1]!;
+    const current = frameEvidence[index]!;
+    if (!before.active || !current.active || before.transientWeight < 0.5 || current.transientWeight < 0.5) continue;
+    if (cosine(frameVectors[index - 1]!, frameVectors[index]!) < 0.9) {
+      const atMs = Math.round(current.timestampMs + frameStepMs / 2);
+      if (atMs - lastChangeMs >= 500) {
+        changePointCandidates.push(atMs);
+        lastChangeMs = atMs;
+      }
     }
+  }
+  // Accept a spectral change point only after the new texture persists for at
+  // least 500ms. This prevents isolated transients from making tiny events.
+  const acceptedChangePoints: number[] = [];
+  for (const candidate of changePointCandidates) {
+    const next = changePointCandidates.find((point) => point > candidate) ?? durationMs;
+    if (next - candidate >= 500 && candidate >= 500) acceptedChangePoints.push(candidate);
+  }
+  // Keep the timeline bounded to roughly one-second observations even when a
+  // track has no spectral change. Prefer a nearby spectral boundary to a fixed
+  // boundary so changes are not smeared by arbitrary window edges.
+  const cuts = [0, durationMs, ...acceptedChangePoints];
+  for (let atMs = HARMONIC_CANDIDATE_WINDOW_MS; atMs < durationMs; atMs += HARMONIC_CANDIDATE_WINDOW_MS) {
+    if (acceptedChangePoints.every((point) => Math.abs(point - atMs) >= 300)) cuts.push(atMs);
+  }
+  cuts.sort((left, right) => left - right);
+  for (let index = 0; index < cuts.length - 1; index += 1) {
+    const startMs = cuts[index]!;
+    const endMs = cuts[index + 1]!;
+    if (endMs > startMs) segments.push({ startMs, endMs });
+  }
+
+  for (const segment of segments) {
+    const firstMs = segment.startMs;
+    const lastMs = segment.endMs;
+    const selected = frameEvidence.filter((frame) => frame.timestampMs >= firstMs && frame.timestampMs < lastMs);
+    const active = selected.filter((frame) => frame.active && frame.transientWeight >= 0.5);
+    const summed = new Array<number>(12).fill(0);
+    for (const frame of active) for (let pc = 0; pc < 12; pc += 1)
+      summed[pc] += frame.independentPitchClasses[pc]!;
     const pitchClassCount = summed.filter((value) => value > 0.04).length;
     const chordVector = summed.map((value) => active.length ? value / active.length : 0);
     const ranked = candidateHypotheses(chordVector);
     const first = ranked[0] ?? { root: null, quality: "unknown" as const, score: 0, margin: 0 };
     const supportedPitchClasses = chordVector.filter((value) => value > 0.04).length;
-    const enoughTime = active.length >= 2;
+    const enoughTime = active.length >= 2 && lastMs - firstMs >= 500;
+    const chordTemplate = HARMONY_CHORD_TEMPLATES.find((template) => template.quality === first.quality);
+    const cooccurringFrames = first.root && chordTemplate ? active.filter((frame) =>
+      chordTemplate.intervals.filter((interval) => frame.independentPitchClasses[
+        (PITCH_CLASSES.indexOf(first.root as typeof PITCH_CLASSES[number]) + interval) % 12
+      ]! > 0.04).length >= 3).length : 0;
     const named = enoughTime && pitchClassCount >= 3 && supportedPitchClasses >= 3
-      && first.root !== null && first.score >= 0.28 && first.margin >= HARMONY_TEMPLATE_MIN_MARGIN;
+      && cooccurringFrames >= 2 && first.root !== null && first.score >= 0.28
+      && first.margin >= HARMONY_TEMPLATE_MIN_MARGIN;
     if (!named) abstained += 1;
     hypotheses.push({ startMs: firstMs, endMs: lastMs, candidates: ranked });
     events.push({ startMs: firstMs, endMs: lastMs, root: named ? first.root : null,
@@ -291,14 +350,12 @@ export function analyzeHarmonicCandidate(pcm: Float32Array): HarmonicCandidateAn
   const bassMinHz = midiHz(MIN_MIDI); const bassMaxHz = midiHz(47);
   return {
     engine: HARMONIC_CANDIDATE_ENGINE, version: HARMONIC_CANDIDATE_VERSION,
-    events, frames: frames.map((frame) => ({ timestampMs: frame.timestampMs,
-      bassPitchClasses: frame.bass.chroma, upperPitchClasses: frame.upper.chroma,
-      independentPitchClasses: combineFrame(frame.bass, frame.upper).pitchClasses,
-      active: frame.active, transientWeight: frame.transientWeight, tuningCents: frame.tuningCents })),
+    events, frames: frameEvidence,
     hypotheses, tuning: { cents: tuning.cents, confidence: tuning.confidence,
-      observationCount: raw.reduce((sum, frame) => sum + frame.observations.length, 0), pitchClassCount: tuning.pitchClassCount },
+      observationCount: tuningObservations.length, pitchClassCount: tuning.pitchClassCount },
     diagnostics: { bassFundamentalHzRange: [bassMinHz, bassMaxHz], bassUpperDisagreements: disagreements,
-      transientFrameCount: transientCount, activeFrameCount: activeCount, abstainedWindowCount: abstained },
+      transientFrameCount: transientCount, activeFrameCount: activeCount, abstainedWindowCount: abstained,
+      detectedChangePointCount: acceptedChangePoints.length },
   };
 }
 
@@ -306,6 +363,6 @@ function emptyAnalysis(): HarmonicCandidateAnalysis {
   return { engine: HARMONIC_CANDIDATE_ENGINE, version: HARMONIC_CANDIDATE_VERSION, events: [], frames: [], hypotheses: [],
     tuning: { cents: null, confidence: 0, observationCount: 0, pitchClassCount: 0 },
     diagnostics: { bassFundamentalHzRange: [midiHz(MIN_MIDI), midiHz(47)], bassUpperDisagreements: 0,
-      transientFrameCount: 0, activeFrameCount: 0, abstainedWindowCount: 0 } };
+      transientFrameCount: 0, activeFrameCount: 0, abstainedWindowCount: 0, detectedChangePointCount: 0 } };
 }
 

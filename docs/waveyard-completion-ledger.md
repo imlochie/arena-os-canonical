@@ -1,18 +1,26 @@
 # Waveyard completion ledger
 
-## Latest offline candidate increment: real-audio gate blocked
+## Latest offline candidate increment: full-source diagnostics complete
 
-Candidate `waveyard-multires-overtone-context-candidate` 0.1.0 remains outside
-production. Its nine synthetic regressions pass; the existing analysis-engine
-suite passes 29/29. The low C1 triad fixture retains bass evidence but remains
-unknown under the existing 0.04 margin policy. The manifest gate found all six
-originals and all eight pinned stems missing in this checkout. Consequently,
-candidate real-audio counts, separate stem and recombined-bed results,
-responsiveness, memory use and independent chord accuracy remain unavailable.
-The prior production counts are historical availability evidence, not a rerun
-or an accuracy measure. See `waveyard-harmonic-candidate-report.json` and
-`HANDOFF.md`. The harmonic-perception upgrade remains incomplete and promotion
-is prohibited until the real-recording gate can be run.
+Candidate `waveyard-multires-overtone-context-candidate` 0.2.0 remains outside
+production. All six exact original sources were recovered and hash verified;
+the production named-window counts reproduced the prior source baseline. The
+candidate ran across all six sources in 2.17–3.86 seconds per track, with at
+most 31.1 MiB sampled additional RSS. These variable-window original-mix
+results do not establish musical accuracy. The combined candidate,
+analysis-engine and mashup suites pass 88/88; the six ground-truth evaluator
+tests also pass. The broader repository suite could not complete because this
+worktree has no `node_modules`, offline install metadata for `@babel/core` is
+missing, and attempted tests report unresolved `drizzle-orm`. No full-repository
+test, lint or build pass is claimed.
+
+All eight pinned stem files remain missing, so no individual-stem or
+recombined-bed evaluation was performed. Independent chord references are also
+absent; chord accuracy and unsupported-prediction rate remain null. The
+annotation template/evaluator are in place. See
+`waveyard-harmonic-candidate-findings.md`, `waveyard-harmonic-annotation-protocol.md`,
+the run report and `HANDOFF.md`. The harmonic-perception upgrade remains
+incomplete and production promotion is not supported.
 
 ## Latest investigation: harmonic replacement did not pass
 

@@ -64,6 +64,8 @@ import {
   type PassageRollingWindow,
   type PassageFingerprint,
 } from "../types/passage-compatibility";
+import { ANALYSIS_PCM_RATE } from "../worker-local/analysis-engine";
+import { analyzeHarmonicCandidate } from "../worker-local/harmonic-candidate";
 
 const RATE = 44_100;
 
@@ -942,6 +944,23 @@ test("plan: measured vocal notes rank the chord-fitting local bed window without
       voiced: true,
     };
   });
+  const candidateBedPcm = new Float32Array(8 * ANALYSIS_PCM_RATE);
+  const addChord = (startSeconds: number, endSeconds: number, midiNotes: number[]) => {
+    for (const midi of midiNotes) {
+      const frequency = 440 * 2 ** ((midi - 69) / 12);
+      for (let index = Math.floor((startSeconds + 0.04) * ANALYSIS_PCM_RATE);
+        index < Math.floor((endSeconds - 0.04) * ANALYSIS_PCM_RATE); index += 1) {
+        const time = index / ANALYSIS_PCM_RATE;
+        let sample = Math.sin(2 * Math.PI * frequency * time);
+        for (let harmonic = 2; harmonic <= 7; harmonic += 1)
+          sample += Math.sin(2 * Math.PI * frequency * harmonic * time) * (0.45 / harmonic);
+        candidateBedPcm[index] += 0.2 * sample;
+      }
+    }
+  };
+  addChord(0, 4, [60, 64, 67]); // C major
+  addChord(4, 8, [53, 57, 60]); // F major
+  const candidateHarmony = analyzeHarmonicCandidate(candidateBedPcm).events;
   const result = planMashup(
     profile({
       role: "vocals",
@@ -994,12 +1013,7 @@ test("plan: measured vocal notes rank the chord-fitting local bed window without
           [rollingWindow(0, 8), rollingWindow(8, 16)],
         ),
       }],
-      harmonyEvents: [
-        // Current local harmony rows store the accepted top-two template margin;
-        // this is deliberately not a calibrated probability.
-        { startMs: 0, endMs: 4_000, root: "C", quality: "major", confidence: 0.05 },
-        { startMs: 4_000, endMs: 8_000, root: "F#", quality: "major", confidence: 0.05 },
-      ],
+      harmonyEvents: candidateHarmony,
     }),
   );
 
@@ -1007,11 +1021,12 @@ test("plan: measured vocal notes rank the chord-fitting local bed window without
   const selected = result.plan.passageSearch?.evaluations.find((evaluation) => evaluation.selected);
   const ranked = selected?.rankedBedCandidates;
   assert.equal(ranked?.[0]?.bedStartMs, 0,
-    "equally rhythmic/chromatic windows prefer the one whose measured chord supports the vocal notes");
+    "the candidate's measured C-major interval makes the compatible placement rank first");
   assert.equal(ranked?.[0]?.similarities.vocalChordFit, 1);
   assert.equal(ranked?.[0]?.similarities.vocalChordCoverage, 1);
   assert.equal(ranked?.[1]?.bedStartMs, 4_000);
-  assert.equal(ranked?.[1]?.similarities.vocalChordFit, 0);
+  assert.ok((ranked?.[1]?.similarities.vocalChordFit ?? 1) < 1,
+    "the candidate's changed F-major interval lowers the same vocal's chord-tone fit");
   assert.ok(result.plan.warnings.some((warning) => warning.includes("not calibrated or listener-validated")),
     "the new relative cue must not be described as verified arrangement quality");
 });

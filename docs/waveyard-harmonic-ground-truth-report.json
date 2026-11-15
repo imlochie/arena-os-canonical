@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "status": "blocked-reference-annotations-incomplete",
+  "metrics": null,
+  "blockers": [
+    {
+      "recordingId": "september",
+      "reasons": [
+        "two complete, independently locked reviews required",
+        "adjudicated chord intervals required"
+      ]
+    },
+    {
+      "recordingId": "another-one-bites-the-dust",
+      "reasons": [
+        "two complete, independently locked reviews required",
+        "adjudicated chord intervals required"
+      ]
+    },
+    {
+      "recordingId": "i-feel-it-coming-80s",
+      "reasons": [
+        "two complete, independently locked reviews required",
+        "adjudicated chord intervals required"
+      ]
+    },
+    {
+      "recordingId": "stayin-alive-reflex",
+      "reasons": [
+        "two complete, independently locked reviews required",
+        "adjudicated chord intervals required"
+      ]
+    },
+    {
+      "recordingId": "break-free-reflex",
+      "reasons": [
+        "two complete, independently locked reviews required",
+        "adjudicated chord intervals required"
+      ]
+    },
+    {
+      "recordingId": "blinding-lights-80s",
+      "reasons": [
+        "two complete, independently locked reviews required",
+        "adjudicated chord intervals required"
+      ]
+    }
+  ],
+  "sourcePredictionEvidence": "original-sources-measured-stems-missing",
+  "statisticalUnit": "song",
+  "heldOutTuning": false
+}

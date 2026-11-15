@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "studyId": "waveyard-harmonic-chords-v1",
+  "status": "awaiting-independent-annotation",
+  "partitionPolicy": "Fixed by whole song before chord annotation; no held-out labels may be used for candidate tuning.",
+  "annotationProtocol": {
+    "reviewerCount": 2,
+    "minimumCoverageFraction": 0.95,
+    "boundaryToleranceMs": 2000,
+    "reviewMode": "independent-blind-then-adjudicated",
+    "qualities": ["major", "minor", "dominant7", "minor7", "major7", "diminished", "augmented", "unknown"],
+    "rules": [
+      "Annotate the audible prevailing chord, not analyzer output, key signatures, or expected song theory.",
+      "Use exact intervals in milliseconds; use root null and quality unknown when harmony is ambiguous or unavailable.",
+      "Mark chord changes separately from interval labels and preserve uncertain boundary ranges.",
+      "Annotators must not view candidate or production predictions until both review files are locked.",
+      "Adjudicate disagreements only after both independent reviews are locked; preserve both originals and the rationale.",
+      "Verify rights and the exact source SHA-256 before any recording is shared with another reviewer."
+    ]
+  },
+  "recordings": [
+    { "id": "september", "title": "Earth, Wind & Fire — September", "durationMs": 215160, "sourceSha256": "6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1", "partition": "development" },
+    { "id": "another-one-bites-the-dust", "title": "Queen — Another One Bites the Dust", "durationMs": 222696, "sourceSha256": "30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c", "partition": "development" },
+    { "id": "i-feel-it-coming-80s", "title": "The Weeknd — I Feel It Coming (80s remix)", "durationMs": 259924, "sourceSha256": "1464946afc0aff4c4b106b10a6d0cb999f019b1efa0ece80d8d6980e2add3b90", "partition": "development" },
+    { "id": "stayin-alive-reflex", "title": "Bee Gees — Stayin' Alive (The Reflex Revision)", "durationMs": 371566, "sourceSha256": "a1bf58f20b60a0dc903bf7029ef196c144e66b72ffc7a0707130dfb9aee85387", "partition": "development" },
+    { "id": "break-free-reflex", "title": "Queen — I Want to Break Free (The Reflex Revision)", "durationMs": 405978, "sourceSha256": "b59ec128e86cddb06cf813356bc5f28b40d0fbef50ad00d2c921646d7b512e10", "partition": "held-out" },
+    { "id": "blinding-lights-80s", "title": "The Weeknd — Blinding Lights (80s remix)", "durationMs": 228856, "sourceSha256": "a0545c5d56a0815faca1275b841289b20dc58f25cd5e049f47469e45285946e5", "partition": "held-out" }
+  ],
+  "annotations": [
+    { "recordingId": "september", "sourceSha256": "6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1", "reviewers": [{ "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }, { "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }], "adjudicated": null },
+    { "recordingId": "another-one-bites-the-dust", "sourceSha256": "30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c", "reviewers": [{ "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }, { "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }], "adjudicated": null },
+    { "recordingId": "i-feel-it-coming-80s", "sourceSha256": "1464946afc0aff4c4b106b10a6d0cb999f019b1efa0ece80d8d6980e2add3b90", "reviewers": [{ "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }, { "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }], "adjudicated": null },
+    { "recordingId": "stayin-alive-reflex", "sourceSha256": "a1bf58f20b60a0dc903bf7029ef196c144e66b72ffc7a0707130dfb9aee85387", "reviewers": [{ "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }, { "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }], "adjudicated": null },
+    { "recordingId": "break-free-reflex", "sourceSha256": "b59ec128e86cddb06cf813356bc5f28b40d0fbef50ad00d2c921646d7b512e10", "reviewers": [{ "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }, { "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }], "adjudicated": null },
+    { "recordingId": "blinding-lights-80s", "sourceSha256": "a0545c5d56a0815faca1275b841289b20dc58f25cd5e049f47469e45285946e5", "reviewers": [{ "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }, { "reviewerId": null, "lockedAt": null, "complete": false, "coverageMs": 0, "intervals": [], "changePoints": [] }], "adjudicated": null }
+  ]
+}
