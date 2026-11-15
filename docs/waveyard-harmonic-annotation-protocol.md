@@ -37,13 +37,19 @@ node scripts/waveyard-harmonic-ground-truth-evaluation.mjs \
 ```
 
 The evaluator refuses mismatched source hashes, incomplete independent reviews,
-missing adjudication, or less than 95% timeline coverage. It compares adjudicated
-timeline bins, reports per-song and per-partition chord/root/quality metrics,
-abstention and unsupported named predictions, and one-to-one chord-change timing
-within the declared two-second tolerance. Macro-F1 confidence intervals resample
-whole songs, never time bins. Metrics remain null while annotation is incomplete.
-The test fixture for evaluator arithmetic is synthetic and is not musical
-accuracy evidence.
+missing adjudication, or less than 95% timeline coverage. It scores candidate
+and production timelines against the same adjudicated source timeline, reports
+per-song/per-partition chord, root, quality, abstention, unsupported-prediction
+and chord-change metrics, and computes a paired song-level candidate-minus-
+production macro-F1 interval. It resamples whole songs, never time bins. With
+only two held-out songs, that interval is descriptive and not generalizable.
+Metrics remain null while annotation is incomplete. Test fixtures are synthetic
+arithmetic checks, not musical accuracy evidence.
+
+The source annotations apply only to original mixes. Stem and recombined-bed
+measurements are not scored against full-mix labels. To score those domains,
+create separately reviewed, explicitly domain-labeled references; cross-domain
+agreement is not chord accuracy.
 
 ## Creating and importing blind reviewer packets
 
@@ -55,11 +61,12 @@ node scripts/waveyard-harmonic-annotation-packets.mjs prepare \
   generated-artifacts/waveyard-harmonic-reviews
 ```
 
-The packets contain exact source hashes and durations, but omit song titles,
+The packets contain exact source hashes and durations plus a reviewer slot and
+packet ID, but omit song titles,
 the development/held-out split, chord predictions and candidate output. The
 owner must deliver the matching hash-verified source audio separately, after
-recording the rights basis. Reviewers fill their own packet, including reviewer
-ID, rights basis, labels, coverage and a lock timestamp. The command refuses to
+recording the rights basis. Reviewers fill only their assigned packet, including
+reviewer ID, rights basis, labels, coverage and a lock timestamp. The command refuses to
 overwrite existing packet files so an accidental regeneration cannot discard
 review work.
 
@@ -74,12 +81,19 @@ node scripts/waveyard-harmonic-annotation-packets.mjs merge \
   generated-artifacts/waveyard-harmonic-reviews/harmonic-chords-v1-reviewed.json
 ```
 
-Merge validates reviewer independence, source hashes, chord labels, locked
-status and the 95% minimum coverage; it preserves both source timelines and
-leaves `adjudicated` null. A qualified adjudicator must resolve disagreements
-in the merged file before the existing evaluator can score it. Keep reviewer
-packets and the merged file as restricted, private evidence. Never regenerate
+Merge validates packet slots, distinct reviewer IDs, source hashes, chord
+labels, locked status and the 95% minimum coverage. It preserves both source
+timelines, hashes the exact submitted JSON bytes, creates a compact disagreement
+queue, and leaves `adjudicated` null. Reviewer IDs are self-reported: the study
+owner must verify identity and independent completion before accepting
+submissions. Rights-basis text is a record, not legal clearance. A qualified
+adjudicator must resolve disagreements before the evaluator can score. Keep
+review packets and merged evidence restricted and private. Never regenerate
 packets into a directory that contains completed reviews.
+
+`reviewMerge.disagreementQueue` lists spans where reviewer labels differ; it is
+a work queue, not an adjudicated answer. The original packet files remain the
+authoritative submissions.
 
 ## Remaining human review
 

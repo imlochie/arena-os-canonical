@@ -99,6 +99,13 @@ test("two locked independent packets merge by verified hash and remain awaiting 
     merged.annotations[0].reviewers[0].rightsBasis,
     "Owner-authorized local annotation",
   );
+  assert.equal(merged.reviewMerge.status, "awaiting-human-adjudication");
+  assert.equal(merged.reviewMerge.disagreementCount, 0);
+  const differing = lockedPackets();
+  differing[1].recordings[0].intervals[0].root = "F";
+  const disagreement = mergeReviewPackets(template(), differing).reviewMerge.disagreementQueue;
+  assert.deepEqual(disagreement, [{ recordingId: "known-song", sourceSha256, startMs: 0, endMs: 1000,
+    reviewerLabels: ["C:major", "F:major"], status: "requires-human-adjudication" }]);
 });
 
 test("merge rejects duplicate reviewers, incomplete locks, insufficient coverage and altered hashes", () => {
@@ -171,6 +178,7 @@ test("merge rejects duplicate reviewers, incomplete locks, insufficient coverage
       ]),
     /unknown or duplicate source hash/,
   );
+  assert.throws(() => mergeReviewPackets(template(), [packets[1], packets[0]]), /packet identity or blinding/);
 });
 
 test("merge refuses to overwrite existing independent review evidence", () => {

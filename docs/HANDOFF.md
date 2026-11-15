@@ -1,5 +1,37 @@
 # Arena handoff — read this first
 
+## Latest increment: v0.2.0 evidence pipeline and acceptance blockers
+
+The candidate remains offline and production remains unchanged. The runner now
+records the unchanged production event timeline alongside candidate events,
+adds ffprobe container/sample-rate/channel metadata, and recombines the
+instrumental bed from bass + drums + other while verifying all four pinned
+stems. It refuses to overwrite a richer saved run report with a run missing
+original sources. The prior verified six-source report remains the evidence;
+this checkout could not regenerate it because the private original files are
+not present locally.
+
+The evaluator scores candidate and production against the same adjudicated
+source labels and computes paired song-level macro-F1 differences. It does not
+score stem or instrumental-bed output against original-mix labels. Blind packets
+bind to their assigned reviewer slot; merge validates submissions, hashes the
+exact submitted JSON files and emits a human disagreement queue. Reviewer
+identity and independent completion remain owner-verified. The evaluation gate
+and all eight pinned missing stem paths/hashes are summarized in
+[`waveyard-harmonic-acceptance-readiness.md`](waveyard-harmonic-acceptance-readiness.md).
+
+Verification this increment: packet/evaluator tests **12/12 passed**;
+candidate/analysis tests **38/38 passed**; `pnpm run typecheck` passed; and
+`PORT=3000 BASE_PATH=/ pnpm run build` passed (with existing sourcemap/chunk
+warnings). A fresh mashup test attempt stalled without output for about 50
+seconds and was stopped; the prior 50/50 planner suite result remains recorded
+below, but was not reproduced in this increment. The candidate run was not
+regenerated: the six source files are absent from this checkout. Its overwrite
+guard was exercised and preserved the prior complete report. Exact stems and
+independent annotations remain unavailable. The broader 226-file sweep remains
+incomplete with the previously listed environment and harness failure classes; do not claim a repository-wide pass.
+The detailed disposition and remaining gates are in the readiness document.
+
 ## Latest increment: verified-source harmonic candidate study
 
 The offline candidate is now version 0.2.0. It retains no full-track spectra,

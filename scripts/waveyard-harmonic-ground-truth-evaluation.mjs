@@ -147,6 +147,22 @@ export function bootstrapSongMacroF1(songScores, iterations = 2000, seed = 42) {
   return { songCount: values.length, iterations, lower95: means[Math.floor(iterations * 0.025)], upper95: means[Math.min(iterations - 1, Math.floor(iterations * 0.975))] };
 }
 
+export function bootstrapPairedMacroF1Delta(songScores, iterations = 2000, seed = 43) {
+  const pairs = songScores.map((song) => [song.candidate?.chord?.macroF1, song.production?.chord?.macroF1])
+    .filter(([candidate, production]) => Number.isFinite(candidate) && Number.isFinite(production))
+    .map(([candidate, production]) => candidate - production);
+  if (pairs.length < 2) return { songCount: pairs.length, iterations: 0, meanDelta: pairs.length ? pairs[0] : null, lower95: null, upper95: null };
+  const sample = random(seed); const means = [];
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    let total = 0;
+    for (let index = 0; index < pairs.length; index += 1) total += pairs[Math.floor(sample() * pairs.length)];
+    means.push(total / pairs.length);
+  }
+  means.sort((a, b) => a - b);
+  return { songCount: pairs.length, iterations, meanDelta: pairs.reduce((sum, value) => sum + value, 0) / pairs.length,
+    lower95: means[Math.floor(iterations * 0.025)], upper95: means[Math.min(iterations - 1, Math.floor(iterations * 0.975))] };
+}
+
 export function evaluateStudy(template, predictions) {
   const predictionByTrack = new Map((predictions.measurements ?? []).filter((measurement) => measurement.sourceDomain === "original-source")
     .map((measurement) => [measurement.trackId, measurement]));
@@ -164,39 +180,46 @@ export function evaluateStudy(template, predictions) {
       reasons.push("two complete, independently locked reviews required");
     if (!annotation?.adjudicated || annotation.adjudicated.status !== "adjudicated") reasons.push("adjudicated chord intervals required");
     if (annotation?.adjudicated?.status === "adjudicated") reasons.push(...validateAdjudicated(annotation.adjudicated, recording.durationMs));
-    const metrics = prediction && annotation?.adjudicated?.status === "adjudicated"
-      ? scoreSong(annotation.adjudicated, prediction.candidate, recording.durationMs, template.annotationProtocol?.boundaryToleranceMs ?? 2000)
-      : null;
-    if (metrics && metrics.referenceCoverageFraction < (template.annotationProtocol?.minimumCoverageFraction ?? 0.95))
+    const candidateMetrics = prediction && annotation?.adjudicated?.status === "adjudicated"
+      ? scoreSong(annotation.adjudicated, prediction.candidate, recording.durationMs, template.annotationProtocol?.boundaryToleranceMs ?? 2000) : null;
+    const productionMetrics = prediction?.production && annotation?.adjudicated?.status === "adjudicated"
+      ? scoreSong(annotation.adjudicated, prediction.production, recording.durationMs, template.annotationProtocol?.boundaryToleranceMs ?? 2000) : null;
+    if (prediction && !prediction.production?.events) reasons.push("production detector timeline missing from source measurement");
+    if (candidateMetrics && candidateMetrics.referenceCoverageFraction < (template.annotationProtocol?.minimumCoverageFraction ?? 0.95))
       reasons.push("adjudicated reference coverage below minimum");
     if (reasons.length) blockers.push({ recordingId: recording.id, reasons });
     recordings.push({ recordingId: recording.id, partition: recording.partition, sourceSha256: recording.sourceSha256,
       runtimeMs: prediction?.candidate?.runtimeMs ?? null, additionalPeakRssBytes: prediction?.candidate?.additionalPeakRssBytes ?? null,
-      metrics: reasons.length ? null : metrics, blockedReasons: reasons });
+      candidateMetrics: reasons.length ? null : candidateMetrics, productionMetrics: reasons.length ? null : productionMetrics, blockedReasons: reasons });
   }
-  const ready = recordings.filter((recording) => recording.metrics);
+  const ready = recordings.filter((recording) => recording.candidateMetrics && recording.productionMetrics);
   const byPartition = {};
   for (const partition of ["development", "held-out"]) {
     const songs = ready.filter((recording) => recording.partition === partition);
     const mean = (select) => { const values = songs.map(select).filter(Number.isFinite); return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null; };
+    const summarize = (field) => ({ macroF1: mean((song) => song[`${field}Metrics`].chord?.macroF1),
+      precision: mean((song) => song[`${field}Metrics`].chord?.precision), recall: mean((song) => song[`${field}Metrics`].chord?.recall),
+      rootAccuracy: mean((song) => song[`${field}Metrics`].rootAccuracy),
+      chordQualityAccuracyGivenCorrectRoot: mean((song) => song[`${field}Metrics`].chordQualityAccuracyGivenCorrectRoot),
+      abstentionRate: mean((song) => song[`${field}Metrics`].abstentionRateOnLabeledBins),
+      unsupportedPredictionRate: mean((song) => song[`${field}Metrics`].unsupportedPredictionRate),
+      chordChangeTiming: { precision: mean((song) => song[`${field}Metrics`].chordChangeTiming.precision),
+        recall: mean((song) => song[`${field}Metrics`].chordChangeTiming.recall),
+        meanAbsoluteErrorMs: mean((song) => song[`${field}Metrics`].chordChangeTiming.meanAbsoluteErrorMs) } });
+    const paired = songs.map((song) => ({ candidate: song.candidateMetrics, production: song.productionMetrics }));
     byPartition[partition] = { songs: songs.length,
-      macroF1: mean((song) => song.metrics.chord?.macroF1),
-      precision: mean((song) => song.metrics.chord?.precision),
-      recall: mean((song) => song.metrics.chord?.recall),
-      rootAccuracy: mean((song) => song.metrics.rootAccuracy),
-      chordQualityAccuracyGivenCorrectRoot: mean((song) => song.metrics.chordQualityAccuracyGivenCorrectRoot),
-      abstentionRate: mean((song) => song.metrics.abstentionRateOnLabeledBins),
-      unsupportedPredictionRate: mean((song) => song.metrics.unsupportedPredictionRate),
-      chordChangeTiming: {
-        precision: mean((song) => song.metrics.chordChangeTiming.precision),
-        recall: mean((song) => song.metrics.chordChangeTiming.recall),
-        meanAbsoluteErrorMs: mean((song) => song.metrics.chordChangeTiming.meanAbsoluteErrorMs),
-      },
-      songBootstrap95: bootstrapSongMacroF1(songs) };
+      candidate: summarize("candidate"), production: summarize("production"),
+      pairedCandidateMinusProductionMacroF1: bootstrapPairedMacroF1Delta(paired),
+      candidateSongBootstrap95: bootstrapSongMacroF1(songs.map((song) => ({ metrics: song.candidateMetrics }))),
+      productionSongBootstrap95: bootstrapSongMacroF1(songs.map((song) => ({ metrics: song.productionMetrics }))) };
   }
-  return { schemaVersion: 1, status: blockers.length ? "blocked-reference-annotations-incomplete" : "scored",
-    metrics: blockers.length ? null : { perSong: recordings, byPartition, heldOutMacroF1SongBootstrap95: byPartition["held-out"].songBootstrap95 },
-    blockers, sourcePredictionEvidence: predictions.status, statisticalUnit: "song", heldOutTuning: false };
+  return { schemaVersion: 2, status: blockers.length ? "blocked-reference-annotations-incomplete" : "scored",
+    metrics: blockers.length ? null : { perSong: recordings, byPartition,
+      heldOutCandidateMacroF1SongBootstrap95: byPartition["held-out"].candidateSongBootstrap95,
+      heldOutProductionMacroF1SongBootstrap95: byPartition["held-out"].productionSongBootstrap95,
+      heldOutPairedCandidateMinusProductionMacroF1: byPartition["held-out"].pairedCandidateMinusProductionMacroF1 },
+    blockers, sourcePredictionEvidence: predictions.status, statisticalUnit: "song", heldOutTuning: false,
+    scoringScope: "Original-source annotations only. Stem and instrumental-bed measurements require separately adjudicated domain-specific references; they are never scored against original-mix labels." };
 }
 
 async function main() {

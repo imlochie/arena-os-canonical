@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -58,12 +59,13 @@ export function createReviewPackets(template) {
     schemaVersion: 1,
     studyId: template.studyId,
     packetId: `${template.studyId}-reviewer-${reviewerNumber}`,
+    reviewerSlot: reviewerNumber,
     reviewerId: null,
     rightsBasis: null,
     blind: true,
     predictionsIncluded: false,
     instructions:
-      "Annotate each exact recording independently. Do not consult analyzer predictions or another review. Enter reviewerId, rightsBasis, intervals, changePoints, coverageMs, complete and lockedAt before returning this file.",
+      "Annotate each exact recording independently. Do not consult analyzer predictions or another review. Enter reviewerId and rightsBasis; complete every timeline and change point. Set complete=true and lockedAt only after review is finished. Return this JSON file unchanged after locking.",
     recordings: template.recordings.map((recording, index) => ({
       recordingKey: `recording-${String(index + 1).padStart(2, "0")}`,
       sourceSha256: recording.sourceSha256,
@@ -78,10 +80,13 @@ export function createReviewPackets(template) {
   return packets;
 }
 
-function validatePacket(packet, template) {
+function validatePacket(packet, template, expectedSlot) {
+  const expectedPacketId = `${template.studyId}-reviewer-${expectedSlot}`;
   if (
     packet?.schemaVersion !== 1 ||
     packet.studyId !== template.studyId ||
+    packet.packetId !== expectedPacketId ||
+    packet.reviewerSlot !== expectedSlot ||
     packet.blind !== true ||
     packet.predictionsIncluded !== false
   )
@@ -180,7 +185,7 @@ export function mergeReviewPackets(template, packets) {
   validateTemplate(template);
   if (!Array.isArray(packets) || packets.length !== 2)
     throw new Error("Exactly two independent review packets are required");
-  for (const packet of packets) validatePacket(packet, template);
+  for (let index = 0; index < packets.length; index += 1) validatePacket(packets[index], template, index + 1);
   if (packets[0].reviewerId === packets[1].reviewerId)
     throw new Error("Reviewers must have distinct IDs");
   const sourceByHash = new Map(
@@ -206,36 +211,38 @@ export function mergeReviewPackets(template, packets) {
     )
       throw new Error("Refusing to overwrite existing reviews or adjudication");
   }
+  const disagreementQueue = [];
   merged.annotations = template.recordings.map((recording) => {
     const existing = annotationByHash.get(recording.sourceSha256);
     if (!existing)
       throw new Error(`Template annotation slot missing for ${recording.id}`);
+    const reviews = packets.map((packet) => {
+      const review = packet.recordings.find((entry) => entry.sourceSha256 === recording.sourceSha256);
+      if (!review) throw new Error(`Reviewer ${packet.reviewerId} omitted ${recording.id}`);
+      return { reviewerId: packet.reviewerId, rightsBasis: packet.rightsBasis, lockedAt: review.lockedAt,
+        complete: true, coverageMs: review.intervals.reduce((total, interval) => total + interval.endMs - interval.startMs, 0),
+        intervals: review.intervals, changePoints: review.changePoints };
+    });
+    const boundaries = [...new Set(reviews.flatMap((review) => review.intervals.flatMap((interval) => [interval.startMs, interval.endMs])))].sort((a, b) => a - b);
+    for (let index = 1; index < boundaries.length; index += 1) {
+      const startMs = boundaries[index - 1]; const endMs = boundaries[index]; const midpoint = (startMs + endMs) / 2;
+      const labels = reviews.map((review) => review.intervals.find((interval) => interval.startMs <= midpoint && midpoint < interval.endMs) ?? null)
+        .map((interval) => interval ? (interval.root === null ? "unknown" : `${interval.root}:${interval.quality}`) : "unlabeled");
+      if (labels[0] !== labels[1]) {
+        const previous = disagreementQueue.at(-1);
+        if (previous?.recordingId === recording.id && previous.endMs === startMs && previous.reviewerLabels[0] === labels[0] && previous.reviewerLabels[1] === labels[1]) previous.endMs = endMs;
+        else disagreementQueue.push({ recordingId: recording.id, sourceSha256: recording.sourceSha256, startMs, endMs, reviewerLabels: labels, status: "requires-human-adjudication" });
+      }
+    }
     return {
       ...existing,
-      reviewers: packets.map((packet) => {
-        const review = packet.recordings.find(
-          (entry) => entry.sourceSha256 === recording.sourceSha256,
-        );
-        if (!review)
-          throw new Error(
-            `Reviewer ${packet.reviewerId} omitted ${recording.id}`,
-          );
-        return {
-          reviewerId: packet.reviewerId,
-          rightsBasis: packet.rightsBasis,
-          lockedAt: review.lockedAt,
-          complete: true,
-          coverageMs: review.intervals.reduce(
-            (total, interval) => total + interval.endMs - interval.startMs,
-            0,
-          ),
-          intervals: review.intervals,
-          changePoints: review.changePoints,
-        };
-      }),
+      reviewers: reviews,
       adjudicated: null,
     };
   });
+  merged.reviewMerge = { status: "awaiting-human-adjudication", reviewerIds: packets.map((packet) => packet.reviewerId),
+    identityVerification: "reviewer IDs are self-reported and must be independently verified by the study owner",
+    disagreementCount: disagreementQueue.length, disagreementQueue };
   return merged;
 }
 
@@ -285,12 +292,14 @@ async function main() {
       throw new Error(
         "Usage: node scripts/waveyard-harmonic-annotation-packets.mjs merge TEMPLATE REVIEWER_1 REVIEWER_2 OUTPUT",
       );
-    const [template, first, second] = await Promise.all(
-      [templatePath, reviewerOnePath, reviewerTwoPath].map(async (path) =>
-        JSON.parse(await readFile(resolve(path), "utf8")),
-      ),
-    );
-    const result = mergeReviewPackets(template, [first, second]);
+    const [template, firstText, secondText] = await Promise.all([
+      readFile(resolve(templatePath), "utf8"), readFile(resolve(reviewerOnePath), "utf8"), readFile(resolve(reviewerTwoPath), "utf8"),
+    ]);
+    const result = mergeReviewPackets(JSON.parse(template), [JSON.parse(firstText), JSON.parse(secondText)]);
+    result.reviewMerge.submissions = [
+      { packetId: `${result.studyId}-reviewer-1`, fileName: resolve(reviewerOnePath).split(/[\\/]/).at(-1), sha256: createHash("sha256").update(firstText).digest("hex") },
+      { packetId: `${result.studyId}-reviewer-2`, fileName: resolve(reviewerTwoPath).split(/[\\/]/).at(-1), sha256: createHash("sha256").update(secondText).digest("hex") },
+    ];
     await writeNewFile(outputPath, result);
     console.log(
       JSON.stringify(

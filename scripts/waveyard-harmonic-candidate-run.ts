@@ -47,6 +47,18 @@ function decode(path: string): Float32Array {
   if (pcm.some((sample) => !Number.isFinite(sample))) throw new Error(`Non-finite analysis PCM for ${basename(path)}`);
   return pcm;
 }
+function probe(path: string): Record<string, unknown> {
+  try {
+    const json = execFileSync(process.env.ARENA_FFPROBE_PATH || "ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path], { encoding: "utf8" });
+    const parsed = JSON.parse(json) as { streams?: Array<Record<string, unknown>>; format?: Record<string, unknown> };
+    const audio = parsed.streams?.find((stream) => stream.codec_type === "audio");
+    return { container: parsed.format?.format_name ?? null, durationSeconds: Number(parsed.format?.duration) || null,
+      audioCodec: audio?.codec_name ?? null, sampleRate: Number(audio?.sample_rate) || null,
+      channels: Number(audio?.channels) || null, channelLayout: audio?.channel_layout ?? null };
+  } catch (error) {
+    return { probeError: error instanceof Error ? error.message : String(error) };
+  }
+}
 async function candidateInWorker(pcm: Float32Array): Promise<CandidateResult & { sampledPeakRssBytes: number }> {
   const transfer = pcm.buffer as ArrayBuffer;
   const baseline = process.memoryUsage().rss;
@@ -78,8 +90,8 @@ async function evaluate(trackId: string, role: string, path: string, sha256: str
   const candidateNamed = result.events.filter(named).length;
   const candidateKeys = new Set(result.events.filter(named).map((event) => `${event.root}:${event.quality}`));
   const productionKeys = new Set(productionEvents.filter(named).map((event) => `${event.root}:${event.quality}`));
-  measurements.push({ trackId, sourceDomain: role, assetSha256: sha256, durationMs,
-    production: { engine: "arena-js-dsp", namedWindows: productionNamed, totalWindows: productionEvents.length, runtimeMs: productionRuntimeMs },
+  measurements.push({ trackId, sourceDomain: role, assetSha256: sha256, durationMs, inputFormat: path.startsWith("derived:") ? null : probe(path),
+    production: { engine: "arena-js-dsp", namedWindows: productionNamed, totalWindows: productionEvents.length, runtimeMs: productionRuntimeMs, events: productionEvents },
     candidate: { engine: "waveyard-multires-overtone-context-candidate", version: "0.2.0", namedSegments: candidateNamed,
       totalSegments: result.events.length, abstentionRate: result.events.length ? 1 - candidateNamed / result.events.length : null,
       runtimeMs: result.runtimeMs, rssBeforeBytes: result.rssBeforeBytes, rssAfterBytes: result.rssAfterBytes,
@@ -105,9 +117,15 @@ for (const track of manifest.tracks) {
     const lengths = Object.values(decoded).map((pcm) => pcm.length);
     if (new Set(lengths).size !== 1) throw new Error(`Cannot recombine ${track.id}: stem decoded lengths differ; alignment is unverified.`);
     const mix = new Float32Array(lengths[0]!);
-    for (const pcm of Object.values(decoded)) for (let i = 0; i < mix.length; i += 1) mix[i] += pcm[i]!;
-    const compositeSha256 = createHash("sha256").update(Object.values(track.stems!).map((asset) => asset.sha256).join(":" )).digest("hex");
-    await evaluate(track.id, "recombined-four-stem-bed", `derived:${track.id}`, compositeSha256, mix);
+    // The target is the instrumental bed. Vocals are hash-verified above but
+    // deliberately excluded from the recombination.
+    for (const role of ["bass", "drums", "other"]) {
+      const pcm = decoded[role];
+      if (!pcm) throw new Error(`Cannot recombine ${track.id}: required ${role} stem missing`);
+      for (let i = 0; i < mix.length; i += 1) mix[i] += pcm[i]!;
+    }
+    const compositeSha256 = createHash("sha256").update(`waveyard-instrumental-bed-v1:${["bass", "drums", "other"].map((role) => track.stems![role]!.sha256).join(":")}`).digest("hex");
+    await evaluate(track.id, "recombined-instrumental-bed", `derived:${track.id}`, compositeSha256, mix);
   }
 }
 
@@ -121,10 +139,20 @@ const report = { schemaVersion: 1, candidate: { engine: "waveyard-multires-overt
   measurements, aggregate: { accuracy: null, reason: "No independent verified chord labels are available; named coverage and disagreements are diagnostic only." },
   peakProcessRssBytes: peakRssBytes,
   limitations: ["Source, separated-stem and recombined-bed domains are reported separately.",
-    "Recombined beds require four verified stems with equal decoded lengths; equal length does not adjudicate phase/gain alignment.",
+    "Recombined instrumental beds require all four verified pinned stems (bass, drums, vocals, other) with equal decoded lengths; only bass, drums and other are summed. Equal length does not adjudicate phase/gain alignment.",
     "No chords, boundaries or reviewer judgments are inferred from the audio.",
     "Source melody and bed harmonic evidence are not separated in original-source measurements."] };
 const output = resolve(root, process.argv[2] ?? "docs/waveyard-harmonic-candidate-run-report.json");
+if (sourceCount < 6) {
+  try {
+    const previous = JSON.parse(await readFile(output, "utf8")) as { sourceCountVerified?: number };
+    if ((previous.sourceCountVerified ?? 0) > sourceCount)
+      throw new Error(`Refusing to replace richer verified evidence at ${output} with an incomplete run (${sourceCount}/6 original sources). Restore the six pinned sources or choose a new output path.`);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Refusing to replace richer")) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+  }
+}
 await writeFile(output, `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify({ output: output.replace(`${root}/`, ""), status: report.status, sourceCountVerified: sourceCount,
   stemsVerified, stemsRequired, measurementCount: measurements.length, peakProcessRssBytes: peakRssBytes,
