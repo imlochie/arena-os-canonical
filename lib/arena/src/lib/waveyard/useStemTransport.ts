@@ -888,6 +888,7 @@ export function useStemTransport(
     const request = ++playRequest.current;
     wantsPlayback.current = true;
     setStarting(true);
+    console.error(`TRANSPORT_TRACE starting:true request=${request}`);
     try {
       setError(null);
       if (playbackIds.length === 0) {
@@ -931,7 +932,9 @@ export function useStemTransport(
       }
       // Resume inside the user's activation before waiting on module I/O
       // (important on mobile). There is no destination bypass while loading.
+      console.error(`TRANSPORT_TRACE ready-await:start request=${request} current=${playRequest.current}`);
       await sessionOutput.current?.ready;
+      console.error(`TRANSPORT_TRACE ready-await:done request=${request} current=${playRequest.current} wants=${wantsPlayback.current}`);
       // A superseded request must never leave the control stuck in "starting".
       // WebKit fires this path: `play()` is awaited while another call (the
       // playback-control handler) bumps `playRequest`, and the early return
@@ -952,7 +955,9 @@ export function useStemTransport(
       for (const element of elements) element.currentTime = start;
       // Wait for every media promise. Promise.all can reject early while other
       // stems are still pending and may start after a pause/error cleanup.
+      console.error(`TRANSPORT_TRACE media-play:start request=${request} current=${playRequest.current}`);
       const results = await Promise.allSettled(elements.map((element) => element.play()));
+      console.error(`TRANSPORT_TRACE media-play:done request=${request} current=${playRequest.current} rejected=${results.filter((r) => r.status === "rejected").length}`);
       if (request !== playRequest.current) {
         settleSupersededRequest(elements);
         return;
