@@ -1,4 +1,5 @@
 export const PASSAGE_FINGERPRINT_ENGINE = "waveyard-passage-fingerprint";
+export { measureStemGroove, compareStemGrooves, proposeGrooveEntryShift } from "./stem-groove";
 export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "2.2.0";
 export const PASSAGE_MATCH_SIMILARITY_THRESHOLD = 0.92;
 export const MINIMUM_PERSISTENT_STEM_CHANGE_DB = 6;

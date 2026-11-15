@@ -1960,6 +1960,7 @@ test(
       const jointVocalId = await addFixtureSource("joint-tempo-vocal", [
         { stemType: "vocals", seconds: 4 },
         { stemType: "drums", seconds: 4 },
+        { stemType: "bass", seconds: 4 },
       ], { bpm: 104 });
       const jointBedId = await addFixtureSource("joint-tempo-bed", [
         { stemType: "drums", seconds: 8 },
@@ -2041,8 +2042,12 @@ test(
       }
       assert.ok(agreement > 0.7,
         `the saved/exported bed must track the rendered shared-tempo waveform, not just its duration (best correlation ${agreement}, lag ${bestLagFrames} frames)`);
-      for (const mode of ["replace", "layer"]) {
-        const extra = { layerStemTypes: ["drums"], stemLayerMode: mode };
+      const sourceAnalysisBeforeGroove = await dbModule.db.select().from(schema.sourceAnalyses)
+        .where(inArray(schema.sourceAnalyses.sourceAssetId, [jointVocalId, jointBedId]));
+      for (const [mode, roles] of [
+        ["replace", ["drums"]], ["layer", ["drums"]], ["replace", ["bass"]], ["replace", ["drums", "bass"]],
+      ] as const) {
+        const extra = { layerStemTypes: [...roles], stemLayerMode: mode };
         const response = await routeModule.POST(renderPair(jointVocalId, jointBedId, {
           ...extra, action: "save",
         }), params);
@@ -2054,9 +2059,24 @@ test(
           mashupPlan: {
             donorTempoStemIds: string[];
             clipTimingMaps: Array<{ stemAssetId: string; sourceOffsetMs: number; durationMs: number; points: Array<{ sourceMs: number; outputMs: number }> }>;
+            crossStemGroove: {
+              profiles: Array<{ sourceAssetId: string; evidence: { role: string; status: string } }>;
+              appliedEntryShiftMs: number;
+            };
           };
         };
-        assert.equal(snapshot.mashupPlan.donorTempoStemIds.length, 1);
+        assert.equal(snapshot.mashupPlan.donorTempoStemIds.length, roles.length);
+        assert.ok(snapshot.mashupPlan.crossStemGroove);
+        assert.equal(snapshot.mashupPlan.crossStemGroove.appliedEntryShiftMs, 0,
+          "pure tones do not authorize a groove correction");
+        for (const role of roles) {
+          assert.ok(snapshot.mashupPlan.crossStemGroove.profiles.some((profile) =>
+            profile.sourceAssetId === jointVocalId && profile.evidence.role === role),
+          "each selected donor role is reconsidered, including unavailable measurements");
+          if (mode === "replace") assert.ok(!snapshot.mashupPlan.crossStemGroove.profiles.some((profile) =>
+            profile.sourceAssetId === jointBedId && profile.evidence.role === role),
+          "removed bed roles must not survive as composite groove evidence");
+        }
         const map = snapshot.mashupPlan.clipTimingMaps.find((candidate) =>
           snapshot.mashupPlan.donorTempoStemIds.includes(candidate.stemAssetId));
         assert.ok(map, `${mode} donor needs its own persisted map`);
@@ -2101,6 +2121,17 @@ test(
           /required saved stem timing map/i,
         );
       }
+      const sourceAnalysisAfterGroove = await dbModule.db.select().from(schema.sourceAnalyses)
+        .where(inArray(schema.sourceAnalyses.sourceAssetId, [jointVocalId, jointBedId]));
+      const byId = <T extends { id: string }>(rows: T[]) => [...rows].sort((a, b) => a.id.localeCompare(b.id));
+      assert.deepEqual(byId(sourceAnalysisAfterGroove), byId(sourceAnalysisBeforeGroove),
+        "replacements/layers must not discard or rewrite valid source analysis");
+      const removedLayer = await routeModule.POST(renderPair(jointVocalId, jointBedId, { action: "plan" }), params);
+      assert.equal(removedLayer.status, 200);
+      const removedLayerPlan = await removedLayer.json() as { plan: { crossStemGroove: { comparisons: unknown[]; appliedEntryShiftMs: number } } };
+      assert.equal(removedLayerPlan.plan.crossStemGroove.comparisons.length, 0);
+      assert.equal(removedLayerPlan.plan.crossStemGroove.appliedEntryShiftMs, 0,
+        "removing a layer must not carry a previous composition's groove decision");
     }
 
     // (1) Single combined instrumental stem + requested replacement: refuse,

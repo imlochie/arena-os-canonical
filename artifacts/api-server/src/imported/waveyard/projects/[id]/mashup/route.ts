@@ -88,6 +88,7 @@ import {
 import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { createPersistedClipTempoMap, donorClipTempoMap } from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
+import { measureStemGroove } from "@workspace/arena/lib/waveyard/types";
 
 export const dynamic = "force-dynamic";
 
@@ -1333,6 +1334,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       }
 
       const grooveEvidence = await loadMeasuredBedGrooveEvidence(projectId, bedId);
+      // Measure retained roles against their OWN source grid before composite
+      // re-analysis can replace the mixture's tempo/grid evidence.
+      const originalBedGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+      const originalBedGrooves = [
+        measureStemGroove("drums", grooveEvidence.drumEvents, originalBedGrid, bed.beatConfidence),
+        measureStemGroove("bass", grooveEvidence.bassEvents, originalBedGrid, bed.beatConfidence),
+      ];
       bed.drumEvents = grooveEvidence.drumEvents;
       bed.bassEvents = grooveEvidence.bassEvents;
       bed.grooveWarnings = grooveEvidence.warnings;
@@ -1422,6 +1430,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         }
       }
+
+      bed.stemGrooves = originalBedGrooves.filter((profile) =>
+        !compositionForPlan?.replacedBedStemTypes.includes(profile.role));
+      const donorGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
+      const donorGrooveEvidence = donorStemsForPlan.size
+        ? await loadMeasuredBedGrooveEvidence(projectId, vocalsId)
+        : null;
+      vocals.stemGrooves = [...donorStemsForPlan.keys()].flatMap((name) => {
+        const role = name.slice("donor_".length);
+        if (role !== "drums" && role !== "bass") return [];
+        // Reuse persisted-first, checksum-current isolated-stem events and its
+        // bounded runtime cache; do not run another FFT analyzer per request.
+        const events = role === "bass" ? donorGrooveEvidence?.bassEvents ?? [] : donorGrooveEvidence?.drumEvents ?? [];
+        return [measureStemGroove(role, events, donorGrid, vocals.beatConfidence)];
+      });
 
       if (action === "compare") {
         const bedInfo = await inspectBed(projectId, bedId);
@@ -1834,6 +1857,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               clipTimingMaps,
               passageSearch: planned.plan.passageSearch ?? null,
               arrangement: planned.plan.arrangement ?? null,
+              crossStemGroove: planned.plan.crossStemGroove ?? null,
               rationale: planned.plan.rationale,
               warnings: planned.plan.warnings,
             },

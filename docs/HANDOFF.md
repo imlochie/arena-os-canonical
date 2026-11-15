@@ -1,5 +1,64 @@
 # Arena handoff — read this first
 
+## Current: bounded cross-stem groove evidence and entry correction
+
+### Audit and reused paths
+
+The completion ledger and ground-truth evaluation still leave real musical
+quality unverified. Existing isolated drum/bass onset detectors, checksum-current
+persisted event loading/runtime caches, source beat grids, four-subdivision
+passage signatures, paired-grid local WSOLA, and clip-bound timing maps are
+reused. No new detector, UI, database schema or audio-warp engine was added.
+Previously there was no independent eighth-note swing estimate and no explicit
+retained-role versus donor-role groove decision after composition resolution.
+
+### Bounded increment
+
+`types/stem-groove.ts` measures onset density, offbeat activity, subdivision
+accent distribution and stable paired eighth-note timing separately for each
+available drum/bass stem against its **own** source grid. Swing ratio is a
+measurement of paired attack timing, not a kick/snare classifier, semantic label
+or proof of quality. Sixteenth-note activity and unstable/missing/weak timing
+do not manufacture eighth-swing evidence. Offbeat activity is not a theoretical
+syncopation score. Route measurements reuse the persisted-first onset loader.
+
+After replacement/layer resolution, removed bed roles are excluded and every
+available retained/donor drum/bass pair is reconsidered on the transformed
+composition timeline. Contrasting swing is contextual evidence, not automatic
+incompatibility. At least eight independent beats, high confidence, 80% attack
+coverage and a stable error reduction must support a common 8–35 ms entry
+translation. All informative pairs must support it. The whole donor group,
+including vocals, moves together; no individual syllables/transients are
+quantised. Accepted local warps, ranked passage entries and phrase-end limits
+take precedence. Original source profiles/analysis rows remain unchanged.
+
+The existing plan/render/save paths consume the adjusted entry, so saved
+independent maps retain it. `mashupPlan.crossStemGroove` records request-derived
+source-bound summaries, pair decisions, rejected proposals and applied shift,
+without persisting large onset arrays or creating reusable analysis records.
+Studio continues using the same existing maps; export refusal is unchanged.
+
+### Evidence and limits
+
+Verification: **100/100** across groove, passage compatibility, planner/render,
+mix-bus, donor-integrity and local-map suites; **1/1 PostgreSQL production-route
+suite, zero skipped**; workspace typecheck and diff check passed. The synthetic
+entry example reduces measured attack error from 20 ms to zero across 48 attacks,
+and the render regression confirms the actual audio moves. This is not an
+independently reviewed real-music timing score. The API restarted cleanly.
+Synthetic A/B files
+and decision JSON are preserved (ignored by Git/deployment) under
+`generated-artifacts/waveyard-groove/`; they are engineering clicks, not music.
+There is no new real-separated-song listening acceptance. The production
+onset-extraction test uses the analyzer's actual 22.05 kHz mono contract,
+separately from 44.1 kHz stereo rendering.
+
+This does **not** implement arbitrary swing conversion, phrase repositioning,
+section-specific groove maps, kick/snare classification, or independent
+vocal/melodic rhythmic profiles. A common small offset cannot fix all groove
+differences. Do not describe this bounded increment as universal adaptation,
+calibrated musical compatibility, or STEM.FM parity.
+
 ## Current: donor replacement/layer timing maps
 
 The donor composition route now permits the existing conservative joint-tempo

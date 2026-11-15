@@ -38,6 +38,7 @@ import {
   type MashupMixResult,
 } from "./mashup-mix-bus";
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
+import { compareStemGrooves, proposeGrooveEntryShift, type StemGrooveEvidence } from "../types/stem-groove";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v12";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
@@ -59,6 +60,8 @@ export type MashupTransientEvent = {
 };
 
 export type MashupSourceProfile = {
+  /** Independent, request-local isolated-stem onset measurements, not full-mix drum labels. */
+  stemGrooves?: StemGrooveEvidence[];
   role: "vocals" | "instrumental";
   sourceAssetId?: string;
   sourceChecksumSha256?: string;
@@ -174,6 +177,12 @@ export type MashupArrangement = {
 };
 
 export type MashupPlan = {
+  crossStemGroove?: {
+    profiles: Array<{ sourceAssetId: string | null; sourceChecksumSha256: string | null; evidence: Omit<Extract<StemGrooveEvidence, { status: "measured" }>, "onsets"> | Extract<StemGrooveEvidence, { status: "unavailable" }> }>;
+    comparisons: Array<{ anchorRole: string; donorRole: string; relationship: ReturnType<typeof compareStemGrooves>; correction: ReturnType<typeof proposeGrooveEntryShift> }>;
+    appliedEntryShiftMs: number;
+    decision: string;
+  };
   engine: typeof MASHUP_PLANNER_ENGINE;
   alignmentStrategy: MashupAlignmentStrategy;
   /** Tempo of the rendered and persisted timeline, not merely a UI label. */
@@ -2786,10 +2795,71 @@ export function planMashup(
       plan.rationale.push(`Both verified tempi (${trustedBedBpm} and ${trustedVocalBpm} BPM) support a shared ${plan.masterBpm.toFixed(2)} BPM timeline; pitch-preserving bed stretch ×${ratio.toFixed(4)} is required in render and export.`);
     }
   }
+  applyCrossStemGroove(plan, vocals, bed);
   return {
     ok: true,
     plan,
   };
+}
+
+/**
+ * Reconsider all available retained/donor drum/bass pairs. Only translate the
+ * donor group together; never change relative vocal/instrumental source timing.
+ */
+function applyCrossStemGroove(plan: MashupPlan, vocals: MashupSourceProfile, bed: MashupSourceProfile): void {
+  if (!vocals.stemGrooves?.length && !bed.stemGrooves?.length) return;
+  const first = plan.segments[0];
+  const comparisons = (bed.stemGrooves ?? []).flatMap((anchor) =>
+    (vocals.stemGrooves ?? []).map((donor) => ({
+      anchorRole: anchor.role, donorRole: donor.role,
+      relationship: compareStemGrooves(anchor, donor),
+      correction: proposeGrooveEntryShift(anchor, donor, {
+        bedRatio: plan.bedStretchRatio ?? 1, donorRatio: plan.vocalsStretchRatio,
+        sourceOffsetMs: first?.vocalsFromMs ?? 0,
+        entryMs: first?.mashupStartMs ?? 0, endMs: plan.durationMs,
+      }),
+    })));
+  const profiles = [bed, vocals].flatMap((source) => (source.stemGrooves ?? []).map((evidence) => ({
+    sourceAssetId: source.sourceAssetId ?? null,
+    sourceChecksumSha256: source.sourceChecksumSha256 ?? null,
+    evidence: evidence.status === "measured" ? (({ onsets: _onsets, ...summary }) => summary)(evidence) : evidence,
+  })));
+  const corrections = comparisons.filter((pair) => pair.correction.shiftMs !== 0);
+  let shift = corrections.length ? Math.round(corrections.reduce((sum, pair) => sum + pair.correction.shiftMs, 0) / corrections.length) : 0;
+  let decision = "No stable, small common entry correction is justified. Preserve the current phrasing.";
+  if (plan.segments.some((segment) => segment.localTempoMap)) {
+    shift = 0;
+    decision = "Preserve accepted local timing maps; a constant-phase comparison cannot override a non-linear warp.";
+  } else if (plan.passageSearch?.evaluations.some((evaluation) => evaluation.selected)) {
+    shift = 0;
+    decision = "Preserve the evidence-ranked passage entry; groove micro-positioning must be evaluated within that passage before moving it.";
+  } else if (corrections.some((pair) => Math.abs(pair.correction.shiftMs - shift) > 8)
+    || comparisons.some((pair) => pair.relationship.relationship === "rhythmic-contrast"
+      || pair.relationship.relationship !== "unavailable" && pair.correction.shiftMs === 0 && shift !== 0)) {
+    shift = 0;
+    decision = "Cross-stem evidence conflicts or shows rhythmic contrast; do not force a common correction.";
+  } else if (plan.segments.some((segment) => segment.mashupStartMs + shift < 0 || segment.mashupEndMs + shift > plan.durationMs)) {
+    shift = 0;
+    decision = "The proposed entry move would crop a phrase or cross the arrangement boundary.";
+  }
+  if (shift !== 0) {
+    plan.segments = plan.segments.map((segment) => ({
+      ...segment, mashupStartMs: segment.mashupStartMs + shift, mashupEndMs: segment.mashupEndMs + shift,
+    }));
+    if (plan.arrangement) {
+      plan.arrangement = {
+        ...plan.arrangement,
+        coherentEntryMs: plan.arrangement.coherentEntryMs + shift,
+        placements: plan.arrangement.placements.map((placement) => ({ ...placement, bedStartMs: placement.bedStartMs + shift })),
+        pairedBeatPhaseFit: null,
+        baselineBeatPhaseFit: null,
+        warnings: [...plan.arrangement.warnings, "Arrangement ranking metrics precede the reported groove entry translation; paired-grid fit is not re-certified."],
+      };
+    }
+    decision = `Moved the complete donor group ${shift} ms from measured cross-stem attacks; internal timing and swing are unchanged.`;
+    plan.rationale.push(decision);
+  }
+  plan.crossStemGroove = { profiles, comparisons, appliedEntryShiftMs: shift, decision };
 }
 
 export type MashupAlignmentCandidate = {

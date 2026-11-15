@@ -1,5 +1,22 @@
 # Waveyard completion ledger
 
+## Latest increment: cross-stem groove evidence and conservative entry movement
+
+The current planner can compare independent retained/donor drum/bass onset
+profiles, including paired eighth-note timing, rather than equating BPM with
+rhythmic feel. A supported, small correction translates the complete donor
+group without changing its internal groove. Missing/conflicting evidence,
+strong swing contrast, accepted local maps and phrase boundaries retain the
+existing plan. This is an entry correction, not a universal groove transformer.
+
+Production replacement/layer tests now include drum, bass and simultaneous
+replacement, save/reopen/export, required-map refusals, layer removal, exclusion
+of removed roles, and equality of original source analysis rows. They use tones
+and explicitly require **no** correction when onset evidence is missing.
+Synthetic attack tests exercise actual entry movement and retain A/B renders.
+No real-music quality or independent-listener acceptance is claimed. See the
+current top of `HANDOFF.md` for the precise measurement and safety scope.
+
 ## Latest increment: composition evidence invalidation
 
 Replacement planning now clears previous mix measurements in both the profile

@@ -3,6 +3,18 @@ name: Waveyard product expectation
 description: The user's core product expectation for Waveyard playback and Studio handoff.
 ---
 
+**Groove objective:** Matching BPM does not mean matching groove. Reconsider
+the retained and replacement/layer roles together, but preserve each source's
+musical character; rhythmic contrast can be desirable.
+
+**Why:** The user's cross-stem groove brief explicitly prioritizes coherent
+relationships over making every stem rhythmically identical.
+
+**How to apply:** Distinguish measured attack/subdivision timing from inferred
+feel or instrument labels. Let uncertainty retain the existing arrangement.
+Never force vocal syllables or percussion onto a grid to improve a numerical
+score, or claim that a shared tempo or synthetic onset test proves musical quality.
+
 **Cross-role timing scope:** A measured vocal phrase warp describes only that
 source interval, not an entire donor drum or bass stem. Preserve its measured
 interval and use an explicitly bounded continuation outside it; every source
