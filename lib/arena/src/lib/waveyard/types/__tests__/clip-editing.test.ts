@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import { expect } from "../../test-shim";
 import {
   MAX_TIMELINE_MS,
+  SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
   clipWindowIsValid,
   moveClipTimeline,
   slipClipSource,
@@ -25,6 +26,24 @@ const clip = {
 };
 
 describe("ordinary RemixClip advanced edits", () => {
+  it("allows only the half-second error from persisted whole-second source durations", () => {
+    const realTrackClip = {
+      ...clip,
+      timelineStartMs: 0,
+      durationMs: 215_137,
+      sourceOffsetMs: 0,
+      tempoSyncEnabled: false,
+    };
+    expect(clipWindowIsValid(realTrackClip, 215_000)).toBe(false);
+    expect(clipWindowIsValid(
+      realTrackClip,
+      215_000,
+      1,
+      SOURCE_DURATION_ROUNDING_TOLERANCE_MS,
+    )).toBe(true);
+    expect(clipWindowIsValid(realTrackClip, 215_000, 1, 136)).toBe(false);
+  });
+
   it("moves only the timeline anchor and enforces the shared timeline bound", () => {
     expect(moveClipTimeline(clip, 4_321)).toMatchObject({
       timelineStartMs: 4_321, sourceOffsetMs: 2_000, durationMs: 1_000,

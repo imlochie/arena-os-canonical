@@ -94,6 +94,7 @@ export function useArcadeGameSave(
   const [reloadKey, setReloadKey] = useState(0);
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
   const [canRetrySave, setCanRetrySave] = useState(true);
+  const [leavePrompt, setLeavePrompt] = useState<string | null>(null);
   const [hasRevisionConflict, setHasRevisionConflict] = useState(false);
   const storageFailure = useRef<"quota" | "blocked" | null>(null);
   const retryToken = useRef<string | null>(null);
@@ -111,6 +112,25 @@ export function useArcadeGameSave(
   const sessionRevision = useRef<string | null>(initialRevision);
   const revisionConflict = useRef(false);
   const retiredSaveWindow = useRef<Window | null>(null);
+  const pendingLeave = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (!leavePrompt || persistenceWarning) return;
+    const action = pendingLeave.current;
+    pendingLeave.current = null;
+    setLeavePrompt(null);
+    action?.();
+  }, [leavePrompt, persistenceWarning]);
+
+  useEffect(() => {
+    if (!persistenceWarning) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [persistenceWarning]);
 
   useEffect(() => {
     setMediaPlaybackError(null);
@@ -411,6 +431,27 @@ export function useArcadeGameSave(
     setReloadKey((key) => key + 1);
   }, []);
 
+  const guardLeave = useCallback((action: () => void, destination = "leave") => {
+    if (!persistenceWarning) {
+      action();
+      return;
+    }
+    pendingLeave.current = action;
+    setLeavePrompt(destination);
+  }, [persistenceWarning]);
+
+  const stayInGame = useCallback(() => {
+    pendingLeave.current = null;
+    setLeavePrompt(null);
+  }, []);
+
+  const discardAndLeave = useCallback(() => {
+    const action = pendingLeave.current;
+    pendingLeave.current = null;
+    setLeavePrompt(null);
+    action?.();
+  }, []);
+
   const restoreSavedProgress = useCallback(async (data: GameSaveData, expectedRaw: string | null, expectedRevision: string | null) => {
     if (!gameId) throw new Error("Select an imported HTML game before restoring progress.");
     await withProgressWriteLock(gameId, () => {
@@ -435,5 +476,6 @@ export function useArcadeGameSave(
   return {
     hasSavedProgress, mediaPlaybackError, persistenceWarning, canRetrySave, retrySaving, reloadKey, sessionId, initialRevision,
     hasRevisionConflict, reconcileStaleProgress, clearSavedProgress, reloadGame, restoreSavedProgress,
+    leavePrompt, guardLeave, stayInGame, discardAndLeave,
   };
 }

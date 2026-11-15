@@ -17,6 +17,7 @@ export type SourceSection = {
   analysisEngine: string;
   analysisEngineVersion: string;
   sourceChecksumSha256: string;
+  /** Versioned source-PCM rhythm/chroma evidence; supports phrase matching, not semantic labels. */
   passageFingerprint?: PassageFingerprint | null;
 };
 
@@ -33,14 +34,25 @@ export type SourceSectionStatus =
 export type SourceSectionCandidate = Omit<SourceSection, "id" | "sectionIndex" | "startMs" | "endMs" | "startBar" | "endBar" | "analysisEngine" | "analysisEngineVersion" | "sourceChecksumSha256">;
 
 export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionIndex" | "label" | "labelConfidence">): string {
+  if ((section.label === "verse" || section.label === "chorus") && section.labelConfidence < 0.75)
+    return `Inferred ${section.label} · unverified musical-form hypothesis`;
   if (section.label === "section") return `Section ${section.sectionIndex + 1}`;
   const repeatedPattern = /^pattern-repeat-([a-z]+)$/i.exec(section.label);
   const repeatedRhythm = /^rhythm-repeat-([a-z]+)$/i.exec(section.label);
+  const repeatedVocalPattern = /^vocal-pattern-repeat-([a-z]+)$/i.exec(section.label);
   const energyChange = /^energy-(rise|drop)$/i.exec(section.label);
   const similarityPercent = `${Math.round(clampUnit(section.labelConfidence) * 100)}%`;
+  if (section.label === "stem-change")
+    return `Stem activity shift · normalized signal strength ${similarityPercent}`;
+  if (section.label === "vocal-change")
+    return `Vocal activity shift · sustained presence change ${similarityPercent}`;
   if (repeatedPattern) {
     const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";
     return `${prefix} audio pattern ${repeatedPattern[1].toUpperCase()} · ${similarityPercent} rhythm+chroma similarity`;
+  }
+  if (repeatedVocalPattern) {
+    const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";
+    return `${prefix} audio pattern ${repeatedVocalPattern[1].toUpperCase()} · ${similarityPercent} rhythm+chroma and vocal-activity agreement`;
   }
   if (repeatedRhythm) {
     const prefix = section.labelConfidence >= 0.92 ? "Repeated" : "Candidate";

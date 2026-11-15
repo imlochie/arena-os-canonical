@@ -17,7 +17,11 @@ import { SoundDesignStudio } from "./studio/SoundDesignStudio";
 import { MasterStudio } from "./studio/MasterStudio";
 import type { InsertChain } from "@workspace/arena/lib/waveyard/mixer/inserts";
 import type { RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
-import { CHOP_SEQUENCER_TRACK_NAME } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
+import {
+  bindChopSequencerClipToTimeline,
+  CHOP_SEQUENCER_TRACK_NAME,
+  retimeChopSequencerTracks,
+} from "@workspace/arena/lib/waveyard/studio/vocal-chops";
 import { GeneratedLayers } from "./studio/GeneratedLayers";
 import { VocalChops } from "./studio/VocalChops";
 import { MashupStudio } from "./studio/MashupStudio";
@@ -567,7 +571,17 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   const changeRemix = useCallback((transform: (current: Remix) => Remix): Remix | null => {
     const current = remixRef.current;
     if (!current) return null;
-    const next = transform(current);
+    const transformed = transform(current);
+    const next = transformed.tempoBpm === current.tempoBpm
+      ? transformed
+      : {
+          ...transformed,
+          tracks: retimeChopSequencerTracks(
+            transformed.tracks,
+            current.tempoBpm,
+            transformed.tempoBpm,
+          ),
+        };
     remixRef.current = next;
     saveRevision.current += 1;
     record(current);
@@ -577,11 +591,34 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
   }, [queuePersist, record]);
   const previewTimeline = useCallback((next: Remix) => { setRemix(next); setSaveState("unsaved"); }, []);
   const commitTimeline = useCallback((before: Remix, after: Remix) => {
-    remixRef.current = after;
+    const previousClipById = new Map(before.tracks.flatMap((track) =>
+      track.clips.flatMap((clip) => clip.id ? [[clip.id, clip] as const] : []),
+    ));
+    const committed = {
+      ...after,
+      tracks: after.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          const previous = clip.id ? previousClipById.get(clip.id) : undefined;
+          const timingUnchanged = previous !== undefined
+            && previous.timelineStartMs === clip.timelineStartMs
+            && previous.durationMs === clip.durationMs
+            && previous.sourceOffsetMs === clip.sourceOffsetMs
+            && before.tempoBpm === after.tempoBpm;
+          const retained = timingUnchanged
+            ? clip
+            : (({ localTempoMap: _staleMap, ...withoutMap }) => withoutMap)(clip);
+          return track.name === CHOP_SEQUENCER_TRACK_NAME && previous?.timelineStartMs !== clip.timelineStartMs
+            ? bindChopSequencerClipToTimeline(retained, track.name, after.tempoBpm)
+            : retained;
+        }),
+      })),
+    };
+    remixRef.current = committed;
     saveRevision.current += 1;
     record(before);
-    setRemix(after);
-    queuePersist(after);
+    setRemix(committed);
+    queuePersist(committed);
   }, [queuePersist, record]);
 
   const patchClip = (clipId: string, patch: Partial<{ gain: number; fadeInMs: number; fadeOutMs: number }>) => {

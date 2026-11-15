@@ -5,11 +5,23 @@ import { createRequire } from "node:module";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fixtureHtml } from "./arcade-workshop-fixture.mjs";
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
-const { chromium } = require("playwright-core");
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+const { chromium, firefox, webkit } = require("playwright-core");
+const engine = process.env.TEST_BROWSER || "chromium";
+const browserTypes = { chromium, firefox, webkit };
+assert.ok(Object.hasOwn(browserTypes, engine), `Unknown TEST_BROWSER "${engine}"; choose chromium, firefox, or webkit.`);
+const browserType = browserTypes[engine];
+const executablePath = engine === "chromium"
+  ? process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium"
+  : process.env[`${engine.toUpperCase()}_PATH`];
+const launchOptions = {
+  headless: process.env.TEST_HEADLESS !== "0",
+  ...(executablePath ? { executablePath } : {}),
+  ...(engine === "chromium" ? { args: ["--no-sandbox", "--disable-dev-shm-usage"] } : {}),
+};
+const browser = await browserType.launch(launchOptions);
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
 const base = process.env.TEST_BASE_URL || "http://localhost:80";
-const output = new URL("../generated-artifacts/arcade-development-journey/", import.meta.url);
+const output = new URL(`../generated-artifacts/arcade-development-journey/${engine}/`, import.meta.url);
 await mkdir(output, { recursive: true });
 await context.addInitScript(() => {
   if (window === top) {
@@ -206,8 +218,8 @@ try {
   assert.equal(ownerCalls, 0, "manual development must not invoke owner-authenticated or model operations");
   checks.push("a failed development checkpoint after a successful install reports partial success honestly, preserves both saves, and recovers through an explicit Workshop launch without automatic resume/install");
   await page.screenshot({ path: new URL("development.png", output).pathname });
-  await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, checks, realModelCall: false, ownerSession: false, evidence: "Independent browser execution of an original manual fixture, not model generation or owner-reported gameplay." }, null, 2));
-  console.log(JSON.stringify({ passed: true, checks, realModelCall: false, ownerSession: false }));
+  await writeFile(new URL("report.json", output), JSON.stringify({ passed: true, browser: { engine, version: browser.version() }, checks, realModelCall: false, ownerSession: false, evidence: "Independent browser execution of an original manual fixture, not model generation or owner-reported gameplay." }, null, 2));
+  console.log(JSON.stringify({ passed: true, browser: { engine, version: browser.version() }, checks, realModelCall: false, ownerSession: false }));
 } catch (error) {
   await page.screenshot({ path: new URL("failure.png", output).pathname }).catch(() => {});
   await writeFile(new URL("failure.txt", output), `${error.stack}\n${await page.locator("body").innerText()}`);

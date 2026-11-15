@@ -21,7 +21,9 @@ import type {
   SeparationJobPayload,
   SourceAnalysisJobPayload,
   DrumAnalysisJobPayload,
+  BassAnalysisJobPayload,
   HarmonyAnalysisJobPayload,
+  StemHarmonyAnalysisJobPayload,
   SourceEventAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
   VocalAnalysisJobPayload,
@@ -34,7 +36,9 @@ export const SOURCE_ANALYSIS_QUEUE = "waveyard-source-analysis";
 export const SOURCE_SECTION_ANALYSIS_QUEUE = "waveyard-source-section-analysis";
 export const SOURCE_EVENT_ANALYSIS_QUEUE = "waveyard-source-event-analysis";
 export const DRUM_ANALYSIS_QUEUE = "waveyard-drum-analysis";
+export const BASS_ANALYSIS_QUEUE = "waveyard-bass-analysis";
 export const HARMONY_ANALYSIS_QUEUE = "waveyard-harmony-analysis";
+export const STEM_HARMONY_ANALYSIS_QUEUE = "waveyard-stem-harmony-analysis";
 export const VOCAL_ANALYSIS_QUEUE = "waveyard-vocal-analysis";
 export const EXPORT_QUEUE = "waveyard-export";
 
@@ -155,6 +159,10 @@ export async function getHarmonyAnalysisQueue(): Promise<QueueLike> {
   return makeQueueApi(HARMONY_ANALYSIS_QUEUE);
 }
 
+export async function getStemHarmonyAnalysisQueue(): Promise<QueueLike> {
+  return makeQueueApi(STEM_HARMONY_ANALYSIS_QUEUE);
+}
+
 export async function getVocalAnalysisQueue(): Promise<QueueLike> {
   return makeQueueApi(VOCAL_ANALYSIS_QUEUE);
 }
@@ -195,7 +203,10 @@ export async function enqueueSourceAnalysis(payload: SourceAnalysisJobPayload) {
 }
 
 export async function enqueueSourceSectionAnalysis(payload: SourceSectionAnalysisJobPayload) {
-  return enqueue(SOURCE_SECTION_ANALYSIS_QUEUE, "analyze-sections", payload as unknown as Record<string, unknown>, payload.sourceSectionAnalysisId);
+  const jobId = payload.dispatchKey
+    ? `${payload.sourceSectionAnalysisId}:refresh:${payload.dispatchKey}`
+    : payload.sourceSectionAnalysisId;
+  return enqueue(SOURCE_SECTION_ANALYSIS_QUEUE, "analyze-sections", payload as unknown as Record<string, unknown>, jobId);
 }
 
 export async function enqueueSourceEventAnalysis(payload: SourceEventAnalysisJobPayload) {
@@ -206,12 +217,29 @@ export async function enqueueDrumAnalysis(payload: DrumAnalysisJobPayload) {
   return enqueue(DRUM_ANALYSIS_QUEUE, "analyze-drums", payload as unknown as Record<string, unknown>, payload.drumAnalysisId);
 }
 
+export async function enqueueBassAnalysis(payload: BassAnalysisJobPayload) {
+  if (!localWorkerActive()) {
+    throw new Error("Bass attack analysis requires the local Waveyard worker; no remote bass-analysis worker is configured.");
+  }
+  return enqueue(BASS_ANALYSIS_QUEUE, "analyze-bass-attacks", payload as unknown as Record<string, unknown>, payload.bassAnalysisId);
+}
+
 export async function enqueueHarmonyAnalysis(payload: HarmonyAnalysisJobPayload) {
   return enqueue(HARMONY_ANALYSIS_QUEUE, "analyze-harmony", payload as unknown as Record<string, unknown>, payload.harmonyAnalysisId);
 }
 
+export async function enqueueStemHarmonyAnalysis(payload: StemHarmonyAnalysisJobPayload) {
+  return enqueue(
+    STEM_HARMONY_ANALYSIS_QUEUE,
+    "analyze-stem-harmony",
+    payload as unknown as Record<string, unknown>,
+    payload.stemHarmonyAnalysisId,
+  );
+}
+
 export async function enqueueVocalAnalysis(payload: VocalAnalysisJobPayload) {
-  return enqueue(VOCAL_ANALYSIS_QUEUE, "analyze-vocal", payload as unknown as Record<string, unknown>, payload.vocalAnalysisId);
+  const versionedJobId = `${payload.vocalAnalysisId}:${payload.analysisEngine}:${payload.analysisEngineVersion}`;
+  return enqueue(VOCAL_ANALYSIS_QUEUE, "analyze-vocal", payload as unknown as Record<string, unknown>, versionedJobId);
 }
 
 export async function enqueueExport(payload: ExportJobPayload) {

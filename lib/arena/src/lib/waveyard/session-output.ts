@@ -2,7 +2,7 @@
 type SessionOutput = {
   context: AudioContext;
   input: GainNode;
-  ready: Promise<void>;
+  readonly ready: Promise<void>;
   stream(): MediaStream;
   release(): void;
 };
@@ -22,23 +22,47 @@ export function acquireSessionOutput(key: string, workletUrl: string): SessionOu
   analyser.fftSize = 2048;
   let processor: AudioWorkletNode | null = null;
   let recording: MediaStreamAudioDestinationNode | null = null;
-  const ready = (async () => {
-    if (!context.audioWorklet || typeof AudioWorkletNode === "undefined")
-      throw new Error("Protected session playback needs AudioWorklet support. Use a current browser and retry.");
-    await context.audioWorklet.addModule(workletUrl);
-    if (context.state === "closed") return;
-    processor = new AudioWorkletNode(context, "waveyard-output-peak", {
-      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+  let readiness: Promise<void> | null = null;
+  const ensureReady = () => {
+    if (processor) return Promise.resolve();
+    if (readiness) return readiness;
+    const attempt = (async () => {
+      if (!context.audioWorklet || typeof AudioWorkletNode === "undefined") {
+        throw new Error("Protected session playback needs AudioWorklet support. Use a current browser and retry.");
+      }
+      try {
+        await context.audioWorklet.addModule(workletUrl);
+        if (context.state === "closed") return;
+        const nextProcessor = new AudioWorkletNode(context, "waveyard-output-peak", {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+        });
+        try {
+          input.connect(nextProcessor);
+          nextProcessor.connect(analyser);
+          analyser.connect(context.destination);
+          processor = nextProcessor;
+        } catch (error) {
+          nextProcessor.disconnect();
+          input.disconnect();
+          analyser.disconnect();
+          throw error;
+        }
+      } catch {
+        throw new Error(
+          "Protected session output could not be loaded. Playback was not started. Check your connection and retry.",
+        );
+      }
+    })();
+    const tracked = attempt.catch((error: unknown) => {
+      if (readiness === tracked) readiness = null;
+      throw error;
     });
-    input.connect(processor);
-    processor.connect(analyser);
-    analyser.connect(context.destination);
-  })();
-  // A lazy graph can be created before play awaits readiness. Keep failures
-  // handled here, but retain the rejected promise so Play reports the error.
-  void ready.catch(() => undefined);
+    readiness = tracked;
+    return tracked;
+  };
   const output: SessionOutput = {
-    context, input, ready,
+    context, input,
+    get ready() { return ensureReady(); },
     stream() {
       if (!recording) {
         recording = context.createMediaStreamDestination();
@@ -58,5 +82,8 @@ export function acquireSessionOutput(key: string, workletUrl: string): SessionOu
     },
   };
   groups.set(key, { output, users: 1 });
+  // Start loading when the first deck creates its bus, but allow a later Play
+  // to retry if this transient attempt rejects.
+  void output.ready.catch(() => undefined);
   return output;
 }

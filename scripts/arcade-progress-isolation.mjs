@@ -26,7 +26,7 @@ await page.route(url => new URL(url).pathname === "/api/models", route => route.
 const original = `<!doctype html><html><head><title>Original shared-key fixture</title></head><body>
 <h1 id="version">Original</h1><label>Progress value<input id="value"></label>
 <button id="save">Save progress</button><button id="remove">Remove key</button><button id="clear">Clear game data</button><output id="stored"></output>
-<script>const field=document.getElementById("value"),stored=document.getElementById("stored");function draw(){stored.textContent=localStorage.getItem("progress")||"unset"}document.getElementById("save").onclick=()=>{localStorage.setItem("progress",field.value);draw()};document.getElementById("remove").onclick=()=>{localStorage.removeItem("progress");draw()};document.getElementById("clear").onclick=()=>{localStorage.clear();draw()};draw();</script></body></html>`;
+<script>const field=document.getElementById("value"),stored=document.getElementById("stored");document.body.dataset.playerSession=Date.now()+"-"+Math.random().toString(36).slice(2);function draw(){stored.textContent=localStorage.getItem("progress")||"unset"}document.getElementById("save").onclick=()=>{localStorage.setItem("progress",field.value);draw()};document.getElementById("remove").onclick=()=>{localStorage.removeItem("progress");draw()};document.getElementById("clear").onclick=()=>{localStorage.clear();draw()};let ticks=0;setInterval(()=>document.body.dataset.gameTicks=String(++ticks),25);draw();</script></body></html>`;
 const revised = original.replace('id="version">Original', 'id="version">Revised');
 let modelCalls = 0;
 await page.route("**/api/arcade/import/revise", async route => {
@@ -40,6 +40,11 @@ await page.route("**/api/arcade/import/revise", async route => {
 const frame = () => page.frameLocator('iframe[title="Playable game: same-name.html"]');
 const saves = (target = page) => target.evaluate(() => Object.fromEntries(Object.keys(localStorage)
   .filter(key => key.startsWith("arenaforge.game-save.v1:")).map(key => [key.slice("arenaforge.game-save.v1:".length), localStorage.getItem(key)])));
+const unloadWouldWarn = () => page.evaluate(() => {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+});
 const playerState = player => player.locator("body").evaluate(body => ({
   session: body.dataset.playerSession,
   ticks: Number(body.dataset.gameTicks || 0),
@@ -119,6 +124,7 @@ try {
   await select(first.id, "private-progress-red-11");
   await save(first.id, "private-progress-red-13");
   const beforeReload = await saves();
+  assert.equal(await unloadWouldWarn(), false, "successfully saved gameplay must not install a leave warning");
   // Bounded real-player fault injection: only the selected game's parent storage fails.
   const installFault = id => page.evaluate(id => {
     const key = `arenaforge.game-save.v1:${id}`;
@@ -158,6 +164,7 @@ try {
     await fault(mode);
     await attempt(`pending-${mode}`);
     await warning.waitFor();
+    assert.equal(await unloadWouldWarn(), true, `${mode}: unresolved progress must warn before closing the page`);
     assert.match(
       await warning.innerText(),
       mode === "quota" ? /browser storage is full/i : /browser storage access is blocked/i,
@@ -200,6 +207,7 @@ try {
       if (body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== true) throw new Error("Successful retry was not confirmed");
     });
     await warning.waitFor({ state: "detached" });
+    assert.equal(await unloadWouldWarn(), false, `${mode}: a committed retry must remove the page-close warning`);
     await page.getByText(/Progress saves in this browser/).waitFor();
     assert.equal(JSON.parse(await committed()).progress, `pending-${mode}`);
     assert.equal(await frame().locator("body").getAttribute("data-failure-live-marker"), "same-running-game");
@@ -207,6 +215,43 @@ try {
     await frame().locator("body").evaluate(() => localStorage.removeItem("other"));
     await page.waitForFunction(id => !Object.hasOwn(JSON.parse(localStorage.getItem(`arenaforge.game-save.v1:${id}`) || "{}"), "other"), first.id);
   }
+  await fault("quota");
+  await attempt("pending-before-leave");
+  await warning.waitFor();
+  assert.equal(await unloadWouldWarn(), true, "live progress that cannot be saved must warn before closing the page");
+  const beforeLeaveCommitted = await committed();
+  const leaveLive = await playerState(frame());
+  const beforeLeaveSnapshotCount = await page.evaluate(() => window.__saveSnapshotCount);
+  await page.getByTestId(`button-select-imported-game-${second.id}`).click();
+  const leaveDialog = page.getByTestId("unsaved-progress-leave-dialog");
+  await leaveDialog.waitFor();
+  await leaveDialog.getByRole("button", { name: "Retry save and switch games", exact: true }).click();
+  await page.waitForFunction(before => window.__saveSnapshotCount > before, beforeLeaveSnapshotCount);
+  await frame().locator("body").evaluate(async body => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== false) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    if (body.ownerDocument.defaultView.__arenaGameSave.status?.ok !== false) throw new Error("Leave retry did not report the storage failure");
+  });
+  await warning.waitFor();
+  await leaveDialog.getByRole("button", { name: "Stay in game", exact: true }).click();
+  await leaveDialog.waitFor({ state: "detached" });
+  const stayedLive = await waitForLiveProgress(frame(), leaveLive.session, leaveLive.ticks, "cancelled game switch");
+  assert.equal(stayedLive.session, leaveLive.session, "cancelling navigation must keep the same player document");
+  assert.equal(await committed(), beforeLeaveCommitted, "a cancelled switch must not change the old committed checkpoint");
+  assert.equal((await saves())[second.id], blue, "a cancelled switch must not change another game's save slot");
+  await page.getByTestId(`button-select-imported-game-${second.id}`).click();
+  await leaveDialog.waitFor();
+  await leaveDialog.getByRole("button", { name: "Discard and switch games", exact: true }).click();
+  await expectStored("private-progress-blue-22");
+  assert.equal((await saves())[first.id], beforeLeaveCommitted, "discarding live progress leaves the first game's committed checkpoint unchanged");
+  assert.equal((await saves())[second.id], blue, "discarding live progress never changes the other game's slot");
+  await fault("");
+  await select(first.id, JSON.parse(beforeLeaveCommitted).progress);
+  await frame().locator("body").evaluate(body => { body.dataset.failureLiveMarker = "same-running-game"; });
+  checks.push("unresolved progress offers retry, stay, or explicit discard; cancellation keeps the same live frame running and discard preserves both committed game slots");
+
   for (const action of ["Remove key", "Clear game data"]) {
     await save(first.id, "before-rejected-removal");
     const previous = await committed();
@@ -534,8 +579,20 @@ try {
 
     await save(second.id, "private-progress-blue-23");
     await staleTab.getByTestId("arcade-save-warning").getByText(/changed in another tab/).waitFor();
+    const beforeRestart = await playerState(staleFrame());
+    const slotsBeforeRestart = await saves();
     await staleTab.getByTestId("button-reload-latest-progress").click();
+    const restartDialog = staleTab.getByTestId("unsaved-progress-leave-dialog");
+    await restartDialog.waitFor();
+    await restartDialog.getByRole("button", { name: "Stay in game", exact: true }).click();
+    await restartDialog.waitFor({ state: "detached" });
+    await waitForLiveProgress(staleFrame(), beforeRestart.session, beforeRestart.ticks, "cancelled progress restart");
+    assert.deepEqual(await saves(), slotsBeforeRestart, "cancelling restart must preserve all game save slots");
+    await staleTab.getByTestId("button-reload-latest-progress").click();
+    await restartDialog.waitFor();
+    await restartDialog.getByRole("button", { name: "Discard and restart the game", exact: true }).click();
     await staleFrame().locator("#stored").filter({ hasText: /^private-progress-blue-23$/ }).waitFor();
+    assert.deepEqual(await saves(), slotsBeforeRestart, "restarting after explicit discard must preserve all committed game slots");
     await panel.locator("summary").click();
     const newerDownloadEvent = page.waitForEvent("download");
     await panel.getByTestId("button-export-imported-progress").click();

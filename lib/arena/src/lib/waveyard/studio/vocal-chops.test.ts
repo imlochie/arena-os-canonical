@@ -13,15 +13,18 @@ import {
   CHOP_SEQUENCER_TRACK_NAME,
   chopNoteId,
   detectVocalChops,
+  diversifyChopDetections,
   extractChopSample,
   parseChopNoteId,
   readChopSequencerSteps,
   renderChopPattern,
+  retimeChopSequencerTracks,
   scanVocalStemForChops,
   type ChopSample,
   type PcmBuffer,
 } from "./vocal-chops";
 import { decodeWav16, encodeWav16 } from "../mixer/synth";
+import { crossfadeError, normaliseRemixState } from "../remix";
 
 const RATE = 44_100;
 
@@ -130,6 +133,46 @@ test("a clean note outranks the same note buried in noise", () => {
   const cleanScore = chops.find((chop) => chop.startMs < 600)?.score ?? 0;
   const noisyScore = chops.find((chop) => chop.startMs > 600)?.score ?? 1;
   assert.ok(cleanScore > noisyScore, `clean ${cleanScore} should outrank noisy ${noisyScore}`);
+});
+
+test("top chop choices preserve distinct note options before filling by quality", () => {
+  const detections = [
+    ...Array.from({ length: 5 }, (_, index) => ({
+      startMs: index * 300,
+      durationMs: 250,
+      rootMidi: 60 + index * 12,
+      cents: 0,
+      clarity: 0.95,
+      stability: 0.95,
+      voicedRatio: 1,
+      score: 0.99 - index * 0.01,
+    })),
+    {
+      startMs: 2000,
+      durationMs: 250,
+      rootMidi: 61,
+      cents: 0,
+      clarity: 0.7,
+      stability: 0.7,
+      voicedRatio: 0.8,
+      score: 0.55,
+    },
+    {
+      startMs: 2300,
+      durationMs: 250,
+      rootMidi: 62,
+      cents: 0,
+      clarity: 0.65,
+      stability: 0.65,
+      voicedRatio: 0.75,
+      score: 0.45,
+    },
+  ];
+
+  const selected = diversifyChopDetections(detections, 3);
+  assert.deepEqual(selected.map((chop) => chop.rootMidi % 12), [0, 1, 2]);
+  assert.equal(selected[0]?.score, 0.99, "the best quality take for each pitch class is retained");
+  assert.deepEqual(diversifyChopDetections(detections, 0), []);
 });
 
 test("continuous vocals with no silence gaps still yield chops (split at dips)", () => {
@@ -323,4 +366,87 @@ test("sixteenth-note chop patterns become reloadable ordinary arrangement clips"
   assert.ok(clips.every((clip) => clip.fadeInMs + clip.fadeOutMs < clip.durationMs));
   assert.deepEqual(readChopSequencerSteps(clips, samples, 120), pattern);
   assert.deepEqual(buildChopSequencerClips(samples, pattern, 0), []);
+});
+
+test("saved chop pad assignments follow tempo changes without losing the source chop length", () => {
+  const stemAssetId = "00000000-0000-0000-0000-000000000010";
+  const samples = [
+    { id: "chop-a", stemAssetId, startMs: 250, durationMs: 240 },
+    { id: "chop-b", stemAssetId, startMs: 910, durationMs: 80 },
+  ];
+  const pattern = ["chop-a", null, "chop-b", "chop-a", ...Array.from({ length: 12 }, () => null)];
+  const initialClips = buildChopSequencerClips(samples, pattern, 120)
+    .map((clip, index) => ({ ...clip, id: `clip-${index}` }));
+  const tracks = [{
+    id: "track-chops",
+    stemAssetId,
+    name: CHOP_SEQUENCER_TRACK_NAME,
+    sortOrder: 0,
+    volume: 1,
+    pan: 0,
+    muted: false,
+    solo: false,
+    clips: initialClips,
+  }];
+
+  assert.deepEqual(initialClips.map((clip) => clip.chopStepIndex), [0, 2, 3]);
+  assert.deepEqual(initialClips.map((clip) => clip.chopSampleDurationMs), [240, 80, 240]);
+
+  const fastTracks = retimeChopSequencerTracks(tracks, 120, 300);
+  assert.deepEqual(fastTracks[0]!.clips.map((clip) => clip.timelineStartMs), [0, 100, 150]);
+  assert.deepEqual(fastTracks[0]!.clips.map((clip) => clip.durationMs), [50, 50, 50]);
+  assert.equal(crossfadeError(fastTracks[0]!), null, "faster steps remain separated and saveable");
+
+  const savedAndReloaded = normaliseRemixState({
+    tempoBpm: 300,
+    timeSignatureNumerator: 4,
+    timeSignatureDenominator: 4,
+    gridDivision: "beat",
+    snapEnabled: true,
+    masterVolume: 1,
+    loopStartMs: 0,
+    loopEndMs: null,
+    targetKey: null,
+    tracks: fastTracks,
+  });
+  assert.ok(savedAndReloaded, "the saved remix schema accepts the chop timing metadata");
+  assert.deepEqual(readChopSequencerSteps(savedAndReloaded.tracks[0]!.clips, samples, savedAndReloaded.tempoBpm), pattern);
+
+  const slowerTracks = retimeChopSequencerTracks(savedAndReloaded.tracks, 300, 80);
+  assert.deepEqual(slowerTracks[0]!.clips.map((clip) => clip.timelineStartMs), [0, 375, 563]);
+  assert.deepEqual(slowerTracks[0]!.clips.map((clip) => clip.durationMs), [188, 80, 188]);
+  const backAtCreationTempo = retimeChopSequencerTracks(slowerTracks, 80, 120);
+  assert.deepEqual(backAtCreationTempo[0]!.clips.map((clip) => clip.timelineStartMs), [0, 250, 375]);
+  assert.deepEqual(backAtCreationTempo[0]!.clips.map((clip) => clip.durationMs), [125, 80, 125]);
+  assert.deepEqual(
+    readChopSequencerSteps(backAtCreationTempo[0]!.clips, samples, 120),
+    pattern,
+    "returning to the saved tempo preserves the original pad pattern and sample bounds",
+  );
+});
+
+test("legacy chop clips acquire a step lock safely on their first tempo change", () => {
+  const stemAssetId = "00000000-0000-0000-0000-000000000010";
+  const legacyClips = buildChopSequencerClips(
+    [{ id: "chop", stemAssetId, startMs: 500, durationMs: 240 }],
+    ["chop", "chop", ...Array.from({ length: 14 }, () => null)],
+    120,
+  ).map(({ chopStepIndex: _step, chopSampleDurationMs: _duration, ...clip }, index) => ({
+    ...clip,
+    id: `legacy-${index}`,
+  }));
+  const [retimed] = retimeChopSequencerTracks([{
+    id: "track-chops",
+    stemAssetId,
+    name: CHOP_SEQUENCER_TRACK_NAME,
+    sortOrder: 0,
+    volume: 1,
+    pan: 0,
+    muted: false,
+    solo: false,
+    clips: legacyClips,
+  }], 120, 90);
+  assert.deepEqual(retimed!.clips.map((clip) => clip.chopStepIndex), [0, 1]);
+  assert.deepEqual(retimed!.clips.map((clip) => clip.timelineStartMs), [0, 167]);
+  assert.ok(retimed!.clips.every((clip) => clip.chopSampleDurationMs === clip.durationMs));
 });

@@ -84,13 +84,21 @@ export function requiredSourceDurationMs(outputDurationMs: number, ratio: number
   return Math.ceil(outputDurationMs * ratio);
 }
 
-export function sourceDurationFits(sourceOffsetMs: number, outputDurationMs: number, ratio: number, stemDurationMs: number) {
+export function sourceDurationFits(
+  sourceOffsetMs: number,
+  outputDurationMs: number,
+  ratio: number,
+  stemDurationMs: number,
+  stemDurationToleranceMs = 0,
+) {
   return (
     Number.isFinite(sourceOffsetMs) &&
     Number.isFinite(stemDurationMs) &&
+    Number.isFinite(stemDurationToleranceMs) &&
+    stemDurationToleranceMs >= 0 &&
     sourceOffsetMs >= 0 &&
     stemDurationMs >= 0 &&
-    sourceOffsetMs + requiredSourceDurationMs(outputDurationMs, ratio) <= stemDurationMs
+    sourceOffsetMs + requiredSourceDurationMs(outputDurationMs, ratio) <= stemDurationMs + stemDurationToleranceMs
   );
 }
 

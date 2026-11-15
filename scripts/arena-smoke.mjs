@@ -933,7 +933,10 @@ let liveDrumDonorResponseBodyLength = 0;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/swaps` && route.request().method() === "DELETE") {
       const swapId = url.searchParams.get("swapId");
-      assert(liveSwaps.some((swap) => swap.id === swapId), "cancelling removes the exact pending live swap");
+      assert(
+        liveSwaps.some((swap) => swap.id === swapId),
+        `cancelling removes the exact pending live swap (requested ${swapId ?? "no id"}; stored ${liveSwaps.map((swap) => swap.id).join(", ") || "none"})`,
+      );
       liveSwapDeleteRequestCount += 1;
       liveSwaps = liveSwaps.filter((swap) => swap.id !== swapId);
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
@@ -2226,6 +2229,13 @@ let liveDrumDonorResponseBodyLength = 0;
   await mobileSwapTrigger.click();
   const mobileSwapPicker = page.getByTestId("live-swap-picker-vocals");
   await mobileSwapPicker.waitFor({ state: "visible", timeout: 5_000 });
+  const vocalHealthWarning = mobileSwapPicker.getByTestId("live-vocal-health-warning");
+  await vocalHealthWarning.waitFor({ state: "visible", timeout: 3_000 });
+  assert.match(
+    await vocalHealthWarning.innerText(),
+    /cannot|unverified|may remain|not assured/i,
+    "the vocal picker must disclose that a donor only replaces the vocal stem and cannot guarantee source-voice removal",
+  );
   const mobilePickerBounds = await mobileSwapPicker.evaluate((picker) => {
     const rect = picker.getBoundingClientRect();
     return {
@@ -4357,6 +4367,7 @@ let liveDrumDonorResponseBodyLength = 0;
   const revisedPongFrame = page.frameLocator('iframe[title="Add a multi-ball mode"]');
   const revisedPongCanvas = revisedPongFrame.locator("canvas");
   await revisedPongFrame.locator("#input-state").waitFor();
+  await revisedPongCanvas.scrollIntoViewIfNeeded();
   await revisedPongCanvas.evaluate(canvas => canvas.focus());
   await page.keyboard.press("ArrowRight");
   assert.equal(

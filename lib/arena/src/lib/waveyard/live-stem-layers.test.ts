@@ -1,15 +1,42 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
 import {
+  assessRecipientVocalLayerEnergy,
   LIVE_STEM_MIN_DONOR_RMS_DBFS,
   LIVE_STEM_PITCH_LOCK_SESSION_BUDGET_BYTES,
   LIVE_STEM_SWITCH_TIMEOUT_MS,
   LiveStemLayers,
+  recipientVocalLayerEnergyMessage,
 } from "./live-stem-layers";
 import { SessionAudioAssetPool } from "./session-audio-asset-pool";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
+
+test("a quiet recipient vocal layer under an active backing produces a cautious leakage warning", () => {
+  const check = assessRecipientVocalLayerEnergy(0.0002, 0.08);
+  assert.equal(check.state, "quiet-over-active-bed");
+  assert.match(recipientVocalLayerEnergyMessage(check), /voice may remain/i);
+});
+
+test("sparse or instrumental moments stay inconclusive instead of being called failed separation", () => {
+  const check = assessRecipientVocalLayerEnergy(0.0002, 0.004);
+  assert.equal(check.state, "no-vocal-activity");
+  assert.match(recipientVocalLayerEnergyMessage(check), /sparse or instrumental/i);
+  assert.match(recipientVocalLayerEnergyMessage(check), /cannot be assessed/i);
+});
+
+test("audible recipient vocals are not treated as proof that other stems are clean", () => {
+  const check = assessRecipientVocalLayerEnergy(0.04, 0.08);
+  assert.equal(check.state, "audible");
+  assert.match(recipientVocalLayerEnergyMessage(check), /cannot prove other stems/i);
+});
+
+test("unavailable vocal measurements stay nonblocking and do not claim a clean replacement", () => {
+  const check = assessRecipientVocalLayerEnergy(undefined, 0.08);
+  assert.equal(check.state, "unavailable");
+  assert.match(recipientVocalLayerEnergyMessage(check), /not assured/i);
+});
 
 type DecodedAudioFixture = {
   duration: number;
@@ -33,6 +60,7 @@ function fixture(
   assetPool?: SessionAudioAssetPool,
 ) {
   const sources: Array<{
+    when: number;
     offset: number;
     stopped: boolean;
     loop: boolean;
@@ -44,19 +72,20 @@ function fixture(
   let decodeCount = 0;
   const context = {
     currentTime: 5,
+    sampleRate: 48_000,
     decodeAudioData: async () => {
       decodeCount += 1;
       return (typeof decodedAudio === "function" ? decodedAudio() : decodedAudio) as AudioBuffer;
     },
     createBufferSource() {
       const source = {
-        offset: -1, stopped: false, loop: false, buffer: null, connectedTo: null as unknown,
+        when: -1, offset: -1, stopped: false, loop: false, buffer: null, connectedTo: null as unknown,
         playbackRate: {
           value: 1,
           setValueAtTime(value: number) { this.value = value; },
         },
         connect(destination: unknown) { this.connectedTo = destination; }, disconnect() {},
-        start(_when: number, offset: number) { this.offset = offset; },
+        start(when: number, offset: number) { this.when = when; this.offset = offset; },
         stop() { this.stopped = true; },
       };
       sources.push(source);
@@ -713,6 +742,82 @@ test("parallel donor failures preserve every other stem across cancel, reject, a
   }
 });
 
+test("a tempo-match rejection preserves its exact prior layer while another stem becomes audible", async () => {
+  const retainedBuffer = { duration: 17, length: 816_000, numberOfChannels: 2 } as AudioBuffer;
+  const failedDecodeBuffer = { duration: 6, length: 288_000, numberOfChannels: 2 } as AudioBuffer;
+  const successBuffer = { duration: 11, length: 528_000, numberOfChannels: 2 } as AudioBuffer;
+  const decodedBuffers = [retainedBuffer, failedDecodeBuffer, successBuffer];
+  let releaseTempoMatch!: (error: Error) => void;
+  let notifyTempoMatchStarted!: () => void;
+  const tempoMatchStarted = new Promise<void>(resolve => { notifyTempoMatchStarted = resolve; });
+  const f = fixture(
+    (_context, _buffer, ratio) => ratio === 0.8
+      ? new Promise<AudioBuffer>((_resolve, reject) => {
+        releaseTempoMatch = reject;
+        notifyTempoMatchStarted();
+      })
+      : Promise.resolve({ duration: 3 } as AudioBuffer),
+    undefined,
+    () => decodedBuffers.shift()!,
+    ["vocals", "drums"],
+  );
+  const failedChannel = f.channels.get("vocals")!;
+  const successChannel = f.channels.get("drums")!;
+  failedChannel.source.mediaElement.currentTime = 8.75;
+  successChannel.source.mediaElement.currentTime = 23.5;
+  globalThis.fetch = async () => response();
+
+  try {
+    await f.layers.replace("vocals", "/retained-vocal-donor");
+    const retainedLayer = lifecycleState(f.layers).layers.get("vocals");
+    const retainedSource = f.sources[0];
+    assert.ok(retainedLayer);
+    assert.equal(retainedSource.offset, 8.75 % retainedBuffer.duration);
+
+    const failingTempoSwap = f.layers.replace("vocals", "/tempo-match-fails", 0.8);
+    const failure = assert.rejects(failingTempoSwap, /Tempo matching failed/);
+    await tempoMatchStarted;
+    assert.equal(lifecycleState(f.layers).pending.has("vocals"), true,
+      "the vocal selection remains pending inside its separate tempo preparation");
+
+    await f.layers.replace("drums", "/new-drum-donor");
+    const successSource = f.sources.at(-1)!;
+    const successInput = f.gains.at(-1)!;
+    assert.equal(successSource.buffer, successBuffer);
+    assert.equal(successSource.connectedTo, successInput);
+    assert.equal(successInput.connectedTo, successChannel.gain,
+      "the completed donor routes only to the drum channel");
+    assert.equal(successSource.offset, 23.5 % successBuffer.duration,
+      "the completed donor follows the peer's independent playback clock");
+    assert.equal(successChannel.inputGain.gain.value, 0,
+      "the successful donor is audible after the original drum layer fades");
+    assert.equal(successSource.stopped, false);
+
+    releaseTempoMatch(new Error("Tempo matching failed."));
+    await failure;
+
+    assert.equal(lifecycleState(f.layers).layers.get("vocals"), retainedLayer,
+      "tempo rejection leaves the exact prior vocal layer selected");
+    assert.equal(retainedSource.stopped, false,
+      "tempo rejection does not retire the previously audible vocal donor");
+    assert.equal(retainedSource.offset, 8.75 % retainedBuffer.duration);
+    assert.equal(failedChannel.inputGain.gain.value, 0,
+      "the retained vocal donor remains routed instead of unmuting/replacing it");
+    assert.equal(failedChannel.source.mediaElement.currentTime, 8.75,
+      "the failed channel's playback clock is unchanged");
+    assert.equal(failedChannel.source.mediaElement.paused, false);
+    assert.equal(successSource.stopped, false,
+      "failure on vocals does not retire the newly installed drum donor");
+    assert.equal(successChannel.source.mediaElement.currentTime, 23.5);
+    assert.equal(successChannel.source.mediaElement.paused, false);
+    assert.equal(f.sources.length, 2,
+      "the rejected tempo output never creates a source; only the retained and successful donors exist");
+    assert.equal(lifecycleState(f.layers).pending.size, 0);
+  } finally {
+    f.layers.dispose();
+  }
+});
+
 test("tempo-matched donor audio is prepared before the original layer fades out", async () => {
   const ratios: number[] = [];
   const f = fixture(async (_context, _buffer, ratio, signal) => {
@@ -874,6 +979,164 @@ test("a warmed donor's audible timing starts when the user selects it, not when 
       timings[0].selectionToAudibleMs <= performance.now() - selectedAt + 10,
       "pre-selection warm time must not inflate the selection-to-audible measurement",
     );
+  } finally { f.layers.dispose(); }
+});
+
+test("snap-off donor replacement retains immediate activation", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/immediate-donor");
+    assert.equal(f.sources[0]?.when, 0);
+    assert.equal(f.channel.inputGain.gain.value, 0);
+  } finally { f.layers.dispose(); }
+});
+
+test("a prepared donor starts and crossfades on the scheduled AudioContext beat", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/current-donor");
+    const current = f.sources[0]!;
+    const pending = f.layers.replace(
+      "vocals",
+      "/beat-donor",
+      1,
+      undefined,
+      0,
+      0,
+      { snapRequested: true, activationTime: 5.5 },
+    );
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const donor = f.sources.at(-1)!;
+    assert.equal(donor.when, 5.5, "the AudioBufferSource is scheduled against the context clock");
+    assert.equal(current.stopped, false, "the current layer keeps running before the beat");
+    assert.equal(f.channel.inputGain.gain.value, 0, "the retained mix is not faded early");
+    assert.deepEqual(f.gains.at(-1)?.automation.slice(-1), [
+      { type: "ramp", value: 1, time: 5.54 },
+    ]);
+    assert.deepEqual(f.gains[2]?.automation.slice(-1), [
+      { type: "ramp", value: 0, time: 5.54 },
+    ]);
+
+    f.context.currentTime = 5.5;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const result = await pending;
+    assert.deepEqual(result, { installed: true, snap: "scheduled" });
+    assert.equal(current.stopped, false, "the old layer remains available through the crossfade tail");
+    assert.equal(f.channel.inputGain.gain.value, 0);
+  } finally { f.layers.dispose(); }
+});
+
+test("pitch-preserving donor worklet receives the same scheduled beat frame", async () => {
+  const pcm = new Float32Array(144_000).fill(0.1);
+  const f = fixture(undefined, undefined, {
+    duration: 3,
+    length: pcm.length,
+    numberOfChannels: 2,
+    sampleRate: 48_000,
+    getChannelData: () => pcm,
+  });
+  const globals = globalThis as unknown as { AudioWorkletNode?: unknown };
+  const originalAudioWorkletNode = globals.AudioWorkletNode;
+  const loadMessages: Array<{ activationFrame?: number; playing?: boolean }> = [];
+  (f.context as unknown as { audioWorklet: { addModule(url: string): Promise<void> } }).audioWorklet = {
+    addModule: async () => undefined,
+  };
+  globals.AudioWorkletNode = class {
+    readonly port = {
+      onmessage: null as ((event: MessageEvent<{ type?: string }>) => void) | null,
+      postMessage: (message: { type?: string; activationFrame?: number; playing?: boolean }) => {
+        if (message.type === "load") {
+          loadMessages.push({ activationFrame: message.activationFrame, playing: message.playing });
+          queueMicrotask(() => this.port.onmessage?.({ data: { type: "ready" } } as MessageEvent<{ type?: string }>));
+        }
+      },
+      close() {},
+    };
+    connect(_destination: unknown) {}
+    disconnect() {}
+  };
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.setPitchPreserving(true);
+    const pending = f.layers.replace(
+      "vocals",
+      "/pitch-locked-beat-donor",
+      1,
+      undefined,
+      0,
+      0,
+      { snapRequested: true, activationTime: 5.5 },
+    );
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(loadMessages, [{ playing: false, activationFrame: 264_000 }],
+      "the worklet waits for the corresponding AudioContext frame instead of starting on the main thread");
+    f.context.currentTime = 5.5;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(await pending, { installed: true, snap: "scheduled" });
+  } finally {
+    f.layers.dispose();
+    if (originalAudioWorkletNode === undefined) delete globals.AudioWorkletNode;
+    else globals.AudioWorkletNode = originalAudioWorkletNode;
+  }
+});
+
+test("a donor that misses its beat during preparation switches immediately and reports the miss", async () => {
+  let f!: ReturnType<typeof fixture>;
+  f = fixture(async (_context, buffer) => {
+    f.context.currentTime = 5.6;
+    return buffer;
+  });
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/current-donor");
+    const current = f.sources[0]!;
+    const result = await f.layers.replace(
+      "vocals",
+      "/late-beat-donor",
+      0.8,
+      undefined,
+      0,
+      0,
+      { snapRequested: true, activationTime: 5.5 },
+    );
+    assert.deepEqual(result, { installed: true, snap: "missed" });
+    assert.equal(f.sources.at(-1)?.when, 0, "a missed target falls back to the normal immediate source start");
+    assert.equal(current.stopped, false, "the previous layer is not stopped before the ready donor takes over");
+    assert.equal(f.channel.inputGain.gain.value, 0, "the replacement completes without claiming a late snap");
+  } finally { f.layers.dispose(); }
+});
+
+test("cancelling before the beat keeps the old donor audible and a later retry can recover", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/retained-donor");
+    const current = f.sources[0]!;
+    const pending = f.layers.replace(
+      "vocals",
+      "/cancelled-beat-donor",
+      1,
+      undefined,
+      0,
+      0,
+      { snapRequested: true, activationTime: 5.5 },
+    );
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const scheduled = f.sources.at(-1)!;
+    assert.equal(scheduled.when, 5.5);
+    f.layers.cancelPending("vocals");
+    assert.equal(await pending, false);
+    assert.equal(scheduled.stopped, true, "the scheduled future source is stopped on cancellation");
+    assert.equal(current.stopped, false, "the previously audible donor is retained");
+    assert.equal(f.channel.inputGain.gain.value, 0, "the original track remains muted under the retained donor");
+
+    await f.layers.replace("vocals", "/recovered-donor");
+    assert.equal(f.sources.at(-1)?.when, 0,
+      "the recovered donor starts immediately rather than inheriting the cancelled target");
+    assert.equal(f.sources.at(-1)?.stopped, false);
+    assert.equal(f.channel.inputGain.gain.value, 0);
   } finally { f.layers.dispose(); }
 });
 

@@ -27,7 +27,7 @@ describe("deterministic isolated-vocal analysis V1", () => {
     expect(normaliseVocalPitchFrames([{ ...voiced, confidence: 1.1 }], 1_000)).toBeNull();
   });
 
-  it("segments only voiced continuity with a deterministic silence gap", () => {
+  it("segments only voiced continuity with a deterministic silence gap and drops zero-duration hits", () => {
     const frames = normaliseVocalPitchFrames([
       voiced,
       { ...voiced, timestampMs: 100, confidence: 0.6 },
@@ -36,8 +36,8 @@ describe("deterministic isolated-vocal analysis V1", () => {
     ], 1_000)!;
     expect(segmentVocalPhrases(frames)).toEqual([
       { startMs: 0, endMs: 100, confidence: 0.7 },
-      { startMs: 500, endMs: 500, confidence: 1 },
     ]);
+    expect(segmentVocalPhrases([voiced])).toEqual([]);
   });
 
   it("requires source, isolated stem, checksums, and engine provenance", () => {

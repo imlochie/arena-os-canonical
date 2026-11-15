@@ -105,6 +105,8 @@ export async function POST(
             tempoSyncEnabled: clip.tempoSyncEnabled,
             keySyncEnabled: clip.keySyncEnabled,
             beatSnapEnabled: clip.beatSnapEnabled,
+            chopStepIndex: null,
+            chopSampleDurationMs: null,
           })));
         await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       });

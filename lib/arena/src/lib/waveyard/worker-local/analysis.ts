@@ -11,14 +11,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
+import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db } from "@workspace/db";
-import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections } from "@workspace/db/waveyardSchema";
+import { sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses } from "@workspace/db/waveyardSchema";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
-import { enqueueSourceSectionAnalysis } from "@workspace/arena/lib/waveyard/queue";
-import type { SourceAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
+import { enqueueSourceSectionAnalysis, enqueueVocalAnalysis } from "@workspace/arena/lib/waveyard/queue";
+import type { SourceAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
+import { LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION, vocalAnalysisIdempotencyKey } from "../types/vocal-analysis";
 import {
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
@@ -27,6 +29,7 @@ import {
   decodeMonoPcm,
   normaliseBeatGrid,
 } from "./analysis-engine";
+import { SESSION_MIN_DOWNBEAT_CONFIDENCE } from "../session-dj-controls";
 
 export { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 
@@ -67,11 +70,17 @@ export function desktopSectionIdempotencyKey(sourceAssetId: string) {
 export async function provisionDesktopSectionAnalysis(
   analysis: typeof sourceAnalyses.$inferSelect,
   source: typeof sourceAssets.$inferSelect,
+  options: {
+    database?: ReturnType<typeof drizzle>;
+    dispatchKey?: string;
+    enqueue?: typeof enqueueSourceSectionAnalysis;
+  } = {},
 ) {
+  const database = options.database ?? db;
   const beatGrid = parseBeatGrid(analysis.beatGrid);
   const unavailable = analysis.status !== "complete" || !beatGrid;
   const now = new Date();
-  const [row] = await db
+  const [row] = await database
     .insert(sourceSectionAnalyses)
     .values({
       projectId: source.projectId,
@@ -95,6 +104,7 @@ export async function provisionDesktopSectionAnalysis(
       target: sourceSectionAnalyses.sourceAssetId,
       set: {
         sourceAnalysisId: analysis.id,
+        idempotencyKey: desktopSectionIdempotencyKey(source.id),
         status: unavailable ? "unavailable" : "queued",
         stage: unavailable ? "insufficient-analysis" : "queued",
         attempts: 0,
@@ -110,19 +120,20 @@ export async function provisionDesktopSectionAnalysis(
       },
     })
     .returning();
-  await db.delete(sourceSections).where(eq(sourceSections.sourceAssetId, source.id));
+  await database.delete(sourceSections).where(eq(sourceSections.sourceAssetId, source.id));
   if (unavailable) return row;
   try {
-    await enqueueSourceSectionAnalysis({
+    await (options.enqueue ?? enqueueSourceSectionAnalysis)({
       sourceSectionAnalysisId: row.id,
       projectId: source.projectId,
       sourceAssetId: source.id,
       sourceAnalysisId: analysis.id,
       analysisEngine: DESKTOP_SECTION_ENGINE,
       analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
+      ...(options.dispatchKey ? { dispatchKey: options.dispatchKey } : {}),
     });
   } catch (error) {
-    await db
+    await database
       .update(sourceSectionAnalyses)
       .set({
         status: "failed",
@@ -135,6 +146,130 @@ export async function provisionDesktopSectionAnalysis(
       .where(eq(sourceSectionAnalyses.id, row.id));
   }
   return row;
+}
+
+/** Queue source- and stem-bound vocal activity and pitch analysis after publication. */
+export async function provisionDesktopVocalAnalysis(
+  source: typeof sourceAssets.$inferSelect,
+  stem: typeof stemAssets.$inferSelect,
+  options: {
+    database?: ReturnType<typeof drizzle>;
+    enqueue?: (payload: VocalAnalysisJobPayload) => Promise<unknown>;
+  } = {},
+) {
+  const database = options.database ?? db;
+  if (stem.projectId !== source.projectId || stem.sourceAssetId !== source.id || stem.stemType !== "vocals") return null;
+
+  const [created] = await database.insert(vocalAnalyses).values({
+    projectId: source.projectId,
+    sourceAssetId: source.id,
+    stemAssetId: stem.id,
+    status: "queued",
+    stage: "queued",
+    idempotencyKey: vocalAnalysisIdempotencyKey(
+      stem.id,
+      LOCAL_VOCAL_ANALYSIS_ENGINE,
+      LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+    ),
+    analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+    analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256: source.checksumSha256,
+    stemChecksumSha256: stem.checksumSha256,
+  }).onConflictDoNothing({ target: vocalAnalyses.stemAssetId }).returning();
+  let [analysis] = created
+    ? [created]
+    : await database.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
+  if (!analysis
+    || analysis.projectId !== source.projectId
+    || analysis.sourceAssetId !== source.id
+    || analysis.sourceChecksumSha256 !== source.checksumSha256
+    || analysis.stemChecksumSha256 !== stem.checksumSha256) return analysis ?? null;
+
+  let shouldQueue = Boolean(created);
+  if (!created && analysis.analysisEngine === LOCAL_VOCAL_ANALYSIS_ENGINE
+    && analysis.analysisEngineVersion !== LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION
+    && analysis.status !== "cancelled") {
+    const previousVersion = analysis.analysisEngineVersion;
+    const previousStatus = analysis.status;
+    const [upgraded] = await database.update(vocalAnalyses).set({
+      status: "queued",
+      stage: "queued",
+      attempts: 0,
+      idempotencyKey: vocalAnalysisIdempotencyKey(
+        stem.id,
+        LOCAL_VOCAL_ANALYSIS_ENGINE,
+        LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      ),
+      analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      errorCode: null,
+      errorMessage: null,
+      startedAt: null,
+      analyzedAt: null,
+      completedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(vocalAnalyses.id, analysis.id),
+      eq(vocalAnalyses.status, previousStatus),
+      eq(vocalAnalyses.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE),
+      eq(vocalAnalyses.analysisEngineVersion, previousVersion),
+      eq(vocalAnalyses.sourceChecksumSha256, source.checksumSha256),
+      eq(vocalAnalyses.stemChecksumSha256, stem.checksumSha256),
+    )).returning();
+    if (upgraded) {
+      analysis = upgraded;
+      shouldQueue = true;
+    } else {
+      [analysis] = await database.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
+    }
+  }
+  if (!analysis
+    || analysis.analysisEngine !== LOCAL_VOCAL_ANALYSIS_ENGINE
+    || analysis.analysisEngineVersion !== LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION) return analysis ?? null;
+  if (!created && analysis.status === "failed") {
+    const [requeued] = await database.update(vocalAnalyses).set({
+      status: "queued",
+      stage: "queued",
+      errorCode: null,
+      errorMessage: null,
+      completedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(vocalAnalyses.id, analysis.id),
+      eq(vocalAnalyses.status, "failed"),
+      eq(vocalAnalyses.sourceChecksumSha256, source.checksumSha256),
+      eq(vocalAnalyses.stemChecksumSha256, stem.checksumSha256),
+    )).returning({ id: vocalAnalyses.id });
+    shouldQueue = Boolean(requeued);
+  }
+  if (!shouldQueue) return analysis;
+
+  try {
+    await (options.enqueue ?? enqueueVocalAnalysis)({
+      vocalAnalysisId: analysis.id,
+      projectId: analysis.projectId,
+      sourceAssetId: analysis.sourceAssetId,
+      stemAssetId: analysis.stemAssetId,
+      analysisEngine: analysis.analysisEngine,
+      analysisEngineVersion: analysis.analysisEngineVersion,
+    });
+    return analysis;
+  } catch (error) {
+    await database.update(vocalAnalyses).set({
+      status: "failed",
+      stage: "queue-unavailable",
+      errorCode: "queue_unavailable",
+      errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Vocal-analysis queue is unavailable.",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(vocalAnalyses.id, analysis.id),
+      eq(vocalAnalyses.status, "queued"),
+      eq(vocalAnalyses.sourceChecksumSha256, source.checksumSha256),
+      eq(vocalAnalyses.stemChecksumSha256, stem.checksumSha256),
+    ));
+    console.warn("could not queue Waveyard vocal timing analysis", error);
+    return null;
+  }
 }
 
 /** Local musical analysis over the original source audio. */
@@ -201,6 +336,27 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       : beatConfidenceFromGrid(raw.bpmConfidence, beatGridMs, raw.beatConfidence);
     if (!beatGridMs && beatConfidence !== null)
       throw new Error("Desktop analysis reported beat confidence without a beat grid.");
+    let downbeatGridMs = raw.downbeatGridMs === null
+      ? null
+      : normaliseBeatGrid(raw.downbeatGridMs, source.durationSeconds);
+    if (raw.downbeatGridMs !== null && downbeatGridMs === null) {
+      throw new Error("Desktop analysis produced an invalid downbeat grid for this source.");
+    }
+    if (downbeatGridMs !== null) {
+      const beatIndexes = downbeatGridMs.map((downbeat) => beatGridMs?.indexOf(downbeat) ?? -1);
+      if (
+        beatIndexes.some((index) => index < 0)
+        || beatIndexes.some((index, offset) => offset > 0 && index - beatIndexes[offset - 1]! !== 4)
+      ) throw new Error("Desktop analysis downbeats do not follow a consistent four-beat phase.");
+    }
+    if (
+      raw.downbeatConfidence !== null
+      && (!Number.isFinite(raw.downbeatConfidence) || raw.downbeatConfidence < 0 || raw.downbeatConfidence > 1)
+    ) throw new Error("Desktop analysis reported invalid downbeat confidence.");
+    const downbeatConfidence = raw.downbeatConfidence === null
+      ? null
+      : Math.min(raw.downbeatConfidence, beatConfidence ?? 0);
+    if ((downbeatConfidence ?? 0) < SESSION_MIN_DOWNBEAT_CONFIDENCE) downbeatGridMs = null;
     const analyzedAt = new Date();
 
     const completed = await db.transaction(async (tx) => {
@@ -221,6 +377,8 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
         keyConfidence: raw.keyConfidence,
         beatGrid: beatGridMs ? JSON.stringify(beatGridMs) : null,
         beatConfidence,
+        downbeatGrid: downbeatGridMs ? JSON.stringify(downbeatGridMs) : null,
+        downbeatConfidence,
         analysisError: null,
         errorCode: null,
         analyzedAt,
@@ -251,6 +409,8 @@ export async function handleSourceAnalysisJob(payloadInput: Record<string, unkno
       keyConfidence: null,
       beatGrid: null,
       beatConfidence: null,
+      downbeatGrid: null,
+      downbeatConfidence: null,
       analyzedAt: null,
       completedAt: new Date(),
     }, job.sourceChecksumSha256);

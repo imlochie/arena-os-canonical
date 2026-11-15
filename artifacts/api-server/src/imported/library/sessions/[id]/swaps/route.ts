@@ -34,6 +34,7 @@ const swapSchema = z.object({
   stemType: z.string().min(1).max(64),
   toTrackId: z.string().uuid(),
   atSeconds: z.number().min(0).optional(),
+  donorEntryOffsetMs: z.number().int().min(0).max(86_400_000).nullable().optional(),
   expectedSwapId: z.string().uuid().optional(),
   toStemAssetId: z.string().uuid().nullable().optional(),
 });

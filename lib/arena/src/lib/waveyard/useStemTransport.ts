@@ -34,6 +34,9 @@ type AudioGraph = {
   /** Explicit-channel-count downmix node: 1 = mono monitor, 2 = stereo. */
   mono: GainNode;
   analyser: AnalyserNode;
+  /** Pre-fader tap so source-layer health is not confused by user mix controls. */
+  sourceAnalyser: AnalyserNode;
+  sourceMonitorSilence: GainNode;
   /** Live insert subgraph between pan and mono; rebuilt on chain change. */
   inserts: InsertSubgraph | null;
   /** The tail node feeding mono (pan or gain). */
@@ -47,6 +50,8 @@ type AudioGraph = {
 function disconnectGraph(graph: AudioGraph) {
   graph.source.mediaElement.pause();
   graph.source.disconnect();
+  graph.sourceAnalyser.disconnect();
+  graph.sourceMonitorSilence.disconnect();
   graph.inputGain.disconnect();
   graph.gain.disconnect();
   graph.pan?.disconnect();
@@ -365,6 +370,7 @@ export function useStemTransport(
   const wasBackgrounded = useRef(false);
   const recoverAudioContext = useRef<() => void>(() => undefined);
   const [playing, setPlaying] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [position, setPosition] = useState(0);
   // Commands such as seek(0); play() run in one event/effect. React state
   // has not rerendered between them, so playback must use a synchronous clock.
@@ -425,12 +431,19 @@ export function useStemTransport(
       mono.channelInterpretation = "speakers";
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
+      const sourceAnalyser = ctx.createAnalyser();
+      sourceAnalyser.fftSize = 2048;
+      const sourceMonitorSilence = ctx.createGain();
+      sourceMonitorSilence.gain.value = 0;
       const inputGain = ctx.createGain();
       const keyShiftDry = ctx.createGain();
       const keyShiftWet = ctx.createGain();
       keyShiftDry.gain.value = 1;
       keyShiftWet.gain.value = 0;
       source.connect(inputGain);
+      source.connect(sourceAnalyser);
+      sourceAnalyser.connect(sourceMonitorSilence);
+      sourceMonitorSilence.connect(masterGain.current!);
       inputGain.connect(gain);
       const tail: AudioNode = pan ?? gain;
       if (pan) gain.connect(pan);
@@ -449,7 +462,7 @@ export function useStemTransport(
       mono.connect(analyser);
       analyser.connect(masterGain.current!);
       graphs.current[id] = {
-        source, inputGain, gain, pan, mono, analyser, inserts: insertSubgraph, tail,
+        source, inputGain, gain, pan, mono, analyser, sourceAnalyser, sourceMonitorSilence, inserts: insertSubgraph, tail,
         keyShiftDry, keyShiftWet, keyShiftNode: null,
       };
     }
@@ -478,9 +491,17 @@ export function useStemTransport(
     }
   }
   liveLayers.current.setAssetPool(assetPool);
-  const replaceStem = useCallback((id: string, url: string | null, tempoStretchRatio = 1, selectedAt?: number, beatOffsetSeconds = 0, keyShiftSemitones = 0) => {
+  const replaceStem = useCallback((
+    id: string,
+    url: string | null,
+    tempoStretchRatio = 1,
+    selectedAt?: number,
+    beatOffsetSeconds = 0,
+    keyShiftSemitones = 0,
+    options?: Parameters<LiveStemLayers["replace"]>[6],
+  ) => {
     if (url) ensureGraph(id);
-    return liveLayers.current!.replace(id, url, tempoStretchRatio, selectedAt, beatOffsetSeconds, keyShiftSemitones);
+    return liveLayers.current!.replace(id, url, tempoStretchRatio, selectedAt, beatOffsetSeconds, keyShiftSemitones, options);
   }, [ensureGraph]);
   const preloadStem = useCallback((id: string, url: string, tempoStretchRatio = 1, selectedAt?: number) => {
     if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
@@ -703,6 +724,24 @@ export function useStemTransport(
     return positionRef.current;
   }, [playbackIds]);
 
+  const contextTimeAtPosition = useCallback((targetPosition: number) => {
+    const ctx = context.current;
+    const anchor = playbackIds
+      .map((id) => media.current[id])
+      .find((element) => element && !element.paused && !element.ended);
+    if (
+      !ctx
+      || ctx.state !== "running"
+      || !anchor
+      || !Number.isFinite(targetPosition)
+      || targetPosition < anchor.currentTime
+    ) return null;
+    const rate = Number.isFinite(anchor.playbackRate) && anchor.playbackRate > 0
+      ? anchor.playbackRate
+      : 1;
+    return ctx.currentTime + (targetPosition - anchor.currentTime) / rate;
+  }, [playbackIds]);
+
   /** Apply insert chains (live): rebuilds the subgraph of every playing graph. */
   const applyInserts = useCallback(
     (chains: Record<string, InsertChain>, master: InsertChain) => {
@@ -794,6 +833,7 @@ export function useStemTransport(
   const pause = useCallback(() => {
     playRequest.current += 1;
     wantsPlayback.current = false;
+    setStarting(false);
     for (const element of Object.values(media.current)) element?.pause();
     liveLayers.current?.pause();
     stopClock();
@@ -826,6 +866,7 @@ export function useStemTransport(
   const play = useCallback(async () => {
     const request = ++playRequest.current;
     wantsPlayback.current = true;
+    setStarting(true);
     try {
       setError(null);
       if (playbackIds.length === 0) {
@@ -906,6 +947,7 @@ export function useStemTransport(
         throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
       liveLayers.current?.sync(playbackIds);
+      setStarting(false);
       setPlaying(true);
     } catch (cause) {
       if (request !== playRequest.current) return;
@@ -1144,6 +1186,28 @@ export function useStemTransport(
     };
   }, []);
 
+  /** Source-level RMS before faders, isolation, inserts, or live donor layers. */
+  const readSourceMeters = useCallback((): Record<string, ChannelMeter> => {
+    const channels: Record<string, ChannelMeter> = {};
+    for (const [id, graph] of Object.entries(graphs.current)) {
+      const samples = new Float32Array(graph.sourceAnalyser.fftSize);
+      graph.sourceAnalyser.getFloatTimeDomainData(samples);
+      let peak = 0;
+      let sumSquares = 0;
+      for (const sample of samples) {
+        const magnitude = Math.abs(sample);
+        if (magnitude > peak) peak = magnitude;
+        sumSquares += sample * sample;
+      }
+      channels[id] = {
+        peak,
+        rms: Math.sqrt(sumSquares / Math.max(1, samples.length)),
+        clipped: peak >= CLIP_LEVEL,
+      };
+    }
+    return channels;
+  }, []);
+
   return {
     register,
     replaceStem,
@@ -1159,10 +1223,13 @@ export function useStemTransport(
     /** The audio context's actual rate (bin→Hz math for spectrum consumers). */
     contextSampleRate: () => context.current?.sampleRate ?? 44_100,
     readMeters,
+    readSourceMeters,
     applyInserts,
     playing,
+    starting,
     position,
     currentPosition,
+    contextTimeAtPosition,
     duration,
     masterVolume,
     setMasterVolume,

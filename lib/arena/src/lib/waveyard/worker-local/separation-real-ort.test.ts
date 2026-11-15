@@ -74,6 +74,11 @@ import {
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
+import type { SeparationActiveMemoryPeak } from "./separation-memory";
+import {
+  SEPARATION_ACTIVE_MEMORY_SAMPLE_INTERVAL_MS,
+  SEPARATION_PROCESS_RSS_SAMPLE_INTERVAL_MS,
+} from "./separation-memory";
 import { FOUR_STEM_MODELS, stagePinnedModels } from "./pinned-models.test-helper";
 
 const KIM = findMdxModel("kim_vocal_2")!;
@@ -200,9 +205,44 @@ async function createMemoryMeasurementSource(realWavPath?: string) {
   };
 }
 
+function assertActiveMemoryPeaks(
+  passes: readonly { model: string; activeMemoryPeak?: SeparationActiveMemoryPeak }[],
+) {
+  assert.deepEqual(
+    passes.map(({ model }) => model),
+    FOUR_STEM_MODELS.map(({ id }) => id),
+    "each pinned pass returns one active-memory summary in recipe order",
+  );
+  for (const { model, activeMemoryPeak } of passes) assertActiveMemoryPeak(activeMemoryPeak, model);
+}
+
+function assertActiveMemoryPeak(activeMemoryPeak: SeparationActiveMemoryPeak | undefined, model: string) {
+  assert.ok(activeMemoryPeak, `${model} reports active worker memory`);
+  assert.equal(activeMemoryPeak.workerSampleIntervalMs, SEPARATION_ACTIVE_MEMORY_SAMPLE_INTERVAL_MS);
+  assert.equal(activeMemoryPeak.processRssSampleIntervalMs, SEPARATION_PROCESS_RSS_SAMPLE_INTERVAL_MS);
+  assert.ok(activeMemoryPeak.workerSampleCount >= 2, `${model} isolate is sampled at pass start and stop`);
+  assert.ok(activeMemoryPeak.processRssSampleCount >= 2, `${model} process RSS is sampled at pass start and stop`);
+  assert.ok(activeMemoryPeak.elapsedMs >= 0);
+  for (const field of ["rss", "heapUsed", "external", "arrayBuffers"] as const) {
+    assert.ok(
+      Number.isSafeInteger(activeMemoryPeak.peak[field]) && activeMemoryPeak.peak[field] >= 0,
+      `${model} reports a valid active peak for ${field}`,
+    );
+  }
+}
+
+function modelPassMemoryPeaks(
+  passes: readonly { model: string; activeMemoryPeak?: SeparationActiveMemoryPeak }[],
+) {
+  return passes.map(({ model, activeMemoryPeak }) => {
+    assert.ok(activeMemoryPeak, `${model} has an active-memory summary`);
+    return { model, activeMemoryPeak };
+  });
+}
+
 function createLocalRetryHarness(
   database: SeparationFixture["database"],
-  onInferenceTiming?: (modelId: string, timings: MdxStageTimings) => void,
+  onInferenceTiming?: (modelId: string, timings: MdxStageTimings, activeMemoryPeak?: SeparationActiveMemoryPeak) => void,
 ) {
   const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
   const previousRedisUrl = process.env.REDIS_URL;
@@ -742,12 +782,12 @@ test("the pinned four-model recipe completes through the production worker on re
     let retryPromise: Promise<{ queued: boolean }> | undefined;
     let elapsedMs = 0;
     try {
-      harness = createLocalRetryHarness(f.database, (model, timings) => {
+      harness = createLocalRetryHarness(f.database, (model, timings, activeMemoryPeak) => {
         // Production-worker timing is emitted only after its inference worker
         // exits; that worker awaits session.release() before posting results.
         // Therefore each callback proves that pass released before the next
         // model session could be opened.
-        completedModelPasses.push({ model, chunkCount: timings.chunkCount });
+        completedModelPasses.push({ model, chunkCount: timings.chunkCount, activeMemoryPeak });
       });
       const startedAt = Date.now();
       retryPromise = retrySeparationJob(f.database, f.job.id);
@@ -792,6 +832,7 @@ test("the pinned four-model recipe completes through the production worker on re
       completedModelPasses.every(({ chunkCount }) => chunkCount > 1),
       `all four pinned model passes process multiple chunks: ${completedModelPasses.map(({ model, chunkCount }) => `${model}=${chunkCount}`).join(", ")}`,
     );
+    assertActiveMemoryPeaks(completedModelPasses);
     assert.ok(
       FOUR_STEM_MODELS.every(({ id }) => requestSamples.some(({ phase }) => phase === `${FOUR_STEM_MODELS.findIndex((model) => model.id === id) + 1}/4`)),
       "library and live-session reads remain active in every model phase",
@@ -880,6 +921,12 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
     Number.isInteger(repetitions) && repetitions >= 6 && repetitions <= 12,
     "WAVEYARD_REAL_ORT_MEMORY_REPETITIONS must be an integer from 6 to 12",
   );
+  const requestedProvider = process.env.WAVEYARD_REAL_ORT_MEMORY_PROVIDER?.trim() || "auto";
+  assert.ok(
+    requestedProvider === "auto" || requestedProvider === "cpu",
+    "WAVEYARD_REAL_ORT_MEMORY_PROVIDER must be auto or cpu",
+  );
+  const providerSelectionMode = requestedProvider === "cpu" ? "forced" : "automatic";
   const warmupJobs = 3;
 
   const source = await createMemoryMeasurementSource(process.env.WAVEYARD_REAL_ORT_MEMORY_WAV?.trim());
@@ -906,13 +953,18 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         stage: "failed",
         errorCode: "separation_unavailable",
         errorMessage: "Memory measurement run initialized.",
+        requestedDevice: requestedProvider,
         completedAt: new Date(),
       })
       .where(eq(processingJobs.id, f.job.id));
 
-    const completedModelPasses: { model: string; chunkCount: number }[] = [];
-    harness = createLocalRetryHarness(f.database, (model, timings) => {
-      completedModelPasses.push({ model, chunkCount: timings.chunkCount });
+    const completedModelPasses: {
+      model: string;
+      chunkCount: number;
+      activeMemoryPeak?: SeparationActiveMemoryPeak;
+    }[] = [];
+    harness = createLocalRetryHarness(f.database, (model, timings, activeMemoryPeak) => {
+      completedModelPasses.push({ model, chunkCount: timings.chunkCount, activeMemoryPeak });
     });
     const baseline = await sampleMemory();
     const samples: Awaited<ReturnType<typeof sampleMemory>>[] = [];
@@ -920,8 +972,11 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       repetition: number;
       requestedDevice: string;
       resolvedDevice: string;
+      startedAtUtcMs: number;
+      finishedAtUtcMs: number;
       chunkCounts: Record<string, number>;
-      memory: Awaited<ReturnType<typeof sampleMemory>>;
+      activeModelPasses: { model: string; activeMemoryPeak: SeparationActiveMemoryPeak }[];
+      postReleaseMemory: Awaited<ReturnType<typeof sampleMemory>>;
     }[] = [];
     const startedAt = Date.now();
     for (let run = 0; run < repetitions; run += 1) {
@@ -940,6 +995,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
           })
           .where(eq(processingJobs.id, f.job.id));
       }
+      const startedAtUtcMs = Date.now();
       assert.deepEqual(await retrySeparationJob(f.database, f.job.id), { queued: true });
       const deadline = Date.now() + 240_000;
       let job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
@@ -952,6 +1008,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
       }
       assert.equal(job?.status, "complete", `pinned four-model repetition ${run + 1} completes before timeout`);
+      const finishedAtUtcMs = Date.now();
       assert.equal(harness.broker.stats().submitted, run + 1, `repetition ${run + 1} reached the local production worker`);
       assert.equal(harness.broker.stats().succeeded, run + 1, `repetition ${run + 1} succeeded in the local production worker`);
       const runPasses = completedModelPasses.slice(firstPassIndex);
@@ -964,17 +1021,26 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         runPasses.every(({ chunkCount }) => chunkCount > 1),
         `repetition ${run + 1} exercised multiple chunks in every model: ${runPasses.map(({ model, chunkCount }) => `${model}=${chunkCount}`).join(", ")}`,
       );
+      assertActiveMemoryPeaks(runPasses);
       assert.equal(job.status, "complete", `repetition ${run + 1} completes`);
       const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
       assert.equal(stems.length, 4, `repetition ${run + 1} persists all four stems`);
       const memory = await sampleMemory();
+      if (process.platform === "win32" && job.resolvedDevice === "dml") {
+        // Give the Windows-side one-second GPU counter sampler a chance to
+        // observe dedicated memory after the model sessions have been released.
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 1_100));
+      }
       samples.push(memory);
       jobReports.push({
         repetition: run + 1,
         requestedDevice: job.requestedDevice ?? "unknown",
         resolvedDevice: job.resolvedDevice ?? "unknown",
+        startedAtUtcMs,
+        finishedAtUtcMs,
         chunkCounts: Object.fromEntries(runPasses.map(({ model, chunkCount }) => [model, chunkCount])),
-        memory,
+        activeModelPasses: modelPassMemoryPeaks(runPasses),
+        postReleaseMemory: memory,
       });
     }
 
@@ -1020,18 +1086,24 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
       requestedDevices[0] && requestedDevices[0] !== "unknown",
       "the completed jobs must report their requested execution provider",
     );
+    if (requestedProvider === "cpu") {
+      assert.equal(resolvedDevices[0], "cpu", "forced CPU memory runs must resolve to CPU");
+    }
     if (process.platform === "win32") {
-      assert.ok(
-        ["dml", "cpu"].includes(resolvedDevices[0]!),
-        `Windows automatic selection must resolve to DirectML or CPU, not ${resolvedDevices[0]}`,
-      );
+      if (requestedProvider === "auto") {
+        assert.ok(
+          ["dml", "cpu"].includes(resolvedDevices[0]!),
+          `Windows automatic selection must resolve to DirectML or CPU, not ${resolvedDevices[0]}`,
+        );
+      }
     }
 
     const memoryReportPath = process.env.WAVEYARD_REAL_ORT_MEMORY_REPORT?.trim();
     if (memoryReportPath) {
       const memoryReport = {
-        schemaVersion: 1,
-        benchmark: "repeated pinned four-model multi-chunk process memory",
+        schemaVersion: 4,
+        benchmark: "repeated pinned four-model multi-chunk process and GPU memory",
+        providerSelectionMode,
         measuredMachine: {
           platform: process.platform,
           osType: osType(),
@@ -1054,6 +1126,21 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         warmupJobs,
         baselineMemoryBytes: baseline,
         jobs: jobReports,
+        activePeakSampling: {
+          workerSampleIntervalMs: SEPARATION_ACTIVE_MEMORY_SAMPLE_INTERVAL_MS,
+          processRssSampleIntervalMs: SEPARATION_PROCESS_RSS_SAMPLE_INTERVAL_MS,
+          rssSource: "independent parent-thread process.memoryUsage.rss() sampling plus worker samples",
+          otherCountersSource: "inference worker isolate process.memoryUsage()",
+        },
+        gpuMemory: {
+          applicable: resolvedDevices[0] === "dml",
+          status: resolvedDevices[0] === "dml" ? "pending_windows_runner" : "not_applicable",
+          source: null,
+          unavailableReason: resolvedDevices[0] === "dml"
+            ? "The Windows runner has not attached GPU Process Memory counter samples."
+            : "The selected execution provider was CPU; DirectML GPU memory does not apply.",
+          samples: [],
+        },
         summary: {
           warmupRetentionBytes: samples[warmupJobs - 1]!.rss - baseline.rss,
           firstSteadyRssBytes: firstSteadySample.rss,
@@ -1061,7 +1148,8 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
           continuedRssGrowthBytes: continuedRssGrowth,
           allowedContinuedGrowthBytes: maxContinuedGrowthBytes,
           continuedGrowthBounded: continuedRssGrowth <= maxContinuedGrowthBytes,
-          samplingMethod: "process.memoryUsage after optional explicit GC and a 150 ms teardown settle",
+          gpuMemoryLevelsOffAfterWarmup: null,
+          samplingMethod: "per-model worker counters sampled at 500 ms and whole-process RSS independently at 100 ms, plus post-job process.memoryUsage after optional explicit GC and a 150 ms teardown settle",
           explicitGcAvailable: Boolean(forceGc),
         },
       };
@@ -1071,7 +1159,8 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
     }
 
     t.diagnostic(
-      `Pinned four-model memory run on ${resolvedDevices[0]}: ${repetitions} completed jobs in ${Date.now() - startedAt} ms; ` +
+      `Pinned four-model ${providerSelectionMode} provider run (requested ${requestedProvider}, selected ${resolvedDevices[0]}) ` +
+        `completed ${repetitions} jobs in ${Date.now() - startedAt} ms; ` +
         `input ${source.kind} ${source.sampleCount / 44_100}s${source.checksum ? ` sha256=${source.checksum}` : ""}; ` +
         `RSS baseline ${toMiB(baseline.rss)} MiB; post-job RSS ${samples.map(({ rss }) => toMiB(rss)).join(" → ")} MiB; ` +
         `${warmupJobs} warm-up jobs retained ${toMiB(samples[warmupJobs - 1]!.rss - baseline.rss)} MiB; ` +
@@ -1081,6 +1170,7 @@ test("repeated pinned four-model jobs do not keep growing process memory after s
         `heapUsed ${samples.map(({ heapUsed }) => toMiB(heapUsed)).join(" → ")} MiB; ` +
         `external ${samples.map(({ external }) => toMiB(external)).join(" → ")} MiB; ` +
         `arrayBuffers ${samples.map(({ arrayBuffers }) => toMiB(arrayBuffers)).join(" → ")} MiB; ` +
+        `active peak RSS per model ${jobReports[0]!.activeModelPasses.map(({ model, activeMemoryPeak }) => `${model}=${toMiB(activeMemoryPeak.peak.rss)} MiB`).join(", ")}; ` +
         `explicit GC ${forceGc ? "available" : "unavailable"}.`,
     );
   } finally {
@@ -1096,6 +1186,24 @@ if (changingMemoryInputsJson) {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const workspaceRoot = resolve(arenaRoot, "../..");
     const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
+    type MemorySongFixture = {
+      id: string;
+      title: string;
+      artist: string;
+      source: {
+        path: string;
+        sha256: string;
+        url: string;
+        license: string;
+        licenseUrl: string;
+      };
+      excerpts: {
+        path: string;
+        startSeconds: number;
+        durationSeconds: number;
+        sha256: string;
+      }[];
+    };
     for (const spec of FOUR_STEM_MODELS) {
       const modelPath = join(modelDirectory, spec.file);
       if (!existsSync(modelPath)) {
@@ -1109,7 +1217,76 @@ if (changingMemoryInputsJson) {
     assert.ok(Array.isArray(paths), "WAVEYARD_REAL_ORT_MEMORY_WAVS_JSON must be a JSON array of WAV paths");
     assert.ok(paths.length >= 6 && paths.length <= 12, "supply between six and twelve changing real excerpts");
     assert.ok(paths.every((path): path is string => typeof path === "string" && path.trim().length > 0));
-    const sources = await Promise.all(paths.map((path) => createMemoryMeasurementSource(path)));
+    const fixtureManifestPath = join(
+      workspaceRoot,
+      "lib/arena/src/lib/waveyard/worker-local/separation-memory-fixtures.json",
+    );
+    const fixtureManifest = JSON.parse(await readFile(fixtureManifestPath, "utf8")) as {
+      schemaVersion: number;
+      songs: MemorySongFixture[];
+    };
+    assert.equal(fixtureManifest.schemaVersion, 1, "the licensed memory-fixture manifest version is supported");
+    const registeredExcerpts = fixtureManifest.songs.flatMap((song) =>
+      song.excerpts.map((excerpt) => ({ song, excerpt })),
+    );
+    const inputs = paths.map((path) => {
+      const absolutePath = resolve(path);
+      const workspaceRelativePath = resolve(workspaceRoot, path);
+      const registered = registeredExcerpts.find(({ excerpt }) => {
+        const excerptPath = resolve(workspaceRoot, excerpt.path);
+        return excerptPath === absolutePath || excerptPath === workspaceRelativePath;
+      });
+      assert.ok(
+        registered,
+        `changing-memory input ${path} must match a source-attributed excerpt in the checked-in fixture manifest`,
+      );
+      return registered;
+    });
+    assert.equal(
+      new Set(inputs.map(({ excerpt }) => excerpt.path)).size,
+      inputs.length,
+      "each changing-memory job uses a different documented excerpt",
+    );
+    const selectedSongs = [...new Map(inputs.map(({ song }) => [song.id, song])).values()];
+    assert.ok(selectedSongs.length >= 3, "the changing excerpts come from at least three separate source songs");
+    assert.equal(
+      new Set(selectedSongs.map(({ source }) => source.sha256)).size,
+      selectedSongs.length,
+      "every source song has a distinct documented source SHA-256",
+    );
+    for (const song of selectedSongs) {
+      assert.equal(song.source.license, "CC BY 4.0", `${song.title} has a documented reusable license`);
+      assert.equal(
+        await checksumFile(resolve(workspaceRoot, song.source.path)),
+        song.source.sha256,
+        `${song.title} source audio matches its documented SHA-256`,
+      );
+    }
+    const sources = await Promise.all(inputs.map(async ({ song, excerpt }) => {
+      const source = await createMemoryMeasurementSource(resolve(workspaceRoot, excerpt.path));
+      assert.equal(source.checksum, excerpt.sha256, `${song.title} excerpt matches its documented SHA-256`);
+      return {
+        ...source,
+        song: {
+          id: song.id,
+          title: song.title,
+          artist: song.artist,
+          source: {
+            filename: basename(song.source.path),
+            sha256: song.source.sha256,
+            url: song.source.url,
+            license: song.source.license,
+            licenseUrl: song.source.licenseUrl,
+          },
+        },
+        excerpt: {
+          filename: basename(excerpt.path),
+          sha256: excerpt.sha256,
+          startSeconds: excerpt.startSeconds,
+          durationSeconds: excerpt.durationSeconds,
+        },
+      };
+    }));
     assert.ok(sources.every(({ kind }) => kind === "real"), "every changing input must be a real WAV excerpt");
     assert.equal(
       new Set(sources.map(({ checksum }) => checksum)).size,
@@ -1142,9 +1319,13 @@ if (changingMemoryInputsJson) {
         })
         .where(eq(processingJobs.id, f.job.id));
 
-      const completedModelPasses: { model: string; chunkCount: number }[] = [];
-      harness = createLocalRetryHarness(f.database, (model, timings) => {
-        completedModelPasses.push({ model, chunkCount: timings.chunkCount });
+      const completedModelPasses: {
+        model: string;
+        chunkCount: number;
+        activeMemoryPeak?: SeparationActiveMemoryPeak;
+      }[] = [];
+      harness = createLocalRetryHarness(f.database, (model, timings, activeMemoryPeak) => {
+        completedModelPasses.push({ model, chunkCount: timings.chunkCount, activeMemoryPeak });
       });
       const storage = getStorage();
       const baseline = await sampleMemory();
@@ -1153,7 +1334,8 @@ if (changingMemoryInputsJson) {
         requestedDevice: string;
         resolvedDevice: string;
         chunkCounts: Record<string, number>;
-        memory: Awaited<ReturnType<typeof sampleMemory>>;
+        activeModelPasses: { model: string; activeMemoryPeak: SeparationActiveMemoryPeak }[];
+        postReleaseMemory: Awaited<ReturnType<typeof sampleMemory>>;
       }[] = [];
       const startedAt = Date.now();
       for (let run = 0; run < sources.length; run += 1) {
@@ -1210,28 +1392,33 @@ if (changingMemoryInputsJson) {
           runPasses.every(({ chunkCount }) => chunkCount > 1),
           `changing excerpt ${run + 1} exercised multiple chunks in every model`,
         );
+        assertActiveMemoryPeaks(runPasses);
         const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
         assert.equal(stems.length, 4, `changing excerpt ${run + 1} persists all four stems`);
         const memory = await sampleMemory();
         jobReports.push({
           input: {
-            filename: basename(source.path),
-            sha256: source.checksum!,
+            songId: source.song.id,
+            title: source.song.title,
+            artist: source.song.artist,
+            source: source.song.source,
+            excerpt: source.excerpt,
             durationSeconds: Number((source.sampleCount / 44_100).toFixed(2)),
           },
           requestedDevice: job.requestedDevice ?? "unknown",
           resolvedDevice: job.resolvedDevice ?? "unknown",
           chunkCounts: Object.fromEntries(runPasses.map(({ model, chunkCount }) => [model, chunkCount])),
-          memory,
+          activeModelPasses: modelPassMemoryPeaks(runPasses),
+          postReleaseMemory: memory,
         });
       }
 
       const warmupJobs = 3;
-      const firstSteadyRss = jobReports[warmupJobs]!.memory.rss;
+      const firstSteadyRss = jobReports[warmupJobs]!.postReleaseMemory.rss;
       const postWarmRss = jobReports
         .slice(warmupJobs)
         .slice(Math.floor((jobReports.length - warmupJobs) / 2))
-        .map(({ memory }) => memory.rss)
+        .map(({ postReleaseMemory }) => postReleaseMemory.rss)
         .sort((left, right) => left - right);
       const middleIndex = Math.floor(postWarmRss.length / 2);
       const tailMedianRss = postWarmRss.length % 2 === 1
@@ -1239,12 +1426,6 @@ if (changingMemoryInputsJson) {
         : (postWarmRss[middleIndex - 1]! + postWarmRss[middleIndex]!) / 2;
       const continuedRssGrowth = tailMedianRss - firstSteadyRss;
       const maxContinuedGrowthBytes = 128 * 1024 * 1024;
-      assert.ok(
-        continuedRssGrowth <= maxContinuedGrowthBytes,
-        `RSS continued growing by ${toMiB(continuedRssGrowth)} MiB after warm-up; ` +
-          `allowed ${toMiB(maxContinuedGrowthBytes)} MiB. ` +
-          `Samples: ${jobReports.map(({ memory }) => `${toMiB(memory.rss)} MiB`).join(" → ")}`,
-      );
       const requestedDevices = [...new Set(jobReports.map(({ requestedDevice }) => requestedDevice))];
       const resolvedDevices = [...new Set(jobReports.map(({ resolvedDevice }) => resolvedDevice))];
       assert.equal(requestedDevices.length, 1, "all changing-input jobs use the same requested provider");
@@ -1253,9 +1434,27 @@ if (changingMemoryInputsJson) {
 
       const reportPath = process.env.WAVEYARD_REAL_ORT_CHANGING_MEMORY_REPORT?.trim();
       if (reportPath) {
+        const memoryCounters = ["rss", "heapUsed", "external", "arrayBuffers"] as const;
+        const memoryTrends = Object.fromEntries(memoryCounters.map((field) => {
+          const finalHalfValues = jobReports
+            .slice(warmupJobs)
+            .slice(Math.floor((jobReports.length - warmupJobs) / 2))
+            .map(({ postReleaseMemory }) => postReleaseMemory[field])
+            .sort((left, right) => left - right);
+          const medianIndex = Math.floor(finalHalfValues.length / 2);
+          const finalHalfMedian = finalHalfValues.length % 2 === 1
+            ? finalHalfValues[medianIndex]!
+            : (finalHalfValues[medianIndex - 1]! + finalHalfValues[medianIndex]!) / 2;
+          return [field, {
+            warmupRetentionBytes: jobReports[warmupJobs - 1]!.postReleaseMemory[field] - baseline[field],
+            firstSteadyBytes: jobReports[warmupJobs]!.postReleaseMemory[field],
+            finalHalfMedianBytes: finalHalfMedian,
+            continuedGrowthBytes: finalHalfMedian - jobReports[warmupJobs]!.postReleaseMemory[field],
+          }];
+        }));
         const report = {
-          schemaVersion: 1,
-          benchmark: "changing real excerpts with pinned four-model process memory",
+          schemaVersion: 3,
+          benchmark: "separately sourced real songs with pinned four-model process memory",
           measuredMachine: {
             platform: process.platform,
             osType: osType(),
@@ -1268,17 +1467,34 @@ if (changingMemoryInputsJson) {
           requestedProvider: requestedDevices[0],
           selectedProvider: resolvedDevices[0],
           models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
+          sourceSongs: selectedSongs.map((song) => ({
+            id: song.id,
+            title: song.title,
+            artist: song.artist,
+            sourceFilename: basename(song.source.path),
+            sourceSha256: song.source.sha256,
+            sourceUrl: song.source.url,
+            license: song.source.license,
+            licenseUrl: song.source.licenseUrl,
+          })),
           baselineMemoryBytes: baseline,
           warmupJobs,
           jobs: jobReports,
+          activePeakSampling: {
+            workerSampleIntervalMs: SEPARATION_ACTIVE_MEMORY_SAMPLE_INTERVAL_MS,
+            processRssSampleIntervalMs: SEPARATION_PROCESS_RSS_SAMPLE_INTERVAL_MS,
+            rssSource: "independent parent-thread process.memoryUsage.rss() sampling plus worker samples",
+            otherCountersSource: "inference worker isolate process.memoryUsage()",
+          },
           summary: {
-            warmupRetentionBytes: jobReports[warmupJobs - 1]!.memory.rss - baseline.rss,
+            warmupRetentionBytes: jobReports[warmupJobs - 1]!.postReleaseMemory.rss - baseline.rss,
             firstSteadyRssBytes: firstSteadyRss,
             finalHalfMedianRssBytes: tailMedianRss,
             continuedRssGrowthBytes: continuedRssGrowth,
             allowedContinuedGrowthBytes: maxContinuedGrowthBytes,
             continuedGrowthBounded: continuedRssGrowth <= maxContinuedGrowthBytes,
-            samplingMethod: "process.memoryUsage after optional explicit GC and a 150 ms worker-teardown settle",
+            memoryCounters: memoryTrends,
+            samplingMethod: "per-model worker counters sampled at 500 ms and whole-process RSS independently at 100 ms, plus post-job process.memoryUsage after optional explicit GC and a 150 ms worker-teardown settle",
             explicitGcAvailable: Boolean(forceGc),
           },
         };
@@ -1287,17 +1503,28 @@ if (changingMemoryInputsJson) {
         await writeFile(resolvedReportPath, `${JSON.stringify(report, null, 2)}\n`);
       }
 
+      // Keep the full counter series even when the memory bound fails; the
+      // report is needed to distinguish one-time warm-up retention from a
+      // continued leak or allocator growth.
+      assert.ok(
+        continuedRssGrowth <= maxContinuedGrowthBytes,
+        `RSS continued growing by ${toMiB(continuedRssGrowth)} MiB after warm-up; ` +
+          `allowed ${toMiB(maxContinuedGrowthBytes)} MiB. ` +
+          `Samples: ${jobReports.map(({ postReleaseMemory }) => `${toMiB(postReleaseMemory.rss)} MiB`).join(" → ")}`,
+      );
+
       t.diagnostic(
         `Pinned four-model changing-input memory run on ${resolvedDevices[0]}: ${sources.length} distinct excerpts ` +
           `in ${Date.now() - startedAt} ms; baseline RSS ${toMiB(baseline.rss)} MiB; post-job RSS ` +
-          `${jobReports.map(({ memory }) => toMiB(memory.rss)).join(" → ")} MiB; ` +
-          `${warmupJobs} warm-up jobs retained ${toMiB(jobReports[warmupJobs - 1]!.memory.rss - baseline.rss)} MiB; ` +
+          `${jobReports.map(({ postReleaseMemory }) => toMiB(postReleaseMemory.rss)).join(" → ")} MiB; ` +
+          `${warmupJobs} warm-up jobs retained ${toMiB(jobReports[warmupJobs - 1]!.postReleaseMemory.rss - baseline.rss)} MiB; ` +
           `first steady RSS ${toMiB(firstSteadyRss)} MiB; final-half median ${toMiB(tailMedianRss)} MiB; ` +
           `continued growth ${toMiB(continuedRssGrowth)} MiB (limit ${toMiB(maxContinuedGrowthBytes)} MiB); ` +
-          `heapUsed ${jobReports.map(({ memory }) => toMiB(memory.heapUsed)).join(" → ")} MiB; ` +
-          `external ${jobReports.map(({ memory }) => toMiB(memory.external)).join(" → ")} MiB; ` +
-          `arrayBuffers ${jobReports.map(({ memory }) => toMiB(memory.arrayBuffers)).join(" → ")} MiB; ` +
-          `excerpt SHA-256 values ${sources.map(({ checksum }) => checksum).join(", ")}.`,
+          `heapUsed ${jobReports.map(({ postReleaseMemory }) => toMiB(postReleaseMemory.heapUsed)).join(" → ")} MiB; ` +
+          `external ${jobReports.map(({ postReleaseMemory }) => toMiB(postReleaseMemory.external)).join(" → ")} MiB; ` +
+          `arrayBuffers ${jobReports.map(({ postReleaseMemory }) => toMiB(postReleaseMemory.arrayBuffers)).join(" → ")} MiB; ` +
+          `source songs ${selectedSongs.map(({ title, source }) => `${title}=${source.sha256}`).join(", ")}; ` +
+          `excerpt SHA-256 values ${sources.map(({ song, excerpt }) => `${song.title}/${excerpt.filename}=${excerpt.sha256}`).join(", ")}.`,
       );
     } finally {
       await harness?.restore();
@@ -1307,13 +1534,19 @@ if (changingMemoryInputsJson) {
 }
 
 // Opt-in real-audio measurement. Arena decodes supported local audio formats
-// into 44.1 kHz stereo PCM, then bounds processing to a 2–20 second excerpt.
+// into 44.1 kHz stereo PCM and accepts a bounded 2–900 second region. The
+// default remains a short excerpt; full-song CPU runs require explicit opt-in.
 const realAudioInputPath =
   process.env.WAVEYARD_REAL_AUDIO_INPUT?.trim() ||
   process.env.WAVEYARD_REAL_AUDIO_WAV?.trim();
 const referenceManifestPath = process.env.WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST?.trim();
 if (realAudioInputPath) {
-  test("the pinned four-model recipe separates a real audio excerpt", { timeout: 600_000 }, async (t) => {
+  const timeoutMs = Number(process.env.WAVEYARD_REAL_AUDIO_TIMEOUT_MS?.trim() || "600000");
+  assert.ok(
+    Number.isSafeInteger(timeoutMs) && timeoutMs >= 600_000 && timeoutMs <= 7_200_000,
+    "WAVEYARD_REAL_AUDIO_TIMEOUT_MS must be an integer from 600000 to 7200000",
+  );
+  test("the pinned four-model recipe separates real audio", { timeout: timeoutMs }, async (t) => {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const workspaceRoot = resolve(arenaRoot, "../..");
     const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
@@ -1342,8 +1575,8 @@ if (realAudioInputPath) {
     const maxSecondsText = process.env.WAVEYARD_REAL_AUDIO_MAX_SECONDS?.trim() || "20";
     const maxSeconds = Number(maxSecondsText);
     assert.ok(
-      Number.isInteger(maxSeconds) && maxSeconds >= 2 && maxSeconds <= 20,
-      "WAVEYARD_REAL_AUDIO_MAX_SECONDS must be an integer from 2 to 20",
+      Number.isInteger(maxSeconds) && maxSeconds >= 2 && maxSeconds <= 900,
+      "WAVEYARD_REAL_AUDIO_MAX_SECONDS must be an integer from 2 to 900",
     );
     const startSecondsText = process.env.WAVEYARD_REAL_AUDIO_START_SECONDS?.trim() || "0";
     const startSeconds = Number(startSecondsText);
@@ -1435,7 +1668,11 @@ if (realAudioInputPath) {
       let retry: Awaited<ReturnType<typeof retrySeparationJob>> | undefined;
       try {
         retry = await retrySeparationJob(f.database, f.job.id);
-        assert.equal(await harness.broker.drain(570_000), true, "the real-audio recipe drains through the production worker");
+        assert.equal(
+          await harness.broker.drain(timeoutMs - 30_000),
+          true,
+          "the real-audio recipe drains through the production worker within its configured limit",
+        );
       } finally {
         clearInterval(playbackTimer);
         stopSamplingProgress = true;
@@ -1758,6 +1995,7 @@ test("a real-length CPU demix leaves library requests and playback timers respon
       assert.equal(result.resolvedDevice, "cpu");
       assert.equal(result.separated.sampleCount, sampleCount);
       assert.equal(result.separated.primary[0].length, sampleCount);
+      assertActiveMemoryPeak(result.activeMemoryPeak, probe.id);
     } finally {
       clearInterval(playbackTimer);
     }

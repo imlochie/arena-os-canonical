@@ -28,8 +28,12 @@ import {
   listenSessions,
   processingJobs,
   projects,
+  sourceAnalyses,
   sourceAssets,
+  sourceSectionAnalyses,
+  stemHarmonyAnalyses,
   stemAssets,
+  vocalAnalyses,
   tracks,
   waveformAssets,
   waveformJobs,
@@ -202,6 +206,7 @@ function startSourceIngestProcess(
   projectId: string,
   filePath: string,
   storageDir: string,
+  failureMode?: "after-commit" | "before-commit",
 ): ChildProcess & { send(message: unknown): boolean } {
   const importFlagIndex = process.execArgv.findIndex((arg, index, args) =>
     arg === "--import" && args[index + 1]?.includes("tsx/dist/loader.mjs"));
@@ -222,6 +227,7 @@ function startSourceIngestProcess(
       WAVEYARD_STORAGE_DIR: storageDir,
       SOURCE_INGEST_TEST_PROJECT_ID: projectId,
       SOURCE_INGEST_TEST_FILE_PATH: filePath,
+      ...(failureMode ? { SOURCE_INGEST_TEST_FAILURE_MODE: failureMode } : {}),
     },
     stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
@@ -578,6 +584,69 @@ test("source cleanup on another API connection preserves a concurrent committed 
     await cleanupPromise?.catch(() => undefined);
     await cleanupPool.end();
     await observer.end();
+    await f.close();
+    await pg.close();
+  }
+});
+
+test("source upload error cleanup preserves committed objects and removes rolled-back uploads across API processes", async (t) => {
+  const pg = await independentRecoveryPostgres(t);
+  if (!pg) return;
+
+  const f = await fixture();
+  const storage = getStorage();
+  const children: ChildProcess[] = [];
+  try {
+    const [project] = await pg.database
+      .insert(projects)
+      .values({ ownerId: randomUUID(), title: "Ambiguous source upload" })
+      .returning();
+    const storageRoot = path.resolve(storage.getLocalPath(privateObjectKey(project.id, "source", "wav"))!, "..", "..", "..", "..");
+
+    const committedUpload = startSourceIngestProcess(
+      pg.connectionString,
+      project.id,
+      f.sourcePath,
+      storageRoot,
+      "after-commit",
+    );
+    children.push(committedUpload);
+    const committedFailure = await waitForRecoveryMessage(committedUpload, "failed");
+    await waitForRecoveryProcessExit(committedUpload);
+    const committedKey = String(committedFailure.key);
+    assert.equal(String(committedFailure.message), "SOURCE_INGEST_TEST_FORCED_FAILURE_AFTER_COMMIT");
+    assert.equal(await storage.exists(committedKey), true, "an upload with a committed source row survives ambiguous failure cleanup");
+    const [committedSource] = await pg.database
+      .select()
+      .from(sourceAssets)
+      .where(eq(sourceAssets.storageKey, committedKey));
+    assert.ok(committedSource, "the source row committed before the request reported failure");
+
+    const rolledBackUpload = startSourceIngestProcess(
+      pg.connectionString,
+      project.id,
+      f.sourcePath,
+      storageRoot,
+      "before-commit",
+    );
+    children.push(rolledBackUpload);
+    const rolledBackFailure = await waitForRecoveryMessage(rolledBackUpload, "failed");
+    await waitForRecoveryProcessExit(rolledBackUpload);
+    const rolledBackKey = String(rolledBackFailure.key);
+    assert.equal(String(rolledBackFailure.message), "SOURCE_INGEST_TEST_FORCED_FAILURE_BEFORE_COMMIT");
+    assert.equal(await storage.exists(rolledBackKey), false, "an upload whose transaction rolled back is cleaned up");
+    const [rolledBackSource] = await pg.database
+      .select()
+      .from(sourceAssets)
+      .where(eq(sourceAssets.storageKey, rolledBackKey));
+    assert.equal(rolledBackSource, undefined, "the rolled-back upload has no source row");
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.send({ type: "release" });
+        await waitForRecoveryProcessExit(child).catch(() => undefined);
+      }
+    }
     await f.close();
     await pg.close();
   }
@@ -2723,6 +2792,7 @@ test("the local broker registers its implemented Waveyard queues", async () => {
     assert.ok(broker!.hasHandler("waveyard-source-section-analysis"));
     assert.ok(broker!.hasHandler("waveyard-drum-analysis"));
     assert.ok(broker!.hasHandler("waveyard-harmony-analysis"));
+    assert.ok(broker!.hasHandler("waveyard-stem-harmony-analysis"));
     assert.ok(broker!.hasHandler("waveyard-vocal-analysis"));
   } finally {
     if (prevDesktop === undefined) delete process.env.ARENA_DESKTOP_MODE;
@@ -2880,6 +2950,9 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
   const f = await fixture({ model: "stems_4" });
   try {
     const opened: string[] = [];
+    const sectionDispatches: { dispatchKey?: string }[] = [];
+    const vocalDispatches: unknown[] = [];
+    const stemHarmonyDispatches: unknown[] = [];
     let liveEngines = 0;
     const engine: (spec: MdxModelSpec) => Promise<OpenedEngine> = async (spec) => {
       assert.equal(liveEngines, 0, "the previous model must be released before opening another");
@@ -2887,7 +2960,24 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
       opened.push(spec.id);
       return { infer: (async (spek: Float32Array) => spek) as MdxInfer, release: async () => { liveEngines -= 1; }, resolvedDevice: "cpu" };
     };
-    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: engine });
+    await f.database.insert(sourceAnalyses).values({
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      status: "complete",
+      idempotencyKey: `analysis:${f.source.id}:${randomUUID()}`,
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: "1.4.0",
+      sourceChecksumSha256: f.source.checksumSha256,
+      beatGrid: JSON.stringify([0, 250, 500, 750, 1_000]),
+      beatConfidence: 0.8,
+    });
+    await handleSeparationJob(payloadOf(f), {
+      db: f.database,
+      openEngine: engine,
+      enqueueSectionAnalysis: async (payload) => { sectionDispatches.push(payload); },
+      enqueueVocalAnalysis: async (payload) => { vocalDispatches.push(payload); },
+      enqueueStemHarmonyAnalysis: async (payload) => { stemHarmonyDispatches.push(payload); },
+    });
     assert.equal(liveEngines, 0, "the final model is released too");
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
@@ -2897,10 +2987,34 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
     assert.deepEqual(metadata.stems, ["vocals", "drums", "bass", "other"]);
     assert.equal(metadata.outputCount, 4);
     assert.deepEqual(metadata.models, ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]);
+    assert.equal(metadata.sourceChecksumSha256, f.source.checksumSha256, "completed stems are bound to the exact source bytes");
+    assert.equal(sectionDispatches.length, 1, "new stems re-run section analysis");
+    assert.equal(typeof sectionDispatches[0]?.dispatchKey, "string", "refresh uses a distinct queue job identity");
+    const [refreshedSections] = await f.database.select().from(sourceSectionAnalyses)
+      .where(eq(sourceSectionAnalyses.sourceAssetId, f.source.id));
+    assert.equal(refreshedSections.status, "queued");
 
     const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
     assert.equal(stems.length, 4, "the stem.fm set: vocals, drums, bass, melody");
     const byType = new Map(stems.map((stem) => [stem.stemType, stem]));
+    const vocalStem = byType.get("vocals")!;
+    assert.equal(vocalDispatches.length, 1, "the published vocal stem starts local pitch-continuity analysis");
+    const [vocalAnalysis] = await f.database.select().from(vocalAnalyses)
+      .where(eq(vocalAnalyses.stemAssetId, vocalStem.id));
+    assert.equal(vocalAnalysis.status, "queued");
+    assert.equal(vocalAnalysis.sourceChecksumSha256, f.source.checksumSha256);
+    assert.equal(vocalAnalysis.stemChecksumSha256, vocalStem.checksumSha256);
+    assert.equal((vocalDispatches[0] as { vocalAnalysisId?: string } | undefined)?.vocalAnalysisId, vocalAnalysis.id);
+    assert.equal(stemHarmonyDispatches.length, 1, "the published non-vocal bed stem starts isolated chord analysis");
+    const [stemHarmonyAnalysis] = await f.database.select().from(stemHarmonyAnalyses)
+      .where(eq(stemHarmonyAnalyses.stemAssetId, byType.get("other")!.id));
+    assert.equal(stemHarmonyAnalysis.status, "queued");
+    assert.equal(stemHarmonyAnalysis.sourceChecksumSha256, f.source.checksumSha256);
+    assert.equal(stemHarmonyAnalysis.stemChecksumSha256, byType.get("other")!.checksumSha256);
+    assert.equal(
+      (stemHarmonyDispatches[0] as { stemAssetId?: string } | undefined)?.stemAssetId,
+      byType.get("other")!.id,
+    );
     assert.equal(byType.get("vocals")?.model, "kim_vocal_2");
     assert.equal(byType.get("drums")?.model, "kuielab_b_drums");
     assert.equal(byType.get("bass")?.model, "kuielab_b_bass");

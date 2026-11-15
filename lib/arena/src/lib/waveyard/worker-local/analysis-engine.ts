@@ -16,6 +16,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import { HARMONY_CHORD_TEMPLATES, HARMONY_TEMPLATE_MIN_MARGIN } from "../types/harmony-analysis";
+import type { VocalActivityInterval } from "../types/vocal-analysis";
+import { SESSION_MIN_DOWNBEAT_CONFIDENCE } from "../session-dj-controls";
 
 export { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 
@@ -28,6 +31,8 @@ export type AnalysisResult = {
   keyConfidence: number | null;
   beatGridMs: number[] | null;
   beatConfidence: number | null;
+  downbeatGridMs: number[] | null;
+  downbeatConfidence: number | null;
 };
 
 const TEMPO_WINDOW_MS = 30_000;
@@ -99,11 +104,35 @@ function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
  * hop). RMS-only flux misses beat attacks when sustained and percussive parts
  * trade energy without changing the whole-frame loudness.
  */
-export function onsetEnvelope(pcm: Float32Array): { envelope: Float32Array; frameMs: number } {
+export function onsetEnvelope(
+  pcm: Float32Array,
+  options?: {
+    frequencyBandHz?: { minHz: number; maxHz: number };
+    minBandEnergyFraction?: number;
+  },
+): { envelope: Float32Array; frameMs: number } {
   const frameMs = (ONSET_HOP_SIZE / ANALYSIS_PCM_RATE) * 1000;
   const frameCount = Math.max(0, Math.floor((pcm.length - ONSET_WINDOW_SIZE) / ONSET_HOP_SIZE) + 1);
-  const envelope = new Float32Array(Math.max(0, frameCount - 1));
+  const envelope = new Float32Array(frameCount);
   if (frameCount < 2) return { envelope, frameMs };
+  const binWidthHz = ANALYSIS_PCM_RATE / ONSET_WINDOW_SIZE;
+  const frequencyBandHz = options?.frequencyBandHz;
+  const minBandEnergyFraction = options?.minBandEnergyFraction ?? 0;
+  const minBin = frequencyBandHz ? Math.max(1, Math.floor(frequencyBandHz.minHz / binWidthHz)) : 1;
+  const maxBin = frequencyBandHz
+    ? Math.min(ONSET_WINDOW_SIZE / 2 - 1, Math.ceil(frequencyBandHz.maxHz / binWidthHz))
+    : ONSET_WINDOW_SIZE / 2 - 1;
+  if (
+    frequencyBandHz
+    && (!Number.isFinite(frequencyBandHz.minHz)
+      || !Number.isFinite(frequencyBandHz.maxHz)
+      || frequencyBandHz.minHz < 0
+      || frequencyBandHz.maxHz <= frequencyBandHz.minHz
+      || maxBin < minBin
+      || !Number.isFinite(minBandEnergyFraction)
+      || minBandEnergyFraction < 0
+      || minBandEnergyFraction > 1)
+  ) return { envelope, frameMs };
 
   const window = Float64Array.from({ length: ONSET_WINDOW_SIZE }, (_, index) =>
     0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (ONSET_WINDOW_SIZE - 1)),
@@ -122,17 +151,22 @@ export function onsetEnvelope(pcm: Float32Array): { envelope: Float32Array; fram
     fftInPlace(real, imaginary);
 
     let total = 0;
+    let broadbandTotal = 0;
     let positiveFlux = 0;
     for (let bin = 1; bin < ONSET_WINDOW_SIZE / 2; bin += 1) {
       const magnitude = Math.hypot(real[bin], imaginary[bin]);
-      total += magnitude;
-      if (frame > 0) positiveFlux += Math.max(0, magnitude - previousMagnitudes[bin]);
+      broadbandTotal += magnitude;
+      if (bin >= minBin && bin <= maxBin) {
+        total += magnitude;
+        positiveFlux += Math.max(0, magnitude - previousMagnitudes[bin]);
+      }
       previousMagnitudes[bin] = magnitude;
     }
-    if (frame > 0) {
-      const scale = (total + previousTotal) / 2;
-      envelope[frame - 1] = scale > 1e-8 ? Math.min(1, positiveFlux / scale) : 0;
-    }
+    const scale = frame === 0 ? total : (total + previousTotal) / 2;
+    const energyFraction = broadbandTotal > 1e-8 ? total / broadbandTotal : 0;
+    envelope[frame] = scale > 1e-8 && energyFraction >= minBandEnergyFraction
+      ? Math.min(1, positiveFlux / scale)
+      : 0;
     previousTotal = total;
   }
   return { envelope, frameMs };
@@ -252,31 +286,226 @@ export function estimateTrackTempo(
 export function estimateBeatGrid(envelope: Float32Array, frameMs: number, bpm: number): { beatGridMs: number[] | null; confidence: number | null } {
   const periodFrames = 60_000 / bpm / frameMs;
   if (!Number.isFinite(periodFrames) || periodFrames < 2) return { beatGridMs: null, confidence: null };
+  let envelopePeak = 0;
+  for (const value of envelope) envelopePeak = Math.max(envelopePeak, value);
   const phases = Math.max(1, Math.round(periodFrames));
+  const phaseLookaheadFrames = Math.min(envelope.length, Math.ceil(periodFrames * 8));
   let bestPhase = 0;
   let bestScore = -Infinity;
+  let bestPhaseSamples = 0;
   for (let phase = 0; phase < phases; phase += 1) {
     let score = 0;
-    for (let frame = phase; frame < envelope.length; frame += periodFrames) {
+    let sampleCount = 0;
+    for (let frame = phase; frame < phaseLookaheadFrames; frame += periodFrames) {
       const index = Math.round(frame);
-      if (index < envelope.length) score += envelope[index];
+      if (index < envelope.length) {
+        score += envelope[index] ?? 0;
+        sampleCount += 1;
+      }
     }
     if (score > bestScore) {
       bestScore = score;
       bestPhase = phase;
+      bestPhaseSamples = sampleCount;
     }
   }
+
+  // The first spectral-flux frame has no previous audio frame to compare with.
+  // If it contains an attack and another attack follows one beat later, use
+  // that directly observed start instead of allowing a long-track phase fit to
+  // skip the opening beat.
+  const searchRadiusFrames = Math.max(1, Math.min(
+    Math.round(periodFrames * 0.16),
+    Math.round(80 / frameMs),
+  ));
+  const peakInRange = (from: number, to: number): { frame: number; value: number } => {
+    let frame = Math.max(0, from);
+    const end = Math.min(envelope.length - 1, to);
+    for (let index = frame + 1; index <= end; index += 1) {
+      if ((envelope[index] ?? 0) > (envelope[frame] ?? 0)) frame = index;
+    }
+    return { frame, value: envelope[frame] ?? 0 };
+  };
+  const firstAttack = peakInRange(0, searchRadiusFrames);
+  const nextExpected = firstAttack.frame + periodFrames;
+  const nextAttack = peakInRange(
+    Math.floor(nextExpected - searchRadiusFrames),
+    Math.ceil(nextExpected + searchRadiusFrames),
+  );
+  if (
+    envelopePeak > 0
+    && firstAttack.value >= envelopePeak * 0.15
+    && nextAttack.value >= envelopePeak * 0.15
+  ) bestPhase = firstAttack.frame;
+
+  // Follow nearby attacks instead of projecting one perfectly even grid over
+  // the whole song. The bounded phase/period loop tracks small performance
+  // drift while refusing to jump to a syncopated hit far from the pulse.
+  const phaseCorrection = 0.25;
+  const periodCorrection = 0.02;
+  let predictedFrame = bestPhase;
+  let trackedPeriodFrames = periodFrames;
+  let strongPeakCount = 0;
+  let absoluteCorrection = 0;
+  let normalizedPeakStrength = 0;
   const grid: number[] = [];
-  for (let frame = bestPhase; frame < envelope.length; frame += periodFrames) {
-    grid.push(Math.round(frame * frameMs));
+  while (predictedFrame < envelope.length) {
+    const expected = predictedFrame;
+    const from = Math.max(0, Math.floor(expected - searchRadiusFrames));
+    const to = Math.min(envelope.length - 1, Math.ceil(expected + searchRadiusFrames));
+    let localMean = 0;
+    let peakFrame = from;
+    for (let frame = from; frame <= to; frame += 1) {
+      localMean += envelope[frame] ?? 0;
+      if ((envelope[frame] ?? 0) > (envelope[peakFrame] ?? 0)) peakFrame = frame;
+    }
+    localMean /= Math.max(1, to - from + 1);
+    const peakValue = envelope[peakFrame] ?? 0;
+    const hasLocalAttack = peakValue > 1e-9 && peakValue >= localMean * 1.25;
+    const correction = hasLocalAttack ? peakFrame - expected : 0;
+    const beatFrame = hasLocalAttack ? peakFrame : expected;
+    const beatMs = Math.round(beatFrame * frameMs);
+    if (grid.length === 0 || beatMs > grid[grid.length - 1]!) {
+      grid.push(beatMs);
+      if (hasLocalAttack) {
+        strongPeakCount += 1;
+        absoluteCorrection += Math.abs(correction);
+        normalizedPeakStrength += envelopePeak > 0 ? peakValue / envelopePeak : 0;
+      }
+    }
+
+    trackedPeriodFrames = Math.max(
+      periodFrames * 0.85,
+      Math.min(periodFrames * 1.15, trackedPeriodFrames + correction * periodCorrection),
+    );
+    predictedFrame = expected + trackedPeriodFrames + correction * phaseCorrection;
   }
   if (grid.length < 2) return { beatGridMs: null, confidence: null };
-  const strength =
+  const phaseStrength =
     bestScore /
-    Math.max(1e-9, grid.reduce((sum, _beat) => sum + 1, 0)) /
-    Math.max(1e-9, Math.max(...envelope) || 1);
-  const confidence = Math.max(0, Math.min(1, strength * 3));
+    Math.max(1, bestPhaseSamples) /
+    Math.max(1e-9, envelopePeak || 1);
+  const peakCoverage = strongPeakCount / grid.length;
+  const meanPeakStrength = strongPeakCount > 0 ? normalizedPeakStrength / strongPeakCount : 0;
+  const meanCorrection = strongPeakCount > 0 ? absoluteCorrection / strongPeakCount : searchRadiusFrames;
+  const trackingEvidence = peakCoverage
+    * meanPeakStrength
+    * Math.max(0, 1 - meanCorrection / Math.max(1, searchRadiusFrames));
+  const confidence = Math.max(0, Math.min(1, phaseStrength * 3 * (0.5 + 0.5 * trackingEvidence)));
   return { beatGridMs: grid, confidence: Math.round(confidence * 1000) / 1000 };
+}
+
+export type DownbeatGridEstimate = {
+  downbeatGridMs: number[] | null;
+  downbeatConfidence: number | null;
+};
+
+/**
+ * Infer a repeating four-beat accent phase only when the measured beat
+ * envelope supports one stable phase. This is rhythm evidence, not a semantic
+ * meter classifier. Uniform pulses, short tracks, unstable phases, and weak
+ * beat grids remain unavailable; BPM alone never labels a downbeat.
+ */
+export function estimateDownbeatGrid(
+  envelope: Float32Array,
+  frameMs: number,
+  beatGridMs: readonly number[] | null,
+  beatConfidence: number | null,
+): DownbeatGridEstimate {
+  const beatsPerBar = 4;
+  const confirmationBars = 4;
+  const confirmationBeats = beatsPerBar * confirmationBars;
+  if (
+    !Number.isFinite(frameMs) || frameMs <= 0
+    || !beatGridMs || beatGridMs.length < confirmationBeats + 1
+    || beatGridMs.some((beat, index) =>
+      !Number.isSafeInteger(beat) || beat < 0 || (index > 0 && beat <= beatGridMs[index - 1]!))
+    || typeof beatConfidence !== "number" || !Number.isFinite(beatConfidence)
+    || beatConfidence < 0.5 || beatConfidence > 1
+  ) return { downbeatGridMs: null, downbeatConfidence: null };
+
+  let envelopePeak = 0;
+  for (const value of envelope) {
+    if (Number.isFinite(value)) envelopePeak = Math.max(envelopePeak, value);
+  }
+  if (envelopePeak <= 1e-9) return { downbeatGridMs: null, downbeatConfidence: 0 };
+
+  const radiusFrames = Math.max(1, Math.ceil(45 / frameMs));
+  const beatStrengths = beatGridMs.map((beatMs) => {
+    const center = Math.round(beatMs / frameMs);
+    let strength = 0;
+    for (
+      let frame = Math.max(0, center - radiusFrames);
+      frame <= Math.min(envelope.length - 1, center + radiusFrames);
+      frame += 1
+    ) {
+      const value = envelope[frame] ?? 0;
+      if (Number.isFinite(value)) strength = Math.max(strength, value);
+    }
+    return strength;
+  });
+
+  const windows: Array<{ phase: number; confidence: number }> = [];
+  for (let start = 0; start + confirmationBeats < beatStrengths.length; start += beatsPerBar) {
+    const phaseStrengths = Array.from({ length: beatsPerBar }, (_, phase) =>
+      Array.from({ length: confirmationBars }, (_, bar) => beatStrengths[start + bar * beatsPerBar + phase] ?? 0),
+    );
+    const median = (values: number[]) => {
+      const sorted = [...values].sort((left, right) => left - right);
+      return sorted[Math.floor(sorted.length / 2)] ?? 0;
+    };
+    const ranked = phaseStrengths
+      .map((values, phase) => ({ phase, strength: median(values) }))
+      .sort((left, right) => right.strength - left.strength);
+    const strongest = ranked[0];
+    const runnerUp = ranked[1];
+    if (!strongest || !runnerUp || strongest.strength <= envelopePeak * 0.08) {
+      windows.push({ phase: strongest?.phase ?? 0, confidence: 0 });
+      continue;
+    }
+    const contrast = Math.max(0, (strongest.strength - runnerUp.strength) / strongest.strength);
+    const supportedBars = phaseStrengths[strongest.phase]!.filter((accent, bar) => {
+      const otherStrengths = phaseStrengths
+        .filter((_, phase) => phase !== strongest.phase)
+        .map((values) => values[bar] ?? 0);
+      const localMedian = median(otherStrengths);
+      return accent >= envelopePeak * 0.08 && accent >= localMedian * 1.2;
+    }).length;
+    const support = supportedBars / confirmationBars;
+    const confidence = Math.max(0, Math.min(1, contrast * support * beatConfidence));
+    windows.push({ phase: strongest.phase, confidence });
+  }
+  if (windows.length === 0) return { downbeatGridMs: null, downbeatConfidence: null };
+
+  const phaseCounts = Array.from({ length: beatsPerBar }, (_, phase) =>
+    windows.filter((window) => window.phase === phase && window.confidence >= SESSION_MIN_DOWNBEAT_CONFIDENCE).length,
+  );
+  const bestPhase = phaseCounts.indexOf(Math.max(...phaseCounts));
+  const accepted = windows.filter((window) => window.confidence >= SESSION_MIN_DOWNBEAT_CONFIDENCE);
+  const matching = accepted.filter((window) => window.phase === bestPhase);
+  const phaseAgreement = accepted.length > 0 ? matching.length / accepted.length : 0;
+  const meanConfidence = matching.length > 0
+    ? matching.reduce((sum, window) => sum + window.confidence, 0) / matching.length
+    : windows.reduce((sum, window) => sum + window.confidence, 0) / windows.length;
+  const weakestWindowConfidence = Math.min(...windows.map((window) => window.confidence));
+  const confidence = Math.round(Math.min(meanConfidence * phaseAgreement, weakestWindowConfidence) * 1000) / 1000;
+  if (
+    matching.length === 0
+    || accepted.length !== windows.length
+    || phaseAgreement < 1
+    || confidence < SESSION_MIN_DOWNBEAT_CONFIDENCE
+  ) return { downbeatGridMs: null, downbeatConfidence: confidence };
+
+  const lastConfirmedBeat = Math.min(
+    beatGridMs.length - 1,
+    (windows.length - 1) * beatsPerBar + confirmationBeats - 1,
+  );
+  const downbeatGridMs = beatGridMs.filter((_, index) =>
+    index <= lastConfirmedBeat && index % beatsPerBar === bestPhase,
+  );
+  return downbeatGridMs.length >= 2
+    ? { downbeatGridMs, downbeatConfidence: confidence }
+    : { downbeatGridMs: null, downbeatConfidence: confidence };
 }
 
 const PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
@@ -417,8 +646,13 @@ export function analysePcm(pcm: Float32Array): AnalysisResult {
     beatGridMs = grid.beatGridMs;
     beatConfidence = grid.confidence;
   }
+  const downbeats = estimateDownbeatGrid(envelope, frameMs, beatGridMs, beatConfidence);
   const { key, confidence: keyConfidence } = keyFromChroma(chromaFromPcm(pcm));
-  return { bpm, bpmConfidence, musicalKey: key, keyConfidence, beatGridMs, beatConfidence };
+  return {
+    bpm, bpmConfidence, musicalKey: key, keyConfidence, beatGridMs, beatConfidence,
+    downbeatGridMs: downbeats.downbeatGridMs,
+    downbeatConfidence: downbeats.downbeatConfidence,
+  };
 }
 
 export type LocalDrumTransient = {
@@ -428,11 +662,21 @@ export type LocalDrumTransient = {
   rhythmicClass: null;
 };
 
-/** Detect measurable transients in the already-isolated drum/percussion stem.
- * This engine deliberately leaves semantic class null: spectral onsets alone
- * do not reliably distinguish kick, snare and hats across arbitrary mixes. */
-export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
-  const { envelope, frameMs } = onsetEnvelope(pcm);
+export type LocalBassAttack = {
+  timestampMs: number;
+  strength: number;
+  confidence: number;
+};
+
+/**
+ * Detect transient evidence in an onset envelope. Strength is relative to this
+ * file's strongest event; confidence is a local prominence measure, not a
+ * probability or instrument classifier.
+ */
+function transientEventsFromEnvelope(
+  envelope: Float32Array,
+  frameMs: number,
+): LocalDrumTransient[] {
   if (envelope.length < 3) return [];
   let maximum = 0;
   let mean = 0;
@@ -463,23 +707,33 @@ export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
   return events;
 }
 
+/** Detect measurable transients in an isolated drum/percussion stem.
+ * Spectral onsets alone do not reliably distinguish kick, snare and hats. */
+export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
+  const { envelope, frameMs } = onsetEnvelope(pcm);
+  return transientEventsFromEnvelope(envelope, frameMs);
+}
+
+/**
+ * Detect low-band attacks from an isolated bass stem. These are not note or
+ * pitch labels: they mark measured spectral changes between 35 and 250 Hz.
+ */
+export function detectBassAttacks(pcm: Float32Array): LocalBassAttack[] {
+  const { envelope, frameMs } = onsetEnvelope(pcm, {
+    frequencyBandHz: { minHz: 35, maxHz: 250 },
+    minBandEnergyFraction: 0.04,
+  });
+  return transientEventsFromEnvelope(envelope, frameMs);
+}
+
 export type LocalHarmonyEvent = {
   startMs: number;
   endMs: number;
   root: string | null;
   quality: "major" | "minor" | "dominant7" | "minor7" | "major7" | "diminished" | "augmented" | "unknown";
+  /** Top-two chord-template score margin; deliberately not called a probability. */
   confidence: number;
 };
-
-const CHORD_TEMPLATES: ReadonlyArray<{ quality: LocalHarmonyEvent["quality"]; intervals: readonly number[] }> = [
-  { quality: "major", intervals: [0, 4, 7] },
-  { quality: "minor", intervals: [0, 3, 7] },
-  { quality: "dominant7", intervals: [0, 4, 7, 10] },
-  { quality: "minor7", intervals: [0, 3, 7, 10] },
-  { quality: "major7", intervals: [0, 4, 7, 11] },
-  { quality: "diminished", intervals: [0, 3, 6] },
-  { quality: "augmented", intervals: [0, 4, 8] },
-];
 
 /** Conservative, source-relative chord windows using the same harmonic
  * salience chroma as the local BPM/key engine. Weak/ambiguous windows remain
@@ -498,7 +752,7 @@ export function detectHarmonyTimeline(pcm: Float32Array, windowSeconds = 2): Loc
     if (total > 1e-8) {
       const normalized = chroma.map((value) => value / total);
       for (let root = 0; root < 12; root += 1) {
-        for (const template of CHORD_TEMPLATES) {
+        for (const template of HARMONY_CHORD_TEMPLATES) {
           let score = 0;
           for (let pitch = 0; pitch < 12; pitch += 1) {
             const interval = (pitch - root + 12) % 12;
@@ -513,7 +767,7 @@ export function detectHarmonyTimeline(pcm: Float32Array, windowSeconds = 2): Loc
       }
     }
     const margin = best ? Math.max(0, (best.score - runner) / Math.max(best.score, 1e-9)) : 0;
-    const confident = best !== null && best.score >= 0.28 && margin >= 0.04;
+    const confident = best !== null && best.score >= 0.28 && margin >= HARMONY_TEMPLATE_MIN_MARGIN;
     const startMs = Math.round((start / ANALYSIS_PCM_RATE) * 1000);
     const endMs = Math.min(durationMs, Math.round((end / ANALYSIS_PCM_RATE) * 1000));
     if (endMs > startMs) events.push({
@@ -562,23 +816,29 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
     }
     const max = Math.min(maxLag, Math.floor(windowSize / 2));
     const differences = new Float64Array(max + 1);
-    for (let lag = minLag; lag <= max; lag += 1) {
+    // CMND needs the sum from lag 1, including periods outside the search
+    // range. Use equal support for every lag, not a shrinking comparison.
+    for (let lag = 1; lag <= max; lag += 1) {
       let difference = 0;
-      for (let index = 0; index + lag < windowSize; index += 1) {
+      for (let index = 0; index < windowSize - max; index += 1) {
         const delta = signal[index] - signal[index + lag];
         difference += delta * delta;
       }
       differences[lag] = difference;
     }
     let running = 0;
+    const normalizedDifferences = new Float64Array(max + 1);
+    for (let lag = 1; lag <= max; lag += 1) {
+      running += differences[lag]!;
+      normalizedDifferences[lag] = running > 0 ? differences[lag]! * lag / running : 1;
+    }
     let bestLag = -1;
     let bestValue = Number.POSITIVE_INFINITY;
     let previousNormalized = Number.POSITIVE_INFINITY;
     for (let lag = minLag; lag <= max; lag += 1) {
-      running += differences[lag] ?? 0;
-      const normalized = running > 0 ? ((differences[lag] ?? 0) * (lag - minLag + 1)) / running : 1;
+      const normalized = normalizedDifferences[lag]!;
       if (normalized < bestValue) { bestValue = normalized; bestLag = lag; }
-      if (lag > minLag && normalized < 0.16 && normalized >= previousNormalized) {
+      if (lag > minLag && previousNormalized < 0.16 && normalized >= previousNormalized) {
         // The first CMND valley is the fundamental period. Searching the
         // global minimum biases toward octave/subharmonic multiples.
         bestLag = lag - 1;
@@ -595,7 +855,17 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
       frames.push({ timestampMs, frequencyHz: null, midiFloat: null, nearestMidiNote: null, confidence: 0, voiced: false });
       continue;
     }
-    const frequencyHz = rate / bestLag;
+    // Integer-lag estimates quantize higher sung notes by tens of cents.
+    // Interpolate the accepted valley without relaxing voiced confidence.
+    let period = bestLag;
+    if (bestLag > 1 && bestLag < max) {
+      const left = normalizedDifferences[bestLag - 1]!;
+      const middle = normalizedDifferences[bestLag]!;
+      const right = normalizedDifferences[bestLag + 1]!;
+      const curvature = left - 2 * middle + right;
+      if (curvature > 1e-12) period += Math.max(-0.5, Math.min(0.5, (left - right) / (2 * curvature)));
+    }
+    const frequencyHz = rate / period;
     const midiFloat = 69 + 12 * Math.log2(frequencyHz / 440);
     const confidence = Math.max(0, Math.min(1, 1 - bestValue));
     if (frequencyHz < 50 || frequencyHz > 1_200 || !Number.isFinite(midiFloat)) {
@@ -605,6 +875,120 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
     }
   }
   return frames;
+}
+
+export type LocalVocalActivityInterval = VocalActivityInterval;
+
+/**
+ * Finds coarse activity passages from the isolated vocal stem independently
+ * of monophonic pitch. Adaptive hysteresis handles speech, breathy/unvoiced
+ * consonants, and separated vocals that do not produce a stable YIN pitch.
+ * These are activity intervals, not word or lyric boundaries.
+ */
+export function detectVocalActivityIntervals(
+  pcm: Float32Array,
+  pitchFrames: readonly LocalVocalPitchFrame[] = [],
+): LocalVocalActivityInterval[] {
+  const windowSamples = Math.round(ANALYSIS_PCM_RATE * 0.03);
+  const hopSamples = Math.round(ANALYSIS_PCM_RATE * 0.01);
+  const minimumDurationMs = 120;
+  const silenceGapMs = 260;
+  if (pcm.length < windowSamples || pcm.some((sample) => !Number.isFinite(sample))) return [];
+
+  const energyFrames: Array<{ startMs: number; endMs: number; levelDb: number }> = [];
+  for (let startSample = 0; startSample + windowSamples <= pcm.length; startSample += hopSamples) {
+    let squaredEnergy = 0;
+    for (let sampleIndex = startSample; sampleIndex < startSample + windowSamples; sampleIndex += 1) {
+      const sample = pcm[sampleIndex]!;
+      squaredEnergy += sample * sample;
+    }
+    const rms = Math.sqrt(squaredEnergy / windowSamples);
+    energyFrames.push({
+      startMs: Math.round(startSample * 1000 / ANALYSIS_PCM_RATE),
+      endMs: Math.round((startSample + windowSamples) * 1000 / ANALYSIS_PCM_RATE),
+      levelDb: 20 * Math.log10(Math.max(rms, 1e-6)),
+    });
+  }
+  if (energyFrames.length < 10) return [];
+
+  const sortedLevels = energyFrames.map((frame) => frame.levelDb).sort((left, right) => left - right);
+  const percentile = (fraction: number) => sortedLevels[Math.floor((sortedLevels.length - 1) * fraction)]!;
+  const noiseFloorDb = percentile(0.2);
+  const activeReferenceDb = percentile(0.75);
+  const dynamicRangeDb = activeReferenceDb - noiseFloorDb;
+  if (!Number.isFinite(dynamicRangeDb) || dynamicRangeDb < 12) return [];
+
+  const openThresholdDb = noiseFloorDb + dynamicRangeDb * 0.62;
+  const closeThresholdDb = noiseFloorDb + dynamicRangeDb * 0.4;
+  const rawIntervals: Array<{ startMs: number; endMs: number }> = [];
+  let startMs: number | null = null;
+  let lastActiveEndMs = 0;
+  const finish = () => {
+    if (startMs !== null && lastActiveEndMs > startMs) rawIntervals.push({ startMs, endMs: lastActiveEndMs });
+    startMs = null;
+    lastActiveEndMs = 0;
+  };
+
+  for (const frame of energyFrames) {
+    if (startMs === null) {
+      if (frame.levelDb >= openThresholdDb) {
+        startMs = frame.startMs;
+        lastActiveEndMs = frame.endMs;
+      }
+      continue;
+    }
+    if (frame.levelDb >= closeThresholdDb) lastActiveEndMs = frame.endMs;
+    else finish();
+  }
+  finish();
+
+  const mergedIntervals: Array<{ startMs: number; endMs: number }> = [];
+  for (const interval of rawIntervals) {
+    const previous = mergedIntervals.at(-1);
+    if (previous && interval.startMs - previous.endMs <= silenceGapMs) {
+      previous.endMs = interval.endMs;
+    } else if (interval.endMs - interval.startMs >= minimumDurationMs) {
+      mergedIntervals.push({ ...interval });
+    }
+  }
+
+  const roundedDurationMs = Math.floor(pcm.length * 1000 / ANALYSIS_PCM_RATE);
+  let energyFrameIndex = 0;
+  let pitchFrameIndex = 0;
+  return mergedIntervals
+    .map((interval) => {
+      const start = Math.max(0, Math.min(roundedDurationMs, interval.startMs));
+      const end = Math.max(start, Math.min(roundedDurationMs, interval.endMs));
+      while (energyFrameIndex < energyFrames.length && energyFrames[energyFrameIndex]!.endMs <= start) energyFrameIndex += 1;
+      let activeLevelSum = 0;
+      let activeLevelCount = 0;
+      for (let index = energyFrameIndex; index < energyFrames.length && energyFrames[index]!.startMs < end; index += 1) {
+        const frame = energyFrames[index]!;
+        if (frame.endMs > start && frame.levelDb >= closeThresholdDb) {
+          activeLevelSum += frame.levelDb;
+          activeLevelCount += 1;
+        }
+      }
+      while (pitchFrameIndex < pitchFrames.length && pitchFrames[pitchFrameIndex]!.timestampMs < start) pitchFrameIndex += 1;
+      let voicedFrameCount = 0;
+      for (let index = pitchFrameIndex; index < pitchFrames.length && pitchFrames[index]!.timestampMs <= end; index += 1) {
+        if (pitchFrames[index]!.voiced) voicedFrameCount += 1;
+      }
+      const expectedFrameCount = Math.max(1, Math.ceil((end - start) / 30));
+      const pitchSupport = Math.min(1, voicedFrameCount / expectedFrameCount);
+      const meanActiveDb = activeLevelCount
+        ? activeLevelSum / activeLevelCount
+        : openThresholdDb;
+      const contrast = Math.max(0, Math.min(1,
+        (meanActiveDb - noiseFloorDb) / Math.max(12, dynamicRangeDb)));
+      const confidence = Math.max(0, Math.min(0.9, 0.52 + 0.23 * contrast + 0.15 * pitchSupport));
+      return {
+        startMs: start,
+        endMs: end,
+        confidence: Math.round(confidence * 1000) / 1000,
+      };
+    })
+    .filter((interval) => interval.endMs - interval.startMs >= minimumDurationMs);
 }
 
 /** Beat positions are canonical source milliseconds and must be strictly ordered. (worker port) */

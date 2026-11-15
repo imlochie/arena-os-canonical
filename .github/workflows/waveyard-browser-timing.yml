@@ -98,7 +98,10 @@ jobs:
           sudo modprobe snd-aloop 2>/dev/null && report "snd-aloop loaded" \
             || report "snd-aloop unavailable (expected on a nested-virt runner); relying on the Pulse null sink"
 
-      - name: Run cross-browser live-stem timing matrix
+      - name: Verify live-swap latency budget noise handling
+        run: node --test scripts/waveyard-live-stem-timing-budget.test.mjs
+
+      - name: Run cross-browser session and live-stem checks
         env:
           WAVEYARD_REQUIRE_BROWSER_ENGINES: "1"
           # The null sink from the previous step. Firefox's cubeb talks to
@@ -163,6 +166,15 @@ jobs:
             # The matrix tails three engines. Name the failing one in the
             # annotation so the check-run is diagnostic without log access.
             echo "::error::Cross-browser live-stem timing matrix failed; see the failing engine(s) named above."
+            echo "--- vite log ---"
+            cat "$RUNNER_TEMP/waveyard-vite.log" || true
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::session-controls-matrix"
+          if ! node scripts/waveyard-live-stems.mjs --session-controls-matrix; then
+            echo "::error::Firefox or WebKit session controls were not fully verified; see the failing engine or incomplete-coverage diagnostic above."
             echo "--- vite log ---"
             cat "$RUNNER_TEMP/waveyard-vite.log" || true
             exit 1

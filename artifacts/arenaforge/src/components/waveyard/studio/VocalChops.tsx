@@ -22,7 +22,7 @@ import {
   readChopSequencerSteps,
   type ChopSequencerStep,
 } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
-import { cleanupPattern } from "@workspace/arena/lib/waveyard/studio/soul-chef";
+import { cleanupPattern, keyPitchClasses, type SoulChefStyle } from "@workspace/arena/lib/waveyard/studio/soul-chef";
 import { useUndoRedo } from "@workspace/arena/lib/waveyard/studio/history";
 import type { RemixClipInput } from "@workspace/arena/lib/waveyard/remix";
 
@@ -60,6 +60,9 @@ export function VocalChops({
   const [playErrorId, setPlayErrorId] = useState<string | null>(null);
   const [chipmunk, setChipmunk] = useState(false);
   const [scanStemType, setScanStemType] = useState("vocals");
+  const [targetPitchClass, setTargetPitchClass] = useState<number | null>(null);
+  const [onlyInKey, setOnlyInKey] = useState(false);
+  const [chefStyle, setChefStyle] = useState<SoulChefStyle>("chopped");
   const [armedChopId, setArmedChopId] = useState<string | null>(null);
   const [bpm, setBpm] = useState(120);
   /** The chef/cleanup context: key from the analysed vocal source. */
@@ -231,7 +234,7 @@ export function VocalChops({
     const response = await fetch(`/api/waveyard/projects/${projectId}/vocal-chops/auto-sequence`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seed: Math.floor(Math.random() * 1_000_000), bars: 4, style: "chopped" }),
+      body: JSON.stringify({ seed: Math.floor(Math.random() * 1_000_000), bars: 4, style: chefStyle }),
     });
     const body = await response.json().catch(() => ({}));
     setCooking(false);
@@ -258,6 +261,14 @@ export function VocalChops({
   const armed = chops?.find((chop) => chop.id === armedChopId) ?? null;
   const armedIndex = armed ? (chops?.indexOf(armed) ?? -1) : -1;
   const patternEndMs = patternNotes.reduce((latest, note) => Math.max(latest, note.startMs + note.durationMs), 0);
+  const sourcePitchClasses = keyPitchClasses(musicalKey);
+  const availablePitchClasses = [...new Set((chops ?? []).map((chop) => ((chop.rootMidi % 12) + 12) % 12))]
+    .sort((left, right) => left - right);
+  const visibleChops = (chops ?? []).filter((chop) => {
+    const pitchClass = ((chop.rootMidi % 12) + 12) % 12;
+    return (targetPitchClass === null || pitchClass === targetPitchClass)
+      && (!onlyInKey || (sourcePitchClasses !== null && sourcePitchClasses.has(pitchClass)));
+  });
 
   return (
     <section className="remix-panel" data-testid="vocal-chops">
@@ -290,17 +301,48 @@ export function VocalChops({
           </label>
         </div>
       )}
+      {chops !== null && chops.length > 0 && (
+        <div className="chop-filter-controls">
+          <label className="chop-scan-stem">
+            Find note
+            <select
+              aria-label="Filter chops by note"
+              value={targetPitchClass === null ? "all" : String(targetPitchClass)}
+              onChange={(event) => setTargetPitchClass(event.target.value === "all" ? null : Number(event.target.value))}
+            >
+              <option value="all">Any detected note</option>
+              {availablePitchClasses.map((pitchClass) => (
+                <option key={pitchClass} value={pitchClass}>
+                  {midiToNoteName(60 + pitchClass).replace(/\d+$/, "")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="chop-chipmunk-toggle">
+            <input
+              type="checkbox"
+              checked={onlyInKey}
+              disabled={sourcePitchClasses === null}
+              onChange={(event) => setOnlyInKey(event.target.checked)}
+            />
+            Keep chops in estimated key{musicalKey ? ` · ${musicalKey}` : ""}
+          </label>
+          <small>{visibleChops.length} of {chops.length} candidates shown · ordered by measured clarity, pitch stability, length, and level</small>
+        </div>
+      )}
       {error && <p className="form-error" role="alert">{error}</p>}
       {chops !== null && chops.length === 0 && (
         <p className="empty-state">
           No chops yet. Separate a source first — then the scan reads the stem you pick (vocals, melody,
-          bass…) and finds the best one-shot notes to chop, pitch, and build a beat from. On the melody
-          stem that means grabbing a flute line or a lead — something stem.fm simply cannot do.
+          bass…) and finds pitch-stable fragments to audition, pitch, and build a beat from.
         </p>
+      )}
+      {chops !== null && chops.length > 0 && visibleChops.length === 0 && (
+        <p className="empty-state">No scanned chops match these note filters. Turn off “Keep chops in estimated key” or choose another note.</p>
       )}
 
       <ul className="chop-list">
-        {(chops ?? []).map((chop, index) => (
+        {visibleChops.map((chop, index) => (
           <li key={chop.id} className={`chop-item ${armedChopId === chop.id ? "armed" : ""}`}>
             <button
               className="stem-select"
@@ -310,6 +352,7 @@ export function VocalChops({
               <b>#{index + 1} · {midiToNoteName(chop.rootMidi)}{Math.abs(chop.cents) >= 15 ? (chop.cents > 0 ? " +" : " −") + Math.abs(chop.cents) : ""}</b>
               <small>
                 {(chop.durationMs / 1000).toFixed(2)}s · at {(chop.startMs / 1000).toFixed(1)}s in the vocal
+                  {sourcePitchClasses?.has(((chop.rootMidi % 12) + 12) % 12) ? " · in estimated key" : ""}
               </small>
               <span className="chop-confidence" title={`Detection confidence ${(chop.confidence * 100).toFixed(0)}%`}>
                 <i style={{ width: `${Math.round(chop.confidence * 100)}%` }} />
@@ -395,8 +438,16 @@ export function VocalChops({
                 ? "Arm a chop above (🎹), then draw notes — each note plays that chop at the drawn pitch"
                 : `Armed: ${midiToNoteName(armed.rootMidi)} chop — draw at any pitch (up = chipmunk)`}
             </small>
+            <label className="chop-scan-stem">
+              Treatment
+              <select aria-label="Chop pattern treatment" value={chefStyle} onChange={(event) => setChefStyle(event.target.value as SoulChefStyle)}>
+                <option value="chopped">Chopped</option>
+                <option value="chipmunk">Chipmunk · up an octave</option>
+                <option value="screwed">Screwed · down an octave</option>
+              </select>
+            </label>
             <button className="button secondary" disabled={cooking} onClick={() => void cookPattern()}>
-              {cooking ? "Cooking…" : "Cook a pattern 🧑‍🍳"}
+              {cooking ? "Building pattern…" : "Build a pattern"}
             </button>
             <button className="button secondary" disabled={!pattern.canUndo} onClick={pattern.undo} title="Undo (Ctrl+Z)">↶</button>
             <button className="button secondary" disabled={!pattern.canRedo} onClick={pattern.redo} title="Redo (Ctrl+Shift+Z)">↷</button>

@@ -10,9 +10,11 @@
  */
 
 import {
+  BASS_ANALYSIS_QUEUE,
   EXPORT_QUEUE,
   DRUM_ANALYSIS_QUEUE,
   HARMONY_ANALYSIS_QUEUE,
+  STEM_HARMONY_ANALYSIS_QUEUE,
   SEPARATION_QUEUE,
   SOURCE_ANALYSIS_QUEUE,
   SOURCE_SECTION_ANALYSIS_QUEUE,
@@ -31,7 +33,7 @@ import { handleSeparationJob } from "./separation";
 import { handleSourceAnalysisJob } from "./analysis";
 import { handleSectionAnalysisJob } from "./sections";
 import { handleExportJob } from "./export";
-import { handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
+import { handleBassAnalysisJob, handleDrumAnalysisJob, handleHarmonyAnalysisJob, handleStemHarmonyAnalysisJob, handleVocalAnalysisJob } from "./stem-analysis";
 
 export { getLocalJobBroker, localWorkerActive };
 export { cleanupOrphanedSourceObjects, ORPHAN_SOURCE_GRACE_PERIOD_MS } from "./source-cleanup";
@@ -48,7 +50,9 @@ export {
   recoverPendingLocalSourceAnalyses,
   recoverPendingLocalSourceSectionAnalyses,
   recoverPendingLocalDrumAnalyses,
+  recoverPendingLocalBassAnalyses,
   recoverPendingLocalHarmonyAnalyses,
+  recoverPendingLocalStemHarmonyAnalyses,
   recoverPendingLocalVocalAnalyses,
 } from "./recovery";
 export type { LocalJobBroker };
@@ -86,7 +90,9 @@ export function startLocalWorker(cleanupOverrides: LocalWorkerCleanupOverrides =
   broker.register(SOURCE_ANALYSIS_QUEUE, handleSourceAnalysisJob);
   broker.register(SOURCE_SECTION_ANALYSIS_QUEUE, handleSectionAnalysisJob);
   broker.register(DRUM_ANALYSIS_QUEUE, handleDrumAnalysisJob);
+  broker.register(BASS_ANALYSIS_QUEUE, handleBassAnalysisJob);
   broker.register(HARMONY_ANALYSIS_QUEUE, handleHarmonyAnalysisJob);
+  broker.register(STEM_HARMONY_ANALYSIS_QUEUE, handleStemHarmonyAnalysisJob);
   broker.register(VOCAL_ANALYSIS_QUEUE, handleVocalAnalysisJob);
   broker.register(EXPORT_QUEUE, handleExportJob);
   return broker;

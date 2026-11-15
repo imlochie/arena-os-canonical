@@ -16,6 +16,8 @@
 
 import type { StereoBuffer } from "./mixer/dsp";
 
+export type TimeStretchMapPoint = { outputFrame: number; inputFrame: number };
+
 const MAX_RATIO = 10;
 const MIN_RATIO = 0.1;
 /** Sinc kernel: 32 zero crossings, 512 table steps per input sample. */
@@ -152,12 +154,14 @@ export function timeStretch(
   buffer: StereoBuffer,
   ratio: number,
   sampleRate: number,
+  timeMap?: readonly { outputFrame: number; inputFrame: number }[],
 ): StereoBuffer {
   const frames = buffer.length / 2;
   const r = clampRatio(ratio);
   const outFrames = Math.round(frames * r);
   if (frames === 0) return new Float32Array(outFrames * 2);
-  if (Math.abs(r - 1) < 1e-9) return Float32Array.from(buffer);
+  const mapping = timeMap === undefined ? null : validateTimeMap(timeMap, frames, outFrames);
+  if (mapping === null && Math.abs(r - 1) < 1e-9) return Float32Array.from(buffer);
 
   const sr = Math.max(1, sampleRate);
   const frame = Math.min(8192, Math.max(64, Math.floor(sr * 0.04) & ~1));
@@ -192,6 +196,21 @@ export function timeStretch(
     }
     return xy / Math.sqrt(yy);
   };
+  const nominalInputFrameAt = (outputFrame: number): number => {
+    if (!mapping) return Math.round(outputFrame / r);
+    let low = 0;
+    let high = mapping.length - 1;
+    while (low + 1 < high) {
+      const middle = (low + high) >>> 1;
+      if (mapping[middle]!.outputFrame <= outputFrame) low = middle;
+      else high = middle;
+    }
+    const left = mapping[low]!;
+    const right = mapping[Math.min(mapping.length - 1, low + 1)]!;
+    const span = right.outputFrame - left.outputFrame;
+    const fraction = span > 0 ? (outputFrame - left.outputFrame) / span : 0;
+    return Math.round(left.inputFrame + fraction * (right.inputFrame - left.inputFrame));
+  };
 
   // Keep attack-bearing windows on the nominal tempo clock. Correlation with
   // sustained tonal content can otherwise move short drum hits to low-weight
@@ -220,7 +239,7 @@ export function timeStretch(
     if (k === 0) {
       inPos = 0;
     } else {
-      const nominal = Math.round(outPos / r);
+      const nominal = nominalInputFrameAt(outPos);
       const natural = prevIn + hop;
       const transient = hasTransient(nominal);
       const lo = Math.max(nominal - (transient ? 0 : tol), 0);
@@ -265,6 +284,39 @@ export function timeStretch(
     out[i * 2 + 1] = outR[i] * norm;
   }
   return out;
+}
+
+function validateTimeMap(
+  points: readonly { outputFrame: number; inputFrame: number }[],
+  inputFrames: number,
+  outputFrames: number,
+): readonly { outputFrame: number; inputFrame: number }[] {
+  if (points.length < 2 || points.length > 20_000) {
+    throw new RangeError("A WSOLA time map must contain between 2 and 20,000 points.");
+  }
+  let previousOutput = -1;
+  let previousInput = -1;
+  for (const point of points) {
+    if (!Number.isSafeInteger(point.outputFrame)
+      || !Number.isSafeInteger(point.inputFrame)
+      || point.outputFrame < 0
+      || point.outputFrame > outputFrames
+      || point.inputFrame < 0
+      || point.inputFrame > inputFrames
+      || point.outputFrame <= previousOutput
+      || point.inputFrame <= previousInput) {
+      throw new RangeError("A WSOLA time map must be finite, strictly increasing, and fit the audio buffers.");
+    }
+    previousOutput = point.outputFrame;
+    previousInput = point.inputFrame;
+  }
+  if (points[0]!.outputFrame !== 0
+    || points[0]!.inputFrame !== 0
+    || points.at(-1)!.outputFrame !== outputFrames
+    || points.at(-1)!.inputFrame !== inputFrames) {
+    throw new RangeError("A WSOLA time map must cover the complete input and output buffers.");
+  }
+  return points;
 }
 
 // ---------------------------------------------------------------------------

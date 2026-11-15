@@ -11,12 +11,17 @@ import {
   normaliseBeatGrid,
   onsetEnvelope,
 } from "../lib/arena/src/lib/waveyard/worker-local/analysis-engine";
-import { desktopSectionCandidates } from "../lib/arena/src/lib/waveyard/worker-local/sections";
-import { buildPassageFingerprint, detectRepeatedPhraseMatches, sectionEnergyChangeDb } from "../lib/arena/src/lib/waveyard/worker-local/section-rhythm";
+import { buildPassageFingerprint, desktopSectionCandidates, detectRepeatedPhraseMatches, sectionEnergyChangeDb } from "../lib/arena/src/lib/waveyard/worker-local/section-rhythm";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../lib/arena/src/lib/waveyard/types/analysis-provenance";
 import { normalizeSourceSections, sourceSectionsAreValid } from "../lib/arena/src/lib/waveyard/types/source-sections";
 import { comparePassageCompatibility } from "../lib/arena/src/lib/waveyard/types/passage-compatibility";
 import { normaliseMusicalKey, semitoneShift } from "../lib/arena/src/lib/waveyard/types/musical-key";
+import {
+  hasReliableLiveStemBeatEvidence,
+  liveStemBeatOffsetSeconds,
+  liveStemSectionAlignment,
+  liveStemTempoStretchRatio,
+} from "../lib/arena/src/lib/waveyard/library/session-logic";
 
 const args = process.argv.slice(2).filter((value) => value !== "--");
 const [outputPath, excerptStartText, excerptDurationText, ...sourcePaths] = args;
@@ -175,6 +180,125 @@ for (const sourcePath of sourcePaths) {
     sections,
   });
 }
+const liveStemAlignmentProbe = fullTrack
+  ? (() => {
+    const orderedPairs = [];
+    let evaluatedWindowPositions = 0;
+    let acceptedWindowAlignments = 0;
+    let beatFallbackWindowPositions = 0;
+    let noAutomaticOffsetWindowPositions = 0;
+    const candidateAlignments = [];
+
+    for (const recipient of tracks) {
+      for (const donor of tracks) {
+        if (recipient === donor) continue;
+        const recipientGrid = recipient.excerpt.beatGridMs;
+        const donorGrid = donor.excerpt.beatGridMs;
+        const tempoEvidence = {
+          recipientBpmConfidence: recipient.bpmConfidence,
+          donorBpmConfidence: donor.bpmConfidence,
+          recipientBeatConfidence: recipient.beatConfidence,
+          donorBeatConfidence: donor.beatConfidence,
+        };
+        const stretchRatio = recipientGrid && donorGrid
+          ? liveStemTempoStretchRatio(recipient.bpm, donor.bpm, tempoEvidence)
+          : null;
+        const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
+        const beatFallbackOffsetSeconds = stretchRatio !== null && reliableBeatEvidence
+          ? liveStemBeatOffsetSeconds(recipientGrid, donorGrid, stretchRatio)
+          : null;
+        let pairWindows = 0;
+        let pairAlignments = 0;
+        let pairBeatFallbacks = 0;
+
+        for (const section of recipient.sections ?? []) {
+          const rollingWindows = section.passageFingerprint?.rollingWindows;
+          if (rollingWindows?.status !== "measured") continue;
+          for (const window of rollingWindows.value) {
+            const recipientPositionMs = recipientGrid?.[window.startBeatIndex];
+            if (!Number.isFinite(recipientPositionMs)) continue;
+            pairWindows += 1;
+            if (stretchRatio === null) continue;
+            const alignment = liveStemSectionAlignment(
+              recipient.sections,
+              donor.sections,
+              recipientPositionMs / 1000,
+              stretchRatio,
+              {
+                ...tempoEvidence,
+                recipientBeatGridMs: recipientGrid,
+                donorBeatGridMs: donorGrid,
+                recipientBpm: recipient.bpm,
+                donorBpm: donor.bpm,
+                recipientKey: recipient.musicalKey,
+                donorKey: donor.musicalKey,
+                recipientKeyConfidence: recipient.keyConfidence,
+                donorKeyConfidence: donor.keyConfidence,
+              },
+            );
+            if (alignment) {
+              pairAlignments += 1;
+              if (candidateAlignments.length < 50) {
+                candidateAlignments.push({
+                  recipient: recipient.filename,
+                  donor: donor.filename,
+                  recipientWindowStartMs: recipientPositionMs,
+                  donorOffsetSeconds: alignment.offsetSeconds,
+                  basis: alignment.basis,
+                });
+              }
+            } else if (beatFallbackOffsetSeconds !== null) {
+              pairBeatFallbacks += 1;
+            }
+          }
+        }
+
+        evaluatedWindowPositions += pairWindows;
+        acceptedWindowAlignments += pairAlignments;
+        beatFallbackWindowPositions += pairBeatFallbacks;
+        noAutomaticOffsetWindowPositions += pairWindows - pairAlignments - pairBeatFallbacks;
+        orderedPairs.push({
+          recipient: recipient.filename,
+          donor: donor.filename,
+          recipientBpmConfidence: recipient.bpmConfidence,
+          donorBpmConfidence: donor.bpmConfidence,
+          recipientBeatConfidence: recipient.beatConfidence,
+          donorBeatConfidence: donor.beatConfidence,
+          stretchRatio,
+          evaluatedWindowPositions: pairWindows,
+          acceptedWindowAlignments: pairAlignments,
+          beatFallbackOffsetSeconds,
+          beatFallbackWindowPositions: pairBeatFallbacks,
+          status: pairAlignments > 0
+            ? "section-window-candidate"
+            : beatFallbackOffsetSeconds !== null
+              ? "beat-fallback"
+              : "no-automatic-offset",
+        });
+      }
+    }
+
+    return {
+      method: "Current liveStemSectionAlignment helper on full-track PCM-derived rolling feature windows",
+      orderedTrackPairCount: orderedPairs.length,
+      evaluatedWindowPositions,
+      acceptedWindowAlignments,
+      beatFallbackWindowPositions,
+      noAutomaticOffsetWindowPositions,
+      orderedPairs,
+      candidateAlignments,
+      groundTruth: {
+        status: "blocked-no-independent-phrase-pairs",
+        correctMatches: null,
+        misses: null,
+        falseMatches: null,
+        meanAbsoluteOffsetErrorMs: null,
+        reason: "The pipeline does not emit lyric-phrase boundaries, and the recordings have no locked independent vocal-phrase pair annotations or adjudicated usefulness judgments.",
+      },
+      interpretation: "These are 8-beat rolling feature-window alignments, not detected vocal or lyric phrases. A returned section-window alignment is only a feature-based candidate; it is not proof that lyrics align, the pairing is useful, or the result sounds good. A beat fallback is reported only when the current confidence gates provide a beat offset. No automatic offset means evidence is insufficient, not that the songs are incompatible.",
+    };
+  })()
+  : null;
 const crossSourceComparisons = [];
 for (let leftTrackIndex = 0; leftTrackIndex < tracks.length; leftTrackIndex += 1) {
   for (let rightTrackIndex = leftTrackIndex + 1; rightTrackIndex < tracks.length; rightTrackIndex += 1) {
@@ -216,6 +340,7 @@ await writeFile(resolve(outputPath), `${JSON.stringify({
   schemaVersion: 1,
   createdAt: new Date().toISOString(),
   tracks,
+  liveStemAlignmentProbe,
   crossSourceCompatibility: {
     evaluatedPassagePairs: crossSourceComparisons.length,
     coreEligibleMatches: crossSourceComparisons.filter((comparison) => comparison.eligible).length,

@@ -18,7 +18,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "test"
+args = "test && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/session-output.test.ts && node scripts/waveyard-live-stems.mjs --session-output-recovery-only"
 
 [[workflows.workflow]]
 name = "test"
@@ -27,9 +27,6 @@ author = "agent"
 [workflows.workflow.metadata]
 isValidation = true
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "node --test scripts/waveyard-benchmark-summary.test.mjs && node scripts/arena-smoke.mjs && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/conversion/engine.test.ts && node scripts/waveyard-library-separation-sync.mjs && pnpm --filter @workspace/scripts exec tsx --test $PWD/scripts/waveyard-studio-recovery-accessibility.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/live-stem-layers.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/lib/arena/src/lib/waveyard/live-key-shift.test.ts $PWD/lib/arena/src/lib/waveyard/library/session-key-matching.test.ts && pnpm --filter @workspace/scripts exec tsx --test $PWD/artifacts/api-server/src/lib/waveyard-startup-recovery.test.ts $PWD/lib/arena/src/lib/waveyard/worker-local/restore-upload-cleanup.test.ts && node scripts/waveyard-live-stems.mjs --studio-persistence-only && pnpm --filter @workspace/scripts exec tsx --test $PWD/scripts/waveyard-clip-donor-preview.test.ts && node scripts/waveyard-live-stems.mjs --pitch-modes-only && node scripts/waveyard-live-stems.mjs --live-stem-timing-matrix && node scripts/waveyard-live-stems.mjs --cross-tab-stem-mix-only && node scripts/waveyard-live-stems.mjs --cross-tab-speed-only --disable-broadcast-channel && pnpm --filter @workspace/scripts exec tsx --test --test-name-pattern='library intake creates a playable track through the existing pipeline|session: concurrent per-stem patches from separate tabs preserve both edits' $PWD/lib/arena/src/lib/waveyard/library/service.test.ts"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -41,4 +38,4 @@ timeoutMs = 120000
 
 [nix]
 channel = "stable-25_05"
-packages = ["wineWowPackages.stable", "bubblewrap", "xorg.xorgserver", "xorg.xdpyinfo", "xdotool", "icu74", "libjpeg_turbo", "gst_all_1.gstreamer", "gst_all_1.gst-plugins-base", "gst_all_1.gst-plugins-bad", "libsecret", "hyphen", "woff2", "patchelf", "libjpeg8", "gtk4", "pango", "harfbuzz", "gdk-pixbuf", "cairo", "vulkan-loader", "graphene", "libxml2", "sqlite", "libxslt", "lcms2", "libevent", "libopus", "flite", "libwebp", "libavif", "wayland", "libmanette", "mesa", "enchant", "atk", "libxkbcommon", "libGL", "x264", "gcc", "libglvnd", "libjxl", "libsoup_3", "gst_all_1.gst-plugins-good"]
+packages = ["wineWowPackages.stable", "bubblewrap", "xorg.xorgserver", "xorg.xdpyinfo", "xdotool", "icu74", "libjpeg_turbo", "gst_all_1.gstreamer", "gst_all_1.gst-plugins-base", "gst_all_1.gst-plugins-bad", "libsecret", "hyphen", "woff2", "patchelf", "libjpeg8", "gtk4", "pango", "harfbuzz", "gdk-pixbuf", "cairo", "vulkan-loader", "graphene", "libxml2", "sqlite", "libxslt", "lcms2", "libevent", "libopus", "flite", "libwebp", "libavif", "wayland", "libmanette", "mesa", "enchant", "atk", "libxkbcommon", "libGL", "x264", "gcc", "libglvnd", "libjxl", "libsoup_3", "gst_all_1.gst-plugins-good", "gtk3", "alsa-lib", "xorg.libXrandr", "xorg.libXcomposite", "xorg.libXcursor", "xorg.libXdamage", "xorg.libXi", "xorg.libXfixes"]

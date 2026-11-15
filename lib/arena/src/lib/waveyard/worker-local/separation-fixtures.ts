@@ -115,7 +115,9 @@ export async function fixture(options: { model?: string; sourceWavPath?: string 
       mimeType: "audio/wav",
       storageKey,
       checksumSha256: checksum,
-      durationSeconds: decodedSource.frames / decodedSource.sampleRate,
+      // The canonical source_assets column stores whole seconds. Preserve the
+      // exact decoded frame count in the WAV; only round the database summary.
+      durationSeconds: Math.round(decodedSource.frames / decodedSource.sampleRate),
       sampleRate: decodedSource.sampleRate,
       channels: decodedSource.channels,
       codec: "pcm_s16le",

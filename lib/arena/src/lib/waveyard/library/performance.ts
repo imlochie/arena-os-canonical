@@ -151,6 +151,59 @@ export function nextPerformanceBoundary(
   return (start + subdivision * step) / 1000;
 }
 
+export type LiveStemSwapBoundaryPlan = {
+  requested: boolean;
+  status: "off" | "unavailable" | "scheduled";
+  targetPositionSeconds: number | null;
+  activationTime: number | null;
+};
+
+/**
+ * Plan a live donor activation against the receiving track's measured clock.
+ * The callback maps that media position to the AudioContext clock so the audio
+ * source and its crossfade can be scheduled by Web Audio, not a UI timer.
+ */
+export function planLiveStemSwapBoundary(input: {
+  snap: PerformanceSnap;
+  playing: boolean;
+  beatEvidenceReliable: boolean;
+  downbeatEvidenceReliable: boolean;
+  positionSeconds: number;
+  beatGridMs: unknown;
+  downbeatGridMs: unknown;
+  contextTimeAtPosition: (positionSeconds: number) => number | null;
+  minimumLeadSeconds?: number;
+}): LiveStemSwapBoundaryPlan {
+  const requested = input.playing && input.snap !== "off";
+  const base = {
+    requested,
+    targetPositionSeconds: null,
+    activationTime: null,
+  } as const;
+  if (!requested) return { ...base, status: "off" };
+  if (!input.beatEvidenceReliable) return { ...base, status: "unavailable" };
+  if (input.snap === "bar" && !input.downbeatEvidenceReliable) {
+    return { ...base, status: "unavailable" };
+  }
+
+  const lead = input.minimumLeadSeconds ?? PERFORMANCE_MINIMUM_LEAD_SECONDS;
+  const target = input.snap === "bar"
+    ? nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, "bar", input.downbeatGridMs, lead)
+    : nextPerformanceBoundary(input.positionSeconds, input.beatGridMs, input.snap, undefined, lead);
+  if (target === null) return { ...base, status: "unavailable" };
+
+  const activationTime = input.contextTimeAtPosition(target);
+  if (activationTime === null || !Number.isFinite(activationTime)) {
+    return { ...base, status: "unavailable" };
+  }
+  return {
+    requested,
+    status: "scheduled",
+    targetPositionSeconds: target,
+    activationTime,
+  };
+}
+
 /** A delayed/backgrounded callback is rejected rather than applied late. */
 export function performanceTick(
   target: number,

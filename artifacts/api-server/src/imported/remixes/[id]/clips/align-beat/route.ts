@@ -18,6 +18,7 @@ import {
 } from "@workspace/arena/lib/waveyard/types";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
+import { bindChopSequencerClipToTimeline } from "@workspace/arena/lib/waveyard/studio/vocal-chops";
 
 function parsedBeatGrid(value: string | null) {
   if (!value) return null;
@@ -92,8 +93,14 @@ export async function POST(
     });
     if (timelineStartMs === null || timelineStartMs + clip.durationMs > MAX_ARRANGEMENT_TIMELINE_MS)
       return Response.json({ errorCode: "timeline_bounds_invalid", error: "This beat cannot be placed at that remix timeline position without exceeding timeline bounds." }, { status: 422 });
+    const alignedInput = bindChopSequencerClipToTimeline({ ...clip, timelineStartMs }, track.name, remix.tempoBpm);
     const [updated] = await db.transaction(async (tx) => {
-      const [aligned] = await tx.update(remixClips).set({ timelineStartMs, updatedAt: new Date() }).where(eq(remixClips.id, clip.id)).returning();
+      const [aligned] = await tx.update(remixClips).set({
+        timelineStartMs: alignedInput.timelineStartMs,
+        chopStepIndex: alignedInput.chopStepIndex ?? null,
+        chopSampleDurationMs: alignedInput.chopSampleDurationMs ?? null,
+        updatedAt: new Date(),
+      }).where(eq(remixClips.id, clip.id)).returning();
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       return [aligned];
     });

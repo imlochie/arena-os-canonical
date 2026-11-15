@@ -50,7 +50,7 @@ interface TrackDetail {
   studioProjectId: string;
   source: { id: string; originalFilename: string; codec: string; sampleRate: number; channels: number; bitrate: number | null };
   stems: Array<{ id: string; stemType: string; engine: string }>;
-  analysis: { status: string; bpm: number | null; musicalKey: string | null } | null;
+  analysis: { status: string; bpm: number | null; bpmConfidence: number | null; musicalKey: string | null } | null;
   playback: { assetIds: string[]; kind: "stems" | "source" };
 }
 
@@ -561,7 +561,11 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
           <p className="player-sub">{track.artist || "Unknown artist"}{track.album ? ` · ${track.album}` : ""}</p>
           <p className="player-facts">
             {formatPlayClock(track.durationSeconds)}
-            {track.analysis?.status === "complete" && track.analysis.bpm !== null ? ` · ${Math.round(track.analysis.bpm)} BPM` : ""}
+            {track.analysis?.status === "complete" && track.analysis.bpm !== null
+              ? track.analysis.bpmConfidence === null || track.analysis.bpmConfidence < 0.5
+                ? ` · ~${Math.round(track.analysis.bpm)} BPM (uncertain)`
+                : ` · ${Math.round(track.analysis.bpm)} BPM`
+              : ""}
             {track.analysis?.status === "complete" && track.analysis.musicalKey ? ` · ${track.analysis.musicalKey}` : ""}
             {` · ${track.source.codec.toUpperCase()} ${Math.round(track.source.sampleRate / 100) / 10}kHz`}
             {separated ? ` · ${track.stemAvailability.stemCount} stems` : ""}

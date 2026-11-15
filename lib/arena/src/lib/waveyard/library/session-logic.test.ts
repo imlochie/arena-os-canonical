@@ -8,7 +8,154 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { liveStemBeatOffsetSeconds, liveStemSectionOffsetSeconds } from "./session-logic";
+import {
+  liveStemBeatOffsetSeconds,
+  liveStemDonorEntryOffsetSeconds,
+  liveStemSectionAlignment,
+  liveStemSectionAlignmentCandidates,
+  liveStemCandidateDonorEntryMs,
+  liveStemSectionOffsetSeconds,
+  liveStemTempoStretchRatio,
+  nearestEntryEvidenceMs,
+} from "./session-logic";
+import {
+  PASSAGE_FINGERPRINT_ENGINE,
+  PASSAGE_FINGERPRINT_ENGINE_VERSION,
+  type PassageFingerprint,
+  type PassageRollingWindow,
+} from "../types/passage-compatibility";
+import type { SourceSection } from "../types/source-sections";
+
+const testEvidence = <T>(value: T) => ({
+  status: "measured" as const,
+  value,
+  method: "test PCM evidence",
+  confidence: 0.95,
+});
+const testUnavailable = (reason: string) => ({ status: "unavailable" as const, reason });
+
+function testRhythm(pattern: 0 | 1 | 2): number[] {
+  return Array.from({ length: 32 }, (_, index) => {
+    if (pattern === 0) return index % 8 === 0 ? 1 : index % 8 === 2 ? 0.25 : 0;
+    if (pattern === 1) return index % 8 === 4 ? 1 : index % 8 === 6 ? 0.25 : 0;
+    return index % 8 === 1 ? 1 : index % 8 === 3 ? 0.25 : 0;
+  });
+}
+
+function testChroma(semitoneShift = 0): number[] {
+  const pitches = [0, 3, 7, 5];
+  return Array.from({ length: 48 }, (_, index) => {
+    const timeBin = Math.floor(index / 12);
+    const pitchClass = index % 12;
+    return pitchClass === (pitches[timeBin]! + semitoneShift + 12) % 12 ? 1 : 0;
+  });
+}
+
+function testRollingWindow(
+  startBeatIndex: number,
+  rhythmPattern: 0 | 1 | 2,
+  semitoneShift = 0,
+): PassageRollingWindow {
+  return {
+    startBeatIndex,
+    endBeatIndex: startBeatIndex + 8,
+    rhythm: testEvidence(testRhythm(rhythmPattern)),
+    chroma: testEvidence(testChroma(semitoneShift)),
+    beatPhase: testEvidence({ subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 }),
+  };
+}
+
+function testPassageFingerprint(
+  sourceChecksumSha256: string,
+  windows: PassageRollingWindow[],
+): PassageFingerprint {
+  return {
+    schemaVersion: 3,
+    engine: PASSAGE_FINGERPRINT_ENGINE,
+    engineVersion: PASSAGE_FINGERPRINT_ENGINE_VERSION,
+    sourceChecksumSha256,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    rhythm: testEvidence([...testRhythm(0), ...testRhythm(0)]),
+    chroma: testEvidence(testChroma()),
+    beatPhase: testEvidence({ subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 }),
+    energy: testEvidence({ rmsDb: -12 }),
+    downbeatConfidence: testUnavailable("No independent downbeat measurement."),
+    vocalActivity: testUnavailable("No vocal measurement."),
+    instrumentalDensity: testUnavailable("No instrumental measurement."),
+    stemActivity: testUnavailable("No stem measurement."),
+    rollingWindows: testEvidence(windows),
+  };
+}
+
+function testSourceSection(
+  sectionIndex: number,
+  checksum: string,
+  windows: PassageRollingWindow[],
+  label = "section",
+): SourceSection {
+  return {
+    id: `section-${sectionIndex}`,
+    sectionIndex,
+    startMs: 0,
+    endMs: 8_000,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    startBar: 0,
+    endBar: 4,
+    label,
+    labelConfidence: 0.95,
+    structuralConfidence: 0.95,
+    analysisEngine: "test",
+    analysisEngineVersion: "1",
+    sourceChecksumSha256: checksum,
+    passageFingerprint: testPassageFingerprint(checksum, windows),
+  };
+}
+
+function testLongSourceSection(
+  checksum: string,
+  windows: PassageRollingWindow[],
+): SourceSection {
+  const fingerprint = testPassageFingerprint(checksum, windows);
+  return {
+    ...testSourceSection(0, checksum, windows),
+    endMs: 24_000,
+    endBeatIndex: 48,
+    passageFingerprint: { ...fingerprint, endBeatIndex: 48 },
+  };
+}
+
+const testLiveStemEvidence = (overrides: Record<string, unknown> = {}) => ({
+  recipientBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+  donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+  recipientBpm: 120,
+  donorBpm: 120,
+  recipientBpmConfidence: 0.95,
+  donorBpmConfidence: 0.95,
+  recipientBeatConfidence: 0.95,
+  donorBeatConfidence: 0.95,
+  recipientKey: "C major",
+  donorKey: "C major",
+  recipientKeyConfidence: 0.95,
+  donorKeyConfidence: 0.95,
+  ...overrides,
+});
+
+test("vocal-entry snap selects the nearest valid measured start and leaves missing evidence alone", () => {
+  assert.equal(nearestEntryEvidenceMs(1_420, [{ startMs: 1_000 }, { startMs: 1_500 }, { startMs: -1 }]), 1_500);
+  assert.equal(nearestEntryEvidenceMs(1_250, [{ startMs: 1_000 }, { startMs: 1_500 }]), 1_000);
+  assert.equal(nearestEntryEvidenceMs(500, []), null);
+  assert.equal(nearestEntryEvidenceMs(-1, [{ startMs: 0 }]), null);
+  assert.equal(nearestEntryEvidenceMs(500, [{ startMs: Number.NaN }]), null);
+});
+
+test("manual donor vocal entry survives native or measured tempo alignment", () => {
+  assert.equal(liveStemDonorEntryOffsetSeconds(20_000, 12.5, 1.1), 9.5);
+  assert.equal(liveStemDonorEntryOffsetSeconds(20_000, 12.5, null), 7.5);
+  assert.equal(liveStemDonorEntryOffsetSeconds(null, 12.5, 1.1), null);
+  assert.equal(liveStemDonorEntryOffsetSeconds(-1, 12.5, 1.1), null);
+});
 
 test("live stem phase projects measured donor beats into tempo-stretched recipient time", () => {
   // 120 BPM recipient begins at 100ms; 100 BPM donor begins at 420ms.
@@ -34,6 +181,7 @@ test("live stem section phase aligns corresponding, structurally compatible sect
 
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, 1.1), 1.1);
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 12, 1.1), 1.9);
+  assert.equal(liveStemSectionAlignment(recipient, donor, 4, 1.1)?.basis, "trusted-section-role");
 });
 
 test("live stem section mapping matches a confident role, not the same ordinal", () => {
@@ -74,6 +222,212 @@ test("live stem section phase refuses weak, mismatched, or out-of-range maps", (
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 4, Number.NaN), null);
 });
 
+test("live stem mapping selects the strongest checksum-bound local rhythm and harmony phrase", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const donor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0),
+  ]);
+  const stretchRatio = 109.0909090909 / 120;
+  const evidence = testLiveStemEvidence({
+    donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 550),
+    donorBpm: 109.0909090909,
+  });
+
+  // At 5 seconds, the active recipient phrase is the 4–12 beat window.
+  // The best donor phrase begins at beat 8 (4 seconds), so the donor clock
+  // is tempo-stretched to the same four-second phrase duration and aligned
+  // with a 2-second offset.
+  const offset = liveStemSectionOffsetSeconds([recipient], [donor], 5, stretchRatio, evidence);
+  assert.ok(offset !== null && Math.abs(offset - 2) < 0.001);
+  assert.equal(liveStemSectionAlignment([recipient], [donor], 5, stretchRatio, evidence)?.basis, "rhythm-harmony-phrase");
+});
+
+test("live stem entry alternatives expose distinct measured windows and their evidence", () => {
+  const checksum = "a".repeat(64);
+  const recipient = testLongSourceSection(checksum, [
+    testRollingWindow(0, 1),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 2),
+  ]);
+  const donor = testLongSourceSection("b".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 1),
+    testRollingWindow(8, 2),
+    testRollingWindow(16, 0),
+    testRollingWindow(20, 1),
+    testRollingWindow(24, 2),
+    testRollingWindow(32, 0),
+    testRollingWindow(36, 1),
+    testRollingWindow(40, 2),
+  ]);
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+    donorBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+  });
+  const alternatives = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence);
+
+  assert.equal(alternatives.length, 3, "overlapping four-beat hops collapse to distinct eight-beat windows");
+  assert.ok(alternatives.every((candidate) => candidate.basis === "rhythm-harmony-phrase"));
+  assert.deepEqual(alternatives.map((candidate) => candidate.donorWindowStartMs), [0, 8_000, 16_000]);
+  assert.ok(alternatives.every((candidate) =>
+    candidate.rhythmSimilarity !== null
+    && candidate.harmonySimilarity !== null
+    && candidate.durationSimilarity !== null
+    && candidate.rhythmMeasurementConfidence === 0.95
+    && candidate.harmonyMeasurementConfidence === 0.95
+    && candidate.recipientBeatConfidence === 0.95
+    && candidate.donorBeatConfidence === 0.95,
+  ));
+  assert.equal(alternatives[0]?.donorEntryMs, 3_000);
+  const first = alternatives[0]!;
+  assert.equal(liveStemCandidateDonorEntryMs(first, 5.5, 1), 3_500,
+    "applying a reviewed choice follows the live clock within the same window");
+  assert.equal(liveStemCandidateDonorEntryMs(first, 6, 1), null, "the window end is exclusive");
+  assert.equal(liveStemCandidateDonorEntryMs(first, 1, 1), null, "seeking before the window invalidates the choice");
+  assert.equal(liveStemCandidateDonorEntryMs(first, 5, 1.1), null, "a changed tempo match needs fresh evidence");
+  assert.equal(liveStemCandidateDonorEntryMs(first, Number.NaN, 1), null);
+  assert.deepEqual(
+    liveStemSectionAlignment([recipient], [donor], 5, 1, evidence),
+    { offsetSeconds: alternatives[0]?.offsetSeconds, basis: alternatives[0]?.basis },
+    "legacy automatic alignment still selects the strongest alternative",
+  );
+  assert.equal(liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence, 2).length, 2);
+});
+
+test("one weak section elsewhere does not block a confident live phrase match", () => {
+  const recipientChecksum = "a".repeat(64);
+  const donorChecksum = "b".repeat(64);
+  const recipient = testSourceSection(0, recipientChecksum, [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const donor = testSourceSection(0, donorChecksum, [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0),
+  ]);
+  const weakSection = (sectionIndex: number, checksum: string) => ({
+    ...testSourceSection(sectionIndex, checksum, []),
+    sectionIndex,
+    startMs: 8_000,
+    endMs: 16_000,
+    startBeatIndex: 16,
+    endBeatIndex: 32,
+    labelConfidence: 0,
+    structuralConfidence: 0.2,
+  });
+  const recipientSections = [recipient, weakSection(1, recipientChecksum)];
+  const donorSections = [donor, weakSection(1, donorChecksum)];
+  const ratio = 109.0909090909 / 120;
+  const evidence = testLiveStemEvidence({
+    donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 550),
+    donorBpm: 109.0909090909,
+  });
+
+  const confidentMatch = liveStemSectionAlignment(recipientSections, donorSections, 5, ratio, evidence);
+  assert.equal(confidentMatch?.basis, "rhythm-harmony-phrase");
+  assert.ok(confidentMatch !== null && Math.abs(confidentMatch.offsetSeconds - 2) < 0.001);
+  assert.equal(
+    liveStemSectionAlignment(recipientSections, donorSections, 10, ratio, evidence),
+    null,
+    "a weak section at the current recipient position must still use the safe fallback",
+  );
+});
+
+test("strong local phrase evidence can align at native pace when global BPM confidence is weak", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const donor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0),
+  ]);
+  const donorBpm = 60_000 / 505;
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+    donorBeatGridMs: Array.from({ length: 17 }, (_, index) => index * 505),
+    donorBpm,
+    recipientBpmConfidence: 0.42,
+    donorBpmConfidence: 0.38,
+    recipientBeatConfidence: 0.81,
+    donorBeatConfidence: 0.67,
+  });
+
+  const ratio = liveStemTempoStretchRatio(120, donorBpm, evidence);
+  assert.equal(ratio, 1, "uncertain global tempo must not authorize stretching");
+  const alignment = liveStemSectionAlignment([recipient], [donor], 5, ratio!, evidence);
+  assert.equal(alignment?.basis, "rhythm-harmony-phrase");
+  assert.ok(alignment !== null && Math.abs(alignment.offsetSeconds - 2.04) < 0.001);
+});
+
+test("live stem phrase mapping rejects conflicting fingerprints and stale provenance", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ], "chorus");
+  const conflictingDonor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 1, 6),
+    testRollingWindow(8, 1, 6),
+  ], "chorus");
+  const staleDonor = {
+    ...conflictingDonor,
+    passageFingerprint: testPassageFingerprint("c".repeat(64), [
+      testRollingWindow(0, 0),
+      testRollingWindow(4, 0),
+      testRollingWindow(8, 0),
+    ]),
+  };
+  const evidence = testLiveStemEvidence();
+
+  assert.equal(liveStemSectionOffsetSeconds([recipient], [conflictingDonor], 5, 1, evidence), null,
+    "a same-name section cannot override conflicting measured rhythm and harmony");
+  assert.equal(liveStemSectionOffsetSeconds([recipient], [staleDonor], 5, 1, evidence), null,
+    "a fingerprint from a different source checksum cannot align a live stem");
+  assert.equal(
+    liveStemBeatOffsetSeconds(evidence.recipientBeatGridMs, evidence.donorBeatGridMs, 1),
+    0,
+    "the caller still has a verified beat-phase fallback when phrase evidence fails",
+  );
+});
+
+test("live stem phrase mapping permits only key-authorized small chroma transpositions", () => {
+  const recipient = testSourceSection(0, "a".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const transposedDonor = testSourceSection(0, "b".repeat(64), [
+    testRollingWindow(0, 1, 6),
+    testRollingWindow(4, 2, 6),
+    testRollingWindow(8, 0, 1),
+  ]);
+  const evidence = testLiveStemEvidence({
+    donorKey: "C# major",
+    donorKeyConfidence: 0.95,
+  });
+
+  assert.equal(liveStemSectionOffsetSeconds([recipient], [transposedDonor], 5, 1, evidence), 2);
+  assert.equal(liveStemSectionOffsetSeconds(
+    [recipient],
+    [transposedDonor],
+    5,
+    1,
+    { ...evidence, donorKeyConfidence: 0.4 },
+  ), null, "untrusted key labels cannot authorize a fingerprint transposition");
+});
+
 import {
   MAX_CROSSFADE_SECONDS,
   automaticCueTiming,
@@ -89,6 +443,7 @@ import {
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   nextSessionTrack,
+  normalizeManualTempoBpm,
   normalizeTransitionConfig,
   tempoCompatibility,
   validateStemSwap,
@@ -99,6 +454,7 @@ import {
   defaultPerformance,
   normalizePerformance,
   nextPerformanceBoundary,
+  planLiveStemSwapBoundary,
   performMix,
   performanceTick,
 } from "./performance";
@@ -170,6 +526,7 @@ test("performance snap requires a measured grid and never guesses bar downbeats"
   assert.equal(nextPerformanceBoundary(0.1, grid, "half"), 0.25);
   assert.equal(nextPerformanceBoundary(0.1, grid, "quarter"), 0.125);
   assert.equal(nextPerformanceBoundary(0.1, grid, "bar"), null);
+  assert.equal(nextPerformanceBoundary(0.1, grid, "bar", [0, 2000, 4000]), 2);
   assert.equal(nextPerformanceBoundary(0.1, null, "beat"), null);
   assert.equal(nextPerformanceBoundary(0.1, [0, 500, 450], "beat"), null);
 });
@@ -179,6 +536,87 @@ test("performance snap leaves enough lead for the scheduled audio callback", () 
   assert.equal(nextPerformanceBoundary(0.9, grid, "beat", undefined, 0.18), 2);
   assert.equal(nextPerformanceBoundary(0.75, grid, "beat", undefined, 0.18), 1);
   assert.equal(nextPerformanceBoundary(0.41, grid, "half", undefined, 0.12), 1);
+});
+
+test("live donor snap plans against the verified receiving beat and leaves snap-off immediate", () => {
+  const off = planLiveStemSwapBoundary({
+    snap: "off",
+    playing: true,
+    beatEvidenceReliable: true,
+    downbeatEvidenceReliable: false,
+    positionSeconds: 0.9,
+    beatGridMs: [0, 500, 1000, 1500],
+    downbeatGridMs: null,
+    contextTimeAtPosition: () => 12,
+  });
+  assert.deepEqual(off, {
+    requested: false,
+    status: "off",
+    targetPositionSeconds: null,
+    activationTime: null,
+  });
+
+  const planned = planLiveStemSwapBoundary({
+    snap: "beat",
+    playing: true,
+    beatEvidenceReliable: true,
+    downbeatEvidenceReliable: false,
+    positionSeconds: 0.9,
+    beatGridMs: [0, 500, 1000, 1500],
+    downbeatGridMs: null,
+    contextTimeAtPosition: target => 12 + (target - 0.9),
+  });
+  assert.deepEqual(planned, {
+    requested: true,
+    status: "scheduled",
+    targetPositionSeconds: 1.5,
+    activationTime: 12.6,
+  });
+});
+
+test("live donor snap refuses unreliable, missing, or unmappable beat evidence", () => {
+  const makePlan = (overrides: Partial<Parameters<typeof planLiveStemSwapBoundary>[0]>) =>
+    planLiveStemSwapBoundary({
+      snap: "beat",
+      playing: true,
+      beatEvidenceReliable: true,
+    downbeatEvidenceReliable: false,
+      positionSeconds: 0.9,
+      beatGridMs: [0, 500, 1000, 1500],
+    downbeatGridMs: null,
+      contextTimeAtPosition: () => 12,
+      ...overrides,
+    });
+  assert.equal(makePlan({ beatEvidenceReliable: false }).status, "unavailable");
+  assert.equal(makePlan({ beatGridMs: null }).status, "unavailable");
+  assert.equal(makePlan({ contextTimeAtPosition: () => null }).status, "unavailable");
+});
+
+test("bar donor snap requires verified downbeats and schedules on a measured bar boundary", () => {
+  const input = {
+    snap: "bar" as const,
+    playing: true,
+    beatEvidenceReliable: true,
+    downbeatEvidenceReliable: true,
+    positionSeconds: 1.1,
+    beatGridMs: Array.from({ length: 17 }, (_, index) => index * 500),
+    downbeatGridMs: [0, 2000, 4000, 6000, 8000],
+    contextTimeAtPosition: (target: number) => 4 + (target - 1.1),
+  };
+  assert.deepEqual(planLiveStemSwapBoundary(input), {
+    requested: true,
+    status: "scheduled",
+    targetPositionSeconds: 2,
+    activationTime: 4.9,
+  });
+  assert.equal(planLiveStemSwapBoundary({
+    ...input,
+    downbeatEvidenceReliable: false,
+  }).status, "unavailable");
+  assert.equal(planLiveStemSwapBoundary({
+    ...input,
+    downbeatGridMs: null,
+  }).status, "unavailable");
 });
 
 test("performance boundary rejects late or interrupted source-clock callbacks", () => {
@@ -315,6 +753,42 @@ test("live stem tempo sync only stretches compatible analyzed tempos", () => {
   assert.equal(liveStemTempoStretchRatio(0, 120), null);
   assert.equal(liveStemTempoStretchRatio(120, NaN), null);
   assert.equal(liveStemTempoStretchRatio(120, null), null, "missing donor analysis is not guessed");
+});
+
+test("manual tempo corrections are range checked and can resolve an uncertain half-time reading", () => {
+  assert.equal(normalizeManualTempoBpm("126.1"), 126.1);
+  assert.equal(normalizeManualTempoBpm("40"), 40);
+  assert.equal(normalizeManualTempoBpm("300"), 300);
+  assert.equal(normalizeManualTempoBpm(""), null);
+  assert.equal(normalizeManualTempoBpm("39.9"), null);
+  assert.equal(normalizeManualTempoBpm("300.1"), null);
+  assert.equal(normalizeManualTempoBpm(Number.NaN), null);
+
+  const uncertainAutoEvidence = {
+    recipientBpmConfidence: 0.296,
+    donorBpmConfidence: 0.8,
+    recipientBeatConfidence: 0.2,
+    donorBeatConfidence: 0.8,
+  };
+  assert.equal(
+    liveStemTempoStretchRatio(71.777, 126, uncertainAutoEvidence),
+    1,
+    "an uncertain half-time-like automatic reading must not authorize stretching",
+  );
+  const userConfirmedTempoEvidence = {
+    ...uncertainAutoEvidence,
+    recipientBpmConfidence: 1,
+  };
+  assert.equal(
+    liveStemTempoStretchRatio(normalizeManualTempoBpm("143.554"), 126, userConfirmedTempoEvidence),
+    126 / 143.554,
+    "a confirmed BPM can enable tempo matching without pretending the beat grid is reliable",
+  );
+  assert.equal(
+    hasReliableLiveStemBeatEvidence(userConfirmedTempoEvidence),
+    false,
+    "manual BPM correction must not promote the independently measured beat grid",
+  );
 });
 
 test("low-confidence timing analysis keeps swaps at native pace", () => {

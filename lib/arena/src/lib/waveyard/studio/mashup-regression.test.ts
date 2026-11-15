@@ -58,8 +58,8 @@ test("render produces PCM inside [-1, 1] and never outgrows the bed", () => {
 
 test("a large key shift warns and reports its size", () => {
   const result = planMashup(
-    { role: "vocals", bpm: 120, musicalKey: "F# major", durationMs: 30000, sections: [{ label: "verse", startMs: 0, endMs: 30000 }] },
-    { role: "instrumental", bpm: 120, musicalKey: "C major", durationMs: 60000, sections: [{ label: "verse", startMs: 0, endMs: 60000 }] },
+    { role: "vocals", bpm: 120, bpmConfidence: 0.9, musicalKey: "F# major", keyConfidence: 0.9, durationMs: 30000, sections: [{ label: "verse", startMs: 0, endMs: 30000 }] },
+    { role: "instrumental", bpm: 120, bpmConfidence: 0.9, musicalKey: "C major", keyConfidence: 0.9, durationMs: 60000, sections: [{ label: "verse", startMs: 0, endMs: 60000 }] },
   );
   assert.ok(result.ok);
   assert.ok(
