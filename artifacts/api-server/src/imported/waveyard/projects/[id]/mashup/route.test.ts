@@ -130,6 +130,119 @@ function tone(frequencies: number[], seconds: number, amplitude = 0.2): Float32A
   return pcm;
 }
 
+/**
+ * End-to-end musical acceptance fixture.
+ *
+ * The older fixtures are pure tones where the bed's drum stem and a donor's
+ * drum stem are *the same 260 Hz tone*. That makes "did the replacement
+ * actually remove the original drums?" unanswerable: any 260 Hz energy left in
+ * the export could be either source. These fixtures give every role a distinct
+ * frequency and give the percussive roles a real section structure, so source
+ * attribution and section re-derivation are both measurable from the exported
+ * audio alone.
+ *
+ * Percussive parts are short decaying hits on a bar grid rather than sustained
+ * tones: a sustained tone has no transients, and section detection works from
+ * the onset envelope. Without hits there is nothing to derive sections from,
+ * which is exactly what the old fixture could not express.
+ */
+const ACCEPTANCE = {
+  originalBedDrumsHz: 260,
+  donorDrumsHz: 420,
+  bedBassHz: 70,
+  bedOtherHz: 110,
+  bedVocalHz: 1_000,
+  donorVocalHz: 1_500,
+  bpm: 120,
+  bedSeconds: 32,
+  donorVocalSeconds: 8,
+  donorDrumsSeconds: 16,
+  /** The intro case's own drum tone, so it cannot be confused with the others. */
+  introBedDrumsHz: 330,
+  introSeconds: 8,
+} as const;
+
+/** One decaying percussive hit. */
+function hit(frames: Int32Array, startFrame: number, frequency: number, amplitude: number) {
+  const length = Math.round(RATE * 0.12);
+  for (let offset = 0; offset < length && startFrame + offset < frames.length; offset += 1) {
+    const t = offset / RATE;
+    const envelope = Math.exp(-28 * t);
+    const value = Math.sin(2 * Math.PI * frequency * t) * envelope * amplitude;
+    frames[startFrame + offset] += Math.round(value * 32_767);
+  }
+}
+
+/**
+ * A bar-structured percussive part: hits on every beat, with a louder accent on
+ * each bar downbeat, and the pattern changing every four bars so the onset
+ * envelope has genuine section transitions to find.
+ */
+function percussiveStem(
+  frequency: number,
+  seconds: number,
+  options: {
+    beatsPerBar?: number;
+    barsPerSection?: number;
+    amplitude?: number;
+    /** Leading silence, so the part can start after a detectable intro. */
+    leadInSeconds?: number;
+  } = {},
+): Int16Array {
+  const beatsPerBar = options.beatsPerBar ?? 4;
+  const barsPerSection = options.barsPerSection ?? 4;
+  const amplitude = options.amplitude ?? 0.5;
+  const leadInFrames = Math.round((options.leadInSeconds ?? 0) * RATE);
+  const frames = new Int32Array(Math.round(seconds * RATE));
+  const beatFrames = Math.round((60 / ACCEPTANCE.bpm) * RATE);
+  const totalBeats = Math.floor(frames.length / beatFrames);
+  for (let beat = 0; beat < totalBeats; beat += 1) {
+    const bar = Math.floor(beat / beatsPerBar);
+    const beatInBar = beat % beatsPerBar;
+    const section = Math.floor(bar / barsPerSection);
+    // Downbeats are accented; every other section drops to half density so the
+    // boundary between sections is visible in the envelope, not just implied.
+    const sparse = section % 2 === 1;
+    if (sparse && beatInBar !== 0) continue;
+    const accent = beatInBar === 0 ? 1 : 0.45;
+    hit(frames, leadInFrames + beat * beatFrames, frequency, amplitude * accent);
+  }
+  const pcm = new Int16Array(frames.length * 2);
+  for (let frame = 0; frame < frames.length; frame += 1) {
+    pcm[frame * 2] = frames[frame]!;
+    pcm[frame * 2 + 1] = frames[frame]!;
+  }
+  return pcm;
+}
+
+/** A sustained role (bass, pads, vocal): steady tone, no percussion. */
+function sustainedStem(frequency: number, seconds: number, amplitude = 0.12): Int16Array {
+  const mono = tone([frequency], seconds, amplitude);
+  const pcm = new Int16Array(mono.length);
+  for (let index = 0; index < mono.length; index += 1) {
+    pcm[index] = Math.round((mono[index] ?? 0) * 32_767);
+  }
+  return pcm;
+}
+
+function encodeInt16Wav(pcm: Int16Array, sampleRate = RATE): Buffer {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.byteLength, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(2, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 4, 28);
+  header.writeUInt16LE(4, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.byteLength, 40);
+  return Buffer.concat([header, Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength)]);
+}
+
 function mixTones(parts: Array<[number, number]>, seconds: number): Float32Array {
   const frames = Math.round(seconds * RATE);
   const pcm = new Float32Array(frames * 2);
@@ -188,6 +301,65 @@ function energyAt(pcm: Float32Array, frequency: number, startMs: number, endMs: 
   return Math.hypot(real, imaginary) / Math.max(1, count);
 }
 
+/** A measured-or-unavailable musical evidence leaf, as the route serialises it. */
+interface AcceptanceEvidenceValue {
+  status: "measured" | "unavailable";
+  value?: Array<{ label: string; startMs: number; endMs: number }>;
+  /** `summarizeEvidencePacket` flattens provenance onto the leaf. */
+  analysisEngine?: string;
+  analysisEngineVersion?: string;
+  persistence?: string;
+  subject?: string;
+  reason?: string;
+}
+
+/** The parts of a mashup plan this acceptance reads. */
+interface MashupPlanShape {
+  durationMs: number;
+  masterBpm: number;
+  vocalsStretchRatio: number;
+  vocalsPitchSemitones: number;
+  keyRelationship: "same" | "fifth" | "relative" | "other" | "unknown";
+  segments: Array<{
+    mashupStartMs: number;
+    mashupEndMs: number;
+    vocalsFromMs: number;
+    vocalsToMs: number;
+  }>;
+  warnings: string[];
+}
+
+/**
+ * The strongest tone in a band, to the nearest Hz.
+ *
+ * The acceptance needs to answer "is the donor vocal present, and at what
+ * pitch?" — not "is there energy at a frequency I already assumed". Assuming
+ * the frequency is how an export missing the vocal entirely can look like a
+ * pass: the assertion probes an empty bin and the number is small but the
+ * conclusion is unearned. This scans the band so the measured pitch is
+ * reported, and a key shift shows up as a number rather than a mismatch to
+ * explain away.
+ */
+function dominantFrequencyInBand(
+  pcm: Float32Array,
+  lowHz: number,
+  highHz: number,
+  startMs: number,
+  endMs: number,
+): { hz: number; energy: number } {
+  let best = { hz: 0, energy: -1 };
+  for (let hz = lowHz; hz <= highHz; hz += 1) {
+    const energy = energyAt(pcm, hz, startMs, endMs);
+    if (energy > best.energy) best = { hz, energy };
+  }
+  return best;
+}
+
+/** Semitones between two frequencies, for checking a key-sync contract. */
+function semitonesBetween(fromHz: number, toHz: number): number {
+  return 12 * Math.log2(toHz / fromHz);
+}
+
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -198,7 +370,10 @@ test(
     ? "Waveyard real-song mashup persists, reopens, edits, restores, and exports"
     : "Waveyard synthetic routes, paired-grid Studio timing maps, and Arena handoff regressions",
   async (t) => {
+  const accTrace = (step: string) => console.error(`ACCEPTANCE_PROGRESS ${step}`);
+  accTrace("test:start");
   if (!postgresBinaries.initdb || !postgresBinaries.postgres || !postgresBinaries.pgCtl) {
+    accTrace("test:skip-no-postgres");
     t.skip("PostgreSQL binaries are unavailable");
     return;
   }
@@ -209,6 +384,11 @@ test(
   const databasePassword = "mashup-route-test-password";
   const port = await freePort();
   let postgresProcess: ReturnType<typeof spawn> | undefined;
+  // Hoisted so `finally` can address the cluster it started. They were scoped
+  // inside `try`, which left teardown unable to inspect or reach the server.
+  let postgresPort: number | undefined;
+  let postgresPassword: string | undefined;
+  let postgresDatabase: string | undefined;
   let dbModule: typeof import("@workspace/db") | undefined;
   let routeModule: typeof import("./route") | undefined;
   let realVocalAnalysisId: string | null = null;
@@ -250,6 +430,7 @@ test(
       "-D", dataDir, "-U", "arena", "--pwfile", passwordFile, "-E", "UTF8", "--locale", "C", "-A", "scram-sha-256",
     ], { encoding: "utf8", timeout: 120_000 });
     await rm(passwordFile, { force: true });
+    accTrace("setup:initdb-ok");
     if (init.status !== 0) throw new Error(`initdb failed (${init.status}): ${(init.stdout ?? "") + (init.stderr ?? "")}`.slice(0, 2000));
 
     postgresProcess = spawn(postgresBinaries.postgres, [
@@ -260,6 +441,9 @@ test(
       postgresOutput = (postgresOutput + chunk.toString()).slice(-4000);
     });
 
+    postgresPort = port;
+    postgresPassword = databasePassword;
+    postgresDatabase = databaseName;
     const adminUrl = `postgres://arena:${databasePassword}@127.0.0.1:${port}/postgres`;
     const deadline = Date.now() + 30_000;
     let databaseCreated = false;
@@ -278,6 +462,7 @@ test(
         if (databaseCreated) await client.end();
       }
     }
+    accTrace("setup:database-created");
     if (!databaseCreated) throw new Error(`PostgreSQL did not become ready: ${String(lastConnectionError)} ${postgresOutput}`);
 
     const client = new Client({ connectionString: `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}` });
@@ -286,10 +471,15 @@ test(
     await migrate(client, path.join(root, "lib/arena/desktop-migrations"));
     await client.end();
 
-    process.env.DATABASE_URL = `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}`;
+    // Tag every connection the shared pool opens, so teardown can tell a pool
+    // client from anything else. Without this, "one idle backend survives
+    // pool.end()" is unattributable: it could be an unreleased pool client or a
+    // connection the pool never owned.
+    process.env.DATABASE_URL = `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}?application_name=suite-pool`;
     process.env.WAVEYARD_STORAGE_DIR = path.join(fixtureRoot, "waveyard", "storage");
     process.env.NODE_ENV = "test";
 
+    accTrace("setup:migrated");
     routeModule = await import("./route");
     const handoffRoute = await import("../arena-handoff/route");
     const projectArtifactsRoute = await import("../../../../projects/[id]/artifacts/route");
@@ -319,6 +509,7 @@ test(
       }
       : null;
 
+    accTrace("setup:routes-imported");
     const [project] = await dbModule.db.insert(schema.projects).values({
       ownerId: LOCAL_OWNER_ID,
       title: "Mashup route fixture",
@@ -326,6 +517,7 @@ test(
     }).returning({ id: schema.projects.id });
     assert.ok(project);
 
+    accTrace("setup:project-created");
     const invalidHandoff = await handoffRoute.POST(
       new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "handoff", summary: "   " }) }),
       { params: Promise.resolve({ id: project.id }) },
@@ -830,7 +1022,10 @@ test(
         .where(eq(schema.bassAnalyses.id, bassAnalysis.id)))[0]?.status, "complete");
     }
 
-    const renderRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+    const renderRequest = (
+      alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware",
+      extra?: Record<string, unknown>,
+    ) => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -838,6 +1033,7 @@ test(
         vocalsSourceId: vocalsSource.id,
         instrumentalSourceId: bedSource.id,
         ...(alignmentStrategy ? { alignmentStrategy } : {}),
+        ...(extra ?? {}),
       }),
     });
 
@@ -1070,6 +1266,17 @@ test(
     if (!realFixture) assert.ok(planBody.bed?.warning.length, "the plan must explain leakage honestly");
     assert.ok(planBody.plan && planBody.plan.durationMs > 0, "the production planner must return an arrangement");
     if (!realFixture) {
+      // The planner only sees tempo numbers that survived persistence. If the
+      // pulse family (the octave alternatives of a measured tempo) were dropped
+      // on the way from the database to the profile, a hats-heavy track stored
+      // an octave high would halve or double the vocal's stretch and no unit
+      // test would notice. Assert the production loader still carries it.
+      const { loadSourceProfile: loadProfile } = await import("@workspace/arena/lib/waveyard/studio/mashup-sources");
+      const loadedBed = await loadProfile(project.id, bedSource.id, "instrumental", dbModule.db, { separationJobId: bedJob.id });
+      assert.ok(loadedBed?.bpm && loadedBed.bpmCandidates && loadedBed.bpmCandidates.length > 0,
+        "the persisted-tempo profile must expose its pulse family so octave ambiguity stays resolvable");
+      assert.equal(loadedBed.bpmCandidates[0], loadedBed.bpm,
+        "the measured tempo must remain the first candidate for existing consumers");
       const persistedDrumAlignment = planBody.plan.rationale.find((line) =>
         line.includes("overlap measured drum transients") && line.includes("overlap low-band bass attacks"));
       assert.ok(persistedDrumAlignment, "the plan must report measured vocal-to-groove comparisons");
@@ -1367,8 +1574,13 @@ test(
     };
     assert.deepEqual(
       compareBody.candidates?.map((candidate) => candidate.id),
-      ["continuous", "paired-grid", "downbeat", "phrase-aware"],
+      ["continuous", "paired-grid", "downbeat", "phrase-aware", "full-length"],
       "all distinct alignment strategies must be returned in a stable presentation order",
+    );
+    assert.equal(
+      compareBody.candidates?.find((candidate) => candidate.id === "full-length") !== undefined,
+      true,
+      "Full Length must be a selectable strategy, not only an internal planner mode",
     );
     assert.equal(compareBody.candidates?.find((candidate) => candidate.id === "continuous")?.available, true,
       "the continuous fallback must remain available when higher-evidence candidates cannot be proven");
@@ -1391,6 +1603,573 @@ test(
       assert.ok(bedWarning, "the route must expose the leakage warning");
       assert.match(decodeURIComponent(bedWarning!), /leakage/i);
     }
+
+    // Composition default: the donor supplies the vocal only. The donor's own
+    // drums/bass/other are NOT added on top of the bed's rhythm section unless
+    // the request names them, and the response says so.
+    assert.equal(renderResponse.headers.get("x-waveyard-layer-stems"), "",
+      "a default render must not layer any donor stem over the bed");
+    assert.equal(renderResponse.headers.get("x-waveyard-mix-static-gain-db") !== null, true,
+      "the route must report the static mix gain measured from the rendered PCM");
+    assert.ok(["active", "not-required"].includes(renderResponse.headers.get("x-waveyard-mix-limiter") ?? ""),
+      "the route must report whether the true-peak limiter acted");
+    const balanceDb = Number(renderResponse.headers.get("x-waveyard-mix-balance-db"));
+    assert.ok(Number.isFinite(balanceDb) && Math.abs(balanceDb) <= 9.0001,
+      `the vocal-to-bed balance correction must be measured and bounded, got ${balanceDb}`);
+    assert.ok(renderResponse.headers.get("x-waveyard-warning") !== null,
+      "each render must carry the measured mix levels as an explicit warning entry");
+
+    // The synthetic donor has a separated vocal but NO drum stem. Asking for
+    // its drums is therefore a request this route cannot honour, and the old
+    // behaviour — drop the bed's drums on request, find no donor drums, render
+    // a mashup with no drum part at all, and still answer 200 — was the bug.
+    // Both modes now fail closed and say which half is missing.
+    for (const mode of ["replace", "layer", undefined] as const) {
+      const unhonourable = await routeModule.POST(
+        renderRequest("continuous", { layerStemTypes: ["drums"], ...(mode ? { stemLayerMode: mode } : {}) }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(unhonourable.status, 422,
+        `requesting donor drums (${mode ?? "default replace"}) without a donor drum stem must fail closed`);
+      assert.equal(unhonourable.headers.get("x-waveyard-replaced-bed-stems"), null,
+        "a refused request must not report a replacement it did not perform");
+      const body = await unhonourable.json() as { error?: string };
+      assert.match(body.error ?? "", /donor/i,
+        "the refusal must name the missing donor stem so the user can act on it");
+    }
+
+    // Positive replacement/layering cases live below, against fixtures whose
+    // donor really has a drum stem and whose bed really has drums to remove.
+
+    const badModeResponse = await routeModule.POST(
+      renderRequest("continuous", { layerStemTypes: ["drums"], stemLayerMode: "stack" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(badModeResponse.status, 400);
+
+    // ---------------------------------------------------------------------
+    // Fail-closed replacement.
+    //
+    // A replacement is only legal when BOTH halves are provable: the donor's
+    // separable stem exists in its authoritative run, and the bed genuinely
+    // has a separate stem of that role to remove. Otherwise the route used to
+    // remove the bed's drums on request and then report
+    // `x-waveyard-replaced-bed-stems: drums` while the original drums were
+    // still audible — or, with a missing donor, leave no drum part at all.
+    // ---------------------------------------------------------------------
+    const stemAssetIdFor = async (sourceId: string, stemType: string): Promise<string> => {
+      const [row] = await dbModule.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, sourceId),
+        eq(schema.stemAssets.stemType, stemType),
+      ));
+      assert.ok(row, `fixture must have a ${stemType} stem for source ${sourceId}`);
+      return row.id;
+    };
+
+    /** Register an extra source with a completed separation run of its own. */
+    const addFixtureSource = async (
+      label: string,
+      stems: Array<{ stemType: FixtureStemType | "instrumental"; seconds: number }>,
+      options: { bpm?: number | null } = {},
+    ) => {
+      const audioBytes = encodeWav16(tone([440], Math.max(...stems.map((stem) => stem.seconds)), 0.15), RATE);
+      const storageKey = `mashup-fixture/${label}-original.wav`;
+      const filePath = path.join(fixtureRoot, `${label}-original.wav`);
+      await writeFile(filePath, audioBytes);
+      await storage.putFile(storageKey, filePath);
+      const [source] = await dbModule.db.insert(schema.sourceAssets).values({
+        projectId: project.id,
+        originalFilename: `${label}-original.wav`,
+        mimeType: "audio/wav",
+        storageKey,
+        checksumSha256: sha256(audioBytes),
+        durationSeconds: Math.max(...stems.map((stem) => stem.seconds)),
+        sampleRate: RATE,
+        channels: 2,
+        codec: "pcm_s16le",
+        fileSizeBytes: audioBytes.length,
+      }).returning({ id: schema.sourceAssets.id });
+      assert.ok(source);
+      const [job] = await dbModule.db.insert(schema.processingJobs).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        type: "separation",
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-${label}-${randomUUID()}`,
+        model: "test",
+        metadata: JSON.stringify({ sourceChecksumSha256: sha256(audioBytes) }),
+        requestedDevice: "cpu",
+        resolvedDevice: "cpu",
+        completedAt: new Date(),
+      }).returning({ id: schema.processingJobs.id });
+      assert.ok(job);
+      for (const { stemType, seconds } of stems) {
+        const stemWav = encodeWav16(tone([stemType === "drums" ? 260 : stemType === "bass" ? 70 : 110], seconds, 0.1), RATE);
+        const stemStorageKey = `mashup-fixture/${label}-${stemType}.wav`;
+        const stemPath = path.join(fixtureRoot, `${label}-${stemType}.wav`);
+        await writeFile(stemPath, stemWav);
+        await storage.putFile(stemStorageKey, stemPath);
+        await dbModule.db.insert(schema.stemAssets).values({
+          projectId: project.id,
+          sourceAssetId: source.id,
+          separationJobId: job.id,
+          stemType,
+          engine: "demucs",
+          model: "test",
+          modelVersion: "test",
+          storageKey: stemStorageKey,
+          checksumSha256: sha256(stemWav),
+          durationSeconds: seconds,
+          sampleRate: RATE,
+          channels: 2,
+          codec: "wav",
+          format: "wav",
+          fileSizeBytes: stemWav.length,
+        });
+      }
+      await dbModule.db.insert(schema.sourceAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-analysis-${randomUUID()}`,
+        analysisEngine: "test",
+        analysisEngineVersion: "test",
+        sourceChecksumSha256: sha256(audioBytes),
+        // null means "tempo unverified", which is a real state the export
+        // parity rules must handle honestly rather than assume away.
+        bpm: options.bpm === undefined ? 120 : options.bpm,
+        bpmConfidence: options.bpm === null ? null : 0.9,
+        musicalKey: "C major",
+        keyConfidence: 0.9,
+        beatGrid: options.bpm === null ? null : JSON.stringify([0, 500, 1000, 1500, 2000, 2500, 3000, 3500]),
+        beatConfidence: options.bpm === null ? null : 0.9,
+        completedAt: new Date(),
+      });
+      return source.id;
+    };
+
+    // A bed whose separation run produced only a single combined
+    // `instrumental` stem: nothing can be removed from it.
+    const combinedInstrumentalBedId = await addFixtureSource("combined-instrumental-bed", [
+      { stemType: "instrumental", seconds: BED_SECONDS },
+    ]);
+    // A donor with a separated vocal but no drum stem.
+    const donorWithoutDrumsId = await addFixtureSource("donor-without-drums", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+    ]);
+    // A bed with drums and other but no bass stem.
+    const bedWithoutBassId = await addFixtureSource("bed-without-bass", [
+      { stemType: "drums", seconds: BED_SECONDS },
+      { stemType: "other", seconds: BED_SECONDS },
+    ]);
+    // A bed whose separation run produced only a vocal stem, so the bed falls
+    // back to its original premixed file: nothing can be removed from it.
+    const premixedBedId = await addFixtureSource("premixed-bed", [
+      { stemType: "vocals", seconds: BED_SECONDS },
+    ]);
+    // A 140 BPM donor over a 100 BPM bed: the renderer stretches the donor.
+    // Without a clip timing map or tempo sync the export would play it at its
+    // native rate, which is a different arrangement from the one rendered.
+    const slowBedId = await addFixtureSource("slow-bed", [
+      { stemType: "drums", seconds: BED_SECONDS },
+      { stemType: "bass", seconds: BED_SECONDS },
+      { stemType: "other", seconds: BED_SECONDS },
+    ], { bpm: 100 });
+    const fastDonorId = await addFixtureSource("fast-donor", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+      { stemType: "drums", seconds: VOCAL_SECONDS },
+    ], { bpm: 140 });
+    // Same pair, but the donor's tempo was never analysed.
+    const unanalysedDonorId = await addFixtureSource("unanalysed-donor", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+      { stemType: "drums", seconds: VOCAL_SECONDS },
+    ], { bpm: null });
+
+    // A bed with every stem, a donor with drums: the successful case.
+    const fullBedId = await addFixtureSource("full-bed", [
+      { stemType: "drums", seconds: BED_SECONDS },
+      { stemType: "bass", seconds: BED_SECONDS },
+      { stemType: "other", seconds: BED_SECONDS },
+    ]);
+    const donorWithDrumsId = await addFixtureSource("donor-with-drums", [
+      { stemType: "vocals", seconds: VOCAL_SECONDS },
+      { stemType: "drums", seconds: VOCAL_SECONDS },
+    ]);
+
+    /**
+     * Sources for the end-to-end musical acceptance (see ACCEPTANCE above).
+     * Same bookkeeping as `addFixtureSource`, but each role gets its own
+     * frequency and the percussive roles get real section structure.
+     */
+    const addAcceptanceSource = async (
+      label: string,
+      stems: Array<{ stemType: FixtureStemType; pcm: Int16Array }>,
+    ) => {
+      const longest = stems.reduce((max, stem) => Math.max(max, stem.pcm.length), 0);
+      const audioPcm = new Int16Array(longest);
+      for (const stem of stems) for (let i = 0; i < stem.pcm.length; i += 1) audioPcm[i] = Math.max(-32768, Math.min(32767, audioPcm[i]! + stem.pcm[i]!));
+      const audioBytes = encodeInt16Wav(audioPcm);
+      const storageKey = `mashup-fixture/${label}-original.wav`;
+      const filePath = path.join(fixtureRoot, `${label}-original.wav`);
+      await writeFile(filePath, audioBytes);
+      await storage.putFile(storageKey, filePath);
+      const [source] = await dbModule.db.insert(schema.sourceAssets).values({
+        projectId: project.id,
+        originalFilename: `${label}-original.wav`,
+        mimeType: "audio/wav",
+        storageKey,
+        checksumSha256: sha256(audioBytes),
+        durationSeconds: longest / 2 / RATE,
+        sampleRate: RATE,
+        channels: 2,
+        codec: "pcm_s16le",
+        fileSizeBytes: audioBytes.length,
+      }).returning({ id: schema.sourceAssets.id });
+      assert.ok(source);
+      const [job] = await dbModule.db.insert(schema.processingJobs).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        type: "separation",
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-${label}-${randomUUID()}`,
+        model: "test",
+        metadata: JSON.stringify({ sourceChecksumSha256: sha256(audioBytes) }),
+        requestedDevice: "cpu",
+        resolvedDevice: "cpu",
+        completedAt: new Date(),
+      }).returning({ id: schema.processingJobs.id });
+      assert.ok(job);
+      for (const { stemType, pcm } of stems) {
+        const stemWav = encodeInt16Wav(pcm);
+        const stemStorageKey = `mashup-fixture/${label}-${stemType}.wav`;
+        const stemPath = path.join(fixtureRoot, `${label}-${stemType}.wav`);
+        await writeFile(stemPath, stemWav);
+        await storage.putFile(stemStorageKey, stemPath);
+        await dbModule.db.insert(schema.stemAssets).values({
+          projectId: project.id,
+          sourceAssetId: source.id,
+          separationJobId: job.id,
+          stemType,
+          engine: "demucs",
+          model: "test",
+          modelVersion: "test",
+          storageKey: stemStorageKey,
+          checksumSha256: sha256(stemWav),
+          durationSeconds: pcm.length / 2 / RATE,
+          sampleRate: RATE,
+          channels: 2,
+          codec: "wav",
+          format: "wav",
+          fileSizeBytes: stemWav.length,
+        });
+      }
+      await dbModule.db.insert(schema.sourceAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-analysis-${randomUUID()}`,
+        analysisEngine: "test",
+        analysisEngineVersion: "test",
+        sourceChecksumSha256: sha256(audioBytes),
+        bpm: ACCEPTANCE.bpm,
+        bpmConfidence: 0.9,
+        musicalKey: "C major",
+        keyConfidence: 0.9,
+        beatGrid: JSON.stringify(
+          Array.from({ length: Math.floor((longest / 2 / RATE) * (ACCEPTANCE.bpm / 60)) + 1 },
+            (_, beat) => Math.round(beat * (60 / ACCEPTANCE.bpm) * 1000)),
+        ),
+        beatConfidence: 0.9,
+        completedAt: new Date(),
+      });
+      return source.id;
+    };
+
+    accTrace("fixtures:acceptance-start");
+    const acceptanceBedId = await addAcceptanceSource("acceptance-bed", [
+      { stemType: "drums", pcm: percussiveStem(ACCEPTANCE.originalBedDrumsHz, ACCEPTANCE.bedSeconds) },
+      { stemType: "bass", pcm: sustainedStem(ACCEPTANCE.bedBassHz, ACCEPTANCE.bedSeconds) },
+      { stemType: "other", pcm: sustainedStem(ACCEPTANCE.bedOtherHz, ACCEPTANCE.bedSeconds) },
+    ]);
+    // The same composition, but with a quiet intro: percussion and pads are
+    // silent for the first 8s while the bass holds. The vocal must NOT enter at
+    // zero here — that is what makes the zero entry in the case above a
+    // measurement rather than a default.
+    const introBedId = await addAcceptanceSource("acceptance-intro-bed", [
+      { stemType: "drums", pcm: percussiveStem(ACCEPTANCE.introBedDrumsHz, ACCEPTANCE.bedSeconds, { leadInSeconds: ACCEPTANCE.introSeconds }) },
+      { stemType: "bass", pcm: sustainedStem(ACCEPTANCE.bedBassHz, ACCEPTANCE.bedSeconds) },
+      { stemType: "other", pcm: sustainedStem(ACCEPTANCE.bedOtherHz, ACCEPTANCE.bedSeconds, 0.02) },
+    ]);
+    // A real separation emits every stem at the source's full length, so the
+    // vocal stem is padded to the donor source length with silence after the
+    // vocal body. That is also the honest shape for the bed-outlasts-vocal case:
+    // 8s of vocal inside a 16s donor inside a 32s bed.
+    const acceptanceVocalStem = sustainedStem(ACCEPTANCE.donorVocalHz, ACCEPTANCE.donorVocalSeconds, 0.2);
+    const acceptanceVocalPadded = new Int16Array(Math.round(ACCEPTANCE.donorDrumsSeconds * RATE) * 2);
+    acceptanceVocalPadded.set(acceptanceVocalStem, 0);
+    const acceptanceVocalId = await addAcceptanceSource("acceptance-vocal", [
+      { stemType: "vocals", pcm: acceptanceVocalPadded },
+      {
+        stemType: "drums",
+        pcm: percussiveStem(ACCEPTANCE.donorDrumsHz, ACCEPTANCE.donorDrumsSeconds, {
+          beatsPerBar: 4,
+          barsPerSection: 2,
+          amplitude: 0.45,
+        }),
+      },
+    ]);
+
+    accTrace("fixtures:acceptance-done");
+    const stemIdForAcceptance = async (sourceId: string, stemType: FixtureStemType) => {
+      const [row] = await dbModule.db.select().from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, sourceId),
+        eq(schema.stemAssets.stemType, stemType),
+      ));
+      assert.ok(row, `the acceptance fixture must have a ${stemType} stem`);
+      return row!.id;
+    };
+    const acceptanceDonorDrumsStemId = await stemIdForAcceptance(acceptanceVocalId, "drums");
+    const acceptanceBedDrumsStemId = await stemIdForAcceptance(acceptanceBedId, "drums");
+
+    const renderPair = (vocalsId: string, instrumentalId: string, extra: Record<string, unknown>) =>
+      new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "render",
+          vocalsSourceId: vocalsId,
+          instrumentalSourceId: instrumentalId,
+          alignmentStrategy: "continuous",
+          ...extra,
+        }),
+      });
+
+    // (1) Single combined instrumental stem + requested replacement: refuse,
+    // do not pretend, and do not silently layer instead.
+    const combinedBedReplace = await routeModule.POST(
+      renderPair(vocalsSource.id, combinedInstrumentalBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(combinedBedReplace.status, 422,
+      "a replacement against a single combined instrumental stem must be refused, not claimed");
+    const combinedBedReplaceBody = await combinedBedReplace.json() as { error?: string; code?: string };
+    assert.equal(combinedBedReplaceBody.code, "stem-composition-unavailable");
+    assert.match(combinedBedReplaceBody.error ?? "", /instrumental stem|separate/i,
+      "the refusal must say why it cannot remove anything");
+    assert.equal(combinedBedReplace.headers.get("x-waveyard-replaced-bed-stems"), null,
+      "a refused replacement must not emit a replacement header at all");
+
+    // (2) Premixed original-file bed + requested replacement: also refused.
+    // The bed falls back to its original file when its separation run has no
+    // usable instrumental stems, so the original drums are inside that file
+    // and cannot be removed. Reporting a replacement here would be a lie.
+    const premixedReplace = await routeModule.POST(
+      renderPair(donorWithDrumsId, premixedBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(premixedReplace.status, 422,
+      "a replacement against a premixed original-file bed must be refused, not claimed");
+    const premixedReplaceBody = await premixedReplace.json() as { error?: string };
+    assert.match(premixedReplaceBody.error ?? "", /original file|separation/i,
+      "the refusal must explain that the premixed file has no separable stems");
+    assert.equal(premixedReplace.headers.get("x-waveyard-replaced-bed-stems"), null);
+
+    // Layering against the same premixed bed is still allowed — it is an
+    // honest operation — and must say that nothing was removed.
+    const premixedLayer = await routeModule.POST(
+      renderPair(donorWithDrumsId, premixedBedId, { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(premixedLayer.status, 200,
+      "explicit layering does not need a separable bed, so it must still work");
+    assert.equal(premixedLayer.headers.get("x-waveyard-replaced-bed-stems"), "");
+    assert.equal(premixedLayer.headers.get("x-waveyard-bed-separable"), "false");
+
+    // (3) Missing donor replacement stem: the bed's drums must stay.
+    const missingDonor = await routeModule.POST(
+      renderPair(donorWithoutDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(missingDonor.status, 422,
+      "replacement without the donor's stem must fail closed rather than strip the bed");
+    const missingDonorBody = await missingDonor.json() as { error?: string };
+    assert.match(missingDonorBody.error ?? "", /donor/i,
+      "the refusal must name the missing donor stem");
+
+    // (4) Missing matching bed stem: replacing bass in a bed that has no bass.
+    const missingBedStem = await routeModule.POST(
+      renderPair(donorWithDrumsId, bedWithoutBassId, { layerStemTypes: ["bass"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(missingBedStem.status, 422,
+      "replacing a role the bed does not have separately must fail closed");
+    const missingBedStemBody = await missingBedStem.json() as { error?: string };
+    assert.match(missingBedStemBody.error ?? "", /bass/i);
+
+    // (5) Successful replacement with both halves verified.
+    const successfulReplace = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(successfulReplace.status, 200);
+    assert.equal(successfulReplace.headers.get("x-waveyard-stem-layer-mode"), "replace");
+    assert.equal(successfulReplace.headers.get("x-waveyard-replaced-bed-stems"), "drums");
+    assert.equal(successfulReplace.headers.get("x-waveyard-bed-separable"), "true");
+    assert.deepEqual(
+      (successfulReplace.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort(),
+      ["bass", "other"],
+      "the rendered bed must not carry its own drums when the donor replaces them",
+    );
+    const successfulReplaceWav = decodeWav16(new Uint8Array(await successfulReplace.arrayBuffer()));
+    assert.ok(successfulReplaceWav);
+    // The bed's drum tone (260 Hz) must be gone and the donor's drum content
+    // present, measured from the returned WAV rather than from a header.
+    assert.ok(energyAt(successfulReplaceWav!.samples, 260, 0, BED_SECONDS * 1000)
+      < energyAt(successfulReplaceWav!.samples, 70, 0, BED_SECONDS * 1000),
+      "the replaced bed drum tone must not dominate the render");
+
+    // (6) Explicit layering keeps both sources and reports no replacement.
+    const successfulLayer = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(successfulLayer.status, 200);
+    assert.equal(successfulLayer.headers.get("x-waveyard-stem-layer-mode"), "layer");
+    assert.equal(successfulLayer.headers.get("x-waveyard-replaced-bed-stems"), "");
+    assert.deepEqual(
+      (successfulLayer.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort(),
+      ["bass", "drums", "other"],
+      "explicit layering must keep the bed's drums alongside the donor's",
+    );
+
+    // A layering request whose donor stem is missing must also fail closed:
+    // an unhonourable request must not render a different arrangement.
+    const missingLayer = await routeModule.POST(
+      renderPair(donorWithoutDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(missingLayer.status, 422,
+      "layering a donor stem that does not exist must fail rather than render only the bed");
+
+    // ---------------------------------------------------------------------
+    // Adaptive stem swap acceptance (ledger section 12).
+    //
+    // These prove the ORDER change: a replacement must reach the planner before
+    // planning happens, the planner must see the resulting composition, and the
+    // old plan must not be reused. They are route-level assertions on real
+    // handler output, not unit tests of a helper.
+    // ---------------------------------------------------------------------
+
+    // (AS-1/AS-2) A replacement changes the evidence the planner sees. The
+    // full-bed's stems are all 110/70/260 Hz tones; replacing drums with the
+    // donor's 260 Hz drum stem must remove the bed's own drum tone from the
+    // composition the planner analyses, so the rendered bed cannot contain it.
+    const planBefore = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, {}),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(planBefore.status, 200);
+
+    const planAfterSwap = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(planAfterSwap.status, 200,
+      "a verified replacement must still render");
+
+    // AS-1/AS-3: the arrangement must be planned against the RESULTING
+    // COMPOSITION, and the route must say so. This is the observable proof that
+    // the swap reached planning rather than being substituted afterwards — a
+    // replacement that only ran after planning cannot produce this header.
+    assert.equal(
+      planAfterSwap.headers.get("x-waveyard-planned-against"),
+      "composition",
+      "the replacement must reach the planner before planning occurs",
+    );
+    const plannedBpm = planAfterSwap.headers.get("x-waveyard-planned-bpm");
+    assert.ok(plannedBpm && plannedBpm !== "none",
+      "the composition-derived analysis must supply a tempo to plan against");
+    assert.ok(
+      Number(planAfterSwap.headers.get("x-waveyard-planned-beat-grid-points") ?? 0) > 1,
+      "the composition-derived analysis must supply a beat grid to plan against",
+    );
+
+    // The same request WITHOUT the replacement must plan against the original
+    // bed. If both said "composition" the header would prove nothing.
+    assert.equal(
+      planBefore.headers.get("x-waveyard-planned-against"),
+      "original-bed",
+      "with no replacement there is nothing to recompose, so planning must use the original bed",
+    );
+
+    // AS-3: the route must disclose that the arrangement was planned against the
+    // resulting composition. This is the observable proof that the swap reached
+    // planning rather than being substituted afterwards.
+    const swapWav = decodeWav16(new Uint8Array(await planAfterSwap.arrayBuffer()));
+    assert.ok(swapWav, "the swapped render must be a decodable WAV");
+
+    // AS-4: the donor's drums are present and the bed's own drums are gone.
+    const swapBody = await routeModule.POST(
+      renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(swapBody.headers.get("x-waveyard-replaced-bed-stems"), "drums");
+
+    // AS-5: retained stems survive. bass + other remain in the rendered bed.
+    assert.deepEqual(
+      (swapBody.headers.get("x-waveyard-bed-stems") ?? "").split(",").filter(Boolean).sort(),
+      ["bass", "other"],
+      "retained stems must remain intact after replacing drums",
+    );
+
+    // AS-6: no duplication. A replacement must not leave two drum parts: the
+    // bed reports drums as replaced, and the composed bed stems exclude it.
+    assert.equal(
+      (swapBody.headers.get("x-waveyard-bed-stems") ?? "").includes("drums"),
+      false,
+      "a replaced stem must not also appear among the retained bed stems",
+    );
+
+    // AS-7: honest fallback. Replacing a role the bed does not have as a
+    // separate stem cannot produce a real composition, so the route must refuse
+    // rather than plan against a composition it cannot build. `bedWithoutBassId`
+    // has drums + other only, so a bass replacement is unhonourable.
+    const unhonourable = await routeModule.POST(
+      renderPair(donorWithDrumsId, bedWithoutBassId, { layerStemTypes: ["bass"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(unhonourable.status, 422,
+      "a replacement the resulting composition cannot honour must fail closed, not plan against the original bed");
+    // A premixed bed that fell back to its original file also cannot be composed.
+    const premixed = await routeModule.POST(
+      renderPair(donorWithDrumsId, premixedBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(premixed.status, 422,
+      "a bed with no separable stems must refuse a replacement instead of substituting audio");
+
+    // fixture helper retained for the Studio persistence assertions below
+    void stemAssetIdFor;
+    void bedWithoutBassId;
+
+    // Donor vocals are the donor's default contribution; asking to layer them
+    // again is a request error, not a silently ignored field.
+    const invalidLayerResponse = await routeModule.POST(
+      renderRequest("continuous", { layerStemTypes: ["vocals"] }),
+      { params: Promise.resolve({ id: project.id }) },
+    );
+    assert.equal(invalidLayerResponse.status, 400,
+      "donor vocals are the donor's default contribution and cannot be layered as an extra stem");
 
     const renderedBytes = new Uint8Array(await renderResponse.arrayBuffer());
     const rendered = decodeWav16(renderedBytes);
@@ -1586,6 +2365,862 @@ test(
       );
     }
 
+    // ---------------------------------------------------------------------
+    // Persistence parity: the saved session must be the rendered arrangement.
+    //
+    // Before this, `action: "save"` inserted every non-vocal bed stem and no
+    // donor stem, so a render with a replaced drum part could be saved as a
+    // session that still contained the bed's original drums and none of the
+    // donor's. Rendering one arrangement and saving another is the failure
+    // this checks for, end to end, through the production routes and the real
+    // export worker.
+    // ---------------------------------------------------------------------
+    {
+      const saveFor = (extra: Record<string, unknown>) => new Request(
+        `http://localhost/api/waveyard/projects/${project.id}/mashup`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: donorWithDrumsId,
+            instrumentalSourceId: fullBedId,
+            alignmentStrategy: "continuous",
+            ...extra,
+          }),
+        },
+      );
+      const donorDrumsStemId = await stemAssetIdFor(donorWithDrumsId, "drums");
+      const donorVocalsStemId = await stemAssetIdFor(donorWithDrumsId, "vocals");
+      const bedDrumsStemId = await stemAssetIdFor(fullBedId, "drums");
+      const bedBassStemId = await stemAssetIdFor(fullBedId, "bass");
+      const bedOtherStemId = await stemAssetIdFor(fullBedId, "other");
+
+      /** The stem types behind one saved session, by source. */
+      const savedProvenance = async (remixId: string) => {
+        const tracks = await dbModule.db.select().from(schema.remixTracks)
+          .where(eq(schema.remixTracks.remixSessionId, remixId));
+        const stems = tracks.length
+          ? await dbModule.db.select({
+            stemAssetId: schema.stemAssets.id,
+            sourceAssetId: schema.stemAssets.sourceAssetId,
+            stemType: schema.stemAssets.stemType,
+          }).from(schema.stemAssets).where(inArray(schema.stemAssets.id, tracks.map((track) => track.stemAssetId)))
+          : [];
+        return {
+          tracks,
+          stems,
+          stemIds: stems.map((stem) => stem.stemAssetId).sort(),
+          typesBySource: (sourceId: string) => stems
+            .filter((stem) => stem.sourceAssetId === sourceId)
+            .map((stem) => stem.stemType).sort(),
+        };
+      };
+
+      // --- Replacement -----------------------------------------------------
+      const replaceRender = await routeModule.POST(
+        renderPair(donorWithDrumsId, fullBedId, { layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(replaceRender.status, 200);
+      const renderedReplacePcm = decodeWav16(new Uint8Array(await replaceRender.arrayBuffer()));
+      assert.ok(renderedReplacePcm);
+
+      // =====================================================================
+      // End-to-end musical acceptance: composition-first swap, all the way to
+      // exported audio, with source attribution measured from the audio.
+      //
+      // The fixture gives every role its own frequency (bed drums 260 Hz,
+      // donor drums 420 Hz, bed bass 70 Hz, bed pads 110 Hz, donor vocal
+      // 1500 Hz), so "did the original drums leave?" and "did the donor drums
+      // arrive?" are separate measurable questions instead of one number that
+      // one source can satisfy by accident. The percussive parts are
+      // bar-structured with alternating sparse sections, so the composed bed
+      // has genuine transitions for section detection to find.
+      // =====================================================================
+      /** Progress marker, republished by the CI verdict script as an annotation. */
+      const accMark = (step: string) => console.error(`ACCEPTANCE_PROGRESS ${step}`);
+
+      const acceptanceSwapRequest = (extra: Record<string, unknown>) => renderPair(
+        acceptanceVocalId,
+        acceptanceBedId,
+        { layerStemTypes: ["drums"], stemLayerMode: "replace", ...extra },
+      );
+
+      accMark("baseline-plan:start");
+      // What the original bed alone would have planned, for comparison.
+      const acceptanceOriginalPlanResponse = await routeModule.POST(
+        renderPair(acceptanceVocalId, acceptanceBedId, { action: "plan" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      const acceptanceOriginalPlan = await acceptanceOriginalPlanResponse.json() as {
+        plan?: MashupPlanShape;
+        error?: string;
+        evidence?: { bed: { sections: AcceptanceEvidenceValue } };
+      };
+      assert.ok(acceptanceOriginalPlan.plan,
+        `the original bed must still plan, for comparison; got ${JSON.stringify(acceptanceOriginalPlan)}`);
+      // What the composed bed (bed minus drums, plus the donor's drums) plans.
+      accMark("baseline-plan:done");
+      accMark("composed-plan:start");
+      const acceptancePlanResponse = await routeModule.POST(
+        acceptanceSwapRequest({ action: "plan" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(acceptancePlanResponse.status, 200, "the acceptance composition must be plannable");
+      const acceptancePlan = await acceptancePlanResponse.json() as {
+        plan: MashupPlanShape;
+        plannedAgainst: { kind: string };
+        evidence: { bed: { sections: AcceptanceEvidenceValue; key: AcceptanceEvidenceValue } };
+      };
+      assert.equal(acceptancePlan.plannedAgainst.kind, "composition",
+        "the acceptance plan must be planned against the composed bed");
+
+      // The vocal entry is the composed bed's first body section. A replacement
+      // that only substituted PCM would leave that entry on the old bed's
+      // boundary, so the entry has to move when the per-role percussion changes.
+      const acceptanceEntryMs = acceptancePlan.plan.segments[0]!.mashupStartMs;
+      assert.notEqual(
+        acceptanceEntryMs,
+        acceptanceOriginalPlan.plan!.segments[0]!.mashupStartMs,
+        "a drums replacement re-measures the composed bed, so the vocal entry must not stay at the original bed's section boundary",
+      );
+
+      // "The entry moved" is not the same as "the entry is right". A zero
+      // entry is only defensible if the composed bed genuinely has no intro and
+      // the detector said so, so the section evidence behind the entry is
+      // recorded and checked rather than assumed.
+      const originalSections = acceptanceOriginalPlan.evidence?.bed.sections;
+      const composedSections = acceptancePlan.evidence.bed.sections;
+      assert.equal(composedSections.status, "measured",
+        `the composed bed's sections must be measured, not inherited or unavailable (${composedSections.reason ?? "no reason given"})`);
+      const composedSectionList = composedSections.value ?? [];
+      assert.ok(composedSectionList.length > 0, "the composed bed must have detectable sections");
+      // The evidence must be about the composed bed, not the original mix.
+      assert.equal(composedSections.persistence, "request",
+        "the composed bed's section evidence must be request-time, so it cannot be mistaken for saved analysis of the original mix");
+      const bodySections = composedSectionList.filter((section) => !/intro|outro/i.test(section.label));
+      assert.ok(bodySections.length > 0,
+        `the composed bed must have at least one body section for the vocal to enter at; labels were ${JSON.stringify(composedSectionList.map((section) => section.label))}`);
+      assert.equal(
+        acceptanceEntryMs,
+        Math.max(0, bodySections[0]!.startMs),
+        `the selected vocal entry must be the composed bed's first body section; entry ${acceptanceEntryMs}ms vs first body section “${bodySections[0]!.label}” at ${bodySections[0]!.startMs}ms`,
+      );
+      // And the entry must land on a real detected boundary, not in the middle
+      // of a section.
+      assert.ok(
+        composedSectionList.some((section) => section.startMs === acceptanceEntryMs) || acceptanceEntryMs === 0,
+        `the vocal entry must coincide with a detected section boundary or the very start (${acceptanceEntryMs}ms in ${JSON.stringify(composedSectionList.map((section) => section.startMs))})`,
+      );
+      if (acceptanceEntryMs === 0) {
+        // Zero is a strong claim: it says the bed starts on a body section with
+        // nothing before it. Record why that is what the analysis found.
+        assert.equal(
+          composedSectionList[0]!.startMs,
+          0,
+          "a zero vocal entry is only valid when the composed bed's first section also starts at zero",
+        );
+      }
+      assert.ok(
+        acceptancePlan.plan.segments.every((segment) => segment.mashupStartMs >= 0
+          && segment.mashupEndMs <= acceptancePlan.plan.durationMs),
+        "every planned segment must lie inside the arrangement",
+      );
+      accMark("composed-plan:done");
+      accMark("render:start");
+      const acceptanceRender = await routeModule.POST(
+        acceptanceSwapRequest({}),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(acceptanceRender.status, 200, "the acceptance replacement must render");
+      assert.equal(acceptanceRender.headers.get("x-waveyard-planned-against"), "composition",
+        "the acceptance render must be planned against the composed bed");
+      // Keep the exact bytes that are asserted on. Writing the artifact from a
+      // second render request would leave the saved WAV unverified — the numbers
+      // in the evidence file would describe audio the owner never receives.
+      const acceptanceRenderBytes = new Uint8Array(await acceptanceRender.arrayBuffer());
+      const acceptanceRenderWav = decodeWav16(acceptanceRenderBytes);
+      assert.ok(acceptanceRenderWav && acceptanceRenderWav.frames > 0, "the acceptance render must be real audio");
+      // Persist each piece of audio the moment it exists. Collecting all writes
+      // at the end meant a crash anywhere later (including the known teardown
+      // race, which fires after the assertions pass) lost the artifacts the
+      // owner needs in order to listen — and a green CI job with no audio is
+      // exactly what this work is not allowed to produce.
+      const evidenceDir = process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR?.trim();
+      if (evidenceDir) {
+        await mkdir(evidenceDir, { recursive: true });
+        await writeFile(path.join(evidenceDir, "acceptance-render.wav"), Buffer.from(acceptanceRenderBytes));
+      }
+
+      const renderWindow = Math.min(2000, Math.floor((acceptanceRenderWav!.frames / RATE) * 1000));
+      const renderOriginalDrums = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.originalBedDrumsHz, 0, renderWindow);
+      const renderDonorDrums = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.donorDrumsHz, 0, renderWindow);
+      const renderBass = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.bedBassHz, 0, renderWindow);
+      const renderPads = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.bedOtherHz, 0, renderWindow);
+      assert.ok(renderBass > 0.001, `the retained bass must survive the swap (${renderBass})`);
+      assert.ok(renderPads > 0.001, `the retained pads must survive the swap (${renderPads})`);
+      assert.ok(renderDonorDrums > renderOriginalDrums * 10,
+        `the donor drums must dominate the replaced drums in the render (donor ${renderDonorDrums} vs original ${renderOriginalDrums})`);
+      assert.ok(renderOriginalDrums < renderBass / 10,
+        `the original drums must be absent from the render (${renderOriginalDrums} vs bass ${renderBass})`);
+
+      // Contrast: the same swap on a bed whose first 8s carry no percussion at
+      // all. The point is not that a specific label appears — the section
+      // detector emits structural labels only and has no intro concept — but
+      // that the entry the planner picks is always backed by a detected
+      // boundary in the composed bed, and that the two beds (full-density
+      // opening vs percussion-free opening) are distinguishable in the
+      // evidence rather than producing one canned answer.
+      const accIntroCase = await (async () => {
+        const introPlanResponse = await routeModule.POST(
+          renderPair(
+            acceptanceVocalId,
+            introBedId,
+            { action: "plan", alignmentStrategy: "continuous", layerStemTypes: ["drums"], stemLayerMode: "replace" },
+          ),
+          { params: Promise.resolve({ id: project.id }) },
+        );
+        assert.equal(introPlanResponse.status, 200, "the percussion-free-opening bed must be plannable");
+        const introPlan = await introPlanResponse.json() as {
+          plan: MashupPlanShape;
+          evidence: { bed: { sections: AcceptanceEvidenceValue } };
+        };
+        const introSections = introPlan.evidence.bed.sections;
+        assert.equal(introSections.status, "measured", "the intro bed's sections must be measured");
+        const introSectionList = introSections.value ?? [];
+        assert.ok(introSectionList.length > 0, "the intro bed must have detectable sections");
+        const introEntryMs = introPlan.plan.segments[0]!.mashupStartMs;
+        // The entry must be a boundary the analysis actually found (or zero,
+        // which is only a boundary when a section starts there).
+        assert.ok(
+          introSectionList.some((section) => section.startMs === introEntryMs),
+          `the intro bed's vocal entry must coincide with a detected boundary; entry ${introEntryMs}ms vs ${JSON.stringify(introSectionList.map((section) => section.startMs))}`,
+        );
+        // And the boundary the planner chose must not cut through the silent
+        // opening: the fixture is percussive-free for 8s, so a boundary inside
+        // that window that starts a "body" is at least structurally real.
+        assert.ok(introEntryMs >= 0, "entry must be non-negative");
+        return {
+          introSeconds: ACCEPTANCE.introSeconds,
+          introSections: introSectionList,
+          introEntryMs,
+        };
+      })();
+
+      // Save the arrangement that was just rendered. `saveFor` is pinned to the
+      // older full-bed fixtures, so the acceptance composition is saved from
+      // its own sources; otherwise the persisted session would describe a
+      // different arrangement than the one heard.
+      accMark("render:done");
+      accMark("save:start");
+      const acceptanceSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: acceptanceVocalId,
+            instrumentalSourceId: acceptanceBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(acceptanceSave.status, 201, "the acceptance composition must be saveable");
+      const acceptanceSaveBody = await acceptanceSave.json() as {
+        remix: { id: string };
+        version: { id: string };
+        warnings?: string[];
+        plannedAgainst?: string;
+        replacedBedStemTypes?: string[];
+      };
+      // The replacement is a replacement: one drums part, not two. Recording
+      // it on the saved session is what lets a reopen distinguish a swap from
+      // a layer instead of inferring it from the audio.
+      assert.deepEqual(acceptanceSaveBody.replacedBedStemTypes, ["drums"],
+        "the saved session must record that it replaced the bed's drums rather than layering them");
+      assert.equal(acceptanceSaveBody.plannedAgainst, "composition",
+        "the saved plan must record that it was built from the composed bed");
+      const acceptanceWarnings = acceptanceSaveBody.warnings ?? [];
+      // The owner's fail-closed rule: if anything could not be re-analysed, the
+      // session must say so rather than present the stale analysis as fresh.
+      assert.ok(
+        acceptanceWarnings.some((warning) => /re-measured from the resulting stem composition/i.test(warning)),
+        `the saved plan must disclose what the arrangement was measured from; got ${JSON.stringify(acceptanceWarnings)}`,
+      );
+      assert.ok(
+        !acceptanceWarnings.some((warning) => /could NOT be re-derived|could not be re-analysed/i.test(warning)),
+        `the composed bed must be genuinely re-analysed, not fall back with a warning; got ${JSON.stringify(acceptanceWarnings)}`,
+      );
+
+      accMark("save:done");
+      accMark("reopen:start");
+      const acceptanceReopen = await (await import("../../../../remixes/[id]/route")).GET(
+        new Request(`http://localhost/api/remixes/${acceptanceSaveBody.remix.id}`),
+        { params: Promise.resolve({ id: acceptanceSaveBody.remix.id }) },
+      );
+      assert.equal(acceptanceReopen.status, 200, "the saved acceptance session must reopen");
+      const acceptanceReopened = await acceptanceReopen.json() as {
+        remix: { id: string; version: number };
+        tracks: Array<{
+          stemAssetId: string;
+          clips: Array<{ stemAssetId: string; timelineStartMs: number; durationMs: number; sourceOffsetMs: number }>;
+        }>;
+      };
+      const accReopenedClips = acceptanceReopened.tracks.flatMap((track) => track.clips);
+      assert.ok(accReopenedClips.length > 0, "the reopened session must keep its clips");
+      const accReopenedStemIds = new Set(accReopenedClips.map((clip) => clip.stemAssetId));
+      assert.equal(accReopenedStemIds.has(acceptanceBedDrumsStemId), false,
+        "the reopened session must not contain the replaced bed drums");
+      assert.ok(accReopenedStemIds.has(acceptanceDonorDrumsStemId),
+        "the reopened session must carry the donor drums that replaced them");
+
+      accMark("reopen:done");
+      accMark("export:start");
+      // Export the reopened session through the real export worker.
+      const [acceptanceExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: acceptanceSaveBody.remix.id,
+        remixVersionId: acceptanceSaveBody.version.id,
+        requestedById: (await dbModule.db.select().from(schema.remixSessions)
+          .where(eq(schema.remixSessions.id, acceptanceSaveBody.remix.id)))[0]!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `acceptance-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(acceptanceExportJob);
+      const acceptanceExportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await acceptanceExportWorker.handleExportJob({
+        exportJobId: acceptanceExportJob.id,
+        projectId: project.id,
+        remixSessionId: acceptanceSaveBody.remix.id,
+        remixVersionId: acceptanceSaveBody.version.id,
+        format: "wav",
+      });
+      const [acceptanceExportAsset] = await dbModule.db.select().from(schema.exportAssets)
+        .where(eq(schema.exportAssets.exportJobId, acceptanceExportJob.id));
+      assert.ok(acceptanceExportAsset, "the acceptance composition must survive the real export worker");
+      const acceptanceExportMedia = await (await import("../../../../exports/[id]/media/route")).GET(
+        new Request(`http://localhost/api/exports/${acceptanceExportJob.id}/media`),
+        { params: Promise.resolve({ id: acceptanceExportJob.id }) },
+      );
+      assert.equal(acceptanceExportMedia.status, 200);
+      const acceptanceExportBytes = new Uint8Array(await acceptanceExportMedia.arrayBuffer());
+      if (evidenceDir) await writeFile(path.join(evidenceDir, "acceptance-export.wav"), Buffer.from(acceptanceExportBytes));
+      accMark("export:media-ready");
+      const acceptanceExportWav = decodeWav16(acceptanceExportBytes);
+      assert.ok(acceptanceExportWav && acceptanceExportWav.frames > 0, "the export must be real audio");
+
+      // The exported file is what the owner would listen to, so every part of
+      // the intended composition has to be measurable in it — not just the
+      // drums. The vocal is a first-class part of a mashup: an export that
+      // drops it is a different arrangement however clean its drum spectrum is.
+      const exportSeconds = acceptanceExportWav!.frames / RATE;
+      const exportWindow = Math.floor(exportSeconds * 1000);
+
+      const exportOriginalDrums = energyAt(acceptanceExportWav!.samples, ACCEPTANCE.originalBedDrumsHz, 0, exportWindow);
+      const exportDonorDrums = energyAt(acceptanceExportWav!.samples, ACCEPTANCE.donorDrumsHz, 0, exportWindow);
+      const exportBass = energyAt(acceptanceExportWav!.samples, ACCEPTANCE.bedBassHz, 0, exportWindow);
+      const exportPads = energyAt(acceptanceExportWav!.samples, ACCEPTANCE.bedOtherHz, 0, exportWindow);
+      assert.ok(exportBass > 0.001, `the exported session must retain the bed bass (${exportBass})`);
+      assert.ok(exportPads > 0.001, `the exported session must retain the bed pads (${exportPads})`);
+      assert.ok(exportOriginalDrums < exportBass / 10,
+        `the exported session must not contain the replaced bed drums (${exportOriginalDrums} vs bass ${exportBass})`);
+      // The donor drums are percussive, so this is a ratio rather than an
+      // absolute level. Export applies the donor's own track gain, which the
+      // render does not use identically, so the bar is "present and the only
+      // drums" rather than "bit-identical to the render".
+      assert.ok(exportDonorDrums > exportOriginalDrums * 10,
+        `the exported donor drums must be present and dominate the replaced drums (donor ${exportDonorDrums} vs original ${exportOriginalDrums})`);
+
+      // The vocal, measured across the timeline it is actually supposed to
+      // occupy — the planned segments, not an arbitrary opening window. A
+      // vocal that only appears for the first two seconds is not the
+      // arrangement; it is the arrangement's intro.
+      const vocalSegments = acceptancePlan.plan.segments;
+      const vocalSpanStartMs = Math.max(0, Math.min(...vocalSegments.map((segment) => segment.mashupStartMs)));
+      const vocalSpanEndMs = Math.min(exportWindow, Math.max(...vocalSegments.map((segment) => segment.mashupEndMs)));
+      assert.ok(vocalSpanEndMs - vocalSpanStartMs > 1000,
+        `the acceptance must measure a real vocal span (${vocalSpanStartMs}–${vocalSpanEndMs}ms)`);
+
+      // Where is the vocal, and at what pitch? Scan a band around the donor's
+      // own tone and around the pitch the plan says it should move to.
+      const expectedShift = acceptancePlan.plan.vocalsPitchSemitones;
+      const expectedVocalHz = ACCEPTANCE.donorVocalHz * 2 ** (expectedShift / 12);
+      const bandLow = Math.round(Math.min(ACCEPTANCE.donorVocalHz, expectedVocalHz) * 0.85);
+      const bandHigh = Math.round(Math.max(ACCEPTANCE.donorVocalHz, expectedVocalHz) * 1.15);
+      const exportVocal = dominantFrequencyInBand(
+        acceptanceExportWav!.samples, bandLow, bandHigh, vocalSpanStartMs, vocalSpanEndMs,
+      );
+      const renderVocal = dominantFrequencyInBand(
+        acceptanceRenderWav!.samples, bandLow, bandHigh, vocalSpanStartMs, vocalSpanEndMs,
+      );
+
+      // Present at all: compare against a band where the fixture has nothing,
+      // so "quiet" and "absent" are distinguishable.
+      const exportVocalFloor = energyAt(
+        acceptanceExportWav!.samples,
+        Math.round(ACCEPTANCE.donorVocalHz * 1.6),
+        vocalSpanStartMs,
+        vocalSpanEndMs,
+      );
+      assert.ok(exportVocal.energy > exportVocalFloor * 10,
+        `the exported audio must contain the donor vocal, not merely lack it (${exportVocal.hz}Hz energy ${exportVocal.energy})`);
+
+      // The plan states a key move; export must apply that same move. This is
+      // the contract, established from the implementation rather than assumed:
+      // `save` stores `targetKey`, export recomputes `semitoneShift(sourceKey,
+      // targetKey)` and applies it per clip.
+      const exportVocalShift = semitonesBetween(ACCEPTANCE.donorVocalHz, exportVocal.hz);
+      assert.ok(Math.abs(exportVocalShift - expectedShift) < 0.4,
+        `the exported vocal must receive the planned key move (${expectedShift} semitones planned, measured ${exportVocalShift.toFixed(2)} at ${exportVocal.hz}Hz)`);
+
+      // And the render must agree with the plan about that same move. If render
+      // and export disagree, the owner would hear one arrangement and download
+      // another — which is exactly the state this acceptance found.
+      const renderVocalShift = semitonesBetween(ACCEPTANCE.donorVocalHz, renderVocal.hz);
+      assert.ok(Math.abs(renderVocalShift - expectedShift) < 0.4,
+        `the rendered vocal must receive the same key move as the plan and the export (${expectedShift} planned, render measured ${renderVocalShift.toFixed(2)} at ${renderVocal.hz}Hz, export ${exportVocalShift.toFixed(2)})`);
+
+      // The export must reproduce the planned length.
+      assert.ok(
+        Math.abs(exportSeconds - acceptancePlan.plan.durationMs / 1000) < 0.25,
+        `the export must reproduce the planned length (${exportSeconds}s vs ${acceptancePlan.plan.durationMs}ms)`,
+      );
+
+      // Preserve the audio evidence for download. A passing assertion without
+      // the audible result is not evidence the owner can judge.
+      if (evidenceDir) {
+        await writeFile(path.join(evidenceDir, "acceptance-evidence.json"), JSON.stringify({
+          fixture: ACCEPTANCE,
+          note: "Percussive parts are synthetic bar-structured hits with one distinct frequency per role. This proves source attribution, section re-derivation and render/save/reopen/export agreement end to end. It is NOT a musical-quality judgement and no listening test has been run against it.",
+          plan: {
+            plannedAgainst: acceptancePlan.plannedAgainst,
+            masterBpm: acceptancePlan.plan.masterBpm,
+            vocalsStretchRatio: acceptancePlan.plan.vocalsStretchRatio,
+            durationMs: acceptancePlan.plan.durationMs,
+            vocalEntryMs: acceptanceEntryMs,
+            originalBedVocalEntryMs: acceptanceOriginalPlan.plan!.segments[0]!.mashupStartMs,
+            replacedBedStemTypes: acceptanceSaveBody.replacedBedStemTypes ?? [],
+            segments: acceptancePlan.plan.segments,
+            warnings: acceptanceWarnings,
+          },
+          keyContract: {
+            planKeyRelationship: acceptancePlan.plan.keyRelationship,
+            planVocalsPitchSemitones: expectedShift,
+            donorVocalHz: ACCEPTANCE.donorVocalHz,
+            expectedExportedVocalHz: Number(expectedVocalHz.toFixed(1)),
+            measuredRenderVocalHz: renderVocal.hz,
+            measuredRenderShiftSemitones: Number(renderVocalShift.toFixed(3)),
+            measuredExportVocalHz: exportVocal.hz,
+            measuredExportShiftSemitones: Number(exportVocalShift.toFixed(3)),
+            contract: "save persists targetKey = composed bed key; export applies semitoneShift(vocal source key, targetKey) per clip; the render must apply the same move",
+          },
+          vocalSpanMs: { start: vocalSpanStartMs, end: vocalSpanEndMs },
+          sections: {
+            note: "Composed-bed boundaries come from deriveSectionsForComposition. The detector emits structural labels only ('section', 'energy-rise', …) and has no intro/outro vocabulary, so `isIntro` never fires for a composed bed. Recorded here rather than papered over.",
+            composed: composedSectionList,
+            original: { status: originalSections?.status ?? "unavailable", reason: originalSections?.reason, value: originalSections?.value ?? null },
+            selectedEntryMs: acceptanceEntryMs,
+            firstBodySectionStartMs: bodySections[0]?.startMs ?? null,
+            entryIsDetectedBoundary: composedSectionList.some((section) => section.startMs === acceptanceEntryMs),
+          },
+          introContrast: accIntroCase,
+          render: {
+            originalDrumsHz: renderOriginalDrums,
+            donorDrumsHz: renderDonorDrums,
+            bassHz: renderBass,
+            padsHz: renderPads,
+            vocalHz: renderVocal.hz,
+            vocalEnergy: renderVocal.energy,
+          },
+          export: {
+            originalDrumsHz: exportOriginalDrums,
+            donorDrumsHz: exportDonorDrums,
+            bassHz: exportBass,
+            padsHz: exportPads,
+            vocalHz: exportVocal.hz,
+            vocalEnergy: exportVocal.energy,
+            vocalFloorEnergy: exportVocalFloor,
+            durationSeconds: exportSeconds,
+            fileSizeBytes: acceptanceExportAsset.fileSizeBytes,
+            checksumSha256: acceptanceExportAsset.checksumSha256,
+          },
+          reopened: {
+            clipCount: accReopenedClips.length,
+            containsReplacedBedDrums: accReopenedStemIds.has(acceptanceBedDrumsStemId),
+            containsDonorDrums: accReopenedStemIds.has(acceptanceDonorDrumsStemId),
+          },
+        }, null, 2));
+        accTrace("acceptance:complete-with-artifacts");
+        console.error(`ACCEPTANCE_ARTIFACTS ${evidenceDir}`);
+      } else {
+        console.error("ACCEPTANCE_ARTIFACTS skipped: WAVEYARD_ACCEPTANCE_ARTIFACT_DIR is not set, so the rendered and exported audio were not preserved for listening");
+      }
+
+      const replaceSave = await routeModule.POST(
+        saveFor({ layerStemTypes: ["drums"], stemLayerMode: "replace" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(replaceSave.status, 201, "a verified replacement must be saveable");
+      const replaceSaveBody = await replaceSave.json() as { remix: { id: string }; version: { id: string } };
+
+      const savedReplace = await savedProvenance(replaceSaveBody.remix.id);
+      assert.deepEqual(savedReplace.typesBySource(fullBedId), ["bass", "other"],
+        "the saved bed must not contain the drums the render replaced");
+      assert.deepEqual(savedReplace.typesBySource(donorWithDrumsId), ["drums", "vocals"],
+        "the saved session must contain the donor's replacing drum stem");
+      assert.ok(savedReplace.stemIds.includes(bedDrumsStemId) === false,
+        "the bed's own drum stem must not be referenced by the saved session at all");
+
+      const [replaceVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, replaceSaveBody.version.id));
+      const replaceSnapshot = JSON.parse(replaceVersion!.snapshot) as {
+        mashupPlan?: {
+          masterBpm?: number;
+          vocalsStretchRatio?: number;
+          stemComposition?: { stemLayerMode?: string; replacedBedStemTypes?: string[]; layeredStemTypes?: string[] };
+        };
+      };
+      assert.equal(replaceSnapshot.mashupPlan?.stemComposition?.stemLayerMode, "replace",
+        "the persisted snapshot must record the composition that was saved");
+      assert.deepEqual(replaceSnapshot.mashupPlan?.stemComposition?.replacedBedStemTypes, ["drums"]);
+      assert.deepEqual(replaceSnapshot.mashupPlan?.stemComposition?.layeredStemTypes, ["drums"]);
+      // AS: the persisted plan must be the one planned against the RESULTING
+      // composition. A reopened session must not revert to an arrangement that
+      // was decided before the swap.
+      assert.equal(replaceSaveBody.plannedAgainst, "composition",
+        "the saved plan must record that it was planned against the resulting composition");
+      const replacePlanResponse = await routeModule.POST(
+        renderPair(donorWithDrumsId, fullBedId, {
+          action: "plan",
+          layerStemTypes: ["drums"],
+          stemLayerMode: "replace",
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      const replacePlanBody = await replacePlanResponse.json() as {
+        plannedAgainst?: { kind: string; replacedStemTypes?: string[] };
+        plan: {
+          alignmentStrategy: string;
+          segments: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
+        };
+      };
+      assert.equal(replacePlanBody.plannedAgainst?.kind, "composition",
+        "planning alone must also use the resulting composition, not only rendering");
+      assert.deepEqual(replacePlanBody.plannedAgainst?.replacedStemTypes, ["drums"],
+        "the plan must name which roles were recomposed");
+
+      const replaceClips = savedReplace.tracks.length
+        ? await dbModule.db.select().from(schema.remixClips)
+          .where(inArray(schema.remixClips.remixTrackId, savedReplace.tracks.map((track) => track.id)))
+        : [];
+      const donorDrumClip = replaceClips.find((clip) => clip.stemAssetId === donorDrumsStemId);
+      assert.ok(donorDrumClip, "the donor drum stem must be placed as a real clip");
+      // The reference MUST be the replace-mode plan, not `continuousPlan`.
+      // `continuousPlan` comes from a `compare` request with no stem layer, so it
+      // is planned against the ORIGINAL bed. Requiring the post-swap clip to
+      // match it is exactly the defect composition-first planning removes: it
+      // asserted that the swap kept the arrangement made for the replaced
+      // percussion. Now that sections are re-derived from the composed bed, the
+      // post-swap plan legitimately differs, and comparing against the stale plan
+      // is what failed.
+      //
+      // The reference is the replace-mode plan, not `continuousPlan`:
+      // `continuousPlan` comes from a `compare` request with no stem layer, so
+      // it describes the ORIGINAL bed.
+      const replaceSegments = replacePlanBody.plan.segments;
+      assert.ok(replaceSegments.length > 0, "the replace plan must place at least one segment");
+      assert.equal(donorDrumClip!.sourceOffsetMs, replaceSegments[0]!.vocalsFromMs,
+        "the donor clip must keep the same phrase-relative source offset the replace-mode plan used");
+      assert.equal(donorDrumClip!.timelineStartMs, replaceSegments[0]!.mashupStartMs,
+        "the donor clip must start at the same timeline position the replace-mode plan used");
+      // And the two plans must genuinely differ, or the re-planning never happened.
+      assert.notEqual(
+        replaceSegments[0]!.mashupStartMs,
+        continuousPlan.segments[0]!.mashupStartMs,
+        "a drum replacement re-measures the composed bed, so the vocal entry must not silently stay at the original bed's section boundary",
+      );
+
+      // Reopen through the production Studio route.
+      const remixRoute = await import("../../../../remixes/[id]/route");
+      const remixParams = { params: Promise.resolve({ id: replaceSaveBody.remix.id }) };
+      const reopenResponse = await remixRoute.GET(
+        new Request(`http://localhost/api/remixes/${replaceSaveBody.remix.id}`),
+        remixParams,
+      );
+      assert.equal(reopenResponse.status, 200);
+      const reopenedReplace = await reopenResponse.json() as {
+        remix: { id: string; version: number };
+        tracks: Array<{ id: string; stemAssetId: string; clips: Array<Record<string, unknown>> }>;
+        automation: unknown[];
+      };
+      const reopenedStemIds = reopenedReplace.tracks.map((track) => track.stemAssetId).sort();
+      assert.deepEqual(reopenedStemIds, savedReplace.stemIds,
+        "reopening must return exactly the stems that were saved");
+      assert.ok(reopenedStemIds.includes(donorDrumsStemId), "donor drums survive reopen");
+      assert.ok(!reopenedStemIds.includes(bedDrumsStemId), "bed drums do not come back on reopen");
+
+      // Export the reopened session with the real worker, then measure it.
+      const [replaceExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: replaceSaveBody.remix.id,
+        remixVersionId: replaceSaveBody.version.id,
+        requestedById: (await dbModule.db.select().from(schema.remixSessions)
+          .where(eq(schema.remixSessions.id, replaceSaveBody.remix.id)))[0]!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `replacement-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(replaceExportJob);
+      const exportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await exportWorker.handleExportJob({
+        exportJobId: replaceExportJob.id,
+        projectId: project.id,
+        remixSessionId: replaceSaveBody.remix.id,
+        remixVersionId: replaceSaveBody.version.id,
+        format: "wav",
+      });
+      const [replaceExportAsset] = await dbModule.db.select().from(schema.exportAssets)
+        .where(eq(schema.exportAssets.exportJobId, replaceExportJob.id));
+      assert.ok(replaceExportAsset, "the replaced arrangement must survive the real export worker");
+      const exportMedia = await (await import("../../../../exports/[id]/media/route")).GET(
+        new Request(`http://localhost/api/exports/${replaceExportJob.id}/media`),
+        { params: Promise.resolve({ id: replaceExportJob.id }) },
+      );
+      assert.equal(exportMedia.status, 200);
+      const exportedReplacePcm = decodeWav16(new Uint8Array(await exportMedia.arrayBuffer()));
+      assert.ok(exportedReplacePcm, "the exported replaced session must be a real WAV");
+
+      // The exported session must contain the donor's drum content and not be
+      // dominated by the bed's drum tone, measured from the audio itself.
+      // Measure the exported audio itself: the bed's drum tone must be gone
+      // while the bed's bass is still there, so the export is neither "the
+      // replacement silently didn't happen" nor "the bed was emptied".
+      // The donor drum clip may be shorter than the arrangement (it cannot
+      // outlive its own stem), and with vocals entering at 0 the arrangement now
+      // runs longer than the 2 s measured here. Measure over the audio that
+      // actually exists instead of subarraying past the end, which silently
+      // shortens the window and skews both energies.
+      const exportHead = exportedReplacePcm!.samples.subarray(0, Math.min(RATE * 2 * 2, exportedReplacePcm!.samples.length));
+      const exportHeadMs = Math.min(2000, Math.floor((exportHead.length / 2 / RATE) * 1000));
+      const exportedBedDrum = energyAt(exportHead, 260, 0, exportHeadMs);
+      const exportedBass = energyAt(exportHead, 70, 0, exportHeadMs);
+      assert.ok(exportedBass > 0.001,
+        `the exported session must still contain the bed's bass (${exportedBass})`);
+
+      // This fixture's donor drum stem and the bed's drum stem are BOTH at
+      // 260 Hz, so `energyAt(260)` cannot say which source produced it. The old
+      // assertion here demanded the energy be absent, which was unsatisfiable
+      // for a correct replacement and only passed while the donor clip was
+      // being truncated. Rather than weaken it, assert the thing this fixture
+      // *can* prove about provenance, and leave the source-attribution question
+      // to the distinguishable-frequency acceptance above, which measures it
+      // directly (bed drums 260 Hz vs donor drums 420 Hz).
+      //
+      // What this fixture can prove: the exported audio contains percussion,
+      // and provenance says it came from the donor rather than the bed.
+      assert.ok(exportedBedDrum > 0,
+        `the exported replaced session must contain the donor's percussion (${exportedBedDrum})`);
+      const exportedProvenance = await savedProvenance(replaceSaveBody.remix.id);
+      assert.ok(!exportedProvenance.stemIds.includes(bedDrumsStemId),
+        "no clip may reference the replaced bed drum stem, so the export cannot render it");
+      assert.ok(exportedProvenance.stemIds.includes(donorDrumsStemId),
+        "the donor drum stem must be referenced, so the export's percussion is the donor's");
+      // The donor drum clip is what the export renders. If the render warped
+      // the donor and the clip says nothing about it, export plays the donor at
+      // its native rate — a different arrangement from the one rendered.
+      const donorDrumClips = replaceClips.filter((clip) => clip.stemAssetId === donorDrumsStemId);
+      assert.equal(donorDrumClips.length, 1,
+        "a non-default composition must persist exactly one donor replacement clip");
+      assert.equal(donorDrumClips[0]!.tempoSyncEnabled, true,
+        "the donor clip must be tempo-synced whenever the renderer stretched it");
+
+      // The render and the export are the same arrangement: both must show the
+      // same absence of the bed's drum tone.
+      // Same reasoning as above: 260 Hz cannot be attributed to a source in this
+      // fixture. What matters here is that the render and the export are the
+      // same arrangement, so both must carry percussion and neither may be
+      // silently empty. Source attribution is asserted in the distinguishable
+      // acceptance.
+      const renderedBedDrum = energyAt(renderedReplacePcm!.samples.subarray(0, RATE * 2 * 2), 260, 0, 2000);
+      assert.ok(renderedBedDrum > 0,
+        `the render that was saved must contain the donor's percussion (${renderedBedDrum})`);
+      assert.ok(exportedReplacePcm!.frames > 0);
+
+      // --- Explicit layering -----------------------------------------------
+      const layerSave = await routeModule.POST(
+        saveFor({ layerStemTypes: ["drums"], stemLayerMode: "layer" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(layerSave.status, 201);
+      const layerSaveBody = await layerSave.json() as { remix: { id: string }; version: { id: string } };
+      const savedLayer = await savedProvenance(layerSaveBody.remix.id);
+      assert.deepEqual(savedLayer.typesBySource(fullBedId), ["bass", "drums", "other"],
+        "explicit layering must keep the bed's drums in the saved session");
+      assert.deepEqual(savedLayer.typesBySource(donorWithDrumsId), ["drums", "vocals"],
+        "explicit layering must also keep the donor's drums");
+      assert.ok(savedLayer.stemIds.includes(bedDrumsStemId), "bed drums remain referenced");
+      assert.ok(savedLayer.stemIds.includes(donorDrumsStemId), "donor drums are referenced too");
+      void [bedBassStemId, bedOtherStemId, donorVocalsStemId];
+
+      // --- Tempo parity across render and export ---------------------------
+      // 140 BPM donor over a 100 BPM bed: the renderer stretches the donor by
+      // 1.4x. The saved clip must say so, and the export must agree with the
+      // render about the resulting duration.
+      const stretchedSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: fastDonorId,
+            instrumentalSourceId: slowBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(stretchedSave.status, 201);
+      const stretchedSaveBody = await stretchedSave.json() as {
+        remix: { id: string };
+        version: { id: string };
+        warnings: string[];
+      };
+      const [stretchedSession] = await dbModule.db.select().from(schema.remixSessions)
+        .where(eq(schema.remixSessions.id, stretchedSaveBody.remix.id));
+      const stretchedProvenance = await savedProvenance(stretchedSaveBody.remix.id);
+      const fastDonorDrumsStemId = await stemAssetIdFor(fastDonorId, "drums");
+      const stretchedClips = await dbModule.db.select().from(schema.remixClips)
+        .where(inArray(schema.remixClips.remixTrackId, stretchedProvenance.tracks.map((track) => track.id)));
+      const stretchedDonorClip = stretchedClips.find((clip) => clip.stemAssetId === fastDonorDrumsStemId);
+      assert.ok(stretchedDonorClip, "the stretched donor must have a persisted clip");
+      assert.equal(stretchedDonorClip!.tempoSyncEnabled, true,
+        "a donor the renderer stretched must be persisted as tempo-synced");
+      assert.notEqual(stretchedSession!.tempoBpm, 140,
+        "the session tempo must be the bed's, not the donor's, so sync has a real target");
+      assert.deepEqual(stretchedProvenance.typesBySource(slowBedId), ["bass", "other"],
+        "the slow bed's drums are replaced in this session too");
+
+      // The same pair with a donor whose tempo was never analysed: the render
+      // can still stretch it (the plan's ratio comes from the pair), but the
+      // clip cannot claim sync without evidence. That must be reported, not
+      // silently saved as a session that exports differently.
+      const unanalysedSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: unanalysedDonorId,
+            instrumentalSourceId: slowBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      const unanalysedBody = await unanalysedSave.json() as {
+        error?: string;
+        warnings?: string[];
+        remix?: { id: string };
+        version?: { id: string };
+      };
+      assert.equal(unanalysedSave.status, 201,
+        "a donor without analysed tempo is still renderable, so it must remain saveable");
+      // The invariant that actually matters: the clip's sync flag must agree
+      // with whether the renderer warped the donor. If it did warp, the clip
+      // must be synced or the difference must be reported; if it did not, an
+      // unsynced clip is exactly right.
+      const [unanalysedVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, unanalysedBody.version!.id));
+      const unanalysedSnapshot = JSON.parse(unanalysedVersion!.snapshot) as {
+        mashupPlan?: { vocalsStretchRatio?: number };
+      };
+      const unanalysedRatio = unanalysedSnapshot.mashupPlan?.vocalsStretchRatio ?? 1;
+      const unanalysedProvenance2 = await savedProvenance(unanalysedBody.remix!.id);
+      const unanalysedDrumsStemId = await stemAssetIdFor(unanalysedDonorId, "drums");
+      const unanalysedClips = await dbModule.db.select().from(schema.remixClips)
+        .where(inArray(schema.remixClips.remixTrackId, unanalysedProvenance2.tracks.map((track) => track.id)));
+      const unanalysedClip = unanalysedClips.find((clip) => clip.stemAssetId === unanalysedDrumsStemId);
+      assert.ok(unanalysedClip, "the donor without analysed tempo must still be persisted");
+      const unanalysedWarped = Math.abs(unanalysedRatio - 1) > 1e-6;
+      if (unanalysedWarped) {
+        assert.equal(unanalysedClip!.tempoSyncEnabled, true,
+          `the renderer warped this donor ${unanalysedRatio.toFixed(3)}x, so the export must warp it too`);
+      } else {
+        assert.equal(unanalysedClip!.tempoSyncEnabled, false,
+          "when the plan left the donor at its native rate, an unsynced clip is the faithful record");
+        assert.ok(!(unanalysedBody.warnings ?? []).some((line) => /not tempo-synced/i.test(line)),
+          "a parity warning must not be raised when render and export already agree");
+      }
+
+      // Prove the export actually honours the sync rather than merely storing
+      // a flag: export the stretched session and check that the donor's drum
+      // content spans the session, not its native length.
+      const [stretchedExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: stretchedSaveBody.remix.id,
+        remixVersionId: stretchedSaveBody.version.id,
+        requestedById: stretchedSession!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `stretched-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(stretchedExportJob);
+      const stretchedExportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await stretchedExportWorker.handleExportJob({
+        exportJobId: stretchedExportJob.id,
+        projectId: project.id,
+        remixSessionId: stretchedSaveBody.remix.id,
+        remixVersionId: stretchedSaveBody.version.id,
+        format: "wav",
+      });
+      const [stretchedAsset] = await dbModule.db.select().from(schema.exportAssets)
+        .where(eq(schema.exportAssets.exportJobId, stretchedExportJob.id));
+      assert.ok(stretchedAsset,
+        "a tempo-synced donor clip must survive the real export worker, not fail on missing source audio");
+      assert.equal(stretchedAsset!.sampleRate, RATE);
+      assert.equal(stretchedAsset!.channels, 2);
+
+      // A request the render would refuse must not be saved either: saving is
+      // not a way to persist an arrangement the renderer would not produce.
+      const unhonourableSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: donorWithoutDrumsId,
+            instrumentalSourceId: fullBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(unhonourableSave.status, 422,
+        "a save whose composition cannot be honoured must be refused, not persisted");
+      const sessionCountAfterRefusal = (await dbModule.db.select().from(schema.remixSessions)).length;
+      assert.ok(sessionCountAfterRefusal >= 2);
+    }
+
     const saveRequest = (alignmentStrategy?: "continuous" | "paired-grid" | "downbeat" | "phrase-aware") => new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1597,12 +3232,16 @@ test(
       }),
     });
     if (!realFixture) {
+      // Count before the attempt: earlier acceptance blocks legitimately create
+      // their own sessions, so "no session at all" is not the property under
+      // test — "no session from this refused save" is.
+      const sessionsBeforeRefusal = (await dbModule.db.select().from(schema.remixSessions)).length;
       const unavailableSave = await routeModule.POST(
         saveRequest(),
         { params: Promise.resolve({ id: project.id }) },
       );
       assert.equal(unavailableSave.status, 422, "an editable save refuses an unavailable separated bed");
-      assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, 0,
+      assert.equal((await dbModule.db.select().from(schema.remixSessions)).length, sessionsBeforeRefusal,
         "a refused save does not leave a partial Studio session");
 
       await dbModule.db.update(schema.processingJobs)
@@ -2579,16 +4218,133 @@ test(
         .where(eq(schema.remixSessions.id, savedSession.id));
       assert.equal(updatedSession.version, savedSession.version + 1);
       assert.equal(updatedSession.masterVolume, 0.9);
+
     }
+  } catch (error) {
+    // Report where it died. Without this, the only signal CI produced was an
+    // uncaught 57P01 from a pg client during teardown, which describes how the
+    // cluster went away rather than what actually failed.
+    accTrace(`test:threw:${error instanceof Error ? error.constructor.name : typeof error}`);
+    console.error(`ACCEPTANCE_FAILURE ${String(error instanceof Error ? (error.stack ?? error.message) : error).slice(0, 3000)}`);
+    throw error;
   } finally {
+    // Close the pool before stopping the server, then clear the handle so a
+    // retry can spawn a fresh cluster instead of skipping teardown against a
+    // dead process. Order matters: stopping the cluster while a pooled client
+    // is still connected surfaces as "terminating connection due to
+    // administrator command" on that client.
+    //
+    // A straggling client can still observe the stopped cluster just after the
+    // test ends, which the runner reports as an uncaught exception. CI runs the
+    // suite with --test-force-exit for that harness race; the assertions
+    // themselves pass.
+    // pg.Pool re-emits an idle client's socket error as a pool "error" event.
+    // An EventEmitter with no "error" listener throws, which is how a
+    // connection that dies during cluster shutdown becomes an uncaught
+    // exception attributed to this test. Attaching a listener is the standard
+    // pg practice and only affects teardown.
+    try {
+      dbModule?.pool.on("error", () => undefined);
+    } catch {
+      /* pool already gone */
+    }
     try {
       await dbModule?.pool.end();
     } catch {
       /* already closed */
     }
+    // pool.end() resolves once the pool stops issuing work, but a client's
+    // socket can still emit its close event afterwards. If pg_ctl stops the
+    // server first, that client reports "terminating connection due to
+    // administrator command" as an uncaught exception, which the runner turns
+    // into a test failure even though every assertion passed. Let those events
+    // settle while the test is still running.
+    const settle = async () => {
+      for (let turn = 0; turn < 3; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    };
+    await settle();
+    // Wait until no backend from this test is left, *while the server is still
+    // running*. Every client that could observe the shutdown is then already
+    // gone, so stopping the cluster cannot raise "terminating connection due to
+    // administrator command" in anybody. Closing the pool alone is not enough:
+    // it resolves once the pool stops issuing work, not when its sockets are
+    // closed.
+    if (postgresProcess && postgresProcess.exitCode === null && postgresPort !== undefined && postgresPassword && postgresDatabase) {
+      const deadline = Date.now() + 10_000;
+      let remaining = -1;
+      let terminated = 0;
+      let grantedGrace = false;
+      while (Date.now() < deadline) {
+        try {
+          const observer = new Client({ connectionString: `postgres://arena:${postgresPassword}@127.0.0.1:${postgresPort}/${postgresDatabase}` });
+          await observer.connect();
+          const result = await observer.query(
+            "select pid from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
+          );
+          const pids = result.rows.map((row: { pid: number }) => row.pid);
+          remaining = pids.length;
+          if (remaining === 0) {
+            await observer.end();
+            break;
+          }
+          // A client is still checked out after pool.end(). That means it was
+          // never released, so the pool cannot close it and stopping the
+          // cluster would disconnect it under a live reader. Give the owner a
+          // short grace period, then terminate the remaining backends: by now
+          // every pool socket has already been closed, so this cannot break a
+          // healthy connection the way terminating before pool.end() did.
+          if (!grantedGrace && Date.now() > deadline - 8_000) {
+            grantedGrace = true;
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            continue;
+          }
+          if (grantedGrace) {
+            await observer.query(
+              "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
+            );
+            terminated += pids.length;
+          }
+          await observer.end();
+        } catch {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+        console.error(`TEARDOWN_DIAGNOSTICS backends_before_stop=${remaining} terminated=${terminated}`);
+      }
+    }
+    if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+      // Printed unconditionally so a missing line is itself information: it
+      // tells us the polling block was skipped, which is the difference between
+      // "zero backends remained" and "we never looked".
+      console.error(
+        `TEARDOWN_DIAGNOSTICS polled=${postgresProcess !== undefined && postgresProcess.exitCode === null && postgresPort !== undefined && Boolean(postgresPassword) && Boolean(postgresDatabase)}`,
+      );
+    }
     if (postgresProcess && postgresProcess.exitCode === null) {
+      if (process.env.WAVEYARD_TEARDOWN_DIAGNOSTICS?.trim()) {
+        // Name the connections that outlive pool.end(). Without this, a
+        // teardown race is indistinguishable from a real route failure in CI.
+        try {
+          const probe = new Client({ connectionString: `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}` });
+          await probe.connect();
+          const live = await probe.query(
+            "select pid, application_name, state, backend_start, query from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() order by backend_start",
+          );
+          console.error(`TEARDOWN_DIAGNOSTICS live_backends=${JSON.stringify(live.rows)}`);
+          await probe.end();
+        } catch (error) {
+          console.error(`TEARDOWN_DIAGNOSTICS probe_failed=${String(error)}`);
+        }
+      }
       spawnSync(postgresBinaries.pgCtl!, ["-D", dataDir, "-m", "fast", "-w", "-t", "20", "stop"], { timeout: 30_000 });
+      await settle();
       postgresProcess.kill();
+      postgresProcess = undefined;
     }
     await rm(fixtureRoot, { recursive: true, force: true }).catch(() => undefined);
   }

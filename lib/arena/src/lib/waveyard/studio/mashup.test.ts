@@ -15,9 +15,11 @@ import {
   planMashup,
   planSongExtension,
   renderMashup,
+  renderMashupWithBus,
   renderSongExtension,
   scoreVocalChordToneFit,
   warpRatioForTempos,
+  warpRatioForTempoCandidates,
   type MashupSourceProfile,
   type MashupSection,
 } from "./mashup";
@@ -1280,10 +1282,14 @@ test("REASSURANCE: half-lock leaves the vocal unsynchronized but beat-consistent
   assert.ok(result.ok);
   assert.equal(result.plan.vocalsStretchRatio, 1);
 
+  // Half-lock is a timing claim, so it is measured on a composition-only
+  // render: loudness matching and limiting are disabled so the mix bus cannot
+  // move the clicks this assertion is about.
   const out = renderMashup(result.plan, {
     vocals: clicksAtBpm(vocalSeconds, 70, 0.6),
     bed: bedTone(bedSeconds),
     sampleRate: RATE,
+    mix: { matchVocalLoudness: false, limit: false },
   });
   const bedBeatMs = 60_000 / 140;
   const clickPeriodMs = 60_000 / 70;
@@ -1321,7 +1327,7 @@ function windowPeak(buffer: Float32Array, fromMs: number, toMs: number): number 
   return peak;
 }
 
-test("render: bed ducks under active vocals, crossfades, never clips", () => {
+test("render: bed ducks under active vocals, crossfades, and is limited rather than hard-clipped", () => {
   const result = planMashup(
     profile({ role: "vocals", bpm: 100, durationMs: 10_000, sections: [section("verse", 0, 10_000)] }),
     profile({ bpm: 100, durationMs: 10_000, sections: [section("verse", 0, 10_000)] }),
@@ -1329,16 +1335,49 @@ test("render: bed ducks under active vocals, crossfades, never clips", () => {
   assert.ok(result.ok);
   const loudBed = new Float32Array(10 * RATE * 2).fill(0.9);
   const loudVocal = new Float32Array(10 * RATE * 2).fill(0.9);
-  const out = renderMashup(result.plan, { vocals: loudVocal, bed: loudBed, sampleRate: RATE });
+  const out = renderMashupWithBus(result.plan, { vocals: loudVocal, bed: loudBed, sampleRate: RATE });
 
-  // Mid-segment: bed 0.9×0.72 + vocal 0.9 = 1.548 → clamped at 1.0 (no clip
-  // past full scale, values sane).
-  const mid = out[5 * RATE * 2];
-  assert.ok(mid <= 1.0001 && mid >= -1.0001);
-  // Before the vocal segment's crossfade completes, bed is near full.
-  const early = out[Math.round(0.02 * RATE) * 2];
-  assert.ok(early > 0.8, `early bed ${early}`);
-  for (const value of out) assert.ok(value >= -1.0001 && value <= 1.0001);
+  // This fixture genuinely overloads: 0.9 bed + 0.9 vocal ≈ +3.8 dB over the
+  // ceiling. The mix bus attenuates that overshoot once, statically, instead
+  // of clamping every sample at full scale.
+  assert.ok(out.mix.staticGainDb < -3 && out.mix.staticGainDb > -5,
+    `static attenuation ${out.mix.staticGainDb} dB should recover the overshoot`);
+  // Static attenuation removes the bulk of the overshoot; the limiter is then
+  // reported as active because the *measured* reconstructable peak still
+  // needed it (the overshoot is computed from true peak, not sample peak).
+  assert.ok(["active", "not-required"].includes(out.mix.limiter.applied ? "active" : "not-required"));
+  assert.ok(out.mix.postLimit.samplePeakDb < -0.5,
+    `nothing may sit at full scale after limiting, got ${out.mix.postLimit.samplePeakDb} dBFS`);
+
+  // Nothing exceeds full scale, and — unlike the previous clamp — nothing is
+  // pinned at full scale either, which is what a hard-clipped mix looks like.
+  let atFullScale = 0;
+  for (const value of out.pcm) {
+    assert.ok(value >= -1.0001 && value <= 1.0001);
+    if (Math.abs(value) > 0.9999) atFullScale += 1;
+  }
+  assert.equal(atFullScale, 0, "hard-clipped samples must not appear in a limited mix");
+
+  // Ducking still behaves: the bed at the top, before the vocal crossfade
+  // completes, is louder than the ducked bed under the vocal once the
+  // vocal's own contribution is removed by rendering the bed alone.
+  // Loudness matching is disabled here so the bed-only render is comparable
+  // with the mixed render: otherwise the vocal (silence) would measure no
+  // loudness and a real vocal would be gain-matched, changing absolute gain.
+  const bedOnly = renderMashupWithBus(result.plan, {
+    vocals: new Float32Array(10 * RATE * 2),
+    bed: loudBed,
+    sampleRate: RATE,
+    mix: { matchVocalLoudness: false },
+  });
+  const staticGain = 10 ** (bedOnly.mix.staticGainDb / 20);
+  const bedMid = bedOnly.pcm[5 * RATE * 2]!;
+  const expectedDuckedBed = 0.9 * staticGain * (1 - 0.28);
+  assert.ok(Math.abs(bedMid - expectedDuckedBed) < 0.01,
+    `bed must sit 28% down under the vocal: ${bedMid.toFixed(3)} vs ${expectedDuckedBed.toFixed(3)}`);
+  const bedEarly = bedOnly.pcm[Math.round(0.05 * RATE) * 2]!;
+  assert.ok(bedEarly > bedMid * 1.15,
+    `bed starts unducked and drops into the vocal pocket: ${bedEarly.toFixed(3)} → ${bedMid.toFixed(3)}`);
 });
 
 // --- extension -------------------------------------------------------------
@@ -1765,4 +1804,85 @@ test("plan: a missing beat detection disables ordinal pairing and keeps the safe
   assert.equal(result.plan.segments.length, 1);
   assert.equal(result.plan.segments[0]?.localTempoMap, undefined);
   assert.ok(result.plan.warnings.some((warning) => warning.includes("paired donor-and-bed beat-grid check was unavailable")));
+});
+
+// --- tempo octave ambiguity ------------------------------------------------
+
+test("warp ratio: a folded bed reading does not double the vocal's stretch", () => {
+  // A hats-heavy 72 BPM part reads 143.555 BPM at confidence 1.0 (measured on
+  // the local analyser). Taking both readings at face value produced 0.697
+  // where the truth is 1.389, so the vocal was compressed twice as hard as it
+  // should have been. The pulse family makes the cheaper pairing available.
+  // Arguments are (vocalCandidates, bedCandidates, vocalBpm, bedBpm).
+  const folded = warpRatioForTempoCandidates([100], [143.555, 71.777, 287.11], 100, 143.555);
+  assert.ok(Math.abs(folded.ratio - 1.393) < 0.01,
+    `expected a ~1.39 ratio from the 71.777 BPM reading, got ${folded.ratio}`);
+  assert.ok(Math.abs(folded.ratio - warpRatioForTempos(100, 143.555)) > 0.5,
+    "the octave-aware ratio must differ materially from the face-value ratio");
+  assert.ok(Math.abs(folded.bedBpm - 71.777) < 0.01, "the resolved bed octave must be reported");
+  // Playing the vocal at 100/1.393 lands on 71.8 BPM against a 72 BPM bed.
+  assert.ok(Math.abs(folded.ratio - 100 / 72) < 0.01, "the chosen warp must land the vocal on the bed's pulse");
+});
+
+test("warp ratio: without octave candidates the previous behaviour is unchanged", () => {
+  for (const [vocal, bed] of [[102, 100], [140, 70], [200, 100], [300, 100], [40, 100]]) {
+    const result = warpRatioForTempoCandidates(null, null, vocal!, bed!);
+    assert.equal(result.ratio, warpRatioForTempos(vocal!, bed!),
+      `no-candidate ratio for ${vocal}/${bed} must equal warpRatioForTempos`);
+  }
+});
+
+test("warp ratio: octave-aware selection never asks for more stretch than the readings", () => {
+  const cases: Array<[number[], number[], number, number]> = [
+    [[143.555, 71.777], [99.384], 143.555, 99.384],
+    [[129.199, 64.599], [178.206, 89.103], 129.199, 178.206],
+    [[120.185, 60.093], [99.384], 120.185, 99.384],
+  ];
+  for (const [vocalCandidates, bedCandidates, vocalBpm, bedBpm] of cases) {
+    const naive = Math.abs(Math.log(warpRatioForTempos(vocalBpm, bedBpm)));
+    const chosen = warpRatioForTempoCandidates(vocalCandidates, bedCandidates, vocalBpm, bedBpm);
+    assert.ok(Math.abs(Math.log(chosen.ratio)) <= naive + 1e-9,
+      `octave-aware ${chosen.ratio} must not stretch more than ${warpRatioForTempos(vocalBpm, bedBpm)}`);
+  }
+});
+
+test("plan: a folded bed tempo adopts the resolved octave for bars and warp together", () => {
+  const vocals = profile({
+    role: "vocals",
+    durationMs: 120_000,
+    bpm: 100,
+    bpmConfidence: 0.9,
+    bpmCandidates: [100, 50, 200],
+  });
+  const bed = profile({
+    role: "instrumental",
+    durationMs: 180_000,
+    bpm: 143.555,
+    bpmConfidence: 0.9,
+    bpmCandidates: [143.555, 71.777, 287.11],
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  assert.ok(Math.abs(result.plan.vocalsStretchRatio - 1.393) < 0.01,
+    `stretch should follow the resolved octave, got ${result.plan.vocalsStretchRatio}`);
+  // The warp is the deciding evidence: the vocal must end up on the bed's pulse
+  // rather than at twice its speed. Barely-stretched output is the failure.
+  const playedVocalBpm = 100 / result.plan.vocalsStretchRatio;
+  const octaveError = Math.min(...[0.5, 1, 2].map((k) => Math.abs(Math.log2(playedVocalBpm / (71.777 * k)))));
+  assert.ok(octaveError < 0.02,
+    `warped vocal should sit on the bed's pulse, got ${playedVocalBpm} BPM (${octaveError.toFixed(3)} octaves off)`);
+  assert.ok(result.plan.rationale.some((line) => /octave resolved from the pulse family/i.test(line)),
+    `expected the octave resolution to be explained, got: ${result.plan.rationale.join(" | ")}`);
+});
+
+test("plan: genuinely ambiguous octaves are reported, not silently guessed", () => {
+  // The envelope cannot distinguish 60 from 120 BPM when every subdivision is
+  // sounded, so the choice must be surfaced rather than presented as certain.
+  const result = planMashup(
+    profile({ role: "vocals", durationMs: 120_000, bpm: 99.384, bpmConfidence: 0.9, bpmCandidates: [99.384, 49.692, 198.768] }),
+    profile({ role: "instrumental", durationMs: 180_000, bpm: 120.185, bpmConfidence: 0.9, bpmCandidates: [120.185, 60.092, 240.37] }),
+  );
+  assert.ok(result.ok);
+  assert.ok(result.plan.warnings.some((warning) => /octave is ambiguous/i.test(warning)),
+    `expected an ambiguity warning, got: ${result.plan.warnings.join(" | ")}`);
 });

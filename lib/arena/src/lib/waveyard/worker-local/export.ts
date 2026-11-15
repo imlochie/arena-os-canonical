@@ -592,18 +592,18 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       if (automated) {
         const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}` : "";
         if (keyShift === undefined)
-          return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+          return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo:sample_fmts=fltp[clip${index}]`;
         const keyTempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
-        return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${keyTempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+        return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${keyTempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo:sample_fmts=fltp[clip${index}]`;
       }
       const gains = panGains(clip.track.pan);
       const volume = (clip.track.volume * clip.gain).toFixed(6);
       if (keyShift === undefined) {
         const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}` : "";
-        return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+        return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo:sample_fmts=fltp[clip${index}]`;
       }
       const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
-      return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
+      return `[${sourceInputIndex}:a]atrim=start=${seconds(sourceStartMs)}:duration=${seconds(sourceDurationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo:sample_fmts=fltp[clip${index}]`;
     });
     const trackBusLabels = new Map<string, string>();
     for (const [trackId, trackIndex] of automatedTrackIndex) {

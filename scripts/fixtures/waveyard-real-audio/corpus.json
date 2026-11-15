@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Real-audio acceptance corpus for Waveyard mashup generation. NOT synthetic. Evidence for measured analysis behaviour only; it is not evidence of musical quality, and no listening test has been run against it.",
+  "license": {
+    "id": "CC0-1.0",
+    "url": "https://creativecommons.org/publicdomain/zero/1.0/legalcode",
+    "note": "Public domain dedication. No attribution required. Downloaded from a public repository; audio is deliberately not committed to this repo (36 MB) so the corpus stays reproducible without bloating history."
+  },
+  "source": {
+    "repository": "https://github.com/farmmer938-lgtm/aeris-cc0-music",
+    "commit": "51ab767ca32558ae5686344fc3b29c7a4498b145",
+    "tracksPath": "tracks",
+    "retrieved": "2026-11-14"
+  },
+  "groundTruth": {
+    "status": "unverified",
+    "detail": "The upstream README publishes a BPM and key per track, but those values disagree with BOTH this repo's analyser and librosa, and the two engines disagree with each other in different directions. They must not be treated as ground truth. Cross-engine agreement (see docs/waveyard-completion-ledger.md) is the reference used instead.",
+    "fields": [
+      "bpm",
+      "key"
+    ]
+  },
+  "tracks": [
+    {
+      "file": "afterglow-vast.mp3",
+      "bytes": 3659564,
+      "sha256": "7830116b105bd635faf95a8710229ff44de37c9558529c5dcf8dbda96cf80ab2"
+    },
+    {
+      "file": "ash.mp3",
+      "bytes": 3493484,
+      "sha256": "672e5e17c78ba8bda95b1a369336b6e8daf59009ff9e26e9ccbdd65c448bdf00"
+    },
+    {
+      "file": "bedroom-window-outlands.mp3",
+      "bytes": 2337644,
+      "sha256": "d9041b1f2605edc9df80b19f7e5e2afdf095dc85560fb3bb9b78e6b37410dafd"
+    },
+    {
+      "file": "bedroom-window-vast.mp3",
+      "bytes": 4153964,
+      "sha256": "5d8d47abd3ce46ab1f000c623acebaf0cabf36169fa785c9be60c1518ff884e5"
+    },
+    {
+      "file": "beneath.mp3",
+      "bytes": 3202604,
+      "sha256": "e9e7fc1f9e788e4a837d9e125485b2bc4cee341ae438ee3d7e8e8d51c9786654"
+    },
+    {
+      "file": "colder-air.mp3",
+      "bytes": 2184044,
+      "sha256": "2c6e193070893d310f02c737e8714fb39964a6aa47e9a99e2ff08ac0f47a9f3a"
+    },
+    {
+      "file": "evergreen-open-road.mp3",
+      "bytes": 1545644,
+      "sha256": "a6352e6ef322da2b1ec7ba91dcad1af09f6cec0b7f5d205c039dd5e424de8a76"
+    },
+    {
+      "file": "horizon-monolith.mp3",
+      "bytes": 2745644,
+      "sha256": "569f4d669cb29096f9529b324f01e7ed6724c962a69e2b8931b805b1c944fbcf"
+    },
+    {
+      "file": "old-photos-outlands.mp3",
+      "bytes": 4153964,
+      "sha256": "14330bd85b6a227c784d9b6776130d1982fb93e4d70d8bf6a6e31c65ead535f3"
+    },
+    {
+      "file": "overdrive-signal-lost.mp3",
+      "bytes": 2401964,
+      "sha256": "a0f1eb549762b746900369976be85741229696d3ebef96a43f1c0c80daa2ae5f"
+    },
+    {
+      "file": "quiet-room.mp3",
+      "bytes": 2287724,
+      "sha256": "dfa5b6c372eeb079b9eb76c30cfb8229fb95c0ba0f4ee8f58636d46344ec971a"
+    },
+    {
+      "file": "signal-lost.mp3",
+      "bytes": 3202604,
+      "sha256": "9cdde114358cf6551aeaf36ed88774ecf158ae76ba89704f4277e513e0b483ed"
+    },
+    {
+      "file": "the-long-walk-signal-lost.mp3",
+      "bytes": 2002604,
+      "sha256": "430f17a23b1b62d2d92e206aed7f46e2e03cecbd852b190e4dc82cda48579a36"
+    }
+  ]
+}

@@ -56,6 +56,7 @@ import {
   type MusicalEvidenceProvenance,
 } from "./musical-evidence";
 import type { MashupSourceProfile } from "./mashup";
+import { tempoCandidates } from "../worker-local/analysis-engine";
 
 export async function loadSourceProfile(
   projectId: string,
@@ -328,6 +329,13 @@ export async function loadSourceProfile(
     sourceChecksumSha256: asset.checksumSha256,
     bpm: evidence.features.tempo.status === "measured" ? evidence.features.tempo.value.bpm : null,
     bpmConfidence: evidence.features.tempo.status === "measured" ? evidence.features.tempo.value.confidence : null,
+    // The pulse family is derived from the stored tempo rather than persisted:
+    // it is a pure function of that number, so a migration would only duplicate
+    // it. Carrying it here is what stops a hats-heavy track — stored as
+    // 143.555 BPM for a 72 BPM performance — from halving the vocal's stretch.
+    bpmCandidates: evidence.features.tempo.status === "measured"
+      ? tempoCandidates(evidence.features.tempo.value.bpm)
+      : null,
     musicalKey: evidence.features.key.status === "measured" ? evidence.features.key.value.key : null,
     keyConfidence: evidence.features.key.status === "measured" ? evidence.features.key.value.confidence : null,
     beatGridMs: evidence.features.beatGrid.status === "measured" ? evidence.features.beatGrid.value.beatsMs : null,

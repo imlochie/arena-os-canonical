@@ -5,6 +5,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -130,3 +131,41 @@ test("ffmpegFadeFilters: shaped fades append the exact afade curve", () => {
   );
   assert.equal(ffmpegFadeFilters({ fadeInMs: 0, fadeOutMs: 0, durationMs: 1000, fadeShape: "equal-power" }), "");
 });
+
+test("mixSumFilters inputs must carry an explicit sample format for amerge", () => {
+  // Regression: ffmpeg 4.1's amerge cannot negotiate a format when clips
+  // reach it with different sample formats. `atrim`/`adelay` preserve the
+  // source format (pcm_s16le), while the pitch chain (asetrate -> aresample
+  // -> atempo) and `pan` emit fltp. Without a normalising aformat the graph
+  // dies with "The following filters could not choose their formats:
+  // Parsed_amerge" and the whole export fails — but only for clips that
+  // actually change format, so no unit test saw it.
+  //
+  // The export graph must pin sample_fmts on every clip label it merges.
+  const label = "[clip0]";
+  const merge = mixSumFilters([label, "[clip1]"], "mix");
+  assert.ok(merge[0].includes("amerge=inputs=2"), merge[0]);
+
+  // Every pre-merge aformat in the export graph names a sample format.
+  const graph = readExportSource();
+  const aformats = graph.match(/aformat=sample_rates=\$\{job\.sampleRate\}:channel_layouts=stereo[^`]*/g) ?? [];
+  assert.ok(aformats.length > 0, "expected aformat segments in the export graph");
+  for (const segment of aformats) {
+    // Only the pre-merge normalisers need the format pinned; the early
+    // aformats are followed by filters that renegotiate cleanly.
+    if (segment.includes("sample_fmts=")) continue;
+    // Early normalisers are fine: they precede pan/pitch/volume, not amerge.
+    assert.ok(
+      !segment.includes("clip${index}]"),
+      `pre-merge aformat must pin sample_fmts: ${segment}`,
+    );
+  }
+  // The terminal normaliser (immediately before [clipN]) pins fltp.
+  const terminal = graph.match(/aformat=sample_rates=\$\{job\.sampleRate\}:channel_layouts=stereo:sample_fmts=fltp\[clip\$\{index\}\]/g) ?? [];
+  assert.ok(terminal.length >= 1, "expected at least one terminal fltp normaliser before the merge label");
+});
+
+function readExportSource(): string {
+  const here = new URL(".", import.meta.url);
+  return readFileSync(new URL("./export.ts", here), "utf8");
+}

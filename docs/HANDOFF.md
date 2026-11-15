@@ -1,6 +1,387 @@
 # Arena handoff — read this first
 
-## Current: auditionable mashup alignment candidates (planner v12)
+## Completion ledger — engine vs intelligence vs proof
+
+`docs/waveyard-completion-ledger.md` now maps the whole directive against the
+evidence, area by area, and separates what is *implemented* from what is
+*proven*. Two findings from that pass are worth surfacing here because they
+were bugs, not gaps:
+
+1. **Donor layers did not follow the local tempo map.** `renderMashupWithBus`
+   warped the vocal through `segment.localTempoMap` but stretched donor stems by
+   the constant `vocalsStretchRatio`. A layer therefore started with the vocal
+   and then slid against it inside the phrase — a flam that grows, invisible to
+   any check taken at the entry. Donor stems now receive the same map (without
+   the vocal's pitch shift, which would be wrong for drums). The regression test
+   measures click placement at four points across the phrase against the map and
+   asserts that the constant-ratio placement would be >400 ms away, so it cannot
+   pass by measuring the old behaviour. Mutation-checked.
+2. **Donor clips were saved as not tempo-synced**, whatever the renderer did.
+   With a 140 BPM donor over a 100 BPM bed the render warped the donor 1.4x and
+   the export played it at its native rate — render and export disagreed, which
+   is the exact failure the previous pass claimed to have closed. Donor clips
+   are now tempo-synced when the donor's own tempo is verified; when it is not,
+   the save response reports that export will differ instead of silently
+   persisting a different arrangement. Mutation-checked, and the stretched
+   session is exported through the real export worker rather than only having
+   its flag inspected.
+
+Current evidence: **90/90** across the six mashup/limiter suites and **1/1** for
+the PostgreSQL route acceptance (0 skipped). Typechecks report nothing in the
+changed files.
+
+Unchanged and still the binding constraint: **N=0 listeners, no real stems in
+this checkout**. P2 stem-compatibility intelligence remains unimplemented, and
+P3 arrangement stays deferred.
+
+## Stem replacement now fails closed, and survives save/reopen/export
+
+Two correctness gaps in the previous commit were real and are now closed. Both
+were found by inspecting the route rather than the renderer, which is where the
+lie lived.
+
+### 1. Replacement could report success without replacing anything
+
+`replacedBedStemTypes` was computed from the *request* before the bed was
+loaded, so a render could answer `x-waveyard-replaced-bed-stems: drums` while
+the original drums were still audible — the bed was a premixed original file or
+a single combined `instrumental` stem and had nothing to remove. With a missing
+donor drum stem the route could also strip the bed's drums and end up with no
+drum part at all.
+
+The decision is now one function, `planStemComposition` in
+`lib/arena/src/lib/waveyard/studio/mashup-bed.ts`, called by
+`resolveStemComposition` in the route. A replacement is legal only when the
+donor stem was loaded from the donor's authoritative completed separation run
+and the bed genuinely has a separate stem of that role. Otherwise the request
+fails with 422 and `code: "stem-composition-unavailable"`, naming the missing
+half. Nothing is omitted on a failed request, and no replacement header is
+emitted (`x-waveyard-replaced-bed-stems` is absent, not empty-with-a-claim).
+Defaults are unchanged: no `layerStemTypes` still means the donor supplies the
+vocal only.
+
+Response headers now describe the composition that was *rendered* — layered
+stems, replaced bed stems, the bed stems actually summed — plus
+`x-waveyard-bed-separable`. `MashupStudio` gained explicit "Donor drums/bass"
+checkboxes with a replace/double selector, sends that choice to render, preview
+and save alike, and clears the previous mix report when the choice changes so a
+stale measurement cannot describe audio that no longer matches.
+
+### 2. Saved sessions dropped the replacement
+
+`action: "save"` inserted every non-vocal bed stem and no donor stem, so a
+render with replaced drums could be saved as a session that still contained the
+bed's drums and none of the donor's. Rendering one arrangement and saving
+another is exactly what the directive forbids.
+
+The save path now resolves the same composition the render would, then:
+
+- excludes the replaced bed stems from the session and from its clips;
+- adds the donor's replacing stems as real Studio tracks with real clips whose
+  `timelineStartMs` and `sourceOffsetMs` match what the renderer used (the
+  phrase's entry and its own source offset); tempo/key sync stay off so the
+  export cannot silently apply a transform the render did not;
+- records `mashupPlan.stemComposition` in the version snapshot;
+- refuses with 422 when the requested composition cannot be honoured, and
+  refuses with 409 if a donor stem disappears between render and save, rather
+  than persisting a session that would not reproduce the render.
+
+### Evidence: the PostgreSQL route test finally executes
+
+The earlier handoff said this test could not run here. That was an environment
+gap, not a fact about the code, and it is now closed. A PostgreSQL 16.2 binary
+was obtained inside the sandbox (`pgserver` wheel on PyPI extracts a
+self-contained manylinux build), and ffmpeg/ffprobe were obtained from PyPI and
+npm. With those on `PATH` / `ARENA_FFMPEG_PATH` / `ARENA_FFPROBE_PATH`:
+
+```
+artifacts/api-server/src/imported/waveyard/projects/[id]/mashup/route.test.ts
+# tests 1  # pass 1  # fail 0
+```
+
+That single test is a long end-to-end scenario. It now covers, through the
+production routes and the real export worker (`docs/waveyard-route-acceptance-environment.md`
+records how to obtain those binaries in a sandbox without root):
+
+1. a replacement against a single combined instrumental stem → 422, no header;
+2. a replacement against a premixed original-file bed → 422; the matching
+   layering request → 200 with `x-waveyard-bed-separable: false`;
+3. a replacement whose donor has no drum stem → 422 naming the donor;
+4. a replacement of a role the bed does not have separately → 422 naming it;
+5. a verified replacement → 200, bed summed without drums, and the returned WAV
+   measured for the bed drum tone;
+6. explicit layering → 200, both drum sources present;
+7. render → save → inspect persisted tracks and clips → reopen → export, with
+   the bed's drum stem absent from every stage and the donor's present at every
+   stage, plus the exported WAV measured at the drum and bass frequencies;
+8. a save whose composition cannot be honoured → 422 with no session written.
+
+Two earlier assertions in that file had encoded the old bug (`donor has no
+drums … expect 200`); they now assert the fail-closed contract instead. The
+"refused save leaves no partial session" check counts sessions before and after
+rather than requiring the table to be globally empty, which is no longer true
+now that the lifecycle blocks create real sessions.
+
+**Mutation-checked.** Reintroducing either defect makes the suite fail:
+reverting the save-path filter fails at the persisted-stem assertion, and
+restoring the optimistic request-derived replacement fails at the 422
+assertions. Neither test passes by construction.
+
+### Test totals in this checkout
+
+- Mashup/limiter suites: `mashup.test.ts` 41, `mashup-mix-bus.test.ts` 12,
+  `donor-stem-integrity.test.ts` 18 (6 new fail-closed cases),
+  `mashup-full-length.test.ts` 4, `mashup-regression.test.ts` 6,
+  `output-peak-limiter.test.ts` 8 — **89/89 pass**.
+- PostgreSQL route acceptance: **1/1 pass**, not skipped.
+- `tsc` for the API server and ArenaForge report no errors in the changed
+  files. Both packages still report pre-existing `TS7006`/`TS2339` errors in
+  unrelated files (721 and 17 respectively), unchanged by this work.
+- A wider sweep of `lib/arena/src/lib/waveyard/**` gives 1,375 tests with 11
+  failures, all pre-existing and environmental: `DATABASE_URL` is unset for
+  several DB-backed suites, one suite needs a Vite `?worker&url` transform, and
+  the worker-local suites need the ONNX runtime. None touch mashup code.
+
+### Still not established
+
+- **N=0.** No one has listened to any of this. Everything above is measurement.
+- The synth fixtures use distinguishable pure tones; the real Queen/September
+  separated stems are still absent, so no real-song replacement has been
+  rendered or saved here.
+- Layering against a premixed bed is allowed and reported honestly, but no
+  compatibility measurement backs the choice — it remains a deliberate user
+  decision.
+- Phrase-aware arrangement (P2) is still untouched.
+
+## Previous: measured mashup mix bus and deliberate stem composition (P0/P1)
+
+The production mashup render no longer sums a second rhythm section on top of
+the bed and no longer hard-clips. Two concrete defects were fixed at the layer
+they occur, both in `lib/arena/src/lib/waveyard/studio/mashup.ts`:
+
+1. **Donor stems were additive and unaligned.** `renderMashup` summed every
+   non-vocal donor stem from the donor's separation run at a fixed 0.6 gain,
+   indexed from timeline frame 0. A vocal that entered at 20 s therefore
+   arrived with a second drum kit and bass that started at 0 s and ignored the
+   alignment strategy entirely. Donor stems are now summed **only** for stem
+   types the caller names in `layerStemTypes`, and each is offset to the
+   planned vocal entry. The default composition is the one the product wants:
+   donor vocal over the bed's own drums, bass and other.
+2. **The mix had no reference and clipped.** Vocal and bed were summed at
+   unity and the total clamped with `Math.max(-1, Math.min(1, …))`, even though
+   `OutputPeakLimiter` already existed (only the live output worklet used it).
+   `renderMashupWithBus` (new) now measures both sides with BS.1770 gated
+   loudness, applies a bounded (±6 LU, reported when clamped) vocal-to-bed
+   correction, attenuates only when the sum genuinely overshoots, and passes the
+   result through the existing stereo-linked 4× true-peak limiter. A mix that
+   already fitted keeps unity gain, so this is not blanket attenuation. The
+   window is ±6 rather than ±9 because a clamped correction must mean the
+   *pairing* is the open question, not that the gain was allowed to do
+   something a mix balance should never do.
+
+3. **A "layer" was doubling, not replacing.** A layered donor stem was summed
+   on top of the bed's own copy of the same role, so a donor drum part played
+   against a second, unaligned drum part. `sumInstrumentalStems` now accepts
+   `omitStemTypes`: the route defaults to `stemLayerMode: "replace"` (donor
+   drums/bass *remove* the bed's drums/bass) and keeps `"layer"` as an explicit
+   opt-in for deliberate doubling. `InstrumentalBedError("all-stems-replaced")`
+   refuses a request that would leave no bed at all, rather than rendering a
+   vocal over silence. Both modes are reported: `x-waveyard-stem-layer-mode`
+   and `x-waveyard-bed-replaced-stems`, and the Studio states which happened.
+
+4. **Donor layers lost the phrase's own source offset.** Offsetting a layer to
+   the vocal *entry* was not enough: a phrase cropped from 1.75 s into the donor
+   still dragged that 1.75 s of donor instrumental in ahead of the singer, so
+   the layer led the vocal. `renderMashupWithBus` now trims the donor's own
+   source lead-in (`segment.vocalsFromMs`) before tempo-mapping it, so the layer
+   starts *with* the phrase. The regression test fails if that trim is removed.
+
+The API route honours an explicit `layerStemTypes` array (400 for unknown or
+`vocals`), reports `x-waveyard-layer-stems`, `x-waveyard-mix-balance-db`,
+`x-waveyard-mix-balance-clamped`, `x-waveyard-mix-static-gain-db`,
+`x-waveyard-mix-limiter` and `x-waveyard-mix-true-peak-db`, and adds the
+measured post-limit level as a warning entry. `MashupStudio` displays the
+composition and those measurements; it still shows no composite quality score.
+
+**The whistle is investigated, not explained away.** A stage-isolating
+diagnostic now exists (`scripts/waveyard-mashup-mix-diagnostic.ts`): it renders
+the same fixture through untouched stems → WSOLA stretch → stretch + pitch →
+summed pre-limit → final mix → exported WAV, and reports narrow components that
+gain ≥6 dB over the comparison stage plus 8 k/12 k band fractions. On that
+synthetic fixture no stage adds a strong stationary component. The measured
+high-band movement is entirely from the deliberate pitch move (12 k+ fraction
+−49.2 dB → −30.4 dB), which is relocated tonal content, not a whistle. **The
+reported whistle is therefore still unexplained and needs real separated stems
+to reproduce**; the previous handoff's habit of attributing it to WSOLA was not
+evidence and is not repeated here.
+
+Verification in this checkout: `tsx --test` on the mashup suites passed
+**83/83** (`mashup.test.ts` 41, `mashup-mix-bus.test.ts` 12,
+`donor-stem-integrity.test.ts` 12, `mashup-full-length` 4, `mashup-regression`
+6, `output-peak-limiter` 8); API-server and ArenaForge typechecks pass.
+The route acceptance test (`route.test.ts`) was extended to assert the default
+composition, the honoured explicit layer, the rejected `vocals` layer and the
+reported mix headers, but **it was not executed here** because this sandbox has
+no PostgreSQL server or bundled binaries. It must be run before merge.
+
+**Not established:** no listening test was performed, responses remain
+**N=0**, and this checkout has no real source audio, no `generated-artifacts/`,
+and no separated Queen/September stems. The four-way A/B/C/D render that the
+product decision depends on is therefore **not** produced by this change. What
+changed is that variants B and D are now possible to render at all: previously
+"corrected composition" and "corrected mix" could not be expressed. Arrangement
+intelligence (P2) is untouched: the planner still places one continuous vocal
+body, and phrase/section placement remains future work.
+
+## Replacement and phrase anchoring — measured on rendered audio
+
+Everything below was produced by rendering WAVs and measuring the PCM. **No one
+has listened to any of it: N=0.**
+
+### A real replacement, not a label
+
+Fixture: an 8 s, 120 BPM bed with distinguishable parts (bed drums = 90 Hz kick
+plus 7 kHz hat, bass = 55 Hz, other = 330 Hz pad), a donor drum part at 3 kHz, a
+sung-ish 440 Hz vocal, and bed supplied as **separated stems** so there is
+something to omit. Rendered via the A/B/C/D harness with `layerStemTypes:
+["drums"]`, once with `stemLayerMode: "replace"` and once with `"layer"`:
+
+| variant | bed 7 kHz hat | donor 3 kHz | bed bass 55 Hz |
+|---|---|---|---|
+| replace, A-baseline | 0.00001 | 0.01346 | 0.08290 |
+| replace, D-both | 0.00001 | 0.01048 | 0.06453 |
+| layer, A-baseline | 0.00191 | 0.01333 | 0.08212 |
+| layer, D-both | 0.00150 | 0.01048 | 0.06454 |
+
+The bed's hat energy is ~150× lower under `replace` than under `layer`, the
+donor part is present in both, and the bass is unchanged to five decimal places
+in the same render — i.e. exactly one role changed. `abcd-report.json` records
+`bedComposition: { mode: "separated-stem-sum", includedStemTypes: ["bass","other"],
+replacedStemTypes: ["drums"] }`.
+
+The harness warns rather than pretending when `stemLayerMode: "replace"` is
+requested but only a premixed bed file was supplied, because there is nothing to
+remove in that case and the render would double the part.
+
+### A layer now starts with the phrase
+
+With a vocal phrase planned from 1.75 s into the donor source, a click placed
+0.5 s after that crop lands at **entry + 500 ms**; nothing is audible in the
+first 100 ms. Removing the new trim makes the same assertion fail, so the test
+measures the fix rather than the fixture.
+
+Honest limit on this evidence: the 5 kHz-onset probe on the *audio files* for
+this case still reports 0 ms, because the plan used there cropped from 0 ms, so
+the trim had nothing to remove. The placement contract is proven by the unit
+test on the real renderer, not by that WAV probe. A donor WAV whose phrase begins
+later in its own file is what the Queen/September render needs to demonstrate it
+end to end, and that pair is still unavailable here.
+
+### A defect in the A/B/C/D harness itself, found and fixed
+
+C ("mix only") was byte-identical to A on every fixture: the quarantined legacy
+renderer ignored the loudness-match gain, so it reported `vocalGainDb: 6` while
+applying 0 dB, and the only difference was the limiter. The match gain is now
+applied inside both composition renderers, so C differs from A by the loudness
+balance *and* the limiter, and D differs from B the same way. This is recorded
+because it is exactly the class of error the directive warns about: a report that
+describes a correction the audio never received.
+
+After the fix, on the late-entry fixture: A/B −17.01 LUFS, C/D −15.13 LUFS, both
+under a 2.18 dB listening-match gain so the comparison is level-fair.
+
+### Reproduce
+
+```
+./scripts/node_modules/.bin/tsx scripts/waveyard-mashup-abcd.ts \
+  --manifest /path/to/manifest.json --out /path/to/out
+```
+
+Manifest keys used above: `vocals`, `bed` (with `bpm`, `key`, confidences,
+`sections`), `bedStems` (per-type WAVs, enables real replacement),
+`donorStems`, `layerStemTypes`, `stemLayerMode`, `strategy`. Every WAV is a
+44.1 kHz PCM16 stereo file; the harness refuses anything else instead of
+resampling silently.
+
+### Still unproven
+
+- **No listening test. N=0.** Nothing above is a judgement of musical quality.
+- **Route test still not executed** (no PostgreSQL in this sandbox); the new
+  replacement assertions in `route.test.ts` are written but unrun.
+- Local tempo *map* preservation under layering is tested with a constant
+  stretch ratio; a segment with a piecewise `localTempoMap` and a donor layer has
+  not been measured.
+- Phrase-aware arrangement (P2) remains untouched and deferred.
+
+## Acceptance evidence for the mix bus, and the A/B/C/D harness
+
+Measurements taken on this checkout, all reproducible from the commands below.
+
+**Full-length cost.** A 215 s render (the real Queen-over-September bed length)
+completed in 157 s. Measurements are not free: whole-programme loudness and
+4× true-peak reconstruction cost roughly 3 s each on 215 s of stereo. The bus
+therefore takes true peak **before** limiting (that is where the decision is
+made), and re-measures true peak **after** limiting only for renders up to
+`FULL_TRUE_PEAK_MAX_SECONDS` (60 s). Longer renders report the post-limit
+sample peak, clipped-region count and `postTruePeakMeasured: false` rather than
+implying a measurement that was not taken.
+
+**Loudness matching on awkward stems.** Fixtures in `mashup-mix-bus.test.ts`:
+a 1.5 s phrase inside 30 s of near-silence, a −50 dBFS separation-bleed floor,
+a one-hit bed, and vocals both much quieter and much louder than the bed. A
+hand-rolled presence gate was implemented and then **removed**: BS.1770's own
+absolute and relative gates already give the phrase its own level (measured
+difference < 0.5 LU), so the extra statistic changed nothing. The correction
+window was tightened from ±9 dB to **±6 dB**, and a clamped correction is
+reported with the measured difference and an explicit instruction that the
+pairing or phrase selection, not the gain, is the open question. Sparse-stem
+active-block fractions are reported alongside, so a mostly-empty vocal stem is
+visible.
+
+**Limiter.** `OutputPeakLimiter` reports sample peak, true peak, loudness,
+stereo correlation and clipped-region count at both stages. A genuinely
+clipping fixture shows the difference: the legacy render leaves 65,873 samples
+pinned at full scale with a +0.30 dBFS reconstructed peak; the corrected bus
+reports 0 clipped regions at −0.81 dBFS sample peak.
+
+**Donor layers follow the tempo map, not just the entry.** A 140→100 BPM pair
+(stretch 1.4) with a click at 0.5 s of donor source time lands at the
+tempo-mapped position and 200 ms away from the un-stretched one, pinned by
+test.
+
+**Four-way A/B/C/D harness — `scripts/waveyard-mashup-abcd.ts`.** Renders
+baseline, composition-only, mix-only and both, from a JSON manifest of real
+WAV paths, and loudness-matches every variant for playback (matched gain is
+reported, and a trim prevents the matched file clipping). It was exercised on a
+synthetic overload fixture: A and B pinned at 0.00 dBFS (the legacy clamp,
+65k+ clipped samples), C and D at −0.81 dBFS with zero clipped regions, static
+gain −3.6/−3.25 dB, limiter active and a +3.34 dB vocal-to-bed correction.
+That is a check that each variant isolates one change — **not** a listening
+result.
+
+**Still blocked, and honestly so.**
+
+- `route.test.ts` now actually loads when invoked by absolute path; it was
+  previously matching zero tests under a bracketed glob. It **skips** in this
+  sandbox (`PostgreSQL binaries are unavailable`) and there is no network to
+  fetch them. Merging still requires that run.
+- `mashup-db-acceptance.test.ts` does run here (PGlite) and passes 2/2 once
+  `DATABASE_URL` is set; without it, the harness fails at import.
+- No real Queen/September stems exist in this checkout, so the A/B/C/D harness
+  has not been run on the pair the decision depends on. Listener count is **0**.
+
+Reproduce:
+
+```sh
+DATABASE_URL=postgres://localhost:5432/arena_test \
+  ./scripts/node_modules/.bin/tsx --test lib/arena/src/lib/waveyard/studio/mashup-db-acceptance.test.ts
+./scripts/node_modules/.bin/tsx --test lib/arena/src/lib/waveyard/studio/mashup-mix-bus.test.ts
+./scripts/node_modules/.bin/tsx scripts/waveyard-mashup-mix-diagnostic.ts
+./scripts/node_modules/.bin/tsx scripts/waveyard-mashup-abcd.ts --manifest <manifest.json> --out <dir>
+```
+
+## Previous: auditionable mashup alignment candidates (planner v12)
+
 
 Waveyard now compares four distinct real planner paths for the same vocal/bed
 pair: a continuous baseline, paired beat-grid alignment, measured-downbeat

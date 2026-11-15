@@ -2,7 +2,16 @@
 
 import "./CandidateAlignmentLab.css";
 
-export type CandidateAlignmentId = "continuous" | "paired-grid" | "downbeat" | "phrase-aware";
+import { MASHUP_ALIGNMENT_CANDIDATES } from "@workspace/arena/lib/waveyard/studio/mashup";
+
+/**
+ * Derived from the planner's own candidate list so the UI cannot drift out of
+ * sync with the strategies the planner actually supports. Previously this was a
+ * hardcoded union that omitted "full-length", which meant Full Length was
+ * reachable through the API but could never be selected in production.
+ */
+export type CandidateAlignmentId =
+  (typeof MASHUP_ALIGNMENT_CANDIDATES)[number]["id"];
 
 export type CandidateAlignmentCandidate = {
   id: CandidateAlignmentId;

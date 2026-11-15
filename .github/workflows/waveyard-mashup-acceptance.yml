@@ -1,0 +1,210 @@
+name: Waveyard mashup acceptance (Linux)
+
+# The Studio mashup planner and the mashup route had no CI coverage at all.
+# A grep of the other workflows shows why: `waveyard-worker-local-db.yml` runs
+# only worker-local suites, `windows-recovered-stack.yml` runs only
+# `studio/mashup-bed.test.ts`, and `waveyard-browser-timing.yml` runs a
+# browser/DSP matrix. Full Length arrangement (`studio/mashup.ts`), the
+# composition-first stem swap, and the route that serves both were verified
+# only by hand.
+#
+# That gap is not hypothetical. It hid a real export bug: the desktop ffmpeg
+# graph never pinned a sample format before `amerge`, so any render containing
+# a key-shifted clip failed with "The following filters could not choose their
+# formats" — and the one test that would have caught it skips itself when
+# ffmpeg/ffprobe or PostgreSQL binaries are missing.
+#
+# So this job provisions those tools and refuses to pass on a skip: a skipped
+# suite would reproduce exactly the blind spot it exists to close.
+#
+# Honest limits: the route suite uses its synthetic fixture path unless
+# WAVEYARD_MASHUP_REAL_FIXTURE_MANIFEST is set (it is not, here), so it proves
+# route and planning behaviour, not musical quality. No audible playback, no
+# real stem separation, no listener assessment. Nothing here claims STEM.FM
+# parity.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mashup-acceptance:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # The route suite lives under artifacts/api-server and imports the
+      # server's own dependencies (drizzle-orm, @workspace/db), so the
+      # api-server graph has to be installed, not just scripts and arena.
+      - name: Install workspace dependencies
+        # `@workspace/desktop` is required even though no test imports it
+        # directly: the route suite imports `desktop/database.mjs` for its
+        # migrations, and that file resolves `pg` from its own workspace. With
+        # the desktop package filtered out, `pg` was never installed and the
+        # suite died at `migrate()` with ERR_MODULE_NOT_FOUND — masked in CI by
+        # an uncaught PostgreSQL shutdown notice that made it look like a
+        # teardown race.
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
+
+      - name: Provide PostgreSQL server binaries and ffmpeg/ffprobe
+        shell: bash
+        run: |
+          set -uo pipefail
+          evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
+          mkdir -p "$evidence"
+
+          # The route suite boots a disposable cluster, so it needs the server
+          # binaries (initdb/postgres/pg_ctl), not the client tools.
+          pgbin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$pgbin" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends postgresql || true
+            pgbin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ -z "$pgbin" ] || [ ! -x "$pgbin/initdb" ] || [ ! -x "$pgbin/postgres" ]; then
+            echo "::error::No PostgreSQL server binaries. The route suite would skip, which is the gap this job closes."
+            exit 1
+          fi
+          echo "$pgbin" >> "$GITHUB_PATH"
+          "$pgbin/postgres" --version | tee -a "$evidence/environment.txt"
+
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            echo "::error::ffmpeg/ffprobe are required: the route suite renders and probes real audio."
+            exit 1
+          fi
+          ffmpeg -version | head -1 | tee -a "$evidence/environment.txt"
+          echo "::notice::mashup environment: $(paste -sd ';' "$evidence/environment.txt")"
+
+      # Full Length arrangement, song extension, loop planning, and the
+      # composition-first mix bus. These are the owner's two acceptance
+      # requirements; they are pure planner tests and must never skip.
+      - name: Full Length arrangement and stem-swap composition
+        shell: bash
+        run: |
+          set -uo pipefail
+          evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
+          mkdir -p "$evidence"
+          cd scripts
+          ./node_modules/.bin/tsx --test \
+            ../lib/arena/src/lib/waveyard/studio/mashup.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/mashup-full-length-mode.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/mashup-mix-bus.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/mashup-regression.test.ts \
+            ../lib/arena/src/lib/waveyard/studio/donor-stem-integrity.test.ts \
+            ../lib/arena/src/lib/waveyard/worker-local/render-helpers.test.ts \
+            2>&1 | tee "$evidence/studio-suites.txt"
+          # tee masks the exit status, so read the summary back explicitly.
+          grep -qE '^# fail 0$' "$evidence/studio-suites.txt" || {
+            echo "::error::Studio mashup suites failed or did not report a clean summary."
+            exit 1
+          }
+          grep -qE '^# skipped 0$' "$evidence/studio-suites.txt" || {
+            echo "::error::Studio mashup suites skipped tests. A skip here is the blind spot this job exists to close."
+            exit 1
+          }
+
+      # The route that serves the Studio. Runs its synthetic fixture path and
+      # must report a pass, not a skip.
+      - name: Mashup route acceptance
+        shell: bash
+        env:
+          DATABASE_URL: postgres://unit@127.0.0.1:1/unit
+          WAVEYARD_TEARDOWN_DIAGNOSTICS: "1"
+          # The end-to-end acceptance writes the rendered WAV and the exported
+          # WAV here. A passing assertion is not the evidence the owner asks
+          # for; the audio has to be downloadable and listened to.
+          WAVEYARD_ACCEPTANCE_ARTIFACT_DIR: ${{ github.workspace }}/generated-artifacts/mashup-linux/acceptance-audio
+          # The suite prints "# TEARDOWN_DIAGNOSTICS ..." from inside the
+          # reporter's own stream. Published to $GITHUB_STEP_SUMMARY so the
+          # evidence survives even when only the summary is retrievable.
+        run: |
+          set -uo pipefail
+          evidence="${GITHUB_WORKSPACE:-$PWD}/generated-artifacts/mashup-linux"
+          mkdir -p "$evidence"
+          # scripts/ is where tsx lives; the bracketed directory must be cd'd
+          # into, because globbing that path collects zero tests and reads as
+          # success.
+          tsx="$PWD/scripts/node_modules/.bin/tsx"
+          cd "artifacts/api-server/src/imported/waveyard/projects/[id]/mashup"
+          # --test-force-exit keeps the runner from waiting on sockets the
+          # suite's disposable cluster leaves behind.
+          "$tsx" --test --test-force-exit route.test.ts 2>&1 | tee "$evidence/route.txt" || true
+          cd "$GITHUB_WORKSPACE"
+          # The suite's signature on the runner is a teardown-time uncaught
+          # exception from a pg client seeing the disposable cluster stop, with
+          # no assertion failure. Interpreting that inline would either hide
+          # real failures or leave the job permanently red for a known harness
+          # race; this script fails on everything except that exact shape and
+          # announces the quarantine as a warning, not a pass.
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### Mashup route acceptance"
+              echo '```'
+              grep -E "TEARDOWN_DIAGNOSTICS|TEARDOWN_SWALLOWED|not ok|^# (tests|pass|fail|skipped)" "$evidence/route.txt" || echo "(no diagnostics captured)"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # The verdict script exits 0 for a clean pass AND for the quarantined
+          # teardown race, so its exit code alone cannot be trusted to mean the
+          # acceptance really ran to completion. Capture it, then require the
+          # audio the acceptance is supposed to produce.
+          verdict=0
+          node scripts/waveyard-mashup-route-verdict.mjs "$evidence/route.txt" || verdict=$?
+          audio="$evidence/acceptance-audio"
+          missing=0
+          for expected in acceptance-render.wav acceptance-export.wav acceptance-evidence.json; do
+            if [ ! -s "$audio/$expected" ]; then
+              echo "::error::Missing acceptance audio evidence: $expected. A passing assertion without the audio is not acceptable evidence."
+              missing=1
+            fi
+          done
+          if [ "$verdict" -ne 0 ]; then
+            exit "$verdict"
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          ls -l "$audio" | tee -a "$evidence/acceptance-audio-manifest.txt"
+
+      - name: Retain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveyard-mashup-linux
+          path: generated-artifacts/mashup-linux
+          if-no-files-found: warn
+
+      # Separate, clearly named artifact so a listener does not have to dig
+      # through logs to find the audio this job exists to produce.
+      - name: Retain acceptance audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveyard-acceptance-audio
+          path: |
+            generated-artifacts/mashup-linux/acceptance-audio/*.wav
+            generated-artifacts/mashup-linux/acceptance-audio/*.json
+          if-no-files-found: warn
+          retention-days: 30
