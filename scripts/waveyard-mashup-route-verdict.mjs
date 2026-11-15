@@ -128,6 +128,16 @@ const uncaughtErrorLine = [...output.matchAll(/^\s*error: '((?:[^'\\]|\\.){0,400
 for (const message of [...new Set(uncaughtErrorLine)].slice(0, 4)) {
   console.error(`::warning::UNCAUGHT_MESSAGE ${message.slice(0, 400)}`);
 }
+// The suite's own catch reports the real failure before teardown noise.
+for (const match of output.matchAll(/ACCEPTANCE_FAILURE (.+)/g)) {
+  console.error(`::error::ACCEPTANCE_FAILURE ${match[1].slice(0, 900)}`);
+}
+// Publish every acceptance stage reached, not just the last one: the ordered
+// list is what says where the setup stopped.
+const stages = [...output.matchAll(/ACCEPTANCE_PROGRESS ([a-z0-9:-]+)/g)].map((match) => match[1]);
+if (stages.length > 0) {
+  console.error(`::warning::ACCEPTANCE_STAGES ${[...new Set(stages)].join(" -> ").slice(0, 900)}`);
+}
 const uncaught = output.includes("failureType: 'uncaughtException'");
 const noise = TEARDOWN_NOISE.test(output);
 

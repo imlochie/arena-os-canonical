@@ -430,6 +430,7 @@ test(
       "-D", dataDir, "-U", "arena", "--pwfile", passwordFile, "-E", "UTF8", "--locale", "C", "-A", "scram-sha-256",
     ], { encoding: "utf8", timeout: 120_000 });
     await rm(passwordFile, { force: true });
+    accTrace("setup:initdb-ok");
     if (init.status !== 0) throw new Error(`initdb failed (${init.status}): ${(init.stdout ?? "") + (init.stderr ?? "")}`.slice(0, 2000));
 
     postgresProcess = spawn(postgresBinaries.postgres, [
@@ -461,6 +462,7 @@ test(
         if (databaseCreated) await client.end();
       }
     }
+    accTrace("setup:database-created");
     if (!databaseCreated) throw new Error(`PostgreSQL did not become ready: ${String(lastConnectionError)} ${postgresOutput}`);
 
     const client = new Client({ connectionString: `postgres://arena:${databasePassword}@127.0.0.1:${port}/${databaseName}` });
@@ -477,6 +479,7 @@ test(
     process.env.WAVEYARD_STORAGE_DIR = path.join(fixtureRoot, "waveyard", "storage");
     process.env.NODE_ENV = "test";
 
+    accTrace("setup:migrated");
     routeModule = await import("./route");
     const handoffRoute = await import("../arena-handoff/route");
     const projectArtifactsRoute = await import("../../../../projects/[id]/artifacts/route");
@@ -506,6 +509,7 @@ test(
       }
       : null;
 
+    accTrace("setup:routes-imported");
     const [project] = await dbModule.db.insert(schema.projects).values({
       ownerId: LOCAL_OWNER_ID,
       title: "Mashup route fixture",
@@ -513,6 +517,7 @@ test(
     }).returning({ id: schema.projects.id });
     assert.ok(project);
 
+    accTrace("setup:project-created");
     const invalidHandoff = await handoffRoute.POST(
       new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "handoff", summary: "   " }) }),
       { params: Promise.resolve({ id: project.id }) },
@@ -4215,6 +4220,13 @@ test(
       assert.equal(updatedSession.masterVolume, 0.9);
 
     }
+  } catch (error) {
+    // Report where it died. Without this, the only signal CI produced was an
+    // uncaught 57P01 from a pg client during teardown, which describes how the
+    // cluster went away rather than what actually failed.
+    accTrace(`test:threw:${error instanceof Error ? error.constructor.name : typeof error}`);
+    console.error(`ACCEPTANCE_FAILURE ${String(error instanceof Error ? (error.stack ?? error.message) : error).slice(0, 3000)}`);
+    throw error;
   } finally {
     // Close the pool before stopping the server, then clear the handle so a
     // retry can spawn a fresh cluster instead of skipping teardown against a
