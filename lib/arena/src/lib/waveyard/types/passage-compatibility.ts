@@ -83,6 +83,8 @@ export type PassageCompatibility = {
     instrumentalDensity: PassageCompatibilityDimension;
     stemActivity: PassageCompatibilityDimension;
     downbeatConfidence: PassageCompatibilityDimension;
+    /** Optional current source-mix chord progression context; never an eligibility gate without independent accuracy evidence. */
+    chordProgression?: PassageCompatibilityDimension;
   };
   missingEvidence: string[];
 };

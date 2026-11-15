@@ -1,5 +1,6 @@
 import { normaliseMusicalKey, semitoneShift, type MusicalKey } from "./musical-key";
 import { usableBeatGrid } from "./beat-grid";
+import { HARMONY_TEMPLATE_MIN_MARGIN, type HarmonyEvent } from "./harmony-analysis";
 import {
   type AutomaticRemixCompatibilityPair,
   comparePassageCompatibility,
@@ -12,7 +13,7 @@ import {
 } from "./analysis-confidence";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
-export const AUTOMATIC_REMIX_ENGINE_VERSION = "4";
+export const AUTOMATIC_REMIX_ENGINE_VERSION = "5";
 export const AUTOMATIC_REMIX_VARIANTS = ["original", "hybrid"] as const;
 export type AutomaticRemixVariant = (typeof AUTOMATIC_REMIX_VARIANTS)[number];
 
@@ -54,6 +55,14 @@ export type AutomaticRemixSource = {
   } | null;
   sections: AutomaticRemixSection[];
   stems: AutomaticRemixStem[];
+  /** Current checksum-bound source-mix chords; advisory because named-chord accuracy is not independently established. */
+  harmony?: {
+    analysisId: string;
+    analysisEngine: string;
+    analysisEngineVersion: string;
+    sourceChecksumSha256: string;
+    events: HarmonyEvent[];
+  } | null;
 };
 
 /** High-level preferences only. Clip-level editing remains in the existing Studio. */
@@ -183,6 +192,63 @@ function trustedKey(source: AutomaticRemixSource): MusicalKey | null {
   return normaliseMusicalKey(trustedAnalysisKey(source.analysis?.musicalKey, source.analysis?.keyConfidence));
 }
 
+function progressionContext(
+  anchor: AutomaticRemixSource,
+  anchorSection: AutomaticRemixSection,
+  donor: AutomaticRemixSource,
+  donorSection: AutomaticRemixSection,
+  shiftSemitones: number,
+) {
+  const validFor = (source: AutomaticRemixSource) => source.harmony
+    && source.harmony.sourceChecksumSha256 === source.checksumSha256
+    && source.analysis?.sourceChecksumSha256 === source.checksumSha256
+    ? source.harmony.events : null;
+  const anchorEvents = validFor(anchor)?.filter((event) => event.endMs > anchorSection.startMs && event.startMs < anchorSection.endMs) ?? null;
+  const donorEvents = validFor(donor)?.filter((event) => event.endMs > donorSection.startMs && event.startMs < donorSection.endMs) ?? null;
+  if (!anchorEvents?.length || !donorEvents?.length) return {
+    status: "unavailable" as const,
+    similarity: null,
+    detail: "Current checksum-bound source-mix chord timelines are unavailable for one or both sections.",
+  };
+
+  const durationA = anchorSection.endMs - anchorSection.startMs;
+  const durationB = donorSection.endMs - donorSection.startMs;
+  const bins = 48;
+  let compared = 0;
+  let matching = 0;
+  for (let index = 0; index < bins; index += 1) {
+    const fraction = (index + 0.5) / bins;
+    const eventAt = (events: HarmonyEvent[], section: AutomaticRemixSection, duration: number) => events.find((event) => {
+      const start = Math.max(event.startMs, section.startMs);
+      const end = Math.min(event.endMs, section.endMs);
+      return end > start && fraction >= (start - section.startMs) / duration && fraction < (end - section.startMs) / duration;
+    });
+    const left = eventAt(anchorEvents, anchorSection, durationA);
+    const right = eventAt(donorEvents, donorSection, durationB);
+    if (!left?.root || left.quality === "unknown" || left.confidence < HARMONY_TEMPLATE_MIN_MARGIN
+      || !right?.root || right.quality === "unknown" || right.confidence < HARMONY_TEMPLATE_MIN_MARGIN) continue;
+    compared += 1;
+    const rootKey = (root: string) => normaliseMusicalKey(`${root} major`);
+    const leftRoot = rootKey(left.root);
+    const rightRoot = rootKey(right.root);
+    if (!leftRoot || !rightRoot) continue;
+    const shiftedRoot = semitoneShift(rightRoot, leftRoot);
+    if (left.quality === right.quality && shiftedRoot === shiftSemitones) matching += 1;
+  }
+  const coverage = compared / bins;
+  if (coverage < 0.5) return {
+    status: "unavailable" as const,
+    similarity: null,
+    detail: `Named chord events cover ${(coverage * 100).toFixed(0)}% of aligned section bins; at least 50% is required for progression context.`,
+  };
+  const similarity = matching / compared;
+  return {
+    status: "context" as const,
+    similarity,
+    detail: `Checksum-bound production chord events agree in root, quality and authorized shift across ${(coverage * 100).toFixed(0)}% of aligned bins (${(similarity * 100).toFixed(0)}% agreement among named bins). Advisory only; chord accuracy has no independent reference yet.`,
+  };
+}
+
 function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
   if (anchor.id === candidate.id || !sourceHasVerifiedAnalysis(anchor) || !sourceHasVerifiedAnalysis(candidate)) return null;
   const anchorBpm = trustedBpm(anchor) ?? 0;
@@ -216,8 +282,10 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
         donorKeyTrusted: donorKey !== null,
         expectedKeyShift,
       });
+      const progression = progressionContext(anchor, anchorSection, candidate, donorSection, comparison.transpositionSemitones ?? 0);
       comparisons.push({
         ...comparison,
+        dimensions: { ...comparison.dimensions, chordProgression: progression },
         anchorSourceName: anchor.originalFilename,
         donorSourceName: candidate.originalFilename,
       });
@@ -227,8 +295,8 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
         comparison.dimensions.harmony.similarity ?? -1,
         comparison.dimensions.beatPhase.similarity ?? -1,
       );
-      return [{ section: donorSection, comparison, score }];
-    }).sort((left, right) => right.score - left.score || left.section.startMs - right.section.startMs);
+      return [{ section: donorSection, comparison, score, progression: progression.status === "context" ? progression.similarity ?? -1 : -1 }];
+    }).sort((left, right) => right.score - left.score || right.progression - left.progression || left.section.startMs - right.section.startMs);
     const selected = choices[0];
     if (selected) {
       usedDonorSections.add(selected.section.id);
@@ -238,7 +306,8 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
   const ranked = [...comparisons].sort((left, right) =>
     Number(right.eligible) - Number(left.eligible)
     || Math.min(right.dimensions.rhythm.similarity ?? -1, right.dimensions.harmony.similarity ?? -1, right.dimensions.beatPhase.similarity ?? -1)
-      - Math.min(left.dimensions.rhythm.similarity ?? -1, left.dimensions.harmony.similarity ?? -1, left.dimensions.beatPhase.similarity ?? -1),
+      - Math.min(left.dimensions.rhythm.similarity ?? -1, left.dimensions.harmony.similarity ?? -1, left.dimensions.beatPhase.similarity ?? -1)
+    || (right.dimensions.chordProgression?.similarity ?? -1) - (left.dimensions.chordProgression?.similarity ?? -1),
   ).slice(0, 12);
   const missingEvidence = [...new Set([
     ...ranked.flatMap((pair) => pair.missingEvidence),
@@ -436,6 +505,12 @@ export function buildAutomaticRemixPlan(
       if (compatibility) {
         notices.push(`Passage-level matches: ${compatibility.eligiblePairs}. They are audition candidates; ${compatibility.missingEvidence.length ? `still missing ${compatibility.missingEvidence.join(", ")}.` : "all listed evidence is present."}`);
         decisions.push("used independent passage-level rhythm, chroma, beat-phase, and tempo evidence without requiring semantic verse/chorus labels");
+        const selectedProgressionMatches = [...counterpartsBySource.entries()].some(([sourceId, counterparts]) =>
+          sourceId !== anchor.id && [...counterparts.entries()].some(([anchorSectionId, donorSection]) =>
+            compatibilityBySource.get(sourceId)?.pairs.some((pair) => pair.anchorSectionId === anchorSectionId
+              && pair.donorSectionId === donorSection.id && pair.dimensions.chordProgression?.status === "context")));
+        if (selectedProgressionMatches)
+          decisions.push("used advisory checksum-bound chord-progression agreement to rank otherwise-equivalent passage matches");
       }
     }
   }

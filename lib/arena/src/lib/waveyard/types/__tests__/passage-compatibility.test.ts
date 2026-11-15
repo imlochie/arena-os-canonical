@@ -271,8 +271,41 @@ test("automatic hybrid can use a measured passage match without semantic verse/c
   assert.equal(result.plan.compatibility?.pairs[0]?.anchorSourceName, "a.wav");
   assert.equal(result.plan.compatibility?.pairs[0]?.donorSourceName, "b.wav");
   assert.equal(result.plan.compatibility?.pairs[0]?.dimensions.phraseAlignment.status, "match");
+  assert.equal(result.plan.compatibility?.pairs[0]?.dimensions.chordProgression?.status, "unavailable");
   assert.ok(result.plan.notices.some((notice) => notice.includes("downbeat confidence")));
   assert.ok(result.plan.provenance.decisions.some((decision) => decision.includes("without requiring semantic")));
+});
+
+test("automatic hybrid reports checksum-bound chord progression context without treating unvalidated labels as a gate", () => {
+  const anchor = source("a", "sha-a", [
+    { id: "a-0", sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "section", labelConfidence: 0, structuralConfidence: 0.9, passageFingerprint: fingerprint("sha-a", 0, 16) },
+  ]);
+  const donor = source("b", "sha-b", [
+    { id: "b-0", sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "section", labelConfidence: 0, structuralConfidence: 0.9, passageFingerprint: fingerprint("sha-b", 0, 16) },
+    { id: "b-1", sectionIndex: 1, startMs: 8_000, endMs: 16_000, startBeatIndex: 16, endBeatIndex: 32, label: "section", labelConfidence: 0, structuralConfidence: 0.9, passageFingerprint: fingerprint("sha-b", 16, 32) },
+  ]);
+  const anchorEvents = [
+    { startMs: 0, endMs: 4_000, root: "C", quality: "major" as const, confidence: 0.2 },
+    { startMs: 4_000, endMs: 8_000, root: "G", quality: "major" as const, confidence: 0.2 },
+  ];
+  anchor.harmony = { analysisId: "a-harmony", analysisEngine: "local", analysisEngineVersion: "1", sourceChecksumSha256: "sha-a", events: anchorEvents };
+  donor.harmony = { analysisId: "b-harmony", analysisEngine: "local", analysisEngineVersion: "1", sourceChecksumSha256: "sha-b", events: [
+    { startMs: 0, endMs: 4_000, root: "D", quality: "major", confidence: 0.2 },
+    { startMs: 4_000, endMs: 8_000, root: "A", quality: "major", confidence: 0.2 },
+    { startMs: 8_000, endMs: 12_000, root: "C", quality: "major", confidence: 0.2 },
+    { startMs: 12_000, endMs: 16_000, root: "G", quality: "major", confidence: 0.2 },
+  ] };
+  const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const pair = result.plan.compatibility?.pairs[0];
+  assert.equal(pair?.eligible, true);
+  assert.equal(pair?.dimensions.chordProgression?.status, "context");
+  assert.equal(pair?.dimensions.chordProgression?.similarity, 1);
+  assert.match(pair?.dimensions.chordProgression?.detail ?? "", /Advisory only/);
+  assert.equal(result.plan.compatibility?.pairs[1]?.dimensions.chordProgression?.similarity, 0);
+  assert.deepEqual(result.plan.tracks.find((track) => track.stemType === "vocals")?.clips.map((clip) => clip.sourceOffsetMs), [8_000]);
+  assert.ok(result.plan.provenance.decisions.some((decision) => decision.includes("advisory checksum-bound chord-progression")));
 });
 
 test("automatic hybrid reports a harmonic conflict and abstains from building clips", () => {

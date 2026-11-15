@@ -1,5 +1,25 @@
 # Arena handoff — read this first
 
+## Latest increment: use chord progression context in passage ranking
+
+The automatic-remix API now loads only complete source-mix harmony analyses
+that match the current engine version and source checksum. The planner compares
+named chord roots and qualities across 48 normalized bins in paired sections,
+accounting for the already-authorized transposition. Agreement is exposed in
+the compatibility report and breaks ties between otherwise-equivalent passage
+matches. It never decides eligibility: the production chord labels have no
+independent accuracy reference, so this remains advisory. No schema or
+production detector threshold changed; automatic-remix provenance is version
+5. The donor vocal melody is still not evaluated against the target bed.
+
+Focused automatic-remix and passage-compatibility tests pass **26/26**;
+workspace typecheck, workspace build, and `git diff --check` pass. The build
+emitted the existing sourcemap and large-chunk warnings. The broad test sweep
+remains incomplete; the previous final-SHA browser CI run had an unrelated
+WebKit session-control failure while recovered-stack, installed-package,
+mashup-acceptance and worker-local-db passed. Candidate v0.2.0 stays offline
+pending pinned stems and reviewed labels.
+
 ## Latest increment: evidence-gated automatic hybrid planning
 
 Work is on the existing PR #31 branch, `arena/669984d8-arena-os-canonical`,

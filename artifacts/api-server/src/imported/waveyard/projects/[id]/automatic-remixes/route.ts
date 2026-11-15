@@ -4,6 +4,8 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   automaticRemixGenerations,
+  harmonyAnalyses,
+  harmonyEvents,
   remixClips,
   remixSessions,
   remixTracks,
@@ -32,6 +34,11 @@ import {
 } from "@workspace/arena/lib/waveyard/types/analysis-provenance";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
+import {
+  LOCAL_HARMONY_ANALYSIS_ENGINE,
+  LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION,
+  normaliseHarmonyEvents,
+} from "@workspace/arena/lib/waveyard/types/harmony-analysis";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
@@ -84,13 +91,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await requireProjectRole(user.id, projectId, "editor");
     const constraints = constraintsFrom(await request.json().catch(() => ({})));
     
-    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows] = await Promise.all([
+    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows, harmonyAnalysisRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, projectId)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, projectId)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(sourceAnalyses).where(eq(sourceAnalyses.projectId, projectId)).orderBy(asc(sourceAnalyses.createdAt)),
       db.select().from(sourceSectionAnalyses).where(eq(sourceSectionAnalyses.projectId, projectId)).orderBy(asc(sourceSectionAnalyses.createdAt)),
       db.select().from(sourceSections).where(eq(sourceSections.projectId, projectId)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
       db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, projectId)).orderBy(asc(vocalAnalyses.createdAt)),
+      db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.projectId, projectId)).orderBy(asc(harmonyAnalyses.createdAt)),
     ]);
     const analysisBySource = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
     const sectionAnalysisBySource = new Map(sectionAnalyses.map((analysis) => [analysis.sourceAssetId, analysis]));
@@ -102,6 +110,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     const sourceById = new Map(sources.map((source) => [source.id, source]));
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
+    const currentHarmonyBySource = new Map<string, (typeof harmonyAnalysisRows)[number]>();
+    for (const harmonyAnalysis of [...harmonyAnalysisRows].reverse()) {
+      const source = sourceById.get(harmonyAnalysis.sourceAssetId);
+      if (!source || harmonyAnalysis.status !== "complete"
+        || harmonyAnalysis.analysisEngine !== LOCAL_HARMONY_ANALYSIS_ENGINE
+        || harmonyAnalysis.analysisEngineVersion !== LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION
+        || harmonyAnalysis.sourceChecksumSha256 !== source.checksumSha256) continue;
+      if (!currentHarmonyBySource.has(source.id)) currentHarmonyBySource.set(source.id, harmonyAnalysis);
+    }
+    const harmonyAnalysisIds = [...currentHarmonyBySource.values()].map((analysis) => analysis.id);
+    const harmonyRows = harmonyAnalysisIds.length
+      ? await db.select({
+        harmonyAnalysisId: harmonyEvents.harmonyAnalysisId,
+        startMs: harmonyEvents.startMs,
+        endMs: harmonyEvents.endMs,
+        root: harmonyEvents.root,
+        quality: harmonyEvents.quality,
+        confidence: harmonyEvents.confidence,
+      }).from(harmonyEvents).where(inArray(harmonyEvents.harmonyAnalysisId, harmonyAnalysisIds)).orderBy(asc(harmonyEvents.startMs))
+      : [];
+    const harmonyEventsByAnalysis = new Map<string, typeof harmonyRows>();
+    for (const event of harmonyRows) {
+      const existing = harmonyEventsByAnalysis.get(event.harmonyAnalysisId) ?? [];
+      existing.push(event);
+      harmonyEventsByAnalysis.set(event.harmonyAnalysisId, existing);
+    }
     const currentVocalBySource = new Map<string, {
       analysis: (typeof vocalAnalysisRows)[number];
       stem: (typeof stems)[number];
@@ -273,6 +307,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           };
         }),
         stems: stems.filter((stem) => stem.sourceAssetId === source.id).map((stem) => ({ id: stem.id, sourceAssetId: stem.sourceAssetId, stemType: stem.stemType, durationMs: stem.durationSeconds * 1000 })),
+        ...(() => {
+          const harmonyAnalysis = currentHarmonyBySource.get(source.id);
+          if (!harmonyAnalysis) return {};
+          const events = normaliseHarmonyEvents(harmonyEventsByAnalysis.get(harmonyAnalysis.id) ?? [], source.durationSeconds * 1000);
+          return events ? { harmony: {
+            analysisId: harmonyAnalysis.id,
+            analysisEngine: harmonyAnalysis.analysisEngine,
+            analysisEngineVersion: harmonyAnalysis.analysisEngineVersion,
+            sourceChecksumSha256: harmonyAnalysis.sourceChecksumSha256,
+            events,
+          } } : {};
+        })(),
       };
     }), constraints);
     if (fingerprintUpdates.length) {
