@@ -2027,3 +2027,178 @@ test("plan: genuinely ambiguous octaves are reported, not silently guessed", () 
   assert.ok(result.plan.warnings.some((warning) => /octave is ambiguous/i.test(warning)),
     `expected an ambiguity warning, got: ${result.plan.warnings.join(" | ")}`);
 });
+
+test("plan: a placement whose vocal harmony could not be measured must not outrank a measured one", () => {
+  // rankPassagePair averages only the features it HAS (sum(score*weight)/sum(weight)).
+  // A candidate whose placed-vocal fit could not be measured therefore drops that
+  // term from the average instead of scoring it, and the remaining terms sit higher:
+  // an unverifiable placement outranked a measured, clashing one. Missing musical
+  // evidence must not read as agreement.
+  const donorHash = "d".repeat(64);
+  const bedHash = "b".repeat(64);
+  // Stable C-major arpeggio: consonant over a C chord, a semitone clash over C#.
+  const vocalFrames = Array.from({ length: 64 }, (_, index) => {
+    const nearestMidiNote = [60, 64, 67][index % 3]!;
+    return {
+      timestampMs: 250 + index * 100,
+      frequencyHz: 440 * 2 ** ((nearestMidiNote - 69) / 12),
+      midiFloat: nearestMidiNote,
+      nearestMidiNote,
+      confidence: 0.95,
+      voiced: true,
+    };
+  });
+  const makeSection = (id: string, startMs: number, hash: string): MashupSection => ({
+    id, label: "section", startMs, endMs: startMs + 8_000,
+    startBeatIndex: startMs / 500, endBeatIndex: startMs / 500 + 16,
+    passageFingerprint: passageFingerprint(hash, startMs / 500, startMs / 500 + 16, "compatible", 500,
+      [rollingWindow(startMs / 500, startMs / 500 + 16)]),
+  });
+  const vocals = profile({
+    role: "vocals", sourceChecksumSha256: donorHash, durationMs: 8_000,
+    beatGridMs: Array.from({ length: 17 }, (_, i) => i * 500), beatConfidence: 0.95,
+    sections: [makeSection("donor-vocal", 0, donorHash)],
+    vocalPhrases: [{ startMs: 250, endMs: 3_450, confidence: 0.95 }],
+    vocalPitchFrames: vocalFrames,
+  });
+  // Opening bed section carries a measured C# chord: a semitone clash the scorer CAN see.
+  // Later bed section has no chord coverage at all: the vocal fit is simply unmeasurable there.
+  const bed = profile({
+    sourceChecksumSha256: bedHash, durationMs: 24_000,
+    beatGridMs: Array.from({ length: 49 }, (_, i) => i * 500), beatConfidence: 0.95,
+    sections: [makeSection("measured-clash", 0, bedHash), makeSection("no-chord-coverage", 12_000, bedHash)],
+    harmonyEvents: [{ startMs: 0, endMs: 4_000, root: "C#", quality: "major", confidence: 0.6 }],
+  });
+  const result = planMashup(vocals, bed);
+  assert.ok(result.ok);
+  const ranked = result.plan.passageSearch?.evaluations.find((evaluation) => evaluation.selected)
+    ?.rankedBedCandidates;
+  assert.ok(ranked?.length, "the search must still rank the available bed passages");
+  const clashing = ranked.find((candidate) => candidate.bedSectionId === "measured-clash");
+  const unmeasured = ranked.find((candidate) => candidate.bedSectionId === "no-chord-coverage");
+  assert.ok(clashing && unmeasured, "both passages must be ranked");
+  assert.ok(clashing.similarities.vocalChordFit !== null,
+    "the clashing passage has a measured vocal fit");
+  assert.equal(unmeasured.similarities.vocalChordFit, null,
+    "the uncovered passage has no measured vocal fit");
+  assert.ok(ranked.indexOf(clashing) < ranked.indexOf(unmeasured),
+    "a measured harmonic clash must not be ranked below a placement whose harmony is unknown; "
+    + `ranked order was ${ranked.map((candidate) => `${candidate.bedSectionId}=${candidate.relativeScore.toFixed(4)}`).join(", ")}`);
+});
+
+test("plan: unmeasured vocal harmony scores as zero agreement, never above a measured clash", () => {
+  // The precise bug: `score` is a weighted mean over features that are present,
+  // so omitting an unmeasurable vocal-harmony term shrinks the denominator and
+  // RAISES the mean. An unverifiable placement therefore scored HIGHER than one
+  // measured to be a total semitone clash (fixture: 1.000 against 0.894).
+  //
+  // The invariant is not "unknown always beats worse" -- a known clash may
+  // legitimately sit below an unknown. It is that unknown agreement can never
+  // be scored above a measured clash, and can never exceed perfect agreement.
+  const vocalFrames = Array.from({ length: 64 }, (_, index) => {
+    const nearestMidiNote = [60, 64, 67][index % 3]!;
+    return {
+      timestampMs: 250 + index * 100,
+      frequencyHz: 440 * 2 ** ((nearestMidiNote - 69) / 12),
+      midiFloat: nearestMidiNote,
+      nearestMidiNote,
+      confidence: 0.95,
+      voiced: true,
+    };
+  });
+  const measure = (bedChords: MashupSourceProfile["harmonyEvents"]): number | null => {
+    const result = planMashup(
+      profile({
+        role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 8_000,
+        beatGridMs: Array.from({ length: 17 }, (_, i) => i * 500), beatConfidence: 0.95,
+        sections: [{
+          id: "donor", label: "section", startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16,
+          passageFingerprint: passageFingerprint("d".repeat(64), 0, 16, "compatible", 500,
+            [rollingWindow(0, 16)]),
+        }],
+        vocalPhrases: [{ startMs: 250, endMs: 3_450, confidence: 0.95 }],
+        vocalPitchFrames: vocalFrames,
+      }),
+      profile({
+        sourceChecksumSha256: "b".repeat(64), durationMs: 8_000,
+        beatGridMs: Array.from({ length: 17 }, (_, i) => i * 500), beatConfidence: 0.95,
+        sections: [{
+          id: "bed", label: "section", startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16,
+          passageFingerprint: passageFingerprint("b".repeat(64), 0, 16, "compatible", 500,
+            [rollingWindow(0, 16)]),
+        }],
+        harmonyEvents: bedChords,
+      }),
+    );
+    assert.ok(result.ok);
+    const ranked = result.plan.passageSearch?.evaluations.find((evaluation) => evaluation.selected)
+      ?.rankedBedCandidates;
+    return ranked?.[0]?.relativeScore ?? null;
+  };
+  const clash = measure([{ startMs: 0, endMs: 8_000, root: "C#", quality: "major", confidence: 0.6 }]);
+  const agreement = measure([{ startMs: 0, endMs: 8_000, root: "C", quality: "major", confidence: 0.6 }]);
+  // No bed chords at all: the cue does not apply and must not be involved.
+  const notApplicable = measure([]);
+  assert.ok(clash !== null && agreement !== null && notApplicable !== null);
+  assert.ok(agreement > clash, `measured agreement must beat a measured clash (${agreement} vs ${clash})`);
+  assert.ok(agreement <= 1 && clash >= 0);
+  // The inapplicable case is the only one allowed to keep the un-adjusted mean.
+  assert.ok(notApplicable > clash,
+    `a candidate where the cue never applied is unaffected (${notApplicable})`);
+  // Applicable but unmeasurable: bed chords exist (so the cue applies) yet cover
+  // far too little of the placed body to judge.
+  const unmeasured = measure([{ startMs: 0, endMs: 200, root: "C", quality: "major", confidence: 0.6 }]);
+  assert.ok(unmeasured !== null);
+  assert.ok(agreement > clash, `measured agreement must beat a measured clash (${agreement} vs ${clash})`);
+  assert.ok(unmeasured < agreement,
+    "an unmeasurable placement must stay below a measured agreement, not tie with it "
+    + `(${unmeasured} vs ${agreement})`);
+  assert.equal(unmeasured, clash,
+    "unknown agreement scores exactly like a measured maximum clash: never better "
+    + "than a clash, and never punished below one for merely being unknown "
+    + `(${unmeasured} vs ${clash})`);
+  assert.ok(notApplicable > clash,
+    `a candidate where the cue never applied is unaffected (${notApplicable})`);
+});
+
+test("plan: an unverifiable harmonic placement says so in its own warning", () => {
+  // A ranking change that is not reported is indistinguishable from a silent
+  // quality claim. When the placed vocal's harmony could not be measured, the
+  // plan must not let the reader believe the placement was harmonically checked.
+  const vocalFrames = Array.from({ length: 64 }, (_, index) => {
+    const nearestMidiNote = [60, 64, 67][index % 3]!;
+    return {
+      timestampMs: 250 + index * 100,
+      frequencyHz: 440 * 2 ** ((nearestMidiNote - 69) / 12),
+      midiFloat: nearestMidiNote, nearestMidiNote, confidence: 0.95, voiced: true,
+    };
+  });
+  const result = planMashup(
+    profile({
+      role: "vocals", sourceChecksumSha256: "d".repeat(64), durationMs: 8_000,
+      beatGridMs: Array.from({ length: 17 }, (_, i) => i * 500), beatConfidence: 0.95,
+      sections: [{
+        id: "donor", label: "section", startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16,
+        passageFingerprint: passageFingerprint("d".repeat(64), 0, 16, "compatible", 500, [rollingWindow(0, 16)]),
+      }],
+      vocalPhrases: [{ startMs: 250, endMs: 3_450, confidence: 0.95 }],
+      vocalPitchFrames: vocalFrames,
+    }),
+    profile({
+      sourceChecksumSha256: "b".repeat(64), durationMs: 8_000,
+      beatGridMs: Array.from({ length: 17 }, (_, i) => i * 500), beatConfidence: 0.95,
+      sections: [{
+        id: "bed", label: "section", startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16,
+        passageFingerprint: passageFingerprint("b".repeat(64), 0, 16, "compatible", 500, [rollingWindow(0, 16)]),
+      }],
+      // Applies but covers only 200ms of a multi-second placed body.
+      harmonyEvents: [{ startMs: 0, endMs: 200, root: "C", quality: "major", confidence: 0.6 }],
+    }),
+  );
+  assert.ok(result.ok);
+  const unmeasured = result.plan.passageSearch?.evaluations
+    .find((evaluation) => evaluation.selected)?.rankedBedCandidates[0]?.similarities.vocalChordFitUnmeasured;
+  assert.equal(unmeasured, true, "the plan records that the check applied but was unmeasurable");
+  assert.ok(result.plan.warnings.some((warning) => warning.includes("not harmonically verified")),
+    `the plan must disclose the unverified placement: ${JSON.stringify(result.plan.warnings)}`);
+});

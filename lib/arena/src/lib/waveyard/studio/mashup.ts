@@ -133,6 +133,12 @@ export type MashupArrangementPlacement = {
   unitScore: number;
   /** Measured vocal-to-bed chord-tone agreement, when computable. */
   vocalChordFit: number | null;
+  /**
+   * The placed-vocal/bed-chord check applied here but could not be measured, so
+   * it was scored as zero agreement instead of being omitted. Explicit so a
+   * reader can tell "we checked and it clashed" from "we could not check".
+   */
+  vocalChordFitUnmeasured: boolean;
   chordFrames: number;
   /** Measured drum/bass onset overlap over the unit onsets, when available. */
   drumBassOnsetFit: number | null;
@@ -242,6 +248,8 @@ export type MashupPassageSearch = {
         beatPhase: number | null;
         vocalChordFit: number | null;
         vocalChordCoverage: number | null;
+        /** The placed-vocal/bed-chord check applied but was unmeasurable; it scored as zero. */
+        vocalChordFitUnmeasured: boolean;
       };
       selected: boolean;
     }>;
@@ -769,6 +777,13 @@ function passageFeatureConfidence(
   return Math.max(0, Math.min(1, evidence.confidence));
 }
 
+/** Result of asking whether a specific placement's vocal agrees with the bed's chords. */
+type VocalHarmonyPlacementAssessment = {
+  fit: VocalChordToneFit | null;
+  /** The comparison applies here but produced too little evidence to judge. */
+  unmeasured: boolean;
+};
+
 type VocalChordToneFit = {
   similarity: number;
   coverage: number;
@@ -800,6 +815,38 @@ function chordAt(events: readonly HarmonyEvent[], timestampMs: number): HarmonyE
   }
   const event = events[low - 1];
   return event && timestampMs < event.endMs ? event : null;
+}
+
+/**
+ * Whether a placed-vocal/bed-chord comparison is even applicable to this
+ * candidate. `scoreVocalChordToneFit` returns null both when the cue does not
+ * apply (no isolated pitch frames, or no bed chords at all) and when it applies
+ * but yields too little evidence to judge. Only the second case means "we tried
+ * to verify this placement's harmony and could not"; the first means the cue is
+ * simply not part of this comparison. Ranking must tell them apart, because an
+ * unmeasurable check on the material being placed is not the same thing as a
+ * check that was never relevant.
+ */
+export function vocalHarmonyAssessmentApplicable(input: {
+  vocalFrames: readonly VocalPitchFrame[] | undefined;
+  bedChords: readonly HarmonyEvent[] | undefined;
+  donorStartMs: number;
+  donorEndMs: number;
+}): boolean {
+  const { vocalFrames, bedChords, donorStartMs, donorEndMs } = input;
+  if (!vocalFrames?.length || !bedChords?.length) return false;
+  if (!Number.isSafeInteger(donorStartMs) || !Number.isSafeInteger(donorEndMs)
+    || donorEndMs <= donorStartMs) return false;
+  // Any voiced, confident pitch frame inside the placed body is material the
+  // bed's chords would have had to agree with.
+  for (let index = lowerBoundPitchFrame(vocalFrames, donorStartMs);
+    index < vocalFrames.length && vocalFrames[index]!.timestampMs < donorEndMs;
+    index += 1) {
+    const frame = vocalFrames[index]!;
+    if (frame.voiced && frame.nearestMidiNote !== null
+      && frame.confidence >= 0.6 && frame.confidence <= 1) return true;
+  }
+  return false;
 }
 
 /**
@@ -884,6 +931,13 @@ function rankPassagePair(
   bedBpm: number | null,
   tempoTrusted: boolean,
   vocalChordFit: VocalChordToneFit | null,
+  /**
+   * True when a placed-vocal/bed-chord comparison was attempted for this
+   * candidate but could not be measured (too few stable notes, or not enough
+   * chord coverage to judge). Distinct from `vocalChordFit === null` because
+   * no pitch frames or no bed chords at all means the cue was never applicable.
+   */
+  vocalHarmonyUnmeasured = false,
 ): {
   score: number;
   details: string[];
@@ -895,6 +949,8 @@ function rankPassagePair(
     beatPhase: number | null;
     vocalChordFit: number | null;
     vocalChordCoverage: number | null;
+    /** The cue applied but could not be measured, so it scored as zero agreement. */
+    vocalChordFitUnmeasured: boolean;
   };
 } | null {
   const dimensions = comparison.dimensions;
@@ -915,6 +971,8 @@ function rankPassagePair(
   ];
   if (measuredFeatureConfidences.some((confidence) => confidence <= 0)) return null;
   const features: Array<{ label: string; score: number; weight: number }> = [];
+  let usedVocalHarmonyCue = false;
+  let unmeasuredVocalHarmonyWeight = 0;
   const addSimilarity = (
     label: string,
     similarity: number | null,
@@ -940,12 +998,38 @@ function rankPassagePair(
     passageFeatureConfidence(donor, "beatPhase") ?? 0,
     passageFeatureConfidence(bed, "beatPhase") ?? 0,
   ), 0.20);
-  if (vocalChordFit) addSimilarity(
-    "vocal chord-tone agreement",
-    vocalChordFit.similarity,
-    vocalChordFit.confidence,
-    0.12,
-  );
+  if (vocalChordFit) {
+    // Fixed weight on both sides of the comparison: a measured fit and an
+    // unmeasured one must occupy the same denominator for the mean to be
+    // comparable across candidates.
+    features.push({
+      label: "vocal chord-tone agreement",
+      score: Math.max(0, Math.min(1, vocalChordFit.similarity)),
+      weight: 0.12,
+    });
+    usedVocalHarmonyCue = true;
+  }
+  // Missing musical evidence must not read as agreement.
+  //
+  // `score` is a weighted mean over the features that are present, so simply
+  // omitting an unmeasurable term RAISES the mean: the denominator shrinks.
+  // That is what let a placement nobody could evaluate outrank a measured
+  // harmonic clash -- the fixture scored the unverifiable placement 1.000 and
+  // the measured semitone clash 0.8937, and the unverifiable one won.
+  //
+  // The correction is not a tuned penalty. A cue that *applies* to this
+  // candidate occupies its full weight whether or not it could be measured;
+  // when it could not be measured it contributes zero agreement. So unknown is
+  // scored exactly like a measured maximum clash -- never better than one, and
+  // never quietly better than agreement that was actually heard. Weight is
+  // pushed directly (not through addSimilarity) precisely because that helper
+  // scales weight by confidence, which is the shrinking-denominator bug again.
+  else if (vocalHarmonyUnmeasured) {
+    const weight = 0.12;
+    features.push({ label: "vocal chord-tone agreement (unmeasured, scored as zero)", score: 0, weight });
+    unmeasuredVocalHarmonyWeight = weight;
+    usedVocalHarmonyCue = true;
+  }
 
   const donorBeats = donor.endBeatIndex - donor.startBeatIndex;
   const bedBeats = bed.endBeatIndex - bed.startBeatIndex;
@@ -972,6 +1056,10 @@ function rankPassagePair(
     details.push(
       `placed vocal body: ${vocalChordFit.stableNoteCount ? `${vocalChordFit.stableNoteCount} stable estimated notes, duration-weighted` : `${vocalChordFit.matchedFrames} voiced pitch frames`} covered ${Math.round(vocalChordFit.coverage * 100)}% by measured bed chords (not just the discovery window)`,
     );
+  } else if (vocalHarmonyUnmeasured) {
+    details.push(
+      "placed vocal body harmony was not measurable against the bed's chord timeline here (too few stable notes or too little chord coverage); it is scored as unknown agreement rather than as agreement",
+    );
   }
   return {
     score,
@@ -984,6 +1072,7 @@ function rankPassagePair(
       beatPhase: dimensions.beatPhase.similarity,
       vocalChordFit: vocalChordFit?.similarity ?? null,
       vocalChordCoverage: vocalChordFit?.coverage ?? null,
+      vocalChordFitUnmeasured: unmeasuredVocalHarmonyWeight > 0,
     },
   };
 }
@@ -1030,7 +1119,12 @@ function rankedPassageEntry(
   stretchRatio: number,
   vocalPitchShiftSemitones: number,
 ): {
-  match: { at: number; why: string; score: number; donorSectionId: string; bedSectionId: string } | null;
+  match: {
+    at: number; why: string; score: number;
+    donorSectionId: string; bedSectionId: string;
+    /** The placed vocal's harmony against the bed applied but could not be measured. */
+    vocalHarmonyUnmeasured: boolean;
+  } | null;
   reason: string;
   search: MashupPassageSearch;
 } {
@@ -1067,24 +1161,35 @@ function rankedPassageEntry(
   // retained vocal body. Score the material we will actually place, rather
   // than letting four locally consonant seconds speak for the whole song.
   // Existing measured-chord coverage gates and ranking weights are unchanged.
-  const placementChordFits = new Map<number, VocalChordToneFit | null>();
-  const chordFitForPlacement = (entryMs: number): VocalChordToneFit | null => {
+  const placementChordFits = new Map<number, VocalHarmonyPlacementAssessment>();
+  const chordFitForPlacement = (entryMs: number): VocalHarmonyPlacementAssessment => {
     if (placementChordFits.has(entryMs)) return placementChordFits.get(entryMs)!;
+    const donorEndMs = Math.min(body.toMs, Math.floor(body.fromMs + (bed.durationMs - entryMs) / stretchRatio));
     const fit = scoreVocalChordToneFit({
       vocalFrames: vocalPitchFrames,
       bedChords: bedHarmonyEvents,
       donorStartMs: body.fromMs,
-      donorEndMs: Math.min(body.toMs, Math.floor(body.fromMs + (bed.durationMs - entryMs) / stretchRatio)),
+      donorEndMs,
       bedStartMs: entryMs,
       bedEndMs: bed.durationMs,
       stretchRatio,
       pitchShiftSemitones: vocalPitchShiftSemitones,
     });
+    // Distinguish "this placement's harmony could not be verified" from "the
+    // cue does not apply at all". Only the former is a missing measurement that
+    // must stop reading as agreement during ranking.
+    const unmeasured = fit === null && vocalHarmonyAssessmentApplicable({
+      vocalFrames: vocalPitchFrames,
+      bedChords: bedHarmonyEvents,
+      donorStartMs: body.fromMs,
+      donorEndMs,
+    });
+    const assessment: VocalHarmonyPlacementAssessment = { fit, unmeasured };
     // Cache offsets, not section-pair identities: many overlapping windows
     // propose exactly the same placement. Bound retention on very long songs.
     if (placementChordFits.size >= 1024) placementChordFits.delete(placementChordFits.keys().next().value!);
-    placementChordFits.set(entryMs, fit);
-    return fit;
+    placementChordFits.set(entryMs, assessment);
+    return assessment;
   };
   const rankAtEntry = (
     comparison: ReturnType<typeof comparePassageCompatibility>,
@@ -1096,8 +1201,10 @@ function rankedPassageEntry(
       tempoTrusted && stretchRatio >= 0.5 && stretchRatio <= 2] as const;
     const base = rankPassagePair(...args, null);
     if (!base) return null; // Do not scan a whole vocal for an unrankable pair.
-    const fit = chordFitForPlacement(entryMs);
-    return fit ? rankPassagePair(...args, fit) : base;
+    const { fit, unmeasured } = chordFitForPlacement(entryMs);
+    // Keep the base ranking when the cue does not apply; carry the explicit
+    // unmeasured signal when it applies but could not be verified.
+    return fit || unmeasured ? rankPassagePair(...args, fit, unmeasured) : base;
   };
 
   const bedPassages = bed.sections.filter((section) =>
@@ -1131,6 +1238,7 @@ function rankedPassageEntry(
       beatPhase: number | null;
       vocalChordFit: number | null;
       vocalChordCoverage: number | null;
+      vocalChordFitUnmeasured: boolean;
     };
     transientScore: number;
     donorSectionId: string;
@@ -1443,7 +1551,11 @@ function rankedPassageEntry(
               : "no voice-bearing donor passage pair had comparable whole-bar durations plus measured rhythm, harmony, and beat-phase evidence";
   return {
     match: best
-      ? { at: best.at, why: best.why, score: best.musicalScore, donorSectionId: best.donorSectionId, bedSectionId: best.bedSectionId }
+      ? {
+        at: best.at, why: best.why, score: best.musicalScore,
+        donorSectionId: best.donorSectionId, bedSectionId: best.bedSectionId,
+        vocalHarmonyUnmeasured: best.similarities.vocalChordFitUnmeasured,
+      }
       : null,
     reason,
     search,
@@ -1542,6 +1654,7 @@ type ArrangementBedContext = {
 type ArrangementFeatureScore = {
   score: number;
   vocalChordFit: number | null;
+  vocalChordFitUnmeasured: boolean;
   chordFrames: number;
   drumBassOnsetFit: number | null;
   bedSectionRole: MashupArrangementPlacement["bedSectionRole"];
@@ -1891,6 +2004,7 @@ function arrangementFeatureScore(
   return {
     score,
     vocalChordFit: chord?.similarity ?? null,
+    vocalChordFitUnmeasured: context.harmonyEvents.length > 0 && chord === null,
     chordFrames: chord?.matchedFrames ?? 0,
     drumBassOnsetFit: transient === null ? null : Math.max(0, Math.min(1, transient)),
     bedSectionRole,
@@ -2070,6 +2184,7 @@ function planArrangement(
       bedStartMs,
       unitScore: Number(feature.score.toFixed(4)),
       vocalChordFit: feature.vocalChordFit === null ? null : Number(feature.vocalChordFit.toFixed(4)),
+      vocalChordFitUnmeasured: feature.vocalChordFitUnmeasured,
       chordFrames: feature.chordFrames,
       drumBassOnsetFit: feature.drumBassOnsetFit === null ? null : Number(feature.drumBassOnsetFit.toFixed(4)),
       bedSectionRole: feature.bedSectionRole,
@@ -2312,7 +2427,12 @@ function grooveAwareBedEntry(
         passageEntry.why,
         `at the selected passage, ${drumLabel} ${vocalOnsetLabel} overlap measured drum transients and ${bassLabel} overlap low-band bass attacks`,
       ].filter(Boolean).join("; "),
-      warning: `The passage choice is only the highest relative evidence ranking among current candidates (${passageEntry.score.toFixed(3)}); it is not calibrated or listener-validated. It does not establish a good-sounding arrangement; transient matches are only a tie-breaker.`,
+      warning: [
+        `The passage choice is only the highest relative evidence ranking among current candidates (${passageEntry.score.toFixed(3)}); it is not calibrated or listener-validated. It does not establish a good-sounding arrangement; transient matches are only a tie-breaker.`,
+        passageEntry.vocalHarmonyUnmeasured
+          ? "At the selected passage the placed vocal's harmony against the bed could not be measured (too few stable notes or too little bed chord coverage), so it was scored as unknown agreement rather than as agreement. This placement is not harmonically verified."
+          : null,
+      ].filter(Boolean).join(" "),
       passageSearch: passageDecision.search,
     };
   }

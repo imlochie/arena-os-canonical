@@ -124,3 +124,107 @@ or a passing repository-wide suite. There is no lint script in the workspace.
 5. Run the required broader engineering validation and triage the known
    environment/test-harness failure classes.
 6. Write a final acceptance decision. Production remains unchanged until then.
+
+## Increment: unmeasured vocal harmony no longer reads as agreement
+
+### The musical limitation addressed
+
+The planner scores a whole-bar passage pair as a weighted mean over the
+features it has (`sum(score*weight)/sum(weight)` in `rankPassagePair`). The
+placed donor vocal's chord-tone fit against the bed is one of those features,
+weight 0.12. When `scoreVocalChordToneFit` could not measure that fit, the term
+was simply **omitted**, which shrinks the denominator and raises the mean.
+
+So a placement whose vocal harmony nobody could check scored *better* than one
+that was checked and found to clash. Measured through the real planner on a
+controlled fixture:
+
+| Bed passage | Placed-vocal chord fit | Score before | Rank before |
+|---|---|---|---|
+| no chord coverage | unmeasurable (`null`) | **1.000** | **1st (selected)** |
+| measured C# over a C-major vocal | measured clash (`0.0`) | 0.8937 | 2nd |
+
+The planner preferred the arrangement whose harmony it could not evaluate.
+That is the "inventing confidence" failure the owner prohibited, expressed as
+arithmetic rather than as prose: an unknown was being averaged as if it were a
+high score.
+
+### What changed
+
+`rankPassagePair` now distinguishes the two ways the fit can be `null`:
+
+* **Not applicable** — no isolated pitch frames, or no bed chords at all — the
+  cue stays absent and the candidate is not judged on it.
+* **Applicable but unmeasurable** — the placement carries voiced, confident
+  material the bed's chords should have had to agree with, but too little was
+  measurable to decide. This now contributes **zero agreement at full weight**,
+  so unknown scores exactly like a measured maximum clash: never better than a
+  clash, and never punished below one merely for being unknown.
+
+The fix is not a tuned constant. The defect was a shrinking denominator, so the
+correction is to stop shrinking it; no threshold was introduced, and the
+existing 0.12 cue weight is unchanged. `vocalHarmonyAssessmentApplicable` makes
+the applicability decision explicit and is exported so it can be tested alone.
+
+The state is reported, not hidden: candidates carry
+`vocalChordFitUnmeasured`, and when the selected best placement is
+harmonically unverifiable the plan says so in its own warning ("This placement
+is not harmonically verified."). An unverified placement must not be
+indistinguishable from a verified one.
+
+### What fraction of the pipeline this covers
+
+This changes **ranking and disclosure**. It does not add a harmonic model, a
+new detector, a calibrated dissonance metric, or an acceptance gate, and it
+does not alter rendered audio: `renderMashup`, `renderMashupWithBus`,
+`renderSongExtension` and the export path are untouched. On the route
+acceptance fixture the render and export WAVs are byte-for-byte the size they
+were before this change (5,644,844 B and 5,633,090 B), with the same key
+contract (−3 st plan, 1500 Hz donor, 1261/1262 Hz measured) — the decision path
+changed, the audio for a harmonically verified fixture did not.
+
+### Verification actually executed
+
+| Suite | Result |
+|---|---|
+| `mashup.test.ts` (incl. 3 new regressions) | **53/53** |
+| `note-harmony.test.ts` | 5/5 |
+| `automatic-remix.test.ts` + `passage-compatibility.test.ts` | 31/31 |
+| `harmonic-candidate.test.ts` | 4/4 |
+| Combined focused set | **93/93, 0 skipped, 0 failed** |
+| `route.test.ts` (real PostgreSQL + real ffmpeg) | **1/1, 0 skipped, 0 failed** |
+| `tsc --noEmit` (`lib/arena`, `artifacts/arenaforge`) | clean |
+| `git diff --check` | clean |
+
+The two ranking regressions were **mutation-checked**: reverting to the old
+omit-the-term behaviour makes both fail, and restoring the fix makes both pass.
+A third test asserts the disclosure contract (the unverified placement names
+itself in the plan warning).
+
+### Real-audio evaluation: NOT run
+
+`scripts/waveyard-note-harmony-evaluation.ts` fails closed with `ENOENT` on
+`attached_assets/0_ytmp3free.cc_earth-wind-fire-september…mp3`; all six pinned
+sources and all eight pinned stems are absent from this checkout. No real-song
+evaluation was performed in this increment, and none of the above is real-song
+evidence. The fixtures are synthetic pure tones with controlled chord
+vocabularies.
+
+### Human listening evidence: NONE
+
+Listener count remains 0. Nothing here establishes that the selected arrangement
+sounds better; it establishes only that an unmeasurable comparison no longer
+scores as agreement, and that the planner now prefers a placement whose
+harmony it could actually measure over one it could not.
+
+### Still open
+
+* Chord labels still lack independent accuracy references, so the fit remains a
+  relative cue, not a calibrated harmonic-quality measure.
+* The check is chord-tone **membership** over stable notes; passing tones,
+  suspensions and intended dissonance are not classified.
+* Chord-tone fit is still only one weighted input; it can be outvoted by rhythm,
+  chroma and beat phase on a pair whose harmony is poor.
+* The automatic (hybrid) planner's advisory `chordProgression` comparison still
+  contrasts anchor and donor **source mixes**, while a hybrid keeps only
+  selected stems. That remains unresolved and is the next honest gap.
