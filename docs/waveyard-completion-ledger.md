@@ -12,7 +12,9 @@ analysis-engine and mashup suites pass 88/88; the six ground-truth evaluator
 tests also pass. The broader repository suite could not complete because this
 worktree has no `node_modules`, offline install metadata for `@babel/core` is
 missing, and attempted tests report unresolved `drizzle-orm`. No full-repository
-test, lint or build pass is claimed.
+test, typecheck, lint or build pass is claimed. The targeted strict typecheck
+for candidate and measurement files passed; `mashup.test.ts` still reports
+three unrelated assertion/narrowing errors.
 
 All eight pinned stem files remain missing, so no individual-stem or
 recombined-bed evaluation was performed. Independent chord references are also

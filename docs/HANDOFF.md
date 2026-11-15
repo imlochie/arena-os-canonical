@@ -30,9 +30,13 @@ precise remaining human review and stem-access requirements.
 Verification boundary: the broader repository test run could not complete in
 this worktree because it has no `node_modules`; the offline dependency install
 also stops on missing pnpm metadata for `@babel/core`, and attempted suites
-report unresolved `drizzle-orm`. No full-repository test, lint or build pass is
-claimed. The focused 88-test run and six evaluator tests are the completed
-checks for this increment.
+report unresolved `drizzle-orm`. A targeted strict TypeScript check passed for
+the candidate, candidate tests, and measurement runner/worker. Typechecking
+`mashup.test.ts` also reports three existing unrelated assertion/narrowing
+errors (two discriminated-union assertions and one possibly-undefined value).
+No full-repository test, typecheck, lint or build pass is claimed. The focused
+88-test run and six evaluator tests are the completed checks for this
+increment.
 
 ## Current: harmonic-perception audit rejected the proposed replacement
 
