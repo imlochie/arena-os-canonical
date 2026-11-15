@@ -759,6 +759,11 @@ function transientEventsFromEnvelope(
 /** Detect measurable transients in an isolated drum/percussion stem.
  * Spectral onsets alone do not reliably distinguish kick, snare and hats. */
 export function detectDrumTransients(pcm: Float32Array): LocalDrumTransient[] {
+  return detectSpectralAttacks(pcm).map((event) => ({ ...event, rhythmicClass: null }));
+}
+
+/** Broadband isolated-layer attacks, not confirmed melodic notes or syllables. */
+export function detectSpectralAttacks(pcm: Float32Array): Array<Pick<LocalDrumTransient, "timestampMs" | "strength" | "confidence">> {
   const { envelope, frameMs } = onsetEnvelope(pcm);
   return transientEventsFromEnvelope(envelope, frameMs);
 }

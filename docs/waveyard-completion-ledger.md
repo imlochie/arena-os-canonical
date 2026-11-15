@@ -1,5 +1,19 @@
 # Waveyard completion ledger
 
+## Latest increment: human-performance timing protection
+
+Separated melodic (`other`) layers now reuse the existing spectral-attack
+extractor and participate in cross-role placement, with stem-bound provenance.
+These are observed attacks, not identified notes. Before a common group move,
+measured vocal-activity phases can veto erosion of the source's expressive
+placement, including offbeats. The original complete performance and source
+analysis remain intact. Missing evidence retains existing fallback behavior.
+
+This extends actual planner behavior; it does not implement lyric alignment,
+independent melodic transcription, general swing conversion or validated
+musical-quality prediction. See the current `HANDOFF.md` section for exact
+scope and verification.
+
 ## Latest increment: cross-stem groove evidence and conservative entry movement
 
 The current planner can compare independent retained/donor drum/bass onset

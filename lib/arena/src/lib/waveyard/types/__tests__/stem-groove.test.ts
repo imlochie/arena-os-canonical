@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { measureStemGroove, compareStemGrooves, proposeGrooveEntryShift, type GrooveOnset } from "../stem-groove";
+import { assessPerformancePhase, measureStemGroove, compareStemGrooves, proposeGrooveEntryShift, type GrooveOnset } from "../stem-groove";
 import { planMashup, renderMashupWithBus, type MashupSourceProfile } from "../../studio/mashup";
 import { encodeWav16 } from "../../mixer/synth";
-import { ANALYSIS_PCM_RATE, detectDrumTransients } from "../../worker-local/analysis-engine";
+import { ANALYSIS_PCM_RATE, detectDrumTransients, detectSpectralAttacks } from "../../worker-local/analysis-engine";
 
 const grid = Array.from({ length: 25 }, (_, i) => i * 500);
 function events(phases: number[], delay = 0): GrooveOnset[] {
@@ -71,7 +71,9 @@ test("production onset extraction carries straight/swing evidence from PCM", () 
       for (let frame = 0; frame < 400 && start + frame < pcm.length; frame++)
         pcm[start + frame] = 0.5 * Math.exp(-frame / 80) * Math.sin(frame * Math.PI * 2 * 900 / ANALYSIS_PCM_RATE);
     }
-    const extracted = detectDrumTransients(pcm);
+    const extracted = detectSpectralAttacks(pcm);
+    assert.deepEqual(detectDrumTransients(pcm), extracted.map((event) => ({ ...event, rhythmicClass: null })),
+      "sharing the attack extractor must not regress the existing drum detector");
     const measured = measureStemGroove("drums", extracted, grid, 0.95);
     assert.equal(measured.status, "measured");
     if (measured.status !== "measured") continue;
@@ -79,6 +81,66 @@ test("production onset extraction carries straight/swing evidence from PCM", () 
     assert.ok(Math.abs(measured.swing.ratio - expectedRatio) < 0.25,
       `onset-window resolution must not reverse straight/swing evidence (${measured.swing.ratio})`);
   }
+});
+
+test("vocal performance comparison preserves offbeats rather than snapping them to beats", () => {
+  const intervals = [250, 1250, 2250, 3250].map((startMs) => ({ startMs, endMs: startMs + 150, confidence: 0.95 }));
+  const timing = { sourceFromMs: 0, sourceToMs: 5000, entryMs: 2000, stretchRatio: 1, proposedShiftMs: 30 };
+  const measured = assessPerformancePhase(intervals, grid, grid, timing);
+  assert.equal(measured.status, "measured");
+  assert.equal(measured.sourceOffbeatFraction, 1);
+  assert.equal(measured.beforeErrorMs, 0);
+  assert.ok(Math.abs(measured.afterErrorMs! - 30) < 0.001);
+  assert.equal(measured.preserveEntry, true);
+  const beatSnap = assessPerformancePhase(intervals, grid, grid, { ...timing, proposedShiftMs: -250 });
+  assert.equal(beatSnap.preserveEntry, true, "do not treat a half-beat pickup as a timing mistake");
+  const repair = assessPerformancePhase(intervals, grid, grid, { ...timing, entryMs: 2030, proposedShiftMs: -30 });
+  assert.equal(repair.preserveEntry, false);
+  assert.ok(repair.afterErrorMs! < repair.beforeErrorMs!);
+  assert.equal(assessPerformancePhase([], grid, grid, timing).status, "unavailable");
+  assert.equal(assessPerformancePhase(intervals.map((interval) => ({ ...interval, confidence: 0.4 })), grid, grid, timing).status, "unavailable");
+  assert.equal(assessPerformancePhase(intervals, null, grid, timing).status, "unavailable");
+  const transformed = assessPerformancePhase(intervals, grid, grid.map((at) => at * 1.1), {
+    ...timing, entryMs: 2200, stretchRatio: 1.1,
+  });
+  assert.ok(transformed.beforeErrorMs! < 0.001, "tempo changes must preserve the original expressive beat phase");
+  assert.equal(transformed.preserveEntry, true);
+});
+
+test("melodic layer attacks participate without being classified as drums or notes", () => {
+  const attacks = profile("other", [0.25, 0.75], 20);
+  assert.equal(attacks.status, "measured");
+  assert.equal(attacks.role, "other");
+  if (attacks.status === "measured") assert.equal(attacks.swing, null);
+  const anchor = profile("drums", [0.25, 0.75]);
+  assert.equal(proposeGrooveEntryShift(anchor, attacks, timeline).shiftMs, -20);
+  assert.equal(proposeGrooveEntryShift(profile("drums", [0]), attacks, timeline).shiftMs, 0,
+    "do not force a melodic offbeat pattern onto kick-like attacks");
+});
+
+test("a percussion proposal cannot override source-relative vocal delivery", () => {
+  const bass = measureStemGroove("bass", events([0, 0.5]).map((event) =>
+    ({ ...event, timestampMs: event.timestampMs + 2000 })), grid.map((at) => at + 2000), 0.95);
+  const melodic = profile("other", [0, 0.5], 30);
+  const vocals = source("vocals", {
+    beatGridMs: grid, beatConfidence: 0.95, stemGrooves: [melodic],
+    vocalActivityIntervals: [250, 1250, 2250, 3250, 4250, 5250, 6250, 7250].map((startMs) =>
+      ({ startMs, endMs: startMs + 150, confidence: 0.95 })),
+  });
+  // Align the target reference to the unchanged whole-body baseline, not an
+  // already corrected candidate. The human events themselves remain untouched.
+  const initial = planMashup({ ...vocals, stemGrooves: undefined }, source("instrumental"), { strategy: "continuous" });
+  assert.ok(initial.ok);
+  const first = initial.plan.segments[0]!;
+  const offset = first.mashupStartMs - first.vocalsFromMs;
+  const targetGrid = grid.map((at) => at + offset);
+  const result = planMashup(vocals, source("instrumental", {
+    beatGridMs: targetGrid, beatConfidence: 0.95, stemGrooves: [bass],
+  }), { strategy: "continuous" });
+  assert.ok(result.ok);
+  assert.equal(result.plan.crossStemGroove?.appliedEntryShiftMs, 0);
+  assert.ok(result.plan.crossStemGroove?.performanceProtection.some((assessment) => assessment.preserveEntry),
+    JSON.stringify(result.plan.crossStemGroove));
 });
 
 function source(role: "vocals" | "instrumental", overrides: Partial<MashupSourceProfile> = {}): MashupSourceProfile {

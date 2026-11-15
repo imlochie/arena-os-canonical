@@ -2,6 +2,8 @@
  * Request-local rhythmic evidence from EXISTING isolated-stem onset detectors.
  * No kick/snare labels, semantic form, or listening-quality inference.
  */
+import type { MusicalEvidenceProvenance } from "../studio/musical-evidence";
+
 export type GrooveOnset = { timestampMs: number; strength: number; confidence: number };
 export type StemGroove = {
   role: string;
@@ -16,7 +18,8 @@ export type StemGroove = {
   subdivision: "eighth-evidence" | "sixteenth-evidence" | "undetermined";
   onsets: GrooveOnset[];
 };
-export type StemGrooveEvidence = StemGroove | { role: string; status: "unavailable"; reason: string };
+export type StemGrooveEvidence = (StemGroove | { role: string; status: "unavailable"; reason: string })
+  & { provenance?: MusicalEvidenceProvenance | null };
 
 const median = (values: number[]) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -145,4 +148,81 @@ export function proposeGrooveEntryShift(
     return none("No stable, minimal phase correction is justified.");
   return { shiftMs, comparedOnsets: errors.length, beforeErrorMs: before, afterErrorMs: after,
     reason: "Consistent measured attacks support one small common donor-group translation; no internal phrasing is warped." };
+}
+
+export type PerformancePhaseAssessment = {
+  status: "measured" | "unavailable";
+  comparedStarts: number;
+  sourceOffbeatFraction: number | null;
+  beforeErrorMs: number | null;
+  afterErrorMs: number | null;
+  preserveEntry: boolean;
+  detail: string;
+};
+
+/**
+ * Compare an entire performance's measured activity starts to its OWN beat
+ * phases. The target is not the nearest beat: a source offbeat stays offbeat.
+ * Activity starts are coarse observations, not words/syllables/note labels.
+ */
+export function assessPerformancePhase(
+  intervals: readonly { startMs: number; endMs: number; confidence: number }[],
+  sourceGrid: readonly number[] | null | undefined,
+  targetGrid: readonly number[] | null | undefined,
+  timing: { sourceFromMs: number; sourceToMs: number; entryMs: number; stretchRatio: number; proposedShiftMs: number },
+): PerformancePhaseAssessment {
+  const missing = (detail: string): PerformancePhaseAssessment => ({
+    status: "unavailable", comparedStarts: 0, sourceOffbeatFraction: null,
+    beforeErrorMs: null, afterErrorMs: null, preserveEntry: false, detail,
+  });
+  const validGrid = (grid: readonly number[] | null | undefined): grid is readonly number[] =>
+    Boolean(grid && grid.length >= 9 && grid.every((time, index) =>
+      Number.isFinite(time) && time >= 0 && (index === 0 || time > grid[index - 1]!)));
+  if (!validGrid(sourceGrid) || !validGrid(targetGrid)) return missing("No trusted source/target grids for performance-phase comparison.");
+  if (![timing.sourceFromMs, timing.sourceToMs, timing.entryMs, timing.stretchRatio, timing.proposedShiftMs].every(Number.isFinite)
+    || timing.sourceFromMs < 0 || timing.sourceToMs <= timing.sourceFromMs || timing.stretchRatio <= 0)
+    return missing("Invalid performance timeline.");
+  const phaseAt = (at: number, grid: readonly number[]) => {
+    if (at < grid[0]! || at >= grid.at(-1)!) return null;
+    let low = 0, high = grid.length - 1;
+    while (low + 1 < high) {
+      const mid = (low + high) >>> 1;
+      if (grid[mid]! <= at) low = mid; else high = mid;
+    }
+    const period = grid[low + 1]! - grid[low]!;
+    return { phase: (at - grid[low]!) / period, period, beatIndex: low };
+  };
+  const observations: Array<{ before: number; after: number; offbeat: boolean; period: number }> = [];
+  const beats = new Set<number>();
+  for (const interval of intervals) {
+    if (!Number.isFinite(interval.startMs) || !Number.isFinite(interval.endMs)
+      || interval.endMs <= interval.startMs || interval.startMs < timing.sourceFromMs || interval.startMs >= timing.sourceToMs
+      || !Number.isFinite(interval.confidence) || interval.confidence < 0.8 || interval.confidence > 1) continue;
+    const source = phaseAt(interval.startMs, sourceGrid);
+    const at = timing.entryMs + (interval.startMs - timing.sourceFromMs) * timing.stretchRatio;
+    const before = phaseAt(at, targetGrid);
+    const after = phaseAt(at + timing.proposedShiftMs, targetGrid);
+    if (!source || !before || !after) continue;
+    const distance = (phase: number) => {
+      const delta = Math.abs(source.phase - phase);
+      return Math.min(delta, 1 - delta);
+    };
+    observations.push({ before: distance(before.phase) * before.period, after: distance(after.phase) * after.period,
+      offbeat: Math.min(source.phase, 1 - source.phase) >= 0.15, period: before.period });
+    beats.add(source.beatIndex);
+  }
+  if (observations.length < 3 || beats.size < 3) return missing("Fewer than three independent, confidence-qualified activity starts.");
+  const beforeErrorMs = observations.reduce((sum, point) => sum + point.before, 0) / observations.length;
+  const afterErrorMs = observations.reduce((sum, point) => sum + point.after, 0) / observations.length;
+  // Coarse activity timing cannot justify sub-frame performance corrections.
+  const tolerance = Math.max(25, median(observations.map((point) => point.period)) * 0.05);
+  const preserveEntry = afterErrorMs - beforeErrorMs > tolerance;
+  return {
+    status: "measured", comparedStarts: observations.length,
+    sourceOffbeatFraction: observations.filter((point) => point.offbeat).length / observations.length,
+    beforeErrorMs, afterErrorMs, preserveEntry,
+    detail: preserveEntry
+      ? "The proposed group translation worsens the performance's own measured beat phases. Preserve its current entry; do not quantise expressive starts."
+      : "The group translation does not measurably worsen source-relative activity phases. This is not lyric timing or a quality judgment.",
+  };
 }

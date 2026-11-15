@@ -38,7 +38,7 @@ import {
   type MashupMixResult,
 } from "./mashup-mix-bus";
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
-import { compareStemGrooves, proposeGrooveEntryShift, type StemGrooveEvidence } from "../types/stem-groove";
+import { assessPerformancePhase, compareStemGrooves, proposeGrooveEntryShift, type StemGrooveEvidence, type PerformancePhaseAssessment } from "../types/stem-groove";
 
 export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v12";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
@@ -182,6 +182,7 @@ export type MashupPlan = {
     comparisons: Array<{ anchorRole: string; donorRole: string; relationship: ReturnType<typeof compareStemGrooves>; correction: ReturnType<typeof proposeGrooveEntryShift> }>;
     appliedEntryShiftMs: number;
     decision: string;
+    performanceProtection: PerformancePhaseAssessment[];
   };
   engine: typeof MASHUP_PLANNER_ENGINE;
   alignmentStrategy: MashupAlignmentStrategy;
@@ -2842,6 +2843,18 @@ function applyCrossStemGroove(plan: MashupPlan, vocals: MashupSourceProfile, bed
     shift = 0;
     decision = "The proposed entry move would crop a phrase or cross the arrangement boundary.";
   }
+  const sourceGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
+  const targetGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence)
+    ?.map((at) => at * (plan.bedStretchRatio ?? 1));
+  const performanceProtection = shift === 0 ? [] : plan.segments.map((segment) =>
+    assessPerformancePhase(vocals.vocalActivityIntervals ?? [], sourceGrid, targetGrid, {
+      sourceFromMs: segment.vocalsFromMs, sourceToMs: segment.vocalsToMs,
+      entryMs: segment.mashupStartMs, stretchRatio: plan.vocalsStretchRatio, proposedShiftMs: shift,
+    }));
+  if (performanceProtection.some((assessment) => assessment.preserveEntry)) {
+    shift = 0;
+    decision = "Preserve the human performance: the percussion/melodic proposal worsens measured source-relative vocal timing.";
+  }
   if (shift !== 0) {
     plan.segments = plan.segments.map((segment) => ({
       ...segment, mashupStartMs: segment.mashupStartMs + shift, mashupEndMs: segment.mashupEndMs + shift,
@@ -2859,7 +2872,7 @@ function applyCrossStemGroove(plan: MashupPlan, vocals: MashupSourceProfile, bed
     decision = `Moved the complete donor group ${shift} ms from measured cross-stem attacks; internal timing and swing are unchanged.`;
     plan.rationale.push(decision);
   }
-  plan.crossStemGroove = { profiles, comparisons, appliedEntryShiftMs: shift, decision };
+  plan.crossStemGroove = { profiles, comparisons, appliedEntryShiftMs: shift, decision, performanceProtection };
 }
 
 export type MashupAlignmentCandidate = {

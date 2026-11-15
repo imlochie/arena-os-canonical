@@ -66,7 +66,7 @@ import {
 } from "@workspace/arena/lib/waveyard/studio/mashup";
 import { deriveSectionsForComposition } from "@workspace/arena/lib/waveyard/studio/composed-bed-sections";
 import { invalidateCompositionEvidence } from "@workspace/arena/lib/waveyard/studio/composition-evidence";
-import { detectBassAttacks, detectDrumTransients } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
+import { detectBassAttacks, detectDrumTransients, detectSpectralAttacks } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
   DESKTOP_ANALYSIS_ENGINE,
   DESKTOP_ANALYSIS_ENGINE_VERSION,
@@ -97,16 +97,18 @@ const MAX_STEM_BYTES = 128 * 1024 * 1024;
 const MAX_RENDER_SECONDS = 900;
 const GROOVE_EVIDENCE_CACHE_TTL_MS = 10 * 60_000;
 const GROOVE_EVIDENCE_CACHE_MAX_ENTRIES = 8;
-const GROOVE_EVIDENCE_VERSION = "waveyard-persisted-first-stem-transients-v3";
+const GROOVE_EVIDENCE_VERSION = "waveyard-persisted-first-stem-transients-v4-melodic";
 const STEM_TIMING_CACHE_MAX_ENTRIES = 8;
 const separatedStemTimingCache = new Map<string, ReturnType<typeof analyseStereoPcm>>();
 
 type MeasuredBedGrooveEvidence = {
   drumEvents: MashupTransientEvent[];
   bassEvents: MashupTransientEvent[];
+  melodicEvents: MashupTransientEvent[];
   warnings: string[];
   drumProvenance: MusicalEvidenceProvenance | null;
   bassProvenance: MusicalEvidenceProvenance | null;
+  melodicProvenance: MusicalEvidenceProvenance | null;
 };
 const measuredBedGrooveCache = new Map<string, { createdAt: number; evidence: MeasuredBedGrooveEvidence }>();
 
@@ -359,7 +361,7 @@ function stemPcmToAnalysisMono(stereo: Float32Array): Float32Array {
 }
 
 function aggregateGrooveProvenance(
-  feature: "drums" | "bass-attacks",
+  feature: "drums" | "bass-attacks" | "melodic-layer-attacks",
   sourceChecksumSha256: string,
   contributors: MusicalEvidenceProvenance[],
 ): MusicalEvidenceProvenance | null {
@@ -409,14 +411,16 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
     return {
       drumEvents: [],
       bassEvents: [],
-      warnings: ["No completed separated drum/bass stems are available; entry timing uses the beat grid only."],
+      melodicEvents: [],
+      warnings: ["No completed separated instrument stems are available; cross-stem groove evidence is unavailable."],
       drumProvenance: null,
       bassProvenance: null,
+      melodicProvenance: null,
     };
   }
 
   const relevantStems = bedSource.stems
-    .filter((stem) => stem.stemType === "drums" || stem.stemType === "percussion" || stem.stemType === "bass")
+    .filter((stem) => stem.stemType === "drums" || stem.stemType === "percussion" || stem.stemType === "bass" || stem.stemType === "other")
     .sort((left, right) => left.stemType.localeCompare(right.stemType) || left.id.localeCompare(right.id));
   const [source] = await db
     .select({
@@ -432,9 +436,11 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
     return {
       drumEvents: [],
       bassEvents: [],
+      melodicEvents: [],
       warnings: ["The source record is missing; stem timing evidence was excluded."],
       drumProvenance: null,
       bassProvenance: null,
+      melodicProvenance: null,
     };
   }
   const drumStemIds = relevantStems
@@ -468,12 +474,15 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
   const evidence: MeasuredBedGrooveEvidence = {
     drumEvents: [],
     bassEvents: [],
+    melodicEvents: [],
     warnings: [],
     drumProvenance: null,
     bassProvenance: null,
+    melodicProvenance: null,
   };
   const drumContributors: MusicalEvidenceProvenance[] = [];
   const bassContributors: MusicalEvidenceProvenance[] = [];
+  const melodicContributors: MusicalEvidenceProvenance[] = [];
   if (!relevantStems.some((stem) => stem.stemType === "drums" || stem.stemType === "percussion")) {
     evidence.warnings.push("The selected separation has no separate drum/percussion stem; drum-transient matching is unavailable.");
   }
@@ -604,10 +613,12 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
         continue;
       }
       const mono = stemPcmToAnalysisMono(decoded.samples);
-      const events = stem.stemType === "bass" ? detectBassAttacks(mono) : detectDrumTransients(mono);
+      const events = stem.stemType === "bass" ? detectBassAttacks(mono)
+        : stem.stemType === "other" ? detectSpectralAttacks(mono) : detectDrumTransients(mono);
       const mapped = events.map(({ timestampMs, strength, confidence }) => ({ timestampMs, strength, confidence }));
       const runtimeProvenance: MusicalEvidenceProvenance = {
-        analysisEngine: stem.stemType === "bass" ? "arena-js-dsp-bass-lowband" : DESKTOP_STEM_ANALYSIS_ENGINE,
+        analysisEngine: stem.stemType === "bass" ? "arena-js-dsp-bass-lowband"
+          : stem.stemType === "other" ? "arena-js-dsp-spectral-attacks" : DESKTOP_STEM_ANALYSIS_ENGINE,
         analysisEngineVersion: DESKTOP_STEM_ANALYSIS_ENGINE_VERSION,
         sourceChecksumSha256: source.checksumSha256,
         stemAssetId: stem.id,
@@ -617,6 +628,9 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
       if (stem.stemType === "bass") {
         evidence.bassEvents.push(...mapped);
         bassContributors.push(runtimeProvenance);
+      } else if (stem.stemType === "other") {
+        evidence.melodicEvents.push(...mapped);
+        melodicContributors.push(runtimeProvenance);
       } else {
         evidence.drumEvents.push(...mapped);
         drumContributors.push(runtimeProvenance);
@@ -628,8 +642,10 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
 
   evidence.drumEvents.sort((left, right) => left.timestampMs - right.timestampMs);
   evidence.bassEvents.sort((left, right) => left.timestampMs - right.timestampMs);
+  evidence.melodicEvents.sort((left, right) => left.timestampMs - right.timestampMs);
   evidence.drumProvenance = aggregateGrooveProvenance("drums", source.checksumSha256, drumContributors);
   evidence.bassProvenance = aggregateGrooveProvenance("bass-attacks", source.checksumSha256, bassContributors);
+  evidence.melodicProvenance = aggregateGrooveProvenance("melodic-layer-attacks", source.checksumSha256, melodicContributors);
   while (measuredBedGrooveCache.size >= GROOVE_EVIDENCE_CACHE_MAX_ENTRIES) {
     const oldestKey = measuredBedGrooveCache.keys().next().value;
     if (oldestKey === undefined) break;
@@ -1338,8 +1354,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       // re-analysis can replace the mixture's tempo/grid evidence.
       const originalBedGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
       const originalBedGrooves = [
-        measureStemGroove("drums", grooveEvidence.drumEvents, originalBedGrid, bed.beatConfidence),
-        measureStemGroove("bass", grooveEvidence.bassEvents, originalBedGrid, bed.beatConfidence),
+        { ...measureStemGroove("drums", grooveEvidence.drumEvents, originalBedGrid, bed.beatConfidence), provenance: grooveEvidence.drumProvenance },
+        { ...measureStemGroove("bass", grooveEvidence.bassEvents, originalBedGrid, bed.beatConfidence), provenance: grooveEvidence.bassProvenance },
+        { ...measureStemGroove("other", grooveEvidence.melodicEvents, originalBedGrid, bed.beatConfidence), provenance: grooveEvidence.melodicProvenance },
       ];
       bed.drumEvents = grooveEvidence.drumEvents;
       bed.bassEvents = grooveEvidence.bassEvents;
@@ -1439,11 +1456,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         : null;
       vocals.stemGrooves = [...donorStemsForPlan.keys()].flatMap((name) => {
         const role = name.slice("donor_".length);
-        if (role !== "drums" && role !== "bass") return [];
+        if (role !== "drums" && role !== "bass" && role !== "other") return [];
         // Reuse persisted-first, checksum-current isolated-stem events and its
         // bounded runtime cache; do not run another FFT analyzer per request.
-        const events = role === "bass" ? donorGrooveEvidence?.bassEvents ?? [] : donorGrooveEvidence?.drumEvents ?? [];
-        return [measureStemGroove(role, events, donorGrid, vocals.beatConfidence)];
+        const events = role === "bass" ? donorGrooveEvidence?.bassEvents ?? []
+          : role === "other" ? donorGrooveEvidence?.melodicEvents ?? [] : donorGrooveEvidence?.drumEvents ?? [];
+        const provenance = role === "bass" ? donorGrooveEvidence?.bassProvenance
+          : role === "other" ? donorGrooveEvidence?.melodicProvenance : donorGrooveEvidence?.drumProvenance;
+        return [{ ...measureStemGroove(role, events, donorGrid, vocals.beatConfidence), provenance: provenance ?? null }];
       });
 
       if (action === "compare") {

@@ -15,6 +15,16 @@ feel or instrument labels. Let uncertainty retain the existing arrangement.
 Never force vocal syllables or percussion onto a grid to improve a numerical
 score, or claim that a shared tempo or synthetic onset test proves musical quality.
 
+**Performance reference:** Preserve measured source-relative beat phases when
+assessing a singer's delivery, not proximity to the nearest target beat.
+
+**Why:** The user specifically warned that moving every vocal onset to a beat
+would erase expressive timing; a deliberate offbeat is not an error.
+
+**How to apply:** Treat activity/pitch-run starts as coarse observations, not
+lyric timestamps. Keep whole performances together unless stronger phrase-level
+evidence justifies another transformation.
+
 **Cross-role timing scope:** A measured vocal phrase warp describes only that
 source interval, not an entire donor drum or bass stem. Preserve its measured
 interval and use an explicitly bounded continuation outside it; every source

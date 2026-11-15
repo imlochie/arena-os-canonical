@@ -1961,6 +1961,7 @@ test(
         { stemType: "vocals", seconds: 4 },
         { stemType: "drums", seconds: 4 },
         { stemType: "bass", seconds: 4 },
+        { stemType: "other", seconds: 4 },
       ], { bpm: 104 });
       const jointBedId = await addFixtureSource("joint-tempo-bed", [
         { stemType: "drums", seconds: 8 },
@@ -2046,6 +2047,7 @@ test(
         .where(inArray(schema.sourceAnalyses.sourceAssetId, [jointVocalId, jointBedId]));
       for (const [mode, roles] of [
         ["replace", ["drums"]], ["layer", ["drums"]], ["replace", ["bass"]], ["replace", ["drums", "bass"]],
+        ["replace", ["other"]], ["layer", ["other"]], ["replace", ["bass", "other"]],
       ] as const) {
         const extra = { layerStemTypes: [...roles], stemLayerMode: mode };
         const response = await routeModule.POST(renderPair(jointVocalId, jointBedId, {
@@ -2060,13 +2062,16 @@ test(
             donorTempoStemIds: string[];
             clipTimingMaps: Array<{ stemAssetId: string; sourceOffsetMs: number; durationMs: number; points: Array<{ sourceMs: number; outputMs: number }> }>;
             crossStemGroove: {
-              profiles: Array<{ sourceAssetId: string; evidence: { role: string; status: string } }>;
+              profiles: Array<{ sourceAssetId: string; evidence: { role: string; status: string; provenance?: { analysisEngine: string; stemAssetId: string; stemChecksumSha256: string } } }>;
               appliedEntryShiftMs: number;
+              performanceProtection: unknown[];
             };
           };
         };
         assert.equal(snapshot.mashupPlan.donorTempoStemIds.length, roles.length);
         assert.ok(snapshot.mashupPlan.crossStemGroove);
+        assert.ok(Array.isArray(snapshot.mashupPlan.crossStemGroove.performanceProtection),
+          "performance-protection decisions must be preserved in the saved plan");
         assert.equal(snapshot.mashupPlan.crossStemGroove.appliedEntryShiftMs, 0,
           "pure tones do not authorize a groove correction");
         for (const role of roles) {
@@ -2076,6 +2081,13 @@ test(
           if (mode === "replace") assert.ok(!snapshot.mashupPlan.crossStemGroove.profiles.some((profile) =>
             profile.sourceAssetId === jointBedId && profile.evidence.role === role),
           "removed bed roles must not survive as composite groove evidence");
+          if (role === "other") {
+            const melodicProfile = snapshot.mashupPlan.crossStemGroove.profiles.find((profile) =>
+              profile.sourceAssetId === jointVocalId && profile.evidence.role === "other")!;
+            assert.equal(melodicProfile.evidence.provenance?.analysisEngine, "arena-js-dsp-spectral-attacks");
+            assert.ok(melodicProfile.evidence.provenance?.stemAssetId);
+            assert.match(melodicProfile.evidence.provenance!.stemChecksumSha256, /^[a-f0-9]{64}$/);
+          }
         }
         const map = snapshot.mashupPlan.clipTimingMaps.find((candidate) =>
           snapshot.mashupPlan.donorTempoStemIds.includes(candidate.stemAssetId));

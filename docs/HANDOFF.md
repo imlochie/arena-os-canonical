@@ -1,5 +1,51 @@
 # Arena handoff — read this first
 
+## Current: preserve vocal delivery while admitting melodic-layer attacks
+
+The previous drum/bass increment is retained. The existing broadband attack
+extractor is now shared explicitly as `detectSpectralAttacks`; the drum adapter
+keeps its existing output. Checksum-verified separated `other` layers can now
+contribute independent attack profiles to the same retained/donor comparison.
+This observes spectral changes, **not confirmed notes**, pitch or articulation.
+Legato or ambiguous layers can have no usable attacks. No new classifier,
+transcription model, source-analysis migration or external provider was added.
+
+The request cache includes the melodic stem identity/checksum, and its version
+was advanced. Request-derived melodic provenance and the existing drum/bass
+provenance now survive in saved groove summaries. Removed roles are still
+excluded. Melodic activity is not passed off as drum events or persisted in a
+drum-analysis table.
+
+Before accepting a common donor-group entry correction, the planner now checks
+confidence-qualified vocal-activity starts against their **own original beat
+phases** on the actual transformed timeline. An offbeat start remains an
+offbeat reference; a nearest-beat coincidence is not rewarded. If a proposal
+materially worsens that phase relationship over at least three independent
+beats, it is vetoed for the entire donor group. It never moves individual
+syllables or short activity fragments. Every placed segment is checked.
+`crossStemGroove.performanceProtection` records the before/after observations
+and decision in the normal saved plan; existing clip maps remain authoritative.
+
+Missing grids/activity, weak confidence or too few starts explicitly return
+unavailable; that does not block mashup creation or invent human timing.
+Coarse activity starts are **not** syllable, lyric or precise phrase boundaries.
+The guard can retain a less-good arrangement; it does not establish listener
+preference, true rhythmic incompatibility or intentional syncopation. Explicit
+swing transformation, independent melodic pitch/note tracking, lyric timing
+and real-song musical-quality acceptance remain outstanding.
+
+Verification: **103/103** groove, passage, planner/render, mix-bus, donor-integrity
+and local-map regressions passed. The **PostgreSQL production-route suite passed,
+zero skipped**, now covering seven drum/bass/melodic replacement/layer cases,
+stem/checksum-bound melodic provenance, saved protection metadata, reopened
+exports, map refusals and preservation of original source-analysis rows.
+Targeted synthetic tests verify source offbeats remain the reference, a harmful
+group proposal is vetoed by the production planner, tempo transformations retain
+phase meaning, weak/missing observations remain unavailable, and sharing the
+spectral extractor does not change drum results. Full typecheck and diff check
+passed. The API rebuilt/restarted cleanly and the Studio landing page loaded.
+No new real-song listening acceptance or browser playback timing is claimed.
+
 ## Current: bounded cross-stem groove evidence and entry correction
 
 ### Audit and reused paths
