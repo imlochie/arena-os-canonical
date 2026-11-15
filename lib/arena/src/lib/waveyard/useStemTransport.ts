@@ -863,6 +863,27 @@ export function useStemTransport(
     seek(0);
   }, [pause, seek]);
 
+  /**
+   * Resolve the state of a play() that lost the race to a newer request.
+   *
+   * Two outcomes, and picking the wrong one is what left WebKit stuck:
+   *   - playback was cancelled (pause() ran): the elements are paused and the
+   *     caller's own pause() has already cleared `starting`.
+   *   - playback was superseded but still wanted (another play()/recover()
+   *     superseded this one): audio is starting, so the control must stop
+   *     saying "starting" and reflect that it is playing. Returning silently
+   *     left `starting === true` forever, because only a later complete play()
+   *     or pause() clears it.
+   */
+  const settleSupersededRequest = useCallback((elements: HTMLAudioElement[]) => {
+    if (!wantsPlayback.current) {
+      elements.forEach((element) => element.pause());
+      return;
+    }
+    setStarting(false);
+    setPlaying(elements.some((element) => !element.paused));
+  }, []);
+
   const play = useCallback(async () => {
     const request = ++playRequest.current;
     wantsPlayback.current = true;
@@ -911,12 +932,18 @@ export function useStemTransport(
       // Resume inside the user's activation before waiting on module I/O
       // (important on mobile). There is no destination bypass while loading.
       await sessionOutput.current?.ready;
+      // A superseded request must never leave the control stuck in "starting".
+      // WebKit fires this path: `play()` is awaited while another call (the
+      // playback-control handler) bumps `playRequest`, and the early return
+      // below then returns without clearing `starting`, so the button stays
+      // aria-busy "Cancel playback start" indefinitely with every stem audibly
+      // playing. `pause()` clears it, but nothing here called pause.
       if (request !== playRequest.current) {
-        if (!wantsPlayback.current) elements.forEach((element) => element.pause());
+        settleSupersededRequest(elements);
         return;
       }
       if (playbackIds.some((id) => !currentPlaybackIds.current.includes(id))) {
-        elements.forEach((element) => element.pause());
+        settleSupersededRequest(elements);
         return;
       }
       const start = duration > 0 && positionRef.current >= duration - 0.01 ? 0 : positionRef.current;
@@ -927,11 +954,11 @@ export function useStemTransport(
       // stems are still pending and may start after a pause/error cleanup.
       const results = await Promise.allSettled(elements.map((element) => element.play()));
       if (request !== playRequest.current) {
-        if (!wantsPlayback.current) elements.forEach((element) => element.pause());
+        settleSupersededRequest(elements);
         return;
       }
       if (playbackIds.some((id) => !currentPlaybackIds.current.includes(id))) {
-        elements.forEach((element) => element.pause());
+        settleSupersededRequest(elements);
         return;
       }
       if (results.some((result) => result.status === "rejected")) {
@@ -959,7 +986,7 @@ export function useStemTransport(
       );
       pause();
     }
-  }, [applyInserts, applyMix, ensureGraph, playbackIds, masterVolume, pause, duration, setKeyShiftSemitones]);
+  }, [applyInserts, applyMix, ensureGraph, playbackIds, masterVolume, pause, duration, setKeyShiftSemitones, settleSupersededRequest]);
 
   useEffect(() => {
     const recover = () => {
