@@ -14,7 +14,8 @@ evaluator tests pass 10/10. Restored frozen dependencies support a passing full
 workspace typecheck and build (with local Vite environment values); no lint
 script is defined. The broader 226-file Arena test sweep remains incomplete:
 multiple batches require PostgreSQL or external network access, Windows
-sandbox permissions reject temporary symlink/rename operations, and batch 15
+sandbox permissions reject temporary symlink/rename operations, and route/test
+harness assertions plus a worker import failure remain untriaged. Batch 15
 stalled. Do not claim a full-repository test pass.
 
 All eight pinned stem files remain missing, so no individual-stem or

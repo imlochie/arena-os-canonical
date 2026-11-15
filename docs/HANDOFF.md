@@ -41,8 +41,9 @@ the focused harmonic/planner set passes 88/88. Packet/evaluator tests pass
 The broader 226-file Arena test sweep is incomplete: several batches require a
 PostgreSQL `DATABASE_URL` or server, some tests expect external network access,
 and Windows sandbox permissions reject test-created symlinks/atomic renames.
-Batch 15 did not finish within the bounded run and was stopped. Do not describe
-the repository-wide test suite as passing.
+The sweep also encountered route/test-harness assertions and a worker import
+failure that remain untriaged. Batch 15 did not finish within the bounded run
+and was stopped. Do not describe the repository-wide test suite as passing.
 
 ## Current: harmonic-perception audit rejected the proposed replacement
 
