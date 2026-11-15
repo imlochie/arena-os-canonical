@@ -115,6 +115,19 @@ if (codeFailures.length > 0) {
   );
 }
 
+// The uncaught exception's own message is the only description of why the test
+// body stopped, and job logs are unreachable from the environment triaging this
+// workflow. Publish it.
+const uncaughtBlocks = [...output.matchAll(/failureType: 'uncaughtException'[\s\S]{0,1200}?message: '([^']{0,600})'/g)]
+  .map((match) => match[1]);
+for (const message of [...new Set(uncaughtBlocks)].slice(0, 4)) {
+  console.error(`::warning::UNCAUGHT_UNEXPECTED ${message.slice(0, 600)}`);
+}
+const uncaughtErrorLine = [...output.matchAll(/^\s*error: '((?:[^'\\]|\\.){0,400})'$/gm)]
+  .map((match) => match[1]);
+for (const message of [...new Set(uncaughtErrorLine)].slice(0, 4)) {
+  console.error(`::warning::UNCAUGHT_MESSAGE ${message.slice(0, 400)}`);
+}
 const uncaught = output.includes("failureType: 'uncaughtException'");
 const noise = TEARDOWN_NOISE.test(output);
 
