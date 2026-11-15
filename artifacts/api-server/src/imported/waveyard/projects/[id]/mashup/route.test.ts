@@ -130,6 +130,109 @@ function tone(frequencies: number[], seconds: number, amplitude = 0.2): Float32A
   return pcm;
 }
 
+/**
+ * End-to-end musical acceptance fixture.
+ *
+ * The older fixtures are pure tones where the bed's drum stem and a donor's
+ * drum stem are *the same 260 Hz tone*. That makes "did the replacement
+ * actually remove the original drums?" unanswerable: any 260 Hz energy left in
+ * the export could be either source. These fixtures give every role a distinct
+ * frequency and give the percussive roles a real section structure, so source
+ * attribution and section re-derivation are both measurable from the exported
+ * audio alone.
+ *
+ * Percussive parts are short decaying hits on a bar grid rather than sustained
+ * tones: a sustained tone has no transients, and section detection works from
+ * the onset envelope. Without hits there is nothing to derive sections from,
+ * which is exactly what the old fixture could not express.
+ */
+const ACCEPTANCE = {
+  originalBedDrumsHz: 260,
+  donorDrumsHz: 420,
+  bedBassHz: 70,
+  bedOtherHz: 110,
+  bedVocalHz: 1_000,
+  donorVocalHz: 1_500,
+  bpm: 120,
+  bedSeconds: 32,
+  donorVocalSeconds: 8,
+  donorDrumsSeconds: 16,
+} as const;
+
+/** One decaying percussive hit. */
+function hit(frames: Int32Array, startFrame: number, frequency: number, amplitude: number) {
+  const length = Math.round(RATE * 0.12);
+  for (let offset = 0; offset < length && startFrame + offset < frames.length; offset += 1) {
+    const t = offset / RATE;
+    const envelope = Math.exp(-28 * t);
+    const value = Math.sin(2 * Math.PI * frequency * t) * envelope * amplitude;
+    frames[startFrame + offset] += Math.round(value * 32_767);
+  }
+}
+
+/**
+ * A bar-structured percussive part: hits on every beat, with a louder accent on
+ * each bar downbeat, and the pattern changing every four bars so the onset
+ * envelope has genuine section transitions to find.
+ */
+function percussiveStem(
+  frequency: number,
+  seconds: number,
+  options: { beatsPerBar?: number; barsPerSection?: number; amplitude?: number } = {},
+): Int16Array {
+  const beatsPerBar = options.beatsPerBar ?? 4;
+  const barsPerSection = options.barsPerSection ?? 4;
+  const amplitude = options.amplitude ?? 0.5;
+  const frames = new Int32Array(Math.round(seconds * RATE));
+  const beatFrames = Math.round((60 / ACCEPTANCE.bpm) * RATE);
+  const totalBeats = Math.floor(frames.length / beatFrames);
+  for (let beat = 0; beat < totalBeats; beat += 1) {
+    const bar = Math.floor(beat / beatsPerBar);
+    const beatInBar = beat % beatsPerBar;
+    const section = Math.floor(bar / barsPerSection);
+    // Downbeats are accented; every other section drops to half density so the
+    // boundary between sections is visible in the envelope, not just implied.
+    const sparse = section % 2 === 1;
+    if (sparse && beatInBar !== 0) continue;
+    const accent = beatInBar === 0 ? 1 : 0.45;
+    hit(frames, beat * beatFrames, frequency, amplitude * accent);
+  }
+  const pcm = new Int16Array(frames.length * 2);
+  for (let frame = 0; frame < frames.length; frame += 1) {
+    pcm[frame * 2] = frames[frame]!;
+    pcm[frame * 2 + 1] = frames[frame]!;
+  }
+  return pcm;
+}
+
+/** A sustained role (bass, pads, vocal): steady tone, no percussion. */
+function sustainedStem(frequency: number, seconds: number, amplitude = 0.12): Int16Array {
+  const mono = tone([frequency], seconds, amplitude);
+  const pcm = new Int16Array(mono.length);
+  for (let index = 0; index < mono.length; index += 1) {
+    pcm[index] = Math.round((mono[index] ?? 0) * 32_767);
+  }
+  return pcm;
+}
+
+function encodeInt16Wav(pcm: Int16Array, sampleRate = RATE): Buffer {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.byteLength, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(2, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 4, 28);
+  header.writeUInt16LE(4, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.byteLength, 40);
+  return Buffer.concat([header, Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength)]);
+}
+
 function mixTones(parts: Array<[number, number]>, seconds: number): Float32Array {
   const frames = Math.round(seconds * RATE);
   const pcm = new Float32Array(frames * 2);
@@ -186,6 +289,20 @@ function energyAt(pcm: Float32Array, frequency: number, startMs: number, endMs: 
     count += 1;
   }
   return Math.hypot(real, imaginary) / Math.max(1, count);
+}
+
+/** The parts of a mashup plan this acceptance reads. */
+interface MashupPlanShape {
+  durationMs: number;
+  masterBpm: number;
+  vocalsStretchRatio: number;
+  segments: Array<{
+    mashupStartMs: number;
+    mashupEndMs: number;
+    vocalsFromMs: number;
+    vocalsToMs: number;
+  }>;
+  warnings: string[];
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -1621,6 +1738,135 @@ test(
       { stemType: "drums", seconds: VOCAL_SECONDS },
     ]);
 
+    /**
+     * Sources for the end-to-end musical acceptance (see ACCEPTANCE above).
+     * Same bookkeeping as `addFixtureSource`, but each role gets its own
+     * frequency and the percussive roles get real section structure.
+     */
+    const addAcceptanceSource = async (
+      label: string,
+      stems: Array<{ stemType: FixtureStemType; pcm: Int16Array }>,
+    ) => {
+      const longest = stems.reduce((max, stem) => Math.max(max, stem.pcm.length), 0);
+      const audioPcm = new Int16Array(longest);
+      for (const stem of stems) for (let i = 0; i < stem.pcm.length; i += 1) audioPcm[i] = Math.max(-32768, Math.min(32767, audioPcm[i]! + stem.pcm[i]!));
+      const audioBytes = encodeInt16Wav(audioPcm);
+      const storageKey = `mashup-fixture/${label}-original.wav`;
+      const filePath = path.join(fixtureRoot, `${label}-original.wav`);
+      await writeFile(filePath, audioBytes);
+      await storage.putFile(storageKey, filePath);
+      const [source] = await dbModule.db.insert(schema.sourceAssets).values({
+        projectId: project.id,
+        originalFilename: `${label}-original.wav`,
+        mimeType: "audio/wav",
+        storageKey,
+        checksumSha256: sha256(audioBytes),
+        durationSeconds: longest / 2 / RATE,
+        sampleRate: RATE,
+        channels: 2,
+        codec: "pcm_s16le",
+        fileSizeBytes: audioBytes.length,
+      }).returning({ id: schema.sourceAssets.id });
+      assert.ok(source);
+      const [job] = await dbModule.db.insert(schema.processingJobs).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        type: "separation",
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-${label}-${randomUUID()}`,
+        model: "test",
+        metadata: JSON.stringify({ sourceChecksumSha256: sha256(audioBytes) }),
+        requestedDevice: "cpu",
+        resolvedDevice: "cpu",
+        completedAt: new Date(),
+      }).returning({ id: schema.processingJobs.id });
+      assert.ok(job);
+      for (const { stemType, pcm } of stems) {
+        const stemWav = encodeInt16Wav(pcm);
+        const stemStorageKey = `mashup-fixture/${label}-${stemType}.wav`;
+        const stemPath = path.join(fixtureRoot, `${label}-${stemType}.wav`);
+        await writeFile(stemPath, stemWav);
+        await storage.putFile(stemStorageKey, stemPath);
+        await dbModule.db.insert(schema.stemAssets).values({
+          projectId: project.id,
+          sourceAssetId: source.id,
+          separationJobId: job.id,
+          stemType,
+          engine: "demucs",
+          model: "test",
+          modelVersion: "test",
+          storageKey: stemStorageKey,
+          checksumSha256: sha256(stemWav),
+          durationSeconds: pcm.length / 2 / RATE,
+          sampleRate: RATE,
+          channels: 2,
+          codec: "wav",
+          format: "wav",
+          fileSizeBytes: stemWav.length,
+        });
+      }
+      await dbModule.db.insert(schema.sourceAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `mashup-analysis-${randomUUID()}`,
+        analysisEngine: "test",
+        analysisEngineVersion: "test",
+        sourceChecksumSha256: sha256(audioBytes),
+        bpm: ACCEPTANCE.bpm,
+        bpmConfidence: 0.9,
+        musicalKey: "C major",
+        keyConfidence: 0.9,
+        beatGrid: JSON.stringify(
+          Array.from({ length: Math.floor((longest / 2 / RATE) * (ACCEPTANCE.bpm / 60)) + 1 },
+            (_, beat) => Math.round(beat * (60 / ACCEPTANCE.bpm) * 1000)),
+        ),
+        beatConfidence: 0.9,
+        completedAt: new Date(),
+      });
+      return source.id;
+    };
+
+    const acceptanceBedId = await addAcceptanceSource("acceptance-bed", [
+      { stemType: "drums", pcm: percussiveStem(ACCEPTANCE.originalBedDrumsHz, ACCEPTANCE.bedSeconds) },
+      { stemType: "bass", pcm: sustainedStem(ACCEPTANCE.bedBassHz, ACCEPTANCE.bedSeconds) },
+      { stemType: "other", pcm: sustainedStem(ACCEPTANCE.bedOtherHz, ACCEPTANCE.bedSeconds) },
+    ]);
+    // A real separation emits every stem at the source's full length, so the
+    // vocal stem is padded to the donor source length with silence after the
+    // vocal body. That is also the honest shape for the bed-outlasts-vocal case:
+    // 8s of vocal inside a 16s donor inside a 32s bed.
+    const acceptanceVocalStem = sustainedStem(ACCEPTANCE.donorVocalHz, ACCEPTANCE.donorVocalSeconds, 0.2);
+    const acceptanceVocalPadded = new Int16Array(Math.round(ACCEPTANCE.donorDrumsSeconds * RATE) * 2);
+    acceptanceVocalPadded.set(acceptanceVocalStem, 0);
+    const acceptanceVocalId = await addAcceptanceSource("acceptance-vocal", [
+      { stemType: "vocals", pcm: acceptanceVocalPadded },
+      {
+        stemType: "drums",
+        pcm: percussiveStem(ACCEPTANCE.donorDrumsHz, ACCEPTANCE.donorDrumsSeconds, {
+          beatsPerBar: 4,
+          barsPerSection: 2,
+          amplitude: 0.45,
+        }),
+      },
+    ]);
+
+    const stemIdForAcceptance = async (sourceId: string, stemType: FixtureStemType) => {
+      const [row] = await dbModule.db.select().from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, sourceId),
+        eq(schema.stemAssets.stemType, stemType),
+      ));
+      assert.ok(row, `the acceptance fixture must have a ${stemType} stem`);
+      return row!.id;
+    };
+    const acceptanceDonorDrumsStemId = await stemIdForAcceptance(acceptanceVocalId, "drums");
+    const acceptanceBedDrumsStemId = await stemIdForAcceptance(acceptanceBedId, "drums");
+
     const renderPair = (vocalsId: string, instrumentalId: string, extra: Record<string, unknown>) =>
       new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
         method: "POST",
@@ -2105,6 +2351,254 @@ test(
       assert.equal(replaceRender.status, 200);
       const renderedReplacePcm = decodeWav16(new Uint8Array(await replaceRender.arrayBuffer()));
       assert.ok(renderedReplacePcm);
+
+      // =====================================================================
+      // End-to-end musical acceptance: composition-first swap, all the way to
+      // exported audio, with source attribution measured from the audio.
+      //
+      // The fixture gives every role its own frequency (bed drums 260 Hz,
+      // donor drums 420 Hz, bed bass 70 Hz, bed pads 110 Hz, donor vocal
+      // 1500 Hz), so "did the original drums leave?" and "did the donor drums
+      // arrive?" are separate measurable questions instead of one number that
+      // one source can satisfy by accident. The percussive parts are
+      // bar-structured with alternating sparse sections, so the composed bed
+      // has genuine transitions for section detection to find.
+      // =====================================================================
+      const acceptanceSwapRequest = (extra: Record<string, unknown>) => renderPair(
+        acceptanceVocalId,
+        acceptanceBedId,
+        { layerStemTypes: ["drums"], stemLayerMode: "replace", ...extra },
+      );
+
+      // What the original bed alone would have planned, for comparison.
+      const acceptanceOriginalPlanResponse = await routeModule.POST(
+        renderPair(acceptanceVocalId, acceptanceBedId, { action: "plan" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      const acceptanceOriginalPlan = await acceptanceOriginalPlanResponse.json() as {
+        plan?: MashupPlanShape;
+        error?: string;
+      };
+      assert.ok(acceptanceOriginalPlan.plan,
+        `the original bed must still plan, for comparison; got ${JSON.stringify(acceptanceOriginalPlan)}`);
+      // What the composed bed (bed minus drums, plus the donor's drums) plans.
+      const acceptancePlanResponse = await routeModule.POST(
+        acceptanceSwapRequest({ action: "plan" }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(acceptancePlanResponse.status, 200, "the acceptance composition must be plannable");
+      const acceptancePlan = await acceptancePlanResponse.json() as {
+        plan: MashupPlanShape;
+        plannedAgainst: { kind: string };
+      };
+      assert.equal(acceptancePlan.plannedAgainst.kind, "composition",
+        "the acceptance plan must be planned against the composed bed");
+
+      // The vocal entry is the bed's first body section. A replacement that
+      // only substituted PCM would leave that entry on the old bed's boundary,
+      // so the entry has to move when the per-role percussion changes.
+      const acceptanceEntryMs = acceptancePlan.plan.segments[0]!.mashupStartMs;
+      assert.notEqual(
+        acceptanceEntryMs,
+        acceptanceOriginalPlan.plan!.segments[0]!.mashupStartMs,
+        "a drums replacement re-measures the composed bed, so the vocal entry must not stay at the original bed's section boundary",
+      );
+      assert.ok(
+        acceptancePlan.plan.segments.every((segment) => segment.mashupStartMs >= 0
+          && segment.mashupEndMs <= acceptancePlan.plan.durationMs),
+        "every planned segment must lie inside the arrangement",
+      );
+      const acceptanceRender = await routeModule.POST(
+        acceptanceSwapRequest({}),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(acceptanceRender.status, 200, "the acceptance replacement must render");
+      assert.equal(acceptanceRender.headers.get("x-waveyard-planned-against"), "composition",
+        "the acceptance render must be planned against the composed bed");
+      const acceptanceRenderWav = decodeWav16(new Uint8Array(await acceptanceRender.arrayBuffer()));
+      assert.ok(acceptanceRenderWav && acceptanceRenderWav.frames > 0, "the acceptance render must be real audio");
+
+      const renderWindow = Math.min(2000, Math.floor((acceptanceRenderWav!.frames / RATE) * 1000));
+      const renderOriginalDrums = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.originalBedDrumsHz, 0, renderWindow);
+      const renderDonorDrums = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.donorDrumsHz, 0, renderWindow);
+      const renderBass = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.bedBassHz, 0, renderWindow);
+      const renderPads = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.bedOtherHz, 0, renderWindow);
+      assert.ok(renderBass > 0.001, `the retained bass must survive the swap (${renderBass})`);
+      assert.ok(renderPads > 0.001, `the retained pads must survive the swap (${renderPads})`);
+      assert.ok(renderDonorDrums > renderOriginalDrums * 10,
+        `the donor drums must dominate the replaced drums in the render (donor ${renderDonorDrums} vs original ${renderOriginalDrums})`);
+      assert.ok(renderOriginalDrums < renderBass / 10,
+        `the original drums must be absent from the render (${renderOriginalDrums} vs bass ${renderBass})`);
+
+      // Save the arrangement that was just rendered. `saveFor` is pinned to the
+      // older full-bed fixtures, so the acceptance composition is saved from
+      // its own sources; otherwise the persisted session would describe a
+      // different arrangement than the one heard.
+      const acceptanceSave = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            vocalsSourceId: acceptanceVocalId,
+            instrumentalSourceId: acceptanceBedId,
+            alignmentStrategy: "continuous",
+            layerStemTypes: ["drums"],
+            stemLayerMode: "replace",
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(acceptanceSave.status, 201, "the acceptance composition must be saveable");
+      const acceptanceSaveBody = await acceptanceSave.json() as {
+        remix: { id: string };
+        version: { id: string };
+        warnings?: string[];
+        plannedAgainst?: string;
+        replacedBedStemTypes?: string[];
+      };
+      // The replacement is a replacement: one drums part, not two. Recording
+      // it on the saved session is what lets a reopen distinguish a swap from
+      // a layer instead of inferring it from the audio.
+      assert.deepEqual(acceptanceSaveBody.replacedBedStemTypes, ["drums"],
+        "the saved session must record that it replaced the bed's drums rather than layering them");
+      assert.equal(acceptanceSaveBody.plannedAgainst, "composition",
+        "the saved plan must record that it was built from the composed bed");
+      const acceptanceWarnings = acceptanceSaveBody.warnings ?? [];
+      // The owner's fail-closed rule: if anything could not be re-analysed, the
+      // session must say so rather than present the stale analysis as fresh.
+      assert.ok(
+        acceptanceWarnings.some((warning) => /re-measured from the resulting stem composition/i.test(warning)),
+        `the saved plan must disclose what the arrangement was measured from; got ${JSON.stringify(acceptanceWarnings)}`,
+      );
+      assert.ok(
+        !acceptanceWarnings.some((warning) => /could NOT be re-derived|could not be re-analysed/i.test(warning)),
+        `the composed bed must be genuinely re-analysed, not fall back with a warning; got ${JSON.stringify(acceptanceWarnings)}`,
+      );
+
+      const acceptanceReopen = await (await import("../../../../remixes/[id]/route")).GET(
+        new Request(`http://localhost/api/remixes/${acceptanceSaveBody.remix.id}`),
+        { params: Promise.resolve({ id: acceptanceSaveBody.remix.id }) },
+      );
+      assert.equal(acceptanceReopen.status, 200, "the saved acceptance session must reopen");
+      const acceptanceReopened = await acceptanceReopen.json() as {
+        remix: { id: string; version: number };
+        tracks: Array<{
+          stemAssetId: string;
+          clips: Array<{ stemAssetId: string; timelineStartMs: number; durationMs: number; sourceOffsetMs: number }>;
+        }>;
+      };
+      const accReopenedClips = acceptanceReopened.tracks.flatMap((track) => track.clips);
+      assert.ok(accReopenedClips.length > 0, "the reopened session must keep its clips");
+      const accReopenedStemIds = new Set(accReopenedClips.map((clip) => clip.stemAssetId));
+      assert.equal(accReopenedStemIds.has(acceptanceBedDrumsStemId), false,
+        "the reopened session must not contain the replaced bed drums");
+      assert.ok(accReopenedStemIds.has(acceptanceDonorDrumsStemId),
+        "the reopened session must carry the donor drums that replaced them");
+
+      // Export the reopened session through the real export worker.
+      const [acceptanceExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: acceptanceSaveBody.remix.id,
+        remixVersionId: acceptanceSaveBody.version.id,
+        requestedById: (await dbModule.db.select().from(schema.remixSessions)
+          .where(eq(schema.remixSessions.id, acceptanceSaveBody.remix.id)))[0]!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `acceptance-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(acceptanceExportJob);
+      const acceptanceExportWorker = await import("@workspace/arena/lib/waveyard/worker-local/export");
+      await acceptanceExportWorker.handleExportJob({
+        exportJobId: acceptanceExportJob.id,
+        projectId: project.id,
+        remixSessionId: acceptanceSaveBody.remix.id,
+        remixVersionId: acceptanceSaveBody.version.id,
+        format: "wav",
+      });
+      const [acceptanceExportAsset] = await dbModule.db.select().from(schema.exportAssets)
+        .where(eq(schema.exportAssets.exportJobId, acceptanceExportJob.id));
+      assert.ok(acceptanceExportAsset, "the acceptance composition must survive the real export worker");
+      const acceptanceExportMedia = await (await import("../../../../exports/[id]/media/route")).GET(
+        new Request(`http://localhost/api/exports/${acceptanceExportJob.id}/media`),
+        { params: Promise.resolve({ id: acceptanceExportJob.id }) },
+      );
+      assert.equal(acceptanceExportMedia.status, 200);
+      const acceptanceExportWav = decodeWav16(new Uint8Array(await acceptanceExportMedia.arrayBuffer()));
+      assert.ok(acceptanceExportWav && acceptanceExportWav.frames > 0, "the export must be real audio");
+
+      // The exported file is what the owner would listen to, so it must be the
+      // same arrangement: the replaced drums gone, the donor drums present.
+      const exportWindow = Math.min(2000, Math.floor((acceptanceExportWav!.frames / RATE) * 1000));
+      const exportOriginalDrums = energyAt(acceptanceExportWav!.samples, ACCEPTANCE.originalBedDrumsHz, 0, exportWindow);
+      const exportDonorDrums = energyAt(acceptanceExportWav!.samples, ACCEPTANCE.donorDrumsHz, 0, exportWindow);
+      const exportBass = energyAt(acceptanceExportWav!.samples, ACCEPTANCE.bedBassHz, 0, exportWindow);
+      assert.ok(exportBass > 0.001, `the exported session must retain the bed bass (${exportBass})`);
+      assert.ok(exportOriginalDrums < exportBass / 10,
+        `the exported session must not contain the replaced bed drums (${exportOriginalDrums} vs bass ${exportBass})`);
+      // The donor drums are percussive, so this is a ratio rather than an
+      // absolute level. Export applies the donor's key sync and its own track
+      // gain, neither of which the render applies identically, so the bar is
+      // "present and the only drums" rather than "bit-identical to the render".
+      assert.ok(exportDonorDrums > exportOriginalDrums * 10,
+        `the exported donor drums must be present and dominate the replaced drums (donor ${exportDonorDrums} vs original ${exportOriginalDrums})`);
+      // The export must not be shorter than the arrangement it claims to be.
+      assert.ok(
+        Math.abs(acceptanceExportWav!.frames / RATE - acceptancePlan.plan.durationMs / 1000) < 0.25,
+        `the export must reproduce the planned length (${acceptanceExportWav!.frames / RATE}s vs ${acceptancePlan.plan.durationMs}ms)`,
+      );
+
+      // Preserve the audio evidence for download. A passing assertion without
+      // the audible result is not evidence the owner can judge.
+      const evidenceDir = process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR?.trim();
+      if (evidenceDir) {
+        await mkdir(evidenceDir, { recursive: true });
+        await writeFile(path.join(evidenceDir, "acceptance-render.wav"),
+          Buffer.from(new Uint8Array(await (await routeModule.POST(
+            acceptanceSwapRequest({}),
+            { params: Promise.resolve({ id: project.id }) },
+          )).arrayBuffer())));
+        await writeFile(path.join(evidenceDir, "acceptance-export.wav"),
+          Buffer.from(new Uint8Array(await (await (await import("../../../../exports/[id]/media/route")).GET(
+            new Request(`http://localhost/api/exports/${acceptanceExportJob.id}/media`),
+            { params: Promise.resolve({ id: acceptanceExportJob.id }) },
+          )).arrayBuffer())));
+        await writeFile(path.join(evidenceDir, "acceptance-evidence.json"), JSON.stringify({
+          fixture: ACCEPTANCE,
+          note: "Percussive parts are synthetic bar-structured hits with one distinct frequency per role. This proves source attribution, section re-derivation and render/save/reopen/export agreement end to end. It is NOT a musical-quality judgement and no listening test has been run against it.",
+          plan: {
+            plannedAgainst: acceptancePlan.plannedAgainst,
+            masterBpm: acceptancePlan.plan.masterBpm,
+            vocalsStretchRatio: acceptancePlan.plan.vocalsStretchRatio,
+            durationMs: acceptancePlan.plan.durationMs,
+            vocalEntryMs: acceptanceEntryMs,
+            originalBedVocalEntryMs: acceptanceOriginalPlan.plan!.segments[0]!.mashupStartMs,
+            replacedBedStemTypes: acceptanceSaveBody.replacedBedStemTypes ?? [],
+            segments: acceptancePlan.plan.segments,
+            warnings: acceptanceWarnings,
+          },
+          render: { originalDrumsHz: renderOriginalDrums, donorDrumsHz: renderDonorDrums, bassHz: renderBass, padsHz: renderPads },
+          export: {
+            originalDrumsHz: exportOriginalDrums,
+            donorDrumsHz: exportDonorDrums,
+            bassHz: exportBass,
+            durationSeconds: acceptanceExportWav!.frames / RATE,
+            fileSizeBytes: acceptanceExportAsset.fileSizeBytes,
+            checksumSha256: acceptanceExportAsset.checksumSha256,
+          },
+          reopened: {
+            clipCount: accReopenedClips.length,
+            containsReplacedBedDrums: accReopenedStemIds.has(acceptanceBedDrumsStemId),
+            containsDonorDrums: accReopenedStemIds.has(acceptanceDonorDrumsStemId),
+          },
+        }, null, 2));
+        console.error(`ACCEPTANCE_ARTIFACTS ${evidenceDir}`);
+      } else {
+        console.error("ACCEPTANCE_ARTIFACTS skipped: WAVEYARD_ACCEPTANCE_ARTIFACT_DIR is not set, so the rendered and exported audio were not preserved for listening");
+      }
 
       const replaceSave = await routeModule.POST(
         saveFor({ layerStemTypes: ["drums"], stemLayerMode: "replace" }),
@@ -3438,6 +3932,7 @@ test(
         .where(eq(schema.remixSessions.id, savedSession.id));
       assert.equal(updatedSession.version, savedSession.version + 1);
       assert.equal(updatedSession.masterVolume, 0.9);
+
     }
   } finally {
     // Close the pool before stopping the server, then clear the handle so a

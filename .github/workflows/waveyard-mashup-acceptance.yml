@@ -125,6 +125,10 @@ jobs:
         env:
           DATABASE_URL: postgres://unit@127.0.0.1:1/unit
           WAVEYARD_TEARDOWN_DIAGNOSTICS: "1"
+          # The end-to-end acceptance writes the rendered WAV and the exported
+          # WAV here. A passing assertion is not the evidence the owner asks
+          # for; the audio has to be downloadable and listened to.
+          WAVEYARD_ACCEPTANCE_ARTIFACT_DIR: ${{ github.workspace }}/generated-artifacts/mashup-linux/acceptance-audio
           # The suite prints "# TEARDOWN_DIAGNOSTICS ..." from inside the
           # reporter's own stream. Published to $GITHUB_STEP_SUMMARY so the
           # evidence survives even when only the summary is retrievable.
@@ -156,6 +160,16 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           node scripts/waveyard-mashup-route-verdict.mjs "$evidence/route.txt"
+          # The route suite must have actually produced the audio evidence, not
+          # merely passed assertions about audio it never wrote.
+          audio="$evidence/acceptance-audio"
+          for expected in acceptance-render.wav acceptance-export.wav acceptance-evidence.json; do
+            if [ ! -s "$audio/$expected" ]; then
+              echo "::error::Missing acceptance audio evidence: $expected. A passing assertion without the audio is not acceptable evidence."
+              exit 1
+            fi
+          done
+          ls -l "$audio" | tee -a "$evidence/acceptance-audio-manifest.txt"
 
       - name: Retain evidence
         if: always()
@@ -164,3 +178,16 @@ jobs:
           name: waveyard-mashup-linux
           path: generated-artifacts/mashup-linux
           if-no-files-found: warn
+
+      # Separate, clearly named artifact so a listener does not have to dig
+      # through logs to find the audio this job exists to produce.
+      - name: Retain acceptance audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveyard-acceptance-audio
+          path: |
+            generated-artifacts/mashup-linux/acceptance-audio/*.wav
+            generated-artifacts/mashup-linux/acceptance-audio/*.json
+          if-no-files-found: warn
+          retention-days: 30

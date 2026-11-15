@@ -1673,7 +1673,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             snapshot: JSON.stringify(snapshot),
           }).returning();
 
-          return { remix, version, warnings: compositionWarnings };
+          // The plan's own warnings include the composed-bed disclosure (which
+          // analysis the arrangement was built from). Reporting only the
+          // layer-mode note meant a saved session silently dropped the statement
+          // that its sections and tempo came from the composed bed — a reopened
+          // arrangement that cannot say what it was planned against. The render
+          // path already reports these; the save path must not disagree with it.
+          const planWarnings = [...planned.plan.warnings];
+          return {
+            remix,
+            version,
+            warnings: [...new Set([...compositionWarnings, ...planWarnings])],
+          };
         });
 
         return Response.json(

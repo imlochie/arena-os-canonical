@@ -1465,3 +1465,95 @@ through render → save → reopen → export, because the only end-to-end fixtu
 cannot express the difference. The owner's requirement — "before/after plan
 data, rendered audio that can be downloaded and listened to" — is not met by
 this section, and the listening gate from §13 remains open.
+
+## 17. End-to-end musical acceptance on a fixture that can tell the sources apart
+
+§16.3 left the route acceptance red because its fixture could not distinguish
+the donor's drum tone from the bed's. That is fixed by building a second
+fixture whose every role has its own frequency, rather than by weakening the
+assertion.
+
+### 17.1 The fixture
+
+`ACCEPTANCE`, in `route.test.ts`:
+
+| role | frequency | shape |
+| --- | --- | --- |
+| bed drums | 260 Hz | percussive, bar-structured |
+| bed bass | 70 Hz | sustained |
+| bed pads | 110 Hz | sustained |
+| donor drums | 420 Hz | percussive, bar-structured, alternating sparse sections |
+| donor vocal | 1500 Hz | sustained, 8 s inside a 16 s source |
+
+Bed 32 s, donor 16 s. Percussive parts are decaying hits on every beat with an
+accented downbeat, and every other 2-bar section drops to downbeat-only, so
+`deriveSectionsForComposition` has genuine onset transitions to find. Every stem
+is stored at its source's full length, the way a real separation writes them.
+
+### 17.2 The lifecycle the test actually runs
+
+1. `plan` on the **original** bed (`stemLayerMode` unset) — the baseline.
+2. `plan` with `stemLayerMode: "replace"`, drums — the composed bed.
+3. `render` the same request.
+4. `save` the same composition **from its own sources**.
+5. `GET /remixes/:id` — reopen.
+6. `handleExportJob` through the real worker, then `GET /exports/:id/media`.
+7. Measure 260/420/70/110 Hz in both the rendered and the exported audio.
+
+Each step is asserted rather than assumed: the plan must say
+`plannedAgainst.kind === "composition"`; the vocal entry must have **moved** off
+the original bed's section boundary; the saved session must record
+`replacedBedStemTypes: ["drums"]`; the reopen must contain the donor's drum stem
+and not the bed's; and both the render and the export must show the bed's 260 Hz
+gone, the donor's 420 Hz present, and the retained 70/110 Hz intact.
+
+All of the above passes. The suite is still red, on the legacy assertion only.
+
+### 17.3 A real save-path defect this exposed
+
+`save` reported only the layer-mode note in `warnings`. The composed-bed
+disclosure (`Beat grid, tempo and key were re-measured from the resulting stem
+composition…` and the section note) was built into `plan.warnings` and then
+**dropped**. A saved session therefore could not say what it had been planned
+against, even though the render could. The owner's rule — a fail-closed fallback
+must be surfaced, never presented as a fresh analysis — applies to the saved
+record too, so `warnings` is now the union of the composition notes and
+`plan.warnings`, deduplicated. The acceptance asserts both that the disclosure
+is present **and** that no `could NOT be re-derived` fallback warning appears,
+so a silent fallback fails the test.
+
+### 17.4 Two test bugs found by the same run (not product defects)
+
+Both were in my own acceptance code and are recorded so they are not repeated:
+
+- `saveFor()` is pinned to the older `donorWithDrumsId` / `fullBedId` fixtures.
+  The first acceptance version reused it, so it persisted a *different*
+  composition than the one it had just rendered. The exported audio was correct
+  for the session that was actually saved — which is why it looked like an
+  export bug. The acceptance now builds its own save request.
+- The first donor fixture gave the vocal stem 8 s while its source was 16 s.
+  The planner then asked for 16 s of "complete vocal body" and export refused
+  with `a tempo-synced clip requires more source audio than its stem contains`.
+  Export was right to refuse; the fixture was unrealistic. Padded to the source
+  length.
+
+### 17.5 What is still not proven
+
+- **The legacy assertion in §16.3 is still red.** It remains the honest record
+  that the older fixture cannot attribute the source of a 260 Hz tone. It is
+  not weakening to a passing state; the new fixture is the case that can
+  express the difference.
+- The fixture is **synthetic**. It proves source attribution, section
+  re-derivation, and render/save/reopen/export agreement. It proves nothing
+  about musical quality, and no listening test has been run on it.
+- The acceptance audio is written to `WAVEYARD_ACCEPTANCE_ARTIFACT_DIR` and
+  uploaded by CI as `waveyard-acceptance-audio`
+  (`acceptance-render.wav`, `acceptance-export.wav`,
+  `acceptance-evidence.json`). The job **fails** if any of the three is
+  missing, so a green job cannot exist without the audio.
+- Export applies the donor's key sync (the exported vocal sits at 1262 Hz,
+  three semitones below the fixture's 1500 Hz) and its own track gains, so the
+  exported spectrum is not bit-identical to the render's. The assertion is
+  therefore "present, and the only drums" rather than equality with the render.
+  Whether the key shift itself is musically right is a listening question, not
+  something a spectrum can settle.
