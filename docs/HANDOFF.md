@@ -1,5 +1,56 @@
 # Arena handoff — read this first
 
+## Latest increment: unmeasured vocal harmony no longer scores as agreement
+
+Work is on the existing PR #31 branch, `arena/669984d8-arena-os-canonical`,
+continuing from published head `5d9bc7b`. No new branch, no force-push, and the
+eight Codex commits (`aab151e`..`5d9bc7b`) are preserved unchanged.
+
+**The limitation.** `rankPassagePair` scores a passage pair as a weighted mean
+over the features that are present. The placed donor vocal's chord-tone fit
+against the bed (weight 0.12) was simply omitted when
+`scoreVocalChordToneFit` could not measure it — which shrinks the denominator
+and *raises* the mean. A placement whose harmony nobody could check therefore
+outranked one measured to clash. Through the real planner on a controlled
+fixture: unmeasurable placement **1.000, selected first**; measured C# against a
+C-major vocal **0.8937, second**. The planner preferred the arrangement it could
+not evaluate.
+
+**The fix.** `rankPassagePair` now separates "the cue does not apply" (no pitch
+frames, or no bed chords: the cue stays absent) from "the cue applies but could
+not be measured" (contributes zero agreement at full weight). Unknown therefore
+scores exactly like a measured maximum clash — never better, and never punished
+below one for being unknown. No threshold was introduced; the defect was a
+shrinking denominator. `vocalHarmonyAssessmentApplicable` makes the
+applicability decision explicit and is exported. The state is disclosed:
+candidates carry `vocalChordFitUnmeasured`, and a selected placement that is
+harmonically unverifiable says so in the plan's own warning.
+
+This is a **decision and disclosure** change only. `renderMashup`,
+`renderMashupWithBus`, `renderSongExtension` and export are untouched; the route
+acceptance fixture renders/exports at identical byte sizes with an unchanged key
+contract (−3 st, 1500 Hz donor, 1261/1262 Hz measured).
+
+**Verification.** `mashup.test.ts` **53/53** (3 new regressions),
+`note-harmony.test.ts` 5/5, `automatic-remix.test.ts` +
+`passage-compatibility.test.ts` 31/31, `harmonic-candidate.test.ts` 4/4 —
+focused set **93/93, 0 skipped, 0 failed**. `route.test.ts` with real
+PostgreSQL and real ffmpeg **1/1, 0 skipped, 0 failed**. `tsc --noEmit` clean
+for `lib/arena` and `artifacts/arenaforge`; `git diff --check` clean. Both
+ranking regressions are mutation-checked: reverting to the old behaviour fails
+both, restoring the fix passes both.
+
+**Not established.** No real-audio evaluation: all six pinned sources and eight
+pinned stems are absent and `waveyard-note-harmony-evaluation.ts` fails closed
+with `ENOENT`. No listening evidence — listener count is 0. The fit remains a
+relative, uncalibrated cue (chord-tone membership over stable notes; passing
+tones and suspensions are not classified) and can still be outvoted by rhythm,
+chroma and beat phase. The automatic hybrid planner's advisory
+`chordProgression` comparison still contrasts anchor and donor **source mixes**
+while a hybrid keeps only selected stems; that is the next honest gap and was
+not addressed here. Details:
+[`waveyard-harmonic-acceptance-readiness.md`](waveyard-harmonic-acceptance-readiness.md).
+
 ## Latest increment: use chord progression context in passage ranking
 
 The automatic-remix API now loads only complete source-mix harmony analyses
