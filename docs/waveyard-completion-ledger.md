@@ -1674,3 +1674,57 @@ question is answered where it can be answered.
 - **CI has not run.** The workflow uploads `waveyard-acceptance-audio` and fails
   if any expected file is missing, but no remote run of this commit has been
   observed yet, so no artifact link can be reported as existing.
+
+## 19. CI does not run this acceptance at all
+
+§18 was reported as verified with `1 pass, 0 fail, 0 skipped`. That was true
+**locally and only locally**. Running the workflow on the branch showed the
+acceptance never executes on CI.
+
+### 19.1 What CI actually reports
+
+Five runs on `ee60572`, `1fc6a09`, `6e3ee9a`, `0bc8f7c`, `b16714c` all end
+`failure`, with the route step quarantined and **no acceptance audio produced**.
+Instrumenting the test body from its first line showed:
+
+```
+ACCEPTANCE_PROGRESS test:start
+UNCAUGHT_MESSAGE terminating connection due to administrator command
+```
+
+The last stage reached is `test:start`. The acceptance block — which begins after
+PostgreSQL start, database creation, migrations and roughly a dozen fixture
+inserts — is never entered. `terminating connection due to administrator command`
+at that point is not a teardown race: the cluster is being shut down while the
+test is still in setup.
+
+### 19.2 The quarantine annotation was wrong, and said so in words
+
+The verdict script reported, in every one of those runs:
+
+> the single test failed only with a teardown-time uncaughtException … **after its
+> assertions passed**. No assertion failed.
+
+Neither clause was observed. An `uncaughtException` anywhere in the body yields
+the same shape, including before any assertion runs, and "no assertion failed"
+was true only because no assertion was reached. This is the same class of error
+the owner has been correcting throughout this work: a diagnostic that describes
+what was assumed rather than what happened.
+
+Fixed: the suite traces from `test:start`, the verdict script republishes the
+last stages reached and the uncaught message, and the annotation no longer
+asserts that assertions passed.
+
+### 19.3 What is therefore not proven
+
+- **The acceptance has not passed in CI.** It passes locally. That is not the
+  same claim, and it must not be reported as end-to-end verification.
+- **No CI artifact exists.** `waveyard-acceptance-audio` has never been
+  uploaded; the job fails its own gate before that. The owner cannot download
+  audio from CI yet.
+- **The composition-first fixes are verified locally only.** §18's three defects
+  and their fixes were measured by local runs with real ffmpeg and a real
+  PostgreSQL. Nothing about them has been reproduced on a runner.
+- The two previously-open reliability issues (WebKit timeout, PostgreSQL
+  teardown) are untouched, and this run suggests the PostgreSQL one is not the
+  explanation for this failure — it is upstream of it.
