@@ -1,5 +1,37 @@
 # Arena handoff — read this first
 
+## Current: donor replacement/layer timing maps
+
+The donor composition route now permits the existing conservative joint-tempo
+policy, instead of blanket-disabling it. It still requires strong, close tempo
+evidence from the **recomputed composition**; this does not authorize a shared
+tempo when re-analysis is weak. Both replacement and explicit layer changes
+invalidate/recompute composite evidence; unchanged source analysis remains
+stored. Layers over combined/original-file beds retain their supported path.
+
+Every donor instrumental clip gets its own source/checksum/clip-bound timing
+map, including an explicit identity map for unmeasured/native-rate fallback.
+This is a transform record, not newly measured BPM evidence. A vocal phrase's
+local warp is followed only over its measured span; remaining donor material
+continues at the planned constant ratio, bounded by that stem's source length
+and the available arrangement. Previously the renderer squeezed all remaining
+donor audio into the first vocal phrase's map, while save/export used different
+durations and generic BPM sync. Render and saved maps now share one constructor.
+Donor instruments retain their own pitch. Required donor maps fail closed during
+export rather than silently substituting a different timing transform.
+
+Verification: the full planner/render suite passed **49/49**, followed by the
+new shared-tempo donor PCM parity test (**1/1**). The PostgreSQL production-route
+suite passed **1/1, zero skipped**, including both mapped donor export modes
+and both missing-map refusals. Full workspace typecheck and diff check passed.
+The PCM checks use synthetic audio, not real-song listening acceptance. The
+shared-tempo donor PCM regression compares the render against the same map
+renderer used by Studio preview, **after** the vocal phrase has ended.
+The PostgreSQL regression covers replacement and layer save/reopen/export,
+independently bounded donor maps, and export refusal when a required map is
+removed. This is not browser playback verification, an arbitrary-source
+joint optimizer, or evidence of improved groove/phrase compatibility.
+
 ## Current: bounded joint-tempo playback and saved-bed parity
 
 On `arena/669984d8-arena-os-canonical`, extend the existing planner, mix bus

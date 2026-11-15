@@ -9,6 +9,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { donorClipTempoMap, parseLocalTempoMap, renderLocalTempoMapWhole } from "./local-tempo-map";
+
+test("donor timing extends a phrase warp without compressing the remaining stem", () => {
+  const phrase = {
+    points: [{ sourceMs: 0, outputMs: 0 }, { sourceMs: 1000, outputMs: 1090 }, { sourceMs: 2000, outputMs: 2200 }],
+    baselineFit: { matchedBeats: 0, comparedBeats: 1, meanErrorMs: 0 },
+    correctedFit: { matchedBeats: 0, comparedBeats: 1, meanErrorMs: 0 },
+    maximumRateDeviationPercent: 1,
+    entryShiftMs: 0,
+  };
+  const map = donorClipTempoMap(8000, 10000, 1.1, phrase)!;
+  assert.deepEqual(map.points.at(-1), { sourceMs: 8000, outputMs: 8800 });
+  assert.deepEqual(map.points.slice(0, 3), phrase.points);
+  assert.ok(parseLocalTempoMap(map, 1.1));
+  const cropped = donorClipTempoMap(8000, 5500, 1.1, phrase)!;
+  assert.ok(Math.abs(cropped.points.at(-1)!.sourceMs - 5000) < 0.001);
+  assert.equal(cropped.points.at(-1)!.outputMs, 5500);
+  const short = donorClipTempoMap(1500, 10000, 1.1, phrase)!;
+  assert.equal(short.points.at(-1)!.sourceMs, 1500);
+  assert.equal(short.points.at(-1)!.outputMs, 1645);
+  assert.equal(donorClipTempoMap(0, 1000, 1), null);
+  assert.equal(donorClipTempoMap(1000, 0, 1), null);
+});
+
+test("donor timing preserves independent source lengths at a shared tempo", () => {
+  const drums = donorClipTempoMap(4000, 8000, 104 / 102)!;
+  const bass = donorClipTempoMap(6000, 8000, 104 / 102)!;
+  assert.equal(drums.points.at(-1)!.sourceMs, 4000);
+  assert.equal(bass.points.at(-1)!.sourceMs, 6000);
+  assert.ok(bass.points.at(-1)!.outputMs > drums.points.at(-1)!.outputMs);
+  assert.ok(parseLocalTempoMap(drums, 104 / 102));
+  assert.ok(parseLocalTempoMap(bass, 104 / 102));
+});
+
 import {
   compareMashupAlignmentCandidates,
   pitchMoveForKeys,
@@ -49,6 +83,44 @@ function profile(overrides: Partial<MashupSourceProfile>): MashupSourceProfile {
     ...overrides,
   };
 }
+
+test("shared-tempo donor render matches the saved map beyond the vocal phrase", () => {
+  const result = planMashup(
+    profile({ role: "vocals", durationMs: 2000, bpm: 104 }),
+    profile({ role: "instrumental", durationMs: 4000, bpm: 100 }),
+  );
+  assert.ok(result.ok);
+  assert.equal(result.plan.masterBpm, 102);
+  const ratio = result.plan.vocalsStretchRatio;
+  const phrase = donorClipTempoMap(1000, 2000, ratio)!;
+  const segment = {
+    ...result.plan.segments[0]!,
+    vocalsFromMs: 0, vocalsToMs: 1000,
+    mashupStartMs: 0, mashupEndMs: Math.round(1000 * ratio),
+    localTempoMap: phrase,
+  };
+  const plan = { ...result.plan, segments: [segment] };
+  const donor = Float32Array.from({ length: RATE * 3 * 2 }, (_, index) =>
+    0.2 * Math.sin(Math.floor(index / 2) / RATE * Math.PI * 2 * 220));
+  const actual = renderMashupWithBus(plan, {
+    vocals: new Float32Array(RATE * 2 * 2), bed: new Float32Array(RATE * 4 * 2),
+    stems: new Map([["donor_drums", donor]]), layerStemTypes: ["drums"],
+    sampleRate: RATE, mix: { matchVocalLoudness: false, limit: false },
+  }).pcm;
+  const map = donorClipTempoMap(3000, plan.durationMs, ratio, phrase)!;
+  const persistedPlayback = renderLocalTempoMapWhole(donor, RATE, map);
+  assert.ok(persistedPlayback);
+  // Beyond the vocal phrase: no vocal ducking or fade can hide the timing.
+  let error = 0;
+  let power = 0;
+  for (let index = RATE * 2 * 2; index < persistedPlayback.length; index++) {
+    const expected = persistedPlayback[index]! * 0.6;
+    error += (actual[index]! - expected) ** 2;
+    power += expected ** 2;
+  }
+  assert.ok(power > 1, "the donor must still play after the vocal ends");
+  assert.ok(error / power < 1e-8, `render and saved-map playback must align (${error / power})`);
+});
 
 function passageFingerprint(
   sourceChecksumSha256: string,

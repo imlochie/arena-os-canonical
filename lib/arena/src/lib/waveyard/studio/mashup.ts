@@ -14,7 +14,7 @@
  */
 
 import { pitchShift, timeStretch, type TimeStretchMapPoint } from "../elastic";
-import type { LocalTempoMap } from "./local-tempo-map";
+import { donorClipTempoMap, type LocalTempoMap } from "./local-tempo-map";
 import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
@@ -3035,9 +3035,7 @@ export function renderMashupWithBus(
       // ahead of it; without (2) the layer drifts against the bed within a bar.
       const entry = plan.segments[0];
       const sourceLeadFrames = Math.round(((entry?.vocalsFromMs ?? 0) / 1000) * sampleRate) * 2;
-      const trimmed = sourceLeadFrames > 0 && sourceLeadFrames < rawStemBuffer.length
-        ? rawStemBuffer.subarray(sourceLeadFrames)
-        : rawStemBuffer;
+      const trimmed = rawStemBuffer.subarray(Math.min(sourceLeadFrames, rawStemBuffer.length));
       // Instrumental donor stems keep their native pitch. They follow the
       // session tempo like the bed does — and like the vocal does.
       //
@@ -3047,10 +3045,18 @@ export function renderMashupWithBus(
       // by the constant ratio instead makes the two drift apart *within* the
       // phrase even though they start together. So the donor is given the same
       // map, minus the vocal's pitch shift, which would be wrong for drums.
-      const donorTempoMap = entry?.localTempoMap;
+      const donorTempoMap = donorClipTempoMap(
+        trimmed.length / 2 / sampleRate * 1000,
+        plan.durationMs - (entry?.mashupStartMs ?? 0),
+        plan.vocalsStretchRatio,
+        entry?.localTempoMap,
+      );
+      if (!donorTempoMap) continue;
       let pcm: StereoBuffer;
-      if (donorTempoMap) {
-        const inputFrames = trimmed.length / 2;
+      {
+        const inputFrames = Math.min(trimmed.length / 2, Math.round(
+          donorTempoMap.points.at(-1)!.sourceMs / 1000 * sampleRate,
+        ));
         const outputFrames = Math.max(1, Math.round(
           (donorTempoMap.points.at(-1)!.outputMs / 1000) * sampleRate,
         ));
@@ -3060,11 +3066,7 @@ export function renderMashupWithBus(
         }));
         timeMap[0] = { outputFrame: 0, inputFrame: 0 };
         timeMap[timeMap.length - 1] = { outputFrame: outputFrames, inputFrame: inputFrames };
-        pcm = timeStretch(trimmed, outputFrames / inputFrames, sampleRate, timeMap);
-      } else if (Math.abs(plan.vocalsStretchRatio - 1.0) > 1e-6) {
-        pcm = timeStretch(trimmed, plan.vocalsStretchRatio, sampleRate);
-      } else {
-        pcm = Float32Array.from(trimmed);
+        pcm = timeStretch(trimmed.subarray(0, inputFrames * 2), outputFrames / inputFrames, sampleRate, timeMap);
       }
       // `mashupStartMs` is already the map-corrected entry (the planner folds
       // `entryShiftMs` into it), so the layer starts exactly where the vocal

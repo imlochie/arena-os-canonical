@@ -141,8 +141,13 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
     && !Array.isArray(rawMashupPlan) && Array.isArray((rawMashupPlan as Record<string, unknown>).bedTempoStemIds)
     ? ((rawMashupPlan as Record<string, unknown>).bedTempoStemIds as unknown[])
     : [];
+  const requiredDonorTempoStemIds = rawMashupPlan && typeof rawMashupPlan === "object"
+    && !Array.isArray(rawMashupPlan) && Array.isArray((rawMashupPlan as Record<string, unknown>).donorTempoStemIds)
+    ? ((rawMashupPlan as Record<string, unknown>).donorTempoStemIds as unknown[])
+    : [];
+  requiredBedTempoStemIds.push(...requiredDonorTempoStemIds);
   if (!requiredBedTempoStemIds.every((id) => typeof id === "string")) {
-    throw new ExportFailure("invalid_snapshot", "Saved bed timing identities are invalid.");
+    throw new ExportFailure("invalid_snapshot", "Saved stem timing identities are invalid.");
   }
   const rawBindings = rawMashupPlan && typeof rawMashupPlan === "object" && !Array.isArray(rawMashupPlan)
     ? (rawMashupPlan as Record<string, unknown>).clipTimingMaps
@@ -535,7 +540,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
   for (const [index, clip] of clips.entries()) {
     if (requiredBedStemIds.has(clip.stemAssetId) && !mappedInputByClipIndex.has(index)) {
       throw new ExportFailure("bed_tempo_map_unavailable",
-        "The saved bed timing map no longer matches its clip or source audio. Restore the original clip or regenerate the mashup; export will not silently use a different tempo.");
+        "A required saved stem timing map no longer matches its clip or source audio. Restore the original clip or regenerate the mashup; export will not silently use a different tempo.");
     }
   }
 

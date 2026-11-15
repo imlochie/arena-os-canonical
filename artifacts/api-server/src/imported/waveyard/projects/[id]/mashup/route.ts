@@ -87,7 +87,7 @@ import {
 } from "@workspace/arena/lib/waveyard/studio/musical-evidence";
 import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
-import { createPersistedClipTempoMap } from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
+import { createPersistedClipTempoMap, donorClipTempoMap } from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
 
 export const dynamic = "force-dynamic";
 
@@ -676,7 +676,7 @@ async function loadInstrumentalBed(
         "The separated instrumental stem is not a valid 44.1 kHz stereo WAV. Re-run separation for the instrumental track.",
       );
     }
-    return { ok: true, pcm, components: [pcm], info };
+    return { ok: true, pcm: mixInReplacingStems(pcm, replacingStems), components: [pcm], info };
   }
 
   const decodedStems: InstrumentalBedStem[] = [];
@@ -1388,7 +1388,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         }
         compositionForPlan = resolved.composition;
         donorStemsForPlan = resolved.donorStems;
-        if (resolved.composition.replacedBedStemTypes.length > 0) {
+        if (resolved.composition.layeredStemTypes.length > 0) {
           // Analyse the ACTUAL resulting composition, not the replacement stem in
           // isolation: loadInstrumentalBed sums the retained stems and omits the
           // replaced roles, which is precisely what the listener will hear.
@@ -1399,8 +1399,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             resolved.composition.replacedBedStemTypes,
             resolved.donorStems,
           ).catch(() => null);
-          if (composedBed?.ok) {
-            bed = bedProfileFromComposition(bed, composedBed.pcm, resolved.composition.replacedBedStemTypes);
+          let compositionPcm = composedBed?.ok ? composedBed.pcm : null;
+          if (composedBed && !composedBed.ok && resolved.composition.stemLayerMode === "layer") {
+            await mkdir(tempDir, { recursive: true });
+            const source = await sourcePcm(projectId, bedId, tempDir);
+            if (source) compositionPcm = mixInReplacingStems(source.pcm, resolved.donorStems);
+          }
+          if (compositionPcm) {
+            bed = bedProfileFromComposition(bed, compositionPcm, resolved.composition.layeredStemTypes);
             plannedAgainstComposition = {
               replacedStemTypes: [...resolved.composition.replacedBedStemTypes],
               plannedBpm: bed.bpm,
@@ -1421,7 +1427,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const bedInfo = await inspectBed(projectId, bedId);
         return Response.json({
           candidates: compareMashupAlignmentCandidates(vocals, bed, {
-            jointTempo: !compositionForPlan || compositionForPlan.stemLayerMode === "none",
+            jointTempo: true,
           }),
           bed: bedInfo,
           evidence: {
@@ -1430,11 +1436,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           },
         }, { status: 200 });
       }
-      // Donor replacement/layer clips do not yet have independent joint-tempo
-      // persistence maps; never offer shared-tempo plans those paths cannot save.
+      // Each retained and donor stem now persists its own bounded timing map.
       const planned = planMashup(vocals, bed, {
         strategy: alignmentStrategy,
-        jointTempo: !compositionForPlan || compositionForPlan.stemLayerMode === "none",
+        jointTempo: true,
       });
       if (!planned.ok) {
         return Response.json({ error: planned.reason }, { status: 422 });
@@ -1524,6 +1529,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               },
               { status: 409 },
             );
+          }
+          if (!vocals.sourceChecksumSha256 || [...donorReplacementStems.values()].some((stem) =>
+            !stem.checksumSha256 || stem.format?.toLowerCase() !== "wav" || stem.channels !== 2)) {
+            return Response.json({
+              error: "Checksum-bound stereo donor audio is required to save its timing transformation.",
+              code: "donor-tempo-provenance-unavailable",
+            }, { status: 422 });
           }
         }
 
@@ -1664,7 +1676,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           // three in the persisted clip is what makes reopen and export
           // reproduce the render rather than play the donor at its native rate.
           const firstSegment = planned.plan.segments[0];
-          const donorTempoTrusted = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence) !== null;
+          const donorMaps = new Map<string, NonNullable<ReturnType<typeof donorClipTempoMap>>>();
           for (const [type, stem] of donorReplacementStems) {
             const track = trackByStemId.get(stem.id);
             if (!track) continue;
@@ -1676,24 +1688,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             // arrangement length and the donor's length are independent numbers;
             // taking the shorter is the audibly true one.
             const donorSourceOffsetMs = firstSegment?.vocalsFromMs ?? 0;
-            const donorAvailableMs = Math.max(1, Math.round(stem.durationSeconds * 1000) - donorSourceOffsetMs);
+            const donorAvailableMs = Math.max(0, stem.durationSeconds * 1000 - donorSourceOffsetMs);
             const donorWantedMs = Math.max(1, planned.plan.durationMs - (firstSegment?.mashupStartMs ?? 0));
+            const donorMap = donorClipTempoMap(donorAvailableMs, donorWantedMs,
+              planned.plan.vocalsStretchRatio, firstSegment?.localTempoMap);
+            if (!donorMap || !stem.checksumSha256 || !vocals.sourceChecksumSha256) {
+              throw new Error("Cannot save a donor without checksum-bound source timing.");
+            }
+            donorMaps.set(stem.id, donorMap);
             clipsToInsert.push({
               remixTrackId: track.id,
               stemAssetId: stem.id,
               timelineStartMs: firstSegment?.mashupStartMs ?? 0,
-              durationMs: Math.min(donorWantedMs, donorAvailableMs),
+              durationMs: Math.round(donorMap.points.at(-1)!.outputMs),
               sourceOffsetMs: donorSourceOffsetMs,
               gain: 0.8,
               fadeInMs: 50,
               fadeOutMs: 150,
-              // The renderer stretches the donor to the session tempo, so the
-              // export must too. That requires the donor's own analysed BPM,
-              // which may be MISSING even on sources the vocal plan could
-              // stretch — vocal tempo can come from the bed. Claiming sync
-              // without the evidence would make the export fail late, so the
-              // case is detected here and reported instead.
-              tempoSyncEnabled: donorTempoTrusted,
+              // Activate the explicit transform, including an identity map
+              // when the planner retained native speed. No independent BPM
+              // lookup may replace the exact timing used by the renderer.
+              tempoSyncEnabled: true,
               keySyncEnabled: false,
               beatSnapEnabled: false,
             });
@@ -1702,6 +1717,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
           const insertedClips = clipsToInsert.length ? await tx.insert(remixClips).values(clipsToInsert).returning() : [];
           const clipTimingMaps = insertedClips.flatMap((clip) => {
+            const donorMap = donorMaps.get(clip.stemAssetId);
+            if (donorMap) {
+              const stem = [...donorReplacementStems.values()].find((item) => item.id === clip.stemAssetId)!;
+              const map = createPersistedClipTempoMap({
+                clipId: clip.id, remixTrackId: clip.remixTrackId,
+                stemAssetId: stem.id, sourceAssetId: stem.sourceAssetId,
+                sourceChecksumSha256: vocals.sourceChecksumSha256!,
+                stemChecksumSha256: stem.checksumSha256!,
+                sourceOffsetMs: clip.sourceOffsetMs, timelineStartMs: clip.timelineStartMs,
+                durationMs: clip.durationMs, sessionTempoBpm: planned.plan.masterBpm,
+                baseStretchRatio: planned.plan.vocalsStretchRatio,
+                map: donorMap,
+              });
+              if (!map) throw new Error("Could not persist the donor tempo transformation.");
+              return [map];
+            }
             if (planned.plan.bedStretchRatio && sessionBedStems.some((stem) => stem.id === clip.stemAssetId)) {
               const stem = sessionBedStems.find((item) => item.id === clip.stemAssetId)!;
               const sourceMs = stem.durationSeconds * 1000;
@@ -1794,6 +1825,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               masterBpm: planned.plan.masterBpm,
               bedStretchRatio: planned.plan.bedStretchRatio ?? 1,
               bedTempoStemIds: planned.plan.bedStretchRatio ? sessionBedStems.map((stem) => stem.id) : [],
+              donorTempoStemIds: [...donorReplacementStems.values()].map((stem) => stem.id),
               vocalsStretchRatio: planned.plan.vocalsStretchRatio,
               vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
               keyRelationship: planned.plan.keyRelationship,

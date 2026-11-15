@@ -9,6 +9,51 @@ export type LocalTempoMap = {
 };
 
 /**
+ * Build a donor's OWN source span. A vocal's measured warp only describes
+ * that phrase, not the remainder of a drum/bass recording. Beyond it, carry
+ * the planned constant tempo without inventing more measured beat matches.
+ */
+export function donorClipTempoMap(
+  availableSourceMs: number,
+  availableTimelineMs: number,
+  stretchRatio: number,
+  phraseMap?: LocalTempoMap,
+): LocalTempoMap | null {
+  if (![availableSourceMs, availableTimelineMs, stretchRatio].every((n) => Number.isFinite(n) && n > 0)) return null;
+  const points = [{ sourceMs: 0, outputMs: 0 }];
+  const candidates = [...(phraseMap?.points.slice(1) ?? [])];
+  const last = candidates.at(-1) ?? points[0]!;
+  if (last.sourceMs < availableSourceMs) candidates.push({
+    sourceMs: availableSourceMs,
+    outputMs: last.outputMs + (availableSourceMs - last.sourceMs) * stretchRatio,
+  });
+  for (const candidate of candidates) {
+    const previous = points.at(-1)!;
+    if (candidate.sourceMs <= previous.sourceMs || candidate.outputMs <= previous.outputMs) return null;
+    const fraction = Math.min(1,
+      (availableSourceMs - previous.sourceMs) / (candidate.sourceMs - previous.sourceMs),
+      (availableTimelineMs - previous.outputMs) / (candidate.outputMs - previous.outputMs));
+    if (fraction <= 0) break;
+    points.push({
+      sourceMs: previous.sourceMs + fraction * (candidate.sourceMs - previous.sourceMs),
+      outputMs: previous.outputMs + fraction * (candidate.outputMs - previous.outputMs),
+    });
+    if (fraction < 1) break;
+  }
+  if (points.length < 2) return null;
+  if (points.length === 2) points.splice(1, 0, {
+    sourceMs: points[1]!.sourceMs / 2, outputMs: points[1]!.outputMs / 2,
+  });
+  return {
+    points,
+    baselineFit: { matchedBeats: 0, comparedBeats: 1, meanErrorMs: 0 },
+    correctedFit: { matchedBeats: 0, comparedBeats: 1, meanErrorMs: 0 },
+    maximumRateDeviationPercent: phraseMap?.maximumRateDeviationPercent ?? 0,
+    entryShiftMs: 0,
+  };
+}
+
+/**
  * A map is bound to the exact editable clip and source bytes it was measured
  * against. It lives in the version's mashupPlan JSON, not in a second clip
  * persistence system.

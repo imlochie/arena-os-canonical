@@ -3,6 +3,20 @@ name: Waveyard product expectation
 description: The user's core product expectation for Waveyard playback and Studio handoff.
 ---
 
+**Cross-role timing scope:** A measured vocal phrase warp describes only that
+source interval, not an entire donor drum or bass stem. Preserve its measured
+interval and use an explicitly bounded continuation outside it; every source
+must carry its own clip-bound transform through preview and export.
+
+**Why:** Extending a phrase's output endpoint to unrelated remaining source
+audio compresses whole instrumental parts into the phrase. The user approved
+independent donor timing and actual master-tempo audio transformation, not
+planner-only tempo labels.
+
+**How to apply:** Bind transforms to source bytes and actual available spans;
+keep missing evidence distinct from an identity transform. Preserve valid source
+analysis when recomputing composite decisions after a replacement or layer edit.
+
 Every stem should adapt and influence the shared composition. No source should automatically become the master because it was uploaded first, is longest, or is the instrumental. Replacing any role must reconsider dependent timing, harmony and arrangement decisions across the other stems.
 
 **Why:** the user explicitly required universal cross-stem adaptation built on the existing architecture, not a separate mashup engine or a sequence of isolated adjustments.

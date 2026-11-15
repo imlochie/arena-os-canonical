@@ -1959,6 +1959,7 @@ test(
       // path. It does not assert that these tones constitute real music.
       const jointVocalId = await addFixtureSource("joint-tempo-vocal", [
         { stemType: "vocals", seconds: 4 },
+        { stemType: "drums", seconds: 4 },
       ], { bpm: 104 });
       const jointBedId = await addFixtureSource("joint-tempo-bed", [
         { stemType: "drums", seconds: 8 },
@@ -2040,6 +2041,66 @@ test(
       }
       assert.ok(agreement > 0.7,
         `the saved/exported bed must track the rendered shared-tempo waveform, not just its duration (best correlation ${agreement}, lag ${bestLagFrames} frames)`);
+      for (const mode of ["replace", "layer"]) {
+        const extra = { layerStemTypes: ["drums"], stemLayerMode: mode };
+        const response = await routeModule.POST(renderPair(jointVocalId, jointBedId, {
+          ...extra, action: "save",
+        }), params);
+        assert.equal(response.status, 201, `${mode} donor save: ${await response.clone().text()}`);
+        const saved = await response.json() as { remix: { id: string }; version: { id: string } };
+        const [version] = await dbModule.db.select().from(schema.remixVersions)
+          .where(eq(schema.remixVersions.id, saved.version.id));
+        const snapshot = JSON.parse(version!.snapshot) as {
+          mashupPlan: {
+            donorTempoStemIds: string[];
+            clipTimingMaps: Array<{ stemAssetId: string; sourceOffsetMs: number; durationMs: number; points: Array<{ sourceMs: number; outputMs: number }> }>;
+          };
+        };
+        assert.equal(snapshot.mashupPlan.donorTempoStemIds.length, 1);
+        const map = snapshot.mashupPlan.clipTimingMaps.find((candidate) =>
+          snapshot.mashupPlan.donorTempoStemIds.includes(candidate.stemAssetId));
+        assert.ok(map, `${mode} donor needs its own persisted map`);
+        assert.ok(map.sourceOffsetMs + map.points.at(-1)!.sourceMs <= 4001);
+        assert.ok(Math.abs(map.durationMs - map.points.at(-1)!.outputMs) <= 1);
+        const reopenedDonor = await (await import("../../../../remixes/[id]/route")).GET(
+          new Request(`http://localhost/api/remixes/${saved.remix.id}`),
+          { params: Promise.resolve({ id: saved.remix.id }) },
+        );
+        assert.equal(reopenedDonor.status, 200);
+        const [donorJob] = await dbModule.db.insert(schema.exportJobs).values({
+          projectId: project.id, remixSessionId: saved.remix.id, remixVersionId: saved.version.id,
+          requestedById: job.requestedById, status: "queued", stage: "queued",
+          idempotencyKey: `donor-timing-${mode}-${randomUUID()}`,
+          format: "wav", sampleRate: RATE, channels: 2,
+        }).returning();
+        await (await import("@workspace/arena/lib/waveyard/worker-local/export")).handleExportJob({
+          exportJobId: donorJob!.id, projectId: project.id,
+          remixSessionId: saved.remix.id, remixVersionId: saved.version.id, format: "wav",
+        });
+        const [completed] = await dbModule.db.select().from(schema.exportJobs)
+          .where(eq(schema.exportJobs.id, donorJob!.id));
+        assert.equal(completed!.status, "complete", `${mode} mapped donor export must complete`);
+        // Deliberately corrupt only this test database's immutable snapshot:
+        // a required donor map must not fall through to independent BPM sync.
+        const broken = structuredClone(snapshot);
+        broken.mashupPlan.clipTimingMaps = broken.mashupPlan.clipTimingMaps.filter((candidate) =>
+          !broken.mashupPlan.donorTempoStemIds.includes(candidate.stemAssetId));
+        await dbModule.db.update(schema.remixVersions).set({ snapshot: JSON.stringify(broken) })
+          .where(eq(schema.remixVersions.id, saved.version.id));
+        const [brokenJob] = await dbModule.db.insert(schema.exportJobs).values({
+          projectId: project.id, remixSessionId: saved.remix.id, remixVersionId: saved.version.id,
+          requestedById: job.requestedById, status: "queued", stage: "queued",
+          idempotencyKey: `donor-missing-map-${mode}-${randomUUID()}`,
+          format: "wav", sampleRate: RATE, channels: 2,
+        }).returning();
+        await assert.rejects(
+          (await import("@workspace/arena/lib/waveyard/worker-local/export")).handleExportJob({
+            exportJobId: brokenJob!.id, projectId: project.id,
+            remixSessionId: saved.remix.id, remixVersionId: saved.version.id, format: "wav",
+          }),
+          /required saved stem timing map/i,
+        );
+      }
     }
 
     // (1) Single combined instrumental stem + requested replacement: refuse,
@@ -3233,14 +3294,15 @@ test(
       };
       assert.equal(unanalysedSave.status, 201,
         "a donor without analysed tempo is still renderable, so it must remain saveable");
-      // The invariant that actually matters: the clip's sync flag must agree
-      // with whether the renderer warped the donor. If it did warp, the clip
-      // must be synced or the difference must be reported; if it did not, an
-      // unsynced clip is exactly right.
+      // A persisted transform (including an identity map) now records the
+      // actual render. It does not claim missing tempo evidence was measured.
       const [unanalysedVersion] = await dbModule.db.select().from(schema.remixVersions)
         .where(eq(schema.remixVersions.id, unanalysedBody.version!.id));
       const unanalysedSnapshot = JSON.parse(unanalysedVersion!.snapshot) as {
-        mashupPlan?: { vocalsStretchRatio?: number };
+        mashupPlan?: {
+          vocalsStretchRatio?: number;
+          clipTimingMaps?: Array<{ stemAssetId: string; baseStretchRatio: number }>;
+        };
       };
       const unanalysedRatio = unanalysedSnapshot.mashupPlan?.vocalsStretchRatio ?? 1;
       const unanalysedProvenance2 = await savedProvenance(unanalysedBody.remix!.id);
@@ -3254,8 +3316,11 @@ test(
         assert.equal(unanalysedClip!.tempoSyncEnabled, true,
           `the renderer warped this donor ${unanalysedRatio.toFixed(3)}x, so the export must warp it too`);
       } else {
-        assert.equal(unanalysedClip!.tempoSyncEnabled, false,
-          "when the plan left the donor at its native rate, an unsynced clip is the faithful record");
+        const identityMap = unanalysedSnapshot.mashupPlan?.clipTimingMaps?.find((map) =>
+          map.stemAssetId === unanalysedDrumsStemId);
+        assert.equal(unanalysedClip!.tempoSyncEnabled, true,
+          "the identity timing map must be active rather than falling back to missing BPM analysis");
+        assert.equal(identityMap?.baseStretchRatio, 1);
         assert.ok(!(unanalysedBody.warnings ?? []).some((line) => /not tempo-synced/i.test(line)),
           "a parity warning must not be raised when render and export already agree");
       }
