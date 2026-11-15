@@ -1,0 +1,279 @@
+{
+  "schemaVersion": 1,
+  "evaluation": "waveyard-harmonic-candidate-offline-input-gate",
+  "candidate": {
+    "engine": "waveyard-multires-overtone-context-candidate",
+    "version": "0.1.0"
+  },
+  "production": {
+    "engine": "arena-js-dsp",
+    "sourceCommit": "2b0781e2",
+    "behaviorChanged": false
+  },
+  "manifest": {
+    "path": "scripts/fixtures/waveyard-musical-evaluation.json",
+    "sha256": "9bb65ef51d6a598d5dafb6861daf73c99ca520d3a656740bf91dc1763bf51af9"
+  },
+  "status": "blocked-pinned-audio-unavailable",
+  "measuredCandidateResults": null,
+  "independentChordAccuracy": null,
+  "accuracyStatus": "unknown-no-verified-independent-chord-labels",
+  "acceptance": {
+    "productionPromotion": false,
+    "realAudioValidationComplete": false,
+    "syntheticTestRun": {
+      "command": "tsx --test lib/arena/src/lib/waveyard/worker-local/harmonic-candidate.test.ts",
+      "passed": 9,
+      "failed": 0
+    },
+    "workerResponsiveness": null,
+    "memoryBenchmark": null
+  },
+  "historicalProductionBaseline": {
+    "provenance": "Previously reported in docs/waveyard-harmonic-perception-audit.md; not rerun in this checkout.",
+    "sourceCommit": "2b0781e2",
+    "completeRecombinedBedNamedWindows": {
+      "september": {
+        "named": 18,
+        "total": 108
+      },
+      "another-one-bites-the-dust": {
+        "named": 7,
+        "total": 112
+      }
+    },
+    "allSixOriginalNamedWindows": {
+      "september": {
+        "named": 20,
+        "total": 108
+      },
+      "another-one-bites-the-dust": {
+        "named": 20,
+        "total": 112
+      },
+      "i-feel-it-coming-80s": {
+        "named": 49,
+        "total": 130
+      },
+      "stayin-alive-reflex": {
+        "named": 18,
+        "total": 186
+      },
+      "break-free-reflex": {
+        "named": 69,
+        "total": 203
+      },
+      "blinding-lights-80s": {
+        "named": 12,
+        "total": 115
+      }
+    },
+    "interpretation": "Named-window availability only; not chord accuracy."
+  },
+  "domains": {
+    "originalSources": {
+      "required": 6,
+      "allInputsVerified": false,
+      "candidateMeasurements": null
+    },
+    "individualStems": {
+      "required": 8,
+      "allInputsVerified": false,
+      "candidateMeasurements": null
+    },
+    "recombinedInstrumentalBeds": {
+      "required": 2,
+      "allInputsVerified": false,
+      "candidateMeasurements": null,
+      "construction": "sum the four independently hash-verified stems per track; never mix with original-source rows"
+    }
+  },
+  "tracks": [
+    {
+      "id": "september",
+      "title": "Earth, Wind & Fire — September",
+      "originalSourceStatus": "missing",
+      "stemStatuses": [
+        "missing",
+        "missing",
+        "missing",
+        "missing"
+      ],
+      "recombinedBedAvailable": false
+    },
+    {
+      "id": "another-one-bites-the-dust",
+      "title": "Queen — Another One Bites the Dust",
+      "originalSourceStatus": "missing",
+      "stemStatuses": [
+        "missing",
+        "missing",
+        "missing",
+        "missing"
+      ],
+      "recombinedBedAvailable": false
+    },
+    {
+      "id": "i-feel-it-coming-80s",
+      "title": "The Weeknd — I Feel It Coming (80s remix)",
+      "originalSourceStatus": "missing",
+      "stemStatuses": [],
+      "recombinedBedAvailable": false
+    },
+    {
+      "id": "stayin-alive-reflex",
+      "title": "Bee Gees — Stayin' Alive (The Reflex Revision)",
+      "originalSourceStatus": "missing",
+      "stemStatuses": [],
+      "recombinedBedAvailable": false
+    },
+    {
+      "id": "break-free-reflex",
+      "title": "Queen — I Want to Break Free (The Reflex Revision)",
+      "originalSourceStatus": "missing",
+      "stemStatuses": [],
+      "recombinedBedAvailable": false
+    },
+    {
+      "id": "blinding-lights-80s",
+      "title": "The Weeknd — Blinding Lights (80s remix)",
+      "originalSourceStatus": "missing",
+      "stemStatuses": [],
+      "recombinedBedAvailable": false
+    }
+  ],
+  "inputs": [
+    {
+      "trackId": "september",
+      "role": "original-source",
+      "path": "attached_assets/0_ytmp3free.cc_earth-wind-fire-september-official-hd-video-you_1793303155539.mp3",
+      "expectedSha256": "6c034800da6b34c44f6d85ba627048e20c0fa61f3e3abab79c121891d12f6be1",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "september",
+      "role": "stem:bass",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/earth-wind-fire-stems/bass-estimate.wav",
+      "expectedSha256": "5004bd6b820f491f5c2831661433e174be76b214c4175ca48720b791ad707020",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "september",
+      "role": "stem:drums",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/earth-wind-fire-stems/drums-estimate.wav",
+      "expectedSha256": "c4b878fc4f0e80d4854f6e5fad9d37225a53fdb0b9d1f832de340b07e3c094a0",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "september",
+      "role": "stem:vocals",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/earth-wind-fire-stems/vocals-estimate.wav",
+      "expectedSha256": "2d8cb1ed15d1909df0253349c60690604f91ec5ad56dd31ae6ace6d540481a53",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "september",
+      "role": "stem:other",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/earth-wind-fire-stems/other-estimate.wav",
+      "expectedSha256": "d6404476c807c321201b57296e5d038c783e3f9461b8b2cd09bd963d83904c95",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "another-one-bites-the-dust",
+      "role": "original-source",
+      "path": "attached_assets/0_another_one_bites_the_dust_1793860743093.mp3",
+      "expectedSha256": "30e1774d7e3ed1579eaae0e70e18bbd526ea3a9e7868514bc63db9e5c629ac2c",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "another-one-bites-the-dust",
+      "role": "stem:bass",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/another-one-stems/bass-estimate.wav",
+      "expectedSha256": "c872e9da615ce359ed5d08c7e51a3a9b5e617aaf8866b567fc8c01b70fdb5608",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "another-one-bites-the-dust",
+      "role": "stem:drums",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/another-one-stems/drums-estimate.wav",
+      "expectedSha256": "dd572546aaafa38a05187cd83dd7f35f5badae71fd6c1efc5d912ef20c67fc14",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "another-one-bites-the-dust",
+      "role": "stem:vocals",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/another-one-stems/vocals-estimate.wav",
+      "expectedSha256": "633637f01a267f1fe43f2beb8e9efd23a4ed822d26784eb146fe97ce3740a44f",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "another-one-bites-the-dust",
+      "role": "stem:other",
+      "path": "generated-artifacts/waveyard-real-world-acceptance/another-one-stems/other-estimate.wav",
+      "expectedSha256": "13c498b7a54cd6689cbd372a16b34603fbd5d40008a22733594d6aad73d8f91c",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "i-feel-it-coming-80s",
+      "role": "original-source",
+      "path": "attached_assets/80s_remix_The_Weeknd_-_I_Feel_It_Coming_1793860984367.m4a",
+      "expectedSha256": "1464946afc0aff4c4b106b10a6d0cb999f019b1efa0ece80d8d6980e2add3b90",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "stayin-alive-reflex",
+      "role": "original-source",
+      "path": "attached_assets/Bee_Gees_-_Stayin'_Alive_[The_Reflex_Revision]_1793860984368.m4a",
+      "expectedSha256": "a1bf58f20b60a0dc903bf7029ef196c144e66b72ffc7a0707130dfb9aee85387",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "break-free-reflex",
+      "role": "original-source",
+      "path": "attached_assets/Queen_-_I_Want_To_Break_Free_[The_Reflex_Revision]_1793860984368.m4a",
+      "expectedSha256": "b59ec128e86cddb06cf813356bc5f28b40d0fbef50ad00d2c921646d7b512e10",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    },
+    {
+      "trackId": "blinding-lights-80s",
+      "role": "original-source",
+      "path": "attached_assets/The_Weeknd_-_Blinding_Lights_(80s_Remix)_1793860984369.m4a",
+      "expectedSha256": "a0545c5d56a0815faca1275b841289b20dc58f25cd5e049f47469e45285946e5",
+      "actualSha256": null,
+      "sizeBytes": null,
+      "status": "missing"
+    }
+  ],
+  "limitations": [
+    "The historical baseline is documentation evidence, not a rerun of the pinned inputs in this checkout.",
+    "No accuracy claim is possible without independently reviewed chord labels and boundaries.",
+    "No worker responsiveness or memory claim is made without running the candidate on audio in the intended runtime.",
+    "Stem association is historical and has not been revalidated through completed-run API publication."
+  ]
+}

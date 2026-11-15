@@ -1,5 +1,25 @@
 # Arena handoff — read this first
 
+## Latest increment: offline harmonic candidate and input gate
+
+An isolated `waveyard-multires-overtone-context-candidate` (0.1.0) and nine
+synthetic regressions now live under `worker-local/`; no production analysis,
+persistence or promotion path imports it. The synthetic suite passes 9/9, and
+the existing analysis-engine suite passes 29/29. Tests cover overtone-only
+abstention, triads/inversion, arpeggio context and silence, tuning ambiguity,
+transients, adjacent changes, low-register evidence and the existing vocal
+chord-fit scorer. For a synthetic C1 triad, the candidate retains bass evidence
+but abstains because its 0.0381 top margin is below the unchanged 0.04 gate.
+
+`scripts/waveyard-harmonic-candidate-evaluation.mjs` reproduces the asset/hash
+gate and `docs/waveyard-harmonic-candidate-report.json` records its result.
+All six pinned original sources and eight pinned stems are absent here, so no
+candidate real-audio counts, recombined-bed rerun, memory or responsiveness
+measurement is available. Historical baseline counts below remain prior
+documentation evidence only. Independent chord accuracy remains unknown.
+Production stays at `2b0781e2`; this offline candidate is not a validated
+replacement and must not be promoted on synthetic results.
+
 ## Current: harmonic-perception audit rejected the proposed replacement
 
 See [the bounded harmonic-perception investigation](waveyard-harmonic-perception-audit.md).

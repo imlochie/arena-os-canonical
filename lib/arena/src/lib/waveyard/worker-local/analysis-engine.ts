@@ -65,7 +65,7 @@ export async function decodeMonoPcm(path: string, maxSeconds = 900): Promise<Flo
 const ONSET_WINDOW_SIZE = 512;
 const ONSET_HOP_SIZE = 256;
 
-function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
+export function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
   const size = real.length;
   let reversed = 0;
   for (let index = 1; index < size; index += 1) {

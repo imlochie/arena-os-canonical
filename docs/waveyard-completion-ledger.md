@@ -1,5 +1,19 @@
 # Waveyard completion ledger
 
+## Latest offline candidate increment: real-audio gate blocked
+
+Candidate `waveyard-multires-overtone-context-candidate` 0.1.0 remains outside
+production. Its nine synthetic regressions pass; the existing analysis-engine
+suite passes 29/29. The low C1 triad fixture retains bass evidence but remains
+unknown under the existing 0.04 margin policy. The manifest gate found all six
+originals and all eight pinned stems missing in this checkout. Consequently,
+candidate real-audio counts, separate stem and recombined-bed results,
+responsiveness, memory use and independent chord accuracy remain unavailable.
+The prior production counts are historical availability evidence, not a rerun
+or an accuracy measure. See `waveyard-harmonic-candidate-report.json` and
+`HANDOFF.md`. The harmonic-perception upgrade remains incomplete and promotion
+is prohibited until the real-recording gate can be run.
+
 ## Latest investigation: harmonic replacement did not pass
 
 The bounded harmonic-perception audit covered the two complete stem sets and
