@@ -55,7 +55,14 @@ jobs:
       # server's own dependencies (drizzle-orm, @workspace/db), so the
       # api-server graph has to be installed, not just scripts and arena.
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..." --filter "@workspace/api-server..."
+        # `@workspace/desktop` is required even though no test imports it
+        # directly: the route suite imports `desktop/database.mjs` for its
+        # migrations, and that file resolves `pg` from its own workspace. With
+        # the desktop package filtered out, `pg` was never installed and the
+        # suite died at `migrate()` with ERR_MODULE_NOT_FOUND — masked in CI by
+        # an uncaught PostgreSQL shutdown notice that made it look like a
+        # teardown race.
+        run: pnpm install --frozen-lockfile --filter "@workspace/scripts..." --filter "@workspace/arena..." --filter "@workspace/api-server..." --filter "@workspace/desktop..."
 
       - name: Provide PostgreSQL server binaries and ffmpeg/ffprobe
         shell: bash
