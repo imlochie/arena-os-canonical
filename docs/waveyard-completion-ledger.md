@@ -1728,3 +1728,104 @@ asserts that assertions passed.
 - The two previously-open reliability issues (WebKit timeout, PostgreSQL
   teardown) are untouched, and this run suggests the PostgreSQL one is not the
   explanation for this failure — it is upstream of it.
+
+## 20. Both open reliability items are closed, and how
+
+### 20.1 The CI acceptance runs: the cause was a missing dependency, not a race
+
+§19 concluded that the acceptance never reached its assertions in CI. The
+uncaught message that survived into the check-run was
+`terminating connection due to administrator command`, which read exactly like
+the teardown race the branch had spent many commits chasing. It was teardown
+noise emitted while the body was already failing, and it **masked the real
+error**.
+
+Publishing the job's own annotations rather than inferring from the message
+surfaced it:
+
+```
+ERR_MODULE_NOT_FOUND: Cannot find package 'pg' imported from desktop/database.mjs
+```
+
+The suite imports `desktop/database.mjs`, which resolves `pg` from the
+`desktop` workspace. The workflow installed `scripts`, `arena` and
+`api-server` only, so that workspace was never linked and the module could not
+resolve. Adding `--filter "@workspace/desktop..."` to the install step fixed
+it.
+
+Run **43665510093** (`6fe6a26`): `success`. Run **43667740713** (`8506ab7`):
+`success`, with both gates satisfied and both artifacts produced —
+`waveyard-mashup-linux` 4,947,154 B and `waveyard-acceptance-audio`
+4,939,937 B.
+
+**What this does not establish.** Artifact *contents* were never inspected from
+the environment that triaged this work: downloading from
+`productionresultssa*.blob.core.windows.net` returns `EOF`. The 4.9 MB audio
+artifact and the job's success are the evidence available there. The local run
+in §18 remains the only place the rendered audio itself was analysed.
+
+The PostgreSQL teardown notice is still emitted. It is now known to be
+downstream noise rather than the failure, and it is still reported separately
+rather than folded into a pass.
+
+### 20.2 The WebKit Play control: a `play()` promise that never settles
+
+The WebKit session-controls leg had failed four runs running with the same
+shape:
+
+```
+aria-pressed=false  aria-busy=true  label="Cancel playback start"
+every stem paused=false, clock advancing past 12 s
+context state=running   playRejections=[-]
+```
+
+The control was stuck in `starting`, the audio was audibly playing, and nothing
+had rejected. Two hypotheses were tested and both were wrong: superseding a
+play request does not leave the token mismatched (fixed anyway, `df02d2f`), and
+the context-resume bound was not involved (resume settled in 23 ms).
+
+The answer came from instrumenting the play path and republishing its trace
+**inside the workflow step** — job logs and artifacts are unreadable from the
+triaging environment, so a diagnostic that is only logged is not evidence. For
+the stalled request the trace showed:
+
+```
+ready-await:start  request=5   output:1 ctx=running readiness=resolved
+ready-await:done   request=5
+media-play:start   request=5
+                        <-- no media-play:done, ever
+```
+
+So `sessionOutput.ready` was fine, and the park was in
+`Promise.allSettled(elements.map((element) => element.play()))`. WebKit
+**entered `play()`, started the media, and never settled the returned
+promise.** It neither resolved nor rejected.
+
+This is the same class of browser behaviour `audio-context-resume.ts` already
+documents for `AudioContext.resume()`: a promise the browser is allowed to
+forget. The fix applies the same principle rather than a longer timeout —
+`media-play-start.ts` bounds the wait at 4 s and, on expiry, decides from the
+element's **own observable state**: not paused, no error, and
+`readyState >= HAVE_CURRENT_DATA`. A stem without that evidence is reported
+`stalled` and surfaces an accurate error instead of claiming playback. Elements
+also start independently, so one wedged stem cannot block the others.
+
+The bound is deliberately inside the 10 s the matrix allows and does not mask a
+slow start; it only releases a promise that will never settle. Regression
+coverage: `media-play-start.test.ts`, 8 cases including a wedged `play()` with
+audible media (started), a wedged `play()` without audible media (stalled), no
+current data (stalled), a decode error (stalled), a rejection carrying its
+reason, a synchronous throw, and a late settle that must not resolve twice.
+
+Run **43667740696** (`8506ab7`): `success`, no failure annotations. The
+workflow sets `WAVEYARD_REQUIRE_BROWSER_ENGINES=1`, so an engine that failed to
+launch exits 1 rather than being counted as a skip — the pass means Firefox and
+WebKit both actually ran the session controls.
+
+### 20.3 Still not established
+
+- No listener has heard any of this. Every claim is measurement.
+- All fixtures are synthetic pure tones; no real separated stems were rendered.
+- Acceptance audio was downloaded and *inspected* locally only; the CI artifact
+  bytes were never opened here.
+- Section labelling still lacks intro/outro vocabulary.
