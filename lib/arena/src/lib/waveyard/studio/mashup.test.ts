@@ -106,6 +106,55 @@ test("warp ratio: near-equal tempos stretch lightly", () => {
   assert.ok(Math.abs(warpRatioForTempos(102, 100) - 1.02) < 1e-9, "2% off is NOT a lock — it stretches");
 });
 
+test("joint tempo: only verified close pulses move both tracks, keeping pitch and the rendered bed length", () => {
+  const trusted = planMashup(
+    profile({ role: "vocals", bpm: 104, durationMs: 2_000, sections: [section("verse", 0, 2_000)] }),
+    profile({ bpm: 100, durationMs: 2_000, sections: [section("verse", 0, 2_000)] }),
+    { strategy: "continuous" },
+  );
+  assert.ok(trusted.ok);
+  assert.ok(Math.abs(trusted.plan.masterBpm - 102) < 0.001);
+  assert.ok(Math.abs(trusted.plan.bedStretchRatio! - 100 / 102) < 1e-6);
+  assert.ok(Math.abs(trusted.plan.vocalsStretchRatio - 104 / 102) < 1e-6);
+  assert.equal(trusted.plan.durationMs, Math.round(2_000 * 100 / 102));
+  const reverse = planMashup(
+    profile({ role: "vocals", bpm: 100, durationMs: 2_000, sections: [section("verse", 0, 2_000)] }),
+    profile({ bpm: 104, durationMs: 2_000, sections: [section("verse", 0, 2_000)] }),
+    { strategy: "continuous" },
+  );
+  assert.ok(reverse.ok);
+  assert.ok(Math.abs(reverse.plan.masterBpm - 102) < 0.001);
+  assert.ok(Math.abs(reverse.plan.bedStretchRatio! - 104 / 102) < 1e-6);
+  assert.ok(reverse.plan.durationMs > 2_000, "a slower shared pulse must lengthen the faster bed");
+  const rate = 8_000;
+  const bed = new Float32Array(rate * 2 * 2);
+  for (let frame = 0; frame < rate * 2; frame++) {
+    bed[frame * 2] = 0.2 * Math.sin(2 * Math.PI * 220 * frame / rate);
+    bed[frame * 2 + 1] = bed[frame * 2]!;
+  }
+  const rendered = renderMashupWithBus(trusted.plan, {
+    bed, vocals: new Float32Array(bed.length), sampleRate: rate,
+    mix: { matchVocalLoudness: false, limit: false },
+  });
+  assert.equal(rendered.pcm.length, Math.round(trusted.plan.durationMs * rate / 1000) * 2);
+  const native = renderMashupWithBus({ ...trusted.plan, bedStretchRatio: 1 }, {
+    bed, vocals: new Float32Array(bed.length), sampleRate: rate,
+    mix: { matchVocalLoudness: false, limit: false },
+  });
+  assert.notDeepEqual(rendered.pcm.slice(rate, rate + 50), native.pcm.slice(rate, rate + 50),
+    "shared tempo must actually change the bed audio, not just the BPM label");
+
+  const unverified = planMashup(profile({ role: "vocals", bpm: 104, bpmConfidence: 0.49 }), profile({ bpm: 100 }));
+  assert.ok(unverified.ok);
+  assert.equal(unverified.plan.bedStretchRatio, undefined);
+  const distant = planMashup(profile({ role: "vocals", bpm: 140 }), profile({ bpm: 100 }));
+  assert.ok(distant.ok);
+  assert.equal(distant.plan.bedStretchRatio, undefined);
+  const nearLock = planMashup(profile({ role: "vocals", bpm: 100.5 }), profile({ bpm: 100 }));
+  assert.ok(nearLock.ok);
+  assert.equal(nearLock.plan.bedStretchRatio, undefined, "half/double or 1% locks must not fabricate a stretch");
+});
+
 test("warp ratio: half/double locks snap to the nearest-to-1 lock", () => {
   assert.equal(warpRatioForTempos(140, 70), 1, "140 over 70 is a double lock — stay at 1.0 (half-time feel)");
   assert.equal(warpRatioForTempos(71, 141), 1, "71 over 141 is a half lock — stay at 1.0");

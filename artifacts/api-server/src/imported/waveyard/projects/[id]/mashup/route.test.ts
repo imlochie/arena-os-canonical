@@ -1954,6 +1954,94 @@ test(
         }),
       });
 
+    if (!realFixture) {
+      // Synthetic engineering check for the new, bounded two-source tempo
+      // path. It does not assert that these tones constitute real music.
+      const jointVocalId = await addFixtureSource("joint-tempo-vocal", [
+        { stemType: "vocals", seconds: 4 },
+      ], { bpm: 104 });
+      const jointBedId = await addFixtureSource("joint-tempo-bed", [
+        { stemType: "drums", seconds: 8 },
+        { stemType: "bass", seconds: 8 },
+        { stemType: "other", seconds: 8 },
+      ], { bpm: 100 });
+      const params = { params: Promise.resolve({ id: project.id }) };
+      const jointPlanResponse = await routeModule.POST(renderPair(jointVocalId, jointBedId, { action: "plan" }), params);
+      assert.equal(jointPlanResponse.status, 200);
+      const jointPlan = await jointPlanResponse.json() as { plan: MashupPlanShape & { bedStretchRatio?: number } };
+      assert.ok(jointPlan.plan.bedStretchRatio && jointPlan.plan.bedStretchRatio < 1);
+      assert.ok(Math.abs(jointPlan.plan.masterBpm - 102) < 0.01);
+      const jointRenderResponse = await routeModule.POST(renderPair(jointVocalId, jointBedId, {}), params);
+      assert.equal(jointRenderResponse.status, 200);
+      const jointRender = decodeWav16(new Uint8Array(await jointRenderResponse.arrayBuffer()));
+      assert.ok(jointRender);
+      assert.ok(Math.abs(jointRender!.frames / RATE * 1000 - jointPlan.plan.durationMs) < 15);
+      const jointSaveResponse = await routeModule.POST(renderPair(jointVocalId, jointBedId, { action: "save" }), params);
+      assert.equal(jointSaveResponse.status, 201, `shared-tempo save: ${await jointSaveResponse.clone().text()}`);
+      const jointSaved = await jointSaveResponse.json() as { remix: { id: string }; version: { id: string } };
+      const [jointVersion] = await dbModule.db.select().from(schema.remixVersions).where(eq(schema.remixVersions.id, jointSaved.version.id));
+      assert.ok(jointVersion);
+      const jointSnapshot = JSON.parse(jointVersion.snapshot) as { mashupPlan: { clipTimingMaps: Array<{ stemAssetId: string; baseStretchRatio: number }> } };
+      const jointBedStems = await dbModule.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.sourceAssetId, jointBedId));
+      assert.equal(jointSnapshot.mashupPlan.clipTimingMaps.filter((map) =>
+        jointBedStems.some((stem) => stem.id === map.stemAssetId)).length, jointBedStems.length,
+      "every retained bed stem must carry the rendered timeline transformation into export");
+      const reopened = await (await import("../../../../remixes/[id]/route")).GET(
+        new Request(`http://localhost/api/remixes/${jointSaved.remix.id}`),
+        { params: Promise.resolve({ id: jointSaved.remix.id }) },
+      );
+      assert.equal(reopened.status, 200);
+      const [job] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: jointSaved.remix.id,
+        remixVersionId: jointSaved.version.id,
+        requestedById: (await dbModule.db.select().from(schema.remixSessions)
+          .where(eq(schema.remixSessions.id, jointSaved.remix.id)))[0]!.ownerId,
+        status: "queued", stage: "queued", idempotencyKey: `joint-tempo-${randomUUID()}`,
+        format: "wav", sampleRate: RATE, channels: 2,
+      }).returning();
+      assert.ok(job);
+      await (await import("@workspace/arena/lib/waveyard/worker-local/export")).handleExportJob({
+        exportJobId: job.id, projectId: project.id,
+        remixSessionId: jointSaved.remix.id, remixVersionId: jointSaved.version.id, format: "wav",
+      });
+      const exported = await (await import("../../../../exports/[id]/media/route")).GET(
+        new Request(`http://localhost/api/exports/${job.id}/media`),
+        { params: Promise.resolve({ id: job.id }) },
+      );
+      assert.equal(exported.status, 200, "the reopened shared-tempo arrangement must export");
+      const jointExport = decodeWav16(new Uint8Array(await exported.arrayBuffer()));
+      assert.ok(jointExport);
+      assert.ok(Math.abs(jointExport!.frames - jointRender!.frames) < RATE / 5,
+        "render and reopened export must occupy the same transformed timeline");
+      assert.ok(energyAt(jointExport!.samples, 70, 1_000, 2_000) > 0.001,
+        "the transformed bed bass must be audible in export");
+      // Compare actual PCM, not merely the BPM label or WAV length. Once the
+      // vocal has ended, gain differences may remain but bed timing should
+      // correlate at the same absolute output positions in both paths.
+      let agreement = -1;
+      let bestLagFrames = 0;
+      const bedOnlyStartFrame = Math.round((jointPlan.plan.segments.at(-1)!.mashupEndMs + 300) * RATE / 1000);
+      const bedOnlyEndFrame = Math.min(bedOnlyStartFrame + RATE / 2, jointExport!.frames - RATE / 5);
+      assert.ok(bedOnlyEndFrame > bedOnlyStartFrame + RATE / 4, "a bed-only comparison window must exist");
+      for (let lag = -440; lag <= 440; lag += 20) {
+        let dot = 0;
+        let renderPower = 0;
+        let exportPower = 0;
+        for (let frame = bedOnlyStartFrame; frame < bedOnlyEndFrame; frame += 4) {
+          const a = jointRender!.samples[frame * 2] ?? 0;
+          const b = jointExport!.samples[(frame + lag) * 2] ?? 0;
+          dot += a * b;
+          renderPower += a * a;
+          exportPower += b * b;
+        }
+        const correlation = dot / Math.sqrt(renderPower * exportPower);
+        if (correlation > agreement) { agreement = correlation; bestLagFrames = lag; }
+      }
+      assert.ok(agreement > 0.7,
+        `the saved/exported bed must track the rendered shared-tempo waveform, not just its duration (best correlation ${agreement}, lag ${bestLagFrames} frames)`);
+    }
+
     // (1) Single combined instrumental stem + requested replacement: refuse,
     // do not pretend, and do not silently layer instead.
     const combinedBedReplace = await routeModule.POST(

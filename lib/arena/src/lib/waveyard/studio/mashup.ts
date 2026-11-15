@@ -176,8 +176,10 @@ export type MashupArrangement = {
 export type MashupPlan = {
   engine: typeof MASHUP_PLANNER_ENGINE;
   alignmentStrategy: MashupAlignmentStrategy;
-  /** The bed's tempo — the instrumental always wins the tempo war. */
+  /** Tempo of the rendered and persisted timeline, not merely a UI label. */
   masterBpm: number;
+  /** Output duration / original bed duration. Omitted in older plans (1.0). */
+  bedStretchRatio?: number;
   /** timeStretch ratio for the vocal (output length / input length). */
   vocalsStretchRatio: number;
   /** Semitones to pitch the vocal into the bed's key. */
@@ -2311,7 +2313,7 @@ function grooveAwareBedEntry(
 export function planMashup(
   vocals: MashupSourceProfile,
   bed: MashupSourceProfile,
-  options: { strategy?: MashupAlignmentStrategy } = {},
+  options: { strategy?: MashupAlignmentStrategy; jointTempo?: boolean } = {},
 ): MashupPlanResult {
   const strategy = options.strategy ?? "phrase-aware";
   vocals = profileFromCurrentEvidence(vocals);
@@ -2709,9 +2711,7 @@ export function planMashup(
     });
   }
 
-  return {
-    ok: true,
-    plan: {
+  const plan: MashupPlan = {
       engine: MASHUP_PLANNER_ENGINE,
       alignmentStrategy: strategy,
       masterBpm,
@@ -2723,8 +2723,72 @@ export function planMashup(
       durationMs: bed.durationMs,
       rationale,
       warnings,
-    passageSearch: alignedEntry.passageSearch,
-    },
+      passageSearch: alignedEntry.passageSearch,
+  };
+  // A uniform, pitch-preserving timeline move leaves the existing measured
+  // beat-phase/phrase placement intact. Only strong, close, unambiguous tempo
+  // evidence permits moving BOTH sources; otherwise retain the proven bed
+  // timeline rather than manufacturing a new tempo.
+  if (options.jointTempo !== false && trustedBedBpm !== null && trustedVocalBpm !== null
+    && (bed.bpmConfidence ?? 0) >= 0.8 && (vocals.bpmConfidence ?? 0) >= 0.8
+    && Math.abs(trustedVocalBpm / trustedBedBpm - 1) > 0.01
+    && Math.abs(trustedVocalBpm / trustedBedBpm - 1) <= 0.08
+    && Math.abs(masterBpm / trustedBedBpm - 1) <= 0.01) {
+    const target = (trustedBedBpm + trustedVocalBpm) / 2;
+    const ratio = masterBpm / target;
+    if (Math.abs(ratio - 1) > 0.001) {
+      const scale = (ms: number) => Math.round(ms * ratio);
+      plan.masterBpm = masterBpm / ratio;
+      plan.bedStretchRatio = ratio;
+      plan.vocalsStretchRatio *= ratio;
+      plan.durationMs = scale(plan.durationMs);
+      plan.segments = segments.map((segment) => ({
+        ...segment,
+        mashupStartMs: scale(segment.mashupStartMs),
+        mashupEndMs: scale(segment.mashupEndMs),
+        crossfadeMs: scale(segment.crossfadeMs),
+        localTempoMap: segment.localTempoMap ? {
+          ...segment.localTempoMap,
+          points: segment.localTempoMap.points.map((point) => ({
+            sourceMs: point.sourceMs, outputMs: scale(point.outputMs),
+          })),
+          entryShiftMs: scale(segment.localTempoMap.entryShiftMs),
+        } : undefined,
+      }));
+      if (plan.arrangement) {
+        plan.arrangement = {
+          ...plan.arrangement,
+          coherentEntryMs: scale(plan.arrangement.coherentEntryMs),
+          placements: plan.arrangement.placements.map((placement) => ({
+            ...placement, bedStartMs: scale(placement.bedStartMs),
+          })),
+        };
+      }
+      if (plan.passageSearch) {
+        plan.passageSearch = {
+          ...plan.passageSearch,
+          evaluations: plan.passageSearch.evaluations.map((evaluation) => ({
+            ...evaluation,
+            bedStartMs: evaluation.bedStartMs === null ? null : scale(evaluation.bedStartMs),
+            bedEndMs: evaluation.bedEndMs === null ? null : scale(evaluation.bedEndMs),
+            plannedEntryMs: evaluation.plannedEntryMs === null ? null : scale(evaluation.plannedEntryMs),
+            rankedBedCandidates: evaluation.rankedBedCandidates?.map((candidate) => ({
+              ...candidate,
+              bedStartMs: scale(candidate.bedStartMs),
+              bedEndMs: scale(candidate.bedEndMs),
+              plannedEntryMs: scale(candidate.plannedEntryMs),
+            })),
+          })),
+        };
+      }
+      plan.rationale = plan.rationale.filter((line) =>
+        !/master tempo = the instrumental's|vocals are time-stretched|vocals stay at natural speed/i.test(line));
+      plan.rationale.push(`Both verified tempi (${trustedBedBpm} and ${trustedVocalBpm} BPM) support a shared ${plan.masterBpm.toFixed(2)} BPM timeline; pitch-preserving bed stretch ×${ratio.toFixed(4)} is required in render and export.`);
+    }
+  }
+  return {
+    ok: true,
+    plan,
   };
 }
 
@@ -2740,9 +2804,10 @@ export type MashupAlignmentCandidate = {
 export function compareMashupAlignmentCandidates(
   vocals: MashupSourceProfile,
   bed: MashupSourceProfile,
+  options: { jointTempo?: boolean } = {},
 ): MashupAlignmentCandidate[] {
   return MASHUP_ALIGNMENT_CANDIDATES.map(({ id, title }) => {
-    const result = planMashup(vocals, bed, { strategy: id });
+    const result = planMashup(vocals, bed, { strategy: id, jointTempo: options.jointTempo });
     if (!result.ok) {
       return { id, title, available: false, unavailableReason: result.reason, plan: null };
     }
@@ -2836,6 +2901,10 @@ export type MashupPcmInput = {
   vocals: StereoBuffer;
   /** Interleaved stereo bed (instrumental) PCM. */
   bed: StereoBuffer;
+  /** Exact constituent bed stems, required when the saved session stretches
+   * them separately. Otherwise a non-linear WSOLA of their sum will disagree
+   * with the Studio/export sum of individually stretched clips. */
+  bedStems?: readonly StereoBuffer[];
   /**
    * Optional complementary **donor** stems for deliberate layering, keyed
    * `donor_<stemType>`. These are never added automatically: only the stem
@@ -2894,9 +2963,28 @@ export function renderMashupWithBus(
   const totalFrames = Math.max(1, Math.round((plan.durationMs / 1000) * sampleRate));
   const summed = new Float32Array(totalFrames * 2);
 
+  const bedPcm = plan.bedStretchRatio && Math.abs(plan.bedStretchRatio - 1) > 0.001
+    ? input.bedStems?.length
+      ? (() => {
+        const output = new Float32Array(totalFrames * 2);
+        for (const stem of input.bedStems) {
+          const frames = stem.length / 2;
+          const stretched = timeStretch(stem, totalFrames / frames, sampleRate, [
+            { inputFrame: 0, outputFrame: 0 },
+            { inputFrame: Math.round(frames / 2), outputFrame: Math.round(totalFrames / 2) },
+            { inputFrame: frames, outputFrame: totalFrames },
+          ]);
+          for (let index = 0; index < Math.min(output.length, stretched.length); index++) {
+            output[index] += stretched[index]!;
+          }
+        }
+        return output;
+      })()
+      : timeStretch(input.bed, plan.bedStretchRatio, sampleRate)
+    : input.bed;
   const balance = input.mix?.matchVocalLoudness === false
     ? null
-    : planMashupBalance({ vocals: input.vocals, bed: input.bed, sampleRate });
+    : planMashupBalance({ vocals: input.vocals, bed: bedPcm, sampleRate });
   const vocalGain = balance === null ? 1 : 10 ** (balance.vocalGainDb / 20);
 
   // Prepared vocal segments (stretched once, then pitched once each).
@@ -2986,7 +3074,7 @@ export function renderMashupWithBus(
     }
   }
 
-  const bedFrames = Math.min(totalFrames, Math.floor(input.bed.length / 2));
+  const bedFrames = Math.min(totalFrames, Math.floor(bedPcm.length / 2));
   for (let frame = 0; frame < totalFrames; frame += 1) {
     const atMs = (frame / sampleRate) * 1000;
 
@@ -3000,8 +3088,8 @@ export function renderMashupWithBus(
     let left = 0;
     let right = 0;
     if (frame < bedFrames) {
-      left = input.bed[frame * 2]! * bedGain;
-      right = input.bed[frame * 2 + 1]! * bedGain;
+      left = bedPcm[frame * 2]! * bedGain;
+      right = bedPcm[frame * 2 + 1]! * bedGain;
     }
 
     for (const { segment, pcm } of prepared) {

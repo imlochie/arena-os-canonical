@@ -7,7 +7,7 @@ Every stem should adapt and influence the shared composition. No source should a
 
 **Why:** the user explicitly required universal cross-stem adaptation built on the existing architecture, not a separate mashup engine or a sequence of isolated adjustments.
 
-**How to apply:** Evaluate coordinated tempo, phrase, structural and harmonic alternatives; preserve source identity and complete phrases. Explain when the available transformations cannot make a combination coherent, and separate deterministic correctness tests from real rendered-audio listening acceptance.
+**How to apply:** Evaluate coordinated tempo, phrase, structural and harmonic alternatives; preserve source identity and complete phrases. A changed composition invalidates its aggregate decisions, not verified measurements of unchanged source stems. Any selected master tempo must also govern rendered PCM, saved clip positions and export; otherwise withhold the change. Explain when the available transformations cannot make a combination coherent, and separate deterministic correctness tests from real rendered-audio listening acceptance.
 
 Automatically producing complete, listenable mashups from arbitrary songs is the acceptance goal: replacing a stem, overlaying contrasting drums, or producing a technically valid export is not sufficient. Vocal flow is equally important to the backing arrangement: when lyrics enter, phrase/cadence timing, and how vocals adapt to drums, bass, and instrumental changes must be measured and used. Acoustic fit outranks lyric semantics. Tempo matching must include measured beat-phase alignment; musical fit, downbeats and phrase selection need their own evidence.
 

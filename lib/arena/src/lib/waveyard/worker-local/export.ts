@@ -74,6 +74,7 @@ type ExportSnapshot = {
   masterVolume: number;
   tempoBpm: number;
   targetKey: string | null;
+  requiredBedTempoStemIds: string[];
   tracks: SnapshotTrack[];
   automation: RemixAutomationLane[];
 };
@@ -136,6 +137,13 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   if (!Array.isArray(value.tracks)) throw new ExportFailure("invalid_snapshot", "Persisted remix tracks are missing.");
   const tempoBpm = finite(value.tempoBpm ?? 120, 20, 300);
   const rawMashupPlan = value.mashupPlan;
+  const requiredBedTempoStemIds = rawMashupPlan && typeof rawMashupPlan === "object"
+    && !Array.isArray(rawMashupPlan) && Array.isArray((rawMashupPlan as Record<string, unknown>).bedTempoStemIds)
+    ? ((rawMashupPlan as Record<string, unknown>).bedTempoStemIds as unknown[])
+    : [];
+  if (!requiredBedTempoStemIds.every((id) => typeof id === "string")) {
+    throw new ExportFailure("invalid_snapshot", "Saved bed timing identities are invalid.");
+  }
   const rawBindings = rawMashupPlan && typeof rawMashupPlan === "object" && !Array.isArray(rawMashupPlan)
     ? (rawMashupPlan as Record<string, unknown>).clipTimingMaps
     : undefined;
@@ -225,6 +233,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
     tempoBpm,
+    requiredBedTempoStemIds: requiredBedTempoStemIds as string[],
     targetKey: normaliseMusicalKey(value.targetKey),
     tracks,
     automation,
@@ -521,6 +530,13 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     const mappedPath = join(temporaryDirectory, `mapped-clip-${index}.wav`);
     await writeFile(mappedPath, encodeFloatWav32(rendered, decoded.sampleRate));
     mappedInputByClipIndex.set(index, { path: mappedPath, inputIndex: nextInputIndex++ });
+  }
+  const requiredBedStemIds = new Set(snapshot.requiredBedTempoStemIds);
+  for (const [index, clip] of clips.entries()) {
+    if (requiredBedStemIds.has(clip.stemAssetId) && !mappedInputByClipIndex.has(index)) {
+      throw new ExportFailure("bed_tempo_map_unavailable",
+        "The saved bed timing map no longer matches its clip or source audio. Restore the original clip or regenerate the mashup; export will not silently use a different tempo.");
+    }
   }
 
   const transformedSourceIds = [...new Set(clips.flatMap((clip, index) =>

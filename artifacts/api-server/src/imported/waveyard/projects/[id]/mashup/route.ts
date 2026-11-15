@@ -200,7 +200,7 @@ type BedSource = {
 };
 
 type BedLoadResult =
-  | { ok: true; pcm: Float32Array; info: BedSourceInfo }
+  | { ok: true; pcm: Float32Array; info: BedSourceInfo; components: Float32Array[] }
   | { ok: false; info: BedSourceInfo };
 
 /** Latest stem of a type for a source whose separation job completed, or null. */
@@ -676,7 +676,7 @@ async function loadInstrumentalBed(
         "The separated instrumental stem is not a valid 44.1 kHz stereo WAV. Re-run separation for the instrumental track.",
       );
     }
-    return { ok: true, pcm, info };
+    return { ok: true, pcm, components: [pcm], info };
   }
 
   const decodedStems: InstrumentalBedStem[] = [];
@@ -708,7 +708,12 @@ async function loadInstrumentalBed(
     includedStemTypes: bed.includedStemTypes as string[],
     replacedStemTypes: bed.replacedStemTypes,
   };
-  return { ok: true, pcm: compositionPcm, info: infoWithStems };
+  return {
+    ok: true, pcm: compositionPcm, info: infoWithStems,
+    components: decodedStems
+      .filter((stem) => new Set<string>(bed.includedStemTypes).has(stem.stemType))
+      .map((stem) => stem.samples),
+  };
 }
 
 /**
@@ -1415,7 +1420,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (action === "compare") {
         const bedInfo = await inspectBed(projectId, bedId);
         return Response.json({
-          candidates: compareMashupAlignmentCandidates(vocals, bed),
+          candidates: compareMashupAlignmentCandidates(vocals, bed, {
+            jointTempo: !compositionForPlan || compositionForPlan.stemLayerMode === "none",
+          }),
           bed: bedInfo,
           evidence: {
             vocals: vocals.evidence ? summarizeEvidencePacket(vocals.evidence) : null,
@@ -1423,7 +1430,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           },
         }, { status: 200 });
       }
-      const planned = planMashup(vocals, bed, { strategy: alignmentStrategy });
+      // Donor replacement/layer clips do not yet have independent joint-tempo
+      // persistence maps; never offer shared-tempo plans those paths cannot save.
+      const planned = planMashup(vocals, bed, {
+        strategy: alignmentStrategy,
+        jointTempo: !compositionForPlan || compositionForPlan.stemLayerMode === "none",
+      });
       if (!planned.ok) {
         return Response.json({ error: planned.reason }, { status: 422 });
       }
@@ -1481,6 +1493,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           stem.stemType !== "vocals"
           && INSTRUMENTAL_BED_STEM_TYPES.includes(stem.stemType as (typeof INSTRUMENTAL_BED_STEM_TYPES)[number])
           && !composition.replacedBedStemTypes.includes(stem.stemType));
+        if (planned.plan.bedStretchRatio && sessionBedStems.some((stem) =>
+          !stem.checksumSha256 || stem.format?.toLowerCase() !== "wav" || stem.channels !== 2)
+          || planned.plan.bedStretchRatio && !bed.sourceChecksumSha256) {
+          return Response.json({
+            error: "The bed's source and stereo stem checksums are required to save the shared-tempo transform. No untransformed arrangement was saved.",
+            code: "bed-tempo-provenance-unavailable",
+          }, { status: 422 });
+        }
 
         // The donor's replacing stems become real Studio tracks, so the saved
         // session carries the arrangement rather than losing it on reopen.
@@ -1621,16 +1641,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           // Bed clips spanning full duration
           for (const bStem of sessionBedStems) {
             if (trackByStemId.has(bStem.id)) {
+              const bedRatio = planned.plan.bedStretchRatio ?? 1;
               clipsToInsert.push({
                 remixTrackId: trackByStemId.get(bStem.id)!.id,
                 stemAssetId: bStem.id,
                 timelineStartMs: 0,
-                durationMs: planned.plan.durationMs,
+                durationMs: Math.min(planned.plan.durationMs, Math.floor(bStem.durationSeconds * 1000 * bedRatio)),
                 sourceOffsetMs: 0,
                 gain: 0.8,
                 fadeInMs: 50,
                 fadeOutMs: 150,
-                tempoSyncEnabled: false,
+                tempoSyncEnabled: Boolean(planned.plan.bedStretchRatio),
                 keySyncEnabled: false,
                 beatSnapEnabled: bedGridTrusted,
               });
@@ -1681,6 +1702,37 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
           const insertedClips = clipsToInsert.length ? await tx.insert(remixClips).values(clipsToInsert).returning() : [];
           const clipTimingMaps = insertedClips.flatMap((clip) => {
+            if (planned.plan.bedStretchRatio && sessionBedStems.some((stem) => stem.id === clip.stemAssetId)) {
+              const stem = sessionBedStems.find((item) => item.id === clip.stemAssetId)!;
+              const sourceMs = stem.durationSeconds * 1000;
+              const ratio = clip.durationMs / sourceMs;
+              const map = createPersistedClipTempoMap({
+                clipId: clip.id,
+                remixTrackId: clip.remixTrackId,
+                stemAssetId: clip.stemAssetId,
+                sourceAssetId: stem.sourceAssetId,
+                sourceChecksumSha256: bed.sourceChecksumSha256!,
+                stemChecksumSha256: stem.checksumSha256!,
+                sourceOffsetMs: clip.sourceOffsetMs,
+                timelineStartMs: clip.timelineStartMs,
+                durationMs: clip.durationMs,
+                sessionTempoBpm: planned.plan.masterBpm,
+                baseStretchRatio: ratio,
+                map: {
+                  points: [
+                    { sourceMs: 0, outputMs: 0 },
+                    { sourceMs: sourceMs / 2, outputMs: clip.durationMs / 2 },
+                    { sourceMs, outputMs: clip.durationMs },
+                  ],
+                  baselineFit: { matchedBeats: 0, comparedBeats: 1, meanErrorMs: 0 },
+                  correctedFit: { matchedBeats: 0, comparedBeats: 1, meanErrorMs: 0 },
+                  maximumRateDeviationPercent: 0,
+                  entryShiftMs: 0,
+                },
+              });
+              if (!map) throw new Error("Could not persist the verified bed tempo transformation.");
+              return [map];
+            }
             if (clip.remixTrackId !== trackByStemId.get(vocalsStem.id)?.id
               || !vocalsStemRecord
               || vocalsStemRecord.projectId !== projectId
@@ -1740,6 +1792,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 note: composition.note,
               },
               masterBpm: planned.plan.masterBpm,
+              bedStretchRatio: planned.plan.bedStretchRatio ?? 1,
+              bedTempoStemIds: planned.plan.bedStretchRatio ? sessionBedStems.map((stem) => stem.id) : [],
               vocalsStretchRatio: planned.plan.vocalsStretchRatio,
               vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
               keyRelationship: planned.plan.keyRelationship,
@@ -1890,6 +1944,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const rendered = renderMashupWithBus(planned.plan, {
         vocals: vocalsPcm,
         bed: bedPcm,
+        bedStems: planned.plan.bedStretchRatio && bedResult.ok ? bedResult.components : undefined,
         stems: composition.donorStems.size > 0 ? composition.donorStems : undefined,
         layerStemTypes: composition.composition.layeredStemTypes,
         sampleRate: RENDER_SAMPLE_RATE,

@@ -1,5 +1,37 @@
 # Arena handoff — read this first
 
+## Current: bounded joint-tempo playback and saved-bed parity
+
+On `arena/669984d8-arena-os-canonical`, extend the existing planner, mix bus
+and immutable Studio snapshot rather than building a new engine. When **both**
+source tempi are verified (confidence at least 0.8), within 8% and outside
+the existing 1% pulse-lock range, the planner chooses their midpoint. The
+whole plan timeline is rescaled; the bed and vocal are both pitch-preserving
+time-stretched. Wider or uncertain differences retain the previous bed
+timeline. Original source evidence is not invalidated by this decision.
+
+The route renders each retained bed stem separately before summing when the
+joint tempo is active. It saves individually bound, checksum-checked bed clip
+tempo maps for Studio preview/export; the export worker refuses to replace a
+missing/invalid saved bed map with its independent BPM transform. Older
+snapshots are unaffected. The paired synthetic PostgreSQL route regression
+plans, renders, saves, reopens and exports a 104/100 BPM pair; it verifies the
+bed maps, transformed length and actual bed-only audio correlation, not only a
+tempo label. These synthetic tones do **not** prove musical quality. The test
+also established that comparing audio during the vocal overlay conflates bed
+timing with different vocal gains; the parity window is after the vocal ends.
+Final check: 47/47 planner/render unit tests, 1/1 PostgreSQL production-route
+test (zero skipped), full workspace typecheck, and `git diff --check` passed.
+The unit test also covers the opposite 100/104 direction and absent/weak
+tempo evidence. No listening assets were preserved for this run.
+
+**Limitations:** This is deliberately a bounded two-source change. Donor
+instrumental layers/replacements currently use their existing vocal-relative
+timing, so the route disables joint-tempo changes for those compositions.
+Wider tempo differences, independent multi-role transforms, meaningful
+duration expansion, and full-length real-audio listening acceptance remain
+open. Do not call this universal adaptation or STEM.FM parity.
+
 ## Current: universal cross-stem adaptation — first correctness increment
 
 Started from clean branch `arena/669984d8-arena-os-canonical`, revision
