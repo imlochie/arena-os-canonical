@@ -2524,6 +2524,16 @@ test(
       const acceptanceRenderBytes = new Uint8Array(await acceptanceRender.arrayBuffer());
       const acceptanceRenderWav = decodeWav16(acceptanceRenderBytes);
       assert.ok(acceptanceRenderWav && acceptanceRenderWav.frames > 0, "the acceptance render must be real audio");
+      // Persist each piece of audio the moment it exists. Collecting all writes
+      // at the end meant a crash anywhere later (including the known teardown
+      // race, which fires after the assertions pass) lost the artifacts the
+      // owner needs in order to listen — and a green CI job with no audio is
+      // exactly what this work is not allowed to produce.
+      const evidenceDir = process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR?.trim();
+      if (evidenceDir) {
+        await mkdir(evidenceDir, { recursive: true });
+        await writeFile(path.join(evidenceDir, "acceptance-render.wav"), Buffer.from(acceptanceRenderBytes));
+      }
 
       const renderWindow = Math.min(2000, Math.floor((acceptanceRenderWav!.frames / RATE) * 1000));
       const renderOriginalDrums = energyAt(acceptanceRenderWav!.samples, ACCEPTANCE.originalBedDrumsHz, 0, renderWindow);
@@ -2678,6 +2688,7 @@ test(
       );
       assert.equal(acceptanceExportMedia.status, 200);
       const acceptanceExportBytes = new Uint8Array(await acceptanceExportMedia.arrayBuffer());
+      if (evidenceDir) await writeFile(path.join(evidenceDir, "acceptance-export.wav"), Buffer.from(acceptanceExportBytes));
       const acceptanceExportWav = decodeWav16(acceptanceExportBytes);
       assert.ok(acceptanceExportWav && acceptanceExportWav.frames > 0, "the export must be real audio");
 
@@ -2760,11 +2771,7 @@ test(
 
       // Preserve the audio evidence for download. A passing assertion without
       // the audible result is not evidence the owner can judge.
-      const evidenceDir = process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR?.trim();
       if (evidenceDir) {
-        await mkdir(evidenceDir, { recursive: true });
-        await writeFile(path.join(evidenceDir, "acceptance-render.wav"), Buffer.from(acceptanceRenderBytes));
-        await writeFile(path.join(evidenceDir, "acceptance-export.wav"), Buffer.from(acceptanceExportBytes));
         await writeFile(path.join(evidenceDir, "acceptance-evidence.json"), JSON.stringify({
           fixture: ACCEPTANCE,
           note: "Percussive parts are synthetic bar-structured hits with one distinct frequency per role. This proves source attribution, section re-derivation and render/save/reopen/export agreement end to end. It is NOT a musical-quality judgement and no listening test has been run against it.",

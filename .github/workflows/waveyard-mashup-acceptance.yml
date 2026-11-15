@@ -159,16 +159,26 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-          node scripts/waveyard-mashup-route-verdict.mjs "$evidence/route.txt"
-          # The route suite must have actually produced the audio evidence, not
-          # merely passed assertions about audio it never wrote.
+          # The verdict script exits 0 for a clean pass AND for the quarantined
+          # teardown race, so its exit code alone cannot be trusted to mean the
+          # acceptance really ran to completion. Capture it, then require the
+          # audio the acceptance is supposed to produce.
+          verdict=0
+          node scripts/waveyard-mashup-route-verdict.mjs "$evidence/route.txt" || verdict=$?
           audio="$evidence/acceptance-audio"
+          missing=0
           for expected in acceptance-render.wav acceptance-export.wav acceptance-evidence.json; do
             if [ ! -s "$audio/$expected" ]; then
               echo "::error::Missing acceptance audio evidence: $expected. A passing assertion without the audio is not acceptable evidence."
-              exit 1
+              missing=1
             fi
           done
+          if [ "$verdict" -ne 0 ]; then
+            exit "$verdict"
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
           ls -l "$audio" | tee -a "$evidence/acceptance-audio-manifest.txt"
 
       - name: Retain evidence
