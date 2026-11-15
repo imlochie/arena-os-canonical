@@ -45,6 +45,52 @@ function decode(file: string, filters?: string): Float32Array {
   return new Float32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
 }
 
+test("derived sections never run past the audio they were derived from", () => {
+  // The regression this guards: `deriveSectionsForComposition` originally fed
+  // 44.1 kHz PCM to `analysePcm`, which assumes the 22.05 kHz analysis rate. The
+  // beat grid came out at twice the real density and sections ran to twice the
+  // track length — 62.6 s of "sections" inside a 32 s bed. Boundaries that do
+  // not fit the audio cannot be an arrangement's phrase structure.
+  const pcm = compositionFixture(32);
+  const durationMs = Math.round((pcm.length / 2 / 44_100) * 1000);
+  const result = deriveSectionsForComposition(pcm, { sampleRate: 44_100 });
+  if (!result.ok) return; // no sections is honest; wrong sections is not.
+  for (const section of result.sections) {
+    assert.ok(section.startMs >= 0, `section starts before the audio (${section.startMs}ms)`);
+    assert.ok(section.endMs <= durationMs,
+      `section ends after the audio: ${section.endMs}ms in a ${durationMs}ms bed`);
+    assert.ok(section.endMs > section.startMs, "sections must be non-empty");
+  }
+});
+
+/** A drum/bass/pad composition at a known tempo, for the bounds test above. */
+function compositionFixture(seconds: number): Float32Array {
+  const rate = 44_100;
+  const frames = Math.round(seconds * rate);
+  const out = new Float32Array(frames * 2);
+  const beatFrames = Math.round(0.5 * rate);
+  const hitFrames = Math.round(0.12 * rate);
+  for (let frame = 0; frame < frames; frame += 1) {
+    const t = frame / rate;
+    const value = Math.sin(2 * Math.PI * 70 * t) * 0.12 + Math.sin(2 * Math.PI * 110 * t) * 0.12;
+    out[frame * 2] = value;
+    out[frame * 2 + 1] = value;
+  }
+  for (let beat = 0; beat * beatFrames < frames; beat += 1) {
+    const sparse = Math.floor(Math.floor(beat / 4) / 2) % 2 === 1;
+    if (sparse && beat % 4 !== 0) continue;
+    const accent = beat % 4 === 0 ? 1 : 0.45;
+    const start = beat * beatFrames;
+    for (let offset = 0; offset < hitFrames && start + offset < frames; offset += 1) {
+      const t = offset / rate;
+      const value = Math.sin(2 * Math.PI * 420 * t) * Math.exp(-28 * t) * 0.45 * accent;
+      out[(start + offset) * 2] += value;
+      out[(start + offset) * 2 + 1] += value;
+    }
+  }
+  return out;
+}
+
 const track = corpusTrack(["ash.mp3", "bedroom-window-vast.mp3"]);
 const ready = track !== null && ffmpeg.length > 0 && existsSync(ffmpeg);
 

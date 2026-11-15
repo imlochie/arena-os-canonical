@@ -385,6 +385,11 @@ function summarizeEvidencePacket(packet: MusicalEvidencePacket) {
         stemAssetId: evidence.provenance.stemAssetId,
         stemType: evidence.provenance.stemType,
         stemChecksumSha256: evidence.provenance.stemChecksumSha256,
+        // Section boundaries are the evidence behind `bedEntryMs`, so a caller
+        // asking "why did the vocal enter there?" has to be able to see them.
+        // Dropping the value left the response saying sections were measured
+        // while withholding the only data that could check the claim.
+        ...(name === "sections" ? { value: evidence.value } : {}),
       }
       : { status: evidence.status, reason: evidence.reason },
   ]));
@@ -645,6 +650,17 @@ async function loadInstrumentalBed(
   bedId: string,
   resolvedSource?: BedSource,
   omitStemTypes: readonly string[] = [],
+  /**
+   * Donor stems that *replace* the omitted bed roles, keyed by stem type.
+   *
+   * Omitting the bed's drums is only half a replacement: the composition the
+   * listener hears is `bed - drums + donor drums`. Analysing the bed with the
+   * drums merely removed measures a bed with NO percussion, which is why a
+   * completed swap was planning against a drumless bed and picking up a
+   * half-tempo reading. These are summed in so the analysis sees the actual
+   * resulting composition.
+   */
+  replacingStems: ReadonlyMap<string, Float32Array> = new Map(),
 ): Promise<BedLoadResult> {
   const { info, stems } = resolvedSource ?? await findBedSource(projectId, bedId);
   if (info.source === "original-fallback" || stems.length === 0) {
@@ -685,12 +701,39 @@ async function loadInstrumentalBed(
   }
 
   const bed = sumInstrumentalStems(decodedStems, { omitStemTypes });
+  const compositionPcm = mixInReplacingStems(bed.pcm, replacingStems);
   const infoWithStems: BedSourceInfo = {
     ...info,
     includedStemTypes: bed.includedStemTypes as string[],
     replacedStemTypes: bed.replacedStemTypes,
   };
-  return { ok: true, pcm: bed.pcm, info: infoWithStems };
+  return { ok: true, pcm: compositionPcm, info: infoWithStems };
+}
+
+/**
+ * Sum the donor's replacing stems into the retained bed audio.
+ *
+ * Sample-aligned addition of the first N frames, in place of the role the bed
+ * gave up. A donor stem shorter than the bed contributes only where it actually
+ * has audio — it is never looped or padded with duplicated material here,
+ * because that would be inventing music the donor did not record.
+ */
+function mixInReplacingStems(
+  bedPcm: Float32Array,
+  replacingStems: ReadonlyMap<string, Float32Array>,
+): Float32Array {
+  if (replacingStems.size === 0) return bedPcm;
+  const out = new Float32Array(bedPcm);
+  for (const donorPcm of replacingStems.values()) {
+    const frames = Math.min(out.length, donorPcm.length);
+    for (let index = 0; index < frames; index += 1) {
+      const mixed = out[index]! + donorPcm[index]!;
+      // Clamp rather than wrap: a summed peak above unity is a level problem,
+      // not a reason to invert the waveform.
+      out[index] = mixed > 1 ? 1 : mixed < -1 ? -1 : mixed;
+    }
+  }
+  return out;
 }
 
 async function inspectBed(projectId: string, bedId: string): Promise<BedSourceInfo> {
@@ -763,14 +806,71 @@ function bedProfileFromComposition(
   // evidence that was derived from the old material. The old grid is kept only
   // when the new measurement is genuinely absent, and then it is labelled.
   const hasNewBeatGrid = Array.isArray(analysis.beatGridMs) && analysis.beatGridMs.length > 1;
+  const composedSections = derivedSections.ok ? derivedSections.sections : original.sections;
+
+  /**
+   * The re-measured values MUST also be written into the evidence packet.
+   *
+   * This is not bookkeeping. `planMashup` starts by calling
+   * `profileFromCurrentEvidence`, which overwrites `bpm`, `musicalKey`,
+   * `beatGridMs` and `sections` from `profile.evidence` whenever the packet's
+   * checksum still matches the source. So the composed bed's analysis was being
+   * computed correctly and then silently replaced by the original bed's stale
+   * analysis before the planner ever saw it — the exact "PCM swapped under an
+   * arrangement planned from the old stem" defect this whole change exists to
+   * remove. The top-level fields are updated for non-plan call sites; the packet
+   * is what the planner actually reads.
+   *
+   * The packet is addressed to the original source asset because that is the
+   * audio identity the rest of the session references, but the provenance says
+   * plainly that these numbers were measured on the resulting composition.
+   */
+  const compositionProvenance = {
+    analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+    analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256: original.sourceChecksumSha256 ?? "",
+    subject: "separated-stem" as const,
+    persistence: "request" as const,
+  };
+  const evidence = original.evidence
+    ? {
+      ...original.evidence,
+      features: {
+        ...original.evidence.features,
+        ...(analysis.bpm !== null
+          ? { tempo: measuredEvidence({ bpm: analysis.bpm, confidence: analysis.bpmConfidence }, compositionProvenance) }
+          : {}),
+        ...(analysis.musicalKey !== null
+          ? { key: measuredEvidence({ key: analysis.musicalKey, confidence: analysis.keyConfidence }, compositionProvenance) }
+          : {}),
+        ...(hasNewBeatGrid
+          ? { beatGrid: measuredEvidence({ beatsMs: analysis.beatGridMs!, confidence: analysis.beatConfidence }, compositionProvenance) }
+          : {}),
+        ...(derivedSections.ok
+          ? {
+            sections: measuredEvidence(
+              composedSections.map((section) => ({
+                label: section.label,
+                startMs: section.startMs,
+                endMs: section.endMs,
+              })),
+              compositionProvenance,
+            ),
+          }
+          : {}),
+      },
+    }
+    : original.evidence;
+
   return {
     ...original,
+    evidence,
     bpm: analysis.bpm ?? null,
     bpmConfidence: analysis.bpmConfidence ?? null,
     bpmCandidates: analysis.bpmCandidates ?? null,
     musicalKey: analysis.musicalKey ?? null,
     keyConfidence: analysis.keyConfidence ?? null,
-    sections: derivedSections.ok ? derivedSections.sections : original.sections,
+    sections: composedSections,
     beatGridMs: hasNewBeatGrid ? analysis.beatGridMs : original.beatGridMs,
     beatConfidence: hasNewBeatGrid ? analysis.beatConfidence : original.beatConfidence,
     downbeatGridMs: analysis.downbeatGridMs ?? original.downbeatGridMs,
@@ -1291,6 +1391,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             bedId,
             resolvedBedSource,
             resolved.composition.replacedBedStemTypes,
+            resolved.donorStems,
           ).catch(() => null);
           if (composedBed?.ok) {
             bed = bedProfileFromComposition(bed, composedBed.pcm, resolved.composition.replacedBedStemTypes);

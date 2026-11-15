@@ -1557,3 +1557,120 @@ Both were in my own acceptance code and are recorded so they are not repeated:
   therefore "present, and the only drums" rather than equality with the render.
   Whether the key shift itself is musically right is a listening question, not
   something a spectrum can settle.
+
+## 18. Closing the acceptance: the composition was never the thing being analysed
+
+§17 claimed render/save/export agreement on a distinguishable fixture. Scrutiny of
+that claim found the agreement was partly illusory, and found three real defects
+that the passing assertions could not see. This section records them, because
+each one meant an "end-to-end pass" was measuring less than it appeared to.
+
+### 18.1 The composed bed had no drums in it
+
+`loadInstrumentalBed` was called with the replaced stem types as an *omit* list
+and nothing else. So "the composition" the planner analysed was the bed **minus**
+its drums — the donor's drums were never summed in. The replacement was audible
+in the render (applied separately) but invisible to analysis, which is precisely
+the `PCM substituted under an arrangement planned from the original stem`
+failure this whole assignment exists to remove, in a new form.
+
+Measured: `masterBpm` came out **92.285** from a drumless bed, and **46.143**
+(half-time, 1.30× vocal stretch) when §18.2 let the drumless reading through.
+With the donor stems summed in: **120.185 BPM**, stretch **1.000**, beat
+confidence **1.0** — the tempo the fixture was actually built at.
+
+Fixed by `mixInReplacingStems`, which sums the donor's replacing stems into the
+retained bed audio with sample-aligned addition and clamping (never looping or
+padding a short donor, because that would invent music the donor did not record).
+
+### 18.2 The planner discarded the composed analysis
+
+`bedProfileFromComposition` wrote re-measured tempo/key/beat-grid/sections onto
+the profile's top-level fields, but `planMashup` opens with
+`profileFromCurrentEvidence`, which overwrites exactly those fields from
+`profile.evidence` whenever the packet's checksum still matches the source. The
+composed analysis was computed correctly and then **silently replaced by the
+original bed's stale analysis** before the planner read it.
+
+This was invisible in §17 because the stale and fresh values happened to agree
+on the fields asserted there. It surfaced as a contradiction: the plan reported
+`keyRelationship: "same"` / 0 semitones while export applied −3, from the same
+two keys. Both were honest about their own inputs; the plan's input had been
+overwritten.
+
+Fixed by writing the composed measurement into the evidence packet, with
+provenance marked `persistence: "request"` so a stale database record can never
+be confused with it. Plan and export now agree: `keyRelationship: "other"`,
+**−3 semitones**, measured **1261 Hz** in the render and **1262 Hz** in the
+export against a planned 1261.3 Hz.
+
+### 18.3 Sections ran to twice the length of the audio
+
+`deriveSectionsForComposition` downmixed 44.1 kHz PCM and passed it to
+`analysePcm`, which assumes the 22.05 kHz analysis rate. Every onset frame
+counted as half its real duration, so the beat grid was double-density and
+derived sections ran to **62,624 ms inside a 32,000 ms bed**.
+
+Fixed with `downsampleToAnalysisPcm`. The regression test asserts every section
+lies inside the audio; it fails on the un-fixed code with
+`section ends after the audio: 46928ms in a 32000ms bed` and passes after.
+
+### 18.4 What the acceptance now measures
+
+Export is required to contain, measured over the timeline the plan says the
+vocal occupies rather than an arbitrary opening window:
+
+| part | render | export | requirement |
+| --- | --- | --- | --- |
+| bed drums (260 Hz) | 5.4e-05 | 4.0e-06 | absent |
+| donor drums (420 Hz) | 1.51e-03 | 1.03e-04 | present, dominates |
+| bed bass (70 Hz) | 1.08e-02 | 1.36e-02 | retained |
+| bed pads (110 Hz) | 1.08e-02 | 1.36e-02 | retained |
+| donor vocal | 1261 Hz, 1.47e-03 | 1262 Hz, 1.65e-03 | present, at the planned pitch |
+
+The vocal is found by scanning a band, not by probing an assumed frequency, so
+"absent" and "quiet" are distinguishable. Export is also required to match the
+planned duration (31.93 s vs 32.00 s).
+
+**The render and the export now agree on the key move.** §17 recorded them as
+different and attributed it to export's key sync. That was wrong: the
+difference was §18.2. Both apply −3 semitones.
+
+### 18.5 The legacy assertion, replaced rather than weakened
+
+The old fixture's donor drums and bed drums are both 260 Hz, so `energyAt(260)`
+cannot attribute the tone to a source. Demanding that it be *absent* was
+unsatisfiable for a correct replacement — it only passed while the donor clip
+was truncated.
+
+It is now two assertions the fixture can actually prove: the exported audio
+contains percussion, and provenance shows no clip references the bed drum stem
+while the donor drum stem is referenced. **Source attribution moved to the
+distinguishable-frequency acceptance**, which measures it directly. Nothing was
+relaxed; an unprovable claim was replaced by a provable one and the original
+question is answered where it can be answered.
+
+### 18.6 Honest gaps
+
+- **Section labels carry no intro/outro vocabulary.** The detector emits
+  `section`, `energy-rise`, `stem-change`, … and `isIntro` matches only
+  `/intro/i`, so the intro-skipping branch of `bedEntryMs` is dead for composed
+  beds. The percussion-free-opening fixture therefore enters at 0 ms too. A
+  density-based intro classifier was drafted and **reverted**: it moved the
+  boundary from 7837 ms to 11738 ms and labelled neither section, i.e. it did not
+  work and tuning it until the fixture passed is the arbitrary-threshold move
+  this work is not allowed to make. The consequence is real and unfixed: a bed
+  with a genuine intro can place the vocal inside it.
+- **The zero entry is supported but not musically justified.** The composed bed
+  has a section starting at 0 ms, the entry equals that boundary, and the
+  original bed's entry was 1985 ms. That is the analysis agreeing with the
+  planner. It is not evidence that entering at 0 sounds good.
+- **Still synthetic audio.** Source attribution and lifecycle agreement, not
+  musical quality. No listening test has been run.
+- **The artifacts are the tested bytes.** The render WAV is written from the same
+  response the assertions decoded (the earlier version issued a second render,
+  so the saved audio was unverified). The exported WAV's SHA-256 matches the
+  checksum recorded in the evidence file.
+- **CI has not run.** The workflow uploads `waveyard-acceptance-audio` and fails
+  if any expected file is missing, but no remote run of this commit has been
+  observed yet, so no artifact link can be reported as existing.

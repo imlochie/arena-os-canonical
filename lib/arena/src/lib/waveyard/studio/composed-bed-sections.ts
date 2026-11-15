@@ -32,7 +32,7 @@
 import { analysePcm, onsetEnvelope } from "../worker-local/analysis-engine";
 import { desktopSectionCandidates } from "../worker-local/section-rhythm";
 import type { SourceSection } from "../types/source-sections";
-import type { MashupSection } from "./mashup";
+import { downsampleToAnalysisPcm, type MashupSection } from "./mashup";
 
 /** Identity for sections derived in-process from a composed bed, not persisted. */
 export const COMPOSED_SECTION_ENGINE = "waveyard-composed-bed-sections";
@@ -41,6 +41,7 @@ export const COMPOSED_SECTION_ENGINE_VERSION = "1";
 export type ComposedSectionResult =
   | { ok: true; sections: MashupSection[]; beatGridMs: number[]; note: string }
   | { ok: false; reason: string };
+
 
 function toMashupSections(sections: readonly SourceSection[]): MashupSection[] {
   return sections.map((section) => ({
@@ -70,9 +71,13 @@ export function deriveSectionsForComposition(
 
   let analysis: ReturnType<typeof analysePcm>;
   try {
-    // analysePcm expects mono at the analysis rate; mirror analyseStereoPcm's
-    // downmix so sections and tempo describe the same signal.
-    const mono = downmix(stereo44k);
+    // `analysePcm` runs on the ANALYSIS rate (22.05 kHz), not the render rate.
+    // Feeding it a plain 44.1 kHz downmix made every onset frame half as long
+    // as it really is, so the beat grid came out at double density and the
+    // derived sections ran to twice the length of the actual audio (62.6 s of
+    // sections inside a 32 s bed). Boundaries have to be measured on the same
+    // signal the listener hears; this is the conversion that makes that true.
+    const mono = downsampleToAnalysisPcm(stereo44k);
     analysis = analysePcm(mono);
   } catch (error) {
     return { ok: false, reason: `The composed bed could not be analysed for sections: ${String(error)}` };
@@ -87,9 +92,16 @@ export function deriveSectionsForComposition(
   }
 
   let candidates: ReturnType<typeof desktopSectionCandidates>;
+  let envelope: Float32Array = new Float32Array(0);
+  let frameMs = 0;
   try {
-    const mono = downmix(stereo44k);
-    const { envelope, frameMs } = onsetEnvelope(mono);
+    // The envelope must be measured on the same analysis-rate signal the beat
+    // grid was derived from, or intro/outro density is judged on a different
+    // timeline than the boundaries.
+    const mono = downsampleToAnalysisPcm(stereo44k);
+    const measured = onsetEnvelope(mono);
+    envelope = measured.envelope;
+    frameMs = measured.frameMs;
     candidates = desktopSectionCandidates(
       beatGridMs,
       envelope,
