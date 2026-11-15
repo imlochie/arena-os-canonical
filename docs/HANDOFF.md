@@ -1,5 +1,22 @@
 # Arena handoff — read this first
 
+## Current: harmonic-perception audit rejected the proposed replacement
+
+See [the bounded harmonic-perception investigation](waveyard-harmonic-perception-audit.md).
+Production stays at `2b0781e2`'s harmonic implementation. The next candidate
+passed six controlled tests but supported only 3/108 September and 6/112 Queen
+complete-bed windows versus the baseline's 18/108 and 7/112. It was **not enabled**;
+its code/tests and exact workspace results were preserved outside runtime source.
+No confidence threshold, harmony version, database, renderer or provider changed.
+
+All six full original recordings were scanned with the production detector;
+five fixed candidate probes per recording were diagnostic only. Source and
+recombined-stem controls differed, but neither separation blame nor chord
+accuracy is established. A larger front-end benchmark and input-quality
+investigation require a scope decision before more implementation. Do not resume
+parameter tuning, call this upgrade finished, or restore the rejected candidate
+without a real-recording validation gate.
+
 ## Current: note-duration ranking, chord-template correction and real-song evidence
 
 ### Reused, not rebuilt

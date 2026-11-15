@@ -1,5 +1,15 @@
 # Waveyard completion ledger
 
+## Latest investigation: harmonic replacement did not pass
+
+The bounded harmonic-perception audit covered the two complete stem sets and
+all six original uploads. The candidate passed six controlled tests but did
+not improve full-bed chord availability. It was archived, not enabled; existing
+runtime, persistence and save/reopen/export behavior remain unchanged.
+The harmonic-perception upgrade is **not complete**. See
+`waveyard-harmonic-perception-audit.md` for exact results, input-domain controls,
+limitations and the larger front-end decision required.
+
 ## Latest increment: note-duration harmonic ranking and six-track inventory
 
 Existing monophonic vocal pitch/MIDI and changing chord estimates now feed a

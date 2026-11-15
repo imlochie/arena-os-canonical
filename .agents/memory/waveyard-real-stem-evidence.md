@@ -21,3 +21,14 @@ from either proxy without naming its input would misdiagnose the limitation.
 and separate component measurements, published/persisted workflow acceptance,
 reference-label accuracy and listening quality. Never lower confidence criteria
 just to turn an unavailable musical result into a reported success.
+
+Do not enable a replacement harmonic front end on controlled chord fixtures
+alone, or treat spectral reconstruction fit as chord accuracy.
+
+**Why:** A note-spectrum prototype passed controlled cases while failing the
+owner's full recording gate. Original recordings and recombined cached stems
+also produced different fit measurements; neither alone identifies the cause.
+
+**How to apply:** Keep source, bed and recombined controls distinct, preserve
+failed candidates outside the runtime, and require real-recording evidence
+before integration. Unknown accuracy must remain unknown without chord labels.
