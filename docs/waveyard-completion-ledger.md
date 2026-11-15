@@ -1390,3 +1390,78 @@ race is exercised only locally (PostgreSQL 16, where zero backends remain).
 channels — job logs, artifacts, check-run annotations, step summary — have each
 failed to deliver on this runner at least once. Treat any single CI diagnostic
 here as unconfirmed until a second channel agrees.
+
+## 16. Composition-first adaptive stem swap: what the acceptance found (2026-11-14)
+
+Worked from the owner's assignment. Two changes were made, one is verified and
+committed, the other is implemented and **deliberately left failing**, because
+making the suite green would have re-encoded the defect.
+
+### 16.1 The defect was narrower and worse than "sections are inherited"
+
+`bedProfileFromComposition` already re-measured tempo, beat grid, downbeats and
+key from the summed composition. It did **not** re-derive `sections`, and its own
+doc comment justified that: sections were listed as "still valid".
+
+They are not. `bedEntryMs` places the vocal at "the bed's first body section",
+and `desktopSectionCandidates` derives section boundaries from the beat grid,
+the onset envelope and stem-activity changes — drum and bass material. So a drum
+replacement could be audible while the arrangement still followed the percussion
+that had been removed. That is AS-2 failing while AS-1 appeared to pass.
+
+Measured on real CC0 audio (`ash.mp3`, 15 → 17 sections, drum band removed):
+
+| Boundary | Original bed | Composed bed |
+|---|---|---|
+| 2nd section | 5.4 s | 8.2 s |
+| 3rd section | 10.9 s | 19.1 s |
+| 4th section | 16.3 s | **35.4 s** |
+
+A vocal placed at the original 16.3 s boundary would have entered 19 seconds
+early relative to the composed structure.
+
+### 16.2 What is verified and committed
+
+**`composeSectionsForComposition`** (`studio/composed-bed-sections.ts`) —
+re-derives sections from the composed PCM with the same conservative bar-aligned
+engine the worker uses. Fails closed: no measurable grid means no sections, and
+the caller must keep the old ones *and say so*. Four tests, run against real
+audio, 4/4 with 0 skipped; verified they fail when the behaviour is removed.
+
+**Donor clip length clamp** (route) — a donor replacement clip was stored with
+`durationMs = plan.durationMs - start`, i.e. the entire arrangement, regardless
+of how much donor audio existed. When re-planning legitimately moved the vocal
+entry, this stored a 4 s clip for a 2 s donor stem and export refused the whole
+session with "a tempo-synced clip requires more source audio than its stem
+contains". The clip now cannot outlive its stem. **This fix alone makes the
+route acceptance pass 1/1 with 0 skipped.**
+
+### 16.3 The real blocker, left failing on purpose
+
+With sections re-derived from the composed bed, the acceptance fails:
+
+```
+the exported session must not contain the replaced bed drums (0.01128 vs bass 0.01132)
+```
+
+This is the synthetic fixture saying something precise. Its stems are pure tones
+— bed drums 260 Hz, bass 70 Hz — and the donor "drum" stem is *also* 260 Hz.
+Replacing the drums therefore leaves a 260 Hz tone in the render: the *donor's*.
+`energyAt(260)` cannot tell the donor's 260 Hz from the bed's 260 Hz, so the
+assertion fails although the replacement is correct.
+
+The change makes the composition honest about something the fixture cannot
+express. Making the suite green would require either weakening the assertion
+(the owner's forbidden move) or keeping the stale planning (the defect). So:
+
+- The production change stands: sections are re-derived, and AS-2 is real.
+- The route acceptance is **red on this branch and must stay red** until the
+  fixture can distinguish the donor's drum tone from the bed's, or the acceptance
+  case is exercised with real separated drums instead of pure tones.
+
+**Nothing here is claimed as done.** AS-1/AS-2 are implemented in the route and
+verified at the module level on real audio; they are not yet proven end-to-end
+through render → save → reopen → export, because the only end-to-end fixture
+cannot express the difference. The owner's requirement — "before/after plan
+data, rendered audio that can be downloaded and listened to" — is not met by
+this section, and the listening gate from §13 remains open.

@@ -2149,7 +2149,10 @@ test(
       );
       const replacePlanBody = await replacePlanResponse.json() as {
         plannedAgainst?: { kind: string; replacedStemTypes?: string[] };
-        plan: { alignmentStrategy: string };
+        plan: {
+          alignmentStrategy: string;
+          segments: Array<{ mashupStartMs: number; vocalsFromMs: number }>;
+        };
       };
       assert.equal(replacePlanBody.plannedAgainst?.kind, "composition",
         "planning alone must also use the resulting composition, not only rendering");
@@ -2162,10 +2165,30 @@ test(
         : [];
       const donorDrumClip = replaceClips.find((clip) => clip.stemAssetId === donorDrumsStemId);
       assert.ok(donorDrumClip, "the donor drum stem must be placed as a real clip");
-      assert.equal(donorDrumClip!.sourceOffsetMs, continuousPlan.segments[0]!.vocalsFromMs,
-        "the donor clip must keep the same phrase-relative source offset the renderer used");
-      assert.equal(donorDrumClip!.timelineStartMs, continuousPlan.segments[0]!.mashupStartMs,
-        "the donor clip must start at the same timeline position the renderer used");
+      // The reference MUST be the replace-mode plan, not `continuousPlan`.
+      // `continuousPlan` comes from a `compare` request with no stem layer, so it
+      // is planned against the ORIGINAL bed. Requiring the post-swap clip to
+      // match it is exactly the defect composition-first planning removes: it
+      // asserted that the swap kept the arrangement made for the replaced
+      // percussion. Now that sections are re-derived from the composed bed, the
+      // post-swap plan legitimately differs, and comparing against the stale plan
+      // is what failed.
+      //
+      // The reference is the replace-mode plan, not `continuousPlan`:
+      // `continuousPlan` comes from a `compare` request with no stem layer, so
+      // it describes the ORIGINAL bed.
+      const replaceSegments = replacePlanBody.plan.segments;
+      assert.ok(replaceSegments.length > 0, "the replace plan must place at least one segment");
+      assert.equal(donorDrumClip!.sourceOffsetMs, replaceSegments[0]!.vocalsFromMs,
+        "the donor clip must keep the same phrase-relative source offset the replace-mode plan used");
+      assert.equal(donorDrumClip!.timelineStartMs, replaceSegments[0]!.mashupStartMs,
+        "the donor clip must start at the same timeline position the replace-mode plan used");
+      // And the two plans must genuinely differ, or the re-planning never happened.
+      assert.notEqual(
+        replaceSegments[0]!.mashupStartMs,
+        continuousPlan.segments[0]!.mashupStartMs,
+        "a drum replacement re-measures the composed bed, so the vocal entry must not silently stay at the original bed's section boundary",
+      );
 
       // Reopen through the production Studio route.
       const remixRoute = await import("../../../../remixes/[id]/route");
@@ -2225,9 +2248,15 @@ test(
       // Measure the exported audio itself: the bed's drum tone must be gone
       // while the bed's bass is still there, so the export is neither "the
       // replacement silently didn't happen" nor "the bed was emptied".
-      const exportHead = exportedReplacePcm!.samples.subarray(0, RATE * 2 * 2);
-      const exportedBedDrum = energyAt(exportHead, 260, 0, 2000);
-      const exportedBass = energyAt(exportHead, 70, 0, 2000);
+      // The donor drum clip may be shorter than the arrangement (it cannot
+      // outlive its own stem), and with vocals entering at 0 the arrangement now
+      // runs longer than the 2 s measured here. Measure over the audio that
+      // actually exists instead of subarraying past the end, which silently
+      // shortens the window and skews both energies.
+      const exportHead = exportedReplacePcm!.samples.subarray(0, Math.min(RATE * 2 * 2, exportedReplacePcm!.samples.length));
+      const exportHeadMs = Math.min(2000, Math.floor((exportHead.length / 2 / RATE) * 1000));
+      const exportedBedDrum = energyAt(exportHead, 260, 0, exportHeadMs);
+      const exportedBass = energyAt(exportHead, 70, 0, exportHeadMs);
       assert.ok(exportedBass > 0.001,
         `the exported session must still contain the bed's bass (${exportedBass})`);
       assert.ok(exportedBedDrum < exportedBass / 100,

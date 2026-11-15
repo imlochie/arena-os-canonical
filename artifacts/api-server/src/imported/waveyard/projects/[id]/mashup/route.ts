@@ -64,6 +64,7 @@ import {
   type MashupAlignmentStrategy,
   type MashupTransientEvent,
 } from "@workspace/arena/lib/waveyard/studio/mashup";
+import { deriveSectionsForComposition } from "@workspace/arena/lib/waveyard/studio/composed-bed-sections";
 import { detectBassAttacks, detectDrumTransients } from "@workspace/arena/lib/waveyard/worker-local/analysis-engine";
 import {
   DESKTOP_ANALYSIS_ENGINE,
@@ -717,10 +718,13 @@ async function inspectBed(projectId: string, bedId: string): Promise<BedSourceIn
  * retained stems while omitting the replaced roles, so its PCM is exactly that
  * composition.
  *
- * Tempo, key, beat grid and downbeats are therefore re-measured from the summed
- * composition rather than inherited from the original mix. Everything the swap
- * does not touch (duration, sections, harmony events already derived from the
- * original analysis) is preserved, because "recompute what is affected and
+ * Tempo, key, beat grid, downbeats AND sections are therefore re-measured from
+ * the summed composition rather than inherited from the original mix. Sections
+ * matter as much as the grid: the planner's vocal entry is "the bed's first body
+ * section", and drum/bass parts are what section boundaries are detected from,
+ * so inheriting them would leave the arrangement describing percussion the swap
+ * removed. What a swap genuinely does not touch (duration, and harmony events
+ * derived from the vocal) is preserved, because "recompute what is affected and
  * preserve what remains valid".
  *
  * When the composition cannot be analysed, this returns the original profile
@@ -748,6 +752,13 @@ function bedProfileFromComposition(
   }
 
   const measuredDurationMs = Math.round((compositionPcm.length / 2 / RENDER_SAMPLE_RATE) * 1000);
+  // Sections are NOT "unaffected" by a swap. Drum and bass parts are what the
+  // section boundaries are detected from, and `bedEntryMs` places the vocal at
+  // the bed's first body section. Inheriting the original bed's sections would
+  // leave the arrangement following percussion the swap removed — audible
+  // replacement with a stale arrangement, which is the exact defect
+  // composition-first planning exists to prevent.
+  const derivedSections = deriveSectionsForComposition(compositionPcm, { sampleRate: RENDER_SAMPLE_RATE });
   // A replacement that changes the musical material must invalidate the beat
   // evidence that was derived from the old material. The old grid is kept only
   // when the new measurement is genuinely absent, and then it is labelled.
@@ -759,6 +770,7 @@ function bedProfileFromComposition(
     bpmCandidates: analysis.bpmCandidates ?? null,
     musicalKey: analysis.musicalKey ?? null,
     keyConfidence: analysis.keyConfidence ?? null,
+    sections: derivedSections.ok ? derivedSections.sections : original.sections,
     beatGridMs: hasNewBeatGrid ? analysis.beatGridMs : original.beatGridMs,
     beatConfidence: hasNewBeatGrid ? analysis.beatConfidence : original.beatConfidence,
     downbeatGridMs: analysis.downbeatGridMs ?? original.downbeatGridMs,
@@ -770,6 +782,9 @@ function bedProfileFromComposition(
         "The replacement composition produced no measurable beat grid, so the previous beat grid was retained and is labelled as unverified.",
       ]),
       `Beat grid, tempo and key were re-measured from the resulting stem composition after replacing ${replacedStemTypes.join(", ")}.`,
+      derivedSections.ok
+        ? derivedSections.note
+        : `Section boundaries could NOT be re-derived for the resulting composition (${derivedSections.reason}). The original bed's sections were retained and the vocal entry is therefore planned against structure detected from the replaced material; treat the arrangement as unverified.`,
     ],
   };
 }
@@ -1530,12 +1545,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           for (const [type, stem] of donorReplacementStems) {
             const track = trackByStemId.get(stem.id);
             if (!track) continue;
+            // The clip may not outlive the donor stem it plays from. This used to
+            // be the whole arrangement length regardless of how much donor audio
+            // existed, so a plan that placed the vocal earlier stored a clip
+            // longer than its stem and the export refused it with "a tempo-synced
+            // clip requires more source audio than its stem contains". The
+            // arrangement length and the donor's length are independent numbers;
+            // taking the shorter is the audibly true one.
+            const donorSourceOffsetMs = firstSegment?.vocalsFromMs ?? 0;
+            const donorAvailableMs = Math.max(1, Math.round(stem.durationSeconds * 1000) - donorSourceOffsetMs);
+            const donorWantedMs = Math.max(1, planned.plan.durationMs - (firstSegment?.mashupStartMs ?? 0));
             clipsToInsert.push({
               remixTrackId: track.id,
               stemAssetId: stem.id,
               timelineStartMs: firstSegment?.mashupStartMs ?? 0,
-              durationMs: Math.max(1, planned.plan.durationMs - (firstSegment?.mashupStartMs ?? 0)),
-              sourceOffsetMs: firstSegment?.vocalsFromMs ?? 0,
+              durationMs: Math.min(donorWantedMs, donorAvailableMs),
+              sourceOffsetMs: donorSourceOffsetMs,
               gain: 0.8,
               fadeInMs: 50,
               fadeOutMs: 150,
