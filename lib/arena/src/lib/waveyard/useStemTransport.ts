@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import liveStemWorkletUrl from "./live-stem-worklet.ts?worker&url";
 import { RESUME_TIMEOUT_MS, resumeWithin } from "./audio-context-resume";
+import { startMediaWithin, type MediaStartOutcome } from "./media-play-start";
 import outputPeakWorkletUrl from "./output-peak-worklet.ts?worker&url";
 import { acquireSessionOutput } from "./session-output";
 import { ensureLiveStemWorklet, LiveStemLayers, normalizeSessionPlaybackRate } from "./live-stem-layers";
@@ -888,7 +889,6 @@ export function useStemTransport(
     const request = ++playRequest.current;
     wantsPlayback.current = true;
     setStarting(true);
-    console.error(`TRANSPORT_TRACE starting:true request=${request}`);
     try {
       setError(null);
       if (playbackIds.length === 0) {
@@ -932,18 +932,7 @@ export function useStemTransport(
       }
       // Resume inside the user's activation before waiting on module I/O
       // (important on mobile). There is no destination bypass while loading.
-      console.error(`TRANSPORT_TRACE ready-await:start request=${request} current=${playRequest.current} ${sessionOutput.current?.debug() ?? "no-output"}`);
-      // Temporary watchdog: if this await never settles, report the bus state
-      // instead of stalling silently. It does not change the await.
-      const readyWatchdog = setTimeout(() => {
-        console.error(`TRANSPORT_TRACE ready-await:watchdog request=${request} current=${playRequest.current} ${sessionOutput.current?.debug() ?? "no-output"}`);
-      }, 2500);
-      try {
-        await sessionOutput.current?.ready;
-      } finally {
-        clearTimeout(readyWatchdog);
-      }
-      console.error(`TRANSPORT_TRACE ready-await:done request=${request} current=${playRequest.current} wants=${wantsPlayback.current}`);
+      await sessionOutput.current?.ready;
       // A superseded request must never leave the control stuck in "starting".
       // WebKit fires this path: `play()` is awaited while another call (the
       // playback-control handler) bumps `playRequest`, and the early return
@@ -962,11 +951,14 @@ export function useStemTransport(
       positionRef.current = start;
       setPosition(start);
       for (const element of elements) element.currentTime = start;
-      // Wait for every media promise. Promise.all can reject early while other
-      // stems are still pending and may start after a pause/error cleanup.
-      console.error(`TRANSPORT_TRACE media-play:start request=${request} current=${playRequest.current}`);
-      const results = await Promise.allSettled(elements.map((element) => element.play()));
-      console.error(`TRANSPORT_TRACE media-play:done request=${request} current=${playRequest.current} rejected=${results.filter((r) => r.status === "rejected").length}`);
+      // Start every stem through a bounded helper. WebKit is allowed to leave
+      // element.play() pending forever even though the media started: the
+      // promise never settles, never rejects, and the audio is already
+      // audible, which parked the control in "starting" with no error. The
+      // bound decides from observable media state instead (see
+      // media-play-start.ts). Elements are also started independently so one
+      // wedged stem cannot hold up the others.
+      const results = await Promise.all(elements.map((element) => startMediaWithin(element)));
       if (request !== playRequest.current) {
         settleSupersededRequest(elements);
         return;
@@ -975,17 +967,22 @@ export function useStemTransport(
         settleSupersededRequest(elements);
         return;
       }
-      if (results.some((result) => result.status === "rejected")) {
-        const blocked = results.find(
-          (result): result is PromiseRejectedResult =>
-            result.status === "rejected" &&
-            typeof result.reason === "object" &&
-            result.reason !== null &&
-            "name" in result.reason &&
-            result.reason.name === "NotAllowedError",
+      const stalled = results.some((result) => result.status === "stalled");
+      const blocked = results.find(
+        (result): result is Extract<MediaStartOutcome, { status: "blocked" }> =>
+          result.status === "blocked" &&
+          typeof result.reason === "object" &&
+          result.reason !== null &&
+          "name" in result.reason &&
+          result.reason.name === "NotAllowedError",
+      );
+      if (blocked) throw new Error("Audio playback was interrupted. Activate Play stems to resume.");
+      if (results.some((result) => result.status === "blocked") || stalled) {
+        throw new Error(
+          stalled
+            ? "One or more stems did not start playing. Check the audio files and retry."
+            : "One or more stems could not play. Check the audio files and retry.",
         );
-        if (blocked) throw new Error("Audio playback was interrupted. Activate Play stems to resume.");
-        throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
       liveLayers.current?.sync(playbackIds);
       setStarting(false);

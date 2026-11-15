@@ -475,16 +475,7 @@ try {
   let page = await context.newPage();
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
   page.on("console", message => {
-    const text = message.text();
-    // The transport's play() trace is the only way to see which await a
-    // superseded play request is parked on; the DOM state cannot show it.
-    if (text.startsWith("TRANSPORT_TRACE")) {
-      console.log(`BROWSER_TRANSPORT_TRACE ${engineName} ${text}`);
-      void page.evaluate(line => { window.audioProbe?.transportTrace?.push(line); },
-        text.slice(0, 400)).catch(() => undefined);
-      return;
-    }
-    if (message.type() === "error") console.log("BROWSER_CONSOLE_ERROR", text);
+    if (message.type() === "error") console.log("BROWSER_CONSOLE_ERROR", message.text());
   });
   if (keyMatchingOnly) page.on("response", response => {
     if (response.status() >= 400) console.log("BROWSER_HTTP_ERROR", response.status(), response.url());
@@ -567,7 +558,6 @@ try {
       // Transport-level trace from useStemTransport (development builds only).
       // The resume diagnostic could see the control was busy and the audio
       // playing, but not which await the play() call was parked on.
-      transportTrace: [],
       renderCaptureDestinations: [],
       workletLoads: [], workletSeeks: [], workletRates: [], workletPitchModes: [], keyShifts: [], transportMessages: [],
       outputModuleFailuresRemaining: 0, outputModuleHoldNext: false, outputModulePending: false,
@@ -2525,14 +2515,8 @@ try {
           contextResumes: window.audioProbe.contextResumes.slice(-6),
           status: document.querySelector('[data-testid="session-status"]')?.textContent,
           alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent),
-          transportTrace: window.audioProbe.transportTrace.slice(-12),
         };
       }).catch(captureError => ({ captureFailed: String(captureError) }));
-      // Emitted separately and first: the resume state object is large and CI
-      // annotations are truncated, so a trace nested inside it is unreadable.
-      const trace = await page.evaluate(() => window.audioProbe?.transportTrace?.slice(-14) ?? [])
-        .catch(() => []);
-      for (const line of trace) console.error(`SESSION_RESUME_TRACE ${engineName} ${line}`);
       console.error(`SESSION_RESUME_STATE ${engineName} ${JSON.stringify(resumeState)}`);
       throw error;
     }
