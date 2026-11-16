@@ -7,6 +7,7 @@
 - [EmulatorJS save handling](emulatorjs-save-handling.md) — telemetry-only save hooks can disable the runtime’s built-in browser persistence.
 - [Waveyard processing evidence](waveyard-processing.md) — model readiness is not processing proof; verify pinned input shapes and bound native session lifetimes.
 - [Waveyard real-audio test runner](waveyard-real-audio-runner.md) — use resolver-aware TypeScript loading and an absolute test path from pnpm's scripts workspace.
+- [Waveyard natural-tempo control](waveyard-natural-tempo-control.md) — the Stronger/All Star demo pair sounded tempo-stable at native speed; use it as a positive control, not proof of tempo correction.
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playback without a second engine; merge changed stem keys and keep master output volume device-local.
 - [Waveyard private device sync](waveyard-private-device-sync.md) — prefer QR pairing and encrypted laptop-hosted sync; keep audio and library files private and avoid paid-cloud dependency.
 - [Waveyard live-swap recovery](waveyard-live-swap-recovery.md) — keep the last audible layer playing while retaining the failed donor choice for an explicit retry.
