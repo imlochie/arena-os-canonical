@@ -2,17 +2,16 @@
 
 ## Decision
 
-Candidate 0.2.0 stays offline. Six manifest-pinned source files were recovered
-from the local Music library and every byte hash matched the evaluation
-manifest. The unchanged production detector reproduced the documented
-all-source named-window counts on all six tracks. These are source-mix results;
-they do not isolate the backing arrangement.
+Candidate 0.2.0 stays offline. A new local rerun verified all six pinned
+original recordings and all eight pinned stems, then measured 16 domains:
+original mixes, each isolated stem, and two recombined instrumental beds. The
+source and stem WAVs were not regenerated or modified. Raw measurements are in
+the ignored `generated-artifacts/waveyard-real-world-acceptance/harmonic-candidate-pinned-domain-rerun.json`.
 
-The candidate has no adjudicated chord reference yet. Its higher or lower named
-segment counts cannot establish improved precision, recall, F1, root/quality
-accuracy, or usefulness. No production promotion is supported. All eight pinned
-stems remain unavailable, so neither the separated-stem nor recombined-bed
-domain was tested in this run.
+The candidate and production detector disagree substantially on some isolated
+stems, but neither has an adjudicated chord reference. Their named-output
+coverage cannot establish precision, recall, F1, root/quality accuracy, or
+musical usefulness. No production promotion is supported.
 
 ## Six exact original-source comparisons
 
@@ -43,28 +42,56 @@ labels. This is not an accuracy result; unsupported-prediction rate remains
 unknown. Some songs produce hundreds of short change segments. Their boundaries
 and chord identities still need blind human review.
 
-## Input provenance and remaining domain gap
+## New pinned source, isolated-stem and instrumental-bed run
 
-All six source SHA-256s are verified in
-`waveyard-harmonic-candidate-run-report.json`. Source paths were resolved by
-hash from the user's local library; only basenames and expected/actual hashes
-are recorded. The private recordings remain outside Git.
+The runner independently verified all six originals and all eight stems against
+`scripts/fixtures/waveyard-musical-evaluation.json`. For each input, the table
+reports the proportion of the timeline covered by named output (`root` present
+and `quality` known), not the proportion of correct chords. Duration-weighted
+coverage is more comparable than event counts because production emits fixed
+two-second windows while the candidate emits variable-length segments.
 
-No exact pinned stem hash was found in the local project generated-artifact
-directories, local Waveyard data/blob stores, other checked project worktrees,
-the local Music library or configured Dropbox search. The manifest identifies
-the intended source as:
+| Track / domain | Production named-time coverage | Candidate named-time coverage | Candidate runtime |
+|---|---:|---:|---:|
+| September — original mix | 18.6% | 21.8% | 1.98 s |
+| September — bass | 31.6% | 15.6% | 1.92 s |
+| September — drums | 11.2% | 9.2% | 1.97 s |
+| September — vocals | 26.0% | 22.8% | 1.97 s |
+| September — other | 28.8% | 29.9% | 1.91 s |
+| September — recombined instrumental bed | 16.7% | 16.8% | 2.02 s |
+| Another One Bites the Dust — original mix | 18.0% | 25.9% | 1.97 s |
+| Another One Bites the Dust — bass | 23.7% | 8.5% | 1.98 s |
+| Another One Bites the Dust — drums | 3.9% | 10.6% | 1.94 s |
+| Another One Bites the Dust — vocals | 10.8% | 24.2% | 1.95 s |
+| Another One Bites the Dust — other | 9.0% | 25.9% | 2.01 s |
+| Another One Bites the Dust — recombined instrumental bed | 6.3% | 16.6% | 1.98 s |
+| I Feel It Coming (80s remix) — original mix | 37.7% | 29.0% | 2.42 s |
+| Stayin' Alive (Reflex revision) — original mix | 9.7% | 26.8% | 3.39 s |
+| I Want to Break Free (Reflex revision) — original mix | 34.0% | 7.5% | 3.49 s |
+| Blinding Lights (80s remix) — original mix | 10.5% | 22.2% | 2.00 s |
+
+The candidate took 1.91–3.49 seconds per 215–406 second recording. Its largest
+sampled additional worker RSS was **33.4 MiB**; peak process RSS for the whole
+run was **278,687,744 bytes**. This is a local sequential measurement, not a
+deployed worker responsiveness or concurrency benchmark.
+
+The strongest actionable result is disagreement, not a winner. On the Queen
+instrumental bed the candidate names 16.6% of timeline versus 6.3% for
+production; on September the two are nearly equal at 16.8% and 16.7%. The
+candidate also labels appreciable portions of vocal and `other` stems. These may
+contain useful harmonic information or false positives; coverage alone cannot
+distinguish those explanations. No analyzer accuracy or improvement is claimed.
+
+## Input provenance and remaining accuracy gap
+
+All six source and eight stem SHA-256s matched the manifest in the latest
+rerun. The exact stem paths are:
 
 - `generated-artifacts/waveyard-real-world-acceptance/earth-wind-fire-stems/{bass,drums,vocals,other}-estimate.wav`
 - `generated-artifacts/waveyard-real-world-acceptance/another-one-stems/{bass,drums,vocals,other}-estimate.wav`
 
-The previous audit places these artifacts in the canonical Replit workspace,
-but the available Replit connector exposes app lookup and prompting, not a
-file-level workspace download. The precise external dependency is restoration
-or export of these eight files from that canonical workspace with their expected
-SHA-256s preserved. Newly separated outputs would have different hashes and
-would be new evidence; they cannot stand in for the pinned stems or prove the
-historical stem association.
+Do not replace these pinned files with new separations: those would be different
+inputs and would not prove the historical stem association.
 
 ## Accuracy and musical acceptance
 

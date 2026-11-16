@@ -1,5 +1,35 @@
 # Arena handoff — read this first
 
+## Latest increment: pinned real-stem harmonic benchmark completed
+
+The eight existing September and Queen stem WAVs were present and matched all
+eight manifest SHA-256 hashes. The six pinned original recordings also verified.
+The existing offline runner measured all **16 domains**: six original mixes,
+eight isolated stems and two recombined instrumental beds. It did not regenerate
+or modify any audio.
+
+The candidate and production detector disagree substantially on several stems.
+On Queen's recombined instrumental bed, for example, the candidate named chords
+over **16.6%** of the timeline versus **6.3%** for production. On the September
+bed they were nearly equal (**16.8%** versus **16.7%**). Those are duration-
+weighted named-output coverage figures, not accuracy. The candidate also named
+chords over **24.2%** of Queen's vocal stem and **25.9%** of its `other` stem;
+without blind chord annotations, these may be useful observations or false
+positives.
+
+Candidate analysis took **1.9–3.5 seconds** per 215–406 second input; the largest
+sampled additional worker RSS was **33.4 MiB** and total process peak RSS was
+**278,687,744 bytes**. This was a local sequential run, not a deployed worker-
+responsiveness benchmark. Raw output is at the ignored
+`generated-artifacts/waveyard-real-world-acceptance/harmonic-candidate-pinned-domain-rerun.json`.
+
+**Decision:** keep candidate 0.2.0 offline. Both analyzers' accuracy remains
+unknown because there are no independent chord labels. The report and analysis
+are documented in [`waveyard-harmonic-candidate-findings.md`](./waveyard-harmonic-candidate-findings.md)
+and [`waveyard-harmonic-acceptance-readiness.md`](./waveyard-harmonic-acceptance-readiness.md).
+The next gate is two blind chord timelines, followed by adjudication and a
+held-out comparison—not threshold tuning or promotion based on output coverage.
+
 ## Latest increment: Mashup Studio recommends donor bass from persisted harmony evidence
 
 **What changed.** Mashup Studio now loads checksum-current bass pitch evidence

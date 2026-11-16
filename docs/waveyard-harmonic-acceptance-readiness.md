@@ -2,19 +2,22 @@
 
 ## Decision
 
-Keep v0.2.0 offline. The six original recordings have prior hash-verified
-candidate measurements documented in
-[`waveyard-harmonic-candidate-findings.md`](./waveyard-harmonic-candidate-findings.md).
-The current checkout no longer contains those private source files, and this
-run did not regenerate the measurements. The eight exact stem assets and all
-independent chord annotations are still absent. There is no accuracy result
-with which to accept or reject v0.2.0 against production.
+Keep v0.2.0 offline. The latest run verified all six original recordings and all
+eight pinned stems, then measured original mixes, individual stems and
+recombined instrumental beds. The source assets were used as-is; none were
+regenerated or modified. The raw report is ignored at
+`generated-artifacts/waveyard-real-world-acceptance/harmonic-candidate-pinned-domain-rerun.json`.
+Candidate and production output coverage differ on several stem domains, but no
+independent chord annotations exist, so accuracy and improvement remain unknown.
+See [`waveyard-harmonic-candidate-findings.md`](./waveyard-harmonic-candidate-findings.md)
+for the measured comparison.
 
 ## Exact external stem inputs
 
-Restore the exact files from the canonical Waveyard workspace at the paths
-below. Preserve their bytes and path names. A fresh separation is a different
-experiment and must not be substituted for the pinned historical inputs.
+The exact files are present at the paths below and all eight hashes matched in
+the latest run. Preserve their bytes and path names. A fresh separation is a
+different experiment and must not be substituted for the pinned historical
+inputs.
 
 | Track | Role | Canonical artifact path | Required SHA-256 |
 |---|---|---|---|
@@ -27,9 +30,17 @@ experiment and must not be substituted for the pinned historical inputs.
 | Another One Bites the Dust | vocals | `generated-artifacts/waveyard-real-world-acceptance/another-one-stems/vocals-estimate.wav` | `633637f01a267f1fe43f2beb8e9efd23a4ed822d26784eb146fe97ce3740a44f` |
 | Another One Bites the Dust | other | `generated-artifacts/waveyard-real-world-acceptance/another-one-stems/other-estimate.wav` | `13c498b7a54cd6689cbd372a16b34603fbd5d40008a22733594d6aad73d8f91c` |
 
-Once restored, verify each file against
+Run output confirms `sourceCountVerified: 6`, `stemsVerified: 8`,
+`stemsRequired: 8`, and `measurementCount: 16`. The run command is:
+
+```sh
+pnpm --filter @workspace/scripts exec tsx waveyard-harmonic-candidate-run.ts \
+  generated-artifacts/waveyard-real-world-acceptance/harmonic-candidate-pinned-domain-rerun.json
+```
+
+The runner verifies each file against
 [`waveyard-musical-evaluation.json`](../scripts/fixtures/waveyard-musical-evaluation.json)
-before running the candidate runner. The runner records the audio container,
+before analysis. It records the audio container,
 duration, codec, sample rate and channel layout when `ffprobe` is available,
 then validates decoding to mono 22.05 kHz analysis PCM. It requires all four
 stems and equal decoded lengths. The recombined instrumental bed sums bass,
@@ -60,8 +71,8 @@ partition contains two songs, so its interval is descriptive only.
 
 | Stage | Current implementation | Outputs that affect downstream decisions | Limit that remains |
 |---|---|---|---|
-| Import and provenance | `artifacts/api-server/src/imported/waveyard/projects/[id]/source-intake/route.ts`; source assets carry checksum and duration | Asset identity and checksum anchor later source analyses | Private originals and licensed stems are external to this repo |
-| Separation | Waveyard separation routes, local worker and `stem_assets` persistence | Versioned stem IDs and source/separation association | Historical stem hashes are unavailable in this checkout |
+| Import and provenance | `artifacts/api-server/src/imported/waveyard/projects/[id]/source-intake/route.ts`; source assets carry checksum and duration | Asset identity and checksum anchor later source analyses | These private originals and stems are workspace artifacts, not tracked Git assets |
+| Separation | Waveyard separation routes, local worker and `stem_assets` persistence | Versioned stem IDs and source/separation association | The eight historical stem WAVs are present locally and hash-verified; their origin/persistence association is not re-proven by this offline benchmark |
 | Source analysis | `lib/arena/src/lib/waveyard/worker-local/analysis-engine.ts` and `worker-local/stem-analysis.ts` | BPM/key confidence, beat/downbeat grids, section fingerprints, local HarmonyEvents | Chord labels still lack independent accuracy references |
 | Evidence loading | `lib/arena/src/lib/waveyard/studio/mashup-sources.ts` verifies current checksums and engine versions; `chooseStemForHarmony` selects instrumental/other/piano/guitar evidence | Current source-mix or selected non-vocal-stem harmony timeline; isolated vocal pitch/activity | It loads one preferred harmony stem, not a bass/drums/other evidence fusion with conflict reporting |
 | Automatic pairing | `lib/arena/src/lib/waveyard/types/automatic-remix.ts` uses passage-level onset/rhythm, chroma, beat-phase and trusted tempo; the API loads current-version, source-checksum-bound source-mix HarmonyEvents | Cross-song section pair selection, clip transform intent, and advisory chord-progression agreement used to break otherwise-equal passage ties | Progression comparison is explicitly advisory because named-chord accuracy has no independent reference; donor vocal melody is not yet compared against the target bed |
@@ -114,11 +125,13 @@ or a passing repository-wide suite. There is no lint script in the workspace.
 
 ## Completion gates
 
-1. Recover eight exact stems and verify every listed hash.
+1. **Complete:** verify all eight exact stem hashes. The latest runner also
+   verified the six pinned original recordings.
 2. Obtain two independently reviewed, owner-verified chord timelines for all
    six sources, adjudicate them, and confirm the sharing basis.
-3. Run the candidate and unchanged production detector on original sources,
-   individual stems and the bass+drums+other instrumental bed.
+3. **Complete:** run the candidate and unchanged production detector on original
+   sources, individual stems and the bass+drums+other instrumental bed. This
+   establishes measured output and runtime only, not accuracy.
 4. Run the evaluator against adjudicated references and review held-out paired
    metrics without tuning on held-out labels.
 5. Run the required broader engineering validation and triage the known

@@ -68,7 +68,7 @@ const report = {
       : hasStemInputs && !componentReady ? "original-sources-verified-pinned-stems-missing"
         : sourceReady && componentReady && bedsReady ? "all-pinned-domains-verified"
           : "original-sources-verified",
-  candidateRunReport: "docs/waveyard-harmonic-candidate-run-report.json",
+  candidateRunReport: "generated-artifacts/waveyard-real-world-acceptance/harmonic-candidate-pinned-domain-rerun.json",
   measuredCandidateResults: null,
   independentChordAccuracy: null,
   accuracyStatus: "unknown-no-verified-independent-chord-labels",
