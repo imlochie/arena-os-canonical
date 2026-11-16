@@ -86,6 +86,103 @@ function profile(overrides: Partial<MashupSourceProfile>): MashupSourceProfile {
   };
 }
 
+test("plan: current persisted beat-grid fit can drive a tempo match when BPM autocorrelation is weak", () => {
+  // These figures mirror the full-track September/Another One Bites the Dust
+  // acceptance report: 126.048 BPM / .697 versus 109.957 BPM / .426, while
+  // their persisted combined beat confidences imply a .905 phase fit on the
+  // latter. The grid-derived interval is used only after current provenance is
+  // resolved by loadSourceProfile; this profile models that resolved evidence.
+  const vocals = profile({
+    role: "vocals",
+    bpm: 109.957,
+    bpmConfidence: 0.426,
+    beatConfidence: 0.642,
+    beatGridAlignmentConfidence: 0.906,
+    beatGridMs: Array.from({ length: 408 }, (_, index) => index * 546),
+    durationMs: 222_670,
+  });
+  const bed = profile({
+    role: "instrumental",
+    bpm: 126.048,
+    bpmConfidence: 0.697,
+    beatConfidence: 0.833,
+    beatGridMs: Array.from({ length: 452 }, (_, index) => index * 476),
+    durationMs: 215_140,
+  });
+
+  const result = planMashup(vocals, bed, { strategy: "continuous", jointTempo: false });
+  assert.ok(result.ok);
+  assert.ok(Math.abs(result.plan.masterBpm - 126.048) < 0.01);
+  assert.ok(Math.abs(result.plan.vocalsStretchRatio - (109.89 / 126.048)) < 0.002,
+    `expected the ~110 BPM vocal to adapt to the ~126 BPM bed, got ×${result.plan.vocalsStretchRatio}`);
+  assert.ok(result.plan.rationale.some((line) => /current beat grid.*phase-fit confidence/i.test(line)));
+  assert.ok(result.plan.warnings.some((warning) => /BPM autocorrelation confidence is low/i.test(warning)));
+
+  const unverified = planMashup({
+    ...vocals,
+    beatGridAlignmentConfidence: 0.75,
+  }, bed, { strategy: "continuous", jointTempo: false });
+  assert.ok(unverified.ok);
+  assert.equal(unverified.plan.vocalsStretchRatio, 1,
+    "without a high-confidence phase fit, do not infer a tempo transform");
+  assert.ok(unverified.plan.warnings.some((warning) => /tempo stretching withheld/i.test(warning)));
+});
+
+test("plan: structural event labels are not mistaken for verse or chorus entry points", () => {
+  const result = planMashup(
+    profile({ role: "vocals", durationMs: 30_000, bpm: 120 }),
+    profile({
+      role: "instrumental",
+      durationMs: 30_000,
+      bpm: 120,
+      beatGridMs: Array.from({ length: 61 }, (_, index) => index * 500),
+      beatConfidence: 0.95,
+      sections: [
+        section("section", 80, 4_000),
+        section("rhythm-repeat-c", 4_000, 8_000),
+        section("energy-rise", 8_000, 12_000),
+      ],
+    }),
+    { strategy: "continuous", jointTempo: false },
+  );
+  assert.ok(result.ok);
+  assert.equal(result.plan.segments[0]?.mashupStartMs, 2_000,
+    "unknown structural labels use the conservative one-bar fallback, not an unverified 80ms body entry");
+  assert.ok(result.plan.rationale.some((line) => /do not provide a named verse\/chorus role/i.test(line)));
+});
+
+test("plan: weak BPM scores do not force a transform when the current paired grids agree", () => {
+  const result = planMashup(
+    profile({
+      role: "vocals",
+      durationMs: 45_000,
+      bpm: 103.359,
+      bpmConfidence: 0.239,
+      beatConfidence: 0.581,
+      beatGridAlignmentConfidence: 0.999,
+      bpmCandidates: [103.359, 51.68, 206.718],
+      beatGridMs: Array.from({ length: 78 }, (_, index) => index * 580),
+    }),
+    profile({
+      role: "instrumental",
+      durationMs: 45_000,
+      bpm: 103.359,
+      bpmConfidence: 0.467,
+      beatConfidence: 0.707,
+      beatGridAlignmentConfidence: 1,
+      bpmCandidates: [103.359, 51.68, 206.718],
+      beatGridMs: Array.from({ length: 78 }, (_, index) => 81 + index * 580),
+    }),
+    { strategy: "continuous", jointTempo: false },
+  );
+  assert.ok(result.ok);
+  assert.equal(result.plan.vocalsStretchRatio, 1);
+  assert.ok(Math.abs(result.plan.masterBpm - 103.448) < 0.01);
+  assert.ok(!result.plan.warnings.some((warning) => /tempo stretching withheld/i.test(warning)));
+  assert.ok(result.plan.warnings.some((warning) => /BPM autocorrelation confidence is low/i.test(warning)));
+  assert.ok(result.plan.warnings.some((warning) => /supports beat timing, not bar phase or semantic section labels/i.test(warning)));
+});
+
 test("shared-tempo donor render matches the saved map beyond the vocal phrase", () => {
   const result = planMashup(
     profile({ role: "vocals", durationMs: 2000, bpm: 104 }),
@@ -1202,8 +1299,8 @@ test("plan: missing passage fingerprints and sparse measured features keep the s
   assert.equal(result.plan.passageSearch?.rankableDonorPassageCount, 0);
   assert.match(result.plan.passageSearch!.evaluations[0]!.reason, /no current checksum-bound passage fingerprint/);
   assert.match(result.plan.passageSearch!.evaluations[1]!.reason, /measured rhythm, harmony, and beat-phase inputs/);
-  assert.equal(result.plan.segments[0]!.mashupStartMs, 8_000,
-    "incomplete passage evidence leaves mashup creation on the existing fallback");
+  assert.equal(result.plan.segments[0]!.mashupStartMs, 2_000,
+    "incomplete passage evidence uses the one-bar fallback instead of treating a generic section edge as a song-form entry");
 });
 
 test("plan: a valid early-bed match is not discarded just because it precedes the fallback entry", () => {
@@ -1963,6 +2060,19 @@ test("warp ratio: a folded bed reading does not double the vocal's stretch", () 
   assert.ok(Math.abs(folded.bedBpm - 71.777) < 0.01, "the resolved bed octave must be reported");
   // Playing the vocal at 100/1.393 lands on 71.8 BPM against a 72 BPM bed.
   assert.ok(Math.abs(folded.ratio - 100 / 72) < 0.01, "the chosen warp must land the vocal on the bed's pulse");
+});
+
+test("warp ratio: rounded half-time ties keep the bed's measured pulse", () => {
+  const result = warpRatioForTempoCandidates(
+    [109.957, 54.979, 219.914],
+    [126.048, 63.024, 252.096],
+    109.89010989010988,
+    126.048,
+  );
+  assert.equal(result.ambiguous, true, "the pair still reports the unresolved half-time interpretation");
+  assert.equal(result.bedBpm, 126.048,
+    "rounding must not move the master timeline to 63 BPM when the bed's own reading is 126 BPM");
+  assert.equal(result.vocalBpm, 109.957);
 });
 
 test("warp ratio: without octave candidates the previous behaviour is unchanged", () => {

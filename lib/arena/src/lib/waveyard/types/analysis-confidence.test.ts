@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compactMusicAnalysisLabel,
+  combineBeatGridConfidence,
+  recoverBeatGridAlignmentConfidence,
   trustedAnalysisBeatGrid,
   trustedAnalysisBpm,
   trustedAnalysisKey,
@@ -49,6 +51,17 @@ test("beat grid requires both confident BPM and beat-fit evidence", () => {
   assert.equal(trustedAnalysisBeatGrid([0, 500, 1000], 0.95, 0.49), null);
   assert.deepEqual(trustedAnalysisBeatGrid([0, 500, 1000], 0.95, 0.95), [0, 500, 1000]);
   assert.equal(trustedAnalysisBeatGrid([0, 500, 400], 0.95, 0.95), null);
+});
+
+test("persisted beat confidence can recover its current-version phase-fit component", () => {
+  const persisted = combineBeatGridConfidence(0.426, 0.905, 408);
+  assert.equal(persisted, 0.642);
+  assert.equal(recoverBeatGridAlignmentConfidence(0.426, persisted), 0.906,
+    "rounding in the persisted combined score is retained honestly");
+  assert.equal(recoverBeatGridAlignmentConfidence(0.426, null), null);
+  assert.equal(recoverBeatGridAlignmentConfidence(null, 0.642), null);
+  assert.equal(recoverBeatGridAlignmentConfidence(0.9, 0.01), null,
+    "inconsistent evidence must not produce a clipped confidence");
 });
 
 test("stale local analysis is labeled for refresh instead of as current music data", () => {

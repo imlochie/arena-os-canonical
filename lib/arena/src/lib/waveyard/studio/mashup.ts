@@ -20,7 +20,12 @@ import type { StereoBuffer } from "../mixer/dsp";
 import { keyCompatibility } from "../library/session-logic";
 import { semitoneShift } from "../types/musical-key";
 import { analysePcm, tempoCandidates, type AnalysisResult } from "../worker-local/analysis-engine";
-import { trustedAnalysisBeatGrid, trustedAnalysisBpm, trustedAnalysisKey } from "../types/analysis-confidence";
+import {
+  hasReliableMixingConfidence,
+  trustedAnalysisBeatGrid,
+  trustedAnalysisBpm,
+  trustedAnalysisKey,
+} from "../types/analysis-confidence";
 import { comparePassageCompatibility, type PassageFingerprint, type PassageRollingWindow } from "../types/passage-compatibility";
 import {
   HARMONY_TEMPLATE_MIN_MARGIN,
@@ -41,7 +46,7 @@ import {
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
 import { assessPerformancePhase, compareStemGrooves, proposeGrooveEntryShift, type StemGrooveEvidence, type PerformancePhaseAssessment } from "../types/stem-groove";
 
-export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v12";
+export const MASHUP_PLANNER_ENGINE = "waveyard-mashup-planner-v13";
 export const MASHUP_RENDER_ENGINE = "waveyard-mashup-render-v1";
 
 export type MashupSection = {
@@ -78,6 +83,12 @@ export type MashupSourceProfile = {
   keyConfidence?: number | null;
   beatGridMs?: number[] | null;
   beatConfidence?: number | null;
+  /**
+   * Current desktop-analysis grid phase-fit confidence, recovered from the
+   * stored combined beat confidence. Null unless the source resolver verified
+   * the exact engine version and source checksum.
+   */
+  beatGridAlignmentConfidence?: number | null;
   /** Full-mix source analysis; a beat grid alone must never be promoted to a bar grid. */
   downbeatGridMs?: number[] | null;
   downbeatConfidence?: number | null;
@@ -381,6 +392,49 @@ export const MASHUP_ALIGNMENT_CANDIDATES: ReadonlyArray<{
 
 const LOCK_TOLERANCE = 0.03;
 const CROSSFADE_MS = 250;
+const MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO = 0.8;
+
+function trustedProfileBeatGrid(profile: MashupSourceProfile): number[] | null {
+  const trusted = trustedAnalysisBeatGrid(profile.beatGridMs, profile.bpmConfidence, profile.beatConfidence);
+  if (trusted) return trusted;
+  if (!hasReliableMixingConfidence(profile.beatGridAlignmentConfidence)
+    || profile.beatGridAlignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO
+    || !Array.isArray(profile.beatGridMs)
+    || profile.beatGridMs.length < 16
+    || profile.beatGridMs.length > 100_000) return null;
+  const grid = profile.beatGridMs;
+  if (grid.some((beat, index) =>
+    !Number.isFinite(beat) || beat < 0 || beat > profile.durationMs
+    || index > 0 && beat <= grid[index - 1]!)) return null;
+  if ((grid.at(-1)! - grid[0]!) < 15_000) return null;
+  const periods = grid.slice(1).map((beat, index) => beat - grid[index]!);
+  const period = median(periods);
+  if (period < 250 || period > 1_500) return null;
+  const deviations = periods.map((value) => Math.abs(value - period));
+  const relativeMad = median(deviations) / period;
+  const inlierFraction = periods.filter((value) => Math.abs(value - period) <= period * 0.25).length / periods.length;
+  if (relativeMad > 0.08 || inlierFraction < 0.9) return null;
+  return grid;
+}
+
+function trustedProfileTempo(profile: MashupSourceProfile): {
+  bpm: number;
+  source: "bpm-analysis" | "beat-grid";
+  confidence: number;
+} | null {
+  const measuredBpm = trustedAnalysisBpm(profile.bpm, profile.bpmConfidence);
+  if (measuredBpm !== null) {
+    return { bpm: measuredBpm, source: "bpm-analysis", confidence: profile.bpmConfidence! };
+  }
+  const grid = trustedProfileBeatGrid(profile);
+  if (!grid || !hasReliableMixingConfidence(profile.beatGridAlignmentConfidence)
+    || profile.beatGridAlignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO) return null;
+  const period = median(grid.slice(1).map((beat, index) => beat - grid[index]!));
+  const bpm = 60_000 / period;
+  return bpm >= 40 && bpm <= 240
+    ? { bpm, source: "beat-grid", confidence: profile.beatGridAlignmentConfidence! }
+    : null;
+}
 
 function crossfadeForSegment(startMs: number, endMs: number): number {
   return Math.max(0, Math.min(CROSSFADE_MS, Math.floor((endMs - startMs) / 2)));
@@ -393,6 +447,10 @@ function isIntro(label: string): boolean {
 }
 function isOutro(label: string): boolean {
   return /outro/i.test(label);
+}
+function isRecognizedSongFormSection(label: string): boolean {
+  return /^(?:intro|verse(?:-\d+)?|pre-chorus(?:-\d+)?|chorus(?:-\d+)?|post-chorus(?:-\d+)?|bridge(?:-\d+)?|breakdown(?:-\d+)?|refrain(?:-\d+)?|hook(?:-\d+)?|instrumental(?:-\d+)?|solo(?:-\d+)?|outro(?:-\d+)?)$/i
+    .test(label.trim().toLowerCase().replace(/[\s_]+/g, "-"));
 }
 
 /**
@@ -456,9 +514,10 @@ export function warpRatioForTempoCandidates(
       });
     }
   }
-  const ranked = [...choices].sort((left, right) =>
-    left.cost - right.cost
-    || left.bedJumps - right.bedJumps
+  const minimumCost = Math.min(...choices.map((choice) => choice.cost));
+  const nearEquivalent = choices.filter((choice) => choice.cost <= minimumCost + 1e-3);
+  const ranked = [...nearEquivalent].sort((left, right) =>
+    left.bedJumps - right.bedJumps
     || left.vocalJumps - right.vocalJumps
     || left.bedBpm - right.bedBpm,
   );
@@ -569,15 +628,20 @@ export function pitchMoveForKeys(
   return { semitones: shift, relationship: compatibility.relationship };
 }
 
-/** First non-intro bed section = where vocals traditionally enter. */
+/** Use named song-form roles only; structural change labels are not verse/chorus annotations. */
 function bedEntryMs(bed: MashupSourceProfile, barMs: number): { at: number; why: string } {
-  const bodySections = bed.sections.filter((section) => !isIntro(section.label) && !isOutro(section.label));
+  const bodySections = bed.sections.filter((section) =>
+    isRecognizedSongFormSection(section.label) && !isIntro(section.label) && !isOutro(section.label),
+  );
   if (bodySections.length > 0) {
     const first = bodySections[0];
     return { at: Math.max(0, first.startMs), why: `vocals enter at the bed's first body section (“${first.label}” at ${(first.startMs / 1000).toFixed(1)}s)` };
   }
   if (bed.sections.length > 0) {
-    return { at: 0, why: "the bed has no labeled body sections — vocals enter at the top" };
+    return {
+      at: Math.round(barMs),
+      why: "detected sections do not provide a named verse/chorus role — vocals use the one-bar fallback",
+    };
   }
   return { at: Math.round(barMs), why: "no section analysis for the bed — vocals enter after one bar" };
 }
@@ -587,8 +651,8 @@ function alignBedEntryToMeasuredBeat(
   requestedEntryMs: number,
   masterBpm: number,
 ): { at: number; why: string | null } {
-  const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
-  if (!grid || trustedAnalysisBpm(bed.bpm, bed.bpmConfidence) === null || !Number.isFinite(masterBpm) || masterBpm <= 0) {
+  const grid = trustedProfileBeatGrid(bed);
+  if (!grid || trustedProfileTempo(bed) === null || !Number.isFinite(masterBpm) || masterBpm <= 0) {
     return { at: requestedEntryMs, why: null };
   }
 
@@ -1784,7 +1848,7 @@ const ARRANGEMENT_ROLE_SCORE: Record<MashupArrangementPlacement["bedSectionRole"
 };
 
 function arrangementSlotEvidence(bed: MashupSourceProfile): { slots: number[]; gridTrusted: boolean } {
-  const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  const grid = trustedProfileBeatGrid(bed);
   if (grid && grid.length >= 8) {
     let slots = grid.filter((beat) => Number.isFinite(beat) && beat >= 0 && beat <= bed.durationMs);
     if (slots.length > ARRANGEMENT_MAX_SLOTS) slots = evenlySpaced(slots, ARRANGEMENT_MAX_SLOTS);
@@ -1966,8 +2030,8 @@ function localTempoWarpForPair(
   bedStartMs: number,
   stretchRatio: number,
 ): NonNullable<MashupSegment["localTempoMap"]> | null {
-  const donorGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
-  const bedGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  const donorGrid = trustedProfileBeatGrid(vocals);
+  const bedGrid = trustedProfileBeatGrid(bed);
   if (!donorGrid || !bedGrid || body.toMs <= body.fromMs || stretchRatio <= 0) return null;
   const beatPairs = correspondingBeatPairs(donorGrid, bedGrid, body.fromMs, body.toMs, bedStartMs, stretchRatio);
   if (!beatPairs || beatPairs.length < 24) return null;
@@ -2142,8 +2206,8 @@ function planArrangement(
   const bassEvents = sanitizeTransientEvents(bed.bassEvents);
   const { slots, gridTrusted } = arrangementSlotEvidence(bed);
   if (slots.length < 3) return null;
-  const donorBeatGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
-  const bedBeatGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  const donorBeatGrid = trustedProfileBeatGrid(vocals);
+  const bedBeatGrid = trustedProfileBeatGrid(bed);
   const donorBeatsInBody = donorBeatGrid?.filter((beat) => beat >= body.fromMs && beat <= body.toMs) ?? [];
   const canComparePairedBeatGrids = gridTrusted
     && bedBeatGrid !== null
@@ -2469,7 +2533,7 @@ function grooveAwareBedEntry(
   options: { searchPassages: boolean } = { searchPassages: true },
 ): { at: number; why: string | null; warning: string | null; passageSearch: MashupPassageSearch } {
   const base = alignBedEntryToMeasuredBeat(bed, requestedEntryMs, masterBpm);
-  const grid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  const grid = trustedProfileBeatGrid(bed);
 
   const drumEvents = (bed.drumEvents ?? [])
     .filter((event) => Number.isSafeInteger(event.timestampMs) && event.timestampMs >= 0
@@ -2574,12 +2638,21 @@ export function planMashup(
   let estimatedBed = false;
   let estimatedVocal = false;
 
-  const trustedBedBpm = trustedAnalysisBpm(bed.bpm, bed.bpmConfidence);
-  const trustedVocalBpm = trustedAnalysisBpm(vocals.bpm, vocals.bpmConfidence);
+  const bedTempoEvidence = trustedProfileTempo(bed);
+  const vocalTempoEvidence = trustedProfileTempo(vocals);
+  const trustedBedBpm = bedTempoEvidence?.bpm ?? null;
+  const trustedVocalBpm = vocalTempoEvidence?.bpm ?? null;
 
   if (trustedBedBpm !== null) {
     masterBpm = trustedBedBpm;
-    rationale.push(`master tempo = the instrumental's verified ${masterBpm} BPM.`);
+    if (bedTempoEvidence?.source === "beat-grid") {
+      rationale.push(`master tempo = ${masterBpm.toFixed(2)} BPM derived from the instrumental's current beat grid (${bedTempoEvidence.confidence.toFixed(2)} phase-fit confidence).`);
+      warnings.push(
+        `Instrumental BPM autocorrelation confidence is low (${bed.bpmConfidence ?? 0}); the current beat-grid phase fit supports beat timing, not bar phase or semantic section labels.`,
+      );
+    } else {
+      rationale.push(`master tempo = the instrumental's verified ${masterBpm} BPM.`);
+    }
   } else if (bed.bpm !== null && bed.bpm > 0) {
     masterBpm = bed.bpm;
     warnings.push(`Instrumental tempo (${masterBpm} BPM) has low confidence (${bed.bpmConfidence ?? 0}); beat synchronization may drift.`);
@@ -2599,6 +2672,15 @@ export function planMashup(
   let effectiveVocalBpm: number;
   if (trustedVocalBpm !== null) {
     effectiveVocalBpm = trustedVocalBpm;
+    if (vocalTempoEvidence?.source === "beat-grid") {
+      rationale.push(
+        `vocal tempo = ${effectiveVocalBpm.toFixed(2)} BPM derived from its current beat grid `
+        + `(${vocalTempoEvidence.confidence.toFixed(2)} phase-fit confidence).`,
+      );
+      warnings.push(
+        `Vocal BPM autocorrelation confidence is low (${vocals.bpmConfidence ?? 0}); the current beat-grid phase fit supports beat timing, not bar phase or semantic section labels.`,
+      );
+    }
   } else if (vocals.bpm !== null && vocals.bpm > 0) {
     effectiveVocalBpm = vocals.bpm;
     warnings.push(`Vocal tempo (${effectiveVocalBpm} BPM) has low confidence (${vocals.bpmConfidence ?? 0}).`);
@@ -2656,7 +2738,7 @@ export function planMashup(
     }
   } else {
     stretchRatio = 1.0;
-    warnings.push("Automatic tempo stretching withheld (ratio 1.0): both tracks must have verified tempo confidence (>=0.5) to enable musical beat synchronization.");
+    warnings.push("Automatic tempo stretching withheld (ratio 1.0): neither a verified BPM nor a sufficiently supported current beat grid is available for both tracks.");
     rationale.push("vocals remain at natural speed (1.000×): tempo evidence is unverified on at least one track.");
   }
 
@@ -3082,8 +3164,8 @@ function applyCrossStemGroove(plan: MashupPlan, vocals: MashupSourceProfile, bed
     shift = 0;
     decision = "The proposed entry move would crop a phrase or cross the arrangement boundary.";
   }
-  const sourceGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
-  const targetGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence)
+  const sourceGrid = trustedProfileBeatGrid(vocals);
+  const targetGrid = trustedProfileBeatGrid(bed)
     ?.map((at) => at * (plan.bedStretchRatio ?? 1));
   const performanceProtection = shift === 0 ? [] : plan.segments.map((segment) =>
     assessPerformancePhase(vocals.vocalActivityIntervals ?? [], sourceGrid, targetGrid, {

@@ -33,6 +33,8 @@ import { planMashup, renderMashup, type MashupSourceProfile } from "./mashup";
 import { loadSourceProfile } from "./mashup-sources";
 import { trustedAnalysisBeatGrid } from "../types/analysis-confidence";
 import {
+  DESKTOP_ANALYSIS_ENGINE,
+  DESKTOP_ANALYSIS_ENGINE_VERSION,
   DESKTOP_SECTION_ENGINE,
   DESKTOP_SECTION_ENGINE_VERSION,
   DESKTOP_STEM_ANALYSIS_ENGINE,
@@ -529,6 +531,92 @@ test("Genuine database round-trip acceptance: plan -> save remix -> query tracks
       .from(remixClips)
       .where(eq(remixClips.id, clipToEdit.id));
     assert.equal(editedClip.gain, 0.9);
+  } finally {
+    await client.close();
+  }
+});
+
+test("persisted current beat-grid fit can drive a mashup when BPM autocorrelation confidence is marginal", async () => {
+  const client = new PGlite();
+  const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+
+  try {
+    await applyDesktopMigrationsToPGlite(client, join(arenaRoot, "desktop-migrations"));
+    const db = drizzle(client);
+    const [project] = await db.insert(projects).values({
+      ownerId: randomUUID(),
+      title: "Beat-grid tempo acceptance",
+    }).returning();
+    const fixtures = [
+      {
+        role: "vocals" as const,
+        filename: "september-vocals.wav",
+        checksum: "a".repeat(64),
+        durationSeconds: 215,
+        bpm: 126.048,
+        bpmConfidence: 0.697,
+        beatConfidence: 0.833,
+        beatMs: 476,
+        beatCount: 452,
+      },
+      {
+        role: "instrumental" as const,
+        filename: "another-one-bed.wav",
+        checksum: "b".repeat(64),
+        durationSeconds: 223,
+        bpm: 109.957,
+        bpmConfidence: 0.426,
+        beatConfidence: 0.642,
+        beatMs: 546,
+        beatCount: 408,
+      },
+    ];
+    const profiles: MashupSourceProfile[] = [];
+    for (const fixture of fixtures) {
+      const [source] = await db.insert(sourceAssets).values({
+        projectId: project.id,
+        originalFilename: fixture.filename,
+        mimeType: "audio/wav",
+        storageKey: `projects/${project.id}/${fixture.filename}`,
+        checksumSha256: fixture.checksum,
+        durationSeconds: fixture.durationSeconds,
+        sampleRate: 44_100,
+        channels: 2,
+        codec: "pcm_s16le",
+        fileSizeBytes: Math.round(fixture.durationSeconds * 44_100 * 4),
+      }).returning();
+      const beatGrid = Array.from({ length: fixture.beatCount }, (_, index) => index * fixture.beatMs);
+      await db.insert(sourceAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: source.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: `analysis-${randomUUID()}`,
+        analysisEngine: DESKTOP_ANALYSIS_ENGINE,
+        analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: source.checksumSha256,
+        bpm: fixture.bpm,
+        bpmConfidence: fixture.bpmConfidence,
+        beatConfidence: fixture.beatConfidence,
+        beatGrid: JSON.stringify(beatGrid),
+        completedAt: new Date(),
+        createdAt: new Date(),
+      });
+      const profile = await loadSourceProfile(project.id, source.id, fixture.role, db);
+      assert.ok(profile);
+      profiles.push(profile);
+    }
+
+    const [vocals, bed] = profiles;
+    assert.equal(bed?.bpmConfidence, 0.426);
+    assert.equal(bed?.beatGridAlignmentConfidence, 0.906);
+    const result = planMashup(vocals!, bed!, { strategy: "continuous", jointTempo: false });
+    assert.ok(result.ok);
+    assert.ok(Math.abs(result.plan.masterBpm - 109.89) < 0.02,
+      JSON.stringify({ masterBpm: result.plan.masterBpm, vocalBpm: vocals?.bpm, bedBpm: bed?.bpm, ratio: result.plan.vocalsStretchRatio, warnings: result.plan.warnings, rationale: result.plan.rationale }));
+    assert.ok(Math.abs(result.plan.vocalsStretchRatio - (126.048 / 109.89)) < 0.003);
+    assert.ok(result.plan.warnings.some((warning) => /Instrumental BPM autocorrelation confidence is low/i.test(warning)));
   } finally {
     await client.close();
   }

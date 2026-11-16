@@ -1,5 +1,51 @@
 # Arena handoff — read this first
 
+## Latest increment: Beat-grid evidence now separates pulse confidence from BPM confidence
+
+The persisted desktop analysis score combines BPM autocorrelation confidence
+with beat-grid phase-fit confidence. The mashup source resolver now recovers the
+phase-fit component only for checksum-current `arena-js-dsp` 1.4.0 records, the
+exact version that wrote that formula. A stable grid must span at least 15
+seconds, contain at least 16 beats, have at least 0.80 phase-fit confidence,
+and pass interval-regularity and duration bounds before it can supplement a
+weak BPM score. This allows a measured pulse to authorize pitch-preserving
+tempo adaptation without pretending that the detector proved meter, downbeats,
+verse/chorus form, or listening quality. Missing, stale, inconsistent, or
+irregular evidence still falls back to natural speed.
+
+The planner now uses that grid-derived pulse for its tempo choice and paired
+beat-grid work. Half/double-time choices whose stretch costs are equivalent
+within 0.001 are treated as ties before tie-breaking, preventing rounded BPM
+candidates from moving a 126 BPM bed's master clock to 63 BPM. The planner
+engine identifier is now `waveyard-mashup-planner-v13`. Structural labels such
+as `section`, `rhythm-repeat-*`, and `energy-rise` no longer count as named
+verse/chorus entry points; without a recognized song-form label, the planner
+uses its one-bar entry fallback rather than claiming a detected section is the
+song's body.
+
+On the supplied Stronger / All Star full-track analysis, both beat grids have a
+median 580 ms period. Their BPM-autocorrelation confidence is weak (0.239 and
+0.467), but the current-version phase-fit components recover to 0.999 and 1.0.
+The planner therefore retains natural speed (1.000×) and makes no pitch move,
+matching the user's report that this particular pairing maintained tempo. This
+does not improve the separated-stem sound quality, and it is not proof that
+arbitrary pairs will sound good.
+
+On the existing full-track September / Another One Bites the Dust analysis,
+Queen's 0.426 BPM confidence and 0.642 combined beat confidence recover to a
+0.906 phase-fit score; its grid median is 546 ms (about 109.89 BPM). September's
+grid median is 476 ms (about 126.05 BPM). The current planner now has enough
+phase evidence to propose a tempo transform where the old BPM-only gate
+withheld it. A database-backed acceptance test verifies that this evidence
+survives the persisted source-profile loader and yields the expected bounded
+tempo plan. It uses report-derived values with controlled grid fixtures; it is
+not a full real-stem render or a subjective acceptance test.
+
+**Verification:** `pnpm run typecheck:libs` passed; planner and confidence
+tests passed 62/62; the PGlite persisted-profile acceptance passed 1/1. No new
+real separated audio was rendered or independently listened to. Mashup
+intelligibility, stem quality, and verse/chorus recognition remain unproven.
+
 ## Latest increment: Live stem swap transforms persist through Studio export
 
 Waveyard now treats an active drum donor as a possible mix-tempo master only

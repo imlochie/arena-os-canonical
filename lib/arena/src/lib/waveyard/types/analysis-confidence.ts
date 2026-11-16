@@ -1,12 +1,51 @@
 import { isStaleDesktopAnalysis } from "./analysis-provenance";
 
 export const WAVEYARD_MIXING_CONFIDENCE_THRESHOLD = 0.5;
+const BPM_CONFIDENCE_WEIGHT = 0.55;
+const BEAT_GRID_ALIGNMENT_WEIGHT = 0.45;
 
 export function hasReliableMixingConfidence(value: number | null | undefined): boolean {
   return typeof value === "number"
     && Number.isFinite(value)
     && value >= WAVEYARD_MIXING_CONFIDENCE_THRESHOLD
     && value <= 1;
+}
+
+/**
+ * Recover the phase-fit component persisted inside beatConfidence.
+ *
+ * Desktop analysis v1.4 stores:
+ *   beatConfidence = 0.55 * bpmConfidence + 0.45 * gridAlignmentConfidence
+ * Keeping this inversion here lets callers distinguish a weak autocorrelation
+ * tempo score from a beat grid that independently fits the audio well. Callers
+ * must first verify current desktop-analysis provenance; older/other engines
+ * may use a different formula.
+ */
+export function recoverBeatGridAlignmentConfidence(
+  bpmConfidence: number | null | undefined,
+  beatConfidence: number | null | undefined,
+): number | null {
+  if (![bpmConfidence, beatConfidence].every((value) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1)) return null;
+  const recovered = (beatConfidence! - BPM_CONFIDENCE_WEIGHT * bpmConfidence!) / BEAT_GRID_ALIGNMENT_WEIGHT;
+  // Allow only small persisted rounding error; do not turn inconsistent or
+  // legacy confidence values into usable phase evidence.
+  if (recovered < -0.003 || recovered > 1.003) return null;
+  return Math.round(Math.max(0, Math.min(1, recovered)) * 1000) / 1000;
+}
+
+/** Shared forward calculation; keep persisted confidence semantics in sync. */
+export function combineBeatGridConfidence(
+  bpmConfidence: number | null | undefined,
+  alignmentConfidence: number | null | undefined,
+  beatCount: number,
+): number | null {
+  if (!Number.isSafeInteger(beatCount) || beatCount < 0) return null;
+  if (beatCount < 3) return 0;
+  if (typeof alignmentConfidence !== "number" || !Number.isFinite(alignmentConfidence)) return null;
+  const tempoEvidence = Math.max(0, Math.min(1, bpmConfidence ?? 0));
+  const gridEvidence = Math.max(0, Math.min(1, alignmentConfidence));
+  return Math.round((BPM_CONFIDENCE_WEIGHT * tempoEvidence + BEAT_GRID_ALIGNMENT_WEIGHT * gridEvidence) * 1000) / 1000;
 }
 
 export function trustedAnalysisBpm(

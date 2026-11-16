@@ -44,6 +44,8 @@ import {
   stemHarmonyAnalysisProvenanceReason,
 } from "../types/stem-harmony-analysis";
 import { chooseStemForHarmony } from "../stem-harmony-analysis";
+import { isCurrentDesktopAnalysis } from "../types/analysis-provenance";
+import { recoverBeatGridAlignmentConfidence } from "../types/analysis-confidence";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
 import { usableBeatGrid } from "../types/beat-grid";
 import { hasReliableSessionDownbeatEvidence } from "../session-dj-controls";
@@ -207,6 +209,9 @@ export async function loadSourceProfile(
       parsedDownbeatGrid = null;
     }
   }
+  const beatGridAlignmentConfidence = parsedGrid && analysis && isCurrentDesktopAnalysis(analysis)
+    ? recoverBeatGridAlignmentConfidence(analysis.bpmConfidence, analysis.beatConfidence)
+    : null;
 
   const sourceProvenance: MusicalEvidenceProvenance | null = analysis ? {
     analysisId: analysis.id,
@@ -340,6 +345,7 @@ export async function loadSourceProfile(
     keyConfidence: evidence.features.key.status === "measured" ? evidence.features.key.value.confidence : null,
     beatGridMs: evidence.features.beatGrid.status === "measured" ? evidence.features.beatGrid.value.beatsMs : null,
     beatConfidence: evidence.features.beatGrid.status === "measured" ? evidence.features.beatGrid.value.confidence : null,
+    beatGridAlignmentConfidence,
     downbeatGridMs: parsedDownbeatGrid,
     downbeatConfidence: parsedDownbeatGrid ? analysis?.downbeatConfidence ?? null : null,
     durationMs: evidence.source.durationMs,

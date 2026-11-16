@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import { combineBeatGridConfidence } from "../types/analysis-confidence";
 import { matchHarmonyChroma } from "../types/harmony-analysis";
 import type { VocalActivityInterval } from "../types/vocal-analysis";
 import { SESSION_MIN_DOWNBEAT_CONFIDENCE } from "../session-dj-controls";
@@ -1149,19 +1150,11 @@ export function normaliseBeatGrid(value: unknown, durationSeconds: number): numb
   return grid;
 }
 
-function normaliseConfidence(value: number): number {
-  return Math.max(0, Math.min(1, Math.round(value * 1000) / 1000));
-}
-
 /** Combine tempo evidence with the measured audio-to-grid phase fit. */
 export function beatConfidenceFromGrid(
   bpmConfidence: number | null,
   beatGridMs: number[],
   alignmentConfidence: number | null,
 ): number | null {
-  if (beatGridMs.length < 3) return 0;
-  if (alignmentConfidence === null || !Number.isFinite(alignmentConfidence)) return null;
-  const tempoEvidence = Math.max(0, Math.min(1, bpmConfidence ?? 0));
-  const gridEvidence = Math.max(0, Math.min(1, alignmentConfidence));
-  return normaliseConfidence(0.55 * tempoEvidence + 0.45 * gridEvidence);
+  return combineBeatGridConfidence(bpmConfidence, alignmentConfidence, beatGridMs.length);
 }
