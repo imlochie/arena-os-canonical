@@ -397,8 +397,9 @@ const MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO = 0.8;
 function trustedProfileBeatGrid(profile: MashupSourceProfile): number[] | null {
   const trusted = trustedAnalysisBeatGrid(profile.beatGridMs, profile.bpmConfidence, profile.beatConfidence);
   if (trusted) return trusted;
-  if (!hasReliableMixingConfidence(profile.beatGridAlignmentConfidence)
-    || profile.beatGridAlignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO
+  const phaseConfidence = profile.beatGridAlignmentConfidence ?? 0;
+  if (!hasReliableMixingConfidence(phaseConfidence)
+    || phaseConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO
     || !Array.isArray(profile.beatGridMs)
     || profile.beatGridMs.length < 16
     || profile.beatGridMs.length > 100_000) return null;
@@ -427,8 +428,9 @@ function trustedProfileTempo(profile: MashupSourceProfile): {
     return { bpm: measuredBpm, source: "bpm-analysis", confidence: profile.bpmConfidence! };
   }
   const grid = trustedProfileBeatGrid(profile);
-  if (!grid || !hasReliableMixingConfidence(profile.beatGridAlignmentConfidence)
-    || profile.beatGridAlignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO) return null;
+  const phaseConfidence = profile.beatGridAlignmentConfidence ?? 0;
+  if (!grid || !hasReliableMixingConfidence(phaseConfidence)
+    || phaseConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO) return null;
   const period = median(grid.slice(1).map((beat, index) => beat - grid[index]!));
   const bpm = 60_000 / period;
   return bpm >= 40 && bpm <= 240

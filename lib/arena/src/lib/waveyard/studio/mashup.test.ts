@@ -126,6 +126,14 @@ test("plan: current persisted beat-grid fit can drive a tempo match when BPM aut
   assert.equal(unverified.plan.vocalsStretchRatio, 1,
     "without a high-confidence phase fit, do not infer a tempo transform");
   assert.ok(unverified.plan.warnings.some((warning) => /tempo stretching withheld/i.test(warning)));
+
+  const missingPhase = planMashup({
+    ...vocals,
+    beatGridAlignmentConfidence: null,
+  }, bed, { strategy: "continuous", jointTempo: false });
+  assert.ok(missingPhase.ok);
+  assert.equal(missingPhase.plan.vocalsStretchRatio, 1,
+    "a missing phase score must fail closed instead of authorizing a tempo transform");
 });
 
 test("plan: structural event labels are not mistaken for verse or chorus entry points", () => {

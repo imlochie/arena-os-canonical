@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { displaySourceSectionLabel } from "@workspace/arena/lib/waveyard/types/source-sections";
-import type { Source, SourceSection } from "./types";
+import { LocalVocalTranscript } from "./LocalVocalTranscript";
+import type { Source, SourceSection, Stem } from "./types";
 
 type ArrangementAction = "add" | "insert" | "loop";
 
@@ -15,12 +16,14 @@ function sourceTime(milliseconds: number) {
 
 export function SourceSectionMap({
   source,
+  vocalStem,
   onUseForSlice,
   onArrangementAction,
   onFindMeetingPoints,
   onRequestEvents,
 }: {
   source: Source;
+  vocalStem: Stem | null;
   onUseForSlice: (section: SourceSection) => void;
   onArrangementAction?: (section: SourceSection, action: ArrangementAction, repetitions: number) => Promise<string | null>;
   onFindMeetingPoints?: (section: SourceSection) => Promise<string | null>;
@@ -63,7 +66,8 @@ export function SourceSectionMap({
     </>}
     {source.eventAnalysis && <small>Engine {source.eventAnalysis.analysisEngine} {source.eventAnalysis.analysisEngineVersion}</small>}
   </section>;
-  if (source.sectionAnalysis?.status !== "complete" || !sections.length) return eventPanel;
+  const transcriptPanel = <LocalVocalTranscript source={source} stem={vocalStem} sections={sections} />;
+  if (source.sectionAnalysis?.status !== "complete" || !sections.length) return <>{transcriptPanel}{eventPanel}</>;
   const selected = sections.find((section) => section.id === selectedId) ?? null;
   const durationMs = Math.max(1, Math.round(source.durationSeconds * 1000));
   const label = selected ? displaySourceSectionLabel(selected) : "";
@@ -138,6 +142,7 @@ export function SourceSectionMap({
       </div>
       {actionMessage && <p className="notice" role="status">{actionMessage}</p>}
     </div> : <p className="notice">Select a marker to inspect it, prefill Slice, or deliberately add it to the arrangement.</p>}
-    {eventPanel}
+     {transcriptPanel}
+     {eventPanel}
   </section>;
 }

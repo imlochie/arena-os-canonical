@@ -1,37 +1,67 @@
 # Arena handoff — read this first
 
-## Latest investigation: vocal activity alone cannot name musical form
+## Latest increment: local vocal transcript drafts stay separate from form labels
 
-The unchanged production form pipeline was run over the complete existing
-September and Another One Bites the Dust source/stem pairs. All eight stem WAVs
-match the SHA-256 values in `scripts/fixtures/waveyard-musical-evaluation.json`;
-none were regenerated. Against the owner's provisional, single-listener section
-notes, the current full-song predictions correctly overlap **102,500 of
-120,000 ms (85.4%)** of September verse/chorus reference time, while Queen
-abstains on all **88,000 ms** of its verse/chorus reference time. This is exact
-time overlap without boundary tolerance; false labels in intro, pre-chorus,
-bridge, breakdown or outro are not included in that percentage. These notes are
-not independently reviewed ground truth.
+Studio's source map now offers on-device transcription from the separated vocal
+stem only. The user explicitly starts it; model weights are downloaded on
+demand, and the browser stores the transcript against both source and stem
+SHA-256 values. SRT/VTT export and transcript/model-cache deletion are
+available. No transcript is sent to the project API or an external speech
+service. The ASR JavaScript is dynamically imported only when requested; model
+weights are not bundled into the Windows installer. The production build adds
+a 1.32 MB ASR code chunk (313 KB gzipped) and the Q8 model is about 42 MiB
+(44 MB); both are loaded only when requested. The development dependency also
+adds about 140 MiB of `onnxruntime-web` files to `node_modules`; the Windows
+installer footprint has not been verified. The transcript is shown alongside
+detected section positions, but does not assign or modify semantic labels.
+Exact recurring n-grams are reported only as unreviewed lyric candidates,
+never as proof of a chorus.
 
-The prediction spans explain the remaining failure: September's second inferred
-verse extends through the opening of chorus two, then the chorus prediction
-starts late and ends in the annotated breakdown. On Queen, the 8-bar windows
-compare a near-continuous separated-vocal activity signal, sparse pitch
-observations and a highly repetitive backing riff. The existing caption service
-can produce timestamped Whisper transcripts through user-supplied Groq/OpenAI
-keys, but the Waveyard section planner does not consume lexical/timed lyric
-evidence. That is the next meaningful evidence layer for distinguishing
-repeated chorus lyrics from other repeated passages; it must remain an explicit
-opt-in because it sends audio to the chosen provider. Do not compensate by
-lowering the recurrence threshold or labeling short repeated windows as whole
-choruses.
+The model's quality was checked before allowing it to influence musical
+decisions. Full existing vocal-stem WAVs were run locally through pinned
+Transformers.js Q8 Whisper-tiny-timestamped
+(`517244293732ee2d58139af5814231b7e6830a0d`) and Whisper-base-timestamped
+(`608c49e61301901684bc36cac8f74b95ff6b5a8e`) weights. Neither model recovered
+the known chorus phrase in either September or Another One Bites the Dust.
+Tiny produced 7,753 and 3,298 transcript characters; base produced 4,356 and
+1,864. The tiny pipeline also returned non-positive timestamps for 1,435/1,589
+and 600/764 output chunks respectively. These are failed lyric-recognition
+results, not evidence of section understanding. The Studio adapter currently
+uses BrowserWhisper's model name, which does not expose a revision pin; the
+tested pinned weights are therefore not guaranteed to match the browser
+download. The UI keeps ASR outside the form classifier, and the model adapter
+needs pinned, repeatable weights before its output can support acceptance
+claims.
 
-**Verification:** the production `measureFormWindows` and
-`inferFormFromWindows` functions processed both full-length recordings using
-the existing beat grids and separated vocal files; `musical-form.test.ts`
-passed **10/10**. No audio was sent to a transcription provider. The current
-section detector remains unproven for Queen and does not provide accurate full
-section boundaries for September.
+The app's browser transcription runtime was also tried with a real 20-second
+September vocal excerpt. This sandbox exposes no WebGPU; the WASM fallback
+loaded the model but remained at 0% transcription for over 200 seconds. Studio
+now detects missing WebGPU and blocks this impractical full-song CPU fallback,
+explaining why it did not start. This does not establish performance on the
+owner's Windows device. A browser run with working WebGPU and real-song
+acceptance is still required before treating this path as usable.
+
+The exact-repeat lyric utility has three unit tests for repeated-word timing,
+coarse segment-only timing and rejection of nearby duplicates. These are
+algorithm tests, not ASR accuracy evidence.
+
+The form baseline is unchanged: the production `measureFormWindows` and
+`inferFormFromWindows` functions still overlap **102,500 of 120,000 ms (85.4%)**
+of the owner's provisional September verse/chorus notes, while Queen abstains
+on **88,000 ms** of provisional verse/chorus reference time. This exact-time
+overlap excludes false labels outside those reference spans and is not
+independently reviewed ground truth. September still leaks its second verse
+into chorus two; Queen's near-continuous vocal activity, sparse pitch and
+repetitive backing remain ambiguous. No ASR output changed those results.
+
+**Verification:** local lyric utility tests passed **3/3**; Waveyard planner
+plus lyric utility tests passed **60/60**; `pnpm run typecheck:libs` and the
+full ArenaForge TypeScript check passed; the Vite production build passed with
+existing source-map and large-chunk warnings. Missing beat-grid phase
+confidence now fails closed, with a regression test. No generated song stems
+or persisted sections were changed. The local ASR draft must not be described
+as reliable until real WebGPU performance and manually checked lyric accuracy
+pass.
 
 ## Latest increment: Beat-grid evidence now separates pulse confidence from BPM confidence
 
