@@ -1,5 +1,38 @@
 # Arena handoff — read this first
 
+## Latest investigation: vocal activity alone cannot name musical form
+
+The unchanged production form pipeline was run over the complete existing
+September and Another One Bites the Dust source/stem pairs. All eight stem WAVs
+match the SHA-256 values in `scripts/fixtures/waveyard-musical-evaluation.json`;
+none were regenerated. Against the owner's provisional, single-listener section
+notes, the current full-song predictions correctly overlap **102,500 of
+120,000 ms (85.4%)** of September verse/chorus reference time, while Queen
+abstains on all **88,000 ms** of its verse/chorus reference time. This is exact
+time overlap without boundary tolerance; false labels in intro, pre-chorus,
+bridge, breakdown or outro are not included in that percentage. These notes are
+not independently reviewed ground truth.
+
+The prediction spans explain the remaining failure: September's second inferred
+verse extends through the opening of chorus two, then the chorus prediction
+starts late and ends in the annotated breakdown. On Queen, the 8-bar windows
+compare a near-continuous separated-vocal activity signal, sparse pitch
+observations and a highly repetitive backing riff. The existing caption service
+can produce timestamped Whisper transcripts through user-supplied Groq/OpenAI
+keys, but the Waveyard section planner does not consume lexical/timed lyric
+evidence. That is the next meaningful evidence layer for distinguishing
+repeated chorus lyrics from other repeated passages; it must remain an explicit
+opt-in because it sends audio to the chosen provider. Do not compensate by
+lowering the recurrence threshold or labeling short repeated windows as whole
+choruses.
+
+**Verification:** the production `measureFormWindows` and
+`inferFormFromWindows` functions processed both full-length recordings using
+the existing beat grids and separated vocal files; `musical-form.test.ts`
+passed **10/10**. No audio was sent to a transcription provider. The current
+section detector remains unproven for Queen and does not provide accurate full
+section boundaries for September.
+
 ## Latest increment: Beat-grid evidence now separates pulse confidence from BPM confidence
 
 The persisted desktop analysis score combines BPM autocorrelation confidence
