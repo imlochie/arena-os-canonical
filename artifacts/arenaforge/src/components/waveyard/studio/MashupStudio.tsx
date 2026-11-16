@@ -84,6 +84,18 @@ type AlignmentCandidatePlan = {
   available: boolean;
   unavailableReason?: string;
   plan: Plan | null;
+  drumRecommendation?: DrumRecommendation;
+};
+
+type DrumRecommendation = {
+  outcome: "retain" | "replace" | "layer" | "reject" | "unavailable";
+  reason: string;
+  measurements: null | {
+    comparedOnsets?: number;
+    sameStrokeOnsets?: number;
+    complementaryOnsets?: number;
+    pulseAgreementRatio?: number | null;
+  };
 };
 
 type EvidenceFeatureSummary =
@@ -116,6 +128,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [bedId, setBedId] = useState(sources[1]?.id ?? sources[0]?.id ?? "");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [evidence, setEvidence] = useState<EvidenceSummary | null>(null);
+  const [drumRecommendation, setDrumRecommendation] = useState<DrumRecommendation | null>(null);
   const [planning, setPlanning] = useState(false);
   const [rendering, setRendering] = useState<"mashup" | "extend" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -155,10 +168,21 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     /** "replace" removes the bed's matching stem; "layer" keeps both. */
     stemLayerMode: string | null;
     replacedBedStems: string[];
+    stemDecisions: Record<string, "retain" | "replace" | "layer">;
   } | null>(null);
 
   const readMixReport = (response: Response) => {
     if (!response.headers.get("x-waveyard-mix-static-gain-db")) return;
+    let stemDecisions: Record<string, "retain" | "replace" | "layer"> = {};
+    try {
+      const raw = JSON.parse(response.headers.get("x-waveyard-stem-decisions") ?? "{}");
+      if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+        stemDecisions = Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, "retain" | "replace" | "layer"] =>
+          entry[1] === "retain" || entry[1] === "replace" || entry[1] === "layer"));
+      }
+    } catch {
+      // Older server responses do not include the independent-choice header.
+    }
     setMixReport({
       balanceDb: response.headers.get("x-waveyard-mix-balance-db"),
       balanceClamped: response.headers.get("x-waveyard-mix-balance-clamped") === "true",
@@ -169,6 +193,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       clippedRegions: response.headers.get("x-waveyard-mix-clipped-regions"),
       stemLayerMode: response.headers.get("x-waveyard-stem-layer-mode"),
       replacedBedStems: response.headers.get("x-waveyard-replaced-bed-stems")?.split(",").filter(Boolean) ?? [],
+      stemDecisions,
     });
   };
   /**
@@ -177,19 +202,30 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
    * It is sent to render, preview and save alike so the saved session cannot
    * describe a different arrangement than the one heard.
    */
-  const [layerStemTypes, setLayerStemTypes] = useState<string[]>([]);
-  const [stemLayerMode, setStemLayerMode] = useState<"replace" | "layer">("replace");
-  const compositionPayload = layerStemTypes.length > 0
-    ? { layerStemTypes, stemLayerMode }
-    : {};
+  const [stemDecisions, setStemDecisions] = useState<Record<string, "retain" | "replace" | "layer">>({
+    drums: "retain",
+    bass: "retain",
+  });
+  const compositionPayload = { stemDecisions };
   const [savingRemix, setSavingRemix] = useState(false);
   // A composition change invalidates the previous render: the mix report and
   // the saved-session claim describe audio that no longer matches the choice.
-  const setComposition = (types: string[], mode: "replace" | "layer") => {
-    setLayerStemTypes(types);
-    setStemLayerMode(mode);
+  const setComposition = (stemType: "drums" | "bass", action: "retain" | "replace" | "layer") => {
+    setStemDecisions((current) => ({ ...current, [stemType]: action }));
+    if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
+    renderUrlRef.current = null;
+    for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
+    candidateRenderUrlsRef.current.clear();
+    candidateRenderOrderRef.current = [];
+    setRenderUrl(null);
+    setRenderKind(null);
+    setRenderedCandidateUrls({});
+    setAlignmentCandidates([]);
+    setSelectedAlignment(null);
+    setPlan(null);
     setMixReport(null);
     setSaveSuccess(null);
+    setError("Stem choices changed. Compare alignment options again before rendering or saving.");
   };
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
@@ -216,6 +252,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setSelectedAlignment(null);
     setPlan(null);
     setEvidence(null);
+    setDrumRecommendation(null);
     setBedInfo(null);
     setError(null);
     setCandidateRendering(null);
@@ -224,6 +261,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setRenderUrl(null);
     setRenderKind(null);
     setSaveSuccess(null);
+    setStemDecisions({ drums: "retain", bass: "retain" });
   }, [vocalsId, bedId, projectId]);
 
   const call = async (payload: Record<string, unknown>, kind: "mashup" | "extended") => {
@@ -298,10 +336,15 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setRenderedCandidateUrls({});
     try {
       const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "compare", vocalsSourceId: vocalsId, instrumentalSourceId: bedId }),
-      });
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "compare",
+            vocalsSourceId: vocalsId,
+            instrumentalSourceId: bedId,
+            ...compositionPayload,
+          }),
+        });
       const body = await response.json().catch(() => ({}));
       if (sourceGeneration !== sourceGenerationRef.current) return;
       if (!response.ok) {
@@ -322,6 +365,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
       if (selected) {
         setSelectedAlignment(selected.id);
         setPlan(selected.plan);
+        setDrumRecommendation(selected.drumRecommendation ?? null);
         if (selected.id !== arrangementMode) {
           setError(
             `Full Length was unavailable for this pair: ${
@@ -345,6 +389,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     if (!candidate?.available || !candidate.plan) return;
     setSelectedAlignment(id);
     setPlan(candidate.plan);
+    setDrumRecommendation(candidate.drumRecommendation ?? null);
     setSaveSuccess(null);
   };
 
@@ -790,9 +835,8 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           <b>Composition:</b>{" "}
           {mixReport.layerStems.length === 0
             ? "vocal donor over the bed's own drums, bass and other (no donor rhythm section added)."
-            : mixReport.stemLayerMode === "layer"
-              ? `vocal donor over the bed, plus deliberately doubled donor ${mixReport.layerStems.join(", ")} (two sources cover the same role).`
-              : `vocal donor over the bed, with donor ${mixReport.layerStems.join(", ")} replacing the bed's ${mixReport.replacedBedStems.length > 0 ? mixReport.replacedBedStems.join(", ") : "matching stems"}.`}
+            : mixReport.layerStems.map((stemType) => `donor ${stemType} ${mixReport.stemDecisions[stemType] ?? "replace"}`).join("; ")}
+          {mixReport.layerStems.length > 0 ? ". Each role was applied independently." : ""}
           <br />
           <b>Mix (measured from this render):</b>{" "}
           vocal-to-bed balance {mixReport.balanceDb !== null ? `${mixReport.balanceDb} dB` : "not measurable"}
@@ -810,35 +854,70 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
         <legend><b>Donor rhythm section</b></legend>
         <p style={{ margin: "4px 0", opacity: 0.85 }}>
           Default: the donor supplies the vocal and the bed keeps its own drums, bass and other.
-          Adding a donor stem either replaces the bed&apos;s copy or doubles it — never silently,
-          and never when either half cannot be verified.
+          Choose drums and bass independently. Replacement removes the bed&apos;s matching separated
+          stem; layering deliberately keeps both. The choice is refused if either audio stem is unavailable.
         </p>
         {(["drums", "bass"] as const).map((stemType) => (
-          <label key={stemType} style={{ marginRight: 12 }}>
-            <input
-              type="checkbox"
-              checked={layerStemTypes.includes(stemType)}
+          <label key={stemType} style={{ marginRight: 16 }}>
+            Donor {stemType}{" "}
+            <select
+              data-testid={`select-donor-${stemType}-action`}
+              value={stemDecisions[stemType] ?? "retain"}
               onChange={(event) => setComposition(
-                event.target.checked
-                  ? [...layerStemTypes, stemType]
-                  : layerStemTypes.filter((type) => type !== stemType),
-                stemLayerMode,
+                stemType,
+                event.target.value === "replace" || event.target.value === "layer"
+                  ? event.target.value
+                  : "retain",
               )}
-            />{" "}
-            Donor {stemType}
+            >
+              <option value="retain">Keep the bed</option>
+              <option value="replace">Replace the bed</option>
+              <option value="layer">Layer with the bed</option>
+            </select>
           </label>
         ))}
-        <label style={{ marginLeft: 8 }}>
-          Applying as{" "}
-          <select
-            value={stemLayerMode}
-            disabled={layerStemTypes.length === 0}
-            onChange={(event) => setComposition(layerStemTypes, event.target.value === "layer" ? "layer" : "replace")}
-          >
-            <option value="replace">replace the bed&apos;s {layerStemTypes.join(" and ") || "stem"}</option>
-            <option value="layer">double it on top</option>
-          </select>
-        </label>
+        {drumRecommendation && (
+          <div role="status" data-testid="status-drum-recommendation" style={{ marginTop: 8 }}>
+            <b>
+              Drum evidence: {drumRecommendation.outcome === "unavailable" || drumRecommendation.outcome === "reject"
+                ? "keep the bed (no safe donor recommendation)"
+                : `recommend ${drumRecommendation.outcome}`}
+            </b>
+            <p style={{ margin: "4px 0" }}>{drumRecommendation.reason}</p>
+            {drumRecommendation.measurements && (
+              <small>
+                Measured {drumRecommendation.measurements.comparedOnsets ?? 0} donor attacks;{" "}
+                {drumRecommendation.measurements.sameStrokeOnsets ?? 0} coincided with bed attacks;{" "}
+                {drumRecommendation.measurements.complementaryOnsets ?? 0} filled open beat phases
+                {drumRecommendation.measurements.pulseAgreementRatio !== undefined
+                  && drumRecommendation.measurements.pulseAgreementRatio !== null
+                  ? `; pulse agreement ${(drumRecommendation.measurements.pulseAgreementRatio * 100).toFixed(0)}%`
+                  : ""}.
+                This measures rhythmic compatibility, not sound quality.
+              </small>
+            )}
+            <p style={{ margin: "4px 0", opacity: 0.78 }}>
+              Compared at the current same-start, native-pulse stem mix before its shared tempo transform.
+              It does not classify kick/snare/hat roles or measure masking.
+            </p>
+            <div>
+              <button
+                type="button"
+                className="button secondary"
+                data-testid="button-apply-drum-recommendation"
+                disabled={!canEdit}
+                onClick={() => setComposition(
+                  "drums",
+                  drumRecommendation.outcome === "replace" || drumRecommendation.outcome === "layer"
+                    ? drumRecommendation.outcome
+                    : "retain",
+                )}
+              >
+                Apply drum recommendation
+              </button>
+            </div>
+          </div>
+        )}
       </fieldset>
 
       {canEdit && (

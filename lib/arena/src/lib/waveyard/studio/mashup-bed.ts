@@ -246,11 +246,13 @@ export function sumInstrumentalStems(
 export type StemCompositionPlan =
   | {
     ok: true;
-    mode: "none" | "replace" | "layer";
+    mode: "none" | "replace" | "layer" | "mixed";
     /** Donor types that are actually mixed in. */
     layerStemTypes: string[];
     /** Bed stem types actually omitted from the instrumental sum. */
     omittedBedStemTypes: string[];
+    /** The chosen operation for each role, including explicit retention. */
+    stemDecisions: Record<string, "retain" | "replace" | "layer">;
     note: string;
   }
   | {
@@ -282,6 +284,7 @@ export function planStemComposition(input: {
       mode: "none",
       layerStemTypes: [],
       omittedBedStemTypes: [],
+      stemDecisions: {},
       note: "Default composition: the donor supplies the vocal and the bed keeps its own drums, bass and other.",
     };
   }
@@ -300,6 +303,7 @@ export function planStemComposition(input: {
       mode: "layer",
       layerStemTypes: requested,
       omittedBedStemTypes: [],
+      stemDecisions: Object.fromEntries(requested.map((type) => [type, "layer"])),
       note: `Deliberate doubling: donor ${requested.join(", ")} plays alongside the bed's own ${requested.join(", ")}. Two sources cover the same role.`,
     };
   }
@@ -337,6 +341,53 @@ export function planStemComposition(input: {
     mode: "replace",
     layerStemTypes: requested,
     omittedBedStemTypes: requested,
+    stemDecisions: Object.fromEntries(requested.map((type) => [type, "replace"])),
     note: `Replacement: donor ${requested.join(", ")} plays, and the bed's own ${requested.join(", ")} is removed so there is one ${requested.join(", ")} part rather than two. This is a deliberate request; no drum/bass compatibility measurement backs it yet.`,
+  };
+}
+
+/**
+ * Resolve each role independently while retaining the same fail-closed donor
+ * and bed checks as the legacy single-mode planner.
+ */
+export function planIndependentStemComposition(input: {
+  stemDecisions: Readonly<Record<string, "retain" | "replace" | "layer">>;
+  bedSeparableStemTypes: readonly string[];
+  bedIndivisibleReason?: string | null;
+  verifiedDonorStemTypes: readonly string[];
+}): StemCompositionPlan {
+  const decisions: Record<string, "retain" | "replace" | "layer"> = {};
+  const layerStemTypes: string[] = [];
+  const omittedBedStemTypes: string[] = [];
+  const notes: string[] = [];
+  const activeModes = new Set<"replace" | "layer">();
+
+  for (const [stemType, action] of Object.entries(input.stemDecisions).sort(([a], [b]) => a.localeCompare(b))) {
+    decisions[stemType] = action;
+    if (action === "retain") continue;
+    const result = planStemComposition({
+      stemLayerMode: action,
+      requestedLayerStemTypes: [stemType],
+      bedSeparableStemTypes: input.bedSeparableStemTypes,
+      bedIndivisibleReason: input.bedIndivisibleReason,
+      verifiedDonorStemTypes: input.verifiedDonorStemTypes,
+    });
+    if (!result.ok) return result;
+    activeModes.add(action);
+    layerStemTypes.push(...result.layerStemTypes);
+    omittedBedStemTypes.push(...result.omittedBedStemTypes);
+    notes.push(result.note);
+  }
+
+  const uniqueModes = [...activeModes];
+  return {
+    ok: true,
+    mode: uniqueModes.length === 0 ? "none" : uniqueModes.length === 1 ? uniqueModes[0]! : "mixed",
+    layerStemTypes,
+    omittedBedStemTypes,
+    stemDecisions: decisions,
+    note: notes.length
+      ? notes.join(" ")
+      : "Default composition: the donor supplies the vocal and the bed keeps its own drums, bass and other.",
   };
 }

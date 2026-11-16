@@ -3,6 +3,7 @@ export * from "./beat-grid";
 export * from "./clip-construction";
 export * from "./source-sections";
 export * from "./passage-compatibility";
+export * from "./drum-bed-decision";
 export * from "./analysis-confidence";
 export * from "./section-arrangement";
 export * from "./cross-source-alignment";

@@ -48,10 +48,9 @@ import { loadSourceProfile } from "@workspace/arena/lib/waveyard/studio/mashup-s
 import {
   INSTRUMENTAL_BED_STEM_TYPES,
   InstrumentalBedError,
-  planStemComposition,
+  planIndependentStemComposition,
   sumInstrumentalStems,
   type InstrumentalBedStem,
-  type StemCompositionPlan,
 } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import {
   analyseStereoPcm,
@@ -89,6 +88,7 @@ import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from 
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { createPersistedClipTempoMap, donorClipTempoMap } from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
 import { measureStemGroove } from "@workspace/arena/lib/waveyard/types";
+import { decideDonorDrumBed } from "@workspace/arena/lib/waveyard/types";
 
 export const dynamic = "force-dynamic";
 
@@ -109,6 +109,12 @@ type MeasuredBedGrooveEvidence = {
   drumProvenance: MusicalEvidenceProvenance | null;
   bassProvenance: MusicalEvidenceProvenance | null;
   melodicProvenance: MusicalEvidenceProvenance | null;
+};
+
+type DonorDrumRecommendation = {
+  outcome: "retain" | "replace" | "layer" | "reject" | "unavailable";
+  reason: string;
+  measurements: ReturnType<typeof decideDonorDrumBed>["measurements"];
 };
 const measuredBedGrooveCache = new Map<string, { createdAt: number; evidence: MeasuredBedGrooveEvidence }>();
 
@@ -132,6 +138,8 @@ type MashupBody = {
    *   the bed's drums).
    */
   stemLayerMode?: unknown;
+  /** Independent user choices for each donor rhythm role. */
+  stemDecisions?: unknown;
   sourceAssetId?: unknown;
   sectionLabel?: unknown;
   repeats?: unknown;
@@ -142,6 +150,34 @@ type MashupBody = {
 const LAYERABLE_STEM_TYPES = ["drums", "bass", "other", "guitar", "piano", "percussion"] as const;
 
 type StemLayerMode = "replace" | "layer";
+type StemCompositionChoice = "retain" | StemLayerMode;
+
+function parseStemDecisions(
+  value: unknown,
+  legacyTypes: readonly string[],
+  legacyMode: StemLayerMode,
+): { ok: true; decisions: Record<string, StemCompositionChoice> } | { ok: false; error: string } {
+  const decisions: Record<string, StemCompositionChoice> = Object.fromEntries(
+    LAYERABLE_STEM_TYPES.map((stemType) => [stemType, "retain"]),
+  );
+  if (value === undefined || value === null) {
+    for (const stemType of legacyTypes) decisions[stemType] = legacyMode;
+    return { ok: true, decisions };
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "stemDecisions must map stem types to retain, replace, or layer." };
+  }
+  for (const [stemType, action] of Object.entries(value as Record<string, unknown>)) {
+    if (!LAYERABLE_STEM_TYPES.includes(stemType as typeof LAYERABLE_STEM_TYPES[number])) {
+      return { ok: false, error: `stemDecisions contains unsupported stem type ${JSON.stringify(stemType)}.` };
+    }
+    if (action !== "retain" && action !== "replace" && action !== "layer") {
+      return { ok: false, error: `stemDecisions.${stemType} must be retain, replace, or layer.` };
+    }
+    decisions[stemType] = action;
+  }
+  return { ok: true, decisions };
+}
 
 function parseStemLayerMode(value: unknown): { ok: true; mode: StemLayerMode } | { ok: false; error: string } {
   if (value === undefined || value === null) return { ok: true, mode: "replace" };
@@ -185,7 +221,8 @@ type BedSourceInfo = {
  * been.
  */
 type RenderedComposition = {
-  stemLayerMode: "none" | "replace" | "layer";
+  stemLayerMode: "none" | "replace" | "layer" | "mixed";
+  stemDecisions: Record<string, StemCompositionChoice>;
   /** Donor stem types actually in the mix. */
   layeredStemTypes: string[];
   /** Bed stem types actually left out of the instrumental sum. */
@@ -656,6 +693,46 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
 }
 
 /**
+ * Apply the same donor-drum decision used by automatic-remixes to the actual
+ * source-clock composition Mashup Studio currently renders: separated donor
+ * stems are combined at t=0, then the resulting bed receives one shared tempo
+ * transform. Until donor stems have their own independent placement maps, this
+ * recommendation must not pretend to evaluate phrase-specific offsets.
+ */
+function recommendDonorDrumsForMashup(input: {
+  donor: Parameters<typeof planMashup>[0];
+  bed: Parameters<typeof planMashup>[1];
+  donorEvidence: MeasuredBedGrooveEvidence;
+  bedEvidence: MeasuredBedGrooveEvidence;
+}): DonorDrumRecommendation {
+  const { donor, bed, donorEvidence, bedEvidence } = input;
+  const durationMs = Math.min(donor.durationMs, bed.durationMs);
+  const placements = durationMs > 0 ? [{
+    anchorSectionId: "full-source-clock",
+    donorSectionId: "full-source-clock",
+    durationMs,
+    anchorSourceStartMs: 0,
+    donorSourceStartMs: 0,
+  }] : [];
+  const anchorGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
+  const donorGrid = trustedAnalysisBeatGrid(donor.beatGridMs, donor.bpmConfidence, donor.beatConfidence);
+  const decision = decideDonorDrumBed({
+    anchorGroove: measureStemGroove("drums", bedEvidence.drumEvents, anchorGrid, bed.beatConfidence),
+    donorGroove: measureStemGroove("drums", donorEvidence.drumEvents, donorGrid, donor.beatConfidence),
+    anchorGrid,
+    // The stems are summed before the bed's shared timing map is applied, so
+    // their relative pulse is still native-to-native in the actual mixed audio.
+    tempoRatio: 1,
+    placements,
+  });
+  return {
+    outcome: decision.decision,
+    reason: decision.reason,
+    measurements: decision.measurements,
+  };
+}
+
+/**
  * Decode and sum the bed's separated non-vocal stems.
  *
  * Returns ok:false only when no usable separation exists, so the original-file
@@ -917,19 +994,22 @@ async function resolveStemComposition(input: {
   vocalsId: string;
   vocalsSeparationJobId: string | undefined;
   bedSource: BedSource;
-  stemLayerMode: "replace" | "layer";
-  requestedLayerStemTypes: readonly string[];
+  stemDecisions: Readonly<Record<string, StemCompositionChoice>>;
 }): Promise<
   | { ok: true; composition: RenderedComposition; donorStems: Map<string, Float32Array> }
   | { ok: false; status: number; error: string }
 > {
-  const { projectId, bedSource, stemLayerMode, requestedLayerStemTypes } = input;
-  const requested = [...new Set(requestedLayerStemTypes)];
+  const { projectId, bedSource } = input;
+  const stemDecisions = { ...input.stemDecisions };
+  const requested = Object.entries(stemDecisions)
+    .filter((entry): entry is [string, StemLayerMode] => entry[1] === "replace" || entry[1] === "layer")
+    .map(([stemType]) => stemType);
   if (requested.length === 0) {
     return {
       ok: true,
       composition: {
         stemLayerMode: "none",
+        stemDecisions,
         layeredStemTypes: [],
         replacedBedStemTypes: [],
         bedStemTypes: bedSource.info.includedStemTypes ?? [],
@@ -990,9 +1070,8 @@ async function resolveStemComposition(input: {
   }
 
   // 3. Fail closed, or commit to an explicit composition.
-  const decision = planStemComposition({
-    stemLayerMode,
-    requestedLayerStemTypes: requested,
+  const decision = planIndependentStemComposition({
+    stemDecisions,
     bedSeparableStemTypes,
     bedIndivisibleReason,
     verifiedDonorStemTypes,
@@ -1006,6 +1085,7 @@ async function resolveStemComposition(input: {
     ok: true,
     composition: {
       stemLayerMode: decision.mode === "none" ? "none" : decision.mode,
+      stemDecisions: decision.stemDecisions,
       layeredStemTypes: decision.layerStemTypes,
       replacedBedStemTypes: replaced,
       bedStemTypes: bedSeparableStemTypes.filter((type) => !replaced.includes(type)),
@@ -1230,16 +1310,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({ error: "Choose a supported mashup alignment strategy." }, { status: 400 });
       }
       const alignmentStrategy = (requestedStrategy ?? "phrase-aware") as MashupAlignmentStrategy;
-      const parsedLayers = parseLayerStemTypes(body.layerStemTypes);
-      if (!parsedLayers.ok) {
-        return Response.json({ error: parsedLayers.error }, { status: 400 });
+      let stemDecisions: Record<string, StemCompositionChoice>;
+      if (body.stemDecisions !== undefined) {
+        if (body.layerStemTypes !== undefined || body.stemLayerMode !== undefined) {
+          return Response.json({
+            error: "Use stemDecisions by itself; do not combine it with legacy layerStemTypes or stemLayerMode.",
+          }, { status: 400 });
+        }
+        const parsedDecisions = parseStemDecisions(body.stemDecisions, [], "replace");
+        if (!parsedDecisions.ok) return Response.json({ error: parsedDecisions.error }, { status: 400 });
+        stemDecisions = parsedDecisions.decisions;
+      } else {
+        const parsedLayers = parseLayerStemTypes(body.layerStemTypes);
+        if (!parsedLayers.ok) return Response.json({ error: parsedLayers.error }, { status: 400 });
+        const parsedLayerMode = parseStemLayerMode(body.stemLayerMode);
+        if (!parsedLayerMode.ok) return Response.json({ error: parsedLayerMode.error }, { status: 400 });
+        const parsedDecisions = parseStemDecisions(undefined, parsedLayers.types, parsedLayerMode.mode);
+        if (!parsedDecisions.ok) return Response.json({ error: parsedDecisions.error }, { status: 400 });
+        stemDecisions = parsedDecisions.decisions;
       }
-      const layerStemTypes = parsedLayers.types;
-      const parsedLayerMode = parseStemLayerMode(body.stemLayerMode);
-      if (!parsedLayerMode.ok) {
-        return Response.json({ error: parsedLayerMode.error }, { status: 400 });
-      }
-      const stemLayerMode = parsedLayerMode.mode;
+      const hasLayeredStems = Object.values(stemDecisions).includes("layer");
 
       const [resolvedVocalSource, resolvedBedSource] = await Promise.all([
         findBedSource(projectId, vocalsId),
@@ -1402,8 +1492,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           vocalsId,
           vocalsSeparationJobId: planningVocalsStem?.separationJobId,
           bedSource: resolvedBedSource,
-          stemLayerMode,
-          requestedLayerStemTypes: layerStemTypes,
+          stemDecisions,
         });
         if (!resolved.ok) {
           return Response.json(
@@ -1425,7 +1514,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             resolved.donorStems,
           ).catch(() => null);
           let compositionPcm = composedBed?.ok ? composedBed.pcm : null;
-          if (composedBed && !composedBed.ok && resolved.composition.stemLayerMode === "layer") {
+          if (composedBed && !composedBed.ok
+            && hasLayeredStems
+            && resolved.composition.replacedBedStemTypes.length === 0) {
             await mkdir(tempDir, { recursive: true });
             const source = await sourcePcm(projectId, bedId, tempDir);
             if (source) compositionPcm = mixInReplacingStems(source.pcm, resolved.donorStems);
@@ -1441,7 +1532,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             compositionForPlan = resolved.composition;
           } else {
             return Response.json({
-              error: `The replacement composition (${resolved.composition.replacedBedStemTypes.join(", ")}) could not be loaded for planning. No arrangement was saved or rendered against the previous mix.`,
+              error: `The requested stem composition could not be loaded for planning. No arrangement was saved or rendered against the previous mix.`,
               code: "stem-composition-unavailable",
             }, { status: 422 });
           }
@@ -1451,9 +1542,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       bed.stemGrooves = originalBedGrooves.filter((profile) =>
         !compositionForPlan?.replacedBedStemTypes.includes(profile.role));
       const donorGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
-      const donorGrooveEvidence = donorStemsForPlan.size
-        ? await loadMeasuredBedGrooveEvidence(projectId, vocalsId)
-        : null;
+      const donorGrooveEvidence = await loadMeasuredBedGrooveEvidence(projectId, vocalsId);
       vocals.stemGrooves = [...donorStemsForPlan.keys()].flatMap((name) => {
         const role = name.slice("donor_".length);
         if (role !== "drums" && role !== "bass" && role !== "other") return [];
@@ -1465,13 +1554,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           : role === "other" ? donorGrooveEvidence?.melodicProvenance : donorGrooveEvidence?.drumProvenance;
         return [{ ...measureStemGroove(role, events, donorGrid, vocals.beatConfidence), provenance: provenance ?? null }];
       });
+      const drumRecommendation = recommendDonorDrumsForMashup({
+        donor: vocals,
+        bed: originalBed,
+        donorEvidence: donorGrooveEvidence,
+        bedEvidence: grooveEvidence,
+      });
 
       if (action === "compare") {
         const bedInfo = await inspectBed(projectId, bedId);
+        const candidates = compareMashupAlignmentCandidates(vocals, bed, { jointTempo: true })
+          .map((candidate) => ({
+            ...candidate,
+            drumRecommendation,
+          }));
         return Response.json({
-          candidates: compareMashupAlignmentCandidates(vocals, bed, {
-            jointTempo: true,
-          }),
+          candidates,
+          composition: compositionForPlan,
           bed: bedInfo,
           evidence: {
             vocals: vocals.evidence ? summarizeEvidencePacket(vocals.evidence) : null,
@@ -1491,6 +1590,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const bedInfo = await inspectBed(projectId, bedId);
         return Response.json({
           plan: planned.plan,
+          drumRecommendation,
+          composition: compositionForPlan,
           plannedAgainst: plannedAgainstComposition ? { kind: "composition", ...plannedAgainstComposition } : { kind: "original-bed" },
           bed: bedInfo,
           evidence: {
@@ -1521,8 +1622,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           vocalsId,
           vocalsSeparationJobId: vocalsStem.separationJobId,
           bedSource: resolvedBedSource,
-          stemLayerMode,
-          requestedLayerStemTypes: layerStemTypes,
+          stemDecisions,
         });
         if (!saveComposition.ok) {
           return Response.json(
@@ -1550,9 +1650,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }, { status: 422 });
         }
 
-        // The donor's replacing stems become real Studio tracks, so the saved
+        // The donor's contributed stems become real Studio tracks, so the saved
         // session carries the arrangement rather than losing it on reopen.
-        const donorReplacementStems = new Map<string, typeof stemAssets.$inferSelect>();
+        const donorContributedStems = new Map<string, typeof stemAssets.$inferSelect>();
         if (composition.layeredStemTypes.length > 0 && vocalsStem.separationJobId) {
           const donorRows = await db.select().from(stemAssets).where(and(
             eq(stemAssets.projectId, projectId),
@@ -1561,9 +1661,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           ));
           for (const type of composition.layeredStemTypes) {
             const [row] = donorRows.filter((candidate) => candidate.stemType === type);
-            if (row) donorReplacementStems.set(type, row);
+            if (row) donorContributedStems.set(type, row);
           }
-          const stillMissing = composition.layeredStemTypes.filter((type) => !donorReplacementStems.has(type));
+          const stillMissing = composition.layeredStemTypes.filter((type) => !donorContributedStems.has(type));
           if (stillMissing.length > 0) {
             return Response.json(
               {
@@ -1573,7 +1673,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               { status: 409 },
             );
           }
-          if (!vocals.sourceChecksumSha256 || [...donorReplacementStems.values()].some((stem) =>
+          if (!vocals.sourceChecksumSha256 || [...donorContributedStems.values()].some((stem) =>
             !stem.checksumSha256 || stem.format?.toLowerCase() !== "wav" || stem.channels !== 2)) {
             return Response.json({
               error: "Checksum-bound stereo donor audio is required to save its timing transformation.",
@@ -1642,14 +1742,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               pan: 0,
             });
           }
-          // Donor replacement stems are part of the arrangement, not an
+          // Donor-contributed stems are part of the arrangement, not an
           // optional extra: without them the reopened session is a different
           // (and drumless) mashup.
-          for (const [type, stem] of donorReplacementStems) {
+          for (const [type, stem] of donorContributedStems) {
             tracksToInsert.push({
               remixSessionId: remix.id,
               stemAssetId: stem.id,
-              name: `${type[0].toUpperCase()}${type.slice(1)} (Donor ${composition.stemLayerMode === "replace" ? "replacement" : "layer"})`,
+              name: `${type[0].toUpperCase()}${type.slice(1)} (Donor ${composition.stemDecisions[type] === "replace" ? "replacement" : "layer"})`,
               sortOrder: sortOrder++,
               volume: 0.8,
               pan: 0,
@@ -1720,7 +1820,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           // reproduce the render rather than play the donor at its native rate.
           const firstSegment = planned.plan.segments[0];
           const donorMaps = new Map<string, NonNullable<ReturnType<typeof donorClipTempoMap>>>();
-          for (const [type, stem] of donorReplacementStems) {
+          for (const [type, stem] of donorContributedStems) {
             const track = trackByStemId.get(stem.id);
             if (!track) continue;
             // The clip may not outlive the donor stem it plays from. This used to
@@ -1762,7 +1862,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           const clipTimingMaps = insertedClips.flatMap((clip) => {
             const donorMap = donorMaps.get(clip.stemAssetId);
             if (donorMap) {
-              const stem = [...donorReplacementStems.values()].find((item) => item.id === clip.stemAssetId)!;
+              const stem = [...donorContributedStems.values()].find((item) => item.id === clip.stemAssetId)!;
               const map = createPersistedClipTempoMap({
                 clipId: clip.id, remixTrackId: clip.remixTrackId,
                 stemAssetId: stem.id, sourceAssetId: stem.sourceAssetId,
@@ -1859,16 +1959,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                */
               stemComposition: {
                 stemLayerMode: composition.stemLayerMode,
+                stemDecisions: composition.stemDecisions,
                 layeredStemTypes: composition.layeredStemTypes,
                 replacedBedStemTypes: composition.replacedBedStemTypes,
                 bedStemTypes: composition.bedStemTypes,
                 bedSeparable: composition.bedSeparable,
                 note: composition.note,
               },
+              drumRecommendation,
               masterBpm: planned.plan.masterBpm,
               bedStretchRatio: planned.plan.bedStretchRatio ?? 1,
               bedTempoStemIds: planned.plan.bedStretchRatio ? sessionBedStems.map((stem) => stem.id) : [],
-              donorTempoStemIds: [...donorReplacementStems.values()].map((stem) => stem.id),
+              donorTempoStemIds: [...donorContributedStems.values()].map((stem) => stem.id),
               vocalsStretchRatio: planned.plan.vocalsStretchRatio,
               vocalsPitchSemitones: planned.plan.vocalsPitchSemitones,
               keyRelationship: planned.plan.keyRelationship,
@@ -1889,7 +1991,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           };
 
           const donorClipsNeedingTempo = insertedClips.filter((clip) =>
-          [...donorReplacementStems.values()].some((stem) => stem.id === clip.stemAssetId)
+          [...donorContributedStems.values()].some((stem) => stem.id === clip.stemAssetId)
           && !clip.tempoSyncEnabled
           && Math.abs(planned.plan.vocalsStretchRatio - 1) > 1e-6);
         if (donorClipsNeedingTempo.length > 0) {
@@ -1978,8 +2080,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             vocalsId,
             vocalsSeparationJobId: vocalsStem?.separationJobId,
             bedSource: resolvedBedSource,
-            stemLayerMode,
-            requestedLayerStemTypes: layerStemTypes,
+            stemDecisions,
           });
           if (!resolved.ok) throw new Error(resolved.error);
           return resolved.composition;
@@ -2042,6 +2143,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         "x-waveyard-mix-clipped-regions": String(rendered.mix.postLimit.clippedRegions),
         "x-waveyard-layer-stems": composition.composition.layeredStemTypes.join(","),
         "x-waveyard-stem-layer-mode": composition.composition.stemLayerMode,
+        "x-waveyard-stem-decisions": JSON.stringify(composition.composition.stemDecisions),
+        "x-waveyard-drum-recommendation": JSON.stringify(drumRecommendation),
         "x-waveyard-replaced-bed-stems": composition.composition.replacedBedStemTypes.join(","),
         "x-waveyard-bed-separable": String(composition.composition.bedSeparable),
         // Provenance of the analysis the arrangement was planned against. A

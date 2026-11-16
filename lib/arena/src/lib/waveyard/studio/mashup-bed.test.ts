@@ -6,6 +6,7 @@ import {
   InstrumentalBedError,
   MASHUP_BED_HEADROOM_GAIN,
   MASHUP_BED_PEAK_CEILING,
+  planIndependentStemComposition,
   sumInstrumentalStems,
   type InstrumentalBedStem,
 } from "./mashup-bed";
@@ -172,4 +173,44 @@ test("the supported bed stem types are explicit and non-vocal", () => {
   assert.ok(INSTRUMENTAL_BED_STEM_TYPES.includes("other"));
   assert.ok(!INSTRUMENTAL_BED_STEM_TYPES.includes("vocals"));
   assert.ok(!INSTRUMENTAL_BED_STEM_TYPES.includes("instrumental"));
+});
+
+test("resolves drum replacement and bass layering independently", () => {
+  const result = planIndependentStemComposition({
+    stemDecisions: { drums: "replace", bass: "layer" },
+    bedSeparableStemTypes: ["drums", "bass", "other"],
+    verifiedDonorStemTypes: ["drums", "bass"],
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.mode, "mixed");
+  assert.deepEqual(result.layerStemTypes, ["bass", "drums"]);
+  assert.deepEqual(result.omittedBedStemTypes, ["drums"]);
+  assert.deepEqual(result.stemDecisions, { bass: "layer", drums: "replace" });
+});
+
+test("independent composition fails closed if any selected donor stem is missing", () => {
+  const result = planIndependentStemComposition({
+    stemDecisions: { drums: "replace", bass: "layer" },
+    bedSeparableStemTypes: ["drums", "bass", "other"],
+    verifiedDonorStemTypes: ["drums"],
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.code, "replacement-donor-missing");
+  assert.match(result.error, /bass/);
+});
+
+test("retained roles need no donor stem and do not alter the bed", () => {
+  const result = planIndependentStemComposition({
+    stemDecisions: { drums: "replace", bass: "retain" },
+    bedSeparableStemTypes: ["drums", "bass", "other"],
+    verifiedDonorStemTypes: ["drums"],
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.mode, "replace");
+  assert.deepEqual(result.layerStemTypes, ["drums"]);
+  assert.deepEqual(result.omittedBedStemTypes, ["drums"]);
+  assert.deepEqual(result.stemDecisions, { bass: "retain", drums: "replace" });
 });

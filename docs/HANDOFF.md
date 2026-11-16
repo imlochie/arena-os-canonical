@@ -1,5 +1,49 @@
 # Arena handoff — read this first
 
+## Latest increment: Mashup Studio can inspect and control each donor rhythm role
+
+**What changed.** The main Mashup Studio request now accepts a per-role
+`stemDecisions` map (`retain`, `replace`, or `layer`) for drums and bass. Each
+role is validated independently against the donor's completed separation and
+the bed's removable stems. Existing `layerStemTypes` / `stemLayerMode` callers
+remain supported. A missing donor part or an inseparable bed still fails closed.
+
+Planning, compare, render and save receive the same per-role choices. Changing a
+choice clears the old rendered audio and alignment plan, so stale audio cannot
+be saved under the new composition. Saved version metadata records the choices;
+the saved clips contain the actual donor and retained bed stems, and the real
+export worker was exercised after reopening a mixed replacement/layer session.
+The main Mashup route also returns the same drum decision for compare, render and
+saved provenance.
+
+The main Mashup route now calls the same pure donor-drum decision function used
+by automatic remixes after loading checksum-current isolated-stem event evidence
+for both selected sources. Each alignment candidate carries that decision into
+the Studio UI; the user can apply the recommendation or override it. The
+recommendation reflects the current renderer's source-clock composition (both
+stems start together at native pulse before the bed's shared timing transform).
+It does not evaluate phrase-specific donor placement, identify kick/snare/hat
+roles, measure masking, or judge which kit sounds better.
+
+**Verification.**
+- `mashup-bed.test.ts`: **12/12 passed**, including mixed drum-replacement /
+  bass-layering and missing-donor refusal.
+- `mashup/route.test.ts`: **1/1 passed** with temporary PostgreSQL and FFmpeg.
+  Its synthetic route fixture verified mixed-role rendering, saved provenance,
+  reopen, and production WAV export. It is not a listening or real-song quality
+  test.
+- `automatic-remixes/route.drum.test.ts`: **1/1 passed** with temporary
+  PostgreSQL and `ARENA_FFMPEG_PATH` set to the workspace FFmpeg; this existing
+  production-path regression verifies that automatic-remix decisions use
+  persisted worker-produced drum evidence.
+- `typecheck:libs`, API-server typecheck and ArenaForge typecheck passed.
+
+**Still open.** Bass has an independent manual action but not yet an automatic
+donor-bass compatibility recommendation. The current drum recommendation does
+not identify kick/snare/hat roles or measure spectral masking, and no human
+listening has established mashup quality. Do not claim intelligent bass choice
+or reliably good-sounding swaps from this increment.
+
 ## Latest increment: hybrid harmony is judged on the stems a hybrid keeps
 
 Continues from `3f7b7f0` on the existing PR #31 branch. No new branch, no

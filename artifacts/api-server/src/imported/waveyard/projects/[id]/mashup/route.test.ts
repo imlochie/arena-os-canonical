@@ -1796,9 +1796,10 @@ test(
       { stemType: "bass", seconds: BED_SECONDS },
       { stemType: "other", seconds: BED_SECONDS },
     ]);
-    const donorWithDrumsId = await addFixtureSource("donor-with-drums", [
+    const donorWithDrumsId = await addFixtureSource("donor-with-drums-and-bass", [
       { stemType: "vocals", seconds: VOCAL_SECONDS },
       { stemType: "drums", seconds: VOCAL_SECONDS },
+      { stemType: "bass", seconds: VOCAL_SECONDS },
     ]);
 
     /**
@@ -2583,6 +2584,7 @@ test(
         },
       );
       const donorDrumsStemId = await stemAssetIdFor(donorWithDrumsId, "drums");
+      const donorBassStemId = await stemAssetIdFor(donorWithDrumsId, "bass");
       const donorVocalsStemId = await stemAssetIdFor(donorWithDrumsId, "vocals");
       const bedDrumsStemId = await stemAssetIdFor(fullBedId, "drums");
       const bedBassStemId = await stemAssetIdFor(fullBedId, "bass");
@@ -3269,6 +3271,114 @@ test(
       assert.ok(savedLayer.stemIds.includes(bedDrumsStemId), "bed drums remain referenced");
       assert.ok(savedLayer.stemIds.includes(donorDrumsStemId), "donor drums are referenced too");
       void [bedBassStemId, bedOtherStemId, donorVocalsStemId];
+
+      // --- Independent role choices survive planning, save, reopen and export ---
+      const mixedChoices = { drums: "replace", bass: "layer" };
+      const mainStudioCompare = await routeModule.POST(
+        new Request(`http://localhost/api/waveyard/projects/${project.id}/mashup`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "compare",
+            vocalsSourceId: donorWithDrumsId,
+            instrumentalSourceId: fullBedId,
+            stemDecisions: mixedChoices,
+          }),
+        }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(mainStudioCompare.status, 200, "the main Mashup Studio must expose candidate comparisons");
+      const mainStudioCompareBody = await mainStudioCompare.json() as {
+        candidates?: Array<{ drumRecommendation?: { outcome?: string; reason?: string; measurements?: unknown } }>;
+      };
+      const mainStudioDrumRecommendation = mainStudioCompareBody.candidates?.[0]?.drumRecommendation;
+      assert.ok(mainStudioDrumRecommendation?.outcome,
+        "the main Mashup route must return the shared donor-drum decision, not require the separate automatic-remix workflow");
+      assert.equal(typeof mainStudioDrumRecommendation?.reason, "string");
+
+      const mixedRender = await routeModule.POST(
+        renderPair(donorWithDrumsId, fullBedId, { stemDecisions: mixedChoices }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(mixedRender.status, 200, "independent role choices must reach the real render route");
+      assert.equal(mixedRender.headers.get("x-waveyard-stem-layer-mode"), "mixed");
+      assert.deepEqual(
+        JSON.parse(mixedRender.headers.get("x-waveyard-stem-decisions") ?? "{}"),
+        { drums: "replace", bass: "layer", other: "retain", guitar: "retain", piano: "retain", percussion: "retain" },
+        "render reports the exact per-role decisions it applied",
+      );
+      const renderedDrumRecommendation = JSON.parse(
+        mixedRender.headers.get("x-waveyard-drum-recommendation") ?? "null",
+      );
+      assert.deepEqual(renderedDrumRecommendation, mainStudioDrumRecommendation,
+        "compare and render must report the same source-bound drum evidence decision");
+
+      const mixedSave = await routeModule.POST(
+        saveFor({ stemDecisions: mixedChoices }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(mixedSave.status, 201, "independent role choices must be saveable");
+      const mixedSaveBody = await mixedSave.json() as { remix: { id: string }; version: { id: string } };
+      const savedMixed = await savedProvenance(mixedSaveBody.remix.id);
+      assert.deepEqual(savedMixed.typesBySource(fullBedId), ["bass", "other"],
+        "replacing drums must omit only bed drums; layering bass keeps bed bass");
+      assert.deepEqual(savedMixed.typesBySource(donorWithDrumsId), ["bass", "drums", "vocals"],
+        "the saved arrangement must include both selected donor roles and vocals");
+      const [mixedVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, mixedSaveBody.version.id));
+      const mixedSnapshot = JSON.parse(mixedVersion!.snapshot) as {
+        mashupPlan?: {
+          stemComposition?: { stemLayerMode?: string; stemDecisions?: Record<string, string> };
+          drumRecommendation?: unknown;
+        };
+      };
+      assert.equal(mixedSnapshot.mashupPlan?.stemComposition?.stemLayerMode, "mixed");
+      assert.deepEqual(mixedSnapshot.mashupPlan?.stemComposition?.stemDecisions?.drums, "replace");
+      assert.deepEqual(mixedSnapshot.mashupPlan?.stemComposition?.stemDecisions?.bass, "layer");
+      assert.deepEqual(mixedSnapshot.mashupPlan?.drumRecommendation, renderedDrumRecommendation,
+        "saved provenance must keep the same drum decision shown during compare and render");
+
+      const mixedReopen = await (await import("../../../../remixes/[id]/route")).GET(
+        new Request(`http://localhost/api/remixes/${mixedSaveBody.remix.id}`),
+        { params: Promise.resolve({ id: mixedSaveBody.remix.id }) },
+      );
+      assert.equal(mixedReopen.status, 200);
+      const reopenedMixed = await mixedReopen.json() as { tracks: Array<{ stemAssetId: string }> };
+      assert.ok(reopenedMixed.tracks.some((track) => track.stemAssetId === donorBassStemId));
+      assert.ok(reopenedMixed.tracks.some((track) => track.stemAssetId === donorDrumsStemId));
+      assert.ok(!reopenedMixed.tracks.some((track) => track.stemAssetId === bedDrumsStemId));
+      const [mixedExportJob] = await dbModule.db.insert(schema.exportJobs).values({
+        projectId: project.id,
+        remixSessionId: mixedSaveBody.remix.id,
+        remixVersionId: mixedSaveBody.version.id,
+        requestedById: (await dbModule.db.select().from(schema.remixSessions)
+          .where(eq(schema.remixSessions.id, mixedSaveBody.remix.id)))[0]!.ownerId,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `mixed-composition-export-${randomUUID()}`,
+        format: "wav",
+        sampleRate: RATE,
+        channels: 2,
+      }).returning();
+      assert.ok(mixedExportJob);
+      await (await import("@workspace/arena/lib/waveyard/worker-local/export")).handleExportJob({
+        exportJobId: mixedExportJob.id,
+        projectId: project.id,
+        remixSessionId: mixedSaveBody.remix.id,
+        remixVersionId: mixedSaveBody.version.id,
+        format: "wav",
+      });
+      const [completedMixedExport] = await dbModule.db.select().from(schema.exportJobs)
+        .where(eq(schema.exportJobs.id, mixedExportJob.id));
+      assert.equal(completedMixedExport!.status, "complete",
+        "an independently replaced/layered arrangement must survive the production export worker");
+      const mixedExportMedia = await (await import("../../../../exports/[id]/media/route")).GET(
+        new Request(`http://localhost/api/exports/${mixedExportJob.id}/media`),
+        { params: Promise.resolve({ id: mixedExportJob.id }) },
+      );
+      assert.equal(mixedExportMedia.status, 200);
+      assert.ok(decodeWav16(new Uint8Array(await mixedExportMedia.arrayBuffer())),
+        "the mixed-role export must be a valid WAV");
 
       // --- Tempo parity across render and export ---------------------------
       // 140 BPM donor over a 100 BPM bed: the renderer stretches the donor by
