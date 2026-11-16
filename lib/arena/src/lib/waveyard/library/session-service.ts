@@ -1167,6 +1167,8 @@ interface SessionStudioTransformPlan {
   keyConfidence: number | null;
   keyReference: string | null;
   keyMode: SessionKeyMode;
+  tempoDecisionNote: string;
+  keyDecisionNote: string;
 }
 
 function confidentAnalysisValue(value: number | null | undefined): value is number {
@@ -1207,6 +1209,11 @@ function deriveSessionStudioTransformPlan(
   const tempoReference = donorDrumsAreMaster
     ? drumSwap?.donorTrack?.title ?? "Donor drums"
     : tempoBpm !== null ? sessionTrack.track.title : null;
+  const tempoDecisionNote = drumSwap
+    ? drumResolution?.reason ?? "The current track remains the tempo reference."
+    : currentTempoIsUsable
+      ? "No donor drum swap is active; the current track remains the tempo reference."
+      : "No reliable BPM and beat-grid pair was available; all layers stay at native timing. Studio's neutral 120 BPM grid default is not applied to the audio.";
 
   const completeBedTrackId = completeInstrumentalBedDonorTrackId(swaps.map((swap) => ({
     stemType: swap.stemType,
@@ -1227,12 +1234,27 @@ function deriveSessionStudioTransformPlan(
         && stem.engine !== "passthrough-unseparated",
       );
     });
+  const hasInstrumentalSwap = swaps.some((swap) => ["drums", "bass", "other"].includes(swap.stemType));
+  const currentTrackHasCompleteBed = !hasInstrumentalSwap
+    && ["drums", "bass", "other"].every((stemType) => sessionTrack.stems.some((stem) =>
+      stem.stemType === stemType && stem.engine !== "passthrough-unseparated",
+    ));
   const bedSwap = completeBedIsPinned ? completeBedSwaps[0] : undefined;
-  const bedAnalysis = bedSwap?.donorTrack?.analysis ?? null;
+  const bedAnalysis = bedSwap?.donorTrack?.analysis
+    ?? (currentTrackHasCompleteBed ? sessionTrack.analysis : null);
+  const bedReferenceTitle = bedSwap?.donorTrack?.title
+    ?? (currentTrackHasCompleteBed ? sessionTrack.track.title : null);
   const key = bedAnalysis?.keyConfidence !== null && bedAnalysis?.keyConfidence !== undefined
     && bedAnalysis.keyConfidence >= 0.5
     ? normaliseMusicalKey(bedAnalysis.musicalKey)
     : null;
+  const keyDecisionNote = key === null
+    ? bedReferenceTitle && bedAnalysis?.musicalKey
+      ? `${bedReferenceTitle} is the complete instrumental-bed reference, but its ${bedAnalysis.musicalKey} estimate is below the confidence threshold; vocals stay at source pitch.`
+      : "No complete, confident instrumental-bed key reference was available; vocals stay at source pitch."
+    : detail.keyMatchMode === "off" || detail.keyMatchMode === "preserve"
+      ? `The complete bed provides ${key}, but ${detail.keyMatchMode} mode keeps vocals at source pitch.`
+      : `${bedReferenceTitle ?? "The complete bed"} provides ${key}; only confidently analyzed vocal clips are transposed, while drums and other layers stay unchanged.`;
   return {
     sessionTrackId: sessionTrack.id,
     tempoBpm: tempoBpm ?? null,
@@ -1241,8 +1263,10 @@ function deriveSessionStudioTransformPlan(
     tempoReference,
     key,
     keyConfidence: key !== null ? bedAnalysis?.keyConfidence ?? null : null,
-    keyReference: key !== null ? bedSwap?.donorTrack?.title ?? "Complete instrumental bed" : null,
+    keyReference: key !== null ? bedReferenceTitle ?? "Complete instrumental bed" : null,
     keyMode: detail.keyMatchMode,
+    tempoDecisionNote,
+    keyDecisionNote,
   };
 }
 
@@ -1723,11 +1747,9 @@ export async function sendSessionToStudio(
       ? "No valid current session entry was available as the single transform authority; clips remain at native timing and pitch."
       : [
         effectiveTransformPlan.tempoBpm === null
-          ? "No reliable tempo authority was available; no automatic tempo changes were applied."
-          : `Tempo target ${effectiveTransformPlan.tempoBpm.toFixed(2)} BPM follows ${effectiveTransformPlan.tempoReference ?? "the current track"}.`,
-        effectiveTransformPlan.key === null
-          ? "No complete, confident instrumental-bed key reference was available; vocals remain at source pitch."
-          : `Key reference ${effectiveTransformPlan.key} comes from ${effectiveTransformPlan.keyReference ?? "the complete instrumental bed"}; only confident vocals in matching mode may be transposed.`,
+          ? effectiveTransformPlan.tempoDecisionNote
+          : `Tempo target ${effectiveTransformPlan.tempoBpm.toFixed(2)} BPM follows ${effectiveTransformPlan.tempoReference ?? "the current track"}. ${effectiveTransformPlan.tempoDecisionNote} Clips without reliable BPM evidence remain native.`,
+        effectiveTransformPlan.keyDecisionNote,
       ].join(" "),
   };
 

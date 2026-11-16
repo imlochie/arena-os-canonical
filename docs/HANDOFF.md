@@ -1,6 +1,6 @@
 # Arena handoff — read this first
 
-## Latest increment: Live stem swaps share a measured tempo and key reference
+## Latest increment: Live stem swap transforms persist through Studio export
 
 Waveyard now treats an active drum donor as a possible mix-tempo master only
 when both tracks have reliable BPM and beat-grid evidence, the BPMs are not a
@@ -18,6 +18,25 @@ replacement vocals are pitch-shifted only when both key estimates meet the
 confidence gate. Bed instruments themselves are not transposed to satisfy a
 vocal. A missing, stale or passthrough asset cannot silently complete the bed.
 
+Sending a session to Studio now carries those same decisions into the existing
+remix model: an accepted drum master sets the remix tempo; only clips with
+reliable source BPM receive `tempoSyncEnabled`; a confident complete bed sets
+the target key; and only a confident vocal in matching mode receives
+`keySyncEnabled`. The handoff reports the reference, adapted-clip counts and
+fallback reason in the UI. Tempo-adjusted clip durations are scaled against
+their source BPM so the exporter consumes the full selected source interval;
+saved donor-vocal entry offsets remain source offsets. Instrumental clips are
+never pitch-shifted as part of vocal matching.
+
+Real PostgreSQL integration tests now follow the persisted rows through remix
+reload, immutable export snapshot and the actual local export worker. With
+controlled sine-wave stem fixtures and deliberately confident analysis rows,
+the worker renders a 110-to-120 BPM clip and a +3-semitone vocal correction,
+checks the exported WAV duration/checksum, and measures the shifted tone. A
+separate route test confirms a donor-drum tempo decision survives Studio reload
+and a later edit. These tests prove wiring and persistence, not that arbitrary
+music will sound good.
+
 Vocal swaps with no source-verified rhythm/harmony entry candidate no longer
 apply at an implicit playhead position. Clicking the donor stages the review
 panel while the current vocal remains active; the user must choose a measured
@@ -28,23 +47,47 @@ The exact September-vocals / Queen-bed real evidence explains the refusal path:
 the stored full-track analysis reports September at **126.048 BPM** (BPM
 confidence **0.697**, beat confidence **0.830**, key confidence **0.406**) and
 Queen at **109.957 BPM** (BPM confidence **0.426**, beat confidence **0.642**,
-key confidence **0.165**). Thus Queen's drum estimate cannot authorize an
+key confidence **0.168**). Thus Queen's drum estimate cannot authorize an
 automatic tempo master and neither key can authorize pitch correction. The
 existing persisted passage report evaluated **26** donor passages and ranked
 **zero**; it also explicitly says it lacks manual verse/chorus ground truth.
 This is evidence to keep the fallback honest, not evidence of a successful
 automatic mashup.
 
-**Verification:** shared library tests passed **64/64**; ArenaForge and shared
-library typechecks passed; the Chromium entry-audition fixture passed, including
-evidence-free direct vocal selection refusing to replace the active vocal,
-manual cue persistence, a strong-evidence whole-deck tempo change, and the
-September/Queen low-confidence fallback; the real PostgreSQL service-test subset
-passed **4/4**, including persisted distinct stem swaps round-tripping into
-Studio; `git diff --check` passed. Browser persistence in the UI fixture is
-mocked and its PCM is synthetic. The PostgreSQL test proves storage/identity
-round-trip, not audio quality. No new full-length real-audio playback,
-independent listening, or musical-quality claim was made.
+**Real-pair persisted acceptance:** an opt-in PostgreSQL test now reuses the
+existing checksum-verified September vocal and Queen (Another One Bites the
+Dust) stems, creates the Queen session, applies the explicit 19,044ms vocal
+cue, saves/reopens through the real Remix API, and exports through the local
+worker. It produced a 222.673-second stereo 44.1kHz WAV with checksum
+`d0e4738ad35cf490037e8d430dc652e0301a424c3194804c1ae7370aa38da324`. The
+measurements were September **126.048 BPM** (BPM confidence **0.697**, beat
+confidence **0.833**) and Queen **109.957 BPM** (BPM confidence **0.426**, beat
+confidence **0.642**, C minor confidence **0.168**). Queen's low confidence
+correctly withheld tempo and key transforms: zero clips were stretched or
+pitch-shifted; the source cue persisted. Studio's neutral 120 BPM grid default
+was not applied to audio. The prior planner baseline still had only 2/400 beat
+matches and 1,176.8ms mean error; this run does not claim an improvement in
+musical fit or sound quality. It does not regenerate or re-separate the audio.
+Run it with
+`WAVEYARD_REAL_SESSION_STEM_ACCEPTANCE=1 pnpm --filter @workspace/scripts exec tsx --test --test-name-pattern='real September vocals over the Queen bed' --test-isolation=none "$(pwd)/lib/arena/src/lib/waveyard/library/service.test.ts"`.
+
+**Verification:** shared session logic and key matching tests passed **64/64**;
+ArenaForge and shared-library typechecks passed; the Chromium entry-audition
+fixture passed, including evidence-free direct vocal selection refusing to
+replace the active vocal, manual cue persistence, strong-evidence whole-deck
+tempo change and the September/Queen low-confidence fallback; the targeted
+real-PostgreSQL service/export subset passed **7/7**. It includes the real
+export worker rendering persisted tempo and key transforms, with PCM tone,
+duration and checksum checks; the exact-real-stem session handoff and export
+acceptance passed **1/1** with transforms correctly withheld for low
+confidence. Browser-fixture persistence is mocked and its
+PCM is synthetic; the database/export fixture also uses synthetic stems and
+analysis values. For the actual September/Queen measurements above, current
+confidence still refuses automatic tempo/key adaptation and the prior
+passage-evaluation report had zero rankable candidates. The opt-in real-pair
+test completed the full persisted export route, but no independent listening
+was performed, so musical quality and an automatically successful mashup
+remain unproven.
 
 ## Latest increment: Studio compares both vocal directions without inventing a winner
 

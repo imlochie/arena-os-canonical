@@ -2340,7 +2340,8 @@ test("Studio handoff persists a confident drum tempo master and complete-bed voc
     `the persisted arrangement retains the full-length bed clip: ${JSON.stringify(savedTracks.map(({ stemType, durationMs, volume }) => ({ stemType, durationMs, volume })))}`);
   assert.equal(vocal.tempoSyncEnabled, true);
   assert.equal(vocal.keySyncEnabled, true);
-  assert.ok(vocal.durationMs > 2_000, "the stretched vocal duration preserves the full source rather than cropping its tail");
+  assert.ok(Math.abs(vocal.durationMs * (120 / 110) - 2_000) <= 1,
+    "the tempo-adjusted timeline consumes the complete vocal stem rather than cropping its tail");
   for (const stemType of ["drums", "bass", "other"]) {
     const bedStem = savedTracks.find((entry) => entry.stemType === stemType);
     assert.ok(bedStem);
@@ -2479,6 +2480,31 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
   const clipOnlyDrums = await seed("Studio route clip-only drum donor", 997, ["drums"]);
   assert.notEqual(vocals.sourceId, drums.sourceId);
   assert.notEqual(drums.sourceId, clipOnlyDrums.sourceId);
+  for (const [fixture, bpm, musicalKey] of [
+    [base, 100, "A minor"],
+    [vocals, 100, "A minor"],
+    [drums, 110, "C major"],
+  ] as const) {
+    const [source] = await db.db.select().from(schema.sourceAssets)
+      .where(eq(schema.sourceAssets.id, fixture.sourceId)).limit(1);
+    assert.ok(source);
+    await db.db.insert(schema.sourceAnalyses).values({
+      projectId: fixture.track.studioProjectId,
+      sourceAssetId: fixture.sourceId,
+      status: "complete",
+      stage: "complete",
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256,
+      idempotencyKey: `studio-route-tempo:${fixture.sourceId}`,
+      bpm,
+      bpmConfidence: 0.9,
+      beatConfidence: 0.9,
+      musicalKey,
+      keyConfidence: 0.9,
+      beatGrid: JSON.stringify([0, 600, 1_200]),
+    });
+  }
   const session = await sessions.createSession(routeOwner, "Distinct donor route reload");
   const detail = await sessions.addTrackToSession({
     ownerId: routeOwner, sessionId: session.id, trackId: base.track.id,
@@ -2498,6 +2524,10 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
     { sessionTrackId, stemMix: { vocals: 0.72, drums: 0.37 } },
   ]);
   assert.equal(handoff.preservedSwapCount, 2);
+  assert.equal(handoff.appliedTransforms?.tempoBpm, 110,
+    "a confident donor-drum tempo master becomes the persisted Studio target");
+  assert.equal(handoff.appliedTransforms?.tempoSyncedClipCount, 1,
+    "only the donor vocal whose source tempo differs from the drum master is adapted");
   // Import after the temporary database is configured, without replacing DB,
   // access-control helpers, or any route response with a mock.
   const projectRoute = await import(new URL(
@@ -2527,6 +2557,7 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
     assert.equal(project.stems.length, 2);
     assert.equal(remix.tracks.length, 2);
     assert.equal(remix.stems.length, 2);
+    assert.equal(remix.remix.tempoBpm, 110);
     const trackIds = remix.tracks.map((track: { id: string }) => track.id).sort();
     if (firstTrackIds) assert.deepEqual(trackIds, firstTrackIds, "reload keeps saved lane IDs");
     firstTrackIds = trackIds;
@@ -2548,6 +2579,8 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
       assert.equal(lane.clips.length, 1);
       assert.equal(lane.clips[0].stemAssetId, stemId);
       assert.equal(lane.clips[0].remixTrackId, lane.id);
+      assert.equal(lane.clips[0].tempoSyncEnabled, type === "vocals",
+        `${type} keeps the saved tempo-transform decision after route reload`);
       assert.equal("storageKey" in projectStem, false, "private storage paths stay off the API");
     }
   }
@@ -2577,6 +2610,7 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
     const snapshot = JSON.parse(persistedVersion.snapshot);
     assert.equal(snapshot.tracks.length, 2);
     assert.equal(snapshot.masterVolume, 1);
+    assert.equal(snapshot.tempoBpm, 110, "the immutable export version records the drum-master tempo");
     for (const { type, donor, volume } of expected) {
       const lane = snapshot.tracks.find((track: { stemAssetId: string }) =>
         track.stemAssetId === donor.stemIds.get(type));
@@ -2587,6 +2621,8 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
       assert.equal(lane.clips.length, 1);
       assert.equal(lane.clips[0].stemAssetId, donor.stemIds.get(type));
       assert.equal(lane.clips[0].gain, 1);
+      assert.equal(lane.clips[0].tempoSyncEnabled, type === "vocals",
+        `the export snapshot preserves the exact ${type} timing decision`);
     }
     // Use the real export handler, not a test mixer or a mocked audio loader.
     // Its only audio inputs are the stem IDs re-read from the saved version.
@@ -2644,11 +2680,14 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
   assert.ok(editedTrackId, "the drum lane exists before editing its clip");
   const input = {
     ...beforeEdit.remix,
-    tracks: beforeEdit.tracks.map((track: { id: string; clips: Array<{ stemAssetId: string; timelineStartMs: number }> }) =>
+    tracks: beforeEdit.tracks.map((track: { id: string; clips: Array<{ id?: string; stemAssetId: string; timelineStartMs: number }> }) =>
       track.id === editedTrackId ? {
         ...track, volume: 0.61,
         clips: track.clips.map(clip => ({
           ...clip,
+          // A changed source is a new clip identity; an existing clip ID is
+          // deliberately pinned to its original audio asset by the API.
+          id: undefined,
           stemAssetId: clipOnlyDrumsStemId,
           timelineStartMs: clip.timelineStartMs + 250,
           beatSnapEnabled: false,
@@ -2660,7 +2699,9 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
   const saveResponse = await remixRoute.PUT(new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`, {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
   }), remixParams);
-  assert.equal(saveResponse.status, 200, "a handed-off arrangement remains editable through the real API");
+  const saveBody = await saveResponse.clone().json();
+  assert.equal(saveResponse.status, 200,
+    `a handed-off arrangement remains editable through the real API: ${JSON.stringify(saveBody)}`);
   const savedBeforeDeletion = await (await remixRoute.GET(
     new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), remixParams,
   )).json();
@@ -2834,10 +2875,10 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
     "the immutable export snapshot preserves the clip-specific donor");
   const temporaryDefaultState = {
     ...reopened.remix,
-    tracks: reopened.tracks.map((track: { id: string; clips: Array<{ stemAssetId: string }> }) =>
+    tracks: reopened.tracks.map((track: { id: string; clips: Array<{ id?: string; stemAssetId: string }> }) =>
       track.id === editedTrackId ? {
         ...track,
-        clips: track.clips.map(clip => ({ ...clip, stemAssetId: drumsStemId })),
+        clips: track.clips.map(clip => ({ ...clip, id: undefined, stemAssetId: drumsStemId })),
       } : track),
     automation: reopened.automation,
     expectedVersion: reopened.remix.version,
@@ -3878,4 +3919,301 @@ test("live session controls remain usable during real four-model separation", {
   } finally {
     await browserDriver.close();
   }
+});
+
+// Reuses the exact already-separated, checksum-pinned September/Queen stems.
+// This does not rerun separation; it proves the current session -> Studio ->
+// PostgreSQL -> local export path and preserves the low-confidence fallback.
+test("real September vocals over the Queen bed persist and export with honest native fallback", {
+  skip: process.env.WAVEYARD_REAL_SESSION_STEM_ACCEPTANCE !== "1",
+  timeout: 360_000,
+}, async t => {
+  assert.ok(root);
+  const manifestPath = path.join(repoRoot, "generated-artifacts/waveyard-real-world-acceptance/reversed-queen-bed-september-vocals-manifest.json");
+  const analysisPath = path.join(repoRoot, "generated-artifacts/waveyard-real-world-acceptance/full-track-analysis.json");
+  const previousReportPath = path.join(repoRoot, "generated-artifacts/waveyard-real-world-acceptance/september-vocals-over-queen-bed-report.json");
+  assert.ok(existsSync(manifestPath) && existsSync(analysisPath) && existsSync(previousReportPath),
+    "the existing real-stem manifest and analysis reports are required; do not rerun separation to satisfy this test");
+
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    vocals: {
+      path: string;
+      filename: string;
+      stems: Record<string, string>;
+      separation: { engine: string; recipeModel: string; models: Record<string, { id: string; sha256: string }> };
+    };
+    bed: {
+      path: string;
+      filename: string;
+      stems: Record<string, string>;
+      separation: { engine: string; recipeModel: string; models: Record<string, { id: string; sha256: string }> };
+    };
+  };
+  const analysisReport = JSON.parse(readFileSync(analysisPath, "utf8")) as {
+    tracks: Array<{
+      filename: string;
+      sourceChecksumSha256: string;
+      analysisEngine: string;
+      analysisEngineVersion: string;
+      bpm: number | null;
+      bpmConfidence: number | null;
+      beatConfidence: number | null;
+      musicalKey: string | null;
+      keyConfidence: number | null;
+      excerpt?: { beatGridMs?: number[] };
+    }>;
+  };
+  const priorReport = JSON.parse(readFileSync(previousReportPath, "utf8")) as {
+    sources: {
+      vocals: { checksumSha256: string };
+      bed: { checksumSha256: string };
+    };
+    stems: Array<{ stemType: string; checksumSha256: string }>;
+    plan: {
+      arrangement: {
+        pairedBeatPhaseFit: { matchedBeats: number; comparedBeats: number; meanErrorMs: number; score: number; toleranceMs: number };
+        baselineBeatPhaseFit: { matchedBeats: number; comparedBeats: number; meanErrorMs: number; score: number; toleranceMs: number };
+        improvementRatio: number;
+        warnings: string[];
+      };
+    };
+  };
+  const sourceSpecs = [
+    {
+      role: "vocals" as const,
+      manifestSource: manifest.vocals,
+      expectedSourceSha256: priorReport.sources.vocals.checksumSha256,
+      stemTypes: ["vocals"],
+    },
+    {
+      role: "bed" as const,
+      manifestSource: manifest.bed,
+      expectedSourceSha256: priorReport.sources.bed.checksumSha256,
+      stemTypes: ["vocals", "drums", "bass", "other"],
+    },
+  ];
+  const expectedStemChecksums = new Map([
+    [`vocals:${manifest.vocals.stems.vocals}`, "2d8cb1ed15d1909df0253349c60690604f91ec5ad56dd31ae6ace6d540481a53"],
+    [`vocals:${manifest.bed.stems.vocals}`, "633637f01a267f1fe43f2beb8e9efd23a4ed822d26784eb146fe97ce3740a44f"],
+    [`drums:${manifest.bed.stems.drums}`, "dd572546aaafa38a05187cd83dd7f35f5badae71fd6c1efc5d912ef20c67fc14"],
+    [`bass:${manifest.bed.stems.bass}`, "c872e9da615ce359ed5d08c7e51a3a9b5e617aaf8866b567fc8c01b70fdb5608"],
+    [`other:${manifest.bed.stems.other}`, "13c498b7a54cd6689cbd372a16b34603fbd5d40008a22733594d6aad73d8f91c"],
+  ]);
+  const routeOwner = (await import("../local-context")).LOCAL_OWNER_ID;
+  const seededTracks = new Map<string, { id: string; studioProjectId: string; sourceId: string; stemIds: Map<string, string> }>();
+  for (const spec of sourceSpecs) {
+    const sourcePath = path.join(repoRoot, spec.manifestSource.path);
+    assert.ok(existsSync(sourcePath), `existing source file is available: ${spec.manifestSource.filename}`);
+    assert.equal(await checksumFile(sourcePath), spec.expectedSourceSha256,
+      `${spec.manifestSource.filename} matches its existing acceptance report`);
+    const { track } = await service.addTrackFromAudioFile({
+      ownerId: routeOwner,
+      filePath: sourcePath,
+      filename: spec.manifestSource.filename,
+      mimeType: "audio/mpeg",
+    });
+    const [trackRow] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id));
+    assert.ok(trackRow);
+    const [job] = await db.db.select().from(schema.processingJobs)
+      .where(eq(schema.processingJobs.sourceAssetId, trackRow.sourceAssetId));
+    assert.ok(job);
+    const [source] = await db.db.select().from(schema.sourceAssets)
+      .where(eq(schema.sourceAssets.id, trackRow.sourceAssetId));
+    assert.ok(source);
+    const analysis = analysisReport.tracks.find((entry) =>
+      entry.sourceChecksumSha256 === source.checksumSha256,
+    );
+    assert.ok(analysis, `full-track analysis is checksum-bound to ${spec.manifestSource.filename}`);
+    assert.equal(analysis.filename, path.basename(spec.manifestSource.path));
+    await db.db.insert(schema.sourceAnalyses).values({
+      projectId: track.studioProjectId,
+      sourceAssetId: trackRow.sourceAssetId,
+      status: "complete",
+      stage: "complete",
+      analysisEngine: analysis.analysisEngine,
+      analysisEngineVersion: analysis.analysisEngineVersion,
+      sourceChecksumSha256: source.checksumSha256,
+      idempotencyKey: `real-session-stem-acceptance:${trackRow.sourceAssetId}`,
+      bpm: analysis.bpm,
+      bpmConfidence: analysis.bpmConfidence,
+      beatConfidence: analysis.beatConfidence,
+      musicalKey: analysis.musicalKey,
+      keyConfidence: analysis.keyConfidence,
+      beatGrid: analysis.excerpt?.beatGridMs ? JSON.stringify(analysis.excerpt.beatGridMs) : null,
+    });
+    const stemIds = new Map<string, string>();
+    for (const stemType of spec.stemTypes) {
+      const relativeStemPath = spec.manifestSource.stems[stemType];
+      assert.ok(relativeStemPath, `${spec.role} ${stemType} path is in the existing manifest`);
+      const stemPath = path.join(repoRoot, relativeStemPath);
+      assert.ok(existsSync(stemPath), `existing separated stem is available: ${relativeStemPath}`);
+      const expected = expectedStemChecksums.get(`${stemType}:${relativeStemPath}`);
+      assert.ok(expected, `existing checksum is pinned for ${stemType} ${relativeStemPath}`);
+      const checksumSha256 = await checksumFile(stemPath);
+      assert.equal(checksumSha256, expected, `the existing ${stemType} WAV bytes match the prior acceptance report`);
+      const metadata = await probeAudio(stemPath);
+      assert.equal(metadata.sampleRate, 44_100);
+      assert.equal(metadata.channels, 2);
+      const storageKey = `real-session-acceptance/${trackRow.sourceAssetId}/${stemType}.wav`;
+      await getStorage().putFile(storageKey, stemPath, "audio/wav");
+      const [stem] = await db.db.insert(schema.stemAssets).values({
+        projectId: track.studioProjectId,
+        sourceAssetId: trackRow.sourceAssetId,
+        separationJobId: job.id,
+        stemType,
+        engine: spec.manifestSource.separation.engine,
+        model: spec.manifestSource.separation.models[stemType]!.id,
+        modelVersion: spec.manifestSource.separation.models[stemType]!.sha256,
+        storageKey,
+        checksumSha256,
+        durationSeconds: Math.round(metadata.durationSeconds),
+        sampleRate: metadata.sampleRate,
+        channels: metadata.channels,
+        codec: "wav",
+        format: "wav",
+        fileSizeBytes: statSync(stemPath).size,
+      }).returning();
+      stemIds.set(stemType, stem.id);
+    }
+    seededTracks.set(spec.role, {
+      id: track.id,
+      studioProjectId: track.studioProjectId,
+      sourceId: trackRow.sourceAssetId,
+      stemIds,
+    });
+  }
+
+  const vocals = seededTracks.get("vocals")!;
+  const bed = seededTracks.get("bed")!;
+  const queenAnalysis = analysisReport.tracks.find((entry) =>
+    entry.sourceChecksumSha256 === priorReport.sources.bed.checksumSha256,
+  )!;
+  const septemberAnalysis = analysisReport.tracks.find((entry) =>
+    entry.sourceChecksumSha256 === priorReport.sources.vocals.checksumSha256,
+  )!;
+  assert.equal(queenAnalysis.bpm, 109.957);
+  assert.equal(queenAnalysis.bpmConfidence, 0.426);
+  assert.equal(queenAnalysis.beatConfidence, 0.642);
+  assert.equal(queenAnalysis.musicalKey, "C minor");
+  assert.equal(queenAnalysis.keyConfidence, 0.168);
+  assert.equal(septemberAnalysis.bpm, 126.048);
+  assert.equal(septemberAnalysis.bpmConfidence, 0.697);
+  assert.equal(septemberAnalysis.beatConfidence, 0.833);
+  assert.deepEqual(priorReport.plan.arrangement.baselineBeatPhaseFit, {
+    matchedBeats: 2,
+    comparedBeats: 400,
+    meanErrorMs: 1_176.795094423283,
+    score: 0.004015682898264264,
+    toleranceMs: 90,
+  });
+
+  const session = await sessionService.createSession(routeOwner, "Real September vocals over Queen bed");
+  const sessionDetail = await sessionService.addTrackToSession({
+    ownerId: routeOwner,
+    sessionId: session.id,
+    trackId: bed.id,
+  });
+  const sessionTrackId = sessionDetail.tracks[0].id;
+  await sessionService.recordStemSwap({
+    ownerId: routeOwner,
+    sessionId: session.id,
+    sessionTrackId,
+    stemType: "vocals",
+    toTrackId: vocals.id,
+    toStemAssetId: vocals.stemIds.get("vocals"),
+    atSeconds: 0,
+    // This is the previous full-track planner's selected entry, carried as an
+    // explicit cue; it is not asserted to be a musically ideal vocal phrase.
+    donorEntryOffsetMs: 19_044,
+  });
+  const handoff = await sessionService.sendSessionToStudio(routeOwner, session.id, [sessionTrackId]);
+  assert.equal(handoff.preservedSwapCount, 1);
+  assert.equal(handoff.appliedTransforms?.tempoBpm, null,
+    "Queen's low-confidence BPM cannot authorize tempo changes");
+  assert.equal(handoff.appliedTransforms?.key, null,
+    "Queen's low-confidence key cannot authorize pitch changes");
+  assert.match(handoff.appliedTransforms?.note ?? "", /below the confidence threshold/);
+  assert.match(handoff.appliedTransforms?.note ?? "", /neutral 120 BPM grid default is not applied to the audio/);
+
+  const remixRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/remixes/[id]/route.ts", import.meta.url,
+  ).href);
+  const params = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const reopenedResponse = await remixRoute.GET(
+    new Request(`http://localhost/api/remixes/${handoff.remixSessionId}`), params,
+  );
+  assert.equal(reopenedResponse.status, 200);
+  const reopened = await reopenedResponse.json();
+  assert.equal(reopened.remix.tempoBpm, 120,
+    "Studio keeps its neutral 120 BPM grid default, but no clip is marked for an audio tempo change");
+  assert.equal(reopened.remix.targetKey, null);
+  const persistedVocalClip = reopened.tracks
+    .flatMap((track: { clips: Array<Record<string, unknown>> }) => track.clips)
+    .find((clip: Record<string, unknown>) => clip.stemAssetId === vocals.stemIds.get("vocals"));
+  assert.ok(persistedVocalClip);
+  assert.equal(persistedVocalClip.sourceOffsetMs, 19_044);
+  assert.equal(persistedVocalClip.tempoSyncEnabled, false);
+  assert.equal(persistedVocalClip.keySyncEnabled, false);
+
+  const versionsRoute = await import(new URL(
+    "../../../../../../artifacts/api-server/src/imported/remixes/[id]/versions/route.ts", import.meta.url,
+  ).href);
+  const versionResponse = await versionsRoute.POST(new Request(
+    `http://localhost/api/remixes/${handoff.remixSessionId}/versions`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Real Sep vocals over Queen bed" }) },
+  ), params);
+  assert.equal(versionResponse.status, 201);
+  const { version } = await versionResponse.json();
+  const [persistedVersion] = await db.db.select().from(schema.remixVersions)
+    .where(eq(schema.remixVersions.id, version.id));
+  assert.ok(persistedVersion);
+  const [exportJob] = await db.db.insert(schema.exportJobs).values({
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: version.id,
+    requestedById: routeOwner,
+    idempotencyKey: `real-session-stem-acceptance:${randomUUID()}`,
+    format: "wav",
+    sampleRate: 44_100,
+    channels: 2,
+  }).returning();
+  const { handleExportJob } = await import("../worker-local/export");
+  await handleExportJob({
+    exportJobId: exportJob.id,
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: version.id,
+    format: "wav",
+  });
+  const [completedExport] = await db.db.select().from(schema.exportJobs)
+    .where(eq(schema.exportJobs.id, exportJob.id));
+  assert.equal(completedExport.status, "complete",
+    completedExport.errorMessage ?? "the real saved September/Queen arrangement reaches the production export worker");
+  const [exportAsset] = await db.db.select().from(schema.exportAssets)
+    .where(eq(schema.exportAssets.exportJobId, exportJob.id));
+  assert.ok(exportAsset);
+  const exportPath = path.join(root, "real-september-vocals-queen-bed.wav");
+  await getStorage().getToFile(exportAsset.storageKey, exportPath);
+  assert.equal(await checksumFile(exportPath), exportAsset.checksumSha256);
+  const output = await probeAudio(exportPath);
+  assert.equal(output.sampleRate, 44_100);
+  assert.equal(output.channels, 2);
+  assert.ok(Math.abs(output.durationSeconds - 222.67) <= 0.5,
+    `the actual Queen bed remains full-length in the export (${output.durationSeconds}s)`);
+  t.diagnostic(JSON.stringify({
+    inputs: {
+      september: { bpm: septemberAnalysis.bpm, bpmConfidence: septemberAnalysis.bpmConfidence, beatConfidence: septemberAnalysis.beatConfidence },
+      queen: { bpm: queenAnalysis.bpm, bpmConfidence: queenAnalysis.bpmConfidence, beatConfidence: queenAnalysis.beatConfidence, key: queenAnalysis.musicalKey, keyConfidence: queenAnalysis.keyConfidence },
+      stems: Object.fromEntries(expectedStemChecksums),
+    },
+    priorBaseline: {
+      ...priorReport.plan.arrangement.baselineBeatPhaseFit,
+      selectedFit: priorReport.plan.arrangement.pairedBeatPhaseFit,
+      improvementRatio: priorReport.plan.arrangement.improvementRatio,
+      warnings: priorReport.plan.arrangement.warnings,
+    },
+    decisions: handoff.appliedTransforms,
+    output: { durationSeconds: output.durationSeconds, sampleRate: output.sampleRate, channels: output.channels, checksumSha256: exportAsset.checksumSha256 },
+    qualityLimit: "real separated audio and production routes were used; this test does not assess listening quality or prove an ideal vocal phrase entry",
+  }));
 });

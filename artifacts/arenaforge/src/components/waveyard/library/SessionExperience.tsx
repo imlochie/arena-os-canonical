@@ -371,8 +371,14 @@ function getPersistedSwapSetup(
   const bedDonorSwap = fullBedDonorTrackId === null
     ? null
     : activeSwaps.find((swap) => swap.toTrackId === fullBedDonorTrackId) ?? null;
+  const hasInstrumentalSwap = activeSwaps.some((swap) => ["drums", "bass", "other"].includes(swap.stemType));
+  const currentTrackHasCompleteBed = !hasInstrumentalSwap
+    && ["drums", "bass", "other"].every((stemType) => item.stems.some((stem) =>
+      stem.stemType === stemType && stem.engine !== "passthrough-unseparated",
+    ));
   const bedKeyAnalysis = bedDonorItem?.analysis ?? bedDonorSwap?.donorTrack?.analysis
-    ?? library.find((track) => track.id === fullBedDonorTrackId)?.analysis ?? null;
+    ?? library.find((track) => track.id === fullBedDonorTrackId)?.analysis
+    ?? (currentTrackHasCompleteBed ? item.analysis : null);
   const vocalSwap = activeSwaps.find((swap) => swap.stemType === "vocals") ?? null;
   const drumSwap = activeSwaps.find((swap) => swap.stemType === "drums") ?? null;
   const recipientTempo = tempoForTrack(item.track.id, item.analysis, tempoCorrections);
@@ -435,6 +441,12 @@ function getPersistedSwapSetup(
     } else {
       keyMasterStatus = `${bedTitle} complete instrumental bed is the key reference${keyReferenceKey ? ` (${keyReferenceKey})` : ""}. The vocal layer is matched only when both key analyses are confident.`;
     }
+  } else if (currentTrackHasCompleteBed) {
+    keyReferenceKey = bedKeyAnalysis?.musicalKey ?? null;
+    keyReferenceConfidence = bedKeyAnalysis?.keyConfidence ?? null;
+    keyMasterStatus = keyReferenceKey !== null && typeof keyReferenceConfidence === "number" && keyReferenceConfidence < 0.5
+      ? `${item.track.title}'s separated instrumental bed remains the key reference, but its ${keyReferenceKey} estimate is low confidence; donor vocals stay at source pitch.`
+      : `${item.track.title}'s separated instrumental bed remains the key reference. Vocal correction is applied only when both analyses are confident.`;
   }
 
   for (const swap of activeSwaps) {
