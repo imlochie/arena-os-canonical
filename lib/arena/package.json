@@ -376,6 +376,7 @@
     "./lib/waveyard/remix-versioning": "./src/lib/waveyard/remix-versioning.ts",
     "./lib/waveyard/remix": "./src/lib/waveyard/remix.ts",
     "./lib/waveyard/transcription/lyric-recurrence": "./src/lib/waveyard/transcription/lyric-recurrence.ts",
+    "./lib/waveyard/transcription/timed-notes": "./src/lib/waveyard/transcription/timed-notes.ts",
     "./lib/waveyard/separation/claim.test": "./src/lib/waveyard/separation/claim.test.ts",
     "./lib/waveyard/separation/claim": "./src/lib/waveyard/separation/claim.ts",
     "./lib/waveyard/separation/client": "./src/lib/waveyard/separation/client.ts",

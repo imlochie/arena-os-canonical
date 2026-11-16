@@ -1,6 +1,6 @@
 # Arena handoff — read this first
 
-## Latest increment: local vocal transcript drafts stay separate from form labels
+## Latest increment: transcripts now carry source-structure timing notes
 
 Studio's source map now offers on-device transcription from the separated vocal
 stem only. The user explicitly starts it; model weights are downloaded on
@@ -12,10 +12,16 @@ weights are not bundled into the Windows installer. The production build adds
 a 1.32 MB ASR code chunk (313 KB gzipped) and the Q8 model is about 42 MiB
 (44 MB); both are loaded only when requested. The development dependency also
 adds about 140 MiB of `onnxruntime-web` files to `node_modules`; the Windows
-installer footprint has not been verified. The transcript is shown alongside
-detected section positions, but does not assign or modify semantic labels.
-Exact recurring n-grams are reported only as unreviewed lyric candidates,
-never as proof of a chorus.
+installer footprint has not been verified.
+
+The transcript review and downloadable annotated text now interleave timestamped
+words (or clearly marked coarse segments), source-section boundaries, pitch-based
+voiced-phrase starts/ends, and repeated-lyric candidates. Transcript starts can
+show the nearest estimated beat only when source analysis is complete and beat
+confidence is at least 0.5; bar numbers state the 4/4 assumption. This adds
+timing context for review, not semantic labels: verse/chorus remain unverified
+form candidates, vocal phrase estimates are not word boundaries, and repeated
+lyrics alone do not prove a chorus. Plain SRT/VTT exports remain caption-only.
 
 The model's quality was checked before allowing it to influence musical
 decisions. Full existing vocal-stem WAVs were run locally through pinned
@@ -41,9 +47,9 @@ explaining why it did not start. This does not establish performance on the
 owner's Windows device. A browser run with working WebGPU and real-song
 acceptance is still required before treating this path as usable.
 
-The exact-repeat lyric utility has three unit tests for repeated-word timing,
-coarse segment-only timing and rejection of nearby duplicates. These are
-algorithm tests, not ASR accuracy evidence.
+The exact-repeat lyric utility has three unit tests; the annotated timeline has
+four tests for interleaving, word/segment timing, weak beat-grid abstention, and
+export formatting. These are algorithm tests, not ASR accuracy evidence.
 
 The form baseline is unchanged: the production `measureFormWindows` and
 `inferFormFromWindows` functions still overlap **102,500 of 120,000 ms (85.4%)**
@@ -54,14 +60,13 @@ independently reviewed ground truth. September still leaks its second verse
 into chorus two; Queen's near-continuous vocal activity, sparse pitch and
 repetitive backing remain ambiguous. No ASR output changed those results.
 
-**Verification:** local lyric utility tests passed **3/3**; Waveyard planner
-plus lyric utility tests passed **60/60**; `pnpm run typecheck:libs` and the
-full ArenaForge TypeScript check passed; the Vite production build passed with
-existing source-map and large-chunk warnings. Missing beat-grid phase
-confidence now fails closed, with a regression test. No generated song stems
-or persisted sections were changed. The local ASR draft must not be described
-as reliable until real WebGPU performance and manually checked lyric accuracy
-pass.
+**Verification:** Waveyard planner and transcription utility tests passed
+**64/64**; `pnpm run typecheck:libs` and the full ArenaForge TypeScript check
+passed; the Vite production build passed with existing source-map and
+large-chunk warnings. Missing beat-grid phase confidence now fails closed,
+with a regression test. No generated song stems or persisted sections were
+changed. The local ASR draft must not be described as reliable until real
+WebGPU performance and manually checked lyric accuracy pass.
 
 ## Latest increment: Beat-grid evidence now separates pulse confidence from BPM confidence
 

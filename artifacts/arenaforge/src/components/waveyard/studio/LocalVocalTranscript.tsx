@@ -1,8 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { findRepeatedLyricPhrases } from "@workspace/arena/lib/waveyard/transcription/lyric-recurrence";
 import { buildSrt, buildVtt } from "@workspace/arena/lib/creative/captions";
+import {
+  buildAnnotatedTimingNotes,
+  buildAnnotatedTranscriptText,
+  formatAnnotatedTime,
+} from "@workspace/arena/lib/waveyard/transcription/timed-notes";
 import type { Source, SourceSection, Stem } from "./types";
 
 const LOCAL_MODEL = "whisper-tiny_timestamped" as const;
@@ -29,14 +33,6 @@ type LocalTranscriptCache = {
 
 function cacheKey(source: Source, stem: Stem) {
   return `waveyard:local-vocal-transcript:v1:${ENGINE_VERSION}:${source.checksumSha256}:${stem.checksumSha256}`;
-}
-
-function timeLabel(seconds: number) {
-  const ms = Math.max(0, Math.round(seconds * 1000));
-  const minutes = Math.floor(ms / 60_000);
-  const wholeSeconds = Math.floor(ms / 1000) % 60;
-  const centiseconds = Math.floor((ms % 1000) / 10);
-  return `${minutes}:${String(wholeSeconds).padStart(2, "0")}.${String(centiseconds).padStart(2, "0")}`;
 }
 
 function safeCachedTranscript(raw: string | null, source: Source, stem: Stem): LocalTranscriptSegment[] {
@@ -146,7 +142,28 @@ export function LocalVocalTranscript({
     return () => { current = false; };
   }, []);
 
-  const repeatedPhrases = useMemo(() => findRepeatedLyricPhrases(transcript), [transcript]);
+  const durationMs = Math.max(1, Math.round(source.durationSeconds * 1000));
+  const vocalPhrases = stem?.vocalPhrases ?? [];
+  const analysisStatus = source.analysis?.status;
+  const beatGridMs = source.analysis?.beatGrid;
+  const beatConfidence = source.analysis?.beatConfidence;
+  const timingNotes = useMemo(() => buildAnnotatedTimingNotes({
+    durationMs,
+    transcript,
+    sections,
+    vocalPhrases,
+    analysisStatus,
+    beatGridMs,
+    beatConfidence,
+  }), [
+    durationMs,
+    transcript,
+    sections,
+    vocalPhrases,
+    analysisStatus,
+    beatGridMs,
+    beatConfidence,
+  ]);
   const transcribe = async () => {
     if (!stem || running) return;
     const runId = ++runIdRef.current;
@@ -261,12 +278,13 @@ export function LocalVocalTranscript({
     }
   };
 
-  const sectionLabelAt = (seconds: number) => {
-    const section = sections.find((candidate) => {
-      const timeMs = seconds * 1000;
-      return candidate.startMs <= timeMs && timeMs < candidate.endMs;
+  const downloadAnnotatedTranscript = () => {
+    const text = buildAnnotatedTranscriptText(timingNotes, {
+      sourceName: source.originalFilename,
+      sourceChecksumSha256: source.checksumSha256,
+      stemChecksumSha256: stem?.checksumSha256 ?? "not-available",
     });
-    return section ? `section ${section.sectionIndex + 1}` : "between detected sections";
+    downloadText("waveyard-annotated-transcript.txt", text, "text/plain;charset=utf-8");
   };
 
   return <section className="local-vocal-transcript" aria-label="Local vocal transcript" data-testid={`local-vocal-transcript-${source.id}`}>
@@ -285,25 +303,22 @@ export function LocalVocalTranscript({
           <button type="button" className="button secondary" data-testid="button-download-vocal-transcript-vtt" onClick={() => downloadText("waveyard-vocals.vtt", buildVtt(transcript), "text/vtt;charset=utf-8")}>Download VTT</button>
           <button type="button" className="button secondary" data-testid="button-clear-local-vocal-transcript" onClick={clearTranscript}>Clear transcript</button>
         </>}
+        {timingNotes.length > 0 && <button type="button" className="button secondary" data-testid="button-download-annotated-transcript" onClick={downloadAnnotatedTranscript}>{transcript.length ? "Download transcript + timing notes" : "Download structure timing notes"}</button>}
         <button type="button" className="button subtle" data-testid="button-remove-local-speech-model" disabled={clearingModel || running} onClick={() => void clearModel()}>{clearingModel ? "Clearing…" : "Remove speech model"}</button>
       </div>
       {webGpuAvailable === false && <p className="notice" role="status" data-testid="status-local-asr-acceleration">This device does not expose WebGPU here. We tested the CPU fallback: even a 20-second vocal excerpt did not finish in three minutes, so full-song transcription is blocked rather than leaving the page stuck. Use a WebGPU-enabled local browser/device; this check has not started a transcription.</p>}
       {webGpuAvailable === null && <p className="local-vocal-transcript-progress" role="status">Checking local acceleration…</p>}
       {progress && <p className="local-vocal-transcript-progress" role="status" data-testid="status-local-transcription-progress">{progress.stage} · {Math.round(progress.fraction * 100)}%</p>}
       {error && <p className="notice" role="status" data-testid="status-local-transcription-message">{error}</p>}
-      {repeatedPhrases.length > 0 && <div className="local-lyric-recurrence" aria-label="Repeated lyric evidence">
-        <strong>Repeated lyric evidence</strong>
-        <p>These lines recur in the draft. They are unreviewed hook candidates, shown against the current section map; they do not assign or change section labels.</p>
-        <ol data-testid="list-repeated-lyric-evidence">{repeatedPhrases.map((phrase, index) => <li key={`${phrase.text}:${phrase.occurrences[0]?.start}`} data-testid={`item-repeated-lyric-${index}`}>
-          <b>“{phrase.text}”</b>
-          <span>{phrase.occurrences.map((occurrence) => `${timeLabel(occurrence.start)} (${sectionLabelAt(occurrence.start)})`).join(" · ")}</span>
-          {phrase.timingResolution === "segment" && <small>Coarse phrase timing from transcript segments</small>}
-        </li>)}</ol>
-      </div>}
-      {transcript.length > 0 && <details className="local-transcript-cues">
-        <summary data-testid="toggle-review-local-transcript">Review all {transcript.length} timestamped cues</summary>
-        <ol>{transcript.map((segment, index) => <li key={`${segment.start}-${index}`}>
-          <time>{timeLabel(segment.start)}–{timeLabel(segment.end)}</time><span>{segment.text}</span>
+      {timingNotes.length > 0 && <details className="local-transcript-cues" data-testid="panel-annotated-transcript">
+        <summary data-testid="toggle-review-local-transcript">Review time-ordered transcript + structure notes ({timingNotes.length})</summary>
+        <p>Section markers are detector output; form candidates are unverified. Voiced phrase estimates come from pitch continuity, not word boundaries. Lyric repeats are candidates, not chorus proof.</p>
+        <ol data-testid="list-annotated-transcript-notes">{timingNotes.map((note) => <li className={`local-timing-note local-timing-note-${note.kind}`} key={note.id} data-testid={`item-timed-note-${note.id}`}>
+          <time>{formatAnnotatedTime(note.atMs)}{note.endMs !== undefined && note.endMs > note.atMs ? `–${formatAnnotatedTime(note.endMs)}` : ""}</time>
+          <span className="local-timing-note-body"><b>{note.label}</b><span>{note.text}</span>
+            {note.timingResolution === "segment" && <small>Coarse segment timing; word-level timing is unavailable.</small>}
+            {note.beatContext && <small>{note.beatContext}</small>}
+          </span>
         </li>)}</ol>
       </details>}
     </>}
