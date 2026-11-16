@@ -274,6 +274,11 @@ function enforceMashupSegmentBounds(plan: MashupPlan): void {
   }
   if (bounded.length > 0) {
     plan.segments = bounded;
+    if (removed > 0 || clipped > 0) {
+      plan.arrangement = null;
+      delete plan.passageSearch;
+      plan.rationale = ["Out-of-range vocal placements were removed or cropped to fit the rendered bed. No section-specific entry claim is retained for this adjusted plan."];
+    }
     return;
   }
 

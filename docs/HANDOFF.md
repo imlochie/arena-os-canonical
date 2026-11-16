@@ -1,48 +1,48 @@
 # Arena handoff — read this first
 
-## Latest increment: Mashup Studio can inspect and control each donor rhythm role
+## Latest increment: Mashup Studio recommends donor bass from persisted harmony evidence
 
-**What changed.** The main Mashup Studio request now accepts a per-role
-`stemDecisions` map (`retain`, `replace`, or `layer`) for drums and bass. Each
-role is validated independently against the donor's completed separation and
-the bed's removable stems. Existing `layerStemTypes` / `stemLayerMode` callers
-remain supported. A missing donor part or an inseparable bed still fails closed.
+**What changed.** Mashup Studio now loads checksum-current bass pitch evidence
+from each source's completed separation and compares donor bass against the
+current bed chord timeline using the shared `assessBassLine` /
+`bassContradictsHarmony` logic. It offers a donor replacement only when the
+donor resolves a majority contradiction that the retained bed bass has; it
+recommends keeping the bed when the reverse is true. If both fit, both conflict,
+or evidence is incomplete, the result is retained/unavailable rather than
+inventing a preferred layer. Harmony from the bed's replaceable `other` stem is
+not used when that stem is replaced or layered.
 
-Planning, compare, render and save receive the same per-role choices. Changing a
-choice clears the old rendered audio and alignment plan, so stale audio cannot
-be saved under the new composition. Saved version metadata records the choices;
-the saved clips contain the actual donor and retained bed stems, and the real
-export worker was exercised after reopening a mixed replacement/layer session.
-The main Mashup route also returns the same drum decision for compare, render and
-saved provenance.
+The route includes current separation identity, stem/source checksums, engine
+versions, confidence filtering, and the pitch evidence in its cache key. The
+compare result carries the same recommendation to the Studio panel and the
+render/save snapshot. The action remains an explicit user choice. This evidence
+does not measure masking, groove fit, bass arrangement quality, or whether a
+mix sounds good.
 
-The main Mashup route now calls the same pure donor-drum decision function used
-by automatic remixes after loading checksum-current isolated-stem event evidence
-for both selected sources. Each alignment candidate carries that decision into
-the Studio UI; the user can apply the recommendation or override it. The
-recommendation reflects the current renderer's source-clock composition (both
-stems start together at native pulse before the bed's shared timing transform).
-It does not evaluate phrase-specific donor placement, identify kick/snare/hat
-roles, measure masking, or judge which kit sounds better.
+**Persisted timeline safeguard.** The route-level export test found a plan whose
+vocal entry landed beyond the rendered bed after timing transforms, producing
+an impossible negative-duration saved clip. The planner now drops out-of-range
+placements, safely crops unmapped segments at the bed end, or—when no placement
+survives—moves the first vocal window to bed start with a warning and clears
+stale section-specific evidence. If even that window cannot fit, planning fails
+instead of persisting invalid clips.
 
 **Verification.**
-- `mashup-bed.test.ts`: **12/12 passed**, including mixed drum-replacement /
-  bass-layering and missing-donor refusal.
+- `donor-bass-bed-decision.test.ts`: **4/4 passed** for replace, retain,
+  ambiguous/conflicting and insufficient-evidence outcomes.
 - `mashup/route.test.ts`: **1/1 passed** with temporary PostgreSQL and FFmpeg.
-  Its synthetic route fixture verified mixed-role rendering, saved provenance,
-  reopen, and production WAV export. It is not a listening or real-song quality
-  test.
-- `automatic-remixes/route.drum.test.ts`: **1/1 passed** with temporary
-  PostgreSQL and `ARENA_FFMPEG_PATH` set to the workspace FFmpeg; this existing
-  production-path regression verifies that automatic-remix decisions use
-  persisted worker-produced drum evidence.
-- `typecheck:libs`, API-server typecheck and ArenaForge typecheck passed.
+  The synthetic fixture exercises persisted donor/bed bass and chord evidence,
+  compare-to-render recommendation parity, saved provenance, reopen, and WAV
+  export. It also asserts positive, in-bounds saved clip durations. This is not a
+  listening or real-song quality test.
+- `pnpm run typecheck` passed for libraries, API server, ArenaForge and scripts.
+- `git diff --check` passed.
 
-**Still open.** Bass has an independent manual action but not yet an automatic
-donor-bass compatibility recommendation. The current drum recommendation does
-not identify kick/snare/hat roles or measure spectral masking, and no human
-listening has established mashup quality. Do not claim intelligent bass choice
-or reliably good-sounding swaps from this increment.
+**Still open.** The recommendation compares harmonic contradiction on the
+renderer’s shared source clock; it does not prove a donor will sound better, and
+it does not assess rhythm, masking, or arrangement aesthetics. No real-song
+listening evidence was collected in this increment. Do not claim reliable
+intelligent bass swaps or mashup quality from these synthetic-route checks.
 
 ## Latest increment: hybrid harmony is judged on the stems a hybrid keeps
 
