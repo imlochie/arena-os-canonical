@@ -212,6 +212,98 @@ export type MashupPlan = {
   warnings: string[];
 };
 
+/**
+ * Keep persisted clip timelines inside the actual rendered arrangement. A
+ * ranked entry can become out of range after a shared-tempo transform; allowing
+ * it through creates negative/zero clips that the export worker correctly
+ * refuses. Prefer a clearly disclosed bed-start fallback over persisting an
+ * impossible musical placement.
+ */
+function enforceMashupSegmentBounds(plan: MashupPlan): void {
+  const durationMs = Math.round(plan.durationMs);
+  if (!Number.isSafeInteger(durationMs) || durationMs < 1) {
+    plan.segments = [];
+    return;
+  }
+
+  const bounded: MashupSegment[] = [];
+  let removed = 0;
+  let clipped = 0;
+  for (const segment of plan.segments) {
+    if (!Number.isFinite(segment.mashupStartMs) || !Number.isFinite(segment.mashupEndMs)
+      || !Number.isFinite(segment.vocalsFromMs) || !Number.isFinite(segment.vocalsToMs)
+      || segment.vocalsToMs <= segment.vocalsFromMs
+      || segment.mashupStartMs < 0
+      || segment.mashupStartMs >= durationMs
+      || segment.mashupEndMs <= segment.mashupStartMs) {
+      removed += 1;
+      continue;
+    }
+    if (segment.mashupEndMs <= durationMs) {
+      bounded.push(segment);
+      continue;
+    }
+    // Cropping a local WSOLA map without inverting its output coordinates would
+    // change the rendered timing silently. Drop that placement and disclose it.
+    if (segment.localTempoMap || !Number.isFinite(plan.vocalsStretchRatio) || plan.vocalsStretchRatio <= 0) {
+      removed += 1;
+      continue;
+    }
+    const allowedTimelineMs = durationMs - segment.mashupStartMs;
+    const allowedSourceMs = Math.floor(allowedTimelineMs / plan.vocalsStretchRatio);
+    const vocalsToMs = Math.min(segment.vocalsToMs, segment.vocalsFromMs + allowedSourceMs);
+    if (vocalsToMs <= segment.vocalsFromMs) {
+      removed += 1;
+      continue;
+    }
+    bounded.push({
+      ...segment,
+      mashupEndMs: durationMs,
+      vocalsToMs,
+      crossfadeMs: Math.min(segment.crossfadeMs, Math.floor(allowedTimelineMs / 2)),
+      rationale: `${segment.rationale}; source range was cropped to the rendered bed end`,
+    });
+    clipped += 1;
+  }
+
+  if (removed > 0) {
+    plan.warnings.push(`${removed} vocal placement(s) fell outside the rendered bed timeline after timing transforms and were omitted rather than saved as invalid clips.`);
+  }
+  if (clipped > 0) {
+    plan.warnings.push(`${clipped} vocal placement(s) were cropped at the bed end; the persisted source window now matches the audible timeline.`);
+  }
+  if (bounded.length > 0) {
+    plan.segments = bounded;
+    return;
+  }
+
+  const first = plan.segments[0];
+  const ratio = plan.vocalsStretchRatio;
+  if (!first || !Number.isFinite(ratio) || ratio <= 0 || first.vocalsToMs <= first.vocalsFromMs) {
+    plan.segments = [];
+    return;
+  }
+  const outputMs = Math.min(durationMs, Math.round((first.vocalsToMs - first.vocalsFromMs) * ratio));
+  const sourceMs = Math.min(first.vocalsToMs - first.vocalsFromMs, Math.floor(outputMs / ratio));
+  if (outputMs < 1 || sourceMs < 1) {
+    plan.segments = [];
+    return;
+  }
+  const { localTempoMap: _discardedLocalMap, ...firstWithoutLocalMap } = first;
+  plan.segments = [{
+    ...firstWithoutLocalMap,
+    mashupStartMs: 0,
+    mashupEndMs: outputMs,
+    vocalsToMs: first.vocalsFromMs + sourceMs,
+    crossfadeMs: Math.min(first.crossfadeMs, Math.floor(outputMs / 2)),
+    rationale: "The selected entry was outside the rendered bed; the first vocal window was placed at bed start using the shared stretch ratio. No section-specific entry is claimed.",
+  }];
+  plan.arrangement = null;
+  delete plan.passageSearch;
+  plan.rationale = ["The selected entry fell outside the rendered bed timeline after timing transforms. Waveyard moved the first vocal window to bed start instead of persisting an impossible clip."];
+  plan.warnings.push("The original timing map or passage-specific entry was not used for the bed-start fallback.");
+}
+
 export type MashupPassageSearch = {
   evaluatedDonorPassageCount: number;
   rankableDonorPassageCount: number;
@@ -2930,6 +3022,13 @@ export function planMashup(
         !/master tempo = the instrumental's|vocals are time-stretched|vocals stay at natural speed/i.test(line));
       plan.rationale.push(`Both verified tempi (${trustedBedBpm} and ${trustedVocalBpm} BPM) support a shared ${plan.masterBpm.toFixed(2)} BPM timeline; pitch-preserving bed stretch ×${ratio.toFixed(4)} is required in render and export.`);
     }
+  }
+  enforceMashupSegmentBounds(plan);
+  if (plan.segments.length === 0) {
+    return {
+      ok: false,
+      reason: "No vocal placement fits the rendered bed timeline, even after the safe bed-start fallback. Choose a longer bed or a shorter vocal source.",
+    };
   }
   applyCrossStemGroove(plan, vocals, bed);
   return {

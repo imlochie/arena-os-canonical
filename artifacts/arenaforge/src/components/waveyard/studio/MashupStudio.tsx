@@ -85,6 +85,7 @@ type AlignmentCandidatePlan = {
   unavailableReason?: string;
   plan: Plan | null;
   drumRecommendation?: DrumRecommendation;
+  bassRecommendation?: BassRecommendation;
 };
 
 type DrumRecommendation = {
@@ -95,6 +96,31 @@ type DrumRecommendation = {
     sameStrokeOnsets?: number;
     complementaryOnsets?: number;
     pulseAgreementRatio?: number | null;
+  };
+};
+
+type BassLineSummary =
+  | {
+    status: "measured";
+    supportShare: number;
+    motionShare: number;
+    contradictionShare: number;
+    judgedMs: number;
+    unjudgedMs: number;
+    examinedMs: number;
+    distinctPitches: number;
+    bedChordChanges: number;
+  }
+  | { status: "unavailable"; reason: string };
+
+type BassRecommendation = {
+  outcome: "retain" | "replace" | "reject" | "unavailable";
+  reason: string;
+  measurements: {
+    fromMs: number;
+    toMs: number;
+    donorBass: BassLineSummary;
+    retainedBedBass: BassLineSummary;
   };
 };
 
@@ -129,6 +155,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [plan, setPlan] = useState<Plan | null>(null);
   const [evidence, setEvidence] = useState<EvidenceSummary | null>(null);
   const [drumRecommendation, setDrumRecommendation] = useState<DrumRecommendation | null>(null);
+  const [bassRecommendation, setBassRecommendation] = useState<BassRecommendation | null>(null);
   const [planning, setPlanning] = useState(false);
   const [rendering, setRendering] = useState<"mashup" | "extend" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -253,6 +280,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setPlan(null);
     setEvidence(null);
     setDrumRecommendation(null);
+    setBassRecommendation(null);
     setBedInfo(null);
     setError(null);
     setCandidateRendering(null);
@@ -327,6 +355,8 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setPlanning(true);
     setError(null);
     setEvidence(null);
+    setDrumRecommendation(null);
+    setBassRecommendation(null);
     setPlan(null);
     setAlignmentCandidates([]);
     setSelectedAlignment(null);
@@ -366,6 +396,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
         setSelectedAlignment(selected.id);
         setPlan(selected.plan);
         setDrumRecommendation(selected.drumRecommendation ?? null);
+        setBassRecommendation(selected.bassRecommendation ?? null);
         if (selected.id !== arrangementMode) {
           setError(
             `Full Length was unavailable for this pair: ${
@@ -390,6 +421,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setSelectedAlignment(id);
     setPlan(candidate.plan);
     setDrumRecommendation(candidate.drumRecommendation ?? null);
+    setBassRecommendation(candidate.bassRecommendation ?? null);
     setSaveSuccess(null);
   };
 
@@ -916,6 +948,44 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
                 Apply drum recommendation
               </button>
             </div>
+          </div>
+        )}
+        {bassRecommendation && (
+          <div role="status" data-testid="status-bass-recommendation" style={{ marginTop: 12 }}>
+            <b>
+              Bass evidence: {bassRecommendation.outcome === "unavailable"
+                ? "no safe recommendation"
+                : bassRecommendation.outcome === "reject"
+                  ? "keep the bed bass"
+                  : `recommend ${bassRecommendation.outcome}`}
+            </b>
+            <p style={{ margin: "4px 0" }}>{bassRecommendation.reason}</p>
+            <small>
+              Donor bass: {bassRecommendation.measurements.donorBass.status === "measured"
+                ? `${(bassRecommendation.measurements.donorBass.supportShare * 100).toFixed(0)}% chord support, ${(bassRecommendation.measurements.donorBass.contradictionShare * 100).toFixed(0)}% unresolved contradiction over ${(bassRecommendation.measurements.donorBass.judgedMs / 1000).toFixed(1)} judged seconds`
+                : bassRecommendation.measurements.donorBass.reason}
+              <br />
+              Bed bass: {bassRecommendation.measurements.retainedBedBass.status === "measured"
+                ? `${(bassRecommendation.measurements.retainedBedBass.supportShare * 100).toFixed(0)}% chord support, ${(bassRecommendation.measurements.retainedBedBass.contradictionShare * 100).toFixed(0)}% unresolved contradiction over ${(bassRecommendation.measurements.retainedBedBass.judgedMs / 1000).toFixed(1)} judged seconds`
+                : bassRecommendation.measurements.retainedBedBass.reason}
+            </small>
+            <p style={{ margin: "4px 0", opacity: 0.78 }}>
+              Uses pitch-tracked bass from the exact completed separations and the bed&apos;s separated chord timeline,
+              mapped at the renderer&apos;s same-start source clock. It does not measure groove, masking, or sound quality,
+              and therefore never recommends layering bass.
+            </p>
+            <button
+              type="button"
+              className="button secondary"
+              data-testid="button-apply-bass-recommendation"
+              disabled={!canEdit || bassRecommendation.outcome === "unavailable"}
+              onClick={() => setComposition(
+                "bass",
+                bassRecommendation.outcome === "replace" ? "replace" : "retain",
+              )}
+            >
+              {bassRecommendation.outcome === "replace" ? "Replace bed bass" : "Keep bed bass"}
+            </button>
           </div>
         )}
       </fieldset>

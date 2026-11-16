@@ -18,7 +18,7 @@
  */
 
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,6 +28,7 @@ import { db } from "@workspace/db";
 import {
   bassAnalyses,
   bassEvents,
+  bassPitchSegments,
   drumAnalyses,
   drumEvents,
   processingJobs,
@@ -75,8 +76,10 @@ import {
 import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import {
   bassAnalysisProvenanceReason,
+  BASS_PITCH_MIN_CONFIDENCE,
   LOCAL_BASS_ANALYSIS_ENGINE,
   LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+  normaliseBassPitchSegments,
 } from "@workspace/arena/lib/waveyard/types/bass-analysis";
 import {
   measuredEvidence,
@@ -84,11 +87,19 @@ import {
   type MusicalEvidenceProvenance,
   type MusicalEvidencePacket,
 } from "@workspace/arena/lib/waveyard/studio/musical-evidence";
-import { trustedAnalysisBpm, trustedAnalysisKey, trustedAnalysisBeatGrid } from "@workspace/arena/lib/waveyard/types";
+import {
+  bedChordsFromHarmonyEvents,
+  decideDonorBassBed,
+  decideDonorDrumBed,
+  measureStemGroove,
+  trustedAnalysisBpm,
+  trustedAnalysisKey,
+  trustedAnalysisBeatGrid,
+  type BassLineNote,
+  type DonorBassBedDecision,
+} from "@workspace/arena/lib/waveyard/types";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { createPersistedClipTempoMap, donorClipTempoMap } from "@workspace/arena/lib/waveyard/studio/local-tempo-map";
-import { measureStemGroove } from "@workspace/arena/lib/waveyard/types";
-import { decideDonorDrumBed } from "@workspace/arena/lib/waveyard/types";
 
 export const dynamic = "force-dynamic";
 
@@ -104,10 +115,12 @@ const separatedStemTimingCache = new Map<string, ReturnType<typeof analyseStereo
 type MeasuredBedGrooveEvidence = {
   drumEvents: MashupTransientEvent[];
   bassEvents: MashupTransientEvent[];
+  bassPitchNotes: BassLineNote[];
   melodicEvents: MashupTransientEvent[];
   warnings: string[];
   drumProvenance: MusicalEvidenceProvenance | null;
   bassProvenance: MusicalEvidenceProvenance | null;
+  bassPitchProvenance: MusicalEvidenceProvenance | null;
   melodicProvenance: MusicalEvidenceProvenance | null;
 };
 
@@ -115,6 +128,13 @@ type DonorDrumRecommendation = {
   outcome: "retain" | "replace" | "layer" | "reject" | "unavailable";
   reason: string;
   measurements: ReturnType<typeof decideDonorDrumBed>["measurements"];
+};
+type DonorBassRecommendation = DonorBassBedDecision & {
+  provenance: {
+    donorBass: MusicalEvidenceProvenance | null;
+    retainedBedBass: MusicalEvidenceProvenance | null;
+    bedHarmony: MusicalEvidenceProvenance | null;
+  };
 };
 const measuredBedGrooveCache = new Map<string, { createdAt: number; evidence: MeasuredBedGrooveEvidence }>();
 
@@ -398,7 +418,7 @@ function stemPcmToAnalysisMono(stereo: Float32Array): Float32Array {
 }
 
 function aggregateGrooveProvenance(
-  feature: "drums" | "bass-attacks" | "melodic-layer-attacks",
+  feature: "drums" | "bass-attacks" | "bass-pitch" | "melodic-layer-attacks",
   sourceChecksumSha256: string,
   contributors: MusicalEvidenceProvenance[],
 ): MusicalEvidenceProvenance | null {
@@ -442,16 +462,26 @@ function summarizeEvidencePacket(packet: MusicalEvidencePacket) {
  * detection remains an explicit fallback until every separated stem has a
  * persisted event analysis; only timestamps and provenance are cached.
  */
-async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): Promise<MeasuredBedGrooveEvidence> {
+async function loadMeasuredBedGrooveEvidence(
+  projectId: string,
+  bedId: string,
+  expectedSeparationJobId?: string,
+): Promise<MeasuredBedGrooveEvidence> {
   const bedSource = await findBedSource(projectId, bedId);
-  if (bedSource.info.source !== "separated" || !bedSource.info.separationJobId) {
+  if (bedSource.info.source !== "separated" || !bedSource.info.separationJobId
+    || expectedSeparationJobId !== undefined && bedSource.info.separationJobId !== expectedSeparationJobId) {
+    const reason = expectedSeparationJobId !== undefined && bedSource.info.separationJobId !== expectedSeparationJobId
+      ? "The separated stems changed during planning; the profile and stem evidence do not share one separation run."
+      : "No completed separated instrument stems are available; cross-stem groove evidence is unavailable.";
     return {
       drumEvents: [],
       bassEvents: [],
+      bassPitchNotes: [],
       melodicEvents: [],
-      warnings: ["No completed separated instrument stems are available; cross-stem groove evidence is unavailable."],
+      warnings: [reason],
       drumProvenance: null,
       bassProvenance: null,
+      bassPitchProvenance: null,
       melodicProvenance: null,
     };
   }
@@ -473,10 +503,12 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
     return {
       drumEvents: [],
       bassEvents: [],
+      bassPitchNotes: [],
       melodicEvents: [],
       warnings: ["The source record is missing; stem timing evidence was excluded."],
       drumProvenance: null,
       bassProvenance: null,
+      bassPitchProvenance: null,
       melodicProvenance: null,
     };
   }
@@ -492,6 +524,27 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
     ? await db.select().from(bassAnalyses).where(inArray(bassAnalyses.stemAssetId, bassStemIds))
     : [];
   const bassAnalysisByStem = new Map(persistedBassAnalyses.map((analysis) => [analysis.stemAssetId, analysis]));
+  const persistedBassPitchRows = persistedBassAnalyses.length
+    ? await db.select({
+      bassAnalysisId: bassPitchSegments.bassAnalysisId,
+      startMs: bassPitchSegments.startMs,
+      endMs: bassPitchSegments.endMs,
+      midiNote: bassPitchSegments.midiNote,
+      frequencyHz: bassPitchSegments.frequencyHz,
+      confidence: bassPitchSegments.confidence,
+    }).from(bassPitchSegments)
+      .where(inArray(bassPitchSegments.bassAnalysisId, persistedBassAnalyses.map((analysis) => analysis.id)))
+      .orderBy(asc(bassPitchSegments.bassAnalysisId), asc(bassPitchSegments.startMs))
+    : [];
+  const bassPitchRowsByAnalysis = new Map<string, typeof persistedBassPitchRows>();
+  for (const row of persistedBassPitchRows) {
+    const existing = bassPitchRowsByAnalysis.get(row.bassAnalysisId) ?? [];
+    existing.push(row);
+    bassPitchRowsByAnalysis.set(row.bassAnalysisId, existing);
+  }
+  const bassPitchRowsChecksum = createHash("sha256")
+    .update(JSON.stringify(persistedBassPitchRows))
+    .digest("hex");
   const cacheKey = [
     bedId,
     source.checksumSha256,
@@ -502,6 +555,7 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
       `${analysis.id}:${analysis.status}:${analysis.sourceChecksumSha256}:${analysis.stemChecksumSha256}:${analysis.analysisEngine}:${analysis.analysisEngineVersion}:${analysis.updatedAt?.getTime() ?? 0}`),
     ...persistedBassAnalyses.map((analysis) =>
       `${analysis.id}:${analysis.status}:${analysis.sourceChecksumSha256}:${analysis.stemChecksumSha256}:${analysis.analysisEngine}:${analysis.analysisEngineVersion}:${analysis.updatedAt?.getTime() ?? 0}`),
+    bassPitchRowsChecksum,
   ].join("|");
   const now = Date.now();
   const cached = measuredBedGrooveCache.get(cacheKey);
@@ -511,14 +565,17 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
   const evidence: MeasuredBedGrooveEvidence = {
     drumEvents: [],
     bassEvents: [],
+    bassPitchNotes: [],
     melodicEvents: [],
     warnings: [],
     drumProvenance: null,
     bassProvenance: null,
+    bassPitchProvenance: null,
     melodicProvenance: null,
   };
   const drumContributors: MusicalEvidenceProvenance[] = [];
   const bassContributors: MusicalEvidenceProvenance[] = [];
+  const bassPitchContributors: MusicalEvidenceProvenance[] = [];
   const melodicContributors: MusicalEvidenceProvenance[] = [];
   if (!relevantStems.some((stem) => stem.stemType === "drums" || stem.stemType === "percussion")) {
     evidence.warnings.push("The selected separation has no separate drum/percussion stem; drum-transient matching is unavailable.");
@@ -573,6 +630,37 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
             stemChecksumSha256: stem.checksumSha256,
             persistence: "database",
           });
+          const pitchSegments = normaliseBassPitchSegments(
+            bassPitchRowsByAnalysis.get(analysis.id) ?? [],
+            Math.round(source.durationSeconds * 1000),
+          );
+          if (pitchSegments === null) {
+            evidence.warnings.push("Persisted bass pitch segments are malformed; donor-bass harmonic guidance is unavailable for this stem.");
+          } else {
+            const reliablePitchSegments = pitchSegments.filter((segment) =>
+              segment.confidence >= BASS_PITCH_MIN_CONFIDENCE);
+            if (reliablePitchSegments.length > 0) {
+              evidence.bassPitchNotes.push(...reliablePitchSegments.map(({ startMs, endMs, midiNote, confidence }) => ({
+                startMs,
+                endMs,
+                midiNote,
+                confidence,
+              })));
+              bassPitchContributors.push({
+                analysisId: analysis.id,
+                analysisEngine: analysis.analysisEngine,
+                analysisEngineVersion: analysis.analysisEngineVersion,
+                sourceChecksumSha256: source.checksumSha256,
+                persistence: "database",
+                subject: "separated-stem",
+                stemAssetId: stem.id,
+                stemType: "bass",
+                stemChecksumSha256: stem.checksumSha256,
+              });
+            } else {
+              evidence.warnings.push("No checksum-current bass pitch segments met the tracker confidence floor; donor-bass harmonic guidance is unavailable.");
+            }
+          }
           continue;
         }
         try {
@@ -679,9 +767,11 @@ async function loadMeasuredBedGrooveEvidence(projectId: string, bedId: string): 
 
   evidence.drumEvents.sort((left, right) => left.timestampMs - right.timestampMs);
   evidence.bassEvents.sort((left, right) => left.timestampMs - right.timestampMs);
+  evidence.bassPitchNotes.sort((left, right) => left.startMs - right.startMs);
   evidence.melodicEvents.sort((left, right) => left.timestampMs - right.timestampMs);
   evidence.drumProvenance = aggregateGrooveProvenance("drums", source.checksumSha256, drumContributors);
   evidence.bassProvenance = aggregateGrooveProvenance("bass-attacks", source.checksumSha256, bassContributors);
+  evidence.bassPitchProvenance = aggregateGrooveProvenance("bass-pitch", source.checksumSha256, bassPitchContributors);
   evidence.melodicProvenance = aggregateGrooveProvenance("melodic-layer-attacks", source.checksumSha256, melodicContributors);
   while (measuredBedGrooveCache.size >= GROOVE_EVIDENCE_CACHE_MAX_ENTRIES) {
     const oldestKey = measuredBedGrooveCache.keys().next().value;
@@ -729,6 +819,55 @@ function recommendDonorDrumsForMashup(input: {
     outcome: decision.decision,
     reason: decision.reason,
     measurements: decision.measurements,
+  };
+}
+
+/**
+ * Compare pitch-tracked bass from the current donor separation against the
+ * checksum-current separated harmonic stem and bass of the bed. The route's
+ * rendered stem composition begins at each source's native t=0; it must not
+ * claim a passage-specific bass match that the current stem renderer does not
+ * apply.
+ */
+function recommendDonorBassForMashup(input: {
+  donor: Parameters<typeof planMashup>[0];
+  bed: Parameters<typeof planMashup>[1];
+  donorEvidence: MeasuredBedGrooveEvidence;
+  bedEvidence: MeasuredBedGrooveEvidence;
+  bedHarmonyChanged: boolean;
+}): DonorBassRecommendation {
+  const { donor, bed, donorEvidence, bedEvidence, bedHarmonyChanged } = input;
+  const harmony = bed.evidence?.features.harmony;
+  const measuredBedHarmonyProvenance = harmony?.status === "measured"
+    && harmony.provenance.persistence === "database"
+    && harmony.provenance.subject === "separated-stem"
+    && harmony.provenance.sourceChecksumSha256 === bed.sourceChecksumSha256
+    && bed.harmonyEvidenceSource === "separated-stem"
+    ? harmony.provenance
+    : null;
+  const bedHarmonyProvenance = bedHarmonyChanged ? null : measuredBedHarmonyProvenance;
+  const bedChords = bedHarmonyProvenance && bed.harmonyEvents
+    ? bedChordsFromHarmonyEvents(bed.harmonyEvents)
+    : [];
+  const decision = decideDonorBassBed({
+    donorBass: donorEvidence.bassPitchNotes,
+    retainedBedBass: bedEvidence.bassPitchNotes,
+    bedChords,
+    fromMs: 0,
+    toMs: Math.min(donor.durationMs, bed.durationMs),
+  });
+  if (!bedHarmonyProvenance && decision.outcome === "unavailable") {
+    decision.reason = bedHarmonyChanged
+      ? "The selected composition changes the bed's harmonic stem, so its original chord timeline no longer describes the resulting bed. No bass recommendation is made."
+      : "A current checksum-bound chord timeline from the bed's separated harmonic stem is unavailable; source-mix chords are not used as a substitute.";
+  }
+  return {
+    ...decision,
+    provenance: {
+      donorBass: donorEvidence.bassPitchProvenance,
+      retainedBedBass: bedEvidence.bassPitchProvenance,
+      bedHarmony: bedHarmonyProvenance,
+    },
   };
 }
 
@@ -1439,7 +1578,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         }
       }
 
-      const grooveEvidence = await loadMeasuredBedGrooveEvidence(projectId, bedId);
+      const grooveEvidence = await loadMeasuredBedGrooveEvidence(
+        projectId,
+        bedId,
+        resolvedBedSource.info.separationJobId,
+      );
       // Measure retained roles against their OWN source grid before composite
       // re-analysis can replace the mixture's tempo/grid evidence.
       const originalBedGrid = trustedAnalysisBeatGrid(bed.beatGridMs, bed.bpmConfidence, bed.beatConfidence);
@@ -1542,7 +1685,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       bed.stemGrooves = originalBedGrooves.filter((profile) =>
         !compositionForPlan?.replacedBedStemTypes.includes(profile.role));
       const donorGrid = trustedAnalysisBeatGrid(vocals.beatGridMs, vocals.bpmConfidence, vocals.beatConfidence);
-      const donorGrooveEvidence = await loadMeasuredBedGrooveEvidence(projectId, vocalsId);
+      const donorGrooveEvidence = await loadMeasuredBedGrooveEvidence(
+        projectId,
+        vocalsId,
+        resolvedVocalSource.info.separationJobId,
+      );
       vocals.stemGrooves = [...donorStemsForPlan.keys()].flatMap((name) => {
         const role = name.slice("donor_".length);
         if (role !== "drums" && role !== "bass" && role !== "other") return [];
@@ -1560,6 +1707,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         donorEvidence: donorGrooveEvidence,
         bedEvidence: grooveEvidence,
       });
+      const bassRecommendation = recommendDonorBassForMashup({
+        donor: vocals,
+        bed: originalBed,
+        donorEvidence: donorGrooveEvidence,
+        bedEvidence: grooveEvidence,
+        bedHarmonyChanged: Boolean(
+          compositionForPlan?.replacedBedStemTypes.includes("other")
+          || compositionForPlan?.layeredStemTypes.includes("other"),
+        ),
+      });
 
       if (action === "compare") {
         const bedInfo = await inspectBed(projectId, bedId);
@@ -1567,6 +1724,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           .map((candidate) => ({
             ...candidate,
             drumRecommendation,
+            bassRecommendation,
           }));
         return Response.json({
           candidates,
@@ -1591,6 +1749,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return Response.json({
           plan: planned.plan,
           drumRecommendation,
+          bassRecommendation,
           composition: compositionForPlan,
           plannedAgainst: plannedAgainstComposition ? { kind: "composition", ...plannedAgainstComposition } : { kind: "original-bed" },
           bed: bedInfo,
@@ -1967,6 +2126,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 note: composition.note,
               },
               drumRecommendation,
+              bassRecommendation,
               masterBpm: planned.plan.masterBpm,
               bedStretchRatio: planned.plan.bedStretchRatio ?? 1,
               bedTempoStemIds: planned.plan.bedStretchRatio ? sessionBedStems.map((stem) => stem.id) : [],
@@ -2145,6 +2305,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         "x-waveyard-stem-layer-mode": composition.composition.stemLayerMode,
         "x-waveyard-stem-decisions": JSON.stringify(composition.composition.stemDecisions),
         "x-waveyard-drum-recommendation": JSON.stringify(drumRecommendation),
+        "x-waveyard-bass-recommendation": JSON.stringify(bassRecommendation),
         "x-waveyard-replaced-bed-stems": composition.composition.replacedBedStemTypes.join(","),
         "x-waveyard-bed-separable": String(composition.composition.bedSeparable),
         // Provenance of the analysis the arrangement was planned against. A

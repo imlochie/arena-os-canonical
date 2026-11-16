@@ -37,7 +37,13 @@ import {
   bassAnalysisIdempotencyKey,
   LOCAL_BASS_ANALYSIS_ENGINE,
   LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+  midiToFrequencyHz,
 } from "@workspace/arena/lib/waveyard/types/bass-analysis";
+import {
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+  stemHarmonyAnalysisIdempotencyKey,
+} from "@workspace/arena/lib/waveyard/types/stem-harmony-analysis";
 import {
   LOCAL_VOCAL_ANALYSIS_ENGINE,
   LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
@@ -1671,7 +1677,7 @@ test(
     const addFixtureSource = async (
       label: string,
       stems: Array<{ stemType: FixtureStemType | "instrumental"; seconds: number }>,
-      options: { bpm?: number | null } = {},
+      options: { bpm?: number | null; bassHz?: number } = {},
     ) => {
       const audioBytes = encodeWav16(tone([440], Math.max(...stems.map((stem) => stem.seconds)), 0.15), RATE);
       const storageKey = `mashup-fixture/${label}-original.wav`;
@@ -1707,7 +1713,9 @@ test(
       }).returning({ id: schema.processingJobs.id });
       assert.ok(job);
       for (const { stemType, seconds } of stems) {
-        const stemWav = encodeWav16(tone([stemType === "drums" ? 260 : stemType === "bass" ? 70 : 110], seconds, 0.1), RATE);
+        const stemWav = encodeWav16(tone([
+          stemType === "drums" ? 260 : stemType === "bass" ? options.bassHz ?? 70 : 110,
+        ], seconds, 0.1), RATE);
         const stemStorageKey = `mashup-fixture/${label}-${stemType}.wav`;
         const stemPath = path.join(fixtureRoot, `${label}-${stemType}.wav`);
         await writeFile(stemPath, stemWav);
@@ -1800,7 +1808,87 @@ test(
       { stemType: "vocals", seconds: VOCAL_SECONDS },
       { stemType: "drums", seconds: VOCAL_SECONDS },
       { stemType: "bass", seconds: VOCAL_SECONDS },
-    ]);
+    ], { bassHz: midiToFrequencyHz(36) });
+
+    // Seed versioned pitch and chord rows on the exact separated stems consumed
+    // by the production recommendation loader. The audio frequencies, MIDI
+    // labels, source/stem checksums and analysis versions agree: the donor
+    // sustains C against a C-major bed, while the retained 70 Hz fixture bass
+    // is tracked as C#2 (about 1% frequency difference from the generated tone).
+    const seedBassPitch = async (sourceId: string, midiNote: number, durationMs: number) => {
+      const [source] = await dbModule.db.select().from(schema.sourceAssets)
+        .where(and(eq(schema.sourceAssets.id, sourceId), eq(schema.sourceAssets.projectId, project.id)));
+      const [stem] = await dbModule.db.select().from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, sourceId),
+        eq(schema.stemAssets.stemType, "bass"),
+      ));
+      assert.ok(source && stem);
+      const [analysis] = await dbModule.db.insert(schema.bassAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: sourceId,
+        stemAssetId: stem.id,
+        status: "complete",
+        stage: "complete",
+        attempts: 1,
+        idempotencyKey: bassAnalysisIdempotencyKey(stem.id),
+        analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: source.checksumSha256,
+        stemChecksumSha256: stem.checksumSha256,
+        startedAt: new Date(),
+        analyzedAt: new Date(),
+        completedAt: new Date(),
+      }).returning({ id: schema.bassAnalyses.id });
+      assert.ok(analysis);
+      await dbModule.db.insert(schema.bassPitchSegments).values([{
+        bassAnalysisId: analysis.id,
+        segmentIndex: 0,
+        startMs: 0,
+        endMs: durationMs,
+        midiNote,
+        frequencyHz: midiToFrequencyHz(midiNote),
+        confidence: 0.95,
+      }]);
+      return stem;
+    };
+    await seedBassPitch(fullBedId, 37, BED_SECONDS * 1000);
+    await seedBassPitch(donorWithDrumsId, 36, VOCAL_SECONDS * 1000);
+
+    const [bedChordStem] = await dbModule.db.select().from(schema.stemAssets).where(and(
+      eq(schema.stemAssets.projectId, project.id),
+      eq(schema.stemAssets.sourceAssetId, fullBedId),
+      eq(schema.stemAssets.stemType, "other"),
+    ));
+    const [fullBedSource] = await dbModule.db.select().from(schema.sourceAssets)
+      .where(and(eq(schema.sourceAssets.id, fullBedId), eq(schema.sourceAssets.projectId, project.id)));
+    assert.ok(bedChordStem && fullBedSource);
+    const [bedHarmonyAnalysis] = await dbModule.db.insert(schema.stemHarmonyAnalyses).values({
+      projectId: project.id,
+      sourceAssetId: fullBedId,
+      stemAssetId: bedChordStem.id,
+      status: "complete",
+      stage: "complete",
+      attempts: 1,
+      idempotencyKey: stemHarmonyAnalysisIdempotencyKey(bedChordStem.id),
+      analysisEngine: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: fullBedSource.checksumSha256,
+      stemChecksumSha256: bedChordStem.checksumSha256,
+      startedAt: new Date(),
+      analyzedAt: new Date(),
+      completedAt: new Date(),
+    }).returning({ id: schema.stemHarmonyAnalyses.id });
+    assert.ok(bedHarmonyAnalysis);
+    await dbModule.db.insert(schema.stemHarmonyEvents).values([{
+      stemHarmonyAnalysisId: bedHarmonyAnalysis.id,
+      eventIndex: 0,
+      startMs: 0,
+      endMs: BED_SECONDS * 1000,
+      root: "C",
+      quality: "major",
+      confidence: 0.95,
+    }]);
 
     /**
      * Sources for the end-to-end musical acceptance (see ACCEPTANCE above).
@@ -3289,12 +3377,38 @@ test(
       );
       assert.equal(mainStudioCompare.status, 200, "the main Mashup Studio must expose candidate comparisons");
       const mainStudioCompareBody = await mainStudioCompare.json() as {
-        candidates?: Array<{ drumRecommendation?: { outcome?: string; reason?: string; measurements?: unknown } }>;
+        candidates?: Array<{
+          drumRecommendation?: { outcome?: string; reason?: string; measurements?: unknown };
+          bassRecommendation?: {
+            outcome?: string;
+            reason?: string;
+            measurements?: {
+              donorBass?: { status?: string; supportShare?: number };
+              retainedBedBass?: { status?: string; contradictionShare?: number };
+            };
+            provenance?: {
+              donorBass?: { persistence?: string; stemType?: string };
+              retainedBedBass?: { persistence?: string; stemType?: string };
+              bedHarmony?: { persistence?: string; subject?: string };
+            };
+          };
+        }>;
       };
       const mainStudioDrumRecommendation = mainStudioCompareBody.candidates?.[0]?.drumRecommendation;
       assert.ok(mainStudioDrumRecommendation?.outcome,
         "the main Mashup route must return the shared donor-drum decision, not require the separate automatic-remix workflow");
       assert.equal(typeof mainStudioDrumRecommendation?.reason, "string");
+      const mainStudioBassRecommendation = mainStudioCompareBody.candidates?.[0]?.bassRecommendation;
+      assert.equal(mainStudioBassRecommendation?.outcome, "replace",
+        "the persisted donor C bass should be recommended over the contradictory retained F# bed bass");
+      assert.equal(mainStudioBassRecommendation?.measurements?.donorBass?.status, "measured");
+      assert.ok((mainStudioBassRecommendation?.measurements?.donorBass?.supportShare ?? 0) > 0.9);
+      assert.equal(mainStudioBassRecommendation?.measurements?.retainedBedBass?.status, "measured");
+      assert.ok((mainStudioBassRecommendation?.measurements?.retainedBedBass?.contradictionShare ?? 0) > 0.5);
+      assert.equal(mainStudioBassRecommendation?.provenance?.donorBass?.persistence, "database");
+      assert.equal(mainStudioBassRecommendation?.provenance?.donorBass?.stemType, "bass");
+      assert.equal(mainStudioBassRecommendation?.provenance?.retainedBedBass?.stemType, "bass");
+      assert.equal(mainStudioBassRecommendation?.provenance?.bedHarmony?.subject, "separated-stem");
 
       const mixedRender = await routeModule.POST(
         renderPair(donorWithDrumsId, fullBedId, { stemDecisions: mixedChoices }),
@@ -3312,6 +3426,11 @@ test(
       );
       assert.deepEqual(renderedDrumRecommendation, mainStudioDrumRecommendation,
         "compare and render must report the same source-bound drum evidence decision");
+      const renderedBassRecommendation = JSON.parse(
+        mixedRender.headers.get("x-waveyard-bass-recommendation") ?? "null",
+      );
+      assert.deepEqual(renderedBassRecommendation, mainStudioBassRecommendation,
+        "compare and render must report the same persisted bass/chord evidence decision");
 
       const mixedSave = await routeModule.POST(
         saveFor({ stemDecisions: mixedChoices }),
@@ -3330,6 +3449,7 @@ test(
         mashupPlan?: {
           stemComposition?: { stemLayerMode?: string; stemDecisions?: Record<string, string> };
           drumRecommendation?: unknown;
+          bassRecommendation?: unknown;
         };
       };
       assert.equal(mixedSnapshot.mashupPlan?.stemComposition?.stemLayerMode, "mixed");
@@ -3337,6 +3457,8 @@ test(
       assert.deepEqual(mixedSnapshot.mashupPlan?.stemComposition?.stemDecisions?.bass, "layer");
       assert.deepEqual(mixedSnapshot.mashupPlan?.drumRecommendation, renderedDrumRecommendation,
         "saved provenance must keep the same drum decision shown during compare and render");
+      assert.deepEqual(mixedSnapshot.mashupPlan?.bassRecommendation, renderedBassRecommendation,
+        "saved provenance must keep the same bass/chord decision shown during compare and render");
 
       const mixedReopen = await (await import("../../../../remixes/[id]/route")).GET(
         new Request(`http://localhost/api/remixes/${mixedSaveBody.remix.id}`),
@@ -3361,6 +3483,17 @@ test(
         channels: 2,
       }).returning();
       assert.ok(mixedExportJob);
+      const exportSnapshot = JSON.parse(mixedVersion!.snapshot) as {
+        tracks?: Array<{ clips?: Array<{ stemAssetId?: string; durationMs?: unknown }> }>;
+      };
+      const invalidPersistedClips = (exportSnapshot.tracks ?? []).flatMap((track) =>
+        (track.clips ?? []).filter((clip) =>
+          !Number.isFinite(Number(clip.durationMs))
+          || Number(clip.durationMs) < 1
+          || Number(clip.durationMs) > 86_400_000)
+          .map((clip) => ({ stemAssetId: clip.stemAssetId, durationMs: clip.durationMs })));
+      assert.deepEqual(invalidPersistedClips, [],
+        `every persisted mixed-arrangement clip must have a valid duration before export: ${JSON.stringify(exportSnapshot.tracks)}`);
       await (await import("@workspace/arena/lib/waveyard/worker-local/export")).handleExportJob({
         exportJobId: mixedExportJob.id,
         projectId: project.id,
