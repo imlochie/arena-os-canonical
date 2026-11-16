@@ -713,7 +713,12 @@ export default function LiveStemSwapPicker({
           onPointerDown={() => { clearHoverWarm(); onWarm(candidate.id); }}
           onClick={() => {
             stopEntryPreview();
-            onChoose(candidate.id);
+            const applied = onChoose(candidate.id);
+            if (applied === false && stemType === "vocals") {
+              stageDonorForEntry(candidate.id);
+              return;
+            }
+            if (applied === false) return;
             closeAndReturnFocus();
           }}
         >
@@ -946,7 +951,7 @@ export default function LiveStemSwapPicker({
                 <p className="wy-vocal-entry-no-candidates" role="status">
                   No source-verified rhythm/harmony window passed the current evidence gates at this playhead.
                   {stagedDonor.collection === "library" ? " Library-only summaries omit detailed windows; add the track to this session to compare them." : ""}
-                  {" "}That does not prove no usable passage exists; automatic safe alignment and manual entry remain available.
+                  {" "}That does not prove no usable passage exists; choose a manual vocal start rather than applying an unverified automatic entry.
                 </p>
               )}
               {selectedAlignmentCandidate && (
@@ -1027,7 +1032,7 @@ export default function LiveStemSwapPicker({
                 </button>
                 <button
                   type="button"
-                  disabled={busy || pending}
+                  disabled={busy || pending || entryCandidates.length === 0}
                   onClick={() => {
                     stopEntryPreview();
                     onChoose(entryDonorId, null);

@@ -52,6 +52,7 @@ import {
   automaticTransitionCue,
   beatAlignedTransitionStart,
   compatibilityEvidence,
+  completeInstrumentalBedDonorTrackId,
   crossfadeCancel,
   crossfadeEnvelope,
   hasReliableLiveStemBeatEvidence,
@@ -66,6 +67,7 @@ import {
   liveStemCandidateDonorEntryMs,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
+  resolveLiveDrumTempoMaster,
   nextSessionTrack,
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
@@ -79,6 +81,7 @@ import {
 import {
   resolveSessionKeyMatch,
   resolveLiveStemKeyCorrection,
+  resolveInstrumentalBedVocalCorrection,
   shiftMusicalKey,
   type SessionKeyMode,
   type SessionKeyShifts,
@@ -171,7 +174,7 @@ interface SessionDetail {
       id: string;
       title: string;
       durationSeconds: number;
-      stems: Array<{ id: string; stemType: string; durationSeconds: number }>;
+      stems: Array<{ id: string; stemType: string; durationSeconds: number; engine?: string }>;
       analysis?: SessionTrackItem["analysis"];
     } | null;
   }>;
@@ -304,6 +307,7 @@ function getPersistedSwapSetup(
   tempoCorrections: ManualTempoCorrections,
   keyMode: SessionKeyMode,
   deckSemitones: number,
+  manualPlaybackRate: number,
 ) {
   const swaps: Record<string, string> = {};
   const tempoStretchRatios: Record<string, number> = {};
@@ -312,31 +316,151 @@ function getPersistedSwapSetup(
   const keyCorrections: Record<string, number> = {};
   const keyMatchStatuses: Record<string, string> = {};
   if (session === null || item === null) {
-    return { swaps, tempoStretchRatios, beatOffsets, alignmentBases, keyCorrections, keyMatchStatuses };
+    return {
+      swaps,
+      tempoStretchRatios,
+      beatOffsets,
+      alignmentBases,
+      keyCorrections,
+      keyMatchStatuses,
+      tempoMasterRate: 1,
+      tempoMasterBpm: null,
+      tempoMasterConfidence: null,
+      tempoMasterStatus: "Current track remains the tempo reference.",
+      keyMasterStatus: "Current track remains the key reference.",
+      keyReferenceKey: null,
+      keyReferenceConfidence: null,
+      sourceKeyShiftSemitones: null,
+      fullBedDonorTrackId: null,
+    };
   }
 
-  for (const swap of session.swaps) {
-    if (swap.sessionTrackId !== item.id || cancelledSwapIds.has(swap.id)) continue;
+  const activeSwaps = session.swaps.filter((swap) =>
+    swap.sessionTrackId === item.id && !cancelledSwapIds.has(swap.id),
+  );
+  const findDonorStem = (swap: SessionDetail["swaps"][number]) => {
     const donor = session.tracks.find((track) => track.track.id === swap.toTrackId);
-    const donorStem = donor?.stems.find((stem) => stem.stemType === swap.stemType)
-      ?? swap.donorTrack?.stems.find((stem) => stem.stemType === swap.stemType);
+    const stems = donor?.stems ?? swap.donorTrack?.stems ?? [];
+    // The saved asset identity is authoritative. Never silently substitute a
+    // different same-role stem if the selected donor asset has disappeared.
+    if (swap.toStemAssetId !== null) return stems.find((stem) => stem.id === swap.toStemAssetId) ?? null;
+    return stems.find((stem) => stem.stemType === swap.stemType) ?? null;
+  };
+  const candidateBedDonorId = completeInstrumentalBedDonorTrackId(activeSwaps.map((swap) => ({
+    stemType: swap.stemType,
+    donorTrackId: swap.toTrackId,
+  })));
+  const bedSwaps = candidateBedDonorId === null
+    ? []
+    : ["drums", "bass", "other"].map((stemType) =>
+      activeSwaps.find((swap) => swap.stemType === stemType && swap.toTrackId === candidateBedDonorId) ?? null,
+    );
+  const bedDonorStemsAvailable = bedSwaps.length === 3 && bedSwaps.every((swap) => {
+    if (swap === null || !item.stems.some((stem) => stem.stemType === swap.stemType)) return false;
+    const donorStem = findDonorStem(swap);
+    return donorStem !== null
+      && donorStem.stemType === swap.stemType
+      && donorStem.engine !== "passthrough-unseparated";
+  });
+  const fullBedDonorTrackId = candidateBedDonorId !== item.track.id && bedDonorStemsAvailable
+    ? candidateBedDonorId
+    : null;
+  const bedDonorItem = fullBedDonorTrackId === null
+    ? null
+    : session.tracks.find((track) => track.track.id === fullBedDonorTrackId) ?? null;
+  const bedDonorSwap = fullBedDonorTrackId === null
+    ? null
+    : activeSwaps.find((swap) => swap.toTrackId === fullBedDonorTrackId) ?? null;
+  const bedKeyAnalysis = bedDonorItem?.analysis ?? bedDonorSwap?.donorTrack?.analysis
+    ?? library.find((track) => track.id === fullBedDonorTrackId)?.analysis ?? null;
+  const vocalSwap = activeSwaps.find((swap) => swap.stemType === "vocals") ?? null;
+  const drumSwap = activeSwaps.find((swap) => swap.stemType === "drums") ?? null;
+  const recipientTempo = tempoForTrack(item.track.id, item.analysis, tempoCorrections);
+  const drumDonor = drumSwap === null
+    ? null
+    : session.tracks.find((track) => track.track.id === drumSwap.toTrackId) ?? null;
+  const drumDonorAnalysis = drumDonor?.analysis ?? drumSwap?.donorTrack?.analysis
+    ?? library.find((track) => track.id === drumSwap?.toTrackId)?.analysis ?? null;
+  const drumDonorTempo = drumSwap === null
+    ? null
+    : tempoForTrack(drumSwap.toTrackId, drumDonorAnalysis, tempoCorrections);
+  const tempoEvidence = {
+    recipientBpmConfidence: recipientTempo.confidence,
+    donorBpmConfidence: drumDonorTempo?.confidence,
+    recipientBeatConfidence: item.analysis?.beatConfidence,
+    donorBeatConfidence: drumDonorAnalysis?.beatConfidence,
+  };
+  const tempoMaster = drumSwap && drumDonorTempo
+    ? resolveLiveDrumTempoMaster(recipientTempo.bpm, drumDonorTempo.bpm, tempoEvidence)
+    : null;
+  const proposedMasterRate = tempoMaster?.master === "donor-drums" ? tempoMaster.playbackRate : 1;
+  const proposedEffectiveRate = manualPlaybackRate * proposedMasterRate;
+  const masterWouldExceedPlaybackBounds = tempoMaster?.master === "donor-drums"
+    && normalizeSessionPlaybackRate(proposedEffectiveRate) !== proposedEffectiveRate;
+  const tempoMasterRate = tempoMaster?.master === "donor-drums" && !masterWouldExceedPlaybackBounds
+    ? tempoMaster.playbackRate
+    : 1;
+  const tempoMasterBpm = tempoMaster?.master === "donor-drums" && !masterWouldExceedPlaybackBounds
+    ? tempoMaster.donorBpm
+    : recipientTempo.bpm;
+  const tempoMasterConfidence = tempoMaster?.master === "donor-drums" && !masterWouldExceedPlaybackBounds
+    ? drumDonorTempo?.confidence ?? null
+    : recipientTempo.confidence;
+  const donorTitle = drumDonor?.track.title ?? drumSwap?.donorTrack?.title ?? "Donor";
+  const tempoMasterStatus = tempoMaster?.master === "donor-drums" && masterWouldExceedPlaybackBounds
+    ? `${donorTitle} drum tempo cannot safely become the mix master at the current speed setting; reduce the manual speed to stay within the playback engine's rate limits. The current track remains the tempo reference.`
+    : tempoMaster?.master === "donor-drums"
+    ? `${donorTitle} drums set the mix tempo at ${Math.round(tempoMaster.donorBpm)} BPM. The receiving track and every donor layer follow this clock; ${tempoMaster.reason}`
+    : tempoMaster
+      ? `${donorTitle} drums do not safely set the mix tempo. ${tempoMaster.reason}`
+      : "Current track remains the tempo reference; a donor drum layer is not active.";
+  let sourceKeyShiftSemitones: number | null = null;
+  let keyMasterStatus = "Current track remains the key reference; a complete drums, bass and melody bed from one donor is needed to change it.";
+  let keyReferenceKey: string | null = null;
+  let keyReferenceConfidence: number | null = null;
+  if (fullBedDonorTrackId !== null) {
+    keyReferenceKey = bedKeyAnalysis?.musicalKey ?? null;
+    keyReferenceConfidence = bedKeyAnalysis?.keyConfidence ?? null;
+    const bedTitle = bedDonorItem?.track.title ?? bedDonorSwap?.donorTrack?.title ?? "Donor";
+    if (vocalSwap === null) {
+      const vocalCorrection = resolveInstrumentalBedVocalCorrection(
+        keyMode,
+        keyReferenceKey,
+        keyReferenceConfidence,
+        item.analysis?.musicalKey,
+        item.analysis?.keyConfidence ?? null,
+      );
+      sourceKeyShiftSemitones = vocalCorrection.semitones;
+      keyMasterStatus = `${bedTitle} complete instrumental bed is the key reference${keyReferenceKey ? ` (${keyReferenceKey})` : ""}. ${vocalCorrection.reason}`;
+    } else {
+      keyMasterStatus = `${bedTitle} complete instrumental bed is the key reference${keyReferenceKey ? ` (${keyReferenceKey})` : ""}. The vocal layer is matched only when both key analyses are confident.`;
+    }
+  }
+
+  for (const swap of activeSwaps) {
+    const donor = session.tracks.find((track) => track.track.id === swap.toTrackId);
+    const donorStem = findDonorStem(swap);
     if (donorStem) swaps[swap.stemType] = donorStem.id;
 
     const libraryDonorAnalysis = library.find((track) => track.id === swap.toTrackId)?.analysis ?? null;
     const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? null;
-    const recipientTempo = tempoForTrack(item.track.id, item.analysis, tempoCorrections);
     const donorTrackId = swap.toTrackId;
     const donorTempo = tempoForTrack(donorTrackId, donorAnalysis ?? libraryDonorAnalysis, tempoCorrections);
-    const tempoEvidence = {
+    const pairTempoEvidence = {
       recipientBpmConfidence: recipientTempo.confidence,
       donorBpmConfidence: donorTempo.confidence,
       recipientBeatConfidence: item.analysis?.beatConfidence,
       donorBeatConfidence: donorAnalysis?.beatConfidence ?? libraryDonorAnalysis?.beatConfidence,
     };
-    const reliableTempoEvidence = hasReliableLiveStemTempoEvidence(tempoEvidence);
-    const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
-    const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, tempoEvidence);
+    const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(pairTempoEvidence);
+    const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, pairTempoEvidence);
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
+    const alignmentRecipientKey = fullBedDonorTrackId !== null
+      ? bedKeyAnalysis?.musicalKey ?? null
+      : shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
+    const alignmentRecipientKeyConfidence = fullBedDonorTrackId !== null
+      ? bedKeyAnalysis?.keyConfidence
+      : item.analysis?.keyConfidence;
     const sectionAlignment = ratio === null ? null : liveStemSectionAlignment(
       item.analysis?.sections,
       donorAnalysis?.sections,
@@ -351,9 +475,9 @@ function getPersistedSwapSetup(
         donorBpmConfidence: donorTempo.confidence,
         recipientBeatConfidence: item.analysis?.beatConfidence,
         donorBeatConfidence: donorAnalysis?.beatConfidence,
-        recipientKey: shiftMusicalKey(item.analysis?.musicalKey, deckSemitones),
+        recipientKey: alignmentRecipientKey,
         donorKey: donorAnalysis?.musicalKey ?? null,
-        recipientKeyConfidence: item.analysis?.keyConfidence,
+        recipientKeyConfidence: alignmentRecipientKeyConfidence,
         donorKeyConfidence: donorAnalysis?.keyConfidence,
       },
     );
@@ -376,10 +500,15 @@ function getPersistedSwapSetup(
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
     const donorKeyConfidence = donor?.analysis?.keyConfidence ?? swap.donorTrack?.analysis?.keyConfidence
       ?? libraryDonorAnalysis?.keyConfidence;
-    const leadKey = shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
+    const leadKey = fullBedDonorTrackId !== null
+      ? bedKeyAnalysis?.musicalKey ?? null
+      : shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
+    const leadKeyConfidence = fullBedDonorTrackId !== null
+      ? bedKeyAnalysis?.keyConfidence
+      : item.analysis?.keyConfidence;
     const keyEvidence = keyCompatibilityEvidence(
       leadKey,
-      item.analysis?.keyConfidence,
+      leadKeyConfidence,
       donorKey ?? null,
       donorKeyConfidence,
     );
@@ -387,16 +516,30 @@ function getPersistedSwapSetup(
     const match = keyEvidenceConfident
       ? resolveSessionKeyMatch(keyMode, leadKey, donorKey)
       : { targetKey: null, semitones: null };
-    const correction = keyEvidenceConfident
-      ? resolveLiveStemKeyCorrection(keyMode, item.analysis?.musicalKey, donorKey, deckSemitones, swap.stemType)
-      : null;
+    const bedInstrumentRole = fullBedDonorTrackId !== null
+      && swap.toTrackId === fullBedDonorTrackId
+      && ["drums", "bass", "other"].includes(swap.stemType);
+    const bedVocalRole = fullBedDonorTrackId !== null && swap.stemType === "vocals";
+    const correction = bedInstrumentRole
+      ? 0
+      : keyEvidenceConfident
+        ? resolveLiveStemKeyCorrection(
+          keyMode,
+          leadKey,
+          donorKey,
+          fullBedDonorTrackId !== null ? 0 : deckSemitones,
+          swap.stemType,
+        )
+        : null;
     if (correction !== null) keyCorrections[swap.stemType] = correction;
     const matchedMode = match.targetKey?.split(" ")[1];
     const leadMode = leadKey?.split(" ")[1];
     const modeDiffers = keyMode === "match" && matchedMode !== undefined && leadMode !== undefined
       && matchedMode !== leadMode;
-    keyMatchStatuses[swap.stemType] = swap.stemType === "drums"
-      ? "Drum pitch preserved"
+    keyMatchStatuses[swap.stemType] = bedInstrumentRole || swap.stemType === "drums"
+      ? "Drum/instrumental bed pitch preserved"
+      : bedVocalRole && !keyEvidenceConfident
+        ? "Bed key reference uncertain · donor vocal pitch preserved"
       : keyMode === "preserve" || keyMode === "off"
         ? "Donor pitch preserved"
         : match.semitones === null
@@ -409,7 +552,37 @@ function getPersistedSwapSetup(
             ? "Key already aligned"
             : keyMode === "camelot" ? "Camelot-compatible key matched" : "Key matched to lead";
   }
-  return { swaps, tempoStretchRatios, beatOffsets, alignmentBases, keyCorrections, keyMatchStatuses };
+  if (fullBedDonorTrackId !== null && vocalSwap !== null) {
+    const donorVocalAnalysis = session.tracks.find((track) => track.track.id === vocalSwap.toTrackId)?.analysis
+      ?? vocalSwap.donorTrack?.analysis
+      ?? library.find((track) => track.id === vocalSwap.toTrackId)?.analysis
+      ?? null;
+    const vocalCorrection = resolveInstrumentalBedVocalCorrection(
+      keyMode,
+      keyReferenceKey,
+      keyReferenceConfidence,
+      donorVocalAnalysis?.musicalKey,
+      donorVocalAnalysis?.keyConfidence ?? null,
+    );
+    keyMasterStatus = `${bedDonorItem?.track.title ?? bedDonorSwap?.donorTrack?.title ?? "Donor"} complete instrumental bed is the key reference${keyReferenceKey ? ` (${keyReferenceKey})` : ""}. ${vocalCorrection.reason}`;
+  }
+  return {
+    swaps,
+    tempoStretchRatios,
+    beatOffsets,
+    alignmentBases,
+    keyCorrections,
+    keyMatchStatuses,
+    tempoMasterRate,
+    tempoMasterBpm,
+    tempoMasterConfidence,
+    tempoMasterStatus,
+    keyMasterStatus,
+    keyReferenceKey,
+    keyReferenceConfidence,
+    sourceKeyShiftSemitones,
+    fullBedDonorTrackId,
+  };
 }
 
 function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
@@ -483,6 +656,7 @@ export interface HostCommand {
 type DeckApi = {
   itemId: string | null;
   transport: ReturnType<typeof useStemTransport>;
+  tempoMasterRate: number;
   hasStemChannels: boolean;
   applyStemVolumes: (volumes: Record<string, number>) => void;
   preloadStem: (recipientStemId: string, donorStemId: string, tempoStretchRatio: number, selectedAt?: number) => Promise<void>;
@@ -536,6 +710,11 @@ function SessionDeck({
   onLevel,
   performanceSettings,
   playbackRate,
+  tempoMasterRate,
+  tempoMasterBpm,
+  tempoMasterConfidence,
+  tempoMasterStatus,
+  keyMasterStatus,
   onPlaybackRateChange,
   pitchModesAvailable,
   pitchPreserving,
@@ -588,6 +767,11 @@ function SessionDeck({
   onLevel: (stemType: string, value: number) => void;
   performanceSettings: PerformanceSettings;
   playbackRate: number;
+  tempoMasterRate: number;
+  tempoMasterBpm: number | null;
+  tempoMasterConfidence: number | null;
+  tempoMasterStatus: string;
+  keyMasterStatus: string;
   onPlaybackRateChange: (value: number) => void;
   pitchModesAvailable: boolean;
   pitchPreserving: boolean;
@@ -656,12 +840,13 @@ function SessionDeck({
   // the replacement is ready. In particular, a failed donor load must not
   // pause the source that is currently audible.
   const transport = useStemTransport(transportIds, duration, assetIds, outputGroup, audioAssetPool);
+  const effectivePlaybackRate = normalizeSessionPlaybackRate(playbackRate * tempoMasterRate);
   const [cuePosition, setCuePosition] = useState(0);
   const [selectedLoopBeats, setSelectedLoopBeats] = useState<number | null>(null);
   const [selectedLoopBars, setSelectedLoopBars] = useState<number | null>(null);
   useEffect(() => {
-    transport.setPlaybackRate(playbackRate);
-  }, [playbackRate, transport.setPlaybackRate]);
+    transport.setPlaybackRate(effectivePlaybackRate);
+  }, [effectivePlaybackRate, transport.setPlaybackRate]);
   useEffect(() => {
     let stale = false;
     const applyKeyShift = async () => {
@@ -998,6 +1183,7 @@ function SessionDeck({
     onApi(deckIndex, {
       itemId: item?.id ?? null,
       transport,
+      tempoMasterRate,
       applyStemVolumes,
       preloadStem: (recipientStemId, donorStemId, ratio, selectedAt) =>
         transport.preloadStem(recipientStemId, `/api/assets/${donorStemId}`, ratio, selectedAt),
@@ -1005,7 +1191,7 @@ function SessionDeck({
       hasStemChannels: item?.playback?.kind === "stems" && (item?.stems ?? []).some((stem) => assetIds.includes(stem.id)),
       prepareHandoff,
     });
-  }, [deckIndex, transport, item, applyStemVolumes, prepareHandoff, onApi]);
+  }, [deckIndex, transport, item, applyStemVolumes, prepareHandoff, onApi, tempoMasterRate]);
   useEffect(() => () => onApi(deckIndex, null), [deckIndex, onApi]);
 
   useEffect(() => {
@@ -1190,7 +1376,7 @@ function SessionDeck({
               <input
                 type="range"
                 aria-label="Session playback speed"
-                aria-valuetext={`${playbackRate.toFixed(2)} times${item.analysis?.bpm == null ? "" : `, ${item.analysis.bpmConfidence === null || item.analysis.bpmConfidence < 0.5 ? "approximately " : ""}${Math.round(item.analysis.bpm * playbackRate)} BPM${item.analysis.bpmConfidence === null || item.analysis.bpmConfidence < 0.5 ? ", tempo uncertain" : ""}`}; ${pitchModesAvailable ? (pitchPreserving ? "pitch preserved" : "pitch follows speed") : "pitch mode unavailable"}`}
+                aria-valuetext={`${effectivePlaybackRate.toFixed(2)} times${tempoMasterBpm === null ? "" : `, ${tempoMasterConfidence === null || tempoMasterConfidence < 0.5 ? "approximately " : ""}${Math.round(tempoMasterBpm * playbackRate)} BPM${tempoMasterConfidence === null || tempoMasterConfidence < 0.5 ? ", tempo uncertain" : ""}`}; ${pitchModesAvailable ? (pitchPreserving ? "pitch preserved" : "pitch follows speed") : "pitch mode unavailable"}`}
                 min={SESSION_PLAYBACK_RATE_MIN}
                 max={SESSION_PLAYBACK_RATE_MAX}
                 step={0.01}
@@ -1198,10 +1384,10 @@ function SessionDeck({
                 onChange={(event) => onPlaybackRateChange(Number(event.target.value))}
                 data-testid="session-playback-speed"
               />
-              <output data-testid="session-speed-value">{playbackRate.toFixed(2)}×</output>
+              <output data-testid="session-speed-value">{effectivePlaybackRate.toFixed(2)}×</output>
               <button
                 type="button"
-                aria-label="Reset playback speed to 1.00x"
+                aria-label="Reset manual speed to 1.00x"
                 data-testid="session-speed-reset"
                 disabled={Math.abs(playbackRate - 1) < 0.001}
                 onClick={() => onPlaybackRateChange(1)}
@@ -1209,13 +1395,15 @@ function SessionDeck({
                 Reset
               </button>
               <small>
-                {item.analysis?.bpm == null
+                {tempoMasterBpm === null
                   ? "Tempo analysis unavailable"
-                  : item.analysis.bpmConfidence === null || item.analysis.bpmConfidence < 0.5
-                    ? `~${Math.round(item.analysis.bpm * playbackRate)} BPM · tempo uncertain`
-                    : `${Math.round(item.analysis.bpm * playbackRate)} BPM`}
+                  : tempoMasterConfidence === null || tempoMasterConfidence < 0.5
+                    ? `~${Math.round(tempoMasterBpm * playbackRate)} BPM · tempo uncertain`
+                    : `${Math.round(tempoMasterBpm * playbackRate)} BPM`}
                 {` · ${pitchModesAvailable ? (pitchPreserving ? "pitch stays steady" : "pitch follows speed") : "pitch control unavailable in this browser"}`}
               </small>
+              <small role="status" data-testid="session-tempo-master-status">{tempoMasterStatus}</small>
+              <small role="status" data-testid="session-key-master-status">{keyMasterStatus}</small>
               {pitchModesAvailable && <button
                 type="button"
                 className={`wy-session-pitch-lock${pitchPreserving ? " is-active" : ""}`}
@@ -1671,6 +1859,15 @@ export default function SessionExperience({
     remixTrackCount: number;
     preservedSwapCount?: number;
     preservedTransitionCount?: number;
+    appliedTransforms?: {
+      tempoBpm: number | null;
+      tempoReference: string | null;
+      key: string | null;
+      keyReference: string | null;
+      tempoSyncedClipCount: number;
+      keySyncedClipCount: number;
+      note: string;
+    };
     transitionWarnings?: Array<{ fromTitle: string; toTitle: string; reason: string }>;
     fullSourceCount?: number;
     refused?: Array<{ title: string; reason: string }>;
@@ -2019,9 +2216,18 @@ export default function SessionExperience({
   };
 
   const currentKeyShift = savedKeyShiftFor(currentItem, validKeyShifts);
+  const currentSwapSetup = useMemo(
+    () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, currentKeyShift, playbackRate),
+    [session, currentItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, currentKeyShift, playbackRate],
+  );
   const leadEffectiveKey = currentItem
-    ? shiftMusicalKey(currentItem.analysis?.musicalKey, currentKeyShift)
+    ? currentSwapSetup.fullBedDonorTrackId !== null
+      ? currentSwapSetup.keyReferenceKey
+      : shiftMusicalKey(currentItem.analysis?.musicalKey, currentKeyShift)
     : null;
+  const leadKeyConfidence = currentSwapSetup.fullBedDonorTrackId !== null
+    ? currentSwapSetup.keyReferenceConfidence
+    : currentItem?.analysis?.keyConfidence;
   const resolvedNextKeyMatch = nextItem
     ? resolveSessionKeyMatch(keyMode, leadEffectiveKey, nextItem.analysis?.musicalKey)
     : {
@@ -2033,7 +2239,7 @@ export default function SessionExperience({
   const nextKeyEvidence = nextItem
     ? keyCompatibilityEvidence(
         leadEffectiveKey,
-        currentItem?.analysis?.keyConfidence,
+        leadKeyConfidence,
         nextItem.analysis?.musicalKey ?? null,
         nextItem.analysis?.keyConfidence,
       )
@@ -2049,13 +2255,9 @@ export default function SessionExperience({
       }
     : resolvedNextKeyMatch;
   const nextKeyShift = nextKeyMatch.semitones ?? 0;
-  const currentSwapSetup = useMemo(
-    () => getPersistedSwapSetup(session, currentItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, currentKeyShift),
-    [session, currentItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, currentKeyShift],
-  );
   const nextSwapSetup = useMemo(
-    () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, nextKeyShift),
-    [session, nextItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, nextKeyShift],
+    () => getPersistedSwapSetup(session, nextItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, nextKeyShift, playbackRate),
+    [session, nextItem, library, cancelledSwapIds, manualTempoCorrections, keyMode, nextKeyShift, playbackRate],
   );
   useEffect(() => {
     if (!nextItem || nextKeyMatch.semitones === null) return;
@@ -2083,7 +2285,7 @@ export default function SessionExperience({
     const matchingMode = requestedMode === "camelot" || requestedMode === "match";
     const requestedEvidence = keyCompatibilityEvidence(
       leadEffectiveKey,
-      currentItem.analysis?.keyConfidence,
+      leadKeyConfidence,
       nextItem.analysis?.musicalKey ?? null,
       nextItem.analysis?.keyConfidence,
     );
@@ -2106,16 +2308,34 @@ export default function SessionExperience({
     }
 
     const otherDeck = activeDeck === 0 ? 1 : 0;
+    const activeVocalSwap = session?.swaps.find((swap) =>
+      swap.sessionTrackId === currentItem.id
+      && swap.stemType === "vocals"
+      && !cancelledSwapIds.has(swap.id),
+    );
+    const requestedCurrentShift = currentSwapSetup.fullBedDonorTrackId !== null && activeVocalSwap === undefined
+      ? resolveInstrumentalBedVocalCorrection(
+        requestedMode,
+        currentSwapSetup.keyReferenceKey,
+        currentSwapSetup.keyReferenceConfidence,
+        currentItem.analysis?.musicalKey,
+        currentItem.analysis?.keyConfidence ?? null,
+      ).semitones
+      : 0;
     const previousShifts = [
-      { deck: activeDeck, item: currentItem, semitones: savedKeyShiftFor(currentItem, keyShiftByTrack) },
+      {
+        deck: activeDeck,
+        item: currentItem,
+        semitones: currentSwapSetup.sourceKeyShiftSemitones ?? savedKeyShiftFor(currentItem, keyShiftByTrack),
+      },
       { deck: otherDeck, item: nextItem, semitones: savedKeyShiftFor(nextItem, keyShiftByTrack) },
     ] as const;
     const shifts: SessionKeyShifts = {
-      [currentItem.id]: { trackId: currentItem.track.id, semitones: 0 },
+      [currentItem.id]: { trackId: currentItem.track.id, semitones: requestedCurrentShift },
       [nextItem.id]: { trackId: nextItem.track.id, semitones: requestedMatch.semitones ?? 0 },
     };
     const requestedShifts = [
-      { deck: activeDeck, item: currentItem, semitones: 0 },
+      { deck: activeDeck, item: currentItem, semitones: requestedCurrentShift },
       { deck: otherDeck, item: nextItem, semitones: requestedMatch.semitones ?? 0 },
     ] as const;
     setKeyMatchBusy(true);
@@ -2144,7 +2364,20 @@ export default function SessionExperience({
     } finally {
       setKeyMatchBusy(false);
     }
-  }, [activeDeck, currentItem, keyMatchBusy, keyShiftByTrack, leadEffectiveKey, liveKeyMatchingAvailable, nextItem, persistState]);
+  }, [
+    activeDeck,
+    cancelledSwapIds,
+    currentItem,
+    currentSwapSetup,
+    keyMatchBusy,
+    keyShiftByTrack,
+    leadEffectiveKey,
+    leadKeyConfidence,
+    liveKeyMatchingAvailable,
+    nextItem,
+    persistState,
+    session,
+  ]);
   const activeSwaps = currentSwapSetup.swaps;
   const activeSwapTempoStretchRatios = currentSwapSetup.tempoStretchRatios;
 
@@ -2184,7 +2417,9 @@ export default function SessionExperience({
     if (Math.abs(rate - playbackRateRef.current) < 0.001) return;
     playbackRateRef.current = rate;
     setPlaybackRate(rate);
-    for (const deck of decksRef.current) deck?.transport.setPlaybackRate(rate);
+    for (const deck of decksRef.current) {
+      if (deck) deck.transport.setPlaybackRate(normalizeSessionPlaybackRate(rate * deck.tempoMasterRate));
+    }
 
     const activeApi = decksRef.current[activeDeckRef.current];
     const remote = remoteTransportRef.current;
@@ -3036,7 +3271,9 @@ export default function SessionExperience({
       const rate = normalizeSessionPlaybackRate(incoming.playbackRate);
       playbackRateRef.current = rate;
       setPlaybackRate(rate);
-      for (const deck of decksRef.current) deck?.transport.setPlaybackRate(rate);
+      for (const deck of decksRef.current) {
+        if (deck) deck.transport.setPlaybackRate(normalizeSessionPlaybackRate(rate * deck.tempoMasterRate));
+      }
     }
     if (incoming.action === "speed" || incoming.action === "pitch") {
       // A mirror can change speed without moving the active owner's playhead.
@@ -3986,6 +4223,15 @@ export default function SessionExperience({
             remixTrackCount: number;
             preservedSwapCount?: number;
             preservedTransitionCount?: number;
+            appliedTransforms?: {
+              tempoBpm: number | null;
+              tempoReference: string | null;
+              key: string | null;
+              keyReference: string | null;
+              tempoSyncedClipCount: number;
+              keySyncedClipCount: number;
+              note: string;
+            };
             transitionWarnings?: Array<{ fromTitle: string; toTitle: string; reason: string }>;
             refused?: Array<{ title: string; reason: string }>;
           };
@@ -4336,22 +4582,42 @@ export default function SessionExperience({
 
   const compatibility = useMemo(() => {
     if (currentItem === null || nextItem === null) return null;
-    const tempo = tempoCompatibility(currentItem.analysis?.bpm ?? null, nextItem.analysis?.bpm ?? null);
+    const currentBpm = currentSwapSetup.tempoMasterBpm ?? currentItem.analysis?.bpm ?? null;
+    const nextBpm = nextSwapSetup.tempoMasterBpm ?? nextItem.analysis?.bpm ?? null;
+    const nextKey = nextSwapSetup.fullBedDonorTrackId !== null
+      ? nextSwapSetup.keyReferenceKey
+      : nextItem.analysis?.musicalKey ?? null;
+    const nextKeyConfidence = nextSwapSetup.fullBedDonorTrackId !== null
+      ? nextSwapSetup.keyReferenceConfidence
+      : nextItem.analysis?.keyConfidence;
+    const currentKey = currentSwapSetup.fullBedDonorTrackId !== null
+      ? currentSwapSetup.keyReferenceKey
+      : currentItem.analysis?.musicalKey ?? null;
+    const currentKeyConfidence = currentSwapSetup.fullBedDonorTrackId !== null
+      ? currentSwapSetup.keyReferenceConfidence
+      : currentItem.analysis?.keyConfidence;
+    const tempo = tempoCompatibility(currentBpm, nextBpm);
     const key = keyCompatibilityEvidence(
-      currentItem.analysis?.musicalKey ?? null,
-      currentItem.analysis?.keyConfidence,
-      nextItem.analysis?.musicalKey ?? null,
-      nextItem.analysis?.keyConfidence,
+      currentKey,
+      currentKeyConfidence,
+      nextKey,
+      nextKeyConfidence,
     );
     const mode = currentTransition?.mode ?? "manual";
-    const evidence = compatibilityEvidence(currentItem.analysis, nextItem.analysis, mode);
+    const currentAnalysis = currentItem.analysis
+      ? { ...currentItem.analysis, bpm: currentBpm, musicalKey: currentKey, keyConfidence: currentKeyConfidence }
+      : null;
+    const nextAnalysis = nextItem.analysis
+      ? { ...nextItem.analysis, bpm: nextBpm, musicalKey: nextKey, keyConfidence: nextKeyConfidence }
+      : null;
+    const evidence = compatibilityEvidence(currentAnalysis, nextAnalysis, mode);
     let alignment: { ok: boolean; reason: string } | null = null;
     if (mode === "beat" || mode === "bar") {
       const aligned = beatAlignedTransitionStart(currentItem.analysis?.beatGridMs ?? null, nextItem.analysis?.beatGridMs ?? null, 0, mode);
       alignment = { ok: aligned.ok, reason: aligned.reason };
     }
     return { tempo, key, alignment, evidence };
-  }, [currentItem, nextItem, currentTransition]);
+  }, [currentItem, nextItem, currentTransition, currentSwapSetup, nextSwapSetup]);
 
   // Start the selected fade early enough to reach its transition cue and finish
   // before the current song ends. The same transition core powers manual mixes.
@@ -4846,11 +5112,15 @@ export default function SessionExperience({
         currentTempoCorrected={recipientTempo.corrected}
         currentBpmConfidence={recipientTempo.confidence}
         currentBeatConfidence={currentItem.analysis?.beatConfidence ?? null}
-        currentKey={currentItem.analysis?.musicalKey ?? null}
-        currentKeyConfidence={currentItem.analysis?.keyConfidence ?? null}
+        currentKey={currentSwapSetup.fullBedDonorTrackId !== null
+          ? currentSwapSetup.keyReferenceKey
+          : currentItem.analysis?.musicalKey ?? null}
+        currentKeyConfidence={currentSwapSetup.fullBedDonorTrackId !== null
+          ? currentSwapSetup.keyReferenceConfidence
+          : currentItem.analysis?.keyConfidence ?? null}
         currentPositionSeconds={positions[activeDeck]}
         currentPlaying={playingByDeck[activeDeck]}
-        sessionPlaybackRate={playbackRate}
+        sessionPlaybackRate={normalizeSessionPlaybackRate(playbackRate * currentSwapSetup.tempoMasterRate)}
         candidates={candidates}
         preparationCandidates={preparationCandidates}
         preparingTrackIds={preparingSeparationTrackIds}
@@ -4918,6 +5188,15 @@ export default function SessionExperience({
               return false;
             }
             donorEntryOffsetMs = exactEntryMs;
+          }
+          if (
+            stemType === "vocals"
+            && donorEntryOffsetMs === null
+            && entryCandidate === undefined
+            && getEntryCandidates(donorId).length === 0
+          ) {
+            setStatus("No source-verified vocal entry match is available at this playhead. The current vocal stays active; compare a measured window or set a manual donor start.");
+            return false;
           }
           if (stemType === "vocals") {
             setRecipientVocalHealth({
@@ -5000,6 +5279,11 @@ export default function SessionExperience({
       tempoStretchRatios: swapSetup.tempoStretchRatios,
       beatOffsets: swapSetup.beatOffsets,
       keyCorrections: swapSetup.keyCorrections,
+      tempoMasterRate: swapSetup.tempoMasterRate,
+      tempoMasterBpm: swapSetup.tempoMasterBpm,
+      tempoMasterConfidence: swapSetup.tempoMasterConfidence,
+      tempoMasterStatus: swapSetup.tempoMasterStatus,
+      keyMasterStatus: swapSetup.keyMasterStatus,
       masterLevel,
       autoPlay: item !== null && autoPlayId === item.id && (isActive || resumeAt?.itemId === item.id),
       onAutoPlayed: () => {
@@ -5019,9 +5303,9 @@ export default function SessionExperience({
       pitchLockMessage: isActive ? pitchLockMessage : null,
       onPitchPreservingChange: changePitchPreserving,
       keyShiftSemitones: item?.id === currentItem?.id
-        ? currentKeyShift
+        ? currentSwapSetup.sourceKeyShiftSemitones ?? currentKeyShift
         : item?.id === nextItem?.id
-          ? nextKeyShift
+          ? nextSwapSetup.sourceKeyShiftSemitones ?? nextKeyShift
           : savedKeyShiftFor(item, keyShiftByTrack),
       onKeyShiftFailure: reportKeyShiftFailure,
       onPerformanceAction: item ? actionForItem(item.id, deckIndex) : () => undefined,
@@ -5370,9 +5654,18 @@ export default function SessionExperience({
             {handoff.preservedSwapCount
               ? ` · ${handoff.preservedSwapCount} live stem swap${handoff.preservedSwapCount === 1 ? "" : "s"} carried over`
               : ""}
+            {handoff.appliedTransforms
+              ? ` · tempo ${handoff.appliedTransforms.tempoBpm !== null
+                ? `${handoff.appliedTransforms.tempoBpm.toFixed(2)} BPM (${handoff.appliedTransforms.tempoSyncedClipCount} clips adapted)`
+                : "unchanged"}`
+              : ""}
+            {handoff.appliedTransforms?.key
+              ? ` · ${handoff.appliedTransforms.key} bed reference (${handoff.appliedTransforms.keySyncedClipCount} vocal clips adapted)`
+              : ""}
             {handoff.preservedTransitionCount
               ? ` · ${handoff.preservedTransitionCount} session crossfade${handoff.preservedTransitionCount === 1 ? "" : "s"} carried over`
               : ""}
+            {handoff.appliedTransforms ? ` — ${handoff.appliedTransforms.note}` : ""}
             {handoff.transitionWarnings && handoff.transitionWarnings.length > 0
               ? ` — transition notes: ${handoff.transitionWarnings.map((item) => `${item.fromTitle} → ${item.toTitle}: ${item.reason}`).join("; ")}`
               : ""}

@@ -1,5 +1,51 @@
 # Arena handoff — read this first
 
+## Latest increment: Live stem swaps share a measured tempo and key reference
+
+Waveyard now treats an active drum donor as a possible mix-tempo master only
+when both tracks have reliable BPM and beat-grid evidence, the BPMs are not a
+half/double-time reading, the stretch is within the existing safe range, and
+the resulting playback rate is supported. The chosen rate is applied to every
+audio layer on that receiving deck; donor stems are prepared against the
+original receiving tempo so the global rate moves the complete arrangement to
+the donor drum tempo. The UI reports the effective rate, tempo authority and
+why the master was accepted or refused.
+
+A key reference changes only when persisted `drums`, `bass` and `other` swaps
+are all present, come from the same track, and resolve to their exact saved
+separated-stem assets. That complete bed becomes the key reference; original or
+replacement vocals are pitch-shifted only when both key estimates meet the
+confidence gate. Bed instruments themselves are not transposed to satisfy a
+vocal. A missing, stale or passthrough asset cannot silently complete the bed.
+
+Vocal swaps with no source-verified rhythm/harmony entry candidate no longer
+apply at an implicit playhead position. Clicking the donor stages the review
+panel while the current vocal remains active; the user must choose a measured
+window or set and save an explicit manual cue. Existing measured candidates can
+still be auditioned and applied, and stale candidate windows remain rejected.
+
+The exact September-vocals / Queen-bed real evidence explains the refusal path:
+the stored full-track analysis reports September at **126.048 BPM** (BPM
+confidence **0.697**, beat confidence **0.830**, key confidence **0.406**) and
+Queen at **109.957 BPM** (BPM confidence **0.426**, beat confidence **0.642**,
+key confidence **0.165**). Thus Queen's drum estimate cannot authorize an
+automatic tempo master and neither key can authorize pitch correction. The
+existing persisted passage report evaluated **26** donor passages and ranked
+**zero**; it also explicitly says it lacks manual verse/chorus ground truth.
+This is evidence to keep the fallback honest, not evidence of a successful
+automatic mashup.
+
+**Verification:** shared library tests passed **64/64**; ArenaForge and shared
+library typechecks passed; the Chromium entry-audition fixture passed, including
+evidence-free direct vocal selection refusing to replace the active vocal,
+manual cue persistence, a strong-evidence whole-deck tempo change, and the
+September/Queen low-confidence fallback; the real PostgreSQL service-test subset
+passed **4/4**, including persisted distinct stem swaps round-tripping into
+Studio; `git diff --check` passed. Browser persistence in the UI fixture is
+mocked and its PCM is synthetic. The PostgreSQL test proves storage/identity
+round-trip, not audio quality. No new full-length real-audio playback,
+independent listening, or musical-quality claim was made.
+
 ## Latest increment: Studio compares both vocal directions without inventing a winner
 
 The main Mashup Studio now has an explicit **Compare both song directions**

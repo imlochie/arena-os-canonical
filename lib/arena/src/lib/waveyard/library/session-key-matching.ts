@@ -52,6 +52,70 @@ export function resolveLiveStemKeyCorrection(
   return relative > 11 ? relative - 12 : relative < -11 ? relative + 12 : relative;
 }
 
+export interface InstrumentalBedVocalCorrection {
+  semitones: number;
+  sourceKey: MusicalKey | null;
+  bedKey: MusicalKey | null;
+  applied: boolean;
+  reason: string;
+}
+
+/**
+ * A complete donor instrumental bed may become the vocal's key reference, but
+ * only measured keys with adequate confidence can authorize an automatic shift.
+ * Weak or missing evidence keeps the vocal at its source pitch.
+ */
+export function resolveInstrumentalBedVocalCorrection(
+  mode: SessionKeyMode,
+  bedKeyValue: unknown,
+  bedKeyConfidence: number | null,
+  vocalKeyValue: unknown,
+  vocalKeyConfidence: number | null,
+): InstrumentalBedVocalCorrection {
+  const bedKey = normaliseMusicalKey(bedKeyValue);
+  const sourceKey = normaliseMusicalKey(vocalKeyValue);
+  if (mode === "off" || mode === "preserve") {
+    return {
+      semitones: 0,
+      sourceKey,
+      bedKey,
+      applied: false,
+      reason: mode === "off"
+        ? "The donor instrumental bed is the key reference, but key correction is off."
+        : "The donor instrumental bed is the key reference, but preserve mode keeps the vocal in its original key.",
+    };
+  }
+  const confident = (value: number | null) => value !== null && Number.isFinite(value) && value >= 0.5;
+  if (!bedKey || !sourceKey || !confident(bedKeyConfidence) || !confident(vocalKeyConfidence)) {
+    return {
+      semitones: 0,
+      sourceKey,
+      bedKey,
+      applied: false,
+      reason: "Bed or vocal key evidence is missing or below 0.50 confidence; the vocal stays at its source pitch.",
+    };
+  }
+  const match = resolveSessionKeyMatch(mode, bedKey, sourceKey);
+  if (match.semitones === null) {
+    return {
+      semitones: 0,
+      sourceKey,
+      bedKey,
+      applied: false,
+      reason: "A compatible bed/vocal key shift could not be calculated; the vocal stays at its source pitch.",
+    };
+  }
+  return {
+    semitones: match.semitones,
+    sourceKey,
+    bedKey,
+    applied: match.semitones !== 0,
+    reason: match.semitones === 0
+      ? `The vocal is already in the donor bed's ${bedKey} key.`
+      : `${match.reason} Shift the vocal ${match.semitones > 0 ? "+" : ""}${match.semitones} semitones.`,
+  };
+}
+
 export function resolveSessionKeyMatch(
   mode: SessionKeyMode,
   leadValue: unknown,

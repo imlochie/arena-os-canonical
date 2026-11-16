@@ -72,16 +72,23 @@ import {
 } from "./model";
 import {
   beatAlignedTransitionStart,
+  completeInstrumentalBedDonorTrackId,
   defaultTransitionConfig,
+  hasReliableLiveStemBeatEvidence,
+  hasReliableLiveStemTempoEvidence,
+  liveStemTempoStretchRatio,
   normalizeTransitionConfig,
+  resolveLiveDrumTempoMaster,
   validateStemSwap,
   type TransitionConfig,
 } from "./session-logic";
 import {
   normalizeSessionKeyMode,
+  resolveInstrumentalBedVocalCorrection,
   type SessionKeyMode,
   type SessionKeyShifts,
 } from "./session-key-matching";
+import { normaliseMusicalKey } from "../types/musical-key";
 import { getTrack, QueueItemNotFoundError, removeQueueItem, type TrackDetail, type TrackStem, type TrackSummary } from "./service";
 import { assertExpectedOrder, withOrderingLock, type OrderingTransaction } from "./ordering";
 export { OrderingConflictError } from "./ordering";
@@ -1132,6 +1139,15 @@ export interface StudioHandoffResult {
   remixTrackCount: number;
   preservedSwapCount: number;
   preservedTransitionCount: number;
+  appliedTransforms?: {
+    tempoBpm: number | null;
+    tempoReference: string | null;
+    key: string | null;
+    keyReference: string | null;
+    tempoSyncedClipCount: number;
+    keySyncedClipCount: number;
+    note: string;
+  };
   transitionWarnings?: Array<{ fromTitle: string; toTitle: string; reason: string }>;
   refused?: Array<{ title: string; reason: string }>;
 }
@@ -1139,6 +1155,95 @@ export interface StudioHandoffResult {
 export interface StudioHandoffTrackEdit {
   sessionTrackId: string;
   stemMix: unknown;
+}
+
+interface SessionStudioTransformPlan {
+  sessionTrackId: string;
+  tempoBpm: number | null;
+  tempoConfidence: number | null;
+  tempoBeatConfidence: number | null;
+  tempoReference: string | null;
+  key: string | null;
+  keyConfidence: number | null;
+  keyReference: string | null;
+  keyMode: SessionKeyMode;
+}
+
+function confidentAnalysisValue(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0.5;
+}
+
+function deriveSessionStudioTransformPlan(
+  detail: SessionDetailPayload,
+  sessionTrack: SessionTrackPayload,
+): SessionStudioTransformPlan {
+  const swaps = detail.swaps.filter((swap) => swap.sessionTrackId === sessionTrack.id);
+  const drumSwap = swaps.find((swap) => swap.stemType === "drums");
+  const drumAnalysis = drumSwap?.donorTrack?.analysis ?? null;
+  const drumEvidence = {
+    recipientBpmConfidence: sessionTrack.analysis?.bpmConfidence,
+    donorBpmConfidence: drumAnalysis?.bpmConfidence,
+    recipientBeatConfidence: sessionTrack.analysis?.beatConfidence,
+    donorBeatConfidence: drumAnalysis?.beatConfidence,
+  };
+  const drumResolution = drumSwap
+    ? resolveLiveDrumTempoMaster(sessionTrack.analysis?.bpm ?? null, drumAnalysis?.bpm ?? null, drumEvidence)
+    : null;
+  const currentTempoIsUsable = confidentAnalysisValue(sessionTrack.analysis?.bpmConfidence)
+    && confidentAnalysisValue(sessionTrack.analysis?.beatConfidence)
+    && Number.isFinite(sessionTrack.analysis?.bpm)
+    && (sessionTrack.analysis?.bpm ?? 0) >= 40
+    && (sessionTrack.analysis?.bpm ?? 0) <= 300;
+  const donorDrumsAreMaster = drumResolution?.master === "donor-drums";
+  const tempoBpm = donorDrumsAreMaster
+    ? drumResolution.donorBpm
+    : currentTempoIsUsable ? sessionTrack.analysis!.bpm : null;
+  const tempoConfidence = donorDrumsAreMaster
+    ? drumAnalysis?.bpmConfidence ?? null
+    : currentTempoIsUsable ? sessionTrack.analysis?.bpmConfidence ?? null : null;
+  const tempoBeatConfidence = donorDrumsAreMaster
+    ? drumAnalysis?.beatConfidence ?? null
+    : currentTempoIsUsable ? sessionTrack.analysis?.beatConfidence ?? null : null;
+  const tempoReference = donorDrumsAreMaster
+    ? drumSwap?.donorTrack?.title ?? "Donor drums"
+    : tempoBpm !== null ? sessionTrack.track.title : null;
+
+  const completeBedTrackId = completeInstrumentalBedDonorTrackId(swaps.map((swap) => ({
+    stemType: swap.stemType,
+    donorTrackId: swap.toTrackId,
+  })));
+  const completeBedSwaps = completeBedTrackId
+    ? ["drums", "bass", "other"].map((stemType) =>
+      swaps.find((swap) => swap.stemType === stemType && swap.toTrackId === completeBedTrackId),
+    )
+    : [];
+  const completeBedIsPinned = completeBedTrackId !== null
+    && completeBedSwaps.length === 3
+    && completeBedSwaps.every((swap) => {
+      if (!swap?.toStemAssetId || swap.donorTrack?.id !== completeBedTrackId) return false;
+      return swap.donorTrack.stems.some((stem) =>
+        stem.id === swap.toStemAssetId
+        && stem.stemType === swap.stemType
+        && stem.engine !== "passthrough-unseparated",
+      );
+    });
+  const bedSwap = completeBedIsPinned ? completeBedSwaps[0] : undefined;
+  const bedAnalysis = bedSwap?.donorTrack?.analysis ?? null;
+  const key = bedAnalysis?.keyConfidence !== null && bedAnalysis?.keyConfidence !== undefined
+    && bedAnalysis.keyConfidence >= 0.5
+    ? normaliseMusicalKey(bedAnalysis.musicalKey)
+    : null;
+  return {
+    sessionTrackId: sessionTrack.id,
+    tempoBpm: tempoBpm ?? null,
+    tempoConfidence: tempoConfidence ?? null,
+    tempoBeatConfidence: tempoBeatConfidence ?? null,
+    tempoReference,
+    key,
+    keyConfidence: key !== null ? bedAnalysis?.keyConfidence ?? null : null,
+    keyReference: key !== null ? bedSwap?.donorTrack?.title ?? "Complete instrumental bed" : null,
+    keyMode: detail.keyMatchMode,
+  };
 }
 
 /**
@@ -1173,6 +1278,11 @@ export async function sendSessionToStudio(
     selectedTracks = detail.tracks.filter((entry) => selectedIds.has(entry.id));
   }
   const selectedTrackIds = new Set(selectedTracks.map((entry) => entry.id));
+  const transformTrack = selectedTracks.find((entry) => entry.id === detail.currentSessionTrackId)
+    ?? (selectedTracks.length === 1 ? selectedTracks[0] : null);
+  const transformPlan = transformTrack
+    ? deriveSessionStudioTransformPlan(detail, transformTrack)
+    : null;
   const mixEdits = new Map<string, StemMix>();
   for (const edit of trackEdits ?? []) {
     if (!selectedTrackIds.has(edit.sessionTrackId)) {
@@ -1198,11 +1308,15 @@ export async function sendSessionToStudio(
     durationMs: number;
     fadeInMs: number;
     fadeOutMs: number;
+    tempoSyncEnabled: boolean;
+    keySyncEnabled: boolean;
   }> = [];
   const refused: Array<{ title: string; reason: string }> = [];
   const transitionWarnings: NonNullable<StudioHandoffResult["transitionWarnings"]> = [];
   const handoffStorage = getStorage();
   const stemObjectAvailability = new Map<string, boolean>();
+  let tempoSyncedClipCount = 0;
+  let keySyncedClipCount = 0;
   const availableStemIds = async (stems: TrackStem[]): Promise<Set<string>> => {
     const ids = [...new Set(stems.map((stem) => stem.id))];
     const pendingIds = ids.filter((id) => !stemObjectAvailability.has(id));
@@ -1259,7 +1373,14 @@ export async function sendSessionToStudio(
       });
       continue;
     }
-    const replacements = new Map<string, { stemId: string; donorTitle: string; durationSeconds: number }>();
+    const replacements = new Map<string, {
+      stemId: string;
+      donorTitle: string;
+      donorTrackId: string;
+      durationSeconds: number;
+      donorEntryOffsetMs: number;
+      analysis: SessionTrackAnalysis | null;
+    }>();
     let invalidSwapReason: string | null = null;
     for (const swap of detail.swaps.filter((entry) => entry.sessionTrackId === sessionTrack.id)) {
       if (swap.fromTrackId !== sessionTrack.track.id || swap.fromStemAssetId === null || swap.toStemAssetId === null) {
@@ -1284,20 +1405,77 @@ export async function sendSessionToStudio(
       replacements.set(swap.stemType, {
         stemId: donorStem.id,
         donorTitle: donorDetail.title,
+        donorTrackId: donorDetail.id,
         durationSeconds: donorStem.durationSeconds,
+        donorEntryOffsetMs: swap.donorEntryOffsetMs ?? 0,
+        analysis: donorDetail.analysis,
       });
     }
     if (invalidSwapReason !== null) {
       refused.push({ title: sessionTrack.track.title, reason: invalidSwapReason });
       continue;
     }
-    const trackDurationMs = Number.isFinite(trackDetail.durationSeconds) && trackDetail.durationSeconds > 0
-      ? Math.max(1, Math.round(trackDetail.durationSeconds * 1000))
-      : Math.max(0, ...playableStems.map((stem) =>
-        Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0
-          ? Math.round(stem.durationSeconds * 1000)
-          : 0,
-      ));
+    const trackTransform = transformPlan?.sessionTrackId === sessionTrack.id ? transformPlan : null;
+    const preparedStems = playableStems.map((stem) => {
+      const replacement = replacements.get(stem.stemType);
+      const stemDurationSeconds = Number.isFinite(replacement?.durationSeconds) && (replacement?.durationSeconds ?? 0) > 0
+        ? replacement!.durationSeconds
+        : Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0
+          ? stem.durationSeconds
+          : trackDetail.durationSeconds;
+      const durationMs = Number.isFinite(stemDurationSeconds) && stemDurationSeconds > 0
+        ? Math.round(stemDurationSeconds * 1000)
+        : 0;
+      const sourceOffsetMs = replacement?.donorEntryOffsetMs ?? 0;
+      const analysis = replacement?.analysis ?? sessionTrack.analysis;
+      const tempoEvidence = {
+        recipientBpmConfidence: trackTransform?.tempoConfidence,
+        donorBpmConfidence: analysis?.bpmConfidence,
+        recipientBeatConfidence: trackTransform?.tempoBeatConfidence,
+        donorBeatConfidence: analysis?.beatConfidence,
+      };
+      const proposedTempoRatio = trackTransform?.tempoBpm !== null && trackTransform?.tempoBpm !== undefined
+        && analysis?.bpm !== null && analysis?.bpm !== undefined
+        && hasReliableLiveStemTempoEvidence(tempoEvidence)
+        ? liveStemTempoStretchRatio(analysis.bpm, trackTransform.tempoBpm, tempoEvidence)
+        : null;
+      const tempoSyncEnabled = proposedTempoRatio !== null
+        && Math.abs(proposedTempoRatio - 1) > 0.0001;
+      const tempoRatio = tempoSyncEnabled ? proposedTempoRatio : 1;
+      const vocalKeyCorrection = trackTransform?.key !== null && trackTransform?.key !== undefined
+        && stem.stemType === "vocals"
+        ? resolveInstrumentalBedVocalCorrection(
+          trackTransform.keyMode,
+          trackTransform.key,
+          trackTransform.keyConfidence,
+          analysis?.musicalKey ?? null,
+          analysis?.keyConfidence ?? null,
+        )
+        : null;
+      const keySyncEnabled = vocalKeyCorrection?.applied === true
+        && vocalKeyCorrection.semitones !== 0;
+      const outputDurationMs = durationMs > sourceOffsetMs
+        ? Math.floor((durationMs - sourceOffsetMs) / tempoRatio)
+        : 0;
+      return {
+        stem,
+        replacement,
+        analysis,
+        sourceOffsetMs,
+        sourceDurationMs: durationMs,
+        tempoRatio,
+        outputDurationMs,
+        tempoSyncEnabled,
+        keySyncEnabled,
+      };
+    });
+    const trackDurationMs = Math.max(
+      0,
+      ...preparedStems.map((prepared) => prepared.outputDurationMs),
+      Number.isFinite(trackDetail.durationSeconds) && trackDetail.durationSeconds > 0 && preparedStems.length === 0
+        ? Math.round(trackDetail.durationSeconds * 1000)
+        : 0,
+    );
     if (trackDurationMs <= 0) {
       refused.push({ title: sessionTrack.track.title, reason: "Audio duration is unavailable for Studio placement." });
       continue;
@@ -1420,19 +1598,18 @@ export async function sendSessionToStudio(
       continue;
     }
     const bindableStart = bindable.length;
-    for (const stem of playableStems) {
-      const replacement = replacements.get(stem.stemType);
-      const stemDuration = Number.isFinite(replacement?.durationSeconds) && (replacement?.durationSeconds ?? 0) > 0
-        ? replacement!.durationSeconds
-        : Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0
-          ? stem.durationSeconds
-        : trackDetail.durationSeconds;
-      if (!Number.isFinite(stemDuration) || stemDuration <= 0) {
+    for (const prepared of preparedStems) {
+      const { stem, replacement } = prepared;
+      const clipSourceOffsetMs = sourceOffsetMs + prepared.sourceOffsetMs;
+      const clipOutputDurationMs = prepared.sourceDurationMs > clipSourceOffsetMs
+        ? Math.floor((prepared.sourceDurationMs - clipSourceOffsetMs) / prepared.tempoRatio)
+        : 0;
+      if (clipOutputDurationMs <= 0) {
         refused.push({ title: sessionTrack.track.title, reason: "Audio duration is unavailable for Studio placement." });
         continue;
       }
       const clipDurationMs = Math.min(
-        Math.round(stemDuration * 1000) - sourceOffsetMs,
+        clipOutputDurationMs,
         remainingTrackDurationMs,
       );
       if (clipDurationMs <= 0) {
@@ -1447,11 +1624,15 @@ export async function sendSessionToStudio(
           ? `${sessionTrack.track.title} — ${stem.stemType} · ${replacement.donorTitle}`
           : `${sessionTrack.track.title} — ${stem.stemType}`,
         timelineStartMs,
-        sourceOffsetMs,
+        sourceOffsetMs: clipSourceOffsetMs,
         durationMs: clipDurationMs,
         fadeInMs: Math.min(fadeInMs, clipDurationMs),
         fadeOutMs: 0,
+        tempoSyncEnabled: prepared.tempoSyncEnabled,
+        keySyncEnabled: prepared.keySyncEnabled,
       });
+      if (prepared.tempoSyncEnabled) tempoSyncedClipCount += 1;
+      if (prepared.keySyncEnabled) keySyncedClipCount += 1;
       if (replacement !== undefined) preservedSwapCount += 1;
     }
     if (bindable.length === bindableStart) continue;
@@ -1481,6 +1662,10 @@ export async function sendSessionToStudio(
         : "No selected session entry has audio the Studio can bind (needs separated stems or the full-source bridge). No Studio project was created. Restore or re-separate the tracks in the Library, or remove them from the selection, then retry.",
     );
   }
+  const effectiveTransformPlan = transformPlan !== null
+    && bindable.some((entry) => entry.sessionTrack.id === transformPlan.sessionTrackId)
+    ? transformPlan
+    : null;
 
   const [project] = await db
     .insert(projects)
@@ -1499,6 +1684,8 @@ export async function sendSessionToStudio(
       projectId: project.id,
       ownerId,
       name: `Session · ${detail.name}`,
+      tempoBpm: effectiveTransformPlan?.tempoBpm ?? 120,
+      targetKey: effectiveTransformPlan?.key ?? null,
     })
     .returning({ id: remixSessions.id });
 
@@ -1520,8 +1707,29 @@ export async function sendSessionToStudio(
       gain: 1,
       fadeInMs: entry.fadeInMs,
       fadeOutMs: entry.fadeOutMs,
+      tempoSyncEnabled: entry.tempoSyncEnabled,
+      keySyncEnabled: entry.keySyncEnabled,
     })));
   });
+
+  const appliedTransforms: NonNullable<StudioHandoffResult["appliedTransforms"]> = {
+    tempoBpm: effectiveTransformPlan?.tempoBpm ?? null,
+    tempoReference: effectiveTransformPlan?.tempoReference ?? null,
+    key: effectiveTransformPlan?.key ?? null,
+    keyReference: effectiveTransformPlan?.keyReference ?? null,
+    tempoSyncedClipCount,
+    keySyncedClipCount,
+    note: effectiveTransformPlan === null
+      ? "No valid current session entry was available as the single transform authority; clips remain at native timing and pitch."
+      : [
+        effectiveTransformPlan.tempoBpm === null
+          ? "No reliable tempo authority was available; no automatic tempo changes were applied."
+          : `Tempo target ${effectiveTransformPlan.tempoBpm.toFixed(2)} BPM follows ${effectiveTransformPlan.tempoReference ?? "the current track"}.`,
+        effectiveTransformPlan.key === null
+          ? "No complete, confident instrumental-bed key reference was available; vocals remain at source pitch."
+          : `Key reference ${effectiveTransformPlan.key} comes from ${effectiveTransformPlan.keyReference ?? "the complete instrumental bed"}; only confident vocals in matching mode may be transposed.`,
+      ].join(" "),
+  };
 
   return {
     projectId: project.id,
@@ -1529,6 +1737,7 @@ export async function sendSessionToStudio(
     remixTrackCount: bindable.length,
     preservedSwapCount,
     preservedTransitionCount,
+    appliedTransforms,
     transitionWarnings: transitionWarnings.length > 0 ? transitionWarnings : undefined,
     refused: refused.length > 0 ? refused : undefined,
   };

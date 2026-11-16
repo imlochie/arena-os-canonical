@@ -216,6 +216,22 @@ export function hasReliableLiveStemBeatEvidence(evidence: LiveStemTempoEvidence)
   ].every(hasConfidenceAtLeastHalf);
 }
 
+export interface InstrumentalBedSwapEvidence {
+  stemType: string;
+  donorTrackId: string;
+}
+
+/** Return a donor only when drums, bass and other all come from that same track. */
+export function completeInstrumentalBedDonorTrackId(
+  swaps: readonly InstrumentalBedSwapEvidence[],
+): string | null {
+  const roles = ["drums", "bass", "other"] as const;
+  const selected = roles.map((role) => swaps.filter((swap) => swap.stemType === role));
+  if (selected.some((matches) => matches.length !== 1 || matches[0]?.donorTrackId.trim() === "")) return null;
+  const donorTrackIds = new Set(selected.map((matches) => matches[0]!.donorTrackId));
+  return donorTrackIds.size === 1 ? [...donorTrackIds][0]! : null;
+}
+
 /**
  * Safe automatic live-stem stretch factor (output duration / donor duration).
  * Keep half/double-time pairs at the donor's native pace; only modestly stretch
@@ -235,6 +251,66 @@ export function liveStemTempoStretchRatio(
   return ratio >= LIVE_STEM_AUTO_STRETCH_MIN_RATIO && ratio <= LIVE_STEM_AUTO_STRETCH_MAX_RATIO
     ? ratio
     : null;
+}
+
+export type LiveDrumTempoMasterResolution =
+  | { master: "donor-drums"; playbackRate: number; donorBpm: number; reason: string }
+  | { master: "current-track"; playbackRate: 1; donorBpm: number | null; reason: string };
+
+/**
+ * A live drum replacement may become the tempo master only when both songs
+ * have reliable BPM and beat-grid evidence and the required donor stretch is
+ * within the same safe limits as automatic stem matching. This rate is applied
+ * to every source channel on the receiving deck, not only to the donor drums.
+ */
+export function resolveLiveDrumTempoMaster(
+  recipientBpm: number | null,
+  donorBpm: number | null,
+  evidence: LiveStemTempoEvidence,
+): LiveDrumTempoMasterResolution {
+  if (
+    recipientBpm === null || donorBpm === null
+    || !Number.isFinite(recipientBpm) || recipientBpm <= 0
+    || !Number.isFinite(donorBpm) || donorBpm <= 0
+  ) {
+    return {
+      master: "current-track",
+      playbackRate: 1,
+      donorBpm: Number.isFinite(donorBpm) && donorBpm! > 0 ? donorBpm : null,
+      reason: "A reliable BPM was not measured for both tracks; the current track remains the tempo reference.",
+    };
+  }
+  if (!hasReliableLiveStemBeatEvidence(evidence)) {
+    return {
+      master: "current-track",
+      playbackRate: 1,
+      donorBpm,
+      reason: "Donor and current BPM plus beat-grid confidence must each be at least 0.50; the current track remains the tempo reference.",
+    };
+  }
+  if (isHalfDoubleTempoPair(recipientBpm, donorBpm)) {
+    return {
+      master: "current-track",
+      playbackRate: 1,
+      donorBpm,
+      reason: "This is a half/double-time pair; no automatic whole-mix tempo jump is applied.",
+    };
+  }
+  const ratio = liveStemTempoStretchRatio(recipientBpm, donorBpm, evidence);
+  if (ratio === null) {
+    return {
+      master: "current-track",
+      playbackRate: 1,
+      donorBpm,
+      reason: "The tempo gap exceeds the safe automatic stretch range; the current track remains the tempo reference.",
+    };
+  }
+  return {
+    master: "donor-drums",
+    playbackRate: ratio,
+    donorBpm,
+    reason: "The measured donor drum tempo controls the receiving mix; all receiving source stems follow the same tempo change.",
+  };
 }
 
 /** Offset in stretched-donor seconds. Beat zero is not necessarily a downbeat. */

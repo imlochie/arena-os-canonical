@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveSessionKeyMatch, resolveLiveStemKeyCorrection, shiftMusicalKey } from "./session-key-matching";
+import {
+  resolveSessionKeyMatch,
+  resolveLiveStemKeyCorrection,
+  resolveInstrumentalBedVocalCorrection,
+  shiftMusicalKey,
+} from "./session-key-matching";
 
 test("swapped tonal stems match the audible lead rather than inheriting the receiving track's correction", () => {
   assert.equal(resolveLiveStemKeyCorrection("match", "C major", "D major", 0, "vocals"), -2);
@@ -39,4 +44,25 @@ test("preserve and off do not shift, while unknown match analysis is not reporte
   assert.equal(resolveSessionKeyMatch("off", "C major", "A minor").semitones, 0);
   assert.equal(resolveSessionKeyMatch("match", null, "A minor").semitones, null);
   assert.equal(shiftMusicalKey("B major", 1), "C major");
+});
+
+test("a complete instrumental bed becomes vocal key reference only when both keys are confident", () => {
+  const confident = resolveInstrumentalBedVocalCorrection("match", "C minor", 0.85, "A major", 0.8);
+  assert.equal(confident.semitones, 3);
+  assert.equal(confident.bedKey, "C minor");
+  assert.equal(confident.applied, true);
+
+  const weakSeptemberQueenEvidence = resolveInstrumentalBedVocalCorrection(
+    "match",
+    "C minor",
+    0.165,
+    "A major",
+    0.406,
+  );
+  assert.equal(weakSeptemberQueenEvidence.semitones, 0);
+  assert.equal(weakSeptemberQueenEvidence.applied, false);
+  assert.match(weakSeptemberQueenEvidence.reason, /below 0\.50 confidence/);
+
+  assert.equal(resolveInstrumentalBedVocalCorrection("off", "C minor", 0.9, "A major", 0.9).semitones, 0);
+  assert.equal(resolveInstrumentalBedVocalCorrection("preserve", "C minor", 0.9, "A major", 0.9).semitones, 0);
 });

@@ -17,6 +17,8 @@ import {
   liveStemSectionOffsetSeconds,
   liveStemTempoStretchRatio,
   nearestEntryEvidenceMs,
+  completeInstrumentalBedDonorTrackId,
+  resolveLiveDrumTempoMaster,
 } from "./session-logic";
 import {
   PASSAGE_FINGERPRINT_ENGINE,
@@ -753,6 +755,51 @@ test("live stem tempo sync only stretches compatible analyzed tempos", () => {
   assert.equal(liveStemTempoStretchRatio(0, 120), null);
   assert.equal(liveStemTempoStretchRatio(120, NaN), null);
   assert.equal(liveStemTempoStretchRatio(120, null), null, "missing donor analysis is not guessed");
+});
+
+test("only a complete single-donor drums, bass and other set defines an instrumental bed", () => {
+  const complete = [
+    { stemType: "drums", donorTrackId: "queen" },
+    { stemType: "bass", donorTrackId: "queen" },
+    { stemType: "other", donorTrackId: "queen" },
+  ];
+  assert.equal(completeInstrumentalBedDonorTrackId(complete), "queen");
+  assert.equal(completeInstrumentalBedDonorTrackId(complete.slice(0, 2)), null);
+  assert.equal(completeInstrumentalBedDonorTrackId([
+    ...complete.slice(0, 2),
+    { stemType: "other", donorTrackId: "another-track" },
+  ]), null);
+  assert.equal(completeInstrumentalBedDonorTrackId([
+    ...complete,
+    { stemType: "drums", donorTrackId: "queen" },
+  ]), null, "duplicate role selection is not treated as a complete bed");
+});
+
+test("a drum donor becomes the live tempo master only with reliable paired tempo and beat evidence", () => {
+  const confidentPair = {
+    recipientBpmConfidence: 0.8,
+    donorBpmConfidence: 0.8,
+    recipientBeatConfidence: 0.75,
+    donorBeatConfidence: 0.75,
+  };
+  const matched = resolveLiveDrumTempoMaster(126, 110, confidentPair);
+  assert.equal(matched.master, "donor-drums");
+  assert.equal(matched.playbackRate, 110 / 126);
+  assert.match(matched.reason, /all receiving source stems/);
+
+  const lowQueenTempoConfidence = resolveLiveDrumTempoMaster(126.048, 109.957, {
+    recipientBpmConfidence: 0.697,
+    donorBpmConfidence: 0.426,
+    recipientBeatConfidence: 0.83,
+    donorBeatConfidence: 0.642,
+  });
+  assert.equal(lowQueenTempoConfidence.master, "current-track");
+  assert.equal(lowQueenTempoConfidence.playbackRate, 1);
+  assert.match(lowQueenTempoConfidence.reason, /at least 0\.50/);
+
+  assert.equal(resolveLiveDrumTempoMaster(120, 60, confidentPair).master, "current-track");
+  assert.equal(resolveLiveDrumTempoMaster(120, 90, confidentPair).master, "current-track");
+  assert.equal(resolveLiveDrumTempoMaster(120, null, confidentPair).master, "current-track");
 });
 
 test("manual tempo corrections are range checked and can resolve an uncertain half-time reading", () => {

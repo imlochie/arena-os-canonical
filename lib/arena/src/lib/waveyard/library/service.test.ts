@@ -2030,7 +2030,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
       modelVersion: "test",
       storageKey,
       checksumSha256: `checksum-b-${stemType}`,
-      durationSeconds: 3,
+      durationSeconds: 2,
       sampleRate: 44100,
       channels: 1,
       codec: "wav",
@@ -2111,6 +2111,11 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     assert.match(studioTrack.name, new RegExp(trackA.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       `the ${stemType} lane identifies the live-swap donor`);
   }
+  const vocalStudioTrack = swappedStudioTracks.find((entry) => entry.stemAssetId === vocalSwap.toStemAssetId)!;
+  const [vocalStudioClip] = await db.db.select().from(schema.remixClips)
+    .where(eq(schema.remixClips.remixTrackId, vocalStudioTrack.id));
+  assert.equal(vocalStudioClip.sourceOffsetMs, 1_000,
+    "the explicitly chosen donor vocal cue survives the Studio handoff as the exact source offset");
 
   // Refusal: B has no real "other" layer to replace.
   await assert.rejects(
@@ -2203,6 +2208,231 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     "legacy swap rows are not guessed from today's donor track contents",
   );
   await sessions.deleteSession(OWNER, created.id);
+});
+
+test("Studio handoff persists a confident drum tempo master and complete-bed vocal key correction", async () => {
+  const sourceFor = (trackId: string) => sourceIdByTrackId.get(trackId)!;
+  const addSourceAnalysis = async (trackId: string, values: {
+    bpm: number; bpmConfidence: number; beatConfidence: number;
+    musicalKey: string; keyConfidence: number;
+  }) => {
+    const sourceAssetId = sourceFor(trackId);
+    const [source] = await db.db.select().from(schema.sourceAssets)
+      .where(eq(schema.sourceAssets.id, sourceAssetId)).limit(1);
+    assert.ok(source);
+    const existing = await db.db.select().from(schema.sourceAnalyses)
+      .where(eq(schema.sourceAnalyses.sourceAssetId, sourceAssetId)).limit(1);
+    const fields = {
+      projectId: trackId === trackA.id ? trackA.studioProjectId : trackB.studioProjectId,
+      status: "complete",
+      stage: "complete",
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256,
+      idempotencyKey: `session-studio-transform:${sourceAssetId}`,
+      bpm: values.bpm,
+      bpmConfidence: values.bpmConfidence,
+      beatConfidence: values.beatConfidence,
+      musicalKey: values.musicalKey,
+      keyConfidence: values.keyConfidence,
+      beatGrid: JSON.stringify([0, 500, 1_000, 1_500, 2_000]),
+    };
+    if (existing[0]) {
+      await db.db.update(schema.sourceAnalyses).set(fields)
+        .where(eq(schema.sourceAnalyses.id, existing[0].id));
+    } else {
+      await db.db.insert(schema.sourceAnalyses).values({ sourceAssetId, ...fields });
+    }
+  };
+  await addSourceAnalysis(trackA.id, {
+    bpm: 120, bpmConfidence: 0.9, beatConfidence: 0.9,
+    musicalKey: "C minor", keyConfidence: 0.9,
+  });
+  await addSourceAnalysis(trackB.id, {
+    bpm: 110, bpmConfidence: 0.9, beatConfidence: 0.9,
+    musicalKey: "A major", keyConfidence: 0.9,
+  });
+
+  const sourceB = sourceFor(trackB.id);
+  const [jobB] = await db.db.select().from(schema.processingJobs)
+    .where(eq(schema.processingJobs.sourceAssetId, sourceB)).limit(1);
+  assert.ok(jobB);
+  for (const stemType of ["bass", "other"]) {
+    const storageKey = `test/b-transform-${stemType}.wav`;
+    await getStorage().putFile(storageKey, path.join(root!, "aphex.wav"), "audio/wav");
+    await db.db.insert(schema.stemAssets).values({
+      projectId: trackB.studioProjectId,
+      sourceAssetId: sourceB,
+      separationJobId: jobB.id,
+      stemType,
+      engine: "demucs",
+      model: "htdemucs",
+      modelVersion: "test",
+      storageKey,
+      checksumSha256: `checksum-b-transform-${stemType}`,
+      durationSeconds: 2,
+      sampleRate: 44100,
+      channels: 1,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: 100,
+    });
+  }
+
+  const session = await sessions.createSession(OWNER, "Persisted musical transforms");
+  const detail = await sessions.addTrackToSession({
+    ownerId: OWNER, sessionId: session.id, trackId: trackB.id,
+  });
+  const sessionTrackId = detail.tracks[0]!.id;
+  await sessions.saveSessionState(OWNER, session.id, sessionTrackId, 0, { mode: "match", shifts: {} });
+  for (const stemType of ["drums", "bass", "other"]) {
+    await sessions.recordStemSwap({
+      ownerId: OWNER,
+      sessionId: session.id,
+      sessionTrackId,
+      stemType,
+      toTrackId: trackA.id,
+      atSeconds: 0,
+    });
+  }
+  const handoff = await sessions.sendSessionToStudio(OWNER, session.id, [sessionTrackId], [
+    { sessionTrackId, stemMix: { drums: 0.01, bass: 0.01, other: 0.01, vocals: 1 } },
+  ]);
+  assert.equal(handoff.appliedTransforms?.tempoBpm, 120);
+  assert.equal(handoff.appliedTransforms?.tempoReference, trackA.title);
+  assert.equal(handoff.appliedTransforms?.key, "C minor");
+  assert.equal(handoff.appliedTransforms?.keyReference, trackA.title);
+  assert.equal(handoff.appliedTransforms?.tempoSyncedClipCount, 1,
+    "only the confident 110-BPM vocal needs adapting to the 120-BPM drum master");
+  assert.equal(handoff.appliedTransforms?.keySyncedClipCount, 1,
+    "only the confident vocal is pitch-corrected against the complete bed");
+
+  const [savedRemix] = await db.db.select().from(schema.remixSessions)
+    .where(eq(schema.remixSessions.id, handoff.remixSessionId)).limit(1);
+  assert.equal(savedRemix.tempoBpm, 120, "the chosen tempo authority is persisted on the Studio session");
+  assert.equal(savedRemix.targetKey, "C minor", "the complete instrumental-bed key is persisted as the target");
+  const savedTracks = await db.db.select({
+    remixTrackId: schema.remixTracks.id,
+    sortOrder: schema.remixTracks.sortOrder,
+    volume: schema.remixTracks.volume,
+    pan: schema.remixTracks.pan,
+    muted: schema.remixTracks.muted,
+    solo: schema.remixTracks.solo,
+    stemAssetId: schema.remixTracks.stemAssetId,
+    stemType: schema.stemAssets.stemType,
+    clipId: schema.remixClips.id,
+    timelineStartMs: schema.remixClips.timelineStartMs,
+    fadeInMs: schema.remixClips.fadeInMs,
+    fadeOutMs: schema.remixClips.fadeOutMs,
+    gain: schema.remixClips.gain,
+    beatSnapEnabled: schema.remixClips.beatSnapEnabled,
+    tempoSyncEnabled: schema.remixClips.tempoSyncEnabled,
+    keySyncEnabled: schema.remixClips.keySyncEnabled,
+    sourceOffsetMs: schema.remixClips.sourceOffsetMs,
+    durationMs: schema.remixClips.durationMs,
+  }).from(schema.remixTracks)
+    .innerJoin(schema.remixClips, eq(schema.remixClips.remixTrackId, schema.remixTracks.id))
+    .innerJoin(schema.stemAssets, eq(schema.stemAssets.id, schema.remixTracks.stemAssetId))
+    .where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+  const vocal = savedTracks.find((entry) => entry.stemType === "vocals");
+  assert.ok(vocal);
+  assert.equal(Math.max(...savedTracks.map((entry) => entry.durationMs)), 2_000,
+    `the persisted arrangement retains the full-length bed clip: ${JSON.stringify(savedTracks.map(({ stemType, durationMs, volume }) => ({ stemType, durationMs, volume })))}`);
+  assert.equal(vocal.tempoSyncEnabled, true);
+  assert.equal(vocal.keySyncEnabled, true);
+  assert.ok(vocal.durationMs > 2_000, "the stretched vocal duration preserves the full source rather than cropping its tail");
+  for (const stemType of ["drums", "bass", "other"]) {
+    const bedStem = savedTracks.find((entry) => entry.stemType === stemType);
+    assert.ok(bedStem);
+    assert.equal(bedStem.tempoSyncEnabled, false, `${stemType} already belongs to the selected tempo master`);
+    assert.equal(bedStem.keySyncEnabled, false, `${stemType} is never pitch-shifted by vocal key matching`);
+  }
+
+  const fixtureChecksum = await checksumFile(path.join(root!, "aphex.wav"));
+  for (const trackId of [trackA.id, trackB.id]) {
+    const [source] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, trackId)).limit(1);
+    const stems = await db.db.select().from(schema.stemAssets)
+      .where(eq(schema.stemAssets.sourceAssetId, source.sourceAssetId));
+    for (const stem of stems) {
+      await db.db.update(schema.stemAssets).set({
+        checksumSha256: fixtureChecksum,
+        fileSizeBytes: statSync(path.join(root!, "aphex.wav")).size,
+      }).where(eq(schema.stemAssets.id, stem.id));
+    }
+  }
+  const snapshot = {
+    masterVolume: savedRemix.masterVolume,
+    tempoBpm: savedRemix.tempoBpm,
+    targetKey: savedRemix.targetKey,
+    requiredBedTempoStemIds: [],
+    tracks: savedTracks.map((entry) => ({
+      id: entry.remixTrackId,
+      stemAssetId: entry.stemAssetId,
+      sortOrder: entry.sortOrder,
+      volume: entry.volume,
+      pan: entry.pan,
+      muted: entry.muted,
+      solo: entry.solo,
+      clips: [{
+        id: entry.clipId,
+        stemAssetId: entry.stemAssetId,
+        timelineStartMs: entry.timelineStartMs,
+        durationMs: entry.durationMs,
+        sourceOffsetMs: entry.sourceOffsetMs,
+        gain: entry.gain,
+        fadeInMs: entry.fadeInMs,
+        fadeOutMs: entry.fadeOutMs,
+        fadeShape: "linear",
+        tempoSyncEnabled: entry.tempoSyncEnabled,
+        keySyncEnabled: entry.keySyncEnabled,
+        beatSnapEnabled: entry.beatSnapEnabled,
+      }],
+    })),
+    automation: [],
+  };
+  const [version] = await db.db.insert(schema.remixVersions).values({
+    remixSessionId: handoff.remixSessionId,
+    createdById: OWNER,
+    name: "Persisted live-swap transform proof",
+    snapshot: JSON.stringify(snapshot),
+  }).returning();
+  const [exportJob] = await db.db.insert(schema.exportJobs).values({
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: version.id,
+    requestedById: OWNER,
+    idempotencyKey: `live-swap-transform-export:${randomUUID()}`,
+    format: "wav",
+    sampleRate: 44_100,
+    channels: 2,
+  }).returning();
+  const { handleExportJob } = await import("../worker-local/export");
+  await handleExportJob({
+    exportJobId: exportJob.id,
+    projectId: handoff.projectId,
+    remixSessionId: handoff.remixSessionId,
+    remixVersionId: version.id,
+    format: "wav",
+  });
+  const [completedExport] = await db.db.select().from(schema.exportJobs)
+    .where(eq(schema.exportJobs.id, exportJob.id));
+  assert.equal(completedExport.status, "complete",
+    completedExport.errorMessage ?? "the saved tempo/key transform is rendered by the actual export worker");
+  const [exportAsset] = await db.db.select().from(schema.exportAssets)
+    .where(eq(schema.exportAssets.exportJobId, exportJob.id));
+  assert.ok(exportAsset);
+  const exportPath = path.join(root!, "live-swap-transforms.wav");
+  await getStorage().getToFile(exportAsset.storageKey, exportPath);
+  assert.equal(await checksumFile(exportPath), exportAsset.checksumSha256);
+  const exportMetadata = await probeAudio(exportPath);
+  assert.equal(exportMetadata.sampleRate, 44_100);
+  assert.equal(exportMetadata.channels, 2);
+  assert.ok(Math.abs(exportMetadata.durationSeconds - 2) < 0.03,
+    `the exported arrangement keeps its full bed length (${exportMetadata.durationSeconds}s)`);
+  const shiftedVocalMagnitude = pcmWavToneMagnitude(exportPath, 220 * 2 ** (3 / 12), 350, 1_400, 0);
+  const sourceVocalMagnitude = pcmWavToneMagnitude(exportPath, 220, 350, 1_400, 0);
+  assert.ok(shiftedVocalMagnitude > sourceVocalMagnitude * 3,
+    `exported vocal follows the persisted +3 semitone bed correction (${shiftedVocalMagnitude} vs ${sourceVocalMagnitude})`);
 });
 
 test("Studio reload routes and exports preserve both saved donors and clip edits after blocked library deletion", async (t) => {
