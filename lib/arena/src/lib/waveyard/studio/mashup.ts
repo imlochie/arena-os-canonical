@@ -397,8 +397,10 @@ const MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO = 0.8;
 function trustedProfileBeatGrid(profile: MashupSourceProfile): number[] | null {
   const trusted = trustedAnalysisBeatGrid(profile.beatGridMs, profile.bpmConfidence, profile.beatConfidence);
   if (trusted) return trusted;
-  if (!hasReliableMixingConfidence(profile.beatGridAlignmentConfidence)
-    || profile.beatGridAlignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO
+  const alignmentConfidence = profile.beatGridAlignmentConfidence;
+  if (alignmentConfidence === null || alignmentConfidence === undefined
+    || !hasReliableMixingConfidence(alignmentConfidence)
+    || alignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO
     || !Array.isArray(profile.beatGridMs)
     || profile.beatGridMs.length < 16
     || profile.beatGridMs.length > 100_000) return null;
@@ -426,13 +428,15 @@ function trustedProfileTempo(profile: MashupSourceProfile): {
   if (measuredBpm !== null) {
     return { bpm: measuredBpm, source: "bpm-analysis", confidence: profile.bpmConfidence! };
   }
+  const alignmentConfidence = profile.beatGridAlignmentConfidence;
   const grid = trustedProfileBeatGrid(profile);
-  if (!grid || !hasReliableMixingConfidence(profile.beatGridAlignmentConfidence)
-    || profile.beatGridAlignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO) return null;
+  if (!grid || alignmentConfidence === null || alignmentConfidence === undefined
+    || !hasReliableMixingConfidence(alignmentConfidence)
+    || alignmentConfidence < MIN_BEAT_GRID_PHASE_CONFIDENCE_FOR_TEMPO) return null;
   const period = median(grid.slice(1).map((beat, index) => beat - grid[index]!));
   const bpm = 60_000 / period;
   return bpm >= 40 && bpm <= 240
-    ? { bpm, source: "beat-grid", confidence: profile.beatGridAlignmentConfidence! }
+    ? { bpm, source: "beat-grid", confidence: alignmentConfidence }
     : null;
 }
 

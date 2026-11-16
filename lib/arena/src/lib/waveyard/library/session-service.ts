@@ -1432,7 +1432,7 @@ export async function sendSessionToStudio(
         donorTrackId: donorDetail.id,
         durationSeconds: donorStem.durationSeconds,
         donorEntryOffsetMs: swap.donorEntryOffsetMs ?? 0,
-        analysis: donorDetail.analysis,
+        analysis: await sessionTrackAnalysis(ownerId, donorDetail.id),
       });
     }
     if (invalidSwapReason !== null) {
