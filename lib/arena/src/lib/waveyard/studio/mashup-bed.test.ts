@@ -6,6 +6,7 @@ import {
   InstrumentalBedError,
   MASHUP_BED_HEADROOM_GAIN,
   MASHUP_BED_PEAK_CEILING,
+  applyEvidenceStemRecommendations,
   planIndependentStemComposition,
   sumInstrumentalStems,
   type InstrumentalBedStem,
@@ -14,6 +15,45 @@ import {
 const RATE = 44_100;
 const SECONDS = 1;
 const FRAMES = RATE * SECONDS;
+
+test("applies supported drum and bass decisions together without collapsing roles", () => {
+  const result = applyEvidenceStemRecommendations({
+    current: { drums: "retain", bass: "layer" },
+    recommendations: { drums: "replace", bass: "retain" },
+  });
+  assert.deepEqual(result.stemDecisions, { drums: "replace", bass: "retain" });
+  assert.deepEqual(result.supportedRoles, ["drums", "bass"]);
+  assert.deepEqual(result.changedRoles, ["drums", "bass"]);
+});
+
+test("keeps the current role choice when recommendation evidence is unavailable", () => {
+  const result = applyEvidenceStemRecommendations({
+    current: { drums: "layer", bass: "replace" },
+    recommendations: { drums: "unavailable", bass: "unavailable" },
+  });
+  assert.deepEqual(result.stemDecisions, { drums: "layer", bass: "replace" });
+  assert.deepEqual(result.supportedRoles, []);
+  assert.deepEqual(result.changedRoles, []);
+});
+
+test("maps rejected donor roles to bed retention and preserves unrelated choices", () => {
+  const result = applyEvidenceStemRecommendations({
+    current: { drums: "replace", bass: "layer", other: "retain" },
+    recommendations: { drums: "reject", bass: "reject" },
+  });
+  assert.deepEqual(result.stemDecisions, { drums: "retain", bass: "retain", other: "retain" });
+  assert.deepEqual(result.supportedRoles, ["drums", "bass"]);
+  assert.deepEqual(result.changedRoles, ["drums", "bass"]);
+});
+
+test("reports recommendations already reflected in the current choices without a change", () => {
+  const result = applyEvidenceStemRecommendations({
+    current: { drums: "layer", bass: "retain" },
+    recommendations: { drums: "layer", bass: "retain" },
+  });
+  assert.deepEqual(result.supportedRoles, ["drums", "bass"]);
+  assert.deepEqual(result.changedRoles, []);
+});
 
 function toneStem(
   stemType: string,

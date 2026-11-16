@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import { applyEvidenceStemRecommendations } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import {
   createPersistedClipTempoMap,
   makeLocalTempoMapWindow,
@@ -3409,6 +3410,21 @@ test(
       assert.equal(mainStudioBassRecommendation?.provenance?.donorBass?.stemType, "bass");
       assert.equal(mainStudioBassRecommendation?.provenance?.retainedBedBass?.stemType, "bass");
       assert.equal(mainStudioBassRecommendation?.provenance?.bedHarmony?.subject, "separated-stem");
+      const recommendationOutcome = (outcome: string | undefined) =>
+        outcome === "retain" || outcome === "replace" || outcome === "layer"
+          || outcome === "reject" || outcome === "unavailable"
+          ? outcome as "retain" | "replace" | "layer" | "reject" | "unavailable"
+          : undefined;
+      const evidenceGuidedChoices = applyEvidenceStemRecommendations({
+        current: { drums: "retain", bass: "retain" },
+        recommendations: {
+          drums: recommendationOutcome(mainStudioDrumRecommendation?.outcome),
+          bass: recommendationOutcome(mainStudioBassRecommendation?.outcome),
+        },
+      });
+      assert.ok(evidenceGuidedChoices.supportedRoles.includes("bass"));
+      assert.equal(evidenceGuidedChoices.stemDecisions.bass, "replace",
+        "the persisted bass/chord result must change the composition input, not remain a detached diagnostic");
 
       const mixedRender = await routeModule.POST(
         renderPair(donorWithDrumsId, fullBedId, { stemDecisions: mixedChoices }),
@@ -3512,6 +3528,45 @@ test(
       assert.equal(mixedExportMedia.status, 200);
       assert.ok(decodeWav16(new Uint8Array(await mixedExportMedia.arrayBuffer())),
         "the mixed-role export must be a valid WAV");
+
+      // Recommendations from persisted analysis must feed a real saved
+      // composition, not stop at a status card. The exact map below is what
+      // Mashup Studio's one-click "Apply supported choices" control submits.
+      const evidenceGuidedSave = await routeModule.POST(
+        saveFor({ stemDecisions: evidenceGuidedChoices.stemDecisions }),
+        { params: Promise.resolve({ id: project.id }) },
+      );
+      assert.equal(evidenceGuidedSave.status, 201);
+      const evidenceGuidedSaveBody = await evidenceGuidedSave.json() as {
+        remix: { id: string };
+        version: { id: string };
+      };
+      const evidenceGuidedProvenance = await savedProvenance(evidenceGuidedSaveBody.remix.id);
+      assert.ok(evidenceGuidedProvenance.typesBySource(donorWithDrumsId).includes("bass"),
+        "the recommended donor bass must be saved as an actual clip");
+      assert.ok(!evidenceGuidedProvenance.typesBySource(fullBedId).includes("bass"),
+        "a replace recommendation must remove the retained bed bass from the saved composition");
+      const [evidenceGuidedVersion] = await dbModule.db.select().from(schema.remixVersions)
+        .where(eq(schema.remixVersions.id, evidenceGuidedSaveBody.version.id));
+      const evidenceGuidedSnapshot = JSON.parse(evidenceGuidedVersion!.snapshot) as {
+        mashupPlan?: {
+          stemComposition?: { stemDecisions?: Record<string, string> };
+          bassRecommendation?: { outcome?: string };
+        };
+      };
+      assert.equal(evidenceGuidedSnapshot.mashupPlan?.stemComposition?.stemDecisions?.bass, "replace");
+      assert.equal(evidenceGuidedSnapshot.mashupPlan?.bassRecommendation?.outcome, "replace",
+        "the persisted choice must keep the exact measured recommendation that produced it");
+      const evidenceGuidedReopen = await (await import("../../../../remixes/[id]/route")).GET(
+        new Request(`http://localhost/api/remixes/${evidenceGuidedSaveBody.remix.id}`),
+        { params: Promise.resolve({ id: evidenceGuidedSaveBody.remix.id }) },
+      );
+      assert.equal(evidenceGuidedReopen.status, 200);
+      const reopenedEvidenceGuided = await evidenceGuidedReopen.json() as {
+        tracks: Array<{ stemAssetId: string }>;
+      };
+      assert.ok(reopenedEvidenceGuided.tracks.some((track) => track.stemAssetId === donorBassStemId));
+      assert.ok(!reopenedEvidenceGuided.tracks.some((track) => track.stemAssetId === bedBassStemId));
 
       // --- Tempo parity across render and export ---------------------------
       // 140 BPM donor over a 100 BPM bed: the renderer stretches the donor by

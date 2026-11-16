@@ -1,5 +1,30 @@
 # Arena handoff — read this first
 
+## Latest increment: measured stem choices now feed one saved composition
+
+Mashup Studio now has a single action for applying supported drum and bass
+recommendations together. It applies only roles with an actual recommendation;
+an unavailable role keeps the user's current choice, and a rejected donor maps
+to retaining the bed. The panel previews exactly which choices will change.
+Applying them invalidates the old plan and render, immediately recomputes
+alignment options with the new role map, and leaves rendering as a deliberate
+separate step.
+
+The shared decision helper has regression tests for replace/layer/retain,
+rejection, unavailable evidence, and already-selected choices. The database-
+backed route acceptance now takes the persisted bass-versus-chord recommendation,
+feeds it through that same decision helper, saves the resulting composition,
+and reopens it. It proves the recommended donor bass is an actual saved clip,
+the contradictory bed bass is absent, and the recommendation remains in the
+snapshot. The existing acceptance also separately verifies mixed-role render,
+save, reopen and WAV export parity.
+
+**Verification:** workspace typecheck passed; `mashup-bed.test.ts` passed **16/16**;
+the PostgreSQL + FFmpeg mashup route acceptance passed **1/1** in about 123 seconds.
+That route run did not preserve audio for listening, and neither these checks nor
+the harmonic benchmark prove the final mix sounds good. Verse/chorus accuracy,
+independent chord accuracy and real-listener mashup quality remain unverified.
+
 ## Latest increment: pinned real-stem harmonic benchmark completed
 
 The eight existing September and Queen stem WAVs were present and matched all

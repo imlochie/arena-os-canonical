@@ -59,6 +59,45 @@ export type InstrumentalBed = {
   warning: string;
 };
 
+export type MashupStemDecision = "retain" | "replace" | "layer";
+export type MashupStemRecommendationOutcome = MashupStemDecision | "reject" | "unavailable";
+
+/**
+ * Merge measured role recommendations into the user's current stem choices.
+ * Unknown evidence must never erase an existing choice; a reject means retain
+ * the bed part. This is a decision-map helper, not a mashup quality score.
+ */
+export function applyEvidenceStemRecommendations(input: {
+  current: Readonly<Record<string, MashupStemDecision>>;
+  recommendations: Readonly<Partial<Record<"drums" | "bass", MashupStemRecommendationOutcome>>>;
+}): {
+  stemDecisions: Record<string, MashupStemDecision>;
+  supportedRoles: Array<"drums" | "bass">;
+  changedRoles: Array<"drums" | "bass">;
+} {
+  const stemDecisions = { ...input.current };
+  const supportedRoles: Array<"drums" | "bass"> = [];
+  const changedRoles: Array<"drums" | "bass"> = [];
+  for (const role of ["drums", "bass"] as const) {
+    const outcome = input.recommendations[role];
+    let decision: MashupStemDecision | null = null;
+    if (role === "drums") {
+      if (outcome === "retain" || outcome === "replace" || outcome === "layer") decision = outcome;
+      else if (outcome === "reject") decision = "retain";
+    } else if (outcome === "replace") {
+      decision = "replace";
+    } else if (outcome === "retain" || outcome === "reject") {
+      decision = "retain";
+    }
+
+    if (decision === null) continue;
+    supportedRoles.push(role);
+    if (stemDecisions[role] !== decision) changedRoles.push(role);
+    stemDecisions[role] = decision;
+  }
+  return { stemDecisions, supportedRoles, changedRoles };
+}
+
 export class InstrumentalBedError extends Error {
   readonly code: string;
 

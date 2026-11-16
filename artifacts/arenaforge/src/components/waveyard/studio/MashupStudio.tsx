@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import type { MashupArrangement } from "@workspace/arena/lib/waveyard/studio/mashup";
 import type { Source } from "./types";
 import { compactMusicAnalysisLabel } from "@workspace/arena/lib/waveyard/types";
+import { applyEvidenceStemRecommendations } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
 import {
   CandidateAlignmentLab,
   type CandidateAlignmentCandidate,
@@ -234,11 +235,17 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     bass: "retain",
   });
   const compositionPayload = { stemDecisions };
+  const evidenceDecisionPreview = applyEvidenceStemRecommendations({
+    current: stemDecisions,
+    recommendations: {
+      drums: drumRecommendation?.outcome,
+      bass: bassRecommendation?.outcome,
+    },
+  });
   const [savingRemix, setSavingRemix] = useState(false);
   // A composition change invalidates the previous render: the mix report and
   // the saved-session claim describe audio that no longer matches the choice.
-  const setComposition = (stemType: "drums" | "bass", action: "retain" | "replace" | "layer") => {
-    setStemDecisions((current) => ({ ...current, [stemType]: action }));
+  const invalidateCompositionResults = () => {
     if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
     renderUrlRef.current = null;
     for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
@@ -253,6 +260,16 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setMixReport(null);
     setSaveSuccess(null);
     setError("Stem choices changed. Compare alignment options again before rendering or saving.");
+  };
+  const setComposition = (stemType: "drums" | "bass", action: "retain" | "replace" | "layer") => {
+    setStemDecisions((current) => ({ ...current, [stemType]: action }));
+    invalidateCompositionResults();
+  };
+  const applyEvidenceComposition = () => {
+    if (!evidenceDecisionPreview.changedRoles.length) return;
+    setStemDecisions(evidenceDecisionPreview.stemDecisions);
+    invalidateCompositionResults();
+    void planMashup(evidenceDecisionPreview.stemDecisions);
   };
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
@@ -350,7 +367,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     }
   };
 
-  const planMashup = async () => {
+  const planMashup = async (decisions: Record<string, "retain" | "replace" | "layer"> = stemDecisions) => {
     const sourceGeneration = sourceGenerationRef.current;
     setPlanning(true);
     setError(null);
@@ -372,7 +389,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             action: "compare",
             vocalsSourceId: vocalsId,
             instrumentalSourceId: bedId,
-            ...compositionPayload,
+            stemDecisions: decisions,
           }),
         });
       const body = await response.json().catch(() => ({}));
@@ -908,6 +925,30 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
             </select>
           </label>
         ))}
+        <div style={{ marginTop: 8 }}>
+          <p data-testid="text-supported-stem-decisions" style={{ margin: "4px 0", opacity: 0.82 }}>
+            {evidenceDecisionPreview.changedRoles.length > 0
+              ? `Will apply: ${evidenceDecisionPreview.changedRoles
+                .map((role) => `${role} → ${evidenceDecisionPreview.stemDecisions[role]}`)
+                .join("; ")}.`
+              : evidenceDecisionPreview.supportedRoles.length > 0
+                ? "The supported recommendations already match your choices."
+                : "No safe drum or bass recommendation is available; your choices stay unchanged."}
+          </p>
+          <button
+            type="button"
+            className="button secondary"
+            data-testid="button-apply-supported-stem-decisions"
+            disabled={!canEdit || evidenceDecisionPreview.changedRoles.length === 0}
+            onClick={applyEvidenceComposition}
+          >
+            Apply supported drum/bass choices
+          </button>
+          <small style={{ display: "block", marginTop: 4, opacity: 0.78 }}>
+            Applies only measured recommendations; unavailable roles keep your current choice.
+            Alignment options are recalculated automatically; rendering remains a separate step.
+          </small>
+        </div>
         {drumRecommendation && (
           <div role="status" data-testid="status-drum-recommendation" style={{ marginTop: 8 }}>
             <b>
