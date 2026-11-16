@@ -1,5 +1,32 @@
 # Arena handoff — read this first
 
+## Latest increment: Studio compares both vocal directions without inventing a winner
+
+The main Mashup Studio now has an explicit **Compare both song directions**
+action for the selected pair. It requests vocal A over bed B and vocal B over
+bed A, then shows each direction's available alignment modes and its measured
+drum/bass recommendation. The same user-selected stem decisions are used for
+both comparisons. If one direction fails, the other result remains visible with
+the failure shown on the affected card.
+
+Waveyard does not rank a “best” direction or claim sound quality from these
+measurements. The user selects a direction; Studio then loads that direction's
+already-computed alignment options and preserves the role choices used to make
+them. This removes the need to compare directions by changing source selectors
+and re-running the planner manually, but it still evaluates only the currently
+selected pair. Initial source defaults remain upload-order based, and the planner
+does not yet search every project pair or every possible role combination.
+
+**Verification:** ArenaForge TypeScript check passed and the web workflow
+restarted cleanly. The preview loaded the Studio arrangements list, but had no
+saved arrangement, so the new populated-editor controls were not visually or
+interactively verified. No new route, real-audio listening, or musical-quality
+acceptance was run in this UI-only increment.
+
+**Next gap:** evaluate all eligible source directions using evidence gates and
+measured criteria, then compare the resulting full-length real separated-stem
+renders against a simpler baseline and independent listening.
+
 ## Latest increment: measured stem choices now feed one saved composition
 
 Mashup Studio now has a single action for applying supported drum and bass

@@ -134,6 +134,20 @@ type EvidenceSummary = {
   bed: Record<string, EvidenceFeatureSummary> | null;
 };
 
+type SourceDirectionComparison = {
+  vocalsSourceId: string;
+  instrumentalSourceId: string;
+  stemDecisions: Record<string, "retain" | "replace" | "layer">;
+  candidates: AlignmentCandidatePlan[];
+  evidence: EvidenceSummary | null;
+  error?: string;
+  bed: {
+    source: string;
+    warning: string;
+    includedStemTypes?: string[];
+  } | null;
+};
+
 const EVIDENCE_FEATURE_LABELS: Record<string, string> = {
   tempo: "Tempo",
   key: "Key",
@@ -163,6 +177,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const [renderUrl, setRenderUrl] = useState<string | null>(null);
   const [renderKind, setRenderKind] = useState<"mashup" | "extended" | null>(null);
   const [alignmentCandidates, setAlignmentCandidates] = useState<AlignmentCandidatePlan[]>([]);
+  const [directionComparisons, setDirectionComparisons] = useState<SourceDirectionComparison[]>([]);
   const [selectedAlignment, setSelectedAlignment] = useState<CandidateAlignmentId | null>(null);
   /**
    * The user's chosen arrangement mode.
@@ -255,6 +270,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setRenderKind(null);
     setRenderedCandidateUrls({});
     setAlignmentCandidates([]);
+    setDirectionComparisons([]);
     setSelectedAlignment(null);
     setPlan(null);
     setMixReport(null);
@@ -276,6 +292,40 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   const candidateRenderUrlsRef = useRef(new Map<CandidateAlignmentId, string>());
   const candidateRenderOrderRef = useRef<CandidateAlignmentId[]>([]);
   const sourceGenerationRef = useRef(0);
+  const pendingDirectionRef = useRef<SourceDirectionComparison | null>(null);
+
+  const installComparison = (comparison: SourceDirectionComparison) => {
+    setError(null);
+    setBedInfo(comparison.bed);
+    setEvidence(comparison.evidence);
+    setAlignmentCandidates(comparison.candidates);
+    const preferred = comparison.candidates.find((candidate) =>
+      candidate.id === arrangementMode && candidate.available);
+    const selected = preferred
+      ?? (["phrase-aware", "paired-grid", "downbeat", "continuous"] as CandidateAlignmentId[])
+        .map((id) => comparison.candidates.find((candidate) => candidate.id === id && candidate.available))
+        .find((candidate) => candidate !== undefined);
+    if (!selected) {
+      setSelectedAlignment(null);
+      setPlan(null);
+      setDrumRecommendation(null);
+      setBassRecommendation(null);
+      setError("No alignment option could place a vocal segment. Check the selected sources and their analysis.");
+      return;
+    }
+    setSelectedAlignment(selected.id);
+    setPlan(selected.plan);
+    setDrumRecommendation(selected.drumRecommendation ?? null);
+    setBassRecommendation(selected.bassRecommendation ?? null);
+    if (selected.id !== arrangementMode) {
+      setError(
+        `${arrangementMode === "full-length" ? "Full Length" : arrangementMode} was unavailable for this pair: ${
+          comparison.candidates.find((candidate) => candidate.id === arrangementMode)?.unavailableReason
+          ?? "the planner could not place the performance"
+        } Using ${selected.title} instead.`,
+      );
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -285,6 +335,13 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
   }, []);
 
   useEffect(() => {
+    const pendingDirection = pendingDirectionRef.current;
+    const selectedDirection = pendingDirection
+      && pendingDirection.vocalsSourceId === vocalsId
+      && pendingDirection.instrumentalSourceId === bedId
+      ? pendingDirection
+      : null;
+    pendingDirectionRef.current = null;
     sourceGenerationRef.current += 1;
     for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
     candidateRenderUrlsRef.current.clear();
@@ -306,7 +363,9 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setRenderUrl(null);
     setRenderKind(null);
     setSaveSuccess(null);
-    setStemDecisions({ drums: "retain", bass: "retain" });
+    setDirectionComparisons([]);
+    setStemDecisions(selectedDirection?.stemDecisions ?? { drums: "retain", bass: "retain" });
+    if (selectedDirection) installComparison(selectedDirection);
   }, [vocalsId, bedId, projectId]);
 
   const call = async (payload: Record<string, unknown>, kind: "mashup" | "extended") => {
@@ -377,6 +436,7 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
     setPlan(null);
     setAlignmentCandidates([]);
     setSelectedAlignment(null);
+    setDirectionComparisons([]);
     for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
     candidateRenderUrlsRef.current.clear();
     candidateRenderOrderRef.current = [];
@@ -398,38 +458,113 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
         setError(body.error ?? "Waveyard could not compare alignment options.");
         return;
       }
-      if (body.bed) setBedInfo(body.bed as { source: string; warning: string; includedStemTypes?: string[] });
-      setEvidence((body.evidence as EvidenceSummary | undefined) ?? null);
       const candidates = Array.isArray(body.candidates) ? body.candidates as AlignmentCandidatePlan[] : [];
-      setAlignmentCandidates(candidates);
-      // Honour the chosen mode first. Only if it is genuinely unavailable does the
-      // fallback chain run, and the UI must say which mode it actually used.
-      const preferred = candidates.find((candidate) => candidate.id === arrangementMode && candidate.available);
-      const selected = preferred
-        ?? (["phrase-aware", "paired-grid", "downbeat", "continuous"] as CandidateAlignmentId[])
-          .map((id) => candidates.find((candidate) => candidate.id === id && candidate.available))
-          .find((candidate) => candidate !== undefined);
-      if (selected) {
-        setSelectedAlignment(selected.id);
-        setPlan(selected.plan);
-        setDrumRecommendation(selected.drumRecommendation ?? null);
-        setBassRecommendation(selected.bassRecommendation ?? null);
-        if (selected.id !== arrangementMode) {
-          setError(
-            `Full Length was unavailable for this pair: ${
-              candidates.find((candidate) => candidate.id === arrangementMode)?.unavailableReason
-              ?? "the planner could not place the performance"
-            } Using ${selected.title} instead.`,
-          );
-        }
-      } else {
-        setError("No alignment option could place a vocal segment. Check the selected sources and their analysis.");
-      }
+      installComparison({
+        vocalsSourceId: vocalsId,
+        instrumentalSourceId: bedId,
+        stemDecisions: decisions,
+        candidates,
+        evidence: (body.evidence as EvidenceSummary | undefined) ?? null,
+        bed: (body.bed as SourceDirectionComparison["bed"] | undefined) ?? null,
+      });
     } catch {
       if (sourceGeneration === sourceGenerationRef.current) setError("Failed to compare mashup alignment options.");
     } finally {
       if (sourceGeneration === sourceGenerationRef.current) setPlanning(false);
     }
+  };
+
+  const compareBothDirections = async () => {
+    if (vocalsId === "" || bedId === "" || vocalsId === bedId || planning || candidateRendering !== null || rendering !== null) return;
+    const sourceGeneration = sourceGenerationRef.current;
+    const decisions = { ...stemDecisions };
+    const directions = [
+      { vocalsSourceId: vocalsId, instrumentalSourceId: bedId },
+      { vocalsSourceId: bedId, instrumentalSourceId: vocalsId },
+    ];
+    setPlanning(true);
+    setError(null);
+    setDirectionComparisons([]);
+    setPlan(null);
+    setEvidence(null);
+    setDrumRecommendation(null);
+    setBassRecommendation(null);
+    setAlignmentCandidates([]);
+    setSelectedAlignment(null);
+    setMixReport(null);
+    setSaveSuccess(null);
+    if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
+    renderUrlRef.current = null;
+    for (const url of candidateRenderUrlsRef.current.values()) URL.revokeObjectURL(url);
+    candidateRenderUrlsRef.current.clear();
+    candidateRenderOrderRef.current = [];
+    setRenderUrl(null);
+    setRenderKind(null);
+    setRenderedCandidateUrls({});
+    try {
+      const comparisons = await Promise.all(directions.map(async (direction) => {
+        try {
+          const response = await fetch(`/api/waveyard/projects/${projectId}/mashup`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "compare",
+              vocalsSourceId: direction.vocalsSourceId,
+              instrumentalSourceId: direction.instrumentalSourceId,
+              stemDecisions: decisions,
+            }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            return {
+              ...direction,
+              stemDecisions: decisions,
+              candidates: [],
+              evidence: null,
+              bed: null,
+              error: body.error ?? `This direction could not be compared (${response.status}).`,
+            } satisfies SourceDirectionComparison;
+          }
+          return {
+            ...direction,
+            stemDecisions: decisions,
+            candidates: Array.isArray(body.candidates) ? body.candidates as AlignmentCandidatePlan[] : [],
+            evidence: (body.evidence as EvidenceSummary | undefined) ?? null,
+            bed: (body.bed as SourceDirectionComparison["bed"] | undefined) ?? null,
+          } satisfies SourceDirectionComparison;
+        } catch {
+          return {
+            ...direction,
+            stemDecisions: decisions,
+            candidates: [],
+            evidence: null,
+            bed: null,
+            error: "The request failed before this direction could be compared.",
+          } satisfies SourceDirectionComparison;
+        }
+      }));
+      if (sourceGeneration !== sourceGenerationRef.current) return;
+      setDirectionComparisons(comparisons);
+    } catch (compareError) {
+      if (sourceGeneration === sourceGenerationRef.current) {
+        setError(compareError instanceof Error ? compareError.message : "Failed to compare both song directions.");
+      }
+    } finally {
+      if (sourceGeneration === sourceGenerationRef.current) setPlanning(false);
+    }
+  };
+
+  const useDirectionComparison = (comparison: SourceDirectionComparison) => {
+    setDirectionComparisons([]);
+    pendingDirectionRef.current = null;
+    if (comparison.vocalsSourceId === vocalsId && comparison.instrumentalSourceId === bedId) {
+      setStemDecisions(comparison.stemDecisions);
+      installComparison(comparison);
+      return;
+    }
+    pendingDirectionRef.current = comparison;
+    setVocalsId(comparison.vocalsSourceId);
+    setBedId(comparison.instrumentalSourceId);
   };
 
   const selectAlignment = (id: CandidateAlignmentId) => {
@@ -661,7 +796,59 @@ export function MashupStudio({ projectId, sources, canEdit }: { projectId: strin
           <button className="button" disabled={planning || candidateRendering !== null || rendering !== null || vocalsId === "" || bedId === "" || vocalsId === bedId} onClick={() => void planMashup()}>
             {planning ? "Comparing real alternatives…" : "Compare alignment options"}
           </button>
+          <button
+            className="button secondary"
+            data-testid="button-compare-mashup-directions"
+            disabled={planning || candidateRendering !== null || rendering !== null || vocalsId === "" || bedId === "" || vocalsId === bedId}
+            onClick={() => void compareBothDirections()}
+          >
+            {planning ? "Checking both directions…" : "Compare both song directions"}
+          </button>
         </div>
+      )}
+      {directionComparisons.length > 0 && (
+        <section className="mashup-direction-comparison" data-testid="mashup-direction-comparison" aria-labelledby="mashup-direction-heading">
+          <h4 id="mashup-direction-heading">Both source directions</h4>
+          <p>
+            These are separate plans, not a quality score or an automatic winner. Compare which direction can place the vocal and read the measured stem evidence, then choose one to load its exact alignment options.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+            {directionComparisons.map((comparison) => {
+              const vocalSource = sources.find((source) => source.id === comparison.vocalsSourceId);
+              const bedSource = sources.find((source) => source.id === comparison.instrumentalSourceId);
+              const available = comparison.candidates.filter((candidate) => candidate.available);
+              const preferred = comparison.candidates.find((candidate) => candidate.id === arrangementMode);
+              const evidenceCandidate = (preferred?.available ? preferred : available[0]) ?? comparison.candidates[0];
+              const vocalName = vocalSource?.originalFilename ?? "Unavailable source";
+              const bedName = bedSource?.originalFilename ?? "Unavailable source";
+              return (
+                <article key={`${comparison.vocalsSourceId}:${comparison.instrumentalSourceId}`} className="mashup-plan-summary">
+                  <h5>{vocalName} vocals over {bedName}</h5>
+                  <p>
+                    {available.length} of {comparison.candidates.length} alignment options can place this vocal.
+                    {" "}
+                    {preferred?.available
+                      ? `${preferred.title} is available${preferred.plan ? ` at ${preferred.plan.masterBpm} BPM` : ""}.`
+                      : `${arrangementMode === "full-length" ? "Full Length" : arrangementMode} is unavailable: ${preferred?.unavailableReason ?? "no plan returned"}.`}
+                  </p>
+                  {comparison.error && <p role="alert">{comparison.error}</p>}
+                  <p>Choices used for both comparisons: drums {comparison.stemDecisions.drums ?? "retain"}, bass {comparison.stemDecisions.bass ?? "retain"}.</p>
+                  <div role="status">
+                    <p><b>Drums:</b> {evidenceCandidate?.drumRecommendation?.outcome ?? "unavailable"} — {evidenceCandidate?.drumRecommendation?.reason ?? "No measured recommendation returned."}</p>
+                    <p><b>Bass:</b> {evidenceCandidate?.bassRecommendation?.outcome ?? "unavailable"} — {evidenceCandidate?.bassRecommendation?.reason ?? "No measured recommendation returned."}</p>
+                  </div>
+                  <button
+                    className="button secondary"
+                    disabled={available.length === 0 || Boolean(comparison.error) || planning || candidateRendering !== null || rendering !== null}
+                    onClick={() => useDirectionComparison(comparison)}
+                  >
+                    Use this direction
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
       )}
       {error && <p className="form-error" role="alert">{error}</p>}
       {canEdit && (
