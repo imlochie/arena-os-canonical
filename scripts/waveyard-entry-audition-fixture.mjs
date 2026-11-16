@@ -221,6 +221,30 @@ export async function runEntryAuditionAcceptance({ page, session, tracks, assets
   assert.equal(await deck.getByTestId("session-speed-value").innerText(), "1.00×",
     "weak real-pair analysis does not trigger a forced tempo shift");
 
+  const partialDrumSwap = session.swaps.find(swap => swap.stemType === "drums");
+  assert.ok(partialDrumSwap, "the mixed-source scenario starts from one active donor instrument");
+  session.swaps = [
+    partialDrumSwap,
+    {
+      id: "partial-vocal",
+      sessionTrackId: sourceTrack.id,
+      stemType: "vocals",
+      fromTrackId: sourceTrack.track.id,
+      toTrackId: bedTrack.track.id,
+      fromStemAssetId: sourceTrack.stems.find(stem => stem.stemType === "vocals")?.id ?? null,
+      toStemAssetId: bedTrack.stems.find(stem => stem.stemType === "vocals")?.id ?? null,
+      atSeconds: 0,
+      donorEntryOffsetMs: null,
+      createdAt: new Date(0).toISOString(),
+      donorTrack: bedTrack.track,
+    },
+  ];
+  await page.reload();
+  deck = page.locator('[data-role="current"]');
+  await deck.getByTestId("session-key-master-status").waitFor();
+  assert.match(await deck.getByTestId("session-key-master-status").innerText(), /multiple sources.*no single key reference.*source pitch/i,
+    "a partial instrumental donor cannot make the original song key look authoritative");
+
   await page.setViewportSize({ width: 390, height: 844 });
   deck = await openCompare();
   await deck.getByTestId("vocal-entry-alternatives").scrollIntoViewIfNeeded();

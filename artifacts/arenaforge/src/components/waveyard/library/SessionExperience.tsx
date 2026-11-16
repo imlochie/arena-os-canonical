@@ -441,6 +441,8 @@ function getPersistedSwapSetup(
     } else {
       keyMasterStatus = `${bedTitle} complete instrumental bed is the key reference${keyReferenceKey ? ` (${keyReferenceKey})` : ""}. The vocal layer is matched only when both key analyses are confident.`;
     }
+  } else if (hasInstrumentalSwap) {
+    keyMasterStatus = "Instrumental layers come from multiple sources; no single key reference is established, so donor vocals stay at source pitch.";
   } else if (currentTrackHasCompleteBed) {
     keyReferenceKey = bedKeyAnalysis?.musicalKey ?? null;
     keyReferenceConfidence = bedKeyAnalysis?.keyConfidence ?? null;
@@ -469,10 +471,10 @@ function getPersistedSwapSetup(
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
     const alignmentRecipientKey = fullBedDonorTrackId !== null
       ? bedKeyAnalysis?.musicalKey ?? null
-      : shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
+      : hasInstrumentalSwap ? null : shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
     const alignmentRecipientKeyConfidence = fullBedDonorTrackId !== null
       ? bedKeyAnalysis?.keyConfidence
-      : item.analysis?.keyConfidence;
+      : hasInstrumentalSwap ? null : item.analysis?.keyConfidence;
     const sectionAlignment = ratio === null ? null : liveStemSectionAlignment(
       item.analysis?.sections,
       donorAnalysis?.sections,
@@ -514,10 +516,10 @@ function getPersistedSwapSetup(
       ?? libraryDonorAnalysis?.keyConfidence;
     const leadKey = fullBedDonorTrackId !== null
       ? bedKeyAnalysis?.musicalKey ?? null
-      : shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
+      : hasInstrumentalSwap ? null : shiftMusicalKey(item.analysis?.musicalKey, deckSemitones);
     const leadKeyConfidence = fullBedDonorTrackId !== null
       ? bedKeyAnalysis?.keyConfidence
-      : item.analysis?.keyConfidence;
+      : hasInstrumentalSwap ? null : item.analysis?.keyConfidence;
     const keyEvidence = keyCompatibilityEvidence(
       leadKey,
       leadKeyConfidence,
@@ -594,6 +596,7 @@ function getPersistedSwapSetup(
     keyReferenceConfidence,
     sourceKeyShiftSemitones,
     fullBedDonorTrackId,
+    hasInstrumentalSwap,
   };
 }
 
@@ -5126,10 +5129,10 @@ export default function SessionExperience({
         currentBeatConfidence={currentItem.analysis?.beatConfidence ?? null}
         currentKey={currentSwapSetup.fullBedDonorTrackId !== null
           ? currentSwapSetup.keyReferenceKey
-          : currentItem.analysis?.musicalKey ?? null}
+          : currentSwapSetup.hasInstrumentalSwap ? null : currentItem.analysis?.musicalKey ?? null}
         currentKeyConfidence={currentSwapSetup.fullBedDonorTrackId !== null
           ? currentSwapSetup.keyReferenceConfidence
-          : currentItem.analysis?.keyConfidence ?? null}
+          : currentSwapSetup.hasInstrumentalSwap ? null : currentItem.analysis?.keyConfidence ?? null}
         currentPositionSeconds={positions[activeDeck]}
         currentPlaying={playingByDeck[activeDeck]}
         sessionPlaybackRate={normalizeSessionPlaybackRate(playbackRate * currentSwapSetup.tempoMasterRate)}

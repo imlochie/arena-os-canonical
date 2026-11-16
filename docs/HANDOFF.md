@@ -17,6 +17,9 @@ separated-stem assets. That complete bed becomes the key reference; original or
 replacement vocals are pitch-shifted only when both key estimates meet the
 confidence gate. Bed instruments themselves are not transposed to satisfy a
 vocal. A missing, stale or passthrough asset cannot silently complete the bed.
+If instrumental stems come from multiple sources without one complete bed,
+Waveyard now withholds a single key authority rather than treating the
+receiving song's old key as if it still described the changed arrangement.
 
 Sending a session to Studio now carries those same decisions into the existing
 remix model: an accepted drum master sets the remix tempo; only clips with
