@@ -29,7 +29,9 @@ the target key; and only a confident vocal in matching mode receives
 fallback reason in the UI. Tempo-adjusted clip durations are scaled against
 their source BPM so the exporter consumes the full selected source interval;
 saved donor-vocal entry offsets remain source offsets. Instrumental clips are
-never pitch-shifted as part of vocal matching.
+never pitch-shifted as part of vocal matching. Studio calls the BPM a timeline
+grid and explicitly says no audio is tempo-synced when the neutral 120 BPM
+default has not transformed a source clip.
 
 Real PostgreSQL integration tests now follow the persisted rows through remix
 reload, immutable export snapshot and the actual local export worker. With
