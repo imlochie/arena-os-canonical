@@ -265,6 +265,94 @@ describe("retained-stem harmonic selection", () => {
     expect(String(vocalTrack!.stemAssetId)).toContain("fits");
   });
 
+  /** A structurally usable bed carrying a checksum-bound chord analysis. */
+  const bedWithBass = (id: string, line: unknown[] | null) => {
+    const base = withFingerprints(source({ id, bedHarmony: undefined }));
+    return {
+      ...base,
+      bassLine: line as never,
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony", analysisEngineVersion: "1.0.0",
+        stemAssetId: `${id}-other`, stemType: "other", stemChecksumSha256: `${id}-other-checksum`,
+        sourceChecksumSha256: base.checksumSha256, events: bedChords(0),
+      },
+    };
+  };
+  /** A bass line of repeated notes; one MIDI pitch per 4-bar phrase. */
+  const bassLine = (pitches: number[], confidence = 0.9) => pitches.flatMap((midi, phrase) =>
+    Array.from({ length: 16 }, (_, step) => ({
+      startMs: phrase * 4_000 + step * 250,
+      endMs: phrase * 4_000 + step * 250 + 230,
+      midiNote: midi,
+      confidence,
+    })));
+  const chosenVocal = (sources: AutomaticRemixSource[]) => {
+    const result = buildAutomaticRemixPlan(sources, {
+      variant: "hybrid", vocalStemId: undefined, anchorSourceId: "a",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return null;
+    const track = result.plan.tracks.find((entry) => entry.stemType === "vocals");
+    return track ? String(track.stemAssetId) : null;
+  };
+
+  it("rejects a donor whose later section clashes even though its opening is perfect", () => {
+    // Both donors sing the same C arpeggio over the first section, so judging
+    // one matched pair -- the previous behaviour -- cannot separate them. The
+    // second section is where they differ.
+    const anchor = bedWithBass("a", null);
+    const throughout = withFingerprints(source({ id: "throughout", vocalNotes: arpeggio as never }));
+    const openingOnly = withFingerprints(source({
+      id: "opening-only",
+      vocalNotes: arpeggio.map((note) => (note.startMs >= 8_000
+        ? { ...note, midiNote: note.midiNote + 1 }
+        : note)) as never,
+    }));
+    // Offer the worse candidate first so a tie would fall back to it.
+    const chosen = chosenVocal([anchor, openingOnly, throughout]);
+    expect(chosen).toContain("throughout");
+    expect(chosen).not.toContain("opening-only");
+  });
+
+  it("prefers an anchor whose own bass corroborates its chord analysis", () => {
+    // Two equally structural beds. One's bass line supports the chords its
+    // harmony analysis reports; the other sustains pitches foreign to them.
+    // The caller names no anchor, so the choice is the planner's.
+    // The contradicting bed is offered FIRST, so ordering alone would keep it.
+    const contradicting = bedWithBass("first", bassLine([42, 45, 44, 42]));
+    const supporting = bedWithBass("second", bassLine([36, 43, 40, 36]));
+    const donor = withFingerprints(source({ id: "donor", vocalNotes: arpeggio as never }));
+    const result = buildAutomaticRemixPlan([contradicting, supporting, donor], {
+      variant: "hybrid", vocalStemId: undefined,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.provenance.anchorSourceId).toBe("second");
+    expect(result.plan.provenance.decisions.join(" ")).toContain("bass line corroborates");
+  });
+
+  it("does not move the anchor when the bass contradicts every candidate", () => {
+    // Contradicting bass is not support. With no corroborating bed, the previous
+    // ordering must stand unchanged.
+    const first = bedWithBass("first", bassLine([42, 45, 44, 42]));
+    const second = bedWithBass("second", bassLine([41, 44, 43, 41]));
+    const donor = withFingerprints(source({ id: "donor", vocalNotes: arpeggio as never }));
+    const result = buildAutomaticRemixPlan([first, second, donor], { variant: "hybrid", vocalStemId: undefined });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.provenance.anchorSourceId).toBe("first");
+  });
+
+  it("leaves the anchor choice untouched when no bass evidence exists at all", () => {
+    const first = bedWithBass("first", null);
+    const second = bedWithBass("second", null);
+    const donor = withFingerprints(source({ id: "donor", vocalNotes: arpeggio as never }));
+    const result = buildAutomaticRemixPlan([first, second, donor], { variant: "hybrid", vocalStemId: undefined });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.provenance.anchorSourceId).toBe("first");
+  });
+
   it("is unmoved when neither donor can be judged, rather than preferring an unknown", () => {
     // No bed harmony on the anchor: the new evidence cannot decide anything,
     // so the previous ordering must stand unchanged.

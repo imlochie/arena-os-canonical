@@ -825,13 +825,42 @@ export type LocalVocalPitchFrame = {
 
 /** Monophonic YIN-style pitch observations on isolated vocal stems. It emits
  * null pitch for unvoiced/ambiguous frames; it never guesses through silence. */
-export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[] {
-  const decimation = 4;
+/**
+ * Monophonic YIN pitch tracking.
+ *
+ * Defaults are the vocal estimator and are unchanged: 50–1200 Hz at 4x
+ * decimation. Bass fundamentals run far lower (bass guitar low E is 41 Hz, a
+ * five-string low B is 31 Hz), so the same detector is reused with an explicit
+ * range rather than reimplemented. Decimation is reduced so the analysis band
+ * still reaches the fundamental: at 2x, Nyquist is ~5.5 kHz and a 20ms period is
+ * well inside the window.
+ */
+export type MonophonicPitchOptions = {
+  /** Lowest fundamental to accept, in Hz. */
+  minFrequencyHz?: number;
+  /** Highest fundamental to accept, in Hz. */
+  maxFrequencyHz?: number;
+  /** Integer sample decimation applied before analysis. */
+  decimation?: number;
+};
+
+export function detectVocalPitchFrames(
+  pcm: Float32Array,
+  options: MonophonicPitchOptions = {},
+): LocalVocalPitchFrame[] {
+  const decimation = Number.isSafeInteger(options.decimation) && options.decimation! >= 1
+    ? options.decimation! : 4;
+  const minFrequencyHz = Number.isFinite(options.minFrequencyHz) && options.minFrequencyHz! > 0
+    ? options.minFrequencyHz! : 50;
+  const maxFrequencyHz = Number.isFinite(options.maxFrequencyHz) && options.maxFrequencyHz! > 0
+    ? options.maxFrequencyHz! : 1_200;
+  if (maxFrequencyHz <= minFrequencyHz) return [];
   const rate = ANALYSIS_PCM_RATE / decimation;
+  // A 20 ms period (50 Hz) needs a window with real support at twice the lag.
   const windowSize = Math.round(rate * 0.06);
   const hopSize = Math.round(rate * 0.03);
-  const minLag = Math.floor(rate / 1_200);
-  const maxLag = Math.floor(rate / 50);
+  const minLag = Math.max(2, Math.floor(rate / maxFrequencyHz));
+  const maxLag = Math.floor(rate / minFrequencyHz);
   if (pcm.length < windowSize * decimation) return [];
   const frames: LocalVocalPitchFrame[] = [];
   const signal = new Float32Array(windowSize);
@@ -901,7 +930,7 @@ export function detectVocalPitchFrames(pcm: Float32Array): LocalVocalPitchFrame[
     const frequencyHz = rate / period;
     const midiFloat = 69 + 12 * Math.log2(frequencyHz / 440);
     const confidence = Math.max(0, Math.min(1, 1 - bestValue));
-    if (frequencyHz < 50 || frequencyHz > 1_200 || !Number.isFinite(midiFloat)) {
+    if (frequencyHz < minFrequencyHz || frequencyHz > maxFrequencyHz || !Number.isFinite(midiFloat)) {
       frames.push({ timestampMs, frequencyHz: null, midiFloat: null, nearestMidiNote: null, confidence: 0, voiced: false });
     } else {
       frames.push({ timestampMs, frequencyHz, midiFloat, nearestMidiNote: Math.round(midiFloat), confidence, voiced: true });

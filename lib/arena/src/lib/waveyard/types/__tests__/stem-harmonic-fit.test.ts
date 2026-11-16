@@ -209,3 +209,146 @@ test("placed notes are mapped into the bed timeline with the arrangement's stret
   assert.ok(notes![0]!.startMs >= 8000, "notes land in the bed timeline");
   assert.ok(notes!.at(-1)!.endMs > 8000);
 });
+
+// --- whole arrangement ------------------------------------------------------
+
+import {
+  assessWholeArrangementHarmony,
+  wholeArrangementConforming,
+  MIN_ARRANGEMENT_JUDGED_SHARE,
+  type ArrangementSectionAssessmentInput,
+} from "../stem-harmonic-fit";
+
+// Bed harmony must cover the whole planned timeline, or later sections fall
+// outside it and become unjudged rather than conflicting.
+const C_MAJOR: StemHarmonyChord[] = [chord(0, 0, 16_000)];
+
+function section(
+  id: string,
+  anchorStartMs: number,
+  notes: StemHarmonyNote[],
+  overrides: Partial<ArrangementSectionAssessmentInput> = {},
+): ArrangementSectionAssessmentInput {
+  return {
+    anchorSectionId: id,
+    donorSectionId: `${id}-donor`,
+    anchorStartMs,
+    anchorEndMs: anchorStartMs + 4000,
+    donorStartMs: 0,
+    donorEndMs: 4000,
+    notes,
+    pitchShiftSemitones: 0,
+    ...overrides,
+  };
+}
+
+// A C-major arpeggio of the right length to be judged, expressed in donor time.
+const conformingNotes = (): StemHarmonyNote[] => [
+  note(60, 0, 400), note(64, 400, 400), note(67, 800, 400),
+  note(60, 1200, 400), note(64, 1600, 400), note(67, 2000, 400),
+  note(60, 2400, 400), note(64, 2800, 400), note(67, 3200, 600),
+];
+// The same line a semitone up: outside C major throughout, never resolving.
+const clashingNotes = (): StemHarmonyNote[] => conformingNotes().map((n) => ({ ...n, midiNote: n.midiNote + 1 }));
+
+test("a whole arrangement that conforms in every section is endorsed", () => {
+  const result = assessWholeArrangementHarmony({
+    sections: [section("a", 0, conformingNotes()), section("b", 4000, conformingNotes())],
+    bedChords: C_MAJOR,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  assert.equal(result.sections.filter((s) => s.status === "measured").length, 2);
+  const decision = wholeArrangementConforming(result);
+  assert.equal(decision.conforming, true, decision.reason);
+});
+
+test("a strong opening cannot conceal a conflicting later section", () => {
+  // This is the case the increment exists for. The opening is perfect; the
+  // second section fights the bed. Averaging would still look healthy.
+  const result = assessWholeArrangementHarmony({
+    sections: [
+      section("opening", 0, conformingNotes()),
+      section("opening-2", 4000, conformingNotes()),
+      section("clash-late", 8000, clashingNotes()),
+    ],
+    bedChords: C_MAJOR,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  assert.deepEqual(result.conflictingSections, ["clash-late"]);
+  const decision = wholeArrangementConforming(result);
+  assert.equal(decision.conforming, false);
+  assert.ok(decision.reason.includes("clash-late"), decision.reason);
+  // Two of three sections conform, so a plain average sits at two-thirds and
+  // would have read as healthy. The decision is the conflict, not the average.
+  assert.ok(result.weightedConformance > 0.6,
+    `the average alone would look acceptable (${result.weightedConformance})`);
+});
+
+test("the weakest section is reported even when the average is healthy", () => {
+  const result = assessWholeArrangementHarmony({
+    sections: [section("good", 0, conformingNotes()), section("bad", 4000, clashingNotes())],
+    bedChords: C_MAJOR,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  assert.equal(result.weakestSectionId, "bad");
+  assert.ok((result.weakestConformance ?? 1) < 0.1);
+});
+
+test("a mostly unjudged arrangement is not endorsed", () => {
+  // Only one short section can be judged; the rest have no bed harmony.
+  const result = assessWholeArrangementHarmony({
+    sections: [
+      section("judged", 0, conformingNotes()),
+      section("empty-1", 4000, []),
+      section("empty-2", 8000, []),
+      section("empty-3", 12000, []),
+    ],
+    bedChords: C_MAJOR,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  assert.equal(result.unjudgedSections, 3);
+  const judgedShare = result.judgedMs / result.proposedMs;
+  assert.ok(judgedShare < MIN_ARRANGEMENT_JUDGED_SHARE, `judged share ${judgedShare}`);
+  assert.equal(wholeArrangementConforming(result).conforming, false);
+});
+
+test("each section keeps its own result instead of one collapsed average", () => {
+  const result = assessWholeArrangementHarmony({
+    sections: [section("a", 0, conformingNotes()), section("b", 4000, clashingNotes())],
+    bedChords: C_MAJOR,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  const [first, second] = result.sections;
+  assert.equal(first!.status, "measured");
+  assert.equal(second!.status, "measured");
+  if (first!.status !== "measured" || second!.status !== "measured") return;
+  assert.ok(first!.assessment.chordToneShare > 0.95);
+  assert.ok(second!.assessment.clashShare > 0.95);
+  assert.notEqual(first!.anchorSectionId, second!.anchorSectionId);
+});
+
+test("a section is judged at the arrangement's real stretch, not donor time", () => {
+  // The donor section is 4s but lands in a 2s anchor section: ratio 0.5.
+  const result = assessWholeArrangementHarmony({
+    sections: [section("tight", 0, conformingNotes(), { anchorEndMs: 2000 })],
+    bedChords: C_MAJOR,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  const only = result.sections[0];
+  assert.equal(only!.status, "measured");
+  if (only!.status !== "measured") return;
+  assert.equal(only!.stretchRatio, 0.5);
+});
+
+test("no bed chords means no arrangement can be judged", () => {
+  const result = assessWholeArrangementHarmony({
+    sections: [section("a", 0, conformingNotes())], bedChords: [],
+  });
+  assert.equal(result.status, "unavailable");
+});

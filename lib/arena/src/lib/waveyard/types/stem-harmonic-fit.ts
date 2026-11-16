@@ -356,3 +356,222 @@ export function assessStemHarmonicFit(input: {
 export function harmonicConformance(assessment: StemHarmonicAssessment): number {
   return assessment.chordToneShare + assessment.resolvedShare;
 }
+
+/**
+ * One planned section of the arrangement, aligned to the anchor timeline the
+ * listener will hear. The caller supplies the real mapping; this module never
+ * guesses a stretch or a shift.
+ */
+export type ArrangementSectionAssessmentInput = {
+  anchorSectionId: string;
+  donorSectionId: string;
+  /** Section span in the anchor's (rendered) timeline. */
+  anchorStartMs: number;
+  anchorEndMs: number;
+  /** Donor span that is mapped onto it. */
+  donorStartMs: number;
+  donorEndMs: number;
+  /** Notes of this donor section, in the donor's own timeline. */
+  notes: readonly StemHarmonyNote[];
+  /** Semitones applied by the arrangement's authorized key shift. */
+  pitchShiftSemitones: number;
+};
+
+export type ArrangementSectionResult =
+  | {
+    status: "measured";
+    anchorSectionId: string;
+    donorSectionId: string;
+    anchorStartMs: number;
+    anchorEndMs: number;
+    stretchRatio: number;
+    assessment: StemHarmonicAssessment;
+  }
+  | {
+    status: "unavailable";
+    anchorSectionId: string;
+    donorSectionId: string;
+    anchorStartMs: number;
+    anchorEndMs: number;
+    reason: string;
+  };
+
+export type WholeArrangementHarmony = {
+  status: "measured";
+  sections: ArrangementSectionResult[];
+  /** Judged sounding time across every measured section. */
+  judgedMs: number;
+  /** Total played time the arrangement proposed, measured or not. */
+  proposedMs: number;
+  /** Sections that could not be evaluated at all. */
+  unjudgedSections: number;
+  /** Sections with a measured, unresolved harmonic conflict. */
+  conflictingSections: string[];
+  /** The least consonant measured section, so a weak passage cannot hide. */
+  weakestSectionId: string | null;
+  weakestConformance: number | null;
+  /**
+   * Conformance across judged time, weighted by section duration. Reported for
+   * ordering only; `conforming` is the decision, not this number.
+   */
+  weightedConformance: number;
+};
+
+/**
+ * Judge every section the arrangement intends to play.
+ *
+ * The decision is deliberately not an average. A pairing that works for its
+ * opening and clashes later must not receive an unconditional endorsement, so
+ * `conforming` requires that no measured section is in sustained conflict, and
+ * that enough of the proposal was actually judged. A weak average cannot buy
+ * back a section that fights.
+ */
+export function assessWholeArrangementHarmony(input: {
+  sections: readonly ArrangementSectionAssessmentInput[];
+  /** Bed chord timeline in the anchor's timeline. */
+  bedChords: readonly StemHarmonyChord[];
+}): WholeArrangementHarmony | { status: "unavailable"; reason: string } {
+  const { sections, bedChords } = input;
+  if (!sections.length) return { status: "unavailable", reason: "The arrangement proposes no sections to judge." };
+  if (!bedChords.length) {
+    return {
+      status: "unavailable",
+      reason: "The retained bed has no chord timeline, so no part of the arrangement can be judged against it.",
+    };
+  }
+  const results: ArrangementSectionResult[] = [];
+  let judgedMs = 0;
+  let proposedMs = 0;
+  let unjudgedSections = 0;
+  let weighted = 0;
+  let weight = 0;
+  let weakestSectionId: string | null = null;
+  let weakestConformance: number | null = null;
+  const conflictingSections: string[] = [];
+  for (const section of sections) {
+    const proposed = Math.max(0, section.anchorEndMs - section.anchorStartMs);
+    proposedMs += proposed;
+    const span = section.donorEndMs - section.donorStartMs;
+    if (span <= 0 || proposed <= 0) {
+      unjudgedSections += 1;
+      results.push({
+        status: "unavailable",
+        anchorSectionId: section.anchorSectionId,
+        donorSectionId: section.donorSectionId,
+        anchorStartMs: section.anchorStartMs,
+        anchorEndMs: section.anchorEndMs,
+        reason: "This section has no duration on the planned timeline.",
+      });
+      continue;
+    }
+    const stretchRatio = proposed / span;
+    // Place this section's notes on the anchor timeline exactly as the renderer
+    // will, then judge them against the bed chords under each one.
+    const placed: StemHarmonyNote[] = section.notes
+      .filter((note) => note.startMs < section.donorEndMs && note.endMs > section.donorStartMs)
+      .map((note) => {
+        const from = Math.max(note.startMs, section.donorStartMs);
+        const to = Math.min(note.endMs, section.donorEndMs);
+        return {
+          startMs: Math.round(section.anchorStartMs + (from - section.donorStartMs) * stretchRatio),
+          endMs: Math.round(section.anchorStartMs + (to - section.donorStartMs) * stretchRatio),
+          midiNote: note.midiNote + section.pitchShiftSemitones,
+          velocity: note.velocity,
+        };
+      })
+      .filter((note) => note.endMs > note.startMs);
+    const assessment = assessStemHarmonicFit({
+      notes: placed,
+      bedChords,
+      fromMs: section.anchorStartMs,
+      toMs: section.anchorEndMs,
+    });
+    if (assessment.status === "unavailable") {
+      unjudgedSections += 1;
+      results.push({
+        status: "unavailable",
+        anchorSectionId: section.anchorSectionId,
+        donorSectionId: section.donorSectionId,
+        anchorStartMs: section.anchorStartMs,
+        anchorEndMs: section.anchorEndMs,
+        reason: assessment.reason,
+      });
+      continue;
+    }
+    judgedMs += assessment.judgedMs;
+    const conformance = harmonicConformance(assessment);
+    weighted += conformance * assessment.judgedMs;
+    weight += assessment.judgedMs;
+    if (weakestConformance === null || conformance < weakestConformance) {
+      weakestConformance = conformance;
+      weakestSectionId = section.anchorSectionId;
+    }
+    // "In sustained conflict" means most judged sounding time in the section is
+    // unresolved tension. A single expressive clash does not condemn a section.
+    if (assessment.clashShare > MAX_SECTION_CLASH_SHARE) conflictingSections.push(section.anchorSectionId);
+    results.push({
+      status: "measured",
+      anchorSectionId: section.anchorSectionId,
+      donorSectionId: section.donorSectionId,
+      anchorStartMs: section.anchorStartMs,
+      anchorEndMs: section.anchorEndMs,
+      stretchRatio,
+      assessment,
+    });
+  }
+  if (!weight) {
+    return {
+      status: "unavailable",
+      reason: `None of the ${sections.length} proposed sections could be judged against the retained bed.`,
+    };
+  }
+  return {
+    status: "measured",
+    sections: results,
+    judgedMs,
+    proposedMs,
+    unjudgedSections,
+    conflictingSections,
+    weakestSectionId,
+    weakestConformance,
+    weightedConformance: weighted / weight,
+  };
+}
+
+/**
+ * The decision, not a score.
+ *
+ * A whole-arrangement pairing conforms only when it was measured, no section is
+ * in sustained conflict, and a substantial share of the proposal was actually
+ * judged. Refusing is the correct answer when most of the song is unknown.
+ */
+export function wholeArrangementConforming(result: WholeArrangementHarmony): { conforming: boolean; reason: string } {
+  if (result.conflictingSections.length) {
+    return {
+      conforming: false,
+      reason: `section ${result.conflictingSections[0]} is in sustained harmonic conflict with the retained bed`,
+    };
+  }
+  const judgedShare = result.proposedMs > 0 ? result.judgedMs / result.proposedMs : 0;
+  if (judgedShare < MIN_ARRANGEMENT_JUDGED_SHARE) {
+    return {
+      conforming: false,
+      reason: `only ${(judgedShare * 100).toFixed(0)}% of the proposed arrangement could be judged`,
+    };
+  }
+  return {
+    conforming: true,
+    reason: `every judged section conforms; ${(judgedShare * 100).toFixed(0)}% of the proposed arrangement was judged`,
+  };
+}
+
+/**
+ * Sustained conflict threshold: more than half of a section's judged sounding
+ * time in unresolved tension. This is a musical statement about the section,
+ * not a tuning knob: a section where most of the melody does not resolve is not
+ * a section that works.
+ */
+export const MAX_SECTION_CLASH_SHARE = 0.5;
+
+/** Below this judged share the arrangement is mostly unknown and is not endorsed. */
+export const MIN_ARRANGEMENT_JUDGED_SHARE = 0.5;

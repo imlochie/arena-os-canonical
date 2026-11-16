@@ -477,6 +477,7 @@
     "./lib/waveyard/types/clip-editing": "./src/lib/waveyard/types/clip-editing.ts",
     "./lib/waveyard/types/cross-source-alignment": "./src/lib/waveyard/types/cross-source-alignment.ts",
     "./lib/waveyard/types/bass-analysis": "./src/lib/waveyard/types/bass-analysis.ts",
+    "./lib/waveyard/types/bass-harmony-fit": "./src/lib/waveyard/types/bass-harmony-fit.ts",
     "./lib/waveyard/types/drum-analysis": "./src/lib/waveyard/types/drum-analysis.ts",
     "./lib/waveyard/types/harmony-analysis": "./src/lib/waveyard/types/harmony-analysis.ts",
     "./lib/waveyard/types/stem-harmonic-adapter": "./src/lib/waveyard/types/stem-harmonic-adapter.ts",

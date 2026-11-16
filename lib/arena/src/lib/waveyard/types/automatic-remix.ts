@@ -3,11 +3,21 @@ import { usableBeatGrid } from "./beat-grid";
 import { HARMONY_TEMPLATE_MIN_MARGIN, type HarmonyEvent } from "./harmony-analysis";
 import {
   assessStemHarmonicFit,
+  assessWholeArrangementHarmony,
   harmonicConformance,
+  wholeArrangementConforming,
+  type ArrangementSectionAssessmentInput,
   type StemHarmonicResult,
   type StemHarmonyNote,
+  type WholeArrangementHarmony,
 } from "./stem-harmonic-fit";
 import { bedChordsFromHarmonyEvents } from "./stem-harmonic-adapter";
+import {
+  assessBassLine,
+  bassContradictsHarmony,
+  type BassLineNote,
+  type BassLineResult,
+} from "./bass-harmony-fit";
 import {
   type AutomaticRemixCompatibilityPair,
   comparePassageCompatibility,
@@ -90,6 +100,12 @@ export type AutomaticRemixSource = {
    * These are the notes a vocal hybrid actually carries.
    */
   vocalNotes?: readonly StemHarmonyNote[] | null;
+  /**
+   * Independently tracked bass notes of this source's bass stem, in this
+   * source's own timeline. Absent means the harmonic foundation was not
+   * measured -- it never means the bass agrees.
+   */
+  bassLine?: readonly BassLineNote[] | null;
 };
 
 /** High-level preferences only. Clip-level editing remains in the existing Studio. */
@@ -346,6 +362,145 @@ export function assessRetainedHybridHarmony(input: {
   });
 }
 
+export type WholeArrangementDecision =
+  | {
+    status: "measured";
+    conforming: boolean;
+    reason: string;
+    harmony: WholeArrangementHarmony;
+    bass: BassLineResult;
+    /** True when the bass also argues against this candidate. */
+    bassContradicts: boolean;
+    bassReason: string;
+    /** Sections assessed, so "the whole song" is auditable. */
+    assessedSectionCount: number;
+  }
+  | { status: "unavailable"; reason: string };
+
+/**
+ * Judge a whole proposed hybrid arrangement: every matched section the planner
+ * intends to use, plus the retained bed's independent bass line.
+ *
+ * This replaces asking "does the first matched section work". A pairing that is
+ * perfect for its opening and fights the bed later must not be endorsed, and a
+ * pairing whose retained bass contradicts the harmony must not be preferred just
+ * because the vocal fits.
+ *
+ * Refusing is a valid answer: without a checksum-bound bed analysis, a trusted
+ * key, or enough judged material the result is unavailable, never "compatible".
+ */
+/**
+ * Which candidate bed should anchor the arrangement when the caller did not
+ * choose one.
+ *
+ * The anchor decides the key, the tempo and the chords every placed donor vocal
+ * is judged against, so picking the first structurally usable source is an
+ * arbitrary musical choice. Where a candidate bed carries its own independently
+ * tracked bass line, that bass can corroborate or contradict the bed's own chord
+ * analysis. A bed whose bass agrees is a safer foundation than one whose own
+ * harmonic foundation argues with its labels.
+ *
+ * This only ever moves between candidates that are already structurally usable,
+ * and returns null when nothing corroborates anything, leaving the previous
+ * ordering untouched.
+ */
+function bedConfirmedByBass(sources: readonly AutomaticRemixSource[]): AutomaticRemixSource | null {
+  for (const source of sources) {
+    if (!source.bedHarmony || !source.bassLine?.length) continue;
+    if (source.bedHarmony.sourceChecksumSha256 !== source.checksumSha256) continue;
+    const bedChords = bedChordsFromHarmonyEvents(source.bedHarmony.events);
+    if (!bedChords.length) continue;
+    const bass = assessBassLine({
+      notes: source.bassLine,
+      bedChords,
+      fromMs: Math.min(...bedChords.map((chord) => chord.startMs)),
+      toMs: Math.max(...bedChords.map((chord) => chord.endMs)),
+    });
+    if (bass.status !== "measured") continue;
+    if (bassContradictsHarmony(bass).contradicts) continue;
+    return source;
+  }
+  return null;
+}
+
+export function assessWholeHybridArrangement(input: {
+  anchor: AutomaticRemixSource;
+  donor: AutomaticRemixSource;
+  /** Every counterpart pair the planner intends to place. */
+  counterparts: ReadonlyMap<string, AutomaticRemixSection>;
+}): WholeArrangementDecision {
+  const { anchor, donor, counterparts } = input;
+  if (!anchor.bedHarmony) {
+    return {
+      status: "unavailable",
+      reason: `The anchor bed for ${anchor.originalFilename} has no current checksum-bound chord analysis from its non-vocal stems, so the placed donor vocal cannot be judged against it.`,
+    };
+  }
+  if (anchor.bedHarmony.sourceChecksumSha256 !== anchor.checksumSha256) {
+    return { status: "unavailable", reason: "The anchor bed chord analysis does not match the current source checksum." };
+  }
+  const donorKey = trustedKey(donor);
+  const anchorKey = trustedKey(anchor);
+  const semitones = donorKey && anchorKey ? semitoneShift(donorKey, anchorKey) : null;
+  if (semitones === null) {
+    return { status: "unavailable", reason: "No authorized pitch shift is available for this placement." };
+  }
+  if (!donor.vocalNotes?.length) {
+    return { status: "unavailable", reason: `No isolated vocal notes are available for ${donor.originalFilename}.` };
+  }
+  const anchorSections = usableSections(anchor);
+  const donorSections = usableSections(donor);
+  const sectionInputs: ArrangementSectionAssessmentInput[] = [];
+  for (const [anchorSectionId, donorSection] of counterparts) {
+    const anchorSection = anchorSections.find((section) => section.id === anchorSectionId);
+    if (!anchorSection || !donorSection) continue;
+    sectionInputs.push({
+      anchorSectionId,
+      donorSectionId: donorSection.id,
+      anchorStartMs: anchorSection.startMs,
+      anchorEndMs: anchorSection.endMs,
+      donorStartMs: donorSection.startMs,
+      donorEndMs: donorSection.endMs,
+      notes: donor.vocalNotes,
+      pitchShiftSemitones: semitones,
+    });
+  }
+  if (!sectionInputs.length) {
+    return { status: "unavailable", reason: "No matched section pair could be resolved on the planned timeline." };
+  }
+  const bedChords = bedChordsFromHarmonyEvents(anchor.bedHarmony.events);
+  const harmony = assessWholeArrangementHarmony({ sections: sectionInputs, bedChords });
+  if (harmony.status === "unavailable") return { status: "unavailable", reason: harmony.reason };
+
+  // Independent bass evidence for the retained bed. Absent or stale evidence is
+  // reported as unavailable and never treated as support.
+  const bass = anchor.bassLine?.length
+    ? assessBassLine({
+      notes: anchor.bassLine,
+      bedChords,
+      fromMs: Math.min(...sectionInputs.map((section) => section.anchorStartMs)),
+      toMs: Math.max(...sectionInputs.map((section) => section.anchorEndMs)),
+    })
+    : { status: "unavailable" as const, reason: "No trustworthy bass-line evidence is available for the retained bed." };
+  const bassVerdict = bass.status === "measured"
+    ? bassContradictsHarmony(bass)
+    : { contradicts: false, reason: bass.reason };
+  const harmonyVerdict = wholeArrangementConforming(harmony);
+  const parts = [harmonyVerdict.reason];
+  if (bass.status === "measured") parts.push(`bass: ${bassVerdict.reason}`);
+  else parts.push(`bass not judged: ${bassVerdict.reason}`);
+  return {
+    status: "measured",
+    conforming: harmonyVerdict.conforming && !bassVerdict.contradicts,
+    reason: parts.join("; "),
+    harmony,
+    bass,
+    bassContradicts: bassVerdict.contradicts,
+    bassReason: bassVerdict.reason,
+    assessedSectionCount: sectionInputs.length,
+  };
+}
+
 function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
   if (anchor.id === candidate.id || !sourceHasVerifiedAnalysis(anchor) || !sourceHasVerifiedAnalysis(candidate)) return null;
   const anchorBpm = trustedBpm(anchor) ?? 0;
@@ -532,11 +687,17 @@ export function buildAutomaticRemixPlan(
   if (!usableSources.length) return { ok: false, reason: "no_usable_source" };
   const variant: AutomaticRemixVariant = constraints.variant === "hybrid" ? "hybrid" : "original";
   const explicitAnchor = usableSources.find((source) => source.id === constraints.anchorSourceId);
-  const anchor = explicitAnchor ?? usableSources.find(sourceCanStructure) ?? usableSources[0];
+  const anchor = explicitAnchor
+    ?? bedConfirmedByBass(usableSources.filter(sourceCanStructure))
+    ?? usableSources.find(sourceCanStructure)
+    ?? usableSources[0];
   const anchorBpm = trustedBpm(anchor);
   const targetKey = trustedKey(anchor);
   const notices: string[] = [];
   const decisions = ["anchored to one preserved source structure"];
+  if (!explicitAnchor && anchor.bassLine?.length && anchor.bedHarmony) {
+    decisions.push("preferred this anchor because its own bass line corroborates its chord analysis");
+  }
   if (!sourceCanStructure(anchor)) notices.push("Structural analysis is incomplete, so Waveyard preserved the source as one continuous arrangement.");
   if (!anchorBpm) notices.push("Tempo confidence is insufficient, so Waveyard will not claim BPM matching or beat snapping for this arrangement.");
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
@@ -574,31 +735,36 @@ export function buildAutomaticRemixPlan(
     // structural passage pairs happened to match. A candidate with fewer
     // matched sections but a melody that sits on the retained bed is a better
     // arrangement than one with more matches and a melody that fights it.
-    const retainedFitBySource = new Map<string, StemHarmonicResult>();
+    const retainedFitBySource = new Map<string, WholeArrangementDecision>();
     const retainedFitFor = (source: AutomaticRemixSource, counterparts: ReadonlyMap<string, AutomaticRemixSection>) => {
       const cached = retainedFitBySource.get(source.id);
       if (cached) return cached;
-      const [anchorSectionId, donorSection] = [...counterparts.entries()][0] ?? [];
-      const anchorSection = anchorSectionId
-        ? usableSections(anchor).find((section) => section.id === anchorSectionId) ?? null
-        : null;
-      const donorKey = trustedKey(source);
-      const anchorKey = trustedKey(anchor);
-      // The authorized shift is itself optional evidence: without both trusted
-      // keys the melody cannot be placed at its true pitch, so the check
-      // reports unavailable rather than judging a placement it cannot see.
-      const semitones = donorKey && anchorKey ? semitoneShift(donorKey, anchorKey) : null;
-      const result = anchorSection && donorSection && semitones !== null
-        ? assessRetainedHybridHarmony({
-          anchor, donor: source, anchorSection, donorSection, semitones,
-        })
-        : { status: "unavailable" as const, reason: "No verified key or matched section pair is available to place the donor vocal." };
+      // Judge the complete proposed arrangement: every matched section the
+      // planner would actually place, plus the bed's independent bass line.
+      // A pairing that only works at the opening fails here.
+      const result = counterparts.size > 0
+        ? assessWholeHybridArrangement({ anchor, donor: source, counterparts })
+        : { status: "unavailable" as const, reason: "No matched section pair is available to place the donor vocal." };
       retainedFitBySource.set(source.id, result);
       return result;
     };
+    /**
+     * Ranking for the actual selection.
+     *
+     * The decision is categorical, not a composite: a candidate whose complete
+     * arrangement is endorsed outranks one that is not, regardless of how good
+     * its best passage looked. Within the endorsed group the least-consonant
+     * judged section decides, because a pairing is only as good as its weakest
+     * moment. Unavailable evidence sorts below a measured endorsement and below
+     * a measured conflict, because it is not a fact about the music.
+     */
     const conforms = (source: AutomaticRemixSource, counterparts: ReadonlyMap<string, AutomaticRemixSection>) => {
       const fit = retainedFitFor(source, counterparts);
-      return fit.status === "measured" ? harmonicConformance(fit) : -1;
+      if (fit.status !== "measured") return -1;
+      if (!fit.conforming) return -0.5;
+      // Smallest weakest-section conformance first; ties fall through to the
+      // existing counterparts.size ordering.
+      return fit.harmony.weakestConformance ?? 0;
     };
     const defaultVocal = defaultVocalCandidates
       .sort((left, right) =>
@@ -641,6 +807,7 @@ export function buildAutomaticRemixPlan(
               && pair.donorSectionId === donorSection.id && pair.dimensions.chordProgression?.status === "context")));
         if (selectedProgressionMatches)
           decisions.push("used advisory checksum-bound chord-progression agreement to rank otherwise-equivalent passage matches");
+        decisions.push("judged every matched section of the proposed arrangement rather than its opening alone");
       }
     }
   }

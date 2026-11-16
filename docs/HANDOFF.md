@@ -3401,3 +3401,49 @@ contradict this, they win.
 5. Measure against a pristine `origin/main` worktree; record both numbers.
 6. Update this file and the reconciliation ledger in the same PR.
 7. Never delete a branch or force-push.
+
+## 2026-11-14 — Whole-arrangement, bass-aware hybrid selection
+
+Automatic hybrid selection previously judged **one matched section pair** — the
+first — and had **no bass evidence at all**. `bass_events` records attacks only
+and its schema says so; there was no bass pitch anywhere in the pipeline.
+
+Now implemented:
+
+* `assessWholeArrangementHarmony` judges **every** matched section the planner
+  intends to place, at the arrangement's real stretch ratio and pitch shift, and
+  keeps each section's result rather than averaging them away.
+* `wholeArrangementConforming` is the decision: endorsed only if no section is in
+  sustained conflict and at least half the proposed duration was judged. The
+  weighted number exists for ordering and auditing but is **not** the decision —
+  a fixture averaging 0.67 is still rejected because its later section fights.
+* `detectVocalPitchFrames` gained optional `MonophonicPitchOptions`; defaults
+  reproduce the previous vocal behaviour byte-for-byte. The same YIN/CMND loop
+  is retargeted downward for bass instead of a second detector being written.
+* `assessBassLine` classifies each bass note as root / chord tone / pedal /
+  passing / approach / contradiction / unjudged. Inversions are support. A pedal
+  is judged on the whole held note. Only sustained, unresolving non-chord tones
+  count against a pairing.
+* Bass **decides the anchor** when the caller names none: `bedConfirmedByBass`
+  prefers a bed whose own bass corroborates its own chord analysis, because those
+  labels are what every placed donor vocal is judged against. It does **not**
+  rank donor vocals — a donor's bass is discarded by the hybrid, so ranking on it
+  would repeat the §22 defect.
+
+**Bass pitch is not persisted yet.** No `bass_pitches` table, worker job or route
+loader; `bassLine` is absent in production and reports `unavailable`, which is
+never treated as support. Adding a table nothing writes to would have been schema
+churn, so none was added. Donor-drum retain/replace/layer/reject remains a
+distinct future milestone and is not implemented.
+
+Verification: focused **123/123** and automatic-remix/passage-planning **80/80**
+(synthetic fixtures); `route.test.ts` **1/1** with real PostgreSQL and ffmpeg
+covering render/save/reopen/export, artifacts byte-identical to the previous
+increment; three packages typecheck clean; `git diff --check` clean. Both key
+selection mechanisms are mutation-checked — reverting either reproduces the wrong
+decision.
+
+**Real audio: not evaluated.** All pinned stems under
+`generated-artifacts/waveyard-real-world-acceptance/` are still missing and no
+substitute was used. **Listener count 0** — nobody listened, and no listening
+pack was regenerated. See ledger §23.

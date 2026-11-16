@@ -2092,3 +2092,161 @@ result is `unavailable`.
 * Verification: focused **98/98**, route acceptance **1/1** with real PostgreSQL
   and ffmpeg, three packages typecheck clean. Selection regression is
   mutation-checked.
+
+---
+
+## 23. Hybrid selection judged one section and ignored the bass
+
+### 23.1 The defect
+
+Two defects, both in how a proposed hybrid was judged.
+
+**It judged the opening only.** `assessRetainedHybridHarmony` took the single
+first matched section pair and reported a conformance number for it. A pairing
+that was beautiful for its opening sixteen bars and incoherent for the rest of
+the song received exactly the same endorsement as one that held together
+throughout, because nothing after the opening was ever looked at.
+
+**It had no independent bass evidence.** Bass is the harmonic foundation: it
+decides which chord tone is in the bass, whether the movement is stepwise or a
+jump, and whether a pedal is holding the piece together. The pipeline recorded
+bass **attacks only** — `bass_events` stores `timestamp_ms`, `strength`,
+`confidence`, `nearest_beat_index`, `beat_offset_ms`, and its own schema says
+these are "not inferred bass-note labels". `detectBassAttacks()` is an onset
+envelope over 35–250 Hz. There was no bass pitch anywhere, so no amount of
+"reuse the existing persisted bass analysis" could answer a question about bass
+movement or root support.
+
+### 23.2 What was implemented
+
+**Whole-arrangement assessment** (`types/stem-harmonic-fit.ts`).
+`assessWholeArrangementHarmony` walks every matched section the planner intends
+to place. For each it computes the real stretch ratio from the section's own
+anchor and donor spans, maps that section's notes onto the anchor timeline
+exactly as the renderer will, applies the arrangement's authorized pitch shift,
+and judges the result against the bed chords under it. Section results are kept
+individually: `sections[]` retains per-section `stretchRatio` and full
+assessment, plus `judgedMs`, `proposedMs`, `unjudgedSections`,
+`conflictingSections`, `weakestSectionId` and `weakestConformance`.
+
+**The decision is categorical, not an average** (`wholeArrangementConforming`).
+A candidate is endorsed only when no measured section is in sustained conflict
+and at least half the proposed duration could actually be judged.
+`weightedConformance` is exposed for ordering and auditing but is **not** the
+decision, and the tests assert that: the "strong opening, clashing later"
+fixture has an average of 0.67 — which would read as healthy — and is still
+rejected because section `clash-late` is in conflict. A sustained conflict is
+more than half of a section's judged sounding time in unresolved tension
+(`MAX_SECTION_CLASH_SHARE = 0.5`); one expressive dissonance does not condemn a
+section.
+
+**Bass pitch, by reusing the pitch detector rather than inventing one**
+(`worker-local/analysis-engine.ts`). `detectVocalPitchFrames` was generalized
+with an optional `MonophonicPitchOptions` of `minFrequencyHz`, `maxFrequencyHz`
+and `decimation`. The defaults reproduce the previous vocal behaviour exactly
+(50–1200 Hz, 4x decimation), so no existing vocal analysis changes. Bass
+fundamentals run far lower — bass guitar low E is 41 Hz, a five-string low B is
+31 Hz — so the same YIN/CMND loop, including its first-valley and sub-sample
+parabolic interpolation logic, is retargeted rather than rewritten.
+
+**Bass-line assessment** (`types/bass-harmony-fit.ts`). This does **not** ask
+"is the bass note the chord root". Each bass note is classified as `root`,
+`chordTone` (inversions and doublings), `pedal`, `passing`, `approach`,
+`contradiction` or `unjudged`:
+
+* An **inversion** is chord-tone support, never a clash.
+* A **pedal** is a single sustained pitch held under changing harmony. The test
+  is deliberately on the whole held note, not on one chord slice of it: a pedal
+  is a property of the note, and slicing it by chord would call the same device a
+  contradiction on whichever chord it happens to be foreign to. A walking line
+  changes pitch before the chord does, so it never reaches this branch. Two
+  tests pin the boundary: a changing line is never a pedal, and restruck foreign
+  notes stay contradictions.
+* **Passing** and **approach** notes are stepwise non-chord tones that resolve to
+  a chord tone or the next chord's root. They are counted as motion, not as
+  error.
+* Only a non-chord tone that neither resolves by step nor sits as a pedal is a
+  `contradiction`, and only when contradictions exceed half the judged line
+  (`bassContradictsHarmony`) does the bass argue against the pairing.
+
+**Note segmentation** (`types/stem-harmonic-adapter.ts`). `sustainBassNotes`
+turns tracked pitch frames into sustained notes. Frames below the confidence
+floor are **dropped, not bridged**: an unattributed gap stays a gap.
+`placeBassNotes` maps notes onto the anchor timeline with the arrangement's own
+stretch ratio and pitch shift.
+
+### 23.3 Where bass evidence actually participates in the decision
+
+This had to be stated carefully, because the honest answer is narrower than
+"bass now ranks donors".
+
+Bass is a property of the **retained bed**, not of the donor vocal. The automatic
+route loads bed chords from a non-vocal stem chosen by `chooseStemForHarmony`
+(`instrumental`/`other`/`piano`/`guitar`); bass is never that stem, and
+`stem-harmony-analysis.ts` excludes bass. So a donor's bass line is not part of
+what a hybrid keeps — it is discarded, and ranking donor vocals on a discarded
+stem would be exactly the defect §22 fixed. Adding a bass field to donor ranking
+would have been a diagnostic dressed as a decision.
+
+Bass therefore **decides the anchor** when the caller does not name one.
+`bedConfirmedByBass` moves between candidates that are already structurally
+usable and prefers a bed whose own bass line corroborates its own chord
+analysis — the very labels every placed donor vocal is later judged against. A
+bed whose harmonic foundation argues with its own labels is a worse foundation
+for the whole arrangement. It returns null when nothing corroborates anything,
+so the previous ordering is untouched. Selection tests pin all three outcomes:
+a corroborated bed wins over a first-offered contradicting one, contradicting
+bass never promotes anything, and no bass evidence leaves the choice unchanged.
+The choice is recorded in `provenance.decisions` as "preferred this anchor
+because its own bass line corroborates its chord analysis".
+
+Inside `assessWholeHybridArrangement`, bass also gates the per-candidate verdict:
+`conforming` requires `harmonyVerdict.conforming && !bassVerdict.contradicts`,
+and the reason string carries both halves.
+
+### 23.4 What remained unjudged, and what is missing
+
+* **Bass pitch is not yet persisted.** The generalized detector exists and is
+  tested, and `AutomaticRemixSource.bassLine` is wired through the planner, but
+  there is no `bass_pitches` table, no worker job and no route loader. Until that
+  exists, production `bassLine` is absent and the honest state is
+  `bass: unavailable` — which the code reports and never treats as support.
+  No migration was added, because a table nothing writes to would be schema
+  churn with no measured benefit.
+* **Donor-drum retain/replace/layer/reject** does not exist. It is a distinct
+  future milestone, explicitly out of scope here.
+* Bass estimates from a separated stem are estimates. Unpitched attacks, gaps
+  and low-confidence frames stay unjudged and are reported in `unjudgedMs`.
+* Chord labels remain unvalidated against independent references.
+
+### 23.5 Verification actually executed
+
+Kept in separate categories on purpose.
+
+* **Synthetic fixtures.** Focused suites **123/123** (`bass-harmony-fit` 17,
+  `stem-harmonic-fit` 19, `automatic-remix` 19, plus the existing 68 across
+  `passage-compatibility`, `note-harmony` and `mashup`). Automatic-remix and
+  passage-planning together **80/80**. No skips.
+* **Mutation checks.** Reverting `assessWholeArrangementHarmony` to judging only
+  the first section reproduces the wrong decision — the A-case selection test
+  fails with `expected "opening-only-vocals" to contain "throughout"` — and five
+  whole-arrangement tests fail. Removing `bedConfirmedByBass` from anchor choice
+  reproduces `expected "first" to be "second"`. Both restored afterwards.
+* **Integration + PostgreSQL + FFmpeg.** `route.test.ts` with real PostgreSQL and
+  ffmpeg: **1/1**, covering render, save, reopen and export. Artifacts:
+  `acceptance-render.wav` 5,644,844 B and `acceptance-export.wav` 5,633,090 B —
+  byte-identical to the previous increment, so rendering is unchanged.
+* **Typechecks.** `tsc --noEmit` clean for `lib/arena`, `artifacts/api-server`
+  and `artifacts/arenaforge`. `git diff --check` clean.
+* **Real audio.** **Not evaluated.** Every pinned stem path under
+  `generated-artifacts/waveyard-real-world-acceptance/` is still absent; no
+  unrelated track was substituted.
+* **Listening.** **Nobody listened. Listener count is 0.** No listening pack was
+  regenerated, and nothing here is evidence that the output sounds better.
+
+### 23.6 Not established
+
+A demonstrably better musical decision on real music has **not** been shown; it
+has been shown on synthetic fixtures and in mutation-checked selection
+regressions. There is no claim of general musical intelligence, no STEM.FM
+parity claim, and no claim that the bass rule is a voice-leading model.
