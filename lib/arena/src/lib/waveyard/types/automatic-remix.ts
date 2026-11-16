@@ -2,6 +2,13 @@ import { normaliseMusicalKey, semitoneShift, type MusicalKey } from "./musical-k
 import { usableBeatGrid } from "./beat-grid";
 import { HARMONY_TEMPLATE_MIN_MARGIN, type HarmonyEvent } from "./harmony-analysis";
 import {
+  assessStemHarmonicFit,
+  harmonicConformance,
+  type StemHarmonicResult,
+  type StemHarmonyNote,
+} from "./stem-harmonic-fit";
+import { bedChordsFromHarmonyEvents } from "./stem-harmonic-adapter";
+import {
   type AutomaticRemixCompatibilityPair,
   comparePassageCompatibility,
   type PassageFingerprint,
@@ -63,6 +70,26 @@ export type AutomaticRemixSource = {
     sourceChecksumSha256: string;
     events: HarmonyEvent[];
   } | null;
+  /**
+   * Chord timeline measured on the non-vocal stem this source will actually
+   * contribute to a hybrid. Distinct from `harmony`, which is the complete
+   * source mix and includes instruments a hybrid discards. Absent means the
+   * bed cannot be judged; it never means "no harmony here".
+   */
+  bedHarmony?: {
+    analysisEngine: string;
+    analysisEngineVersion: string;
+    stemAssetId: string;
+    stemType: string;
+    stemChecksumSha256: string;
+    sourceChecksumSha256: string;
+    events: HarmonyEvent[];
+  } | null;
+  /**
+   * Isolated donor vocal notes, placed by the caller into the anchor timeline.
+   * These are the notes a vocal hybrid actually carries.
+   */
+  vocalNotes?: readonly StemHarmonyNote[] | null;
 };
 
 /** High-level preferences only. Clip-level editing remains in the existing Studio. */
@@ -247,6 +274,76 @@ function progressionContext(
     similarity,
     detail: `Checksum-bound production chord events agree in root, quality and authorized shift across ${(coverage * 100).toFixed(0)}% of aligned bins (${(similarity * 100).toFixed(0)}% agreement among named bins). Advisory only; chord accuracy has no independent reference yet.`,
   };
+}
+
+/**
+ * Judge a candidate donor vocal against the chord timeline of the anchor bed it
+ * would actually be placed on.
+ *
+ * This is the retained-material check. `progressionContext` compares two
+ * complete source mixes, which a hybrid does not play: it keeps the anchor's
+ * instrumental and the donor's vocal and discards everything else. A pair whose
+ * mixes agree can still place a melody over a bed it fights, and a pair whose
+ * mixes disagree can place one that fits. Only this function looks at what will
+ * be heard.
+ *
+ * `alignment` is the arrangement's real placement: the first matched anchor
+ * section and the donor section mapped onto it, with the authorized shift.
+ * Without that mapping the notes cannot be put in the bed's timeline, and the
+ * check reports unavailable rather than guessing.
+ */
+export function assessRetainedHybridHarmony(input: {
+  anchor: AutomaticRemixSource;
+  donor: AutomaticRemixSource;
+  /** Anchor section the donor section is placed under. */
+  anchorSection: AutomaticRemixSection;
+  /** Donor section whose vocal notes survive. */
+  donorSection: AutomaticRemixSection;
+  /** Authorized pitch shift applied to the donor vocal, in semitones. */
+  semitones: number;
+}): StemHarmonicResult {
+  const { anchor, donor, anchorSection, donorSection, semitones } = input;
+  if (!Number.isFinite(semitones) || !Number.isInteger(semitones)) {
+    return { status: "unavailable", reason: "No authorized pitch shift is available for this placement." };
+  }
+  if (!anchor.bedHarmony) {
+    return {
+      status: "unavailable",
+      reason: `The anchor bed for ${anchor.originalFilename} has no current checksum-bound chord analysis from its non-vocal stems, so the placed donor vocal cannot be judged against it.`,
+    };
+  }
+  if (anchor.bedHarmony.sourceChecksumSha256 !== anchor.checksumSha256) {
+    return { status: "unavailable", reason: "The anchor bed chord analysis does not match the current source checksum." };
+  }
+  if (!donor.vocalNotes?.length) {
+    return { status: "unavailable", reason: `No isolated vocal notes are available for ${donor.originalFilename}.` };
+  }
+  const anchorDuration = anchorSection.endMs - anchorSection.startMs;
+  const donorDuration = donorSection.endMs - donorSection.startMs;
+  if (anchorDuration <= 0 || donorDuration <= 0) {
+    return { status: "unavailable", reason: "The compared sections have no duration." };
+  }
+  const stretchRatio = anchorDuration / donorDuration;
+  const bedChords = bedChordsFromHarmonyEvents(anchor.bedHarmony.events);
+  const placed: StemHarmonyNote[] = donor.vocalNotes
+    .filter((note) => note.startMs < donorSection.endMs && note.endMs > donorSection.startMs)
+    .map((note) => {
+      const from = Math.max(note.startMs, donorSection.startMs);
+      const to = Math.min(note.endMs, donorSection.endMs);
+      return {
+        startMs: Math.round(anchorSection.startMs + (from - donorSection.startMs) * stretchRatio),
+        endMs: Math.round(anchorSection.startMs + (to - donorSection.startMs) * stretchRatio),
+        midiNote: note.midiNote + semitones,
+        velocity: note.velocity,
+      };
+    })
+    .filter((note) => note.endMs > note.startMs);
+  return assessStemHarmonicFit({
+    notes: placed,
+    bedChords,
+    fromMs: anchorSection.startMs,
+    toMs: anchorSection.endMs,
+  });
 }
 
 function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
@@ -473,7 +570,40 @@ export function buildAutomaticRemixPlan(
         if (passage.matches.size) defaultVocalCandidates.push({ source, stem, counterparts: passage.matches });
       } else compatibilityBySource.set(source.id, unavailablePassageReport(source));
     }
-    const defaultVocal = defaultVocalCandidates.sort((left, right) => right.counterparts.size - left.counterparts.size)[0] ?? null;
+    // Rank donor vocals on the material a hybrid keeps, not on how many
+    // structural passage pairs happened to match. A candidate with fewer
+    // matched sections but a melody that sits on the retained bed is a better
+    // arrangement than one with more matches and a melody that fights it.
+    const retainedFitBySource = new Map<string, StemHarmonicResult>();
+    const retainedFitFor = (source: AutomaticRemixSource, counterparts: ReadonlyMap<string, AutomaticRemixSection>) => {
+      const cached = retainedFitBySource.get(source.id);
+      if (cached) return cached;
+      const [anchorSectionId, donorSection] = [...counterparts.entries()][0] ?? [];
+      const anchorSection = anchorSectionId
+        ? usableSections(anchor).find((section) => section.id === anchorSectionId) ?? null
+        : null;
+      const donorKey = trustedKey(source);
+      const anchorKey = trustedKey(anchor);
+      // The authorized shift is itself optional evidence: without both trusted
+      // keys the melody cannot be placed at its true pitch, so the check
+      // reports unavailable rather than judging a placement it cannot see.
+      const semitones = donorKey && anchorKey ? semitoneShift(donorKey, anchorKey) : null;
+      const result = anchorSection && donorSection && semitones !== null
+        ? assessRetainedHybridHarmony({
+          anchor, donor: source, anchorSection, donorSection, semitones,
+        })
+        : { status: "unavailable" as const, reason: "No verified key or matched section pair is available to place the donor vocal." };
+      retainedFitBySource.set(source.id, result);
+      return result;
+    };
+    const conforms = (source: AutomaticRemixSource, counterparts: ReadonlyMap<string, AutomaticRemixSection>) => {
+      const fit = retainedFitFor(source, counterparts);
+      return fit.status === "measured" ? harmonicConformance(fit) : -1;
+    };
+    const defaultVocal = defaultVocalCandidates
+      .sort((left, right) =>
+        conforms(right.source, right.counterparts) - conforms(left.source, left.counterparts)
+        || right.counterparts.size - left.counterparts.size)[0] ?? null;
     if (defaultVocal) {
       candidates.set(`${defaultVocal.source.id}:vocals`, { source: defaultVocal.source, stem: defaultVocal.stem });
       counterpartsBySource.set(defaultVocal.source.id, defaultVocal.counterparts);

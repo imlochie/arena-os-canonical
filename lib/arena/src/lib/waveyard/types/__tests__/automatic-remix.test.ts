@@ -33,6 +33,43 @@ function source(overrides: SourceOverrides & Pick<AutomaticRemixSource, "id">): 
   };
 }
 
+/**
+ * A measured passage fingerprint that passes the rhythm/chroma/beat-phase
+ * eligibility checks, so a hybrid can actually be built in these tests.
+ */
+function measuredFingerprint(checksum: string, startBeatIndex: number, endBeatIndex: number) {
+  const measure = <T>(value: T) => ({ status: "measured" as const, value, method: "fixture", confidence: 0.95 });
+  return {
+    schemaVersion: 3 as const,
+    engine: "waveyard-passage-fingerprint" as const,
+    engineVersion: "2.2.0" as const,
+    sourceChecksumSha256: checksum,
+    startBeatIndex,
+    endBeatIndex,
+    rhythm: measure(Array.from({ length: (endBeatIndex - startBeatIndex) * 4 }, (_, index) => Number(index % 4 === 0))),
+    chroma: measure(Array.from({ length: 48 }, (_, index) => {
+      const pitch = index % 12;
+      return pitch === 0 ? 1 : pitch === 4 ? 0.75 : pitch === 7 ? 0.5 : 0.02;
+    })),
+    beatPhase: measure({ subdivisionProfile: [0.9, 0.05, 0.03, 0.02], beatPeriodMs: 500 }),
+    energy: measure({ rmsDb: -12 }),
+    downbeatConfidence: measure(0.95),
+    vocalActivity: { status: "unavailable" as const, reason: "fixture" },
+    instrumentalDensity: { status: "unavailable" as const, reason: "fixture" },
+    stemActivity: { status: "unavailable" as const, reason: "fixture" },
+  };
+}
+
+function withFingerprints(input: AutomaticRemixSource): AutomaticRemixSource {
+  return {
+    ...input,
+    sections: input.sections.map((section) => ({
+      ...section,
+      passageFingerprint: measuredFingerprint(input.checksumSha256, section.startMs / 500, section.endMs / 500),
+    })),
+  };
+}
+
 function withRoles(input: AutomaticRemixSource, labels: string[] = ["verse", "chorus"]): AutomaticRemixSource {
   return {
     ...input,
@@ -179,5 +216,65 @@ describe("deterministic automatic remix arranger", () => {
 
   it("rejects an empty source set rather than inventing material", () => {
     expect(buildAutomaticRemixPlan([])).toEqual({ ok: false, reason: "no_usable_source" });
+  });
+});
+
+describe("retained-stem harmonic selection", () => {
+  const bedChords = (root: number) => [{
+    startMs: 0, endMs: 16_000,
+    root: ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"][root]!,
+    quality: "major" as const,
+    confidence: 0.6,
+  }];
+  // A sustained C-major arpeggio in the donor's own key.
+  const arpeggio = Array.from({ length: 32 }, (_, index) => ({
+    startMs: index * 500,
+    endMs: index * 500 + 480,
+    midiNote: [60, 64, 67][index % 3]!,
+    velocity: 100,
+  }));
+
+  it("prefers the donor vocal that fits the retained bed, not the one with more passage matches", () => {
+    // Anchor bed is C major. Donor "fits" is a C arpeggio; donor "clashes" sits a
+    // semitone up. Both have structurally compatible passages, so the old
+    // count-of-matches ordering could not tell them apart.
+    const anchor = withFingerprints(source({ id: "a", bedHarmony: undefined }));
+    const withBed = {
+      ...anchor,
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony", analysisEngineVersion: "1.0.0",
+        stemAssetId: "a-other", stemType: "other", stemChecksumSha256: "a-other-checksum",
+        sourceChecksumSha256: "a-checksum", events: bedChords(0),
+      },
+    };
+    const fits = withFingerprints(source({ id: "fits", vocalNotes: arpeggio }));
+    const clashes = withFingerprints(source({
+      id: "clashes",
+      vocalNotes: arpeggio.map((note) => ({ ...note, midiNote: note.midiNote + 1 })),
+    }));
+
+    // Order matters: "clashes" is offered first, so a tie falls back to it.
+    const result = buildAutomaticRemixPlan([withBed, clashes, fits], {
+      variant: "hybrid", vocalStemId: undefined, anchorSourceId: "a",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const vocalTrack = result.plan.tracks.find((track) => track.stemType === "vocals");
+    expect(vocalTrack).toBeDefined();
+    // The chosen vocal must come from the fitting donor.
+    expect(String(vocalTrack!.stemAssetId)).toContain("fits");
+  });
+
+  it("is unmoved when neither donor can be judged, rather than preferring an unknown", () => {
+    // No bed harmony on the anchor: the new evidence cannot decide anything,
+    // so the previous ordering must stand unchanged.
+    const anchor = withFingerprints(source({ id: "a" }));
+    const first = withFingerprints(source({ id: "first", vocalNotes: arpeggio }));
+    const second = withFingerprints(source({ id: "second", vocalNotes: arpeggio }));
+    const result = buildAutomaticRemixPlan([anchor, first, second], { variant: "hybrid", anchorSourceId: "a" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const vocalTrack = result.plan.tracks.find((track) => track.stemType === "vocals");
+    expect(String(vocalTrack!.stemAssetId)).toContain("first");
   });
 });

@@ -15,9 +15,12 @@ import {
   sourceSectionAnalyses,
   sourceSections,
   stemAssets,
+  stemHarmonyAnalyses,
+  stemHarmonyEvents,
   vocalActivityIntervals,
   vocalAnalyses,
   vocalPhrases,
+  vocalPitchFrames,
 } from "@workspace/db/waveyardSchema";
 import { buildAutomaticRemixPlan, parsePassageFingerprint, type AutomaticRemixConstraints, type PassageFingerprint } from "@workspace/arena/lib/waveyard/types";
 import {
@@ -39,6 +42,14 @@ import {
   LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION,
   normaliseHarmonyEvents,
 } from "@workspace/arena/lib/waveyard/types/harmony-analysis";
+import {
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE,
+  LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION,
+  normaliseStemHarmonyEvents,
+  stemHarmonyAnalysisProvenanceReason,
+} from "@workspace/arena/lib/waveyard/types/stem-harmony-analysis";
+import { chooseStemForHarmony } from "@workspace/arena/lib/waveyard/stem-harmony-analysis";
+import { placedVocalNotes } from "@workspace/arena/lib/waveyard/types/stem-harmonic-adapter";
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
@@ -91,7 +102,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await requireProjectRole(user.id, projectId, "editor");
     const constraints = constraintsFrom(await request.json().catch(() => ({})));
     
-    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows, harmonyAnalysisRows] = await Promise.all([
+    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows, harmonyAnalysisRows, stemHarmonyAnalysisRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, projectId)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, projectId)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(sourceAnalyses).where(eq(sourceAnalyses.projectId, projectId)).orderBy(asc(sourceAnalyses.createdAt)),
@@ -99,6 +110,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       db.select().from(sourceSections).where(eq(sourceSections.projectId, projectId)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
       db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, projectId)).orderBy(asc(vocalAnalyses.createdAt)),
       db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.projectId, projectId)).orderBy(asc(harmonyAnalyses.createdAt)),
+      db.select().from(stemHarmonyAnalyses).where(eq(stemHarmonyAnalyses.projectId, projectId)).orderBy(asc(stemHarmonyAnalyses.createdAt)),
     ]);
     const analysisBySource = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
     const sectionAnalysisBySource = new Map(sectionAnalyses.map((analysis) => [analysis.sourceAssetId, analysis]));
@@ -136,11 +148,51 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       existing.push(event);
       harmonyEventsByAnalysis.set(event.harmonyAnalysisId, existing);
     }
+    // Stem-scoped bed harmony: the chord timeline of the non-vocal stem a hybrid
+    // actually keeps. The source-mix analysis above includes instruments that a
+    // hybrid discards, so it cannot answer whether the placed vocal fits.
+    const currentStemHarmonyByStemId = new Map<string, (typeof stemHarmonyAnalysisRows)[number]>();
+    for (const analysis of [...stemHarmonyAnalysisRows].reverse()) {
+      if (analysis.status !== "complete"
+        || analysis.analysisEngine !== LOCAL_STEM_HARMONY_ANALYSIS_ENGINE
+        || analysis.analysisEngineVersion !== LOCAL_STEM_HARMONY_ANALYSIS_ENGINE_VERSION) continue;
+      if (!currentStemHarmonyByStemId.has(analysis.stemAssetId)) currentStemHarmonyByStemId.set(analysis.stemAssetId, analysis);
+    }
+    const stemHarmonyIds = [...currentStemHarmonyByStemId.values()].map((analysis) => analysis.id);
+    const stemHarmonyRows = stemHarmonyIds.length
+      ? await db.select({
+        stemHarmonyAnalysisId: stemHarmonyEvents.stemHarmonyAnalysisId,
+        startMs: stemHarmonyEvents.startMs,
+        endMs: stemHarmonyEvents.endMs,
+        root: stemHarmonyEvents.root,
+        quality: stemHarmonyEvents.quality,
+        confidence: stemHarmonyEvents.confidence,
+      }).from(stemHarmonyEvents)
+        .where(inArray(stemHarmonyEvents.stemHarmonyAnalysisId, stemHarmonyIds))
+        .orderBy(asc(stemHarmonyEvents.startMs))
+      : [];
+    const stemHarmonyEventsByAnalysis = new Map<string, typeof stemHarmonyRows>();
+    for (const event of stemHarmonyRows) {
+      const existing = stemHarmonyEventsByAnalysis.get(event.stemHarmonyAnalysisId) ?? [];
+      existing.push(event);
+      stemHarmonyEventsByAnalysis.set(event.stemHarmonyAnalysisId, existing);
+    }
+    const stemsBySource = new Map<string, typeof stems>();
+    for (const stem of stems) {
+      const existing = stemsBySource.get(stem.sourceAssetId) ?? [];
+      existing.push(stem);
+      stemsBySource.set(stem.sourceAssetId, existing);
+    }
+
     const currentVocalBySource = new Map<string, {
       analysis: (typeof vocalAnalysisRows)[number];
       stem: (typeof stems)[number];
       phrases: Array<{ startMs: number; endMs: number; confidence: number }>;
       activityIntervals: Array<{ startMs: number; endMs: number; confidence: number }>;
+      pitchFrames?: Array<{
+        timestampMs: number; frequencyHz: number | null; midiFloat: number | null;
+        nearestMidiNote: number | null; confidence: number; voiced: boolean;
+      }>;
     }>();
     for (const vocalAnalysis of [...vocalAnalysisRows].reverse()) {
       if (vocalAnalysis.status !== "complete"
@@ -198,6 +250,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           phrases: phrasesByAnalysis.get(current.analysis.id) ?? [],
           activityIntervals: activityByAnalysis.get(current.analysis.id) ?? [],
         });
+      // Isolated pitch frames are the melody a vocal hybrid carries. Without
+      // them the retained-stem check has nothing to judge and must say so.
+      const pitchFrameRows = await db.select({
+        vocalAnalysisId: vocalPitchFrames.vocalAnalysisId,
+        timestampMs: vocalPitchFrames.timestampMs,
+        frequencyHz: vocalPitchFrames.frequencyHz,
+        midiFloat: vocalPitchFrames.midiFloat,
+        nearestMidiNote: vocalPitchFrames.nearestMidiNote,
+        confidence: vocalPitchFrames.confidence,
+        voiced: vocalPitchFrames.voiced,
+      }).from(vocalPitchFrames).where(inArray(vocalPitchFrames.vocalAnalysisId, vocalAnalysisIds))
+        .orderBy(asc(vocalPitchFrames.timestampMs));
+      const framesByAnalysis = new Map<string, typeof pitchFrameRows>();
+      for (const frame of pitchFrameRows) {
+        const existing = framesByAnalysis.get(frame.vocalAnalysisId) ?? [];
+        existing.push(frame);
+        framesByAnalysis.set(frame.vocalAnalysisId, existing);
+      }
+      for (const [sourceId, current] of currentVocalBySource)
+        currentVocalBySource.set(sourceId, { ...current, pitchFrames: framesByAnalysis.get(current.analysis.id) ?? [] });
     }
     const fingerprintUpdates: Array<{
       id: string;
@@ -318,6 +390,68 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             sourceChecksumSha256: harmonyAnalysis.sourceChecksumSha256,
             events,
           } } : {};
+        })(),
+        ...(() => {
+          // The bed a hybrid keeps is this source's non-vocal stem, so the
+          // retained-stem check must read that stem's own chord timeline.
+          const sourceStems = stemsBySource.get(source.id) ?? [];
+          const bedStem = chooseStemForHarmony(sourceStems);
+          if (!bedStem) return {};
+          const stemHarmony = currentStemHarmonyByStemId.get(bedStem.id);
+          if (!stemHarmony) return {};
+          if (stemHarmonyAnalysisProvenanceReason({
+            sourceAssetId: stemHarmony.sourceAssetId,
+            expectedSourceAssetId: source.id,
+            stemAssetId: stemHarmony.stemAssetId,
+            expectedStemAssetId: bedStem.id,
+            stemType: bedStem.stemType,
+            sourceChecksumSha256: stemHarmony.sourceChecksumSha256,
+            expectedSourceChecksumSha256: source.checksumSha256,
+            stemChecksumSha256: stemHarmony.stemChecksumSha256,
+            expectedStemChecksumSha256: bedStem.checksumSha256,
+            analysisEngine: stemHarmony.analysisEngine,
+            analysisEngineVersion: stemHarmony.analysisEngineVersion,
+          })) return {};
+          const stemEvents = normaliseStemHarmonyEvents(
+            stemHarmonyEventsByAnalysis.get(stemHarmony.id) ?? [],
+            source.durationSeconds * 1000,
+          );
+          if (!stemEvents) return {};
+          return { bedHarmony: {
+            analysisEngine: stemHarmony.analysisEngine,
+            analysisEngineVersion: stemHarmony.analysisEngineVersion,
+            stemAssetId: bedStem.id,
+            stemType: bedStem.stemType,
+            stemChecksumSha256: stemHarmony.stemChecksumSha256,
+            sourceChecksumSha256: stemHarmony.sourceChecksumSha256,
+            events: stemEvents,
+          } };
+        })(),
+        ...(() => {
+          // The melody a vocal hybrid carries, mapped into this source's own
+          // timeline. Placement into the anchor happens inside the planner,
+          // which knows the matched section pair and the authorized shift.
+          const vocal = currentVocalBySource.get(source.id);
+          if (!vocal?.pitchFrames?.length) return {};
+          const frames = vocal.pitchFrames
+            .filter((frame): frame is typeof frame & { nearestMidiNote: number } => frame.nearestMidiNote !== null)
+            .map((frame) => ({
+              timestampMs: frame.timestampMs,
+              frequencyHz: frame.frequencyHz,
+              midiFloat: frame.midiFloat,
+              nearestMidiNote: frame.nearestMidiNote,
+              confidence: frame.confidence,
+              voiced: frame.voiced,
+            }));
+          const notes = placedVocalNotes({
+            vocalFrames: frames,
+            sourceStartMs: 0,
+            sourceEndMs: source.durationSeconds * 1000,
+            targetStartMs: 0,
+            stretchRatio: 1,
+            pitchShiftSemitones: 0,
+          });
+          return notes ? { vocalNotes: notes } : {};
         })(),
       };
     }), constraints);
