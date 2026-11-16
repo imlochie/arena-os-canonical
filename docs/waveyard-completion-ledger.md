@@ -2029,3 +2029,66 @@ asserts the disclosure contract.
   `chordProgression` comparison contrasts anchor and donor **source mixes**,
   while a hybrid keeps only selected stems — it partly measures harmony of
   material that will be discarded. That is unresolved here.
+
+## 22. Hybrid harmony was judged on discarded stems
+
+### 22.1 The defect
+
+§21 established that an unmeasurable comparison no longer scores as agreement.
+This section addresses the comparison itself being **about the wrong material**.
+
+`progressionContext` in `types/automatic-remix.ts` compared the anchor's
+complete source-mix chord timeline against the donor's complete source-mix chord
+timeline. A hybrid keeps the anchor's instrumental and the donor's vocal. The
+donor's instrumental is discarded. So a substantial part of the evidence used to
+justify a hybrid pairing described audio the hybrid never plays — and nothing
+described the pairing that is actually heard: the surviving donor melody over the
+retained anchor bed.
+
+### 22.2 Demonstrated effect on selection, not just on a score
+
+Two donors with identical, structurally compatible passages and one C-major
+anchor bed; bed evidence supplied from the anchor's non-vocal stem:
+
+| Surviving donor vocal | Previous ordering | New ordering |
+|---|---|---|
+| C-major arpeggio (consonant with the bed) | rejected | **selected** |
+| the same arpeggio a semitone higher | **selected** | rejected |
+
+The previous rule ordered donor vocals by `counterparts.size`, the count of
+structural passage pairs. No count of structural matches can separate these two,
+because they are structurally identical. Reverting the new ordering reproduces
+the old behaviour exactly: `expected "clashes-vocals" to contain "fits"`.
+
+This is the standard the owner set for this increment: a new musical signal had
+to change real hybrid selection in controlled cases where the source mixes look
+compatible but the retained stems do not. It does.
+
+### 22.3 What the assessment measures
+
+`stem-harmonic-fit.ts` splits each placed note at bed chord boundaries and
+classifies every segment as **chord tone**, **suspension** (non-member resolving
+downward by step inside the chord), **passing** (non-member resolving by step
+onward into a chord tone) or **clash** (unresolved, or resolved by leap). It
+reports `bedChordChanges` so progression movement is visible rather than
+collapsed into one global key. Shares divide by **judged** time only, so a bed
+region the analyser declined to name is excluded from the ratio and reported as
+`unjudgedShare` — it never counts as agreement. Below 1200 ms of judged time the
+result is `unavailable`.
+
+### 22.4 Honest limits
+
+* **No real-audio evaluation and no listening.** All pinned sources and stems are
+  absent; fixtures are synthetic. Listener count is 0. The planner now accounts
+  for retained material and its ordering changes — that is not evidence the
+  output sounds better.
+* Bed evidence is the anchor's non-vocal stem chords. **Separate bass-line and
+  drum evidence are not loaded** by the automatic route, so "bass movement vs
+  chord roots" is only partly served by the bed chord timeline.
+* Suspension vs passing uses **resolution direction**, since the pipeline has no
+  metrical accent position. A documented proxy, not a voice-leading model.
+* Chord labels remain unvalidated against independent references.
+* Only the first matched section pair is assessed.
+* Verification: focused **98/98**, route acceptance **1/1** with real PostgreSQL
+  and ffmpeg, three packages typecheck clean. Selection regression is
+  mutation-checked.
