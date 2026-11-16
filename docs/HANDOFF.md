@@ -1,5 +1,79 @@
 # Arena handoff — read this first
 
+## Latest increment: hybrid harmony is judged on the stems a hybrid keeps
+
+Continues from `3f7b7f0` on the existing PR #31 branch. No new branch, no
+force-push; all previously published commits are preserved.
+
+**The limitation.** The automatic hybrid planner compared the donor's complete
+source mix against the anchor's complete source mix. A hybrid plays neither: it
+keeps the anchor's instrumental and the donor's vocal, discarding the donor's
+instrumental. The planner was judging harmony belonging to material it throws
+away, and never judging the material it keeps. Two songs whose mixes both sit in
+C could look perfectly compatible while the surviving melody fought the bed.
+
+**What was added.**
+- `types/stem-harmonic-fit.ts` — classifies every placed melodic note against the
+  chord sounding under it, splitting notes at chord boundaries. Non-chord tones
+  are classified by continuation: **chord tone**, **suspension** (resolves
+  downward by step within the chord), **passing** (resolves by step onward into a
+  chord tone), or **clash** (unresolved or resolved by leap). Reports
+  `bedChordChanges` so progression movement is visible rather than collapsed into
+  a global key.
+- `types/stem-harmonic-adapter.ts` — converts persisted stem chord events and
+  isolated vocal frames, applying the arrangement's real stretch ratio and pitch
+  shift. Unnamed chords are never converted into named ones.
+- `assessRetainedHybridHarmony` in `types/automatic-remix.ts` — places a donor
+  section's notes under its matched anchor section; refuses to answer without a
+  checksum-bound bed analysis, a trusted key, or enough judged time.
+- The API route now loads engine- and checksum-verified `stem_harmony_events`
+  for each source's non-vocal stem plus `vocal_pitch_frames`.
+
+**Uncertainty is explicit.** Shares divide by *judged* time, so an unnamed bed
+region is excluded from the ratio and reported separately as `unjudgedShare`; it
+never counts as agreement. Below `MIN_JUDGED_MS` (1200 ms) the assessment is
+unavailable rather than a number derived from two notes.
+
+**The required safeguard is the point of the change: hybrid selection actually
+changes, and that is demonstrated.** Donor vocals are now ordered by conformance
+over the retained bed *before* the previous count-of-matched-passages ordering.
+In the controlled regression two donors have structurally compatible passages
+and a C-major anchor bed; the old ordering selects the vocal a semitone above
+it, the new ordering selects the one that fits. Reverting the sort fails with
+`expected "clashes-vocals" to contain "fits"`. A second regression confirms that
+with no bed evidence the previous ordering stands unchanged — unknown never
+becomes a preference.
+
+**Verification.** Focused set **98/98, 0 skipped, 0 failed** (14 new;
+`stem-harmonic-fit.test.ts` 12 cases plus 2 selection regressions).
+`route.test.ts` with real PostgreSQL and real ffmpeg **1/1, 0 skipped, 0
+failed**. `tsc --noEmit` clean for `lib/arena`, `artifacts/api-server` and
+`artifacts/arenaforge`. Render, export and the acceptance evidence are
+unchanged (5,644,844 B / 5,633,090 B, key contract −3 st, 1261/1262 Hz measured).
+
+**Known limitations, stated plainly.**
+- **This still requires real-song validation and human listening.** No pinned
+  source is present in this checkout, so this increment has **no real-audio
+  evidence and listener count remains 0**. Fixtures are synthetic tones with
+  controlled chord vocabularies. Do not read this as evidence that mashups sound
+  better.
+- Bed evidence is the anchor's **non-vocal stem chords only**. Bass-guitar
+  movement and drum evidence are still not loaded by the automatic route, so
+  "bass movement and chord-tone relationships" is only partly addressed: the bed
+  chords come from a stem that usually contains the bass, but no separate bass
+  line is analysed.
+- Suspension-versus-passing is decided by **resolution direction**, because the
+  pipeline has no metrical accent position. That is a documented proxy, not a
+  reimplementation of voice-leading rules.
+- Chord labels still have no independent accuracy reference, so this measures
+  agreement with the *analyser's* chord reading, not with ground truth.
+- The assessment judges the first matched section pair only; it does not scan
+  every section of a long arrangement.
+- No new weighted score was introduced: `harmonicConformance` is a resolved-share
+  figure used for ordering, and the plan discloses when the check was
+  unavailable. Details in
+  [`waveyard-harmonic-acceptance-readiness.md`](waveyard-harmonic-acceptance-readiness.md).
+
 ## Latest increment: unmeasured vocal harmony no longer scores as agreement
 
 Work is on the existing PR #31 branch, `arena/669984d8-arena-os-canonical`,

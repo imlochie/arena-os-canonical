@@ -228,3 +228,88 @@ harmony it could actually measure over one it could not.
 * The automatic (hybrid) planner's advisory `chordProgression` comparison still
   contrasts anchor and donor **source mixes**, while a hybrid keeps only
   selected stems. That remains unresolved and is the next honest gap.
+
+## Increment: retained-stem harmonic assessment for hybrid planning
+
+### The gap this closes
+
+The dependency map above recorded that the automatic planner's `chordProgression`
+comparison "contrasts anchor and donor **source mixes**". A hybrid neither plays
+nor keeps those mixes: it keeps the anchor's instrumental and the donor's vocal,
+and discards the donor's instrumental entirely. The planner was therefore
+comparing harmony belonging to discarded material and never comparing the
+material that survives. Two sources whose mixes both centre on C could pass the
+progression check while the surviving melody fought the retained bed.
+
+Measured on a controlled fixture with two donors that have identical
+structurally compatible passages and one C-major anchor bed:
+
+| Donor vocal that survives | Old ordering | New ordering |
+|---|---|---|
+| C-major arpeggio (fits the bed) | rejected | **selected** |
+| same arpeggio a semitone up (fights the bed) | **selected** | rejected |
+
+The old ordering sorted donor vocals by how many structural passage pairs
+matched — a count that cannot distinguish these two. Reverting the new sort
+reproduces the failure exactly: `expected "clashes-vocals" to contain "fits"`.
+
+### What was built
+
+* `types/stem-harmonic-fit.ts` — the assessment. Notes are split at chord
+  boundaries; each segment is classified **chord tone**, **suspension**,
+  **passing** or **clash**, with `bedChordChanges` reporting progression
+  movement. This is the difference between "is this note a member?" and
+  "does this melodic line work over this progression?".
+* `types/stem-harmonic-adapter.ts` — bridges persisted `stem_harmony_events`
+  and `vocal_pitch_frames`, applying the arrangement's real stretch ratio and
+  authorized pitch shift. An `unknown`-quality chord is converted to an unnamed
+  chord, never to a named one.
+* `assessRetainedHybridHarmony` — places a donor section under its matched
+  anchor section and returns `unavailable` when the bed analysis is missing,
+  stale, or not bound to the current source checksum.
+* `automatic-remixes/route.ts` — loads engine- and checksum-verified
+  `stem_harmony_events` for each source's non-vocal stem, plus
+  `vocal_pitch_frames`.
+
+### Refusing to manufacture a score
+
+* Shares divide by **judged** time. Bed regions the analyser declined to name are
+  excluded from the ratio and reported as `unjudgedShare`; they never count as
+  agreement.
+* Below `MIN_JUDGED_MS` (1200 ms of judged sounding time) the whole assessment is
+  `unavailable`, not a confident-looking number.
+* With no bed evidence at all, donor ordering falls back to the previous rule
+  unchanged — a second regression asserts `unknown` never becomes a preference.
+
+### Verification actually executed
+
+| Suite | Result |
+|---|---|
+| `stem-harmonic-fit.test.ts` (new) | **12/12** |
+| `automatic-remix.test.ts` (2 new selection regressions) | 15/15 |
+| `passage-compatibility.test.ts` | 16/16 |
+| `note-harmony.test.ts` | 5/5 |
+| `mashup.test.ts` | 53/53 |
+| Focused combined | **98/98, 0 skipped, 0 failed** |
+| `route.test.ts` (real PostgreSQL + ffmpeg) | **1/1, 0 skipped, 0 failed** |
+| `tsc --noEmit` lib/arena, api-server, arenaforge | clean |
+
+The selection regression is mutation-checked: restoring the previous sort makes
+it fail. Render and export are untouched; the acceptance fixture produces
+identical WAV sizes and key contract.
+
+### What this does not establish
+
+* **No real-audio evaluation and no listening evidence.** Every pinned source and
+  stem is absent from this checkout; fixture audio is synthetic. Listener count
+  remains 0. This shows the planner now accounts for the retained material and
+  that its ordering changes accordingly — it does not show the result sounds
+  better.
+* Bed evidence is the anchor's **non-vocal stem chords**. A separate bass-line
+  analysis (bass movement vs chord roots) and drum evidence are still not loaded
+  by the automatic route.
+* Suspension vs passing uses **resolution direction** as its rule, because no
+  metrical accent position is available. Documented proxy, not a full
+  voice-leading model.
+* Chord labels remain unvalidated against independent references.
+* Only the first matched section pair is assessed, not every section.
