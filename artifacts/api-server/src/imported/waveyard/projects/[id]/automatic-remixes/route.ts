@@ -5,6 +5,8 @@ import { db } from "@workspace/db";
 import {
   automaticRemixGenerations,
   bassAnalyses,
+  drumAnalyses,
+  drumEvents,
   bassPitchSegments,
   harmonyAnalyses,
   harmonyEvents,
@@ -56,6 +58,15 @@ import {
   bassAnalysisProvenanceReason,
   normaliseBassPitchSegments,
 } from "@workspace/arena/lib/waveyard/types/bass-analysis";
+import {
+  DESKTOP_STEM_ANALYSIS_ENGINE,
+  DESKTOP_STEM_ANALYSIS_ENGINE_VERSION,
+} from "@workspace/arena/lib/waveyard/types/analysis-provenance";
+import {
+  DRUM_ANALYSIS_ENGINE,
+  DRUM_ANALYSIS_ENGINE_VERSION,
+  drumAnalysisProvenanceReason,
+} from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import { chooseStemForHarmony } from "@workspace/arena/lib/waveyard/stem-harmony-analysis";
 import { placedVocalNotes } from "@workspace/arena/lib/waveyard/types/stem-harmonic-adapter";
 
@@ -110,7 +121,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await requireProjectRole(user.id, projectId, "editor");
     const constraints = constraintsFrom(await request.json().catch(() => ({})));
     
-    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows, harmonyAnalysisRows, stemHarmonyAnalysisRows, bassAnalysisRows] = await Promise.all([
+    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows, harmonyAnalysisRows, stemHarmonyAnalysisRows, bassAnalysisRows, drumAnalysisRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, projectId)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, projectId)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(sourceAnalyses).where(eq(sourceAnalyses.projectId, projectId)).orderBy(asc(sourceAnalyses.createdAt)),
@@ -120,6 +131,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.projectId, projectId)).orderBy(asc(harmonyAnalyses.createdAt)),
       db.select().from(stemHarmonyAnalyses).where(eq(stemHarmonyAnalyses.projectId, projectId)).orderBy(asc(stemHarmonyAnalyses.createdAt)),
       db.select().from(bassAnalyses).where(eq(bassAnalyses.projectId, projectId)).orderBy(asc(bassAnalyses.createdAt)),
+      db.select().from(drumAnalyses).where(eq(drumAnalyses.projectId, projectId)).orderBy(asc(drumAnalyses.createdAt)),
     ]);
     const analysisBySource = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
     const sectionAnalysisBySource = new Map(sectionAnalyses.map((analysis) => [analysis.sourceAssetId, analysis]));
@@ -221,6 +233,44 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         currentBassPitchByStemId.set(stemId, {
           analysis: current.analysis,
           segments: segmentsByAnalysis.get(current.analysis.id) ?? [],
+        });
+    }
+    // Independent drum TRANSIENT evidence for each source's isolated drum or
+    // percussion stem. Only a complete, checksum-current analysis from a
+    // supported engine qualifies: an older engine measured something else, so
+    // its row is skipped rather than read as "the drums played nothing".
+    const currentDrumByStemId = new Map<string, { analysis: (typeof drumAnalysisRows)[number]; events: Array<{
+      timestampMs: number; strength: number; confidence: number;
+    }> }>();
+    for (const analysis of [...drumAnalysisRows].reverse()) {
+      if (analysis.status !== "complete") continue;
+      const engineMatches = (analysis.analysisEngine === DRUM_ANALYSIS_ENGINE
+        && analysis.analysisEngineVersion === DRUM_ANALYSIS_ENGINE_VERSION)
+        || (analysis.analysisEngine === DESKTOP_STEM_ANALYSIS_ENGINE
+          && analysis.analysisEngineVersion === DESKTOP_STEM_ANALYSIS_ENGINE_VERSION);
+      if (!engineMatches) continue;
+      if (!currentDrumByStemId.has(analysis.stemAssetId))
+        currentDrumByStemId.set(analysis.stemAssetId, { analysis, events: [] });
+    }
+    const drumAnalysisIds = [...currentDrumByStemId.values()].map(({ analysis }) => analysis.id);
+    if (drumAnalysisIds.length) {
+      const eventRows = await db.select({
+        drumAnalysisId: drumEvents.drumAnalysisId,
+        timestampMs: drumEvents.timestampMs,
+        strength: drumEvents.strength,
+        confidence: drumEvents.confidence,
+      }).from(drumEvents).where(inArray(drumEvents.drumAnalysisId, drumAnalysisIds))
+        .orderBy(asc(drumEvents.timestampMs));
+      const eventsByAnalysis = new Map<string, typeof eventRows>();
+      for (const event of eventRows) {
+        const existing = eventsByAnalysis.get(event.drumAnalysisId) ?? [];
+        existing.push(event);
+        eventsByAnalysis.set(event.drumAnalysisId, existing);
+      }
+      for (const [stemId, current] of currentDrumByStemId)
+        currentDrumByStemId.set(stemId, {
+          analysis: current.analysis,
+          events: eventsByAnalysis.get(current.analysis.id) ?? [],
         });
     }
     const stemsBySource = new Map<string, typeof stems>();
@@ -426,7 +476,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             passageFingerprint: fingerprintForSection(source.id, section, source.checksumSha256),
           };
         }),
-        stems: stems.filter((stem) => stem.sourceAssetId === source.id).map((stem) => ({ id: stem.id, sourceAssetId: stem.sourceAssetId, stemType: stem.stemType, durationMs: stem.durationSeconds * 1000 })),
+        stems: stems.filter((stem) => stem.sourceAssetId === source.id).map((stem) => ({
+          id: stem.id,
+          sourceAssetId: stem.sourceAssetId,
+          stemType: stem.stemType,
+          durationMs: stem.durationSeconds * 1000,
+          // Carried so per-stem evidence can be bound to the bytes it was
+          // measured from rather than to itself.
+          checksumSha256: stem.checksumSha256,
+        })),
         ...(() => {
           const harmonyAnalysis = currentHarmonyBySource.get(source.id);
           if (!harmonyAnalysis) return {};
@@ -502,6 +560,62 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           );
           if (!segments?.length) return {};
           return { bassLine: segments };
+        })(),
+        ...(() => {
+          // The drum part this source would contribute, or the one a bed would
+          // have to give up. It is attached only when the persisted evidence is
+          // bound to the current source and stem bytes; otherwise the planner is
+          // told nothing and must answer "insufficient evidence" rather than
+          // assume the drums fit.
+          const drumStem = (stemsBySource.get(source.id) ?? []).find((stem) =>
+            stem.stemType === "drums" || stem.stemType === "percussion");
+          if (!drumStem) return {};
+          const evidence = currentDrumByStemId.get(drumStem.id);
+          if (!evidence) return {};
+          if (drumAnalysisProvenanceReason({
+            sourceAssetId: evidence.analysis.sourceAssetId,
+            expectedSourceAssetId: source.id,
+            stemAssetId: evidence.analysis.stemAssetId,
+            expectedStemAssetId: drumStem.id,
+            sourceChecksumSha256: evidence.analysis.sourceChecksumSha256,
+            expectedSourceChecksumSha256: source.checksumSha256,
+            stemChecksumSha256: evidence.analysis.stemChecksumSha256,
+            expectedStemChecksumSha256: drumStem.checksumSha256,
+            analysisEngine: evidence.analysis.analysisEngine,
+            analysisEngineVersion: evidence.analysis.analysisEngineVersion,
+          }, {
+            // Which version counts as current depends on the engine that
+            // produced the row: the desktop detector and the local worker are
+            // separate engines with separate version histories. Checking a
+            // local row against the desktop constant would reject every row the
+            // worker writes.
+            engine: evidence.analysis.analysisEngine === DRUM_ANALYSIS_ENGINE
+              ? DRUM_ANALYSIS_ENGINE : DESKTOP_STEM_ANALYSIS_ENGINE,
+            version: evidence.analysis.analysisEngine === DRUM_ANALYSIS_ENGINE
+              ? DRUM_ANALYSIS_ENGINE_VERSION : DESKTOP_STEM_ANALYSIS_ENGINE_VERSION,
+          })) return {};
+          const durationMs = source.durationSeconds * 1000;
+          const events = evidence.events
+            .filter((event) => Number.isSafeInteger(event.timestampMs)
+              && event.timestampMs >= 0
+              && event.timestampMs <= Math.round(durationMs)
+              && Number.isFinite(event.strength)
+              && event.strength >= 0
+              && event.strength <= 1
+              && Number.isFinite(event.confidence)
+              && event.confidence > 0
+              && event.confidence <= 1)
+            .map(({ timestampMs, strength, confidence }) => ({ timestampMs, strength, confidence }));
+          if (!events.length) return {};
+          return { drumEvidence: {
+            analysisEngine: evidence.analysis.analysisEngine,
+            analysisEngineVersion: evidence.analysis.analysisEngineVersion,
+            stemAssetId: drumStem.id,
+            stemType: drumStem.stemType,
+            stemChecksumSha256: evidence.analysis.stemChecksumSha256,
+            sourceChecksumSha256: evidence.analysis.sourceChecksumSha256,
+            events,
+          } };
         })(),
         ...(() => {
           // The melody a vocal hybrid carries, mapped into this source's own

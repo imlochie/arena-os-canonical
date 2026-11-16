@@ -2414,5 +2414,116 @@ Bass pitch is monophonic by construction. Genuine two-voice bass or a bass note
 sounding under a bleed-heavy separation will be under-reported rather than
 mis-reported, which is the intended failure direction but is still a gap.
 
-Donor-drum retain/replace/layer/reject remains a distinct future milestone and is
-not implemented.
+## 25. Donor-drum retain / replace / layer / reject
+
+One musical question, one decision: when a donor vocal is combined with an anchor
+bed, should Waveyard keep the bed's drums, substitute the donor's, layer the two,
+or refuse the donor drums outright?
+
+### 25.1 What was established by inspection first
+
+The milestone began by establishing what drum evidence production actually has,
+before deciding anything. What exists:
+
+* Checksum-bound **broadband transient onsets** per isolated drum/percussion stem
+  (`drum_analyses` + `drum_events`, engine `waveyard-numpy-drum-transients` or
+  `arena-js-stem-analysis`), each with `timestampMs`, `strength`, `confidence`.
+* The source's own beat grid and beat confidence.
+* A complete existing **cross-stem groove system** (`types/stem-groove.ts`):
+  groove profiling, groove comparison, entry-shift proposal, performance phase.
+
+What does **not** exist, and this is the constraint that shaped the milestone:
+
+* **No rhythmic-role labels.** `detectDrumTransients` returns
+  `rhythmicClass: null` always. There is no kick/snare/hat classification
+  anywhere in production, so no part can be called "complementary by role".
+* **No masking/spectral-overlap measurement.** Masking is not measurable.
+* **No drum-specific tempo adaptation** beyond the existing global tempo
+  transform.
+
+Consequence, applied literally: groove compatibility, transient alignment, tempo
+adaptation and section changes are decidable; **rhythmic role and masking are not**
+and resolve to an explicit `unavailable` dimension rather than a guess.
+
+### 25.2 The decision
+
+`types/drum-bed-decision.ts` returns one of five categorical outcomes — `retain`,
+`replace`, `layer`, `reject`, `unavailable` — from measured evidence only. There is
+no weighted score and no synthetic confidence anywhere in the result.
+
+Order of checks, each of which can refuse:
+
+1. Both grooves must be `measured`. `measureStemGroove`'s existing refusals are
+   inherited, not bypassed.
+2. **Tempo adaptation**: the measured pulses must agree within 2% *after* the
+   authorized transform, reusing the exact formula `proposeGrooveEntryShift`
+   already relied on (factored out as `stemPulsesAgree` so the two cannot drift).
+   A ratio of 1 is used when no stretch is authorized, so the parts are judged as
+   they would actually play.
+3. **Groove compatibility** via the existing `compareStemGrooves`. Its answers are
+   not collapsed: `rhythmic-contrast` → `reject` (the existing system refuses to
+   swing-convert measured contrast, and no role evidence exists to prove the donor
+   is a separate part); `context` (feel not established on both parts) is recorded
+   as an unmeasured dimension and the decision proceeds on what *was* measured.
+4. **Transient alignment and section changes** in anchor source time: the donor's
+   section is mapped onto the anchor section's span exactly as the clip plan maps
+   it. Every placed clip must carry comparable attacks, and the placed sections
+   must agree; otherwise the decision is `unavailable`, never a uniform verdict
+   averaged over sections that disagree.
+5. Outcome: complementary attacks dominate → `layer`; same-stroke attacks dominate
+   and sit within 8 ms of the grid → `replace`; same strokes but too loose to
+   certify and nothing to add → `retain`.
+
+### 25.3 Wiring through production
+
+* `automatic-remixes/route.ts` now loads `drum_analyses`/`drum_events` and attaches
+  `drumEvidence` only when the row is complete, checksum-bound to the current
+  source **and stem** bytes, and from the engine that actually produced it.
+* `automatic-remix.ts` replaced the old unconditional donor-drum replace (a
+  requested drum stem was selected with no comparison at all) with the decision.
+  `layer` produces two real `remix_tracks` rows, which the existing export path
+  renders — layering is persisted, not plan-only.
+
+Two genuine bugs were found by the production test and fixed:
+
+* The provenance check compared the evidence's stem checksum **to itself**, so it
+  certified anything. Stems now carry `checksumSha256` and are compared against it.
+* `drumAnalysisProvenanceReason` defaults to the desktop engine constant, so every
+  row the **local worker** wrote was rejected as stale. The expected engine is now
+  derived from the row's own engine.
+
+### 25.4 Evidence buckets
+
+* **Synthetic / unit (`unit`):** `types/__tests__/drum-bed-decision.test.ts`
+  **11/11**. All four reachable outcomes plus `unavailable` are each produced by
+  changing only the measured evidence, and the "insufficient evidence" outcome is asserted never to
+  become a preference. Mutations verified: disabling the `layer` branch, the
+  `reject` branch, and the `retain` branch, and downgrading `replace`, each fail
+  exactly the test that owns that outcome.
+* **Production route, real PostgreSQL + real worker
+  (`integration`, generated audio):**
+  `automatic-remixes/route.drum.test.ts` **1/1**. Real worker transients →
+  production loader → planner → two persisted drum tracks. Disabling the loader
+  makes it fail.
+* **Regression:** focused `types` suites **159/159**; automatic-remix + passage
+  suite **68/68**; `stem-analysis.test.ts` **3/3**; the pre-existing bass route
+  test **1/1**; mashup acceptance `route.test.ts` **1/1**.
+* **Real music (`real-audio`, not run):** not evaluated. The pinned stems are
+  absent; nothing was substituted.
+* **Human listening (`listening`, not run):** **0 listeners.** No listening pack
+  was generated or regenerated.
+
+Acceptance render **5,644,844 B** / export **5,633,090 B** — unchanged from §24,
+so no rendering behaviour moved.
+
+### 25.5 What this does not establish
+
+* No real-music validation. Every measurement here is a generated fixture; how a
+  real separated drum stem behaves is untested.
+* **Rhythmic role and masking remain unmeasured.** A part that doubles every
+  attack is treated as duplicative; a kick and a hat on the same beat are
+  indistinguishable, because production records no instrument class. That is a
+  real limitation of the evidence, not a bug in the decision.
+* "Complementary" means *different beat positions on a shared pulse*. It is not a
+  judgement that the combination sounds good, and no confidence is attached.
+* Whether Waveyard's drum decision agrees with a listener is unproven.

@@ -28,6 +28,13 @@ import {
   trustedAnalysisKey,
   WAVEYARD_MIXING_CONFIDENCE_THRESHOLD,
 } from "./analysis-confidence";
+import { measureStemGroove } from "./stem-groove";
+import {
+  decideDonorDrumBed,
+  type DrumBedDecision,
+  type DrumPlacement,
+} from "./drum-bed-decision";
+import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION, LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, drumAnalysisProvenanceReason } from "./drum-analysis";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
 export const AUTOMATIC_REMIX_ENGINE_VERSION = "5";
@@ -39,6 +46,13 @@ export type AutomaticRemixStem = {
   sourceAssetId: string;
   stemType: string;
   durationMs: number;
+  /**
+   * Checksum of the stem's bytes, when the caller supplies it. Per-stem
+   * evidence (drums, bass) is only trusted when the evidence's own recorded
+   * checksum still matches this value, so a re-rendered stem cannot be judged
+   * against onsets measured from bytes that no longer exist.
+   */
+  checksumSha256?: string;
 };
 
 export type AutomaticRemixSection = {
@@ -106,6 +120,23 @@ export type AutomaticRemixSource = {
    * measured -- it never means the bass agrees.
    */
   bassLine?: readonly BassLineNote[] | null;
+  /**
+   * Checksum-current broadband transient onsets of this source's isolated drum
+   * (or percussion) stem, in this source's own timeline. Absent means the drum
+   * part was not measured -- it never means the part is compatible.
+   *
+   * Only onsets exist: production transient detection records no kick/snare/hat
+   * class, so nothing here can support a rhythmic-role claim.
+   */
+  drumEvidence?: {
+    analysisEngine: string;
+    analysisEngineVersion: string;
+    stemAssetId: string;
+    stemType: string;
+    stemChecksumSha256: string;
+    sourceChecksumSha256: string;
+    events: readonly { timestampMs: number; strength: number; confidence: number }[];
+  } | null;
 };
 
 /** High-level preferences only. Clip-level editing remains in the existing Studio. */
@@ -152,6 +183,18 @@ export type AutomaticRemixProvenance = {
   constraints: Required<Pick<AutomaticRemixConstraints, "instrumental">> & Omit<AutomaticRemixConstraints, "instrumental">;
   decisions: string[];
   passageCompatibility?: AutomaticRemixCompatibilityReport;
+  /**
+   * What each donor's drum part was decided to do, with the measurements behind
+   * it. Present only when a donor drum part was actually considered; an absent
+   * entry means no drum question was asked, not that the drums were retained.
+   */
+  drumBedDecisions?: Array<{
+    donorSourceId: string;
+    donorFilename: string;
+    outcome: DrumBedDecision["decision"];
+    reason: string;
+    measurements: DrumBedDecision["measurements"];
+  }>;
 };
 
 export type AutomaticRemixCompatibilityReport = {
@@ -604,6 +647,103 @@ function requestedStem(sources: AutomaticRemixSource[], stemId: string | undefin
     .find((candidate) => candidate.stem.id === stemId && candidate.stem.stemType === stemType) ?? null;
 }
 
+/**
+ * The drum question, answered from evidence this pipeline actually persists.
+ *
+ * `drumEvidence` is checksum-bound transient onsets. A row from a non-current
+ * engine is NOT evidence (an older engine measured something else), so it is
+ * refused rather than read as "the donor played nothing". A bed with no drum
+ * stem at all is a different fact from a bed whose drums were not measured, and
+ * both are reported as unavailable rather than as a preference.
+ */
+function decideDrumBedForCandidate(input: {
+  anchor: AutomaticRemixSource;
+  donor: AutomaticRemixSource;
+  counterparts: ReadonlyMap<string, AutomaticRemixSection>;
+}): DrumBedDecision {
+  const { anchor, donor, counterparts } = input;
+  const verified = (source: AutomaticRemixSource, stemType: "drums" | "percussion") => {
+    const stem = source.stems.find((candidate) => candidate.stemType === stemType)
+      ?? source.stems.find((candidate) => candidate.stemType === "drums")
+      ?? source.stems.find((candidate) => candidate.stemType === "percussion");
+    if (!stem) return null;
+    const evidence = source.drumEvidence;
+    if (!evidence) return null;
+    const supportedEngine = (evidence.analysisEngine === DRUM_ANALYSIS_ENGINE
+      && evidence.analysisEngineVersion === DRUM_ANALYSIS_ENGINE_VERSION)
+      || (evidence.analysisEngine === LOCAL_DRUM_ANALYSIS_ENGINE
+        && evidence.analysisEngineVersion === LOCAL_DRUM_ANALYSIS_ENGINE_VERSION);
+    if (!supportedEngine) return null;
+    // The stem bytes this evidence was measured from must still be the stem's
+    // bytes. Comparing the evidence's checksum against itself would certify
+    // anything, so the stem record has to carry its own checksum for the claim
+    // to mean something.
+    if (!stem.checksumSha256) return null;
+    if (drumAnalysisProvenanceReason({
+      sourceAssetId: source.id,
+      expectedSourceAssetId: source.id,
+      stemAssetId: evidence.stemAssetId,
+      expectedStemAssetId: stem.id,
+      sourceChecksumSha256: evidence.sourceChecksumSha256,
+      expectedSourceChecksumSha256: source.checksumSha256,
+      stemChecksumSha256: evidence.stemChecksumSha256,
+      expectedStemChecksumSha256: stem.checksumSha256,
+      analysisEngine: evidence.analysisEngine,
+      analysisEngineVersion: evidence.analysisEngineVersion,
+    }, {
+      // A local-worker row and a desktop-detector row are separate engines with
+      // separate version histories; judging one against the other's constant
+      // would reject every row the worker writes.
+      engine: evidence.analysisEngine === DRUM_ANALYSIS_ENGINE
+        ? DRUM_ANALYSIS_ENGINE : LOCAL_DRUM_ANALYSIS_ENGINE,
+      version: evidence.analysisEngine === DRUM_ANALYSIS_ENGINE
+        ? DRUM_ANALYSIS_ENGINE_VERSION : LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+    })) return null;
+    return { stem, evidence };
+  };
+  const anchorPart = verified(anchor, "drums");
+  if (!anchorPart)
+    return {
+      decision: "unavailable",
+      reason: `The bed ${anchor.originalFilename} has no checksum-current drum transient evidence, so its own rhythm section cannot be compared with the donor's.`,
+      measurements: null,
+    };
+  const donorPart = verified(donor, "drums");
+  if (!donorPart)
+    return {
+      decision: "unavailable",
+      reason: `The donor ${donor.originalFilename} has no checksum-current drum transient evidence, so its drum part cannot be compared with the bed's.`,
+      measurements: null,
+    };
+  const anchorGrid = usableBeatGrid(anchor.analysis?.beatGridMs);
+  const anchorBpm = trustedBpm(anchor);
+  const donorBpm = trustedBpm(donor);
+  // The transform the clip plan will apply. When either tempo is untrusted the
+  // planner authorizes no stretch, so the ratio is 1 -- and the decision must
+  // judge the parts as they would actually be played, not as a hypothetical.
+  const tempoRatio = anchorBpm && donorBpm ? anchorBpm / donorBpm : 1;
+  const placements: DrumPlacement[] = [];
+  for (const [anchorSectionId, donorSection] of counterparts) {
+    const anchorSection = usableSections(anchor).find((section) => section.id === anchorSectionId);
+    if (!anchorSection) continue;
+    placements.push({
+      anchorSectionId,
+      donorSectionId: donorSection.id,
+      durationMs: anchorSection.endMs - anchorSection.startMs,
+      anchorSourceStartMs: anchorSection.startMs,
+      donorSourceStartMs: donorSection.startMs,
+    });
+  }
+  return decideDonorDrumBed({
+    anchorGroove: measureStemGroove("drums", anchorPart.evidence.events, anchorGrid, anchor.analysis?.beatConfidence),
+    donorGroove: measureStemGroove("drums", donorPart.evidence.events, usableBeatGrid(donor.analysis?.beatGridMs), donor.analysis?.beatConfidence),
+    anchorGrid,
+    tempoRatio,
+    placements,
+  });
+}
+
+
 function firstStem(source: AutomaticRemixSource, stemType: string) {
   return source.stems.find((stem) => stem.stemType === stemType) ?? null;
 }
@@ -717,6 +857,8 @@ export function buildAutomaticRemixPlan(
   const selected = new Map<string, { source: AutomaticRemixSource; stem: AutomaticRemixStem }>();
   const counterpartsBySource = new Map<string, ReadonlyMap<string, AutomaticRemixSection>>();
   const compatibilityBySource = new Map<string, AutomaticRemixCompatibilityReport>();
+  /** Drum-bed decisions per donor, kept for provenance so the choice is auditable. */
+  const drumDecisionBySource = new Map<string, DrumBedDecision>();
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
 
   if (variant === "hybrid" && !sourceCanStructure(anchor)) {
@@ -797,12 +939,66 @@ export function buildAutomaticRemixPlan(
         notices.push(`${candidate.source.originalFilename} was kept out of the hybrid because no section pair passed the measured tempo, rhythm, chroma, and beat-phase checks.`);
         continue;
       }
-      if (candidate.stem.stemType === "vocals" || candidate.stem.stemType === "drums") {
+      if (candidate.stem.stemType === "vocals") {
         selected.set(candidate.stem.stemType, candidate);
         counterpartsBySource.set(candidate.source.id, counterparts);
+        continue;
+      }
+      if (candidate.stem.stemType === "drums") {
+        // The requested donor drum part is not accepted on arrival order. What
+        // happens to the bed's own rhythm section is decided from measured
+        // transient evidence; when that evidence cannot support an answer the
+        // bed keeps its own drums and the plan says so.
+        const drumDecision = decideDrumBedForCandidate({
+          anchor,
+          donor: candidate.source,
+          counterparts,
+        });
+        drumDecisionBySource.set(candidate.source.id, drumDecision);
+        const pairing = `${candidate.source.originalFilename}'s drums`;
+        if (drumDecision.decision === "retain") {
+          notices.push(`The bed keeps its own drums: ${drumDecision.reason}`);
+          continue;
+        }
+        if (drumDecision.decision === "unavailable") {
+          notices.push(`Drum evidence is insufficient, so the bed keeps its own drums: ${drumDecision.reason}`);
+          continue;
+        }
+        if (drumDecision.decision === "reject") {
+          notices.push(`The donor drums were refused: ${drumDecision.reason}`);
+          continue;
+        }
+        if (drumDecision.decision === "replace") {
+          selected.set("drums", candidate);
+          counterpartsBySource.set(candidate.source.id, counterparts);
+          decisions.push(`replaced the anchor drums with ${pairing} on measured compatibility: ${drumDecision.reason}`);
+          continue;
+        }
+        // `layer` needs two drum tracks, which only exists if the donor is a
+        // different source. Layering a source's own drums over itself would be
+        // the same part twice, so that is refused rather than planned.
+        if (candidate.source.id === anchor.id) {
+          notices.push(`The bed keeps its own drums: the requested drum stem belongs to the anchor itself, so layering it would play the same part twice.`);
+          continue;
+        }
+        selected.set("drums+donor", candidate);
+        counterpartsBySource.set(candidate.source.id, counterparts);
+        decisions.push(`layered the donor drums over the anchor drums on measured compatibility: ${drumDecision.reason}`);
       }
     }
-    if ([...selected.values()].some((choice) => choice.source.id !== anchor.id)) decisions.push("replaced only verified, structurally compatible featured stems");
+    if ([...selected.values()].some((choice) => choice.source.id !== anchor.id)) {
+      // Say what actually happened. A donor used only to layer drums over the
+      // bed's did not replace that part, and a plan that claims it did would
+      // misdescribe the arrangement the listener gets.
+      const replaced = ["vocals", "drums"].filter((role) =>
+        [...selected.entries()].some(([key, choice]) => key === role && choice.source.id !== anchor.id));
+      const layeredOnly = [...selected.keys()].includes("drums+donor");
+      decisions.push(replaced.length
+        ? `replaced only verified, structurally compatible featured stems (${replaced.join(", ")})`
+        : "did not remove any part of the anchor bed; only added verified, structurally compatible donor material"
+        );
+      if (layeredOnly) decisions.push("kept the anchor's drums alongside the donor's on measured complementarity");
+    }
     else {
       const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
       const reason = compatibility && compatibility.evaluatedPairs > 0
@@ -871,6 +1067,15 @@ export function buildAutomaticRemixPlan(
         constraints: completeConstraints(constraints, variant),
         decisions,
         ...(compatibility ? { passageCompatibility: compatibility } : {}),
+        ...(drumDecisionBySource.size ? {
+          drumBedDecisions: [...drumDecisionBySource.entries()].map(([donorSourceId, decision]) => ({
+            donorSourceId,
+            donorFilename: usableSources.find((source) => source.id === donorSourceId)?.originalFilename ?? donorSourceId,
+            outcome: decision.decision,
+            reason: decision.reason,
+            measurements: decision.measurements,
+          })),
+        } : {}),
       },
     },
   };

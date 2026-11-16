@@ -3499,5 +3499,46 @@ typecheck clean. Worker persistence and route loading are both mutation-checked.
 **Listener count 0** — nobody listened. Synthetic fixtures do not show that a
 separated real bass stem yields trustworthy pitch. See ledger §24.
 
-Donor-drum retain/replace/layer/reject remains the next musical-intelligence
-milestone and is not implemented.
+# Donor drums: retain, replace, layer or reject
+
+The question is one: when a donor vocal lands on an anchor bed, what happens to
+the bed's drums?
+
+**Inspection first.** Production has checksum-bound broadband transient onsets per
+isolated drum stem, the source's beat grid, and the existing cross-stem groove
+system. It has **no kick/snare/hat labels** (`detectDrumTransients` always returns
+`rhythmicClass: null`) and **no spectral-overlap measurement**. So groove
+compatibility, transient alignment, tempo adaptation and section continuity are
+decidable; **rhythmic role and masking are not**, and are reported as unmeasured
+dimensions rather than guessed at.
+
+`types/drum-bed-decision.ts` returns `retain` / `replace` / `layer` / `reject` /
+`unavailable` from measurements only — no weighted score, no synthetic confidence.
+Every intermediate check can refuse, and refusals propagate honestly instead of
+becoming a default preference.
+
+The old behaviour this replaces: a requested donor drum stem was selected as a
+replace with **no comparison at all**, and the planner never loaded drum evidence.
+Now `automatic-remixes/route.ts` loads `drum_analyses`/`drum_events` and the
+decision runs on them; `layer` writes two real `remix_tracks` rows that the export
+path renders, so layering is persisted rather than plan-only.
+
+**Two real bugs found by testing the production path, both fixed:**
+
+1. The provenance check compared the evidence's stem checksum *to itself*, so it
+   certified any stem. Stems now carry `checksumSha256` and are compared against it.
+2. `drumAnalysisProvenanceReason` defaults to the desktop engine constant, so every
+   row the **local worker** wrote was rejected as stale. The expected engine now
+   comes from the row's own engine.
+
+Verification: `drum-bed-decision.test.ts` **11/11** (all four outcomes plus
+`unavailable`, each mutation-checked); `route.drum.test.ts` **1/1** on real
+PostgreSQL + real worker + real persisted transients, loader mutation-checked;
+focused `types` **159/159**; automatic-remix + passage **68/68**;
+`stem-analysis.test.ts` **3/3**; pre-existing bass route test **1/1**; acceptance
+**1/1** with render 5,644,844 B / export 5,633,090 B unchanged; four packages
+typecheck clean.
+
+**Real audio still not evaluated** (pinned stems absent, no substitution).
+**Listener count 0** — nobody listened. "Complementary" means different beat
+positions on a shared pulse, not "sounds good". See ledger §25.

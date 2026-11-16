@@ -102,6 +102,33 @@ export function compareStemGrooves(anchor: StemGrooveEvidence, donor: StemGroove
   };
 }
 
+/**
+ * Do two stems still share one pulse once each is transformed by the ratios the
+ * renderer will actually apply?
+ *
+ * This is the SAME 2% check the entry-shift search already relies on, factored
+ * out so a decision that depends on the two parts sitting on one grid does not
+ * have to restate (or drift from) the formula. Ratio semantics match the clip
+ * plan: a stem's measured beat period is scaled by its own ratio before the
+ * two are compared.
+ */
+export function stemPulsesAgree(
+  anchor: StemGrooveEvidence,
+  donor: StemGrooveEvidence,
+  timing: { bedRatio: number; donorRatio: number },
+): { status: "measured"; agreementRatio: number } | { status: "unavailable"; reason: string } {
+  if (anchor.status !== "measured" || donor.status !== "measured")
+    return { status: "unavailable", reason: "Missing independent stem rhythm evidence." };
+  const { bedRatio, donorRatio } = timing;
+  if (![bedRatio, donorRatio].every((ratio) => Number.isFinite(ratio) && ratio > 0))
+    return { status: "unavailable", reason: "No measured tempo transform places the donor on the bed." };
+  const anchorPulse = anchor.beatPeriodMs * bedRatio;
+  const donorPulse = donor.beatPeriodMs * donorRatio;
+  if (!(anchorPulse > 0) || !(donorPulse > 0))
+    return { status: "unavailable", reason: "A transformed stem has no usable pulse period." };
+  return { status: "measured", agreementRatio: donorPulse / anchorPulse };
+}
+
 /** A common translation, NOT per-onset quantisation or swing conversion. */
 export function proposeGrooveEntryShift(
   anchor: StemGrooveEvidence,
