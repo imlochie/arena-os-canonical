@@ -26,10 +26,13 @@ song's body.
 On the supplied Stronger / All Star full-track analysis, both beat grids have a
 median 580 ms period. Their BPM-autocorrelation confidence is weak (0.239 and
 0.467), but the current-version phase-fit components recover to 0.999 and 1.0.
-The planner therefore retains natural speed (1.000×) and makes no pitch move,
-matching the user's report that this particular pairing maintained tempo. This
-does not improve the separated-stem sound quality, and it is not proof that
-arbitrary pairs will sound good.
+For the 45-second excerpt plan, Waveyard retains natural speed (1.000×) and
+makes no pitch move, matching the user's report that this particular pairing
+maintained tempo. The full source durations are about 266 seconds for Stronger
+and 200 seconds for All Star; the current full-track planner cannot produce a
+complete vocal-over-bed result when the bed is shorter, and the 45-second demo
+must not be presented as full-song proof. This change does not improve
+separated-stem sound quality or prove that arbitrary pairs will sound good.
 
 On the existing full-track September / Another One Bites the Dust analysis,
 Queen's 0.426 BPM confidence and 0.642 combined beat confidence recover to a
