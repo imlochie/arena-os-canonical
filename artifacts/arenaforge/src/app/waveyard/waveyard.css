@@ -1313,12 +1313,24 @@
 .wy-transition{flex:0 0 250px;border:1px solid var(--line);background:var(--panel);padding:14px;display:grid;gap:10px;align-content:start}
 .wy-deck-empty p,.wy-deck-note,.wy-fine{color:var(--muted);font-size:12px;margin:4px 0}
 .wy-fine{font-size:10px}
-.wy-stems{display:grid;gap:6px}
+.wy-stems{display:grid;gap:8px}
+.wy-stem-channel{--channel-accent:var(--wy-b);display:grid;gap:4px;min-width:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--channel-accent) 30%,var(--line));background:linear-gradient(100deg,color-mix(in srgb,var(--channel-accent) 7%,transparent),transparent 55%),var(--panel);transition:border-color .16s,background .16s,opacity .16s}
+.wy-stem-channel[data-stem-type="vocals"]{--channel-accent:var(--stem-vocals)}
+.wy-stem-channel[data-stem-type="drums"]{--channel-accent:var(--stem-drums)}
+.wy-stem-channel[data-stem-type="bass"]{--channel-accent:var(--stem-bass)}
+.wy-stem-channel[data-stem-type="other"]{--channel-accent:var(--wy-b)}
+.wy-stem-channel.silent{opacity:.62}
 .wy-stem{display:grid;grid-template-columns:72px 44px minmax(60px,1fr) 34px 48px 58px 58px;gap:6px;align-items:center;font-size:12px}
-.wy-stem.silent{opacity:.5}
+.wy-stem-name{color:var(--channel-accent);letter-spacing:.035em}
+.wy-stem-meter{border-radius:999px}
+.wy-stem-channel .wy-stem-source-control{grid-column:auto;padding-top:3px;border-top:1px solid color-mix(in srgb,var(--channel-accent) 17%,transparent)}
+.wy-stem-channel .wy-swap-label{color:var(--channel-accent)}
+.wy-stem-channel .wy-swap-trigger{min-height:42px;background:linear-gradient(110deg,color-mix(in srgb,var(--channel-accent) 11%,transparent),transparent 65%),var(--panel)}
+.wy-stem-channel .wy-swap-trigger.active{border-color:color-mix(in srgb,var(--channel-accent) 58%,var(--line))}
+.wy-stem-channel .wy-swap-trigger-icon{border-color:color-mix(in srgb,var(--channel-accent) 42%,transparent);color:var(--channel-accent)}
 .wy-stem-name{text-transform:capitalize;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wy-stem-meter{height:6px;background:#22261d;overflow:hidden}
-.wy-stem-meter i{display:block;height:100%;background:var(--wy-b);transform-origin:left;transition:transform 60ms linear}
+.wy-stem-meter i{display:block;height:100%;background:var(--channel-accent,var(--wy-b));transform-origin:left;transition:transform 60ms linear}
 .wy-stem-vocals .wy-stem-meter i{background:var(--stem-vocals)}.wy-stem-drums .wy-stem-meter i{background:var(--stem-drums)}.wy-stem-bass .wy-stem-meter i{background:var(--stem-bass)}
 .wy-stem-value{font:10px ui-monospace,monospace;color:var(--muted)}
 .wy-toggle{min-width:48px;height:32px;padding:0 6px;border:1px solid var(--line);background:#11130e;color:var(--muted);font-size:10px;font-weight:800}
