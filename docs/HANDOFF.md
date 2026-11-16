@@ -29,6 +29,8 @@ are documented in [`waveyard-harmonic-candidate-findings.md`](./waveyard-harmoni
 and [`waveyard-harmonic-acceptance-readiness.md`](./waveyard-harmonic-acceptance-readiness.md).
 The next gate is two blind chord timelines, followed by adjudication and a
 held-out comparison—not threshold tuning or promotion based on output coverage.
+This is separate from the still-unvalidated verse/chorus predictions and the
+unjudged musical quality of rendered mashups.
 
 ## Latest increment: Mashup Studio recommends donor bass from persisted harmony evidence
 
