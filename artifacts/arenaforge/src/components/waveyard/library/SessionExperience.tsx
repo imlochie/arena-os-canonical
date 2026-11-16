@@ -1720,84 +1720,91 @@ function SessionDeck({
                 const silent = muted || (anySolo && !solo);
                 const peak = meters?.[stem.id]?.peak ?? 0;
                 return (
-                  <div key={stem.id} className={`wy-stem wy-stem-${stem.stemType}${silent ? " silent" : ""}`}>
-                    <span
-                      className="wy-stem-name"
-                      title={stem.stemType === "vocals" && swaps[stem.stemType]
-                        ? "Donor vocal layer selected; source-voice leakage in other stems is unverified."
-                        : undefined}
-                    >
-                      {stem.stemType}{swaps[stem.stemType] ? stem.stemType === "vocals" ? " · donor" : " · swapped" : ""}
-                    </span>
-                    <span className="wy-stem-meter" aria-hidden="true">
-                      <i style={{ transform: `scaleX(${Math.min(1, peak)})` }} />
-                    </span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={2}
-                      step={0.01}
-                      value={level}
-                      aria-label={`${stem.stemType} level, ${active ? "current" : "next"} deck`}
-                      onChange={(event) => onLevel(stem.stemType, Number(event.target.value))}
-                    />
-                    <span className="wy-stem-value">{level.toFixed(2)}</span>
-                    <button type="button" className={`wy-toggle${muted ? " on" : ""}`} disabled={performanceDisabled} aria-pressed={muted} aria-label={`Mute ${stem.stemType}`} onClick={() => onPerformanceAction({ kind: "mute", stem: stem.stemType })}>Mute</button>
-                    <button type="button" className={`wy-toggle solo${solo ? " on" : ""}`} disabled={performanceDisabled} aria-pressed={solo} aria-label={`Isolate ${stem.stemType}`} onClick={() => onPerformanceAction({ kind: "isolate", stem: stem.stemType })}>Isolate</button>
-                    {active && (
-                      <button
-                        type="button"
-                        className={`wy-toggle wy-hold-toggle${heldStem === stem.stemType ? " on" : ""}`}
-                        disabled={performanceDisabled}
-                        aria-pressed={heldStem === stem.stemType}
-                        aria-label={`Hold to isolate ${stem.stemType}`}
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          holdGestureRef.current = "pointer";
-                          event.currentTarget.setPointerCapture(event.pointerId);
-                          onHoldStart(stem.stemType);
-                        }}
-                        onPointerUp={() => {
-                          holdGestureRef.current = null;
-                          suppressHoldClickRef.current = true;
-                          onHoldEnd();
-                        }}
-                        onPointerCancel={() => {
-                          holdGestureRef.current = null;
-                          onHoldEnd();
-                        }}
-                        onLostPointerCapture={() => onHoldEnd()}
-                        onBlur={() => onHoldEnd()}
-                        onKeyDown={(event) => {
-                          if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+                  <section
+                    key={stem.id}
+                    className={`wy-stem-channel wy-stem-${stem.stemType}${silent ? " silent" : ""}`}
+                    aria-label={`${stem.stemType} channel`}
+                    data-stem-type={stem.stemType}
+                  >
+                    <div className="wy-stem">
+                      <span
+                        className="wy-stem-name"
+                        title={stem.stemType === "vocals" && swaps[stem.stemType]
+                          ? "Donor vocal layer selected; source-voice leakage in other stems is unverified."
+                          : undefined}
+                      >
+                        {stem.stemType}{swaps[stem.stemType] ? stem.stemType === "vocals" ? " · donor" : " · swapped" : ""}
+                      </span>
+                      <span className="wy-stem-meter" aria-hidden="true">
+                        <i style={{ transform: `scaleX(${Math.min(1, peak)})` }} />
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.01}
+                        value={level}
+                        aria-label={`${stem.stemType} level, ${active ? "current" : "next"} deck`}
+                        onChange={(event) => onLevel(stem.stemType, Number(event.target.value))}
+                      />
+                      <span className="wy-stem-value">{level.toFixed(2)}</span>
+                      <button type="button" className={`wy-toggle${muted ? " on" : ""}`} disabled={performanceDisabled} aria-pressed={muted} aria-label={`Mute ${stem.stemType}`} onClick={() => onPerformanceAction({ kind: "mute", stem: stem.stemType })}>Mute</button>
+                      <button type="button" className={`wy-toggle solo${solo ? " on" : ""}`} disabled={performanceDisabled} aria-pressed={solo} aria-label={`Isolate ${stem.stemType}`} onClick={() => onPerformanceAction({ kind: "isolate", stem: stem.stemType })}>Isolate</button>
+                      {active && (
+                        <button
+                          type="button"
+                          className={`wy-toggle wy-hold-toggle${heldStem === stem.stemType ? " on" : ""}`}
+                          disabled={performanceDisabled}
+                          aria-pressed={heldStem === stem.stemType}
+                          aria-label={`Hold to isolate ${stem.stemType}`}
+                          onPointerDown={(event) => {
                             event.preventDefault();
-                            holdGestureRef.current = "keyboard";
+                            holdGestureRef.current = "pointer";
+                            event.currentTarget.setPointerCapture(event.pointerId);
                             onHoldStart(stem.stemType);
-                          }
-                        }}
-                        onKeyUp={(event) => {
-                          if (event.key === " " || event.key === "Enter") {
-                            event.preventDefault();
+                          }}
+                          onPointerUp={() => {
                             holdGestureRef.current = null;
                             suppressHoldClickRef.current = true;
                             onHoldEnd();
-                          }
-                        }}
-                        onClick={() => {
-                          if (suppressHoldClickRef.current) {
-                            suppressHoldClickRef.current = false;
-                            return;
-                          }
-                          if (holdGestureRef.current !== null) return;
-                          onHoldStart(stem.stemType);
-                          window.setTimeout(onHoldEnd, 350);
-                        }}
-                      >
-                        Hold
-                      </button>
-                    )}
+                          }}
+                          onPointerCancel={() => {
+                            holdGestureRef.current = null;
+                            onHoldEnd();
+                          }}
+                          onLostPointerCapture={() => onHoldEnd()}
+                          onBlur={() => onHoldEnd()}
+                          onKeyDown={(event) => {
+                            if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+                              event.preventDefault();
+                              holdGestureRef.current = "keyboard";
+                              onHoldStart(stem.stemType);
+                            }
+                          }}
+                          onKeyUp={(event) => {
+                            if (event.key === " " || event.key === "Enter") {
+                              event.preventDefault();
+                              holdGestureRef.current = null;
+                              suppressHoldClickRef.current = true;
+                              onHoldEnd();
+                            }
+                          }}
+                          onClick={() => {
+                            if (suppressHoldClickRef.current) {
+                              suppressHoldClickRef.current = false;
+                              return;
+                            }
+                            if (holdGestureRef.current !== null) return;
+                            onHoldStart(stem.stemType);
+                            window.setTimeout(onHoldEnd, 350);
+                          }}
+                        >
+                          Hold
+                        </button>
+                      )}
+                    </div>
                     {stemExtra?.(stem.stemType)}
-                  </div>
+                  </section>
                 );
               })}
             </div>
