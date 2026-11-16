@@ -336,3 +336,31 @@ mtime_ms = 1794606054814
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/654ad616-cc46-41da-84c3-39cd5f8a41d6/bd9f45f7-62ca-498c-a177-60c98ee6e4f0"
 storage_version_token = "1794606273056281"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "PulVXiaBpuB3_lh_eLgjN"
+uri = "file://generated-artifacts/waveyard-user-demos/stronger-vocals-over-allstar.wav"
+type = "audio"
+title = "Waveyard demo: Stronger vocals over All Star"
+description = "24-second production-planner render using the uploaded source pair and real 4-stem model separation. Automatic tempo and pitch changes were withheld because the analysis confidence was too low."
+logical_id = "4f556305-e32e-4c13-abfb-aea8d5ce1c1a"
+content_hash = "sha256:25d0c7b7920e2637d3eae4e7ab168935c973bedb69141a36e40456265fcd02ff"
+size = 4233644
+mtime_ms = 1794831454539
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/4f556305-e32e-4c13-abfb-aea8d5ce1c1a/4e8eb6e1-ab70-4f85-89e5-6bedce6a1616"
+storage_version_token = "1794831500189445"
+content_type = "audio/wav"
+
+[[outputs]]
+id = "3qNuzKDXLWzwZLIIsfXvj"
+uri = "file://generated-artifacts/waveyard-user-demos/allstar-vocals-over-stronger.wav"
+type = "audio"
+title = "Waveyard demo: All Star vocals over Stronger"
+description = "24-second production-planner render using the uploaded source pair and real 4-stem model separation. Automatic tempo and pitch changes were withheld because the analysis confidence was too low."
+logical_id = "f81464a7-4fe9-4b76-a72a-66d6d05cd09e"
+content_hash = "sha256:8adc225fc2ac737b6939095f81ad05b3af7d64595ab92407a1c25340cb3cf13b"
+size = 4233644
+mtime_ms = 1794831457183
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/f81464a7-4fe9-4b76-a72a-66d6d05cd09e/b21aa372-abfd-46f4-bf37-9baf3fe1852e"
+storage_version_token = "1794831500766644"
+content_type = "audio/wav"
