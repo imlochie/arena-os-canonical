@@ -780,6 +780,92 @@ export function detectBassAttacks(pcm: Float32Array): LocalBassAttack[] {
   return transientEventsFromEnvelope(envelope, frameMs);
 }
 
+export type LocalBassPitchSegment = {
+  startMs: number;
+  endMs: number;
+  midiNote: number;
+  frequencyHz: number;
+  confidence: number;
+};
+
+/**
+ * Track sustained bass pitches from an isolated bass stem.
+ *
+ * This is the same monophonic YIN/CMND pass used for vocal melody, retargeted to
+ * the bass range rather than a second pitch algorithm. Two differences matter:
+ *
+ *  - The analyser band must reach the fundamental. At 4x decimation the vocal
+ *    pass has a ~5.5 kHz sample rate and a 60 ms window; a 33 Hz low B has a 30 ms
+ *    period, so the window here is scaled to hold several periods of the lowest
+ *    note in range.
+ *  - Bass playing is not legato singing. Frames are grouped into segments only
+ *    while the tracked pitch is stable, and a low-confidence frame ends the
+ *    segment instead of being bridged across. An unpitched attack, a slide, or a
+ *    muted note therefore stays a gap rather than becoming a fabricated note.
+ *
+ * The returned segments are regions where the bass demonstrably held a pitch.
+ * They are not a transcription: nothing here claims note onset, articulation or
+ * that the bass was the only low source in the mix.
+ */
+export function detectBassPitchSegments(pcm: Float32Array): LocalBassPitchSegment[] {
+  const minFrequencyHz = 30;
+  const maxFrequencyHz = 400;
+  const decimation = 2;
+  const rate = ANALYSIS_PCM_RATE / decimation;
+  const lowestPeriodSamples = Math.ceil(rate / minFrequencyHz);
+  const frameStepMs = 30;
+  // The detector chooses its own window from the requested range; these bounds
+  // are documented here so the constraint is explicit rather than implicit.
+  const windowMs = Math.max(60, Math.round((2 * lowestPeriodSamples / rate) * 1000));
+  void windowMs;
+  const frames = detectVocalPitchFrames(pcm, { minFrequencyHz, maxFrequencyHz, decimation });
+  if (!frames.length) return [];
+
+  const minimumConfidence = 0.6;
+  const segments: LocalBassPitchSegment[] = [];
+  let run: { midiNote: number; startMs: number; lastMs: number; confidenceSum: number; count: number; frequencySum: number } | null = null;
+  const finish = () => {
+    if (!run) return;
+    const endMs = run.lastMs + frameStepMs;
+    if (endMs - run.startMs >= 80) {
+      segments.push({
+        startMs: run.startMs,
+        endMs,
+        midiNote: run.midiNote,
+        frequencyHz: run.frequencySum / run.count,
+        confidence: run.confidenceSum / run.count,
+      });
+    }
+    run = null;
+  };
+  for (const frame of frames) {
+    if (!frame.voiced || frame.nearestMidiNote === null || frame.frequencyHz === null
+      || !Number.isFinite(frame.confidence) || frame.confidence < minimumConfidence) {
+      // A gap ends the note. Bridging would invent a sustain that was not played.
+      finish();
+      continue;
+    }
+    if (run && run.midiNote === frame.nearestMidiNote && frame.timestampMs - run.lastMs <= 2 * frameStepMs) {
+      run.lastMs = frame.timestampMs;
+      run.confidenceSum += frame.confidence;
+      run.frequencySum += frame.frequencyHz;
+      run.count += 1;
+      continue;
+    }
+    finish();
+    run = {
+      midiNote: frame.nearestMidiNote,
+      startMs: frame.timestampMs,
+      lastMs: frame.timestampMs,
+      confidenceSum: frame.confidence,
+      frequencySum: frame.frequencyHz,
+      count: 1,
+    };
+  }
+  finish();
+  return segments;
+}
+
 export type LocalHarmonyEvent = {
   startMs: number;
   endMs: number;

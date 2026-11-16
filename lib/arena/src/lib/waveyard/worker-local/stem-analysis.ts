@@ -11,7 +11,7 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { db as defaultDb } from "@workspace/db";
 import {
-  bassAnalyses, bassEvents, drumAnalyses, drumEvents, harmonyAnalyses, harmonyEvents,
+  bassAnalyses, bassEvents, bassPitchSegments, drumAnalyses, drumEvents, harmonyAnalyses, harmonyEvents,
   stemHarmonyAnalyses, stemHarmonyEvents,
   sourceAnalyses, sourceAssets, stemAssets,
   vocalAnalyses, vocalActivityIntervals, vocalPitchFrames, vocalPhrases,
@@ -21,6 +21,7 @@ import { enqueueSourceSectionAnalysis } from "@workspace/arena/lib/waveyard/queu
 import type { BassAnalysisJobPayload, DrumAnalysisJobPayload, HarmonyAnalysisJobPayload, StemHarmonyAnalysisJobPayload, VocalAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import {
   bassAnalysisProvenanceReason,
+  normaliseBassPitchSegments,
   LOCAL_BASS_ANALYSIS_ENGINE,
   LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
   normaliseBassEvents,
@@ -44,7 +45,7 @@ import {
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { provisionDesktopSectionAnalysis } from "./analysis";
-import { ANALYSIS_PCM_RATE, decodeMonoPcm, detectBassAttacks, detectDrumTransients, detectHarmonyTimeline, detectVocalActivityIntervals, detectVocalPitchFrames } from "./analysis-engine";
+import { ANALYSIS_PCM_RATE, decodeMonoPcm, detectBassAttacks, detectBassPitchSegments, detectDrumTransients, detectHarmonyTimeline, detectVocalActivityIntervals, detectVocalPitchFrames } from "./analysis-engine";
 
 type AnalysisDb = ReturnType<typeof drizzle>;
 type StemAnalysisDeps = {
@@ -227,6 +228,15 @@ export async function handleBassAnalysisJob(payloadInput: Record<string, unknown
       if (pcm.length < 2_205) throw new Error("The isolated bass stem is too short for attack analysis.");
       const events = normaliseBassEvents(detectBassAttacks(pcm), Math.round(source.durationSeconds * 1000));
       if (events === null) throw new Error("The local DSP engine returned invalid bass attack events.");
+      // Independent pitch evidence from the same stem and the same analysis row.
+      // Null here means the tracker produced something malformed; that is a
+      // failed analysis, not an empty one, because absence of pitch must never
+      // be indistinguishable from "the bass played nothing".
+      const pitchSegments = normaliseBassPitchSegments(
+        detectBassPitchSegments(pcm).map((segment) => ({ ...segment })),
+        Math.round(source.durationSeconds * 1000),
+      );
+      if (pitchSegments === null) throw new Error("The local DSP engine returned invalid bass pitch segments.");
       const [sourceTempo] = await database.select({ beatGrid: sourceAnalyses.beatGrid }).from(sourceAnalyses)
         .where(and(eq(sourceAnalyses.sourceAssetId, source.id), eq(sourceAnalyses.status, "complete"))).limit(1);
       const beatGrid = parseBeatGrid(sourceTempo?.beatGrid ?? null);
@@ -239,6 +249,16 @@ export async function handleBassAnalysisJob(payloadInput: Record<string, unknown
           throw new Error("The source or isolated bass stem changed while it was being analyzed.");
         }
         await tx.delete(bassEvents).where(eq(bassEvents.bassAnalysisId, job.id));
+        await tx.delete(bassPitchSegments).where(eq(bassPitchSegments.bassAnalysisId, job.id));
+        if (pitchSegments.length) await tx.insert(bassPitchSegments).values(pitchSegments.map((segment, segmentIndex) => ({
+          bassAnalysisId: job.id,
+          segmentIndex,
+          startMs: segment.startMs,
+          endMs: segment.endMs,
+          midiNote: segment.midiNote,
+          frequencyHz: segment.frequencyHz,
+          confidence: segment.confidence,
+        })));
         if (events.length) await tx.insert(bassEvents).values(events.map((event, eventIndex) => {
           const beatIndex = beatGrid ? nearestBeatIndex(event.timestampMs, beatGrid) : null;
           return {

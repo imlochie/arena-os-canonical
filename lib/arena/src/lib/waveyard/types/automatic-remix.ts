@@ -695,8 +695,22 @@ export function buildAutomaticRemixPlan(
   const targetKey = trustedKey(anchor);
   const notices: string[] = [];
   const decisions = ["anchored to one preserved source structure"];
-  if (!explicitAnchor && anchor.bassLine?.length && anchor.bedHarmony) {
-    decisions.push("preferred this anchor because its own bass line corroborates its chord analysis");
+  // State the reason only when the evidence actually supports it. Emitting this
+  // whenever a bass line merely exists would be an unsupported claim, and it is
+  // exactly what a stale or contradicting analysis must not produce.
+  if (!explicitAnchor && anchor.bedHarmony && anchor.bassLine?.length) {
+    const anchorBedChords = bedChordsFromHarmonyEvents(anchor.bedHarmony.events);
+    const anchorBass = anchorBedChords.length
+      ? assessBassLine({
+        notes: anchor.bassLine,
+        bedChords: anchorBedChords,
+        fromMs: Math.min(...anchorBedChords.map((chord) => chord.startMs)),
+        toMs: Math.max(...anchorBedChords.map((chord) => chord.endMs)),
+      })
+      : null;
+    if (anchorBass?.status === "measured" && !bassContradictsHarmony(anchorBass).contradicts) {
+      decisions.push("preferred this anchor because its own bass line corroborates its chord analysis");
+    }
   }
   if (!sourceCanStructure(anchor)) notices.push("Structural analysis is incomplete, so Waveyard preserved the source as one continuous arrangement.");
   if (!anchorBpm) notices.push("Tempo confidence is insufficient, so Waveyard will not claim BPM matching or beat snapping for this arrangement.");

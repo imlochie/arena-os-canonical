@@ -3447,3 +3447,57 @@ decision.
 `generated-artifacts/waveyard-real-world-acceptance/` are still missing and no
 substitute was used. **Listener count 0** — nobody listened, and no listening
 pack was regenerated. See ledger §23.
+
+## 2026-11-14 — Production bass evidence: the ears are connected
+
+§23 built the bass decision; **nothing produced its input**. `bass_events` holds
+onsets with no pitch, `handleBassAnalysisJob` persisted only attacks, and nothing
+ever populated `AutomaticRemixSource.bassLine`. The decision worked when handed
+evidence and never ran on a real imported song.
+
+Now:
+
+* `0032_bass_pitch_segments.sql` + `bassPitchSegments` — held notes
+  (`start_ms`, `end_ms`, `midi_note`, `frequency_hz`, `confidence`) on the
+  **existing** `bass_analyses` row. Not a parallel table: one stem has one
+  versioned analysis, so attacks and pitch inherit the same identity, checksums
+  and engine version by construction.
+* `LOCAL_BASS_ANALYSIS_ENGINE_VERSION` → **2.0.0**. 1.0.0 rows recorded no pitch
+  and are genuinely stale, so `bassAnalysisProvenanceReason` rejects and
+  reanalyses them instead of reading them as "the bass played nothing".
+* `detectBassPitchSegments` — the §23 generalized YIN pass at 30–400 Hz, 2x
+  decimation. A low-confidence frame ends the segment; an unpitched attack or
+  slide stays a gap.
+* `handleBassAnalysisJob` runs attacks and pitch on one decoded PCM in one claim
+  and one transaction. Malformed tracker output fails the analysis rather than
+  persisting an empty result.
+* `ensureBassAnalysis` resets a stale **engine** and requeues it, deleting the
+  superseded evidence — otherwise the version bump would strand every existing
+  project. A changed **checksum** is refused, not refreshed: different bytes are
+  different music.
+* The automatic-remixes route loads `bassLine` behind full provenance checks.
+
+**Two real bugs found by testing the production path, both fixed:**
+
+1. `assessBassLine` compared chord rows by identity, so a bed holding C major
+   across four analysis windows looked like four chord changes and a sustained
+   foreign pitch was excused as a pedal. Now compared by pitch content. A
+   sustained F# is `contradiction ≥ 0.9`, not a pedal.
+2. The provenance text "preferred this anchor because its own bass line
+   corroborates its chord analysis" was emitted whenever a bass line merely
+   *existed*, unverified — and still appeared after the evidence went stale. It is
+   now emitted only after the assessment is `measured` and does not contradict.
+
+Verification: focused **132/132** (plus `stem-analysis.test.ts` **3/3** with real
+ffmpeg); automatic-remix/passage-planning **80/80**;
+`stem-analysis.test.ts` **3/3** on real PostgreSQL with a real decoded WAV;
+`automatic-remixes/route.test.ts` **1/1** on real PostgreSQL + FFmpeg + real
+worker; acceptance **1/1** with artifacts byte-identical to §23; four packages
+typecheck clean. Worker persistence and route loading are both mutation-checked.
+
+**Real audio still not evaluated** (pinned stems absent, no substitution).
+**Listener count 0** — nobody listened. Synthetic fixtures do not show that a
+separated real bass stem yields trustworthy pitch. See ledger §24.
+
+Donor-drum retain/replace/layer/reject remains the next musical-intelligence
+milestone and is not implemented.

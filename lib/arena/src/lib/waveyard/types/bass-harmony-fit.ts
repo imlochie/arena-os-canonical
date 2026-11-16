@@ -128,10 +128,19 @@ function chordAt(chords: readonly BassHarmonyChord[], timeMs: number): BassHarmo
   return candidate && candidate.startMs <= timeMs ? candidate : null;
 }
 
-function sameChord(a: BassHarmonyChord | null, b: BassHarmonyChord | null): boolean {
+/**
+ * Whether two chord events are the SAME harmony.
+ *
+ * Compared by pitch content, not by row identity or timing. A bed that repeats
+ * C major across four events is still one harmony repeated, so a bass note held
+ * over it has not spanned a chord change. Treating each event as a change would
+ * misclassify a plain sustained non-chord tone as a pedal and excuse it.
+ */
+function sameHarmony(a: BassHarmonyChord | null, b: BassHarmonyChord | null): boolean {
   if (!a || !b) return false;
-  if (a === b) return true;
-  return a.startMs === b.startMs && a.endMs === b.endMs;
+  if (!a.pitchClasses.length || !b.pitchClasses.length) return false;
+  return a.pitchClasses.length === b.pitchClasses.length
+    && a.pitchClasses.every((tone) => b.pitchClasses.includes(tone));
 }
 
 /**
@@ -234,7 +243,16 @@ export function assessBassLine(input: {
     // this branch and its non-chord tones are judged as motion.
     const noteSegments = segments.filter((candidate) => candidate.note === segment.note);
     const noteSpanMs = noteSegments.reduce((sum, candidate) => sum + (candidate.toMs - candidate.fromMs), 0);
-    const spansChange = new Set(noteSegments.map((candidate) => candidate.chord)).size > 1;
+    // "Spans a change" means the HARMONY changed under the held note. Comparing
+    // chord-row identity would call a repeated C major a change.
+    const distinctHarmonies: BassHarmonyChord[] = [];
+    for (const candidate of noteSegments) {
+      if (!candidate.chord || !candidate.chord.pitchClasses.length) continue;
+      if (!distinctHarmonies.some((existing) => sameHarmony(existing, candidate.chord))) {
+        distinctHarmonies.push(candidate.chord);
+      }
+    }
+    const spansChange = distinctHarmonies.length > 1;
     const heldAcrossChange = noteSpanMs >= BASS_PEDAL_MIN_MS && spansChange;
     if (heldAcrossChange) {
       supportMs += weight;

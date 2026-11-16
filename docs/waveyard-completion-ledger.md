@@ -2250,3 +2250,169 @@ A demonstrably better musical decision on real music has **not** been shown; it
 has been shown on synthetic fixtures and in mutation-checked selection
 regressions. There is no claim of general musical intelligence, no STEM.FM
 parity claim, and no claim that the bass rule is a voice-leading model.
+
+---
+
+## 24. The bass decision had no ears: bass pitch was never produced
+
+### 24.1 The defect
+
+Section 23 built a bass-harmony assessment and proved it changed the planner's
+anchor choice. It did not connect that assessment to anything a normal imported
+song produces.
+
+Concretely:
+
+* `bass_events` (migration `0026`) stores `timestamp_ms`, `strength`,
+  `confidence`, `nearest_beat_index`, `beat_offset_ms`. **No pitch.** Its own
+  schema says these are "not inferred bass-note labels".
+* `handleBassAnalysisJob` ran `detectBassAttacks()` — an onset envelope over
+  35–250 Hz — and persisted nothing else.
+* `AutomaticRemixSource.bassLine` existed and was wired through the planner, but
+  **nothing ever populated it**. The automatic-remixes route loaded bed chords
+  and vocal pitch frames, and no bass.
+
+So §23's result was: *the decision works when supplied with evidence*. It was
+never: *an imported song can produce that evidence and use it*. The bass
+intelligence was real but deaf.
+
+### 24.2 What was implemented
+
+**Persistence, on the existing analysis row** (`0032_bass_pitch_segments.sql`,
+`lib/db/src/schema/waveyardSchema.ts`). A new `bass_pitch_segments` table stores
+`start_ms`, `end_ms`, `midi_note`, `frequency_hz`, `confidence` per held note,
+hanging off `bass_analyses`.
+
+Deliberately **not** a parallel analysis table. One bass stem has one versioned
+analysis, and both kinds of evidence — when it was struck, what it held — belong
+to it. Attacks and pitch therefore inherit the same source identity, the same
+stem identity, the same checksum binding and the same engine version by
+construction, rather than by a second implementation agreeing with the first.
+
+**Engine version bumped to 2.0.0** (`types/bass-analysis.ts`). This is the
+substantive decision. Rows written by 1.0.0 contain attacks with no pitch, so
+they are genuinely stale with respect to what the engine now claims to measure.
+Bumping the version means `bassAnalysisProvenanceReason` rejects them and they are
+reanalysed, rather than being read as "the bass played nothing". The route, the
+worker and the recovery path all compare against the constant, so the bump
+propagates without a data migration.
+
+**Pitch tracking by reuse** (`worker-local/analysis-engine.ts`,
+`detectBassPitchSegments`). The §23 generalization of `detectVocalPitchFrames`
+is used directly: 30–400 Hz at 2x decimation, which keeps Nyquist far above the
+range while reaching a 30.87 Hz low B. Grouping rules match the bass as a played
+instrument rather than a sung line: a low-confidence frame **ends** the segment
+instead of being bridged, so an unpitched attack, slide or muted note stays a gap.
+
+**Generation and versioning go through the real worker**
+(`worker-local/stem-analysis.ts`). `handleBassAnalysisJob` now runs
+`detectBassAttacks` and `detectBassPitchSegments` on the same decoded PCM, inside
+the same durable claim and the same transaction. `normaliseBassPitchSegments`
+validates every segment before persistence, and a malformed tracker result is a
+**failed** analysis, not an empty one — absence of pitch must never be
+indistinguishable from "the bass played nothing". Stale and checksum-corrupt
+paths were already tested; both were extended to assert they persist no pitch
+either.
+
+**Reanalysis, so the version bump is not a dead end**
+(`lib/arena/src/lib/waveyard/bass-analysis.ts`). Returning `stale` forever would
+strand every existing project without bass evidence, so `ensureBassAnalysis` now
+resets an analysis written by an older engine to the current one, requeues it, and
+deletes the superseded attacks and pitch in the same transaction.
+
+It deliberately does **not** refresh on a checksum mismatch. `analysis_stale`
+covers both "older engine" and "different bytes", so the checksums are compared
+explicitly: different bytes are different music, and quietly reanalysing them
+against the old row would attribute old evidence to a new source. An identity
+mismatch is refused outright.
+
+**Loading through the real route**
+(`projects/[id]/automatic-remixes/route.ts`). The route now reads
+`bass_pitch_segments` for each source's isolated bass stem, accepts only a
+`complete` analysis from the current engine version, verifies source identity,
+stem identity and both checksums with `bassAnalysisProvenanceReason`, validates
+the segments, and attaches `bassLine` to the source the planner sees.
+
+### 24.3 Decisions that changed, and two real bugs this found
+
+Proving this on the production path rather than in a fixture immediately
+exposed two defects that had passed the §23 unit tests.
+
+**Bug 1 — a repeated chord was treated as a chord change.** `assessBassLine`
+compared chord rows by object identity. Production writes one `stem_harmony_events`
+row per analysis window, so a bed holding C major for four windows arrives as four
+rows. A sustained foreign pitch over it was therefore deemed to "span a change"
+and excused as a pedal point — when the harmony had not moved at all. Fixed by
+comparing **pitch content**, so a repeated harmony is one harmony. This
+materially changes decisions: a sustained F# over four C-major windows is now
+`contradiction ≥ 0.9` instead of `pedal`.
+
+**Bug 2 — the decision text made a claim it had not verified.** The provenance
+message "preferred this anchor because its own bass line corroborates its chord
+analysis" was emitted whenever a `bassLine` merely **existed**, without
+re-evaluating it. After the engine-version bump removed the corroborating bed's
+evidence, the plan still claimed corroboration. Now the message is emitted only
+after `assessBassLine` returns `measured` and `bassContradictsHarmony` is false.
+An unverified claim in the user-visible decision log is worse than no claim.
+
+Both are covered by tests: `bass-harmony-fit.test.ts` pins repeated-harmony vs
+genuine-change, and the route test pins the stale-evidence case.
+
+### 24.4 Verification actually executed
+
+Separate categories again.
+
+* **Synthetic DSP fixtures.** `bass-pitch.test.ts` (new, 6): pitch exact across
+  E1 41.2 Hz through A2 110 Hz, no octave error on E1 (midi 28, not 40), silence
+  yields nothing, a gap stays a gap, persisted-contract bounds, and the vocal
+  detector's previous behaviour (440 Hz → midi 69; 41 Hz still unvoiced there).
+* **Reanalysis and replacement (PGlite + desktop migrations).**
+  `bass-pitch-reanalysis.test.ts` (new, 1): a `1.0.0` row holding attacks but no
+  pitch is reset to the current engine, requeued, and its superseded evidence
+  removed — while a source whose checksum changed is refused and never enqueued.
+  Mutation-checked: disabling the refresh branch fails the same test.
+* **Real database, worker in-transaction (PGlite + desktop migrations).**
+  `stem-analysis.test.ts` 3/3, including a new test that decodes a real WAV, runs
+  the real job, and asserts the persisted notes are A1 (33) and E2 (40) with every
+  stored Hz within 2% of its own MIDI label. Mutation-checked: skipping the pitch
+  insert reproduces `expected at least two held notes, saw 0`.
+* **Real route, real PostgreSQL, real FFmpeg, real worker.**
+  `automatic-remixes/route.test.ts` (new, 1) builds two candidate beds whose chord
+  analysis is identical (C major) and whose bass differs — a C2 foundation versus
+  a sustained F#2 — with the contradicting bed offered first. The route must
+  choose the corroborating bed, say why, and must stop saying why once the
+  evidence is stale. Mutation-checked: removing the `bassLine` attachment
+  reproduces the old choice (`the bed whose own bass corroborates its chords must
+  win the anchor`).
+* **Focused combined** `types/__tests__` + `bass-pitch` + `bass-pitch-reanalysis`:
+  **132/132**, 0 skipped, 0 failed. `stem-analysis.test.ts` **3/3** separately
+  (it needs real ffmpeg on PATH).
+* **Automatic-remix and passage-planning:** **80/80**.
+* **Acceptance** `route.test.ts` with real PostgreSQL and ffmpeg: **1/1**,
+  render/save/reopen/export. Artifacts `acceptance-render.wav` 5,644,844 B and
+  `acceptance-export.wav` 5,633,090 B — **byte-identical** to §23, so rendering is
+  unchanged.
+* **Typechecks:** `tsc --noEmit` clean for `lib/arena`, `lib/db`,
+  `artifacts/api-server` and `artifacts/arenaforge`. `git diff --check` clean.
+* **Real audio: not evaluated.** Every pinned stem under
+  `generated-artifacts/waveyard-real-world-acceptance/` is still absent. No
+  unrelated track was substituted.
+* **Listening: nobody listened. Listener count is 0.** No listening pack was
+  regenerated.
+
+### 24.5 What is still not established
+
+The pipeline can now produce and consume bass pitch for a normal imported song.
+That is **not** the same as a better musical decision on **real music**. Every
+measurement above is a synthetic fixture; the only real-bytes path exercised is a
+generated WAV. Whether a separated bass stem from a real recording yields
+trustworthy pitch — separation bleed, sub-bass content, slap and fretless playing
+— is untested, and an honest tracker should be expected to return `unavailable`
+on material it cannot resolve.
+
+Bass pitch is monophonic by construction. Genuine two-voice bass or a bass note
+sounding under a bleed-heavy separation will be under-reported rather than
+mis-reported, which is the intended failure direction but is still a gap.
+
+Donor-drum retain/replace/layer/reject remains a distinct future milestone and is
+not implemented.

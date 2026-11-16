@@ -248,3 +248,33 @@ test("a pedal is only recognised when the note is genuinely sustained", () => {
   assert.equal(result.relations.filter((relation) => relation.kind === "pedal").length, 0);
   assert.ok(result.contradictionShare > 0.9, "restruck foreign notes stay contradictions");
 });
+
+test("a foreign note held across a repeated chord is not excused as a pedal", () => {
+  // Production writes one chord event per window, so the SAME harmony arrives as
+  // several rows. A sustained F# over four C-major events has spanned no chord
+  // change at all, and must stay a contradiction rather than become a pedal.
+  const repeated = [0, 1, 2, 3].map((index) => chord(0, index * 1000, index * 1000 + 1000));
+  const result = assessBassLine({
+    notes: [note(42, 0, 4000)],
+    bedChords: repeated,
+    fromMs: 0, toMs: 4000,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  assert.equal(result.relations.filter((relation) => relation.kind === "pedal").length, 0,
+    "a repeated harmony is not a chord change");
+  assert.ok(result.contradictionShare > 0.9);
+  assert.equal(bassContradictsHarmony(result).contradicts, true);
+});
+
+test("a pedal is still recognised when the harmony genuinely changes", () => {
+  // Same shape as the pedal test above, but the chord really moves.
+  const result = assessBassLine({
+    notes: [note(36, 0, 2400)],
+    bedChords: [chord(0, 0, 800), chord(5, 800, 1600), chord(7, 1600, 2400)],
+    fromMs: 0, toMs: 2400,
+  });
+  assert.equal(result.status, "measured");
+  if (result.status !== "measured") return;
+  assert.ok(result.relations.some((relation) => relation.kind === "pedal"));
+});

@@ -13,7 +13,7 @@ import { applyDesktopMigrationsToPGlite } from "./pglite-migrations.test-helper"
 import { encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { LocalStorageProvider, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import {
-  projects, processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, stemAssets, bassAnalyses, bassEvents, drumAnalyses, drumEvents,
+  projects, processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, stemAssets, bassAnalyses, bassEvents, bassPitchSegments, drumAnalyses, drumEvents,
   harmonyAnalyses, harmonyEvents, stemHarmonyAnalyses, stemHarmonyEvents, vocalAnalyses, vocalActivityIntervals, vocalPitchFrames, vocalPhrases,
   remixSessions, remixVersions, exportJobs, exportAssets,
 } from "@workspace/db/waveyardSchema";
@@ -226,6 +226,8 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     assert.equal(staleBassAfter.status, "failed");
     assert.equal(staleBassAfter.errorCode, "analysis_stale");
     assert.equal((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, staleBass.id))).length, 0);
+    assert.equal((await db.select().from(bassPitchSegments).where(eq(bassPitchSegments.bassAnalysisId, staleBass.id))).length, 0,
+      "a stale bass stem persists no pitch evidence");
 
     const [corruptSeparation] = await db.insert(processingJobs).values({
       projectId: project.id, sourceAssetId: source.id, type: "separation", model: "test-local", requestedDevice: "cpu",
@@ -246,6 +248,8 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     const [corruptBassAfter] = await db.select().from(bassAnalyses).where(eq(bassAnalyses.id, corruptBass.id));
     assert.equal(corruptBassAfter.status, "failed");
     assert.equal((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, corruptBass.id))).length, 0);
+    assert.equal((await db.select().from(bassPitchSegments).where(eq(bassPitchSegments.bassAnalysisId, corruptBass.id))).length, 0,
+      "a checksum-corrupt bass stem persists no pitch evidence");
 
     // Let the recovered jobs finish before introducing a separate failed row.
     await db.update(drumAnalyses).set({ status: "complete", stage: "complete" }).where(eq(drumAnalyses.id, drum.id));
@@ -463,5 +467,94 @@ test("separated backing harmony is computed from persisted stem PCM and restart-
   } finally {
     await client.close();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+/**
+ * The production bass pathway: pitched stem in, versioned pitch segments out.
+ *
+ * bass_events alone cannot support harmonic judgement -- it records attacks with
+ * no pitch. This proves the worker now persists what the bass actually held, bound
+ * to the same durable analysis row and engine version as its attacks.
+ */
+test("local bass analysis persists pitch segments bound to the versioned analysis", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arena-bass-pitch-"));
+  const client = new PGlite();
+  try {
+    const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+    await applyDesktopMigrationsToPGlite(client, join(repoRoot, "desktop-migrations"));
+    const db = drizzle(client) as unknown as NonNullable<Parameters<typeof handleBassAnalysisJob>[1]>["db"];
+    const storage = new LocalStorageProvider(join(root, "storage"));
+    const [project] = await db.insert(projects).values({ ownerId: randomUUID(), title: "Bass pitch" }).returning();
+
+    // A bass line: A1 (55 Hz) then E2 (82.41 Hz), each held ~0.9 s.
+    const bassTone = (hz: number, seconds: number) => {
+      const mono = new Float32Array(RATE * seconds);
+      for (let i = 0; i < mono.length; i += 1) {
+        mono[i] = 0.5 * (Math.sin((2 * Math.PI * hz * i) / RATE) + 0.25 * Math.sin((4 * Math.PI * hz * i) / RATE));
+      }
+      return mono;
+    };
+    const mono = new Float32Array(RATE * 4);
+    mono.set(bassTone(55, 0.9), 0);
+    mono.set(bassTone(82.41, 0.9), Math.round(RATE * 1.6));
+    const bytes = stereoWav(mono);
+    const path = join(root, "bass.wav");
+    await writeFile(path, bytes);
+    const sourceKey = privateObjectKey(project.id, "source", "wav");
+    await storage.putFile(sourceKey, path, "audio/wav");
+    const digest = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
+    const [source] = await db.insert(sourceAssets).values({
+      projectId: project.id, originalFilename: "bass-source.wav", mimeType: "audio/wav", storageKey: sourceKey,
+      checksumSha256: digest(bytes), durationSeconds: 4, sampleRate: RATE, channels: 2, codec: "pcm_s16le", fileSizeBytes: bytes.length,
+    }).returning();
+    const [separation] = await db.insert(processingJobs).values({
+      projectId: project.id, sourceAssetId: source.id, type: "separation",
+      model: "test-local", requestedDevice: "cpu", idempotencyKey: `separation-pitch:${source.id}`,
+    }).returning();
+    const stemKey = privateObjectKey(project.id, "stem", "wav");
+    await storage.putFile(stemKey, path, "audio/wav");
+    const [bassStem] = await db.insert(stemAssets).values({
+      projectId: project.id, sourceAssetId: source.id, separationJobId: separation.id, stemType: "bass",
+      engine: "test", model: "test-local", modelVersion: "1", storageKey: stemKey, checksumSha256: digest(bytes),
+      durationSeconds: 4, sampleRate: RATE, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: bytes.length,
+    }).returning();
+    const [bass] = await db.insert(bassAnalyses).values({
+      projectId: project.id, sourceAssetId: source.id, stemAssetId: bassStem.id,
+      idempotencyKey: bassAnalysisIdempotencyKey(bassStem.id),
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: source.checksumSha256, stemChecksumSha256: bassStem.checksumSha256,
+    }).returning();
+
+    await handleBassAnalysisJob({
+      bassAnalysisId: bass.id, projectId: project.id, sourceAssetId: source.id, stemAssetId: bassStem.id,
+      analysisEngine: LOCAL_BASS_ANALYSIS_ENGINE, analysisEngineVersion: LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+    }, { db, storage });
+
+    const [done] = await db.select().from(bassAnalyses).where(eq(bassAnalyses.id, bass.id));
+    assert.equal(done!.status, "complete");
+    assert.equal(done!.analysisEngineVersion, LOCAL_BASS_ANALYSIS_ENGINE_VERSION);
+
+    const segments = await db.select().from(bassPitchSegments)
+      .where(eq(bassPitchSegments.bassAnalysisId, bass.id)).orderBy(bassPitchSegments.startMs);
+    assert.ok(segments.length >= 2, `expected at least two held notes, saw ${segments.length}`);
+
+    // The two pitches are the ones actually played, not merely plausible numbers.
+    const notes = new Set(segments.map((segment) => segment.midiNote));
+    assert.ok(notes.has(33), `expected A1 (midi 33), saw ${[...notes].join(",")}`);
+    assert.ok(notes.has(40), `expected E2 (midi 40), saw ${[...notes].join(",")}`);
+    for (const segment of segments) {
+      const expected = 440 * 2 ** ((segment.midiNote - 69) / 12);
+      assert.ok(Math.abs(segment.frequencyHz - expected) / expected < 0.02,
+        `persisted ${segment.frequencyHz}Hz must match its stored midi label ${segment.midiNote}`);
+      assert.ok(segment.confidence >= 0.6 && segment.confidence <= 1);
+      assert.ok(segment.endMs > segment.startMs);
+      assert.ok(segment.endMs <= 4_000, "pitch timing stays inside the decoded source");
+    }
+    // Attacks and pitch are separate evidence on the SAME analysis row.
+    assert.ok((await db.select().from(bassEvents).where(eq(bassEvents.bassAnalysisId, bass.id))).length > 0);
+  } finally {
+    await client.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -465,6 +465,27 @@ export const bassEvents = pgTable("bass_events", {
   index("bass_events_analysis_time_idx").on(table.bassAnalysisId, table.timestampMs),
 ]);
 
+/**
+ * Independent bass PITCH evidence. `bass_events` records attacks with no pitch;
+ * these rows record the pitch the isolated bass stem demonstrably held, and hang
+ * off the same versioned analysis row so they inherit its source/stem identity,
+ * checksum binding and engine version.
+ */
+export const bassPitchSegments = pgTable("bass_pitch_segments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  bassAnalysisId: uuid("bass_analysis_id").notNull().references(() => bassAnalyses.id, { onDelete: "cascade" }),
+  segmentIndex: integer("segment_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  midiNote: integer("midi_note").notNull(),
+  frequencyHz: real("frequency_hz").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("bass_pitch_segments_analysis_index_unique").on(table.bassAnalysisId, table.segmentIndex),
+  index("bass_pitch_segments_analysis_start_idx").on(table.bassAnalysisId, table.startMs),
+]);
+
 export const vocalAnalyses = pgTable("vocal_analyses", {
   id: uuid("id").defaultRandom().primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),

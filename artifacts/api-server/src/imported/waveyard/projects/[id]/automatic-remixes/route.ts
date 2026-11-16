@@ -4,6 +4,8 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   automaticRemixGenerations,
+  bassAnalyses,
+  bassPitchSegments,
   harmonyAnalyses,
   harmonyEvents,
   remixClips,
@@ -48,6 +50,12 @@ import {
   normaliseStemHarmonyEvents,
   stemHarmonyAnalysisProvenanceReason,
 } from "@workspace/arena/lib/waveyard/types/stem-harmony-analysis";
+import {
+  LOCAL_BASS_ANALYSIS_ENGINE,
+  LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+  bassAnalysisProvenanceReason,
+  normaliseBassPitchSegments,
+} from "@workspace/arena/lib/waveyard/types/bass-analysis";
 import { chooseStemForHarmony } from "@workspace/arena/lib/waveyard/stem-harmony-analysis";
 import { placedVocalNotes } from "@workspace/arena/lib/waveyard/types/stem-harmonic-adapter";
 
@@ -102,7 +110,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await requireProjectRole(user.id, projectId, "editor");
     const constraints = constraintsFrom(await request.json().catch(() => ({})));
     
-    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows, harmonyAnalysisRows, stemHarmonyAnalysisRows] = await Promise.all([
+    const [sources, stems, analyses, sectionAnalyses, sections, vocalAnalysisRows, harmonyAnalysisRows, stemHarmonyAnalysisRows, bassAnalysisRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, projectId)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, projectId)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(sourceAnalyses).where(eq(sourceAnalyses.projectId, projectId)).orderBy(asc(sourceAnalyses.createdAt)),
@@ -111,6 +119,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, projectId)).orderBy(asc(vocalAnalyses.createdAt)),
       db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.projectId, projectId)).orderBy(asc(harmonyAnalyses.createdAt)),
       db.select().from(stemHarmonyAnalyses).where(eq(stemHarmonyAnalyses.projectId, projectId)).orderBy(asc(stemHarmonyAnalyses.createdAt)),
+      db.select().from(bassAnalyses).where(eq(bassAnalyses.projectId, projectId)).orderBy(asc(bassAnalyses.createdAt)),
     ]);
     const analysisBySource = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
     const sectionAnalysisBySource = new Map(sectionAnalyses.map((analysis) => [analysis.sourceAssetId, analysis]));
@@ -176,6 +185,43 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const existing = stemHarmonyEventsByAnalysis.get(event.stemHarmonyAnalysisId) ?? [];
       existing.push(event);
       stemHarmonyEventsByAnalysis.set(event.stemHarmonyAnalysisId, existing);
+    }
+    // Independent bass PITCH evidence for each source's isolated bass stem.
+    // Only a complete analysis from the current engine version qualifies: 1.0.0
+    // rows recorded attacks with no pitch and are genuinely stale, so they are
+    // skipped rather than read as "the bass played nothing".
+    const currentBassPitchByStemId = new Map<string, { analysis: (typeof bassAnalysisRows)[number]; segments: Array<{
+      startMs: number; endMs: number; midiNote: number; frequencyHz: number; confidence: number;
+    }> }>();
+    for (const analysis of [...bassAnalysisRows].reverse()) {
+      if (analysis.status !== "complete"
+        || analysis.analysisEngine !== LOCAL_BASS_ANALYSIS_ENGINE
+        || analysis.analysisEngineVersion !== LOCAL_BASS_ANALYSIS_ENGINE_VERSION) continue;
+      if (!currentBassPitchByStemId.has(analysis.stemAssetId))
+        currentBassPitchByStemId.set(analysis.stemAssetId, { analysis, segments: [] });
+    }
+    const bassAnalysisIds = [...currentBassPitchByStemId.values()].map(({ analysis }) => analysis.id);
+    if (bassAnalysisIds.length) {
+      const segmentRows = await db.select({
+        bassAnalysisId: bassPitchSegments.bassAnalysisId,
+        startMs: bassPitchSegments.startMs,
+        endMs: bassPitchSegments.endMs,
+        midiNote: bassPitchSegments.midiNote,
+        frequencyHz: bassPitchSegments.frequencyHz,
+        confidence: bassPitchSegments.confidence,
+      }).from(bassPitchSegments).where(inArray(bassPitchSegments.bassAnalysisId, bassAnalysisIds))
+        .orderBy(asc(bassPitchSegments.startMs));
+      const segmentsByAnalysis = new Map<string, typeof segmentRows>();
+      for (const segment of segmentRows) {
+        const existing = segmentsByAnalysis.get(segment.bassAnalysisId) ?? [];
+        existing.push(segment);
+        segmentsByAnalysis.set(segment.bassAnalysisId, existing);
+      }
+      for (const [stemId, current] of currentBassPitchByStemId)
+        currentBassPitchByStemId.set(stemId, {
+          analysis: current.analysis,
+          segments: segmentsByAnalysis.get(current.analysis.id) ?? [],
+        });
     }
     const stemsBySource = new Map<string, typeof stems>();
     for (const stem of stems) {
@@ -271,6 +317,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       for (const [sourceId, current] of currentVocalBySource)
         currentVocalBySource.set(sourceId, { ...current, pitchFrames: framesByAnalysis.get(current.analysis.id) ?? [] });
     }
+    const probeTimer = () => {};
+    void probeTimer;
     const fingerprintUpdates: Array<{
       id: string;
       sourceAnalysisId: string;
@@ -426,6 +474,34 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             sourceChecksumSha256: stemHarmony.sourceChecksumSha256,
             events: stemEvents,
           } };
+        })(),
+        ...(() => {
+          // The retained bed's own harmonic foundation. This is the evidence that
+          // lets the planner decide whether a bed's chord labels agree with the
+          // bass underneath them; without it the bass is reported unavailable and
+          // never treated as support.
+          const bassStem = (stemsBySource.get(source.id) ?? []).find((stem) => stem.stemType === "bass");
+          if (!bassStem) return {};
+          const evidence = currentBassPitchByStemId.get(bassStem.id);
+          if (!evidence) return {};
+          if (bassAnalysisProvenanceReason({
+            sourceAssetId: evidence.analysis.sourceAssetId,
+            expectedSourceAssetId: source.id,
+            stemAssetId: evidence.analysis.stemAssetId,
+            expectedStemAssetId: bassStem.id,
+            sourceChecksumSha256: evidence.analysis.sourceChecksumSha256,
+            expectedSourceChecksumSha256: source.checksumSha256,
+            stemChecksumSha256: evidence.analysis.stemChecksumSha256,
+            expectedStemChecksumSha256: bassStem.checksumSha256,
+            analysisEngine: evidence.analysis.analysisEngine,
+            analysisEngineVersion: evidence.analysis.analysisEngineVersion,
+          })) return {};
+          const segments = normaliseBassPitchSegments(
+            evidence.segments,
+            source.durationSeconds * 1000,
+          );
+          if (!segments?.length) return {};
+          return { bassLine: segments };
         })(),
         ...(() => {
           // The melody a vocal hybrid carries, mapped into this source's own
