@@ -425,6 +425,10 @@ type LiveStemSection = Pick<
 type LiveStemSectionEvidence = LiveStemTempoEvidence & {
   recipientBeatGridMs?: unknown;
   donorBeatGridMs?: unknown;
+  recipientVocalActivityStartsMs?: unknown;
+  donorVocalActivityStartsMs?: unknown;
+  recipientVoicedPhraseStartsMs?: unknown;
+  donorVoicedPhraseStartsMs?: unknown;
   donorStemDurationMs?: number | null;
   recipientBpm?: number | null;
   donorBpm?: number | null;
@@ -473,6 +477,145 @@ function beatBoundaryMs(grid: readonly number[], beatIndex: number): number | nu
   const intervals = grid.slice(1).map((time, index) => time - grid[index]!).sort((left, right) => left - right);
   const median = intervals[Math.floor(intervals.length / 2)];
   return median && Number.isFinite(median) ? grid.at(-1)! + median : null;
+}
+
+type VocalOnset = { startMs: number; confidence: number };
+type VocalTimingEvidence = Pick<
+  LiveStemSectionAlignmentCandidate,
+  | "vocalTimingSimilarity"
+  | "vocalTimingMatchedEvents"
+  | "vocalTimingRecipientEventCount"
+  | "vocalTimingDonorEventCount"
+  | "vocalTimingBasis"
+>;
+
+const LIVE_VOCAL_ONSET_CONFIDENCE_MIN = 0.65;
+const LIVE_VOCAL_TIMING_RANK_WEIGHT = 0.2;
+
+function localBeatPeriodMs(grid: readonly number[], startBeatIndex: number, endBeatIndex: number): number | null {
+  const intervals: number[] = [];
+  for (let index = startBeatIndex; index < Math.min(endBeatIndex, grid.length - 1); index += 1) {
+    const interval = grid[index + 1]! - grid[index]!;
+    if (Number.isFinite(interval) && interval > 0) intervals.push(interval);
+  }
+  intervals.sort((left, right) => left - right);
+  const median = intervals[Math.floor(intervals.length / 2)];
+  return median && Number.isFinite(median) ? median : null;
+}
+
+function vocalOnsetsInWindow(value: unknown, startMs: number, endMs: number): VocalOnset[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): VocalOnset[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const onset = entry as Partial<VocalOnset>;
+    return Number.isSafeInteger(onset.startMs)
+      && onset.startMs! >= startMs
+      && onset.startMs! < endMs
+      && Number.isFinite(onset.confidence)
+      && onset.confidence! >= LIVE_VOCAL_ONSET_CONFIDENCE_MIN
+      && onset.confidence! <= 1
+      ? [{ startMs: onset.startMs!, confidence: onset.confidence! }]
+      : [];
+  }).sort((left, right) => left.startMs - right.startMs);
+}
+
+/**
+ * Compare checksum-current onset timing only inside the two audio windows that
+ * are already rhythm/harmony candidates. This can refine their order, but never
+ * substitutes for beat, rhythm, or harmonic evidence.
+ */
+function compareVocalOnsetTiming(input: {
+  recipientBeatGrid: readonly number[];
+  donorBeatGrid: readonly number[];
+  recipientWindowStartBeat: number;
+  recipientWindowEndBeat: number;
+  donorWindowStartBeat: number;
+  donorWindowEndBeat: number;
+  recipientWindowStartMs: number;
+  recipientWindowEndMs: number;
+  donorWindowStartMs: number;
+  donorWindowEndMs: number;
+  stretchRatio: number;
+  recipientVocalActivityStartsMs?: unknown;
+  donorVocalActivityStartsMs?: unknown;
+  recipientVoicedPhraseStartsMs?: unknown;
+  donorVoicedPhraseStartsMs?: unknown;
+}): VocalTimingEvidence {
+  const empty: VocalTimingEvidence = {
+    vocalTimingSimilarity: null,
+    vocalTimingMatchedEvents: null,
+    vocalTimingRecipientEventCount: null,
+    vocalTimingDonorEventCount: null,
+    vocalTimingBasis: null,
+  };
+  const recipientPhrases = vocalOnsetsInWindow(
+    input.recipientVoicedPhraseStartsMs,
+    input.recipientWindowStartMs,
+    input.recipientWindowEndMs,
+  );
+  const donorPhrases = vocalOnsetsInWindow(
+    input.donorVoicedPhraseStartsMs,
+    input.donorWindowStartMs,
+    input.donorWindowEndMs,
+  );
+  const recipientActivity = vocalOnsetsInWindow(
+    input.recipientVocalActivityStartsMs,
+    input.recipientWindowStartMs,
+    input.recipientWindowEndMs,
+  );
+  const donorActivity = vocalOnsetsInWindow(
+    input.donorVocalActivityStartsMs,
+    input.donorWindowStartMs,
+    input.donorWindowEndMs,
+  );
+  const phraseEvidenceAvailable = recipientPhrases.length >= 2 && donorPhrases.length >= 2;
+  const activityEvidenceAvailable = recipientActivity.length >= 2 && donorActivity.length >= 2;
+  const recipientOnsets = phraseEvidenceAvailable ? recipientPhrases : activityEvidenceAvailable ? recipientActivity : [];
+  const donorOnsets = phraseEvidenceAvailable ? donorPhrases : activityEvidenceAvailable ? donorActivity : [];
+  if (recipientOnsets.length < 2 || donorOnsets.length < 2) return empty;
+
+  const recipientBeatPeriod = localBeatPeriodMs(
+    input.recipientBeatGrid,
+    input.recipientWindowStartBeat,
+    input.recipientWindowEndBeat,
+  );
+  const donorBeatPeriod = localBeatPeriodMs(
+    input.donorBeatGrid,
+    input.donorWindowStartBeat,
+    input.donorWindowEndBeat,
+  );
+  if (recipientBeatPeriod === null || donorBeatPeriod === null
+    || !Number.isFinite(input.stretchRatio) || input.stretchRatio <= 0) return empty;
+  const timingToleranceMs = Math.min(recipientBeatPeriod, donorBeatPeriod * input.stretchRatio) * 0.25;
+  const recipientTimes = recipientOnsets.map((onset) => onset.startMs);
+  const donorOutputTimes = donorOnsets.map((onset) =>
+    input.recipientWindowStartMs + (onset.startMs - input.donorWindowStartMs) * input.stretchRatio,
+  );
+  const matchedRecipient = new Set<number>();
+  let matchedEvents = 0;
+  for (const donorTime of donorOutputTimes) {
+    let nearestIndex = -1;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < recipientTimes.length; index += 1) {
+      if (matchedRecipient.has(index)) continue;
+      const distance = Math.abs(recipientTimes[index]! - donorTime);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIndex = index;
+      }
+    }
+    if (nearestIndex >= 0 && nearestDistance <= timingToleranceMs) {
+      matchedRecipient.add(nearestIndex);
+      matchedEvents += 1;
+    }
+  }
+  return {
+    vocalTimingSimilarity: 2 * matchedEvents / (recipientOnsets.length + donorOnsets.length),
+    vocalTimingMatchedEvents: matchedEvents,
+    vocalTimingRecipientEventCount: recipientOnsets.length,
+    vocalTimingDonorEventCount: donorOnsets.length,
+    vocalTimingBasis: phraseEvidenceAvailable ? "voiced-phrase" : "vocal-activity",
+  };
 }
 
 function measuredRollingWindows(section: LiveStemSection): PassageRollingWindow[] | null {
@@ -570,6 +713,27 @@ function livePhraseSectionAlignmentCandidates(
         || !similarity.harmonicShiftAllowed) continue;
 
       const score = (similarity.rhythmSimilarity + similarity.harmonySimilarity) / 2 * durationSimilarity;
+      const vocalTiming = compareVocalOnsetTiming({
+        recipientBeatGrid: recipientGrid,
+        donorBeatGrid: donorGrid,
+        recipientWindowStartBeat: recipientWindow.startBeatIndex,
+        recipientWindowEndBeat: recipientWindow.endBeatIndex,
+        donorWindowStartBeat: donorWindow.startBeatIndex,
+        donorWindowEndBeat: donorWindow.endBeatIndex,
+        recipientWindowStartMs,
+        recipientWindowEndMs,
+        donorWindowStartMs,
+        donorWindowEndMs,
+        stretchRatio,
+        recipientVocalActivityStartsMs: evidence.recipientVocalActivityStartsMs,
+        donorVocalActivityStartsMs: evidence.donorVocalActivityStartsMs,
+        recipientVoicedPhraseStartsMs: evidence.recipientVoicedPhraseStartsMs,
+        donorVoicedPhraseStartsMs: evidence.donorVoicedPhraseStartsMs,
+      });
+      const rankingScore = vocalTiming.vocalTimingSimilarity === null
+        ? score
+        : score * (1 - LIVE_VOCAL_TIMING_RANK_WEIGHT)
+          + vocalTiming.vocalTimingSimilarity * LIVE_VOCAL_TIMING_RANK_WEIGHT;
       const positionDistance = recipientTrackEnd > 0 && donorTrackEnd > 0
         ? Math.abs(
           (donorWindow.startBeatIndex / donorTrackEnd)
@@ -612,8 +776,9 @@ function livePhraseSectionAlignmentCandidates(
         recipientBeatConfidence: evidence.recipientBeatConfidence ?? null,
         donorBeatConfidence: evidence.donorBeatConfidence ?? null,
         transpositionSemitones: similarity.transpositionSemitones,
-        rankingScore: score,
+        rankingScore,
         positionDistance,
+        ...vocalTiming,
       });
     }
   }
@@ -757,6 +922,11 @@ export type LiveStemSectionAlignmentCandidate = {
   recipientBeatConfidence: number | null;
   donorBeatConfidence: number | null;
   transpositionSemitones: number | null;
+  vocalTimingSimilarity: number | null;
+  vocalTimingMatchedEvents: number | null;
+  vocalTimingRecipientEventCount: number | null;
+  vocalTimingDonorEventCount: number | null;
+  vocalTimingBasis: "voiced-phrase" | "vocal-activity" | null;
 };
 
 const MAX_LIVE_STEM_ALIGNMENT_CANDIDATES = 5;
@@ -883,6 +1053,11 @@ export function liveStemSectionAlignmentCandidates(
       recipientBeatConfidence: evidence?.recipientBeatConfidence ?? null,
       donorBeatConfidence: evidence?.donorBeatConfidence ?? null,
       transpositionSemitones: null,
+      vocalTimingSimilarity: null,
+      vocalTimingMatchedEvents: null,
+      vocalTimingRecipientEventCount: null,
+      vocalTimingDonorEventCount: null,
+      vocalTimingBasis: null,
     }];
   }).filter(fitsDonorStem);
 }

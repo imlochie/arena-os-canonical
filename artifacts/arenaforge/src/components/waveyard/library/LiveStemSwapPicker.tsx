@@ -1050,7 +1050,7 @@ export default function LiveStemSwapPicker({
                 </button>
               </header>
               <p className="wy-vocal-entry-evidence">
-                These are measured rolling audio windows, not lyric phrases or verified verse/chorus labels. Similarity scores and signal-confidence measurements are shown separately.
+                These are measured rolling audio windows, not lyric phrases or verified verse/chorus labels. When both tracks have enough checksum-current vocal onsets, their beat-relative timing refines the ranking; it does not prove lyric or musical-form alignment.
               </p>
               {currentPlaying ? (
                 <button type="button" className="wy-vocal-entry-compare" onClick={() => {
@@ -1100,6 +1100,15 @@ export default function LiveStemSwapPicker({
                         Harmony similarity {formatEvidencePercent(candidate.harmonySimilarity)}
                         {" · "}measurement {formatEvidencePercent(candidate.harmonyMeasurementConfidence)}
                       </span>
+                      {candidate.vocalTimingSimilarity !== null && (
+                        <span>
+                          Vocal {candidate.vocalTimingBasis === "voiced-phrase" ? "phrase" : "activity"} timing agreement{" "}
+                          {formatEvidencePercent(candidate.vocalTimingSimilarity)}
+                          {" · "}{candidate.vocalTimingMatchedEvents} aligned of{" "}
+                          {candidate.vocalTimingRecipientEventCount} recipient /{" "}
+                          {candidate.vocalTimingDonorEventCount} donor onsets
+                        </span>
+                      )}
                       <span>
                         Duration fit {formatEvidencePercent(candidate.durationSimilarity)}
                         {" · "}boundary evidence {formatEvidencePercent(candidate.recipientBoundaryConfidence)}

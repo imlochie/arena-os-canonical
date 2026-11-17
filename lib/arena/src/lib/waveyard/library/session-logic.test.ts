@@ -422,6 +422,71 @@ test("live stem entry alternatives expose distinct measured windows and their ev
   assert.equal(liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence, 2).length, 2);
 });
 
+test("live vocal alternatives rank beat-mapped phrase timing without replacing music evidence", () => {
+  const checksum = "a".repeat(64);
+  const recipient = testLongSourceSection(checksum, [
+    testRollingWindow(0, 0),
+    testRollingWindow(4, 0),
+    testRollingWindow(8, 0),
+  ]);
+  const donor = testLongSourceSection("b".repeat(64), [
+    testRollingWindow(0, 0),
+    testRollingWindow(8, 0),
+    testRollingWindow(16, 0),
+    testRollingWindow(24, 0),
+  ]);
+  const beatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs: beatGridMs,
+    donorBeatGridMs: beatGridMs,
+    recipientVoicedPhraseStartsMs: [
+      { startMs: 3_000, confidence: 0.9 },
+      { startMs: 5_000, confidence: 0.9 },
+    ],
+    donorVoicedPhraseStartsMs: [
+      { startMs: 1_000, confidence: 0.9 },
+      { startMs: 3_000, confidence: 0.9 },
+      { startMs: 5_500, confidence: 0.9 },
+      { startMs: 7_500, confidence: 0.9 },
+      { startMs: 9_000, confidence: 0.9 },
+      { startMs: 11_000, confidence: 0.9 },
+      { startMs: 13_500, confidence: 0.9 },
+      { startMs: 15_500, confidence: 0.9 },
+    ],
+  });
+
+  const candidates = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence);
+  assert.ok(candidates.length >= 3);
+  assert.deepEqual(
+    candidates.slice(0, 2).map((candidate) => candidate.donorWindowStartMs),
+    [0, 8_000],
+    "equal rhythm/harmony windows with matching beat-relative vocal starts rank above mismatched starts",
+  );
+  assert.ok(candidates.slice(0, 2).every((candidate) =>
+    candidate.vocalTimingSimilarity === 1
+    && candidate.vocalTimingBasis === "voiced-phrase"
+    && candidate.vocalTimingMatchedEvents === 2
+    && candidate.rhythmSimilarity !== null
+    && candidate.harmonySimilarity !== null,
+  ));
+  assert.ok(candidates.some((candidate) =>
+    candidate.vocalTimingSimilarity === 0
+    && candidate.vocalTimingBasis === "voiced-phrase",
+  ));
+
+  const withoutVocalTiming = liveStemSectionAlignmentCandidates(
+    [recipient],
+    [donor],
+    5,
+    1,
+    testLiveStemEvidence({ recipientBeatGridMs: beatGridMs, donorBeatGridMs: beatGridMs }),
+  );
+  assert.ok(withoutVocalTiming.length > 0);
+  assert.ok(withoutVocalTiming.every((candidate) =>
+    candidate.vocalTimingSimilarity === null && candidate.vocalTimingBasis === null,
+  ), "missing paired vocal evidence stays unavailable and does not fabricate a score");
+});
+
 test("one weak section elsewhere does not block a confident live phrase match", () => {
   const recipientChecksum = "a".repeat(64);
   const donorChecksum = "b".repeat(64);
