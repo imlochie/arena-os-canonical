@@ -12,6 +12,7 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getTrack, getTrackDeletionProtection, updateTrackCuration } from "@workspace/arena/lib/waveyard/library/service";
+import { sessionTrackAnalysis } from "@workspace/arena/lib/waveyard/library/session-service";
 
 export const runtime = "nodejs";
 
@@ -46,14 +47,16 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   }
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser();
     const { id } = await params;
     if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const track = await getTrack(user.id, id);
     if (track === null) return Response.json({ error: "Track not found." }, { status: 404 });
-    return Response.json({ track });
+    const includeSessionAnalysis = new URL(request.url).searchParams.get("includeSessionAnalysis") === "true";
+    const analysis = includeSessionAnalysis ? await sessionTrackAnalysis(user.id, id) : undefined;
+    return Response.json({ track, ...(includeSessionAnalysis ? { sessionAnalysis: analysis } : {}) });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

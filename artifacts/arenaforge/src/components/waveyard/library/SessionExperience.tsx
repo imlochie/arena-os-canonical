@@ -43,6 +43,7 @@ import CamelotWheel from "./CamelotWheel";
 import SessionKeyMatchingControls from "./SessionKeyMatchingControls";
 import LiveStemSwapPicker, {
   type LiveStemDonorOption,
+  type LiveStemEntryReviewEvidence,
   type LiveStemPreparationOption,
 } from "./LiveStemSwapPicker";
 import LocalSessionPairing from "./LocalSessionPairing";
@@ -167,6 +168,8 @@ interface SessionTrackItem {
     voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
   } | null;
 }
+
+type SessionTrackAnalysis = NonNullable<SessionTrackItem["analysis"]>;
 
 interface SessionDetail {
   id: string;
@@ -1961,6 +1964,10 @@ export default function SessionExperience({
   const [sendingToStudio, setSendingToStudio] = useState(false);
   const studioHandoffInFlight = useRef(false);
   const liveSwapWarmupsRef = useRef(new Map<string, Promise<void>>());
+  const donorAnalysisRequestsRef = useRef(new Map<string, Promise<SessionTrackAnalysis | null>>());
+  useEffect(() => {
+    donorAnalysisRequestsRef.current.clear();
+  }, [sessionId]);
   const [warmingLiveSwap, setWarmingLiveSwap] = useState<{
     key: string;
     sessionTrackId: string;
@@ -5084,14 +5091,44 @@ export default function SessionExperience({
         };
       }),
     ];
-    const getEntryCandidates = (donorId: string): LiveStemSectionAlignmentCandidate[] => {
+    const getEntryCandidates = async (donorId: string): Promise<LiveStemEntryReviewEvidence> => {
       const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
-      // Library summaries deliberately omit checksum-bound windows. Reuse full
-      // session/saved-donor evidence only; never fabricate windows from summaries.
-      const donorAnalysis = sessionDonor?.analysis
+      let donorAnalysis = sessionDonor?.analysis
         ?? session.swaps.find((item) => item.toTrackId === donorId)?.donorTrack?.analysis
         ?? null;
-      if (donorAnalysis === null || currentItem.analysis === null) return [];
+      // Library list summaries intentionally omit large checksum-bound window
+      // evidence. Load it only when a user asks to compare one donor.
+      if (donorAnalysis === null) {
+        let request = donorAnalysisRequestsRef.current.get(donorId);
+        if (!request) {
+          request = fetch(`/api/library/tracks/${encodeURIComponent(donorId)}?includeSessionAnalysis=true`, {
+            cache: "no-store",
+          }).then(async (response) => {
+            if (!response.ok) throw new Error(`Donor analysis request failed (${response.status}).`);
+            const body = await response.json() as { sessionAnalysis?: unknown };
+            if (!body.sessionAnalysis || typeof body.sessionAnalysis !== "object") {
+              throw new Error("This donor has no current source-verified section analysis.");
+            }
+            return body.sessionAnalysis as SessionTrackAnalysis;
+          });
+          donorAnalysisRequestsRef.current.set(donorId, request);
+        }
+        try {
+          donorAnalysis = await request;
+        } catch {
+          throw new Error("Could not load current, source-verified donor analysis.");
+        } finally {
+          if (donorAnalysisRequestsRef.current.get(donorId) === request) {
+            donorAnalysisRequestsRef.current.delete(donorId);
+          }
+        }
+      }
+      if (donorAnalysis === null || currentItem.analysis === null) return {
+        candidates: [],
+        vocalActivityStartsMs: donorAnalysis?.vocalActivityStartsMs ?? null,
+        voicedPhraseStartsMs: donorAnalysis?.voicedPhraseStartsMs ?? null,
+        sections: donorAnalysis?.sections ?? null,
+      };
       const donorTempo = tempoForTrack(donorId, donorAnalysis, manualTempoCorrections);
       const candidateTempoEvidence = {
         recipientBpmConfidence: recipientTempo.confidence,
@@ -5104,23 +5141,28 @@ export default function SessionExperience({
         donorTempo.bpm,
         candidateTempoEvidence,
       ) ?? 1;
-      return liveStemSectionAlignmentCandidates(
-        currentItem.analysis.sections,
-        donorAnalysis.sections,
-        decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
-        stretchRatio,
-        {
-          ...candidateTempoEvidence,
-          recipientBeatGridMs: currentItem.analysis.beatGridMs,
-          donorBeatGridMs: donorAnalysis.beatGridMs,
-          recipientBpm: recipientTempo.bpm,
-          donorBpm: donorTempo.bpm,
-          recipientKey: currentItem.analysis.musicalKey,
-          donorKey: donorAnalysis.musicalKey,
-          recipientKeyConfidence: currentItem.analysis.keyConfidence,
-          donorKeyConfidence: donorAnalysis.keyConfidence,
-        },
-      );
+      return {
+        candidates: liveStemSectionAlignmentCandidates(
+          currentItem.analysis.sections,
+          donorAnalysis.sections,
+          decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+          stretchRatio,
+          {
+            ...candidateTempoEvidence,
+            recipientBeatGridMs: currentItem.analysis.beatGridMs,
+            donorBeatGridMs: donorAnalysis.beatGridMs,
+            recipientBpm: recipientTempo.bpm,
+            donorBpm: donorTempo.bpm,
+            recipientKey: currentItem.analysis.musicalKey,
+            donorKey: donorAnalysis.musicalKey,
+            recipientKeyConfidence: currentItem.analysis.keyConfidence,
+            donorKeyConfidence: donorAnalysis.keyConfidence,
+          },
+        ),
+        vocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
+        voicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
+        sections: donorAnalysis.sections,
+      };
     };
     const selectedDonor = session.tracks.find((item) => item.track.id === swap?.toTrackId);
     const selectedDonorLibraryTrack = library.find((item) => item.id === swap?.toTrackId);
@@ -5268,7 +5310,7 @@ export default function SessionExperience({
         onGetEntryCandidates={getEntryCandidates}
         onResolvePreviewAsset={resolveLiveSwapPreviewAsset}
         onPauseForEntryReview={() => decksRef.current[activeDeck]?.transport.pause()}
-        onChoose={(donorId, donorEntryOffsetMs = null, entryCandidate) => {
+        onChoose={async (donorId, donorEntryOffsetMs = null, entryCandidate) => {
           if (entryCandidate) {
             const candidateTempo = candidates.find((candidate) => candidate.id === donorId);
             const donorAnalysis = donors.find((item) => item.track.id === donorId)?.analysis
@@ -5300,7 +5342,7 @@ export default function SessionExperience({
             stemType === "vocals"
             && donorEntryOffsetMs === null
             && entryCandidate === undefined
-            && getEntryCandidates(donorId).length === 0
+            && (await getEntryCandidates(donorId)).candidates.length === 0
           ) {
             setStatus("No source-verified vocal entry match is available at this playhead. The current vocal stays active; compare a measured window or set a manual donor start.");
             return false;

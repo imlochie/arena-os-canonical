@@ -163,6 +163,28 @@ test("concurrent multipart uploads return one library track and queue one separa
     assert.equal(bodies[0].track.id, bodies[1].track.id);
     assert.equal(bodies.filter((body) => body.created).length, 1);
 
+    const detailRoutes = await import("./[id]/route");
+    const detailUrl = `http://127.0.0.1/api/library/tracks/${bodies[0].track.id}`;
+    const defaultDetail = await detailRoutes.GET(
+      new Request(detailUrl),
+      { params: Promise.resolve({ id: bodies[0].track.id }) },
+    );
+    assert.equal(defaultDetail.status, 200);
+    assert.equal(Object.hasOwn(await defaultDetail.json(), "sessionAnalysis"), false,
+      "the ordinary library detail stays small and does not include section windows");
+    const evidenceDetail = await detailRoutes.GET(
+      new Request(`${detailUrl}?includeSessionAnalysis=true`),
+      { params: Promise.resolve({ id: bodies[0].track.id }) },
+    );
+    assert.equal(evidenceDetail.status, 200);
+    const evidenceBody = await evidenceDetail.json() as {
+      sessionAnalysis: { sections: unknown; vocalActivityStartsMs: unknown; voicedPhraseStartsMs: unknown } | null;
+    };
+    assert.ok(evidenceBody.sessionAnalysis);
+    assert.equal(evidenceBody.sessionAnalysis.sections, null);
+    assert.equal(evidenceBody.sessionAnalysis.vocalActivityStartsMs, null);
+    assert.equal(evidenceBody.sessionAnalysis.voicedPhraseStartsMs, null);
+
     const ownerTracks = await dbModule.db.select().from(schema.tracks)
       .where(eq(schema.tracks.ownerId, LOCAL_OWNER_ID));
     assert.equal(ownerTracks.length, 1);

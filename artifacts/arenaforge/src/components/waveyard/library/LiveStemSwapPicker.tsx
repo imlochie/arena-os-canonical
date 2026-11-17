@@ -38,6 +38,13 @@ export interface LiveStemPreparationOption {
   progressLabel?: string;
 }
 
+export interface LiveStemEntryReviewEvidence {
+  candidates: LiveStemSectionAlignmentCandidate[];
+  vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
+  voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
+  sections: Pick<SourceSection, "sectionIndex" | "startMs" | "label" | "labelConfidence">[] | null;
+}
+
 interface LiveStemSwapPickerProps {
   stemType: string;
   currentTrackId: string;
@@ -65,9 +72,13 @@ interface LiveStemSwapPickerProps {
   busy: boolean;
   onToggle: () => void;
   onClose: () => void;
-  onChoose: (donorId: string, donorEntryOffsetMs?: number | null, candidate?: LiveStemSectionAlignmentCandidate) => boolean | void;
+  onChoose: (
+    donorId: string,
+    donorEntryOffsetMs?: number | null,
+    candidate?: LiveStemSectionAlignmentCandidate,
+  ) => boolean | void | Promise<boolean | void>;
   onPauseForEntryReview: () => void;
-  onGetEntryCandidates: (donorId: string) => LiveStemSectionAlignmentCandidate[];
+  onGetEntryCandidates: (donorId: string) => LiveStemEntryReviewEvidence | Promise<LiveStemEntryReviewEvidence>;
   onResolvePreviewAsset: (donorId: string, stemType: string) => Promise<string | null>;
   onWarm: (donorId: string) => void;
   onPrefetch: (donorId: string) => void;
@@ -360,6 +371,11 @@ export default function LiveStemSwapPicker({
   const previewStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [entryDonorId, setEntryDonorId] = useState<string | null>(null);
   const [entryCandidates, setEntryCandidates] = useState<LiveStemSectionAlignmentCandidate[]>([]);
+  const [entryVocalActivityStartsMs, setEntryVocalActivityStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
+  const [entryVoicedPhraseStartsMs, setEntryVoicedPhraseStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
+  const [entrySections, setEntrySections] = useState<LiveStemEntryReviewEvidence["sections"]>(null);
+  const [entryCandidatesLoading, setEntryCandidatesLoading] = useState(false);
+  const [entryCandidatesError, setEntryCandidatesError] = useState<string | null>(null);
   const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
   const [manualEntryMs, setManualEntryMs] = useState(0);
   const [previewAssetUrl, setPreviewAssetUrl] = useState<string | null>(null);
@@ -384,23 +400,51 @@ export default function LiveStemSwapPicker({
   const stageDonorForEntry = useCallback((donorId: string) => {
     stopEntryPreview();
     const sequence = ++previewResolveSequenceRef.current;
-    const alternatives = stemType === "vocals" ? onGetEntryCandidates(donorId) : [];
     setEntryDonorId(donorId);
-    setEntryCandidates(alternatives);
+    setEntryCandidates([]);
+    setEntryVocalActivityStartsMs(null);
+    setEntryVoicedPhraseStartsMs(null);
+    setEntrySections(null);
+    setEntryCandidatesLoading(stemType === "vocals");
+    setEntryCandidatesError(null);
     setSelectedEntryIndex(0);
-    setManualEntryMs(alternatives[0]?.donorEntryMs ?? 0);
+    setManualEntryMs(0);
     setPreviewAssetUrl(null);
     setPreviewAudioReady(false);
     setPreviewAssetState("loading");
     setPreviewMessage("");
-    void onResolvePreviewAsset(donorId, stemType).then((url) => {
+    void Promise.allSettled([
+      stemType === "vocals" ? onGetEntryCandidates(donorId) : Promise.resolve({
+        candidates: [],
+        vocalActivityStartsMs: null,
+        voicedPhraseStartsMs: null,
+        sections: null,
+      }),
+      onResolvePreviewAsset(donorId, stemType).catch(() => null),
+    ]).then(([reviewResult, previewResult]) => {
       if (previewResolveSequenceRef.current !== sequence) return;
-      setPreviewAssetUrl(url);
-      setPreviewAssetState(url === null ? "unavailable" : "ready");
-    }).catch(() => {
-      if (previewResolveSequenceRef.current !== sequence) return;
-      setPreviewAssetUrl(null);
-      setPreviewAssetState("unavailable");
+      setEntryCandidatesLoading(false);
+      if (reviewResult.status === "fulfilled") {
+        const review = reviewResult.value;
+        setEntryCandidates(review.candidates);
+        setEntryVocalActivityStartsMs(review.vocalActivityStartsMs);
+        setEntryVoicedPhraseStartsMs(review.voicedPhraseStartsMs);
+        setEntrySections(review.sections);
+        setManualEntryMs(review.candidates[0]?.donorEntryMs ?? 0);
+        setEntryCandidatesError(null);
+      } else {
+        setEntryCandidatesError("Detailed donor evidence could not be loaded. The saved swap is unchanged.");
+      }
+      if (previewResult.status === "fulfilled") {
+        setPreviewAssetUrl(previewResult.value);
+        setPreviewAssetState(previewResult.value === null ? "unavailable" : "ready");
+      } else {
+        setPreviewAssetUrl(null);
+        setPreviewAssetState("unavailable");
+      }
+      if (reviewResult.status === "fulfilled" && stemType === "vocals" && reviewResult.value.candidates.length === 0) {
+        setPreviewMessage("No verified entry match is available. Choose a manual start or snap to measured donor evidence.");
+      }
     });
   }, [onGetEntryCandidates, onResolvePreviewAsset, stemType, stopEntryPreview]);
 
@@ -463,6 +507,11 @@ export default function LiveStemSwapPicker({
     stopEntryPreview();
     setEntryDonorId(null);
     setEntryCandidates([]);
+    setEntryVocalActivityStartsMs(null);
+    setEntryVoicedPhraseStartsMs(null);
+    setEntrySections(null);
+    setEntryCandidatesLoading(false);
+    setEntryCandidatesError(null);
     setPreviewAssetUrl(null);
     setPreviewAudioReady(false);
     setPreviewAssetState("idle");
@@ -651,6 +700,18 @@ export default function LiveStemSwapPicker({
     onClose();
     focusSwapTrigger();
   };
+  const snapStagedDonorEntry = (
+    points: readonly { startMs: number }[] | null | undefined,
+    description: string,
+  ) => {
+    const nearest = nearestEntryEvidenceMs(boundedManualEntryMs, points);
+    if (nearest === null) {
+      setPreviewMessage(`No measured ${description.toLowerCase()} is available.`);
+      return;
+    }
+    setManualEntryMs(nearest);
+    setPreviewMessage(`Snapped to ${description.toLowerCase()} at ${formatEntryTime(nearest)}.`);
+  };
   const sessionCandidates = filteredCandidates.filter((candidate) => candidate.collection === "session");
   const libraryCandidates = filteredCandidates.filter((candidate) => candidate.collection === "library");
   const visiblePreparationCandidates = filteredPreparationCandidates.slice(0, 12);
@@ -711,9 +772,19 @@ export default function LiveStemSwapPicker({
           onPointerEnter={() => scheduleHoverWarm(candidate.id)}
           onPointerLeave={clearHoverWarm}
           onPointerDown={() => { clearHoverWarm(); onWarm(candidate.id); }}
-          onClick={() => {
+          onClick={async () => {
             stopEntryPreview();
-            const applied = onChoose(candidate.id);
+            let applied: boolean | void;
+            try {
+              applied = await onChoose(candidate.id);
+            } catch {
+              if (stemType !== "vocals") {
+                setPreviewMessage("The swap could not be prepared. The current layer is unchanged.");
+                return;
+              }
+              stageDonorForEntry(candidate.id);
+              return;
+            }
             if (applied === false && stemType === "vocals") {
               stageDonorForEntry(candidate.id);
               return;
@@ -885,7 +956,7 @@ export default function LiveStemSwapPicker({
                   <strong>Compare vocal entry windows</strong>
                   <small>{stagedDonor.title} · selection is staged; the current swap stays unchanged until applied</small>
                 </div>
-                <button type="button" onClick={refreshEntryCandidates} disabled={busy || pending}>
+                <button type="button" onClick={refreshEntryCandidates} disabled={busy || pending || entryCandidatesLoading}>
                   Refresh
                 </button>
               </header>
@@ -901,7 +972,15 @@ export default function LiveStemSwapPicker({
                   Pause mix to compare entries
                 </button>
               ) : <small>Mix paused · audition the donor separately without moving the playhead.</small>}
-              {entryCandidates.length > 0 ? (
+              {entryCandidatesLoading ? (
+                <p className="wy-vocal-entry-no-candidates" role="status">
+                  Loading this donor’s source-verified section and vocal evidence…
+                </p>
+              ) : entryCandidatesError !== null ? (
+                <p className="wy-vocal-entry-no-candidates" role="status">
+                  {entryCandidatesError} Choose a manual donor start or retry comparison.
+                </p>
+              ) : entryCandidates.length > 0 ? (
                 <div className="wy-vocal-entry-candidate-list" role="radiogroup" aria-label="Measured donor entry alternatives">
                   {entryCandidates.map((candidate, index) => (
                     <button
@@ -950,7 +1029,6 @@ export default function LiveStemSwapPicker({
               ) : (
                 <p className="wy-vocal-entry-no-candidates" role="status">
                   No source-verified rhythm/harmony window passed the current evidence gates at this playhead.
-                  {stagedDonor.collection === "library" ? " Library-only summaries omit detailed windows; add the track to this session to compare them." : ""}
                   {" "}That does not prove no usable passage exists; choose a manual vocal start rather than applying an unverified automatic entry.
                 </p>
               )}
@@ -985,29 +1063,54 @@ export default function LiveStemSwapPicker({
               )}
               {previewMessage && <small className="wy-vocal-entry-snap-status" role="status">{previewMessage}</small>}
               {manualEntryLimitMs !== null ? (
-                <label className="wy-vocal-entry-time">
-                  <span>Manual donor start · no feature match</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={manualEntryLimitMs}
-                    step={50}
-                    value={boundedManualEntryMs}
-                    onChange={(event) => setManualEntryMs(Number(event.target.value))}
-                    aria-label={`Manual donor start time for ${stagedDonor.title}`}
-                    data-testid="staged-donor-entry-slider"
-                  />
-                  <output>{formatEntryTime(boundedManualEntryMs)}</output>
-                </label>
+                <>
+                  <label className="wy-vocal-entry-time">
+                    <span>Manual donor start · no feature match</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={manualEntryLimitMs}
+                      step={50}
+                      value={boundedManualEntryMs}
+                      onChange={(event) => setManualEntryMs(Number(event.target.value))}
+                      aria-label={`Manual donor start time for ${stagedDonor.title}`}
+                      data-testid="staged-donor-entry-slider"
+                    />
+                    <output>{formatEntryTime(boundedManualEntryMs)}</output>
+                  </label>
+                  <div className="wy-vocal-entry-snaps" aria-label="Snap manual donor start to measured evidence">
+                    <button type="button" disabled={entryVocalActivityStartsMs?.length === 0 || entryVocalActivityStartsMs === null}
+                      onClick={() => snapStagedDonorEntry(entryVocalActivityStartsMs, "vocal activity")}>
+                      Snap to vocal activity
+                    </button>
+                    <button type="button" disabled={entryVoicedPhraseStartsMs?.length === 0 || entryVoicedPhraseStartsMs === null}
+                      onClick={() => snapStagedDonorEntry(entryVoicedPhraseStartsMs, "voiced phrase candidate")}>
+                      Snap to voiced phrase
+                    </button>
+                    <button type="button" disabled={entrySections?.length === 0 || entrySections === null}
+                      onClick={() => snapStagedDonorEntry(entrySections, "detected section boundary")}>
+                      Snap to section
+                    </button>
+                  </div>
+                  <small className="wy-vocal-entry-evidence" role="note">
+                    Phrase starts are pitch-continuity candidates, not lyric or word boundaries; section labels may be provisional.
+                  </small>
+                </>
               ) : null}
               <div className="wy-vocal-entry-actions">
                 <button
                   type="button"
                   disabled={busy || pending || selectedAlignmentCandidate === null || selectedAlignmentIsStale}
-                  onClick={() => {
+                  onClick={async () => {
                     if (!selectedAlignmentCandidate || selectedAlignmentIsStale) return;
                     stopEntryPreview();
-                    const applied = onChoose(entryDonorId, null, selectedAlignmentCandidate);
+                    let applied: boolean | void;
+                    try {
+                      applied = await onChoose(entryDonorId, null, selectedAlignmentCandidate);
+                    } catch {
+                      setPreviewMessage("The swap could not be prepared. The current layer is unchanged.");
+                      return;
+                    }
                     if (applied === false) {
                       setPreviewMessage("The live playhead or tempo changed. Refresh alternatives before applying.");
                       return;
@@ -1021,9 +1124,15 @@ export default function LiveStemSwapPicker({
                 <button
                   type="button"
                   disabled={busy || pending || manualEntryLimitMs === null}
-                  onClick={() => {
+                  onClick={async () => {
                     stopEntryPreview();
-                    onChoose(entryDonorId, boundedManualEntryMs);
+                    try {
+                      const applied = await onChoose(entryDonorId, boundedManualEntryMs);
+                      if (applied === false) return;
+                    } catch {
+                      setPreviewMessage("The swap could not be prepared. The current layer is unchanged.");
+                      return;
+                    }
                     closeAndReturnFocus();
                   }}
                   data-testid="button-apply-manual-entry"
@@ -1033,9 +1142,15 @@ export default function LiveStemSwapPicker({
                 <button
                   type="button"
                   disabled={busy || pending || entryCandidates.length === 0}
-                  onClick={() => {
+                  onClick={async () => {
                     stopEntryPreview();
-                    onChoose(entryDonorId, null);
+                    try {
+                      const applied = await onChoose(entryDonorId, null);
+                      if (applied === false) return;
+                    } catch {
+                      setPreviewMessage("The swap could not be prepared. The current layer is unchanged.");
+                      return;
+                    }
                     closeAndReturnFocus();
                   }}
                   data-testid="button-apply-automatic-entry"

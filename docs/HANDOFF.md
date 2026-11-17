@@ -1,6 +1,32 @@
 # Arena handoff — read this first
 
-## Latest increment: live swaps use exact same-role stem timing evidence
+## Latest increment: library vocal donors load full comparison evidence on demand
+
+The vocal entry comparison no longer stops at the lightweight library summary.
+When a user compares a library donor, the existing owner-checked track detail
+route can return its current `sessionTrackAnalysis`: checksum-current full-track
+sections and rolling fingerprints plus isolated-vocal activity and
+pitch-continuity phrase starts. The default detail response stays small, and
+evidence is fetched only for the donor being compared. Selecting a donor without
+a qualifying automatic window still leaves the current swap untouched and
+offers manual timing plus snaps to that donor's measured activity, voiced-phrase
+candidate, or section-boundary evidence.
+
+Load failures are distinguished from a genuine no-match result. These comparisons
+remain signal-evidence matches, not lyric transcription or proof of verse/chorus
+meaning; phrase starts may omit unvoiced consonants and section labels can be
+provisional.
+
+**Verification:** The PostgreSQL-backed library-route test passed and confirmed
+that ordinary track detail remains small while explicit evidence requests return
+the persisted analysis envelope. Library, API-server, and Arena UI typechecks
+passed. No real-song candidate was auditioned.
+
+**Still open:** Whole-track evidence does not guarantee a useful vocal phrase,
+semantic section correctness, or listenable mix. Real-song vocal entry,
+re-opened-state, and audible output still require evaluation.
+
+## Previous increment: live swaps use exact same-role stem timing evidence
 
 Listening-session swap payloads now expose a bounded groove-phase correction for
 drum/percussion and bass replacements only when both exact stem assets have
