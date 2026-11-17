@@ -24,6 +24,16 @@ confidence, saved-map and +5-semitone cases. The automatic-remixes PostgreSQL
 route acceptance passed against its synthetic audio fixture (one test); it
 does not specifically exercise the low-BPM grid-recovery case. The API health
 endpoint returned 200 after restart. No real-song listening test was performed.
+As a read-only replay of the existing six-track full-track report, the helper
+retained Another One Bites the Dust's 109.96 BPM candidate at 109.89 BPM from
+its 408-beat grid despite raw BPM confidence 0.426; it withheld I Feel It
+Coming (recovered grid-fit 0.714) and I Want to Break Free (0.773) below the
+0.8 threshold. This demonstrates the conservative real-data path, not a better
+cross-song match: the report still has 0 eligible pairs out of 24,941, and its
+top candidate fails tempo, rhythm and harmony checks. The next work must make
+the authorized transforms participate in candidate ranking and then verify
+actual rendered results; this increment alone does not make arbitrary pairs
+work.
 These changes improve evidence reuse and transform consistency, not a claim that
 arbitrary song pairs now produce pleasant mashups. The main Mashup Studio still
 has full-length fallback behavior; the separate Automatic Hybrid path can still
