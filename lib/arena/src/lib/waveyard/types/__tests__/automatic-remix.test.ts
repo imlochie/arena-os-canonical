@@ -75,6 +75,27 @@ function withFingerprints(input: AutomaticRemixSource): AutomaticRemixSource {
   };
 }
 
+function withDifferentSourceMixChroma(input: AutomaticRemixSource): AutomaticRemixSource {
+  return {
+    ...input,
+    sections: input.sections.map((section) => ({
+      ...section,
+      passageFingerprint: section.passageFingerprint ? {
+        ...section.passageFingerprint,
+        chroma: {
+          status: "measured" as const,
+          method: "fixture",
+          confidence: 0.95,
+          value: Array.from({ length: 48 }, (_, index) => {
+            const pitch = index % 12;
+            return pitch === 2 ? 1 : pitch === 6 ? 0.75 : pitch === 9 ? 0.5 : 0.02;
+          }),
+        },
+      } : null,
+    })),
+  };
+}
+
 function withRoles(input: AutomaticRemixSource, labels: string[] = ["verse", "chorus"]): AutomaticRemixSource {
   return {
     ...input,
@@ -228,6 +249,49 @@ describe("deterministic automatic remix arranger", () => {
     expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });
   });
 
+  it("lets isolated drum evidence decide a drum swap without gating on discarded harmony", () => {
+    const withDrumEvidence = (input: AutomaticRemixSource): AutomaticRemixSource => {
+      const stem = input.stems.find((candidate) => candidate.stemType === "drums")!;
+      const checksum = `${input.id}-drum-checksum`;
+      const events = Array.from({ length: 32 }, (_, index) => ({
+        timestampMs: index * 500,
+        strength: 1,
+        confidence: 0.95,
+      }));
+      return {
+        ...input,
+        stems: input.stems.map((candidate) =>
+          candidate.id === stem.id ? { ...candidate, checksumSha256: checksum } : candidate),
+        drumEvidence: {
+          analysisEngine: "waveyard-numpy-drum-transients",
+          analysisEngineVersion: "1.0.0",
+          stemAssetId: stem.id,
+          stemType: "drums",
+          stemChecksumSha256: checksum,
+          sourceChecksumSha256: input.checksumSha256,
+          events,
+        },
+      };
+    };
+    const anchor = withDrumEvidence(withFingerprints(source({ id: "drum-anchor" })));
+    const donor = withDrumEvidence(withDifferentSourceMixChroma(withFingerprints(source({ id: "drum-donor" }))));
+
+    const result = buildAutomaticRemixPlan([anchor, donor], {
+      variant: "hybrid",
+      anchorSourceId: anchor.id,
+      drumsStemId: "drum-donor-drums",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tracks.find((track) => track.stemType === "drums")?.stemAssetId).toBe("drum-donor-drums");
+    expect(result.plan.compatibility?.pairs.some((pair) =>
+      pair.donorSourceName === donor.originalFilename
+      && pair.eligible
+      && pair.dimensions.harmony.status === "context"
+      && pair.dimensions.harmony.detail.includes("not a gate for a drum swap"))).toBe(true);
+  });
+
   it("shows missing donor provenance and withholds the hybrid", () => {
     const donor = source({
       id: "b",
@@ -271,6 +335,192 @@ describe("retained-stem harmonic selection", () => {
     midiNote: [60, 64, 67][index % 3]!,
     velocity: 100,
   }));
+
+  it("uses the retained vocal and bed harmony instead of discarded donor-mix chroma", () => {
+    const anchorBase = withFingerprints(source({ id: "role-anchor" }));
+    const anchor = {
+      ...anchorBase,
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony",
+        analysisEngineVersion: "1.0.0",
+        stemAssetId: "role-anchor-other",
+        stemType: "other",
+        stemChecksumSha256: "role-anchor-other-checksum",
+        sourceChecksumSha256: anchorBase.checksumSha256,
+        events: bedChords(0),
+      },
+    };
+    const donor = withDifferentSourceMixChroma(withFingerprints(source({
+      id: "role-donor",
+      vocalNotes: arpeggio,
+    })));
+
+    const result = buildAutomaticRemixPlan([anchor, donor], {
+      variant: "hybrid",
+      anchorSourceId: anchor.id,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("role-donor-vocals");
+    expect(result.plan.compatibility?.pairs.some((pair) =>
+      pair.donorSourceName === donor.originalFilename
+      && pair.eligible
+      && pair.dimensions.harmony.status === "match"
+      && pair.dimensions.harmony.detail.includes("Isolated donor-vocal notes"))).toBe(true);
+  });
+
+  it("does not let source-mix chroma overrule measured vocal conflict with the retained bed", () => {
+    const anchorBase = withFingerprints(source({ id: "conflict-anchor" }));
+    const anchor = {
+      ...anchorBase,
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony",
+        analysisEngineVersion: "1.0.0",
+        stemAssetId: "conflict-anchor-other",
+        stemType: "other",
+        stemChecksumSha256: "conflict-anchor-other-checksum",
+        sourceChecksumSha256: anchorBase.checksumSha256,
+        events: bedChords(0),
+      },
+    };
+    const donor = withFingerprints(source({
+      id: "conflict-donor",
+      vocalNotes: arpeggio.map((note) => ({ ...note, midiNote: note.midiNote + 1 })),
+    }));
+
+    const result = buildAutomaticRemixPlan([anchor, donor], {
+      variant: "hybrid",
+      anchorSourceId: anchor.id,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.compatibility?.pairs.some((pair) =>
+      pair.donorSourceName === donor.originalFilename
+      && pair.dimensions.harmony.status === "conflict"
+      && pair.dimensions.harmony.detail.includes("Isolated donor-vocal notes"))).toBe(true);
+  });
+
+  it("avoids a donor section with measured silence and preserves the active vocal entry offset", () => {
+    const anchorBase = withFingerprints(source({ id: "entry-anchor" }));
+    const anchor = {
+      ...anchorBase,
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony",
+        analysisEngineVersion: "1.0.0",
+        stemAssetId: "entry-anchor-other",
+        stemType: "other",
+        stemChecksumSha256: "entry-anchor-other-checksum",
+        sourceChecksumSha256: anchorBase.checksumSha256,
+        events: bedChords(0),
+      },
+    };
+    const donorBase = withFingerprints(source({
+      id: "entry-donor",
+      vocalNotes: arpeggio.filter((note) => note.startMs >= 8_000),
+    }));
+    const donor = {
+      ...donorBase,
+      sections: donorBase.sections.map((section, index) => ({
+        ...section,
+        passageFingerprint: {
+          ...section.passageFingerprint!,
+          vocalActivity: {
+            status: "measured" as const,
+            method: "fixture: isolated-vocal activity",
+            confidence: null,
+            value: {
+              activityCoverage: index === 0 ? 0 : 0.125,
+              meanActivityStrength: index === 0 ? 0 : 0.9,
+              pitchCoverage: 0,
+              meanPitchConfidence: 0,
+              analysisId: "entry-vocal-analysis",
+              stemAssetId: "entry-donor-vocals",
+              stemChecksumSha256: "entry-vocal-checksum",
+              activityIntervals: index === 0 ? [] : [{ startMs: 8_500, endMs: 9_500, confidence: 0.9 }],
+              pitchContinuityRuns: [],
+            },
+          },
+        },
+      })),
+    };
+
+    const result = buildAutomaticRemixPlan([anchor, donor], {
+      variant: "hybrid",
+      anchorSourceId: anchor.id,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const vocalTrack = result.plan.tracks.find((track) => track.stemType === "vocals");
+    expect(vocalTrack?.stemAssetId).toBe("entry-donor-vocals");
+    expect(vocalTrack?.clips).toEqual([
+      expect.objectContaining({ timelineStartMs: 0, sourceOffsetMs: 8_000, durationMs: 8_000 }),
+    ]);
+    expect(result.plan.compatibility?.pairs.some((pair) =>
+      pair.donorSectionId === "entry-donor-a"
+      && pair.dimensions.vocalActivity.status === "conflict"
+      && pair.dimensions.vocalActivity.detail.includes("no vocal content"))).toBe(true);
+    expect(result.plan.compatibility?.pairs.some((pair) =>
+      pair.donorSectionId === "entry-donor-b"
+      && pair.eligible
+      && pair.dimensions.vocalActivity.detail.includes("would enter 500 ms"))).toBe(true);
+  });
+
+  it("does not call a vocal silent when pitch events contradict an empty activity detector", () => {
+    const anchorBase = withFingerprints(source({ id: "pitch-anchor" }));
+    const anchor = {
+      ...anchorBase,
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony",
+        analysisEngineVersion: "1.0.0",
+        stemAssetId: "pitch-anchor-other",
+        stemType: "other",
+        stemChecksumSha256: "pitch-anchor-other-checksum",
+        sourceChecksumSha256: anchorBase.checksumSha256,
+        events: bedChords(0),
+      },
+    };
+    const donorBase = withFingerprints(source({ id: "pitch-donor", vocalNotes: arpeggio }));
+    const donor = {
+      ...donorBase,
+      sections: donorBase.sections.map((section) => ({
+        ...section,
+        passageFingerprint: {
+          ...section.passageFingerprint!,
+          vocalActivity: {
+            status: "measured" as const,
+            method: "fixture: isolated-vocal activity",
+            confidence: null,
+            value: {
+              activityCoverage: 0,
+              meanActivityStrength: 0,
+              pitchCoverage: 0,
+              meanPitchConfidence: 0,
+              analysisId: "pitch-vocal-analysis",
+              stemAssetId: "pitch-donor-vocals",
+              stemChecksumSha256: "pitch-vocal-checksum",
+              activityIntervals: [],
+              pitchContinuityRuns: [],
+            },
+          },
+        },
+      })),
+    };
+
+    const result = buildAutomaticRemixPlan([anchor, donor], {
+      variant: "hybrid",
+      anchorSourceId: anchor.id,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tracks.find((track) => track.stemType === "vocals")?.stemAssetId).toBe("pitch-donor-vocals");
+    expect(result.plan.compatibility?.pairs.some((pair) =>
+      pair.eligible
+      && pair.dimensions.vocalActivity.detail.includes("but checksum-current isolated-vocal pitch evidence"))).toBe(true);
+  });
 
   it("judges the whole hybrid at the same BPM-mapped times the saved clips will play", () => {
     const anchor = source({

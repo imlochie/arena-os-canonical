@@ -75,12 +75,12 @@ partition contains two songs, so its interval is descriptive only.
 | Separation | Waveyard separation routes, local worker and `stem_assets` persistence | Versioned stem IDs and source/separation association | The eight historical stem WAVs are present locally and hash-verified; their origin/persistence association is not re-proven by this offline benchmark |
 | Source analysis | `lib/arena/src/lib/waveyard/worker-local/analysis-engine.ts` and `worker-local/stem-analysis.ts` | BPM/key confidence, beat/downbeat grids, section fingerprints, local HarmonyEvents | Chord labels still lack independent accuracy references |
 | Evidence loading | `lib/arena/src/lib/waveyard/studio/mashup-sources.ts` verifies current checksums and engine versions; `chooseStemForHarmony` selects instrumental/other/piano/guitar evidence | Current source-mix or selected non-vocal-stem harmony timeline; isolated vocal pitch/activity | It loads one preferred harmony stem, not a bass/drums/other evidence fusion with conflict reporting |
-| Automatic pairing | `lib/arena/src/lib/waveyard/types/automatic-remix.ts` uses passage-level onset/rhythm, chroma, beat-phase and trusted tempo; the API loads current-version, source-checksum-bound source-mix HarmonyEvents, isolated vocal notes and the selected non-vocal-stem chord timeline | Cross-song section pair selection, clip transform intent, advisory source-mix chord-progression context, and whole-arrangement donor-vocal vs retained-bed chord assessment using the exact BPM-derived source span | The initial passage gate still compares whole-source mix rhythm/chroma, although the donor instrumental is discarded; chord accuracy and perceptual quality remain unvalidated against references and listening |
+| Automatic pairing | `lib/arena/src/lib/waveyard/types/automatic-remix.ts` uses trusted tempo, complete-bar length, onset rhythm and beat phase; vocal role checks use isolated vocal notes against retained-bed harmony when available, while drum role decisions use checksum-current isolated drum transients | Cross-song section pairing, exact clip transforms, donor-vocal activity and transformed entry offset, retained-vocal harmony decision, and drum retain/replace/layer decision | Vocal structural alignment still uses whole-mix onset rhythm/beat phase; activity intervals are not phrase or lyric boundaries; harmonic accuracy and perceptual quality remain unvalidated against references and listening |
 | Manual mashup planning | `planMashup` and `scoreVocalChordToneFit` in `lib/arena/src/lib/waveyard/studio/mashup.ts` | Section/entry ranking, trusted tempo/key transforms, optional placed-vocal vs bed-chord ranking cue | Chord-tone fit is a ranking cue when coverage exists, not a calibrated dissonance or harmonic-change acceptance gate |
 | Persistence and editing | `projects/[id]/automatic-remixes/route.ts`, remix session/track/clip records, and `StudioCore.tsx` | Persisted tracks, clips, provenance and user edits | No persisted post-render harmonic re-analysis or automatic rollback on a musical clash |
 | Rendering and playback | `renderMashupWithBus`/`renderMashup` in `studio/mashup.ts`, export workers/routes, and `SessionExperience.tsx` | Actual WSOLA/pitch-shifted PCM, mix bus, saved render and playback | Render quality and musical success require an actual listener; no listening acceptance is recorded |
 
-## Highest-priority planner correction in this increment
+## Role-specific automatic pairing correction
 
 The automatic hybrid planner previously substituted alternating full-song clips
 when it had no usable cross-song passage evidence or when every measured passage
@@ -91,18 +91,28 @@ can explain the missing evidence or measured conflict. Semantic roles plus
 global key/tempo are no longer enough to admit a donor; measured passage chroma,
 rhythm, beat-phase and trusted tempo must support the pair. Successful evidence
 based plans and the renderer remain intact. The planner provenance version is
-now 5. Current source-mix chord timelines are compared over aligned section bins
-and affect passage tie-breaking only when enough named-chord coverage exists.
-They are labeled advisory because independent chord accuracy is unknown.
-Separately, the retained-vocal check compares isolated donor vocal notes with
-the anchor's checksum-current non-vocal-stem chord timeline across every planned
-section. Its time mapping uses the exact source span and linear BPM transform
-stored for playback/export; it refuses a section if that source span would cross
-the donor-section boundary. This verifies evidence/audio timing consistency, not
-chord-detector accuracy or perceptual fit. The source analysis loader validates
-the existing harmony engine version and source checksum; no schema migration or
-detector-threshold change was needed. Initial passage eligibility still relies
-on whole-mix rhythm/chroma, a separate role-specific gap.
+now 6. For vocal pairs, checksum-current isolated vocal notes versus the retained
+bed chord timeline replace source-mix chroma when that role evidence is
+available; measured sustained conflict rejects a pair even if the whole mixes
+match. If that evidence is unavailable, the existing source-mix chroma path
+remains, and the report names the missing role-specific evidence.
+
+For drum pairs, donor source-mix chroma is context only because the donor's
+instruments are discarded. Actual retain/replace/layer decisions still require
+checksum-current isolated drum attacks and both tracks' measured beat grids.
+Vocal activity in the exact selected donor window is checked when available:
+known silence rejects that passage, and the report gives the measured activity
+entry after the planned transform. It explicitly does not call the coarse RMS
+region a lyric or word timestamp.
+
+Both roles still use whole-mix onset rhythm and beat phase to establish section
+structure. Those features can disagree with the isolated vocal or drum layer;
+replacing them with role-specific phrase alignment remains open. Chord labels,
+timing quality on actual recordings and listener-perceived mix quality have not
+been validated against the human-reference packets or real rendered mixes.
+Source-mix chord progression is retained in the report as advisory context only;
+it no longer breaks ties between candidate passages whose backing will be
+discarded.
 
 ## Production use path and evidence boundary
 
@@ -110,17 +120,16 @@ Production still calls `detectHarmonyTimeline` in
 `lib/arena/src/lib/waveyard/worker-local/analysis-engine.ts`. Existing local
 harmony events flow into the mashup planner's harmony comparison and
 `scoreVocalChordToneFit` in `lib/arena/src/lib/waveyard/studio/mashup.ts`;
-the planner regression verifies a controlled ranking change when candidate
-events are supplied to that interface. v0.2.0 remains a separate offline
-candidate runner. No database, production detector, confidence threshold or
-runtime selection path is changed here. A planner ranking unit test is not a
-real-source mashup, completed separation-to-database route, or listening test.
+the offline v0.2.0 candidate runner remains separate. This increment changes
+automatic-hybrid role-specific passage selection but does not change database
+schema, production detector or confidence thresholds. A planner regression or a
+persisted synthetic route test is not a real-source mashup or listening test.
 
 ## Engineering validation
 
-This increment passed the focused automatic-remix and passage-compatibility
-tests (26/26), workspace typecheck, workspace build, and `git diff --check`.
-The build emitted source-map resolution and large-chunk warnings. The prior
+This increment passed the focused automatic-remix suite (27/27), workspace
+library and API-server typechecks, the synthetic PostgreSQL automatic-remix
+and donor-drum route tests, and `git diff --check`. The prior
 12 focused packet/evaluator tests and earlier candidate/harmonic results are
 recorded in [`HANDOFF.md`](./HANDOFF.md). The broad repository test sweep remains
 incomplete. Its known failure classes are PostgreSQL/service prerequisites,

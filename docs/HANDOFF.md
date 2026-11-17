@@ -1,32 +1,51 @@
 # Arena handoff — read this first
 
-## Latest increment: harmony evaluation now follows the rendered tempo map
+## Latest increment: hybrid matching uses evidence from the stems it keeps
 
-The automatic hybrid's retained-vocal harmony checks previously mapped every
-note across the full labeled donor section, even when the saved WSOLA clip read a
-shorter BPM-derived source window. That could judge a vocal note against a bed
-chord at a different time from the rendered mix.
+Hybrid passage matching previously used the donor's full-mix chroma as a hard
+gate, even though the hybrid discards those donor instruments. Vocal passages
+now use checksum-current isolated vocal notes against the retained bed's chord
+timeline when available. This replaces, rather than supplements, the discarded
+source-mix chroma decision. A measured sustained clash refuses that passage;
+a measured fit only makes it an audition candidate, not a quality claim.
 
-The planner, advisory chord-progression comparison, retained-hybrid check and
-persisted tempo-map builder now use one shared bounded BPM transform. Harmony
-evaluation clips donor notes to the exact source span the audio clip will read,
-then places them on the anchor timeline with the same linear ratio. It also
-withholds judgment if that span crosses the selected donor-section boundary.
+For drums, source-mix chroma is context only: the donor harmony is not retained.
+The planner still requires trusted tempo, complete-bar length, onset rhythm and
+beat-phase evidence for section pairing; the subsequent drum decision must pass
+checksum-current isolated drum transients to retain, replace or layer.
 
-**Verification:** The automatic-remix, passage-compatibility, harmonic-fit and
-persisted tempo-map suites passed 62 tests. The API-server TypeScript check and
-`git diff --check` passed. The automatic-remixes acceptance route passed against
-its isolated PostgreSQL fixture with FFmpeg explicitly configured; the separate
-drum-route test was skipped when run without that environment setting. The
-passing route exercises synthetic audio, not a real-song render. No real audio
-render or listening evaluation was performed, so this establishes timing
-consistency, not mix quality.
+When isolated vocal activity is measured, a candidate section with no activity
+inside the exact BPM-mapped donor audio window is rejected. Otherwise the report
+shows the coarse activity-entry offset after the actual transform. Those windows
+are not word or lyric timestamps. When stem-level vocal evidence is unavailable,
+the source-mix fallback is retained and the missing evidence is disclosed.
 
-One important gap remains: cross-song passage eligibility still compares
-source-mix rhythm/chroma fingerprints, even though a hybrid discards the donor's
-instrumental. The retained-vocal chord check now judges the material used, but
-the initial passage gate still needs role-specific evidence before Waveyard can
-claim that all of its matching evidence describes the resulting mashup.
+Source-mix chord progression remains visible in the compatibility report but is
+not used to select passages whose donor backing is discarded.
+
+**Verification:** The automatic-remix suite passed 27 tests, including a
+source-mix chroma mismatch with a retained-vocal harmonic fit, measured vocal
+conflict overriding source-mix agreement, a silent donor section being skipped
+in favor of an active section with its transformed entry offset, and a drum swap
+being accepted despite irrelevant donor chroma mismatch while still requiring
+measured isolated attacks. It also preserves pitch-note evidence when the coarse
+activity detector reports no interval. The workspace library and API-server
+typechecks and `git diff --check` passed. The automatic-remix and donor-drum
+PostgreSQL route acceptance tests passed with generated fixtures. No real-song
+render or listening evaluation was performed.
+
+The previous increment aligned the retained-vocal harmonic evaluator and
+advisory chord progression with the exact source span and WSOLA ratio from the
+persisted tempo map. Its synthetic database-route result establishes timing
+consistency only, not real-song mix quality.
+
+**Still open:** Vocal pairing still uses whole-mix onset rhythm and beat phase
+for structural alignment; those are not isolated vocal phrase-onset comparisons.
+Coarse activity is not transcription or phrase-boundary evidence. No real-song
+render or listening test shows that the selected entries sound musical, and the
+chord analysis has not been evaluated against human references.
+
+## Previous increment: harmony evaluation now follows the rendered tempo map
 
 ## Latest increment: automatic hybrid applies bounded, section-contained tempo adaptation
 

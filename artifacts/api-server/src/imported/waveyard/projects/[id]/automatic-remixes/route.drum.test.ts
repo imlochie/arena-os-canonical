@@ -86,6 +86,21 @@ function chordStemWav(seconds = 8) {
   return encodeWav16(stereo(mono), RATE);
 }
 
+/** A controlled C4 vocal-like stem with separated activity windows for timing tests. */
+function vocalStemWav(seconds = 8) {
+  const mono = new Float32Array(RATE * seconds);
+  for (let i = 0; i < mono.length; i += 1) {
+    const t = i / RATE;
+    const withinPhrase = t % 2;
+    if (withinPhrase >= 0.25 && withinPhrase < 1.5) {
+      const attack = Math.min(1, (withinPhrase - 0.25) * 20);
+      const release = Math.min(1, (1.5 - withinPhrase) * 20);
+      mono[i] = 0.22 * Math.min(attack, release) * Math.sin(2 * Math.PI * 261.63 * t);
+    }
+  }
+  return encodeWav16(stereo(mono), RATE);
+}
+
 /**
  * A drum part made of audible clicks at chosen beat phases.
  *
@@ -248,9 +263,9 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
         bpm: input.bpm, bpmConfidence: 0.9, musicalKey: "C major", keyConfidence: 0.9,
         beatGrid, beatConfidence: 0.9, completedAt: new Date(),
       }).returning();
-      // A real isolated vocal stem, so the hybrid has a donor part to carry and
-      // the passage check is not starved of a featured stem.
-      const vocalBytes = chordStemWav();
+      // A controlled voiced stem with known activity gaps; a continuous chord
+      // surrogate would correctly be rejected as having no detected vocal entry.
+      const vocalBytes = vocalStemWav();
       const vocalPath = path.join(fixtureRoot, `${randomUUID()}-vocals.wav`);
       await writeFile(vocalPath, vocalBytes);
       const vocalStem = await makeStem("vocals", vocalBytes, vocalPath);
@@ -450,7 +465,7 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
       anchorSourceId: bed.source.id,
       drumsStemId: donor.drumStem.id,
     });
-    assert.equal(stale.status, 201, "a stale drum analysis must not break the route");
+    assert.equal(stale.status, 201, `a stale drum analysis must not break the route: ${JSON.stringify(stale.body)}`);
     const staleDecisions = ((stale.body.plan as { provenance?: Record<string, unknown> } | undefined)
       ?.provenance?.drumBedDecisions) as Array<Record<string, unknown>> | undefined;
     assert.equal(staleDecisions?.[0]?.outcome, "unavailable",

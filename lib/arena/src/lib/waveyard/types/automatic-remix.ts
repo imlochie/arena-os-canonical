@@ -41,7 +41,7 @@ import {
 import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION, LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, drumAnalysisProvenanceReason } from "./drum-analysis";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
-export const AUTOMATIC_REMIX_ENGINE_VERSION = "5";
+export const AUTOMATIC_REMIX_ENGINE_VERSION = "6";
 export const AUTOMATIC_REMIX_VARIANTS = ["original", "hybrid"] as const;
 export type AutomaticRemixVariant = (typeof AUTOMATIC_REMIX_VARIANTS)[number];
 
@@ -177,6 +177,14 @@ export type AutomaticRemixTrackPlan = {
   clips: AutomaticRemixClipPlan[];
 };
 
+export type AutomaticRemixDrumBedDecision = {
+  donorSourceId: string;
+  donorFilename: string;
+  outcome: DrumBedDecision["decision"];
+  reason: string;
+  measurements: DrumBedDecision["measurements"];
+};
+
 export type AutomaticRemixProvenance = {
   engine: typeof AUTOMATIC_REMIX_ENGINE;
   engineVersion: typeof AUTOMATIC_REMIX_ENGINE_VERSION;
@@ -194,13 +202,7 @@ export type AutomaticRemixProvenance = {
    * it. Present only when a donor drum part was actually considered; an absent
    * entry means no drum question was asked, not that the drums were retained.
    */
-  drumBedDecisions?: Array<{
-    donorSourceId: string;
-    donorFilename: string;
-    outcome: DrumBedDecision["decision"];
-    reason: string;
-    measurements: DrumBedDecision["measurements"];
-  }>;
+  drumBedDecisions?: AutomaticRemixDrumBedDecision[];
 };
 
 export type AutomaticRemixCompatibilityReport = {
@@ -209,6 +211,8 @@ export type AutomaticRemixCompatibilityReport = {
   pairs: AutomaticRemixCompatibilityPair[];
   missingEvidence: string[];
   note: string;
+  /** Kept on failed as well as successful plans so unavailable drum evidence is explainable. */
+  drumBedDecisions?: AutomaticRemixDrumBedDecision[];
 };
 
 export type AutomaticRemixPlan = {
@@ -610,7 +614,152 @@ export function assessWholeHybridArrangement(input: {
   };
 }
 
-function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: AutomaticRemixSource) {
+type RetainedStemRole = "vocals" | "drums";
+
+function passageCompatibilityScore(pair: Pick<AutomaticRemixCompatibilityPair, "dimensions">) {
+  const measured = [
+    pair.dimensions.rhythm.similarity,
+    pair.dimensions.beatPhase.similarity,
+    ...(pair.dimensions.harmony.status === "context" ? [] : [pair.dimensions.harmony.similarity]),
+  ].filter((value): value is number => value !== null);
+  return measured.length ? Math.min(...measured) : -1;
+}
+
+/**
+ * Whole-mix features can describe backing that a hybrid discards. Keep tempo,
+ * phrase length, rhythm and beat phase as the structural pairing evidence, but
+ * decide harmony from the material the requested hybrid actually retains.
+ */
+function applyRetainedRoleEvidence(input: {
+  anchor: AutomaticRemixSource;
+  donor: AutomaticRemixSource;
+  anchorSection: AutomaticRemixSection;
+  donorSection: AutomaticRemixSection;
+  role: RetainedStemRole;
+  comparison: ReturnType<typeof comparePassageCompatibility>;
+}) {
+  const { anchor, donor, anchorSection, donorSection, role } = input;
+  const comparison = input.comparison;
+  const structuralMatch = (comparison.dimensions.tempo.status === "match"
+      || comparison.dimensions.tempo.status === "adapted")
+    && comparison.dimensions.phraseAlignment.status === "match"
+    && comparison.dimensions.rhythm.status === "match"
+    && comparison.dimensions.beatPhase.status === "match";
+
+  if (role === "drums") {
+    return {
+      ...comparison,
+      eligible: structuralMatch,
+      dimensions: {
+        ...comparison.dimensions,
+        harmony: {
+          status: "context" as const,
+          similarity: null,
+          detail: "Source-mix chroma is not a gate for a drum swap because the donor's harmony is discarded. Isolated drum transients decide retain/replace/layer after section pairing.",
+        },
+      },
+    };
+  }
+
+  // The vocal-only mix is judged against the anchor's retained bed, using the
+  // same BPM transform and exact donor source span the saved clip will render.
+  // Do not use an unvalidated whole-mix chroma match to overrule this evidence.
+  if (structuralMatch) {
+    const anchorBpm = trustedBpm(anchor);
+    const donorBpm = trustedBpm(donor);
+    const transform = anchorBpm !== null && donorBpm !== null
+      ? automaticTempoTransform(donorBpm, anchorBpm)
+      : null;
+    const donorSourceSpanMs = transform
+      ? automaticTempoSourceSpanMs(anchorSection.endMs - anchorSection.startMs, donorBpm!, anchorBpm!)
+      : null;
+    const donorWindowEndMs = donorSourceSpanMs === null ? donorSection.startMs : donorSection.startMs + donorSourceSpanMs;
+    const vocalEvidence = donorSection.passageFingerprint?.vocalActivity;
+    let vocalActivity = comparison.dimensions.vocalActivity;
+    let hasVocalActivity = true;
+    const missingEvidence = [...comparison.missingEvidence];
+    if (vocalEvidence?.status === "measured" && donorSourceSpanMs !== null && transform) {
+      const inWindow = vocalEvidence.value.activityIntervals.filter((interval) =>
+        interval.endMs > donorSection.startMs && interval.startMs < donorWindowEndMs);
+      const pitchedInWindow = donor.vocalNotes?.filter((note) =>
+        note.endMs > donorSection.startMs && note.startMs < donorWindowEndMs) ?? [];
+      if (!inWindow.length) {
+        if (pitchedInWindow.length) {
+          const sourceEntryMs = Math.max(donorSection.startMs, pitchedInWindow[0]!.startMs);
+          const targetEntryMs = (sourceEntryMs - donorSection.startMs) * transform.baseStretchRatio;
+          vocalActivity = {
+            ...vocalActivity,
+            status: "context",
+            detail: `The coarse activity detector found no interval in this window, but checksum-current isolated-vocal pitch evidence contains ${pitchedInWindow.length} note event(s). The first begins ${(sourceEntryMs - donorSection.startMs).toFixed(0)} ms into the donor section and would enter ${(targetEntryMs).toFixed(0)} ms into the target section after the saved tempo transform. These are note/activity measurements, not lyric or word timestamps.`,
+          };
+        } else {
+          hasVocalActivity = false;
+          vocalActivity = {
+            status: "conflict",
+            similarity: 0,
+            detail: "Checksum-current isolated-vocal activity and pitch analyses measured no vocal content inside the exact donor audio window this clip would render.",
+          };
+        }
+      } else {
+        const sourceEntryMs = Math.max(donorSection.startMs, inWindow[0]!.startMs);
+        const targetEntryMs = (sourceEntryMs - donorSection.startMs) * transform.baseStretchRatio;
+        vocalActivity = {
+          ...vocalActivity,
+          status: "context",
+          detail: `${vocalActivity.detail} The first measured isolated-vocal activity begins ${(sourceEntryMs - donorSection.startMs).toFixed(0)} ms into the donor section and would enter ${(targetEntryMs).toFixed(0)} ms into the target section after the saved tempo transform. These are coarse activity boundaries, not lyric or word timestamps.`,
+        };
+      }
+    } else {
+      missingEvidence.push("isolated-vocal activity timing for the exact selected donor window");
+    }
+
+    const retainedFit = assessWholeHybridArrangement({
+      anchor,
+      donor,
+      counterparts: new Map([[anchorSection.id, donorSection]]),
+    });
+    if (retainedFit.status === "measured") {
+      const verdict = wholeArrangementConforming(retainedFit.harmony);
+      return {
+        ...comparison,
+        eligible: structuralMatch && verdict.conforming && hasVocalActivity,
+        missingEvidence: [...new Set(missingEvidence)],
+        dimensions: {
+          ...comparison.dimensions,
+          vocalActivity,
+          harmony: {
+            status: verdict.conforming ? "match" as const : "conflict" as const,
+            similarity: retainedFit.harmony.weakestConformance,
+            detail: `Isolated donor-vocal notes against the retained bed chord timeline, on the exact saved tempo transform: ${verdict.reason}. This is measured harmonic evidence, not validated listening quality; treat the result as an audition candidate.`,
+          },
+        },
+      };
+    }
+    return {
+      ...comparison,
+      eligible: comparison.eligible && hasVocalActivity,
+      missingEvidence: [...new Set([
+        ...missingEvidence,
+        "measured isolated-vocal fit against the retained bed; source-mix chroma cannot establish this",
+      ])],
+      dimensions: {
+        ...comparison.dimensions,
+        vocalActivity,
+        harmony: {
+          ...comparison.dimensions.harmony,
+          detail: `${comparison.dimensions.harmony.detail} The isolated-vocal-versus-retained-bed check was unavailable, so this source-mix measurement does not establish vocal harmony.`,
+        },
+      },
+    };
+  }
+  return comparison;
+}
+
+function passageHybridCounterparts(
+  anchor: AutomaticRemixSource,
+  candidate: AutomaticRemixSource,
+  retainedRole: RetainedStemRole = "vocals",
+) {
   if (anchor.id === candidate.id || !sourceHasVerifiedAnalysis(anchor) || !sourceHasVerifiedAnalysis(candidate)) return null;
   const anchorBpm = trustedBpm(anchor) ?? 0;
   const candidateBpm = trustedBpm(candidate) ?? 0;
@@ -642,6 +791,14 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
         anchorKeyTrusted: anchorKey !== null,
         donorKeyTrusted: donorKey !== null,
         expectedKeyShift,
+      });
+      comparison = applyRetainedRoleEvidence({
+        anchor,
+        donor: candidate,
+        anchorSection,
+        donorSection,
+        role: retainedRole,
+        comparison,
       });
       if (comparison.eligible) {
         // The persisted tempo map reads anchor-duration × (anchor BPM / donor
@@ -676,13 +833,16 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
         donorSourceName: candidate.originalFilename,
       });
       if (!comparison.eligible) return [];
-      const score = Math.min(
-        comparison.dimensions.rhythm.similarity ?? -1,
-        comparison.dimensions.harmony.similarity ?? -1,
-        comparison.dimensions.beatPhase.similarity ?? -1,
-      );
-      return [{ section: donorSection, comparison, score, progression: progression.status === "context" ? progression.similarity ?? -1 : -1 }];
-    }).sort((left, right) => right.score - left.score || right.progression - left.progression || left.section.startMs - right.section.startMs);
+      const score = passageCompatibilityScore(comparison);
+      return [{
+        section: donorSection,
+        comparison,
+        score,
+        vocalActivity: retainedRole === "vocals" ? comparison.dimensions.vocalActivity.similarity ?? -1 : -1,
+      }];
+    }).sort((left, right) => right.score - left.score
+      || right.vocalActivity - left.vocalActivity
+      || left.section.startMs - right.section.startMs);
     const selected = choices[0];
     if (selected) {
       usedDonorSections.add(selected.section.id);
@@ -691,9 +851,7 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
   }
   const ranked = [...comparisons].sort((left, right) =>
     Number(right.eligible) - Number(left.eligible)
-    || Math.min(right.dimensions.rhythm.similarity ?? -1, right.dimensions.harmony.similarity ?? -1, right.dimensions.beatPhase.similarity ?? -1)
-      - Math.min(left.dimensions.rhythm.similarity ?? -1, left.dimensions.harmony.similarity ?? -1, left.dimensions.beatPhase.similarity ?? -1)
-    || (right.dimensions.chordProgression?.similarity ?? -1) - (left.dimensions.chordProgression?.similarity ?? -1),
+    || passageCompatibilityScore(right) - passageCompatibilityScore(left),
   ).slice(0, 12);
   const missingEvidence = [...new Set([
     ...ranked.flatMap((pair) => pair.missingEvidence),
@@ -710,7 +868,7 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
       missingEvidence,
       note: fingerprintCount === 0
         ? "No current passage fingerprints were found. Re-run structural analysis; older section rows are not silently upgraded."
-        : "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. Adapted tempo is bounded and must fit inside the selected donor section. A match is an audition candidate, not a listening-quality claim.",
+        : "Passage matching keeps trusted tempo, phrase length, onset rhythm, and beat phase. Vocal harmony uses isolated vocal notes against the retained bed when available; drum swaps defer to isolated drum transients. Whole-mix chroma is not a gate when that backing is discarded. Adapted tempo must fit inside the selected donor section; matches remain audition candidates, not listening-quality claims.",
     } satisfies AutomaticRemixCompatibilityReport,
   };
 }
@@ -894,15 +1052,14 @@ function combinedCompatibilityReport(reports: AutomaticRemixCompatibilityReport[
   if (!reports.length) return undefined;
   const pairs = reports.flatMap((report) => report.pairs)
     .sort((left, right) => Number(right.eligible) - Number(left.eligible)
-      || Math.min(right.dimensions.rhythm.similarity ?? -1, right.dimensions.harmony.similarity ?? -1, right.dimensions.beatPhase.similarity ?? -1)
-        - Math.min(left.dimensions.rhythm.similarity ?? -1, left.dimensions.harmony.similarity ?? -1, left.dimensions.beatPhase.similarity ?? -1))
+      || passageCompatibilityScore(right) - passageCompatibilityScore(left))
     .slice(0, 12);
   return {
     evaluatedPairs: reports.reduce((total, report) => total + report.evaluatedPairs, 0),
     eligiblePairs: reports.reduce((total, report) => total + report.eligiblePairs, 0),
     pairs,
     missingEvidence: [...new Set(reports.flatMap((report) => report.missingEvidence))],
-    note: "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. Adapted tempo is bounded and must fit inside the selected donor section. A match is an audition candidate, not a listening-quality claim.",
+    note: "Passage matches use trusted tempo, phrase length, rhythm, and beat phase. Vocal harmony and drum decisions use retained-stem evidence when available; discarded source backing is not a compatibility gate. Matches are audition candidates, not listening-quality claims.",
   };
 }
 
@@ -950,6 +1107,14 @@ export function buildAutomaticRemixPlan(
   const compatibilityBySource = new Map<string, AutomaticRemixCompatibilityReport>();
   /** Drum-bed decisions per donor, kept for provenance so the choice is auditable. */
   const drumDecisionBySource = new Map<string, DrumBedDecision>();
+  const drumDecisionSummaries = (): AutomaticRemixDrumBedDecision[] => [...drumDecisionBySource]
+    .map(([donorSourceId, decision]) => ({
+      donorSourceId,
+      donorFilename: usableSources.find((source) => source.id === donorSourceId)?.originalFilename ?? donorSourceId,
+      outcome: decision.decision,
+      reason: decision.reason,
+      measurements: decision.measurements,
+    }));
   for (const stem of anchor.stems) selected.set(stem.stemType, { source: anchor, stem });
 
   if (variant === "hybrid" && !sourceCanStructure(anchor)) {
@@ -972,7 +1137,7 @@ export function buildAutomaticRemixPlan(
     for (const source of usableSources) {
       const stem = firstStem(source, "vocals");
       if (!stem || source.id === anchor.id) continue;
-      const passage = passageHybridCounterparts(anchor, source);
+      const passage = passageHybridCounterparts(anchor, source, "vocals");
       if (passage) {
         compatibilityBySource.set(source.id, passage.report);
         if (passage.matches.size) defaultVocalCandidates.push({ source, stem, counterparts: passage.matches });
@@ -1022,7 +1187,11 @@ export function buildAutomaticRemixPlan(
       counterpartsBySource.set(defaultVocal.source.id, defaultVocal.counterparts);
     }
     for (const candidate of candidates.values()) {
-      const passage = passageHybridCounterparts(anchor, candidate.source);
+      const passage = passageHybridCounterparts(
+        anchor,
+        candidate.source,
+        candidate.stem.stemType === "drums" ? "drums" : "vocals",
+      );
       const counterparts = passage?.matches.size ? passage.matches : null;
       if (passage) compatibilityBySource.set(candidate.source.id, passage.report);
       else compatibilityBySource.set(candidate.source.id, unavailablePassageReport(candidate.source));
@@ -1095,19 +1264,22 @@ export function buildAutomaticRemixPlan(
       const reason = compatibility && compatibility.evaluatedPairs > 0
         ? "no_compatible_hybrid_source"
         : "hybrid_evidence_unavailable";
-      return { ok: false, reason, ...(compatibility ? { compatibility } : {}) };
+      return {
+        ok: false,
+        reason,
+        ...(compatibility ? {
+          compatibility: {
+            ...compatibility,
+            ...(drumDecisionBySource.size ? { drumBedDecisions: drumDecisionSummaries() } : {}),
+          },
+        } : {}),
+      };
     }
     if (compatibilityBySource.size) {
       const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
       if (compatibility) {
         notices.push(`Passage-level matches: ${compatibility.eligiblePairs}. They are audition candidates; ${compatibility.missingEvidence.length ? `still missing ${compatibility.missingEvidence.join(", ")}.` : "all listed evidence is present."}`);
-        decisions.push("used independent passage-level rhythm, chroma, beat-phase, and tempo evidence without requiring semantic verse/chorus labels");
-        const selectedProgressionMatches = [...counterpartsBySource.entries()].some(([sourceId, counterparts]) =>
-          sourceId !== anchor.id && [...counterparts.entries()].some(([anchorSectionId, donorSection]) =>
-            compatibilityBySource.get(sourceId)?.pairs.some((pair) => pair.anchorSectionId === anchorSectionId
-              && pair.donorSectionId === donorSection.id && pair.dimensions.chordProgression?.status === "context")));
-        if (selectedProgressionMatches)
-          decisions.push("used advisory checksum-bound chord-progression agreement to rank otherwise-equivalent passage matches");
+        decisions.push("used measured tempo, phrase length, onset rhythm and beat phase, then checked retained vocal harmony or isolated drum behavior where evidence was available; no semantic verse/chorus label was invented");
         decisions.push("judged every matched section of the proposed arrangement rather than its opening alone");
       }
     }
@@ -1136,7 +1308,13 @@ export function buildAutomaticRemixPlan(
     });
   }
   const analysisIds = [...new Set(ordered.map((choice) => choice.source.analysis?.id).filter((id): id is string => Boolean(id)))];
-  const compatibility = combinedCompatibilityReport([...compatibilityBySource.values()]);
+  const compatibilityBase = combinedCompatibilityReport([...compatibilityBySource.values()]);
+  const compatibility = compatibilityBase
+    ? {
+      ...compatibilityBase,
+      ...(drumDecisionBySource.size ? { drumBedDecisions: drumDecisionSummaries() } : {}),
+    }
+    : undefined;
   return {
     ok: true,
     plan: {
@@ -1158,15 +1336,7 @@ export function buildAutomaticRemixPlan(
         constraints: completeConstraints(constraints, variant),
         decisions,
         ...(compatibility ? { passageCompatibility: compatibility } : {}),
-        ...(drumDecisionBySource.size ? {
-          drumBedDecisions: [...drumDecisionBySource.entries()].map(([donorSourceId, decision]) => ({
-            donorSourceId,
-            donorFilename: usableSources.find((source) => source.id === donorSourceId)?.originalFilename ?? donorSourceId,
-            outcome: decision.decision,
-            reason: decision.reason,
-            measurements: decision.measurements,
-          })),
-        } : {}),
+        ...(drumDecisionBySource.size ? { drumBedDecisions: drumDecisionSummaries() } : {}),
       },
     },
   };

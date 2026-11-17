@@ -54,6 +54,27 @@ also produced different fit measurements; neither alone identifies the cause.
 failed candidates outside the runtime, and require real-recording evidence
 before integration. Unknown accuracy must remain unknown without chord labels.
 
+For hybrid matching, use role-specific evidence from the stems the arrangement
+will actually retain. A donor's full-mix chroma includes backing that a vocal
+swap discards; it must not veto or rank the retained vocal against the anchor
+bed. Conversely, compare isolated vocal notes with retained-bed harmony when
+available, and use isolated drum transients for drum decisions. Whole-mix rhythm
+and beat-phase can remain structural context until reliable stem-level phrase
+alignment exists. Coarse vocal-activity windows identify activity and entry
+timing, not lyrics or words; reconcile them with pitch-note evidence rather than
+treating one detector's silence as definitive.
+
+**Why:** The automatic hybrid compared complete source mixes even when it
+rendered only the anchor bed and donor vocal, and could select a passage whose
+discarded backing drove the decision. Stem-specific harmony, activity, pitch
+notes and drum transients already exist in the same persisted workflow.
+
+**How to apply:** Keep passage structure separate from retained-role judgments;
+use the exact saved tempo transform and source window for both evidence and
+rendering. Let matched role-specific measurements replace irrelevant source-mix
+gates, but label them as audition evidence until human references and listening
+tests establish accuracy and quality.
+
 When consuming persisted analysis evidence, validate the version constant for
 that analysis contract, not merely the shared engine name or a generic stem
 version. A specialized local analysis can reuse the engine identifier while

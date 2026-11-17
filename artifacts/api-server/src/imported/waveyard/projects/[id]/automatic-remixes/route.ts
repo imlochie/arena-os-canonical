@@ -672,7 +672,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         : plan.reason === "hybrid_evidence_unavailable"
           ? "A hybrid needs current, confident tempo and beat analysis with usable structural sections. Choose Original for a faithful single-source arrangement."
           : plan.reason === "no_compatible_hybrid_source"
-            ? "No donor passage passed Waveyard’s current tempo, rhythm, chroma, and beat-phase checks, so no hybrid was created. Analyze sources with current section fingerprints or choose Original."
+            ? "Waveyard could not select a donor stem with sufficient role-specific evidence for a hybrid. Check the compatibility report for missing vocal/bed or isolated-drum evidence, refresh current analysis, or choose Original."
         : plan.reason === "unsafe_hybrid_alignment"
           ? "Waveyard could not verify safe section-to-section alignment for this hybrid. Try different sources or choose the original arrangement."
           : "A completed source with real stems is required before Waveyard can build an arrangement.";
