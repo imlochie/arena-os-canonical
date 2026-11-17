@@ -10,15 +10,16 @@
  * phrase and bar placement read section boundaries. Drum and bass stems are
  * exactly what those boundaries are detected from
  * (`desktopSectionCandidates` builds them from the beat grid plus the onset
- * envelope and sustained stem-activity changes). So when a swap replaces drums,
+ * envelope and sustained component-level activity changes). So when a swap replaces drums,
  * inheriting the original bed's sections means the arrangement keeps a shape
  * derived from percussion that is no longer in the mix — the replacement is
  * audible while the arrangement still belongs to the replaced part. That is the
  * specific failure composition-first planning exists to prevent.
  *
  * This module re-derives sections from the composed PCM with the same
- * conservative bar-aligned engine the worker uses, and falls back rather than
- * inventing structure:
+ * conservative bar-aligned engine the worker uses. When component PCM is
+ * available, activity changes in the retained and replacement stems enter that
+ * same section map. It falls back rather than inventing structure:
  *
  *  - If the composed bed yields no usable beat grid, no sections are produced.
  *    The caller must invalidate the old ones and use an explicitly unverified
@@ -64,7 +65,8 @@ function toMashupSections(sections: readonly SourceSection[]): MashupSection[] {
  *
  * `stereo44k` must be the composed (post-swap) mix at the render sample rate —
  * the same signal the listener hears and the same one the tempo/beat grid were
- * re-measured from, so sections and grid always describe one composition.
+ * re-measured from. Optional component stems must use the same source clock;
+ * their activity indicates structural changes, not semantic form.
  */
 export function deriveSectionsForComposition(
   stereo44k: Float32Array,

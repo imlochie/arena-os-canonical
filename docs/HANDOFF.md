@@ -1,5 +1,47 @@
 # Arena handoff — read this first
 
+## Latest increment: post-swap stem changes enter section analysis
+
+When the mashup API builds a bed from retained and replacement stems, it now
+keeps those decoded components separately for analysis while leaving the
+renderer’s existing stretch-component contract unchanged. The summed
+post-swap PCM still supplies tempo, beat-grid, onset and energy evidence;
+bar-level activity changes from each available component are now added to that
+same section-candidate pass. A combined instrumental file has no trustworthy
+per-stem roles, so it continues to use only evidence measured from its mix.
+These are structural-change candidates, not verse/chorus labels.
+
+The session-to-Studio live-swap path now loads the donor’s full
+checksum-current `SessionTrackAnalysis`, rather than assigning the narrower
+BPM/key summary returned by the track-detail API. This restores the enriched
+analysis object for donor tempo/key decisions and resolves a type error in the
+API server. The current Studio persistence contract still stores audio clips
+and transform flags, not a complete donor-analysis record; donor beat grids,
+sections and phrase evidence are not yet persisted as a separate remix object.
+
+**Evidence:** a 64-second regression fixture with a sustained added-layer
+entrance detects a `stem-change` boundary at the expected 32-second point;
+existing per-stem tests still reject a one-bar fill as a section transition.
+The focused section suite passed 21 tests, with the existing real-CC0-corpus
+acceptance test skipped: this checkout has FFmpeg on `PATH`, but
+`ARENA_FFMPEG_PATH` is unset and the suite’s `generated-artifacts/waveyard-real-audio`
+fixtures are absent. `typecheck:libs`, ArenaForge typecheck, and API-server
+typecheck pass. This proves the signal handoff and boundary mechanism, not
+verse/chorus accuracy, cross-song musical fit, or audible mix quality. The
+existing generated real-world stems are still available elsewhere under
+`generated-artifacts/waveyard-real-world-acceptance`; they have not been
+re-separated or altered by this increment.
+
+The separately gated persisted September-vocal/Queen-bed acceptance also ran
+against those pinned existing WAVs with FFmpeg explicitly configured. It passed
+the real library → session swap → Studio → PostgreSQL → WAV export route,
+producing a 222.673-second, 44.1 kHz stereo file. The verified Queen BPM
+confidence (0.426) and key confidence (0.168) were below transform thresholds,
+so Waveyard correctly left tempo and pitch native instead of claiming an
+unsupported correction. This proves persistence and safe abstention on this
+pair, not that the export sounds good. The route report itself explicitly
+states that it does not assess listening quality or prove an ideal vocal entry.
+
 ## Latest increment: transcripts now carry source-structure timing notes
 
 Studio's source map now offers on-device transcription from the separated vocal

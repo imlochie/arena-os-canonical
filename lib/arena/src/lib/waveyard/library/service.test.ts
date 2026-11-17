@@ -21,7 +21,7 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, or } from "drizzle-orm";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
@@ -2013,7 +2013,18 @@ test("session: a missing original can be restored without changing stems or sess
   }
 });
 
-test("session stem swaps: distinct donors round-trip into Studio; impossible swaps refused honestly", async () => {
+test("session stem swaps: distinct donors round-trip into Studio; impossible swaps refused honestly", async (t) => {
+  let createdSessionId: string | null = null;
+  let createdRemixSessionId: string | null = null;
+  t.after(async () => {
+    if (createdSessionId !== null) await sessions.deleteSession(OWNER, createdSessionId).catch(() => undefined);
+    if (createdRemixSessionId !== null) {
+      const [remix] = await db.db.select({ projectId: schema.remixSessions.projectId })
+        .from(schema.remixSessions).where(eq(schema.remixSessions.id, createdRemixSessionId)).limit(1);
+      await db.db.delete(schema.remixSessions).where(eq(schema.remixSessions.id, createdRemixSessionId));
+      if (remix) await db.db.delete(schema.projects).where(eq(schema.projects.id, remix.projectId));
+    }
+  });
   // Give track B two real stem types so both can be replaced independently.
   const sourceB = sourceIdByTrackId.get(trackB.id)!;
   const [jobB] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceB)).limit(1);
@@ -2040,6 +2051,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   }
 
   const created = await sessions.createSession(OWNER, "Swap set");
+  createdSessionId = created.id;
   const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
   const sessionTrackB = detail.tracks[0].id;
 
@@ -2099,6 +2111,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   const swapHandoff = await sessions.sendSessionToStudio(OWNER, created.id, [sessionTrackB], [
     { sessionTrackId: sessionTrackB, stemMix: { drums: 0.37, vocals: 0.72 } },
   ]);
+  createdRemixSessionId = swapHandoff.remixSessionId;
   assert.equal(swapHandoff.preservedSwapCount, 2, "both saved live swaps are reported as carried into Studio");
   const swappedStudioTracks = await db.db.select().from(schema.remixTracks)
     .where(eq(schema.remixTracks.remixSessionId, swapHandoff.remixSessionId));
@@ -2941,15 +2954,29 @@ test("Studio reload routes and exports preserve both saved donors and clip edits
   await sessions.deleteSession(routeOwner, session.id);
 });
 
-test("session stem swap: a donor without the requested stem is refused", async () => {
+test("session stem swap: a donor without the requested stem is refused", async (t) => {
   const created = await sessions.createSession(OWNER, "Swap refusal");
   const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
-  // B now has drums (previous test) but no "other"; requesting other from donor A:
+  // Earlier acceptance cases add an "other" layer to donor A. Temporarily
+  // remove only that donor role so this remains a true donor-missing case.
+  const donorSourceId = sourceIdByTrackId.get(trackA.id)!;
+  const donorOtherStems = await db.db.select().from(schema.stemAssets)
+    .where(and(eq(schema.stemAssets.sourceAssetId, donorSourceId), eq(schema.stemAssets.stemType, "other")));
+  t.after(async () => {
+    for (const stem of donorOtherStems) {
+      await db.db.update(schema.stemAssets).set({ engine: stem.engine })
+        .where(eq(schema.stemAssets.id, stem.id));
+    }
+    await sessions.deleteSession(OWNER, created.id).catch(() => undefined);
+  });
+  if (donorOtherStems.length > 0) {
+    await db.db.update(schema.stemAssets).set({ engine: "passthrough-unseparated" })
+      .where(and(eq(schema.stemAssets.sourceAssetId, donorSourceId), eq(schema.stemAssets.stemType, "other")));
+  }
   await assert.rejects(
     () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: detail.tracks[0].id, stemType: "other", toTrackId: trackA.id, atSeconds: 0 }),
-    (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
+    (error: Error) => error instanceof sessions.StemSwapRefusedError && /donor track has no separated/i.test(error.message),
   );
-  await sessions.deleteSession(OWNER, created.id);
 });
 
 test("session: ownership isolation", async () => {
@@ -3346,12 +3373,53 @@ test("session: Studio handoff checks selected and live-donor audio files, keepin
   }
 });
 
-test("session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)", async () => {
+test("session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)", async (t) => {
   // trackA has a complete analysis (128.5 BPM, A minor). Give trackB one too.
+  const sourceA = sourceIdByTrackId.get(trackA.id)!;
   const sourceB = sourceIdByTrackId.get(trackB.id)!;
+  const [sourceAssetA] = await db.db.select().from(schema.sourceAssets)
+    .where(eq(schema.sourceAssets.id, sourceA)).limit(1);
+  assert.ok(sourceAssetA);
   const [sourceAssetB] = await db.db.select().from(schema.sourceAssets)
     .where(eq(schema.sourceAssets.id, sourceB)).limit(1);
   assert.ok(sourceAssetB);
+  const previousSourceAnalyses = await db.db.select().from(schema.sourceAnalyses)
+    .where(or(
+      eq(schema.sourceAnalyses.sourceAssetId, sourceA),
+      eq(schema.sourceAnalyses.sourceAssetId, sourceB),
+    ));
+  const previousSourceAnalysisA = previousSourceAnalyses.find((row) => row.sourceAssetId === sourceA);
+  const previousSourceAnalysisB = previousSourceAnalyses.find((row) => row.sourceAssetId === sourceB);
+  t.after(async () => {
+    await db.db.delete(schema.sourceAnalyses)
+      .where(or(
+        eq(schema.sourceAnalyses.sourceAssetId, sourceA),
+        eq(schema.sourceAnalyses.sourceAssetId, sourceB),
+      ));
+    if (previousSourceAnalysisA) await db.db.insert(schema.sourceAnalyses).values(previousSourceAnalysisA);
+    if (previousSourceAnalysisB) await db.db.insert(schema.sourceAnalyses).values(previousSourceAnalysisB);
+  });
+  await db.db.delete(schema.sourceAnalyses)
+    .where(or(
+      eq(schema.sourceAnalyses.sourceAssetId, sourceA),
+      eq(schema.sourceAnalyses.sourceAssetId, sourceB),
+    ));
+  await db.db.insert(schema.sourceAnalyses).values({
+    projectId: trackA.studioProjectId,
+    sourceAssetId: sourceA,
+    status: "complete",
+    stage: "complete",
+    analysisEngine: "arena-js-dsp",
+    analysisEngineVersion: DESKTOP_ANALYSIS_ENGINE_VERSION,
+    sourceChecksumSha256: sourceAssetA.checksumSha256,
+    idempotencyKey: `analysis-test-a:${sourceA}`,
+    bpm: 128.5,
+    bpmConfidence: 0.9,
+    musicalKey: "A minor",
+    keyConfidence: 0.9,
+    beatGrid: JSON.stringify([0, 500, 1_000, 1_500, 2_000]),
+    beatConfidence: 0.9,
+  });
   const trackBDetail = await service.getTrack(OWNER, trackB.id);
   const donorVocalStem = trackBDetail?.stems.find((stem) => stem.stemType === "vocals");
   assert.ok(donorVocalStem, "the donor's isolated vocal asset is available");
@@ -3410,7 +3478,7 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
         vocalAnalysisId: vocalAnalysisRow.id,
         phraseIndex: 0,
         startMs: 1_100,
-        endMs: 2_100,
+        endMs: 1_900,
         confidence: 0.7,
       },
       {
