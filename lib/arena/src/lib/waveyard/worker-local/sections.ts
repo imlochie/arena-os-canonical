@@ -351,6 +351,7 @@ export async function handleSectionAnalysisJob(
         beatGrid,
         stemActivity.vocalActivity?.pitchContinuityRuns ?? [],
         stemActivity.vocalActivity?.activityIntervals ?? [],
+        stemActivity.profiles,
       )))
       : candidates;
     const fingerprintedCandidates = formCandidates.map((candidate) => ({

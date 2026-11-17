@@ -89,3 +89,17 @@ current, checksum-bound events, but the route discarded them before planning.
 **How to apply:** Keep worker persistence checks and route-consumption checks
 paired in one database acceptance test. Verify that valid persisted evidence
 changes the plan, while stale engine versions remain unavailable.
+
+For semantic form recurrence, current isolated accompaniment activity may
+corroborate repeated vocal/source patterns, but no individual instrument can
+label a verse or chorus by itself. Keep vocal/source recurrence and arrangement
+context as separate evidence channels; incomplete stem profiles are unavailable,
+not silent.
+
+**Why:** Section analysis already loaded checksum-current per-stem levels for
+arrangement boundaries while the form model ignored them. Feeding the same
+verified profiles into recurrence closes that evidence gap without treating a
+repeating drum loop as song-form ground truth.
+
+**How to apply:** Use only source-bound profiles measured on the same saved beat
+grid, and retain the form model's existing abstention and ambiguity checks.

@@ -125,6 +125,40 @@ test("provenance-checked vocal continuity timing strengthens repeated vocal-flow
     "the same sub-threshold chroma similarity still abstains without vocal-timing evidence");
 });
 
+test("isolated accompaniment recurrence corroborates a repeated vocal hook with a varied melody", () => {
+  const verseOne = window(0, "a", -20);
+  const chorusOne = window(8, "c", -15);
+  const verseTwo = window(16, "a", -20);
+  const chorusTwo = window(24, "c", -15);
+  chorusTwo.vocal = [Math.sqrt(1 - 0.65 ** 2), 0, 0.65];
+  const activity = [0, 1, 0, -1, 0, 1, 0, -1];
+  for (const candidate of [verseOne, verseTwo]) {
+    candidate.stemActivity = { drums: activity, bass: activity.map((value) => value * 0.8) };
+  }
+  for (const candidate of [chorusOne, chorusTwo]) {
+    candidate.stemActivity = { drums: activity, bass: activity.map((value) => value * 0.8) };
+  }
+  const evidence = [
+    verseOne, chorusOne, verseTwo, chorusTwo,
+    ...[4, 12, 20, 28].map(startBar => ({ ...window(startBar, "a"), vocalCoverage: 0 })),
+  ];
+
+  assert.deepEqual(inferFormFromWindows(evidence).map(({ startBar, label }) => [startBar, label]), [
+    [0, "verse"], [8, "chorus"], [16, "verse"], [24, "chorus"],
+  ]);
+  assert.deepEqual(inferFormFromWindows(evidence.map(({ stemActivity: _activity, ...candidate }) => candidate)), [],
+    "accompaniment recurrence is useful evidence, not a substitute for recurrent vocal/source evidence");
+});
+
+test("a repeated drum loop alone cannot create verse or chorus labels", () => {
+  const evidence = arrangement().map((candidate) => ({
+    ...candidate,
+    vocal: [1, 0, 0],
+    stemActivity: { drums: [0, 1, 0, -1, 0, 1, 0, -1] },
+  }));
+  assert.deepEqual(inferFormFromWindows(evidence), []);
+});
+
 test("invalid/insufficient audio cannot produce form observations", () => {
   assert.deepEqual(measureFormWindows(new Float32Array(), new Float32Array(), []), []);
   assert.deepEqual(measureFormWindows(new Float32Array(100), new Float32Array(100), [0, 500, 400]), []);
@@ -153,6 +187,27 @@ test("beat-relative vocal pitch-continuity runs are added as timing evidence", (
     { startMs: 400, endMs: 800, confidence: 0.8 },
   ]), measureFormWindows(audio, audio, beatGrid),
   "invalid optional timing preserves the verified PCM fallback");
+});
+
+test("form windows carry only valid isolated accompaniment profiles into the recurrence model", () => {
+  const audio = Float32Array.from({ length: ANALYSIS_PCM_RATE * 41 }, (_, index) =>
+    0.3 * Math.sin(2 * Math.PI * 110 * index / ANALYSIS_PCM_RATE));
+  const beatGrid = Array.from({ length: 20 * 4 + 1 }, (_, index) => index * 500);
+  const profiles = [
+    { stemType: "drums", rmsDbByBar: Array.from({ length: 20 }, (_, bar) => -18 + Math.sin(bar / 2) * 3) },
+    { stemType: "bass", rmsDbByBar: Array.from({ length: 20 }, (_, bar) => -22 + Math.cos(bar / 3) * 2) },
+    { stemType: "vocals", rmsDbByBar: Array.from({ length: 20 }, () => -15) },
+    { stemType: "other", rmsDbByBar: [null, ...Array.from({ length: 19 }, () => -20)] },
+  ];
+  const windows = measureFormWindows(audio, audio, beatGrid, [], [], profiles);
+
+  assert.deepEqual(windows[0]?.stemActivity, {
+    drums: profiles[0]!.rmsDbByBar.slice(0, 8),
+    bass: profiles[1]!.rmsDbByBar.slice(0, 8),
+  });
+  assert.ok(windows.every((candidate) => !("vocals" in (candidate.stemActivity ?? {}))
+    && !("other" in (candidate.stemActivity ?? {}))),
+  "vocal PCM is already represented independently; an incomplete stem profile is not repaired or counted");
 });
 
 test("inferred roles keep section IDs, gaps and fingerprint ranges stable through persistence", () => {

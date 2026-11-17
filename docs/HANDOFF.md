@@ -1,6 +1,48 @@
 # Arena handoff — read this first
 
-## Latest increment: hybrid matching uses evidence from the stems it keeps
+## Latest increment: separated accompaniment now informs form recurrence
+
+The persistent section-analysis worker already loaded checksum-current isolated
+bass, drums and other-stem activity to find arrangement changes, but verse/chorus
+recurrence compared only source and vocal pitch features. It now passes those
+verified per-bar RMS profiles into the existing beat-synchronous eight-bar form
+windows. Recurrence gains a small accompaniment-shape contribution when the same
+isolated role is measured in both windows. Vocal/source evidence and the existing
+alternation, energy and ambiguity checks still govern form labels; a repeated drum
+loop alone cannot create a verse or chorus. Missing, incomplete, or flat local
+stem profiles provide no recurrence evidence, and vocal activity is not double
+counted as an accompaniment stem.
+
+The section-analysis engine is now `1.13.0`, so old persisted labels are not
+mistaken for results from the expanded evidence model; current section analysis
+must be rerun before this signal participates in planning.
+
+This follows a limited open-source review, not copied code or a new dependency.
+Librosa's recurrence matrix uses nearest-neighbor feature similarity while
+excluding temporally adjacent frames, and its recurrence-to-lag transform exposes
+repeated diagonal structures; this supports comparing separated, time-distant
+arrangement windows rather than treating the full mix as one feature. See
+[`librosa.segment`](https://github.com/librosa/librosa/blob/main/librosa/segment.py).
+WhisperX documents that raw ASR segment timestamps may be several seconds off
+and uses wav2vec2 forced alignment for word-level timing. Waveyard's current
+transcript utilities only consume timed text and annotate it; there is no local
+ASR/forced-alignment producer in this workflow, so they are not yet lyric
+evidence for mix selection. See
+[`WhisperX`](https://github.com/m-bain/whisperX).
+
+**Verification:** The focused form suite passed 13 tests, and persisted section
+acceptance passed 5 tests, including a varied
+chorus melody corroborated by repeated isolated bass/drum activity and a negative
+case where a repeated drum loop alone still abstains. This changes existing
+section inference without a schema migration or audio-model download. No
+full-song listening evaluation or new real-track prediction capture was run;
+the semantic improvement remains unverified against human annotations.
+
+**Still open:** Local ASR and forced word alignment are absent, and vocal pairing
+still uses whole-mix onset rhythm/phase rather than isolated-vocal phrase timing.
+Real-song section accuracy and listenable mashup quality remain unproven.
+
+## Previous increment: hybrid matching uses evidence from the stems it keeps
 
 Hybrid passage matching previously used the donor's full-mix chroma as a hard
 gate, even though the hybrid discards those donor instruments. Vocal passages
