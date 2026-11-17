@@ -9,6 +9,7 @@
 - [Waveyard real-audio test runner](waveyard-real-audio-runner.md) — use resolver-aware TypeScript loading and an absolute test path from pnpm's scripts workspace.
 - [Waveyard natural-tempo control](waveyard-natural-tempo-control.md) — the Stronger/All Star demo pair sounded tempo-stable at native speed; use it as a positive control, not proof of tempo correction.
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playback without a second engine; merge changed stem keys and keep master output volume device-local.
+- [Waveyard cross-stem timing](waveyard-cross-stem-timing.md) — same-role attacks may authorize phase correction; unlike stem roles are context, not alignment targets.
 - [Waveyard private device sync](waveyard-private-device-sync.md) — prefer QR pairing and encrypted laptop-hosted sync; keep audio and library files private and avoid paid-cloud dependency.
 - [Waveyard live-swap recovery](waveyard-live-swap-recovery.md) — keep the last audible layer playing while retaining the failed donor choice for an explicit retry.
 - [Waveyard local phrase alignment](waveyard-live-section-confidence.md) — gate confidence per active/candidate passage; weak unrelated sections must not disable a whole track, and weak BPM never authorizes stretch.
