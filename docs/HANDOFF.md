@@ -1,18 +1,44 @@
 # Arena handoff — read this first
 
+## Latest increment: replacement planning stays source-correct through export
+
+The mashup route now plans against retained bed stems on the bed's own source
+clock; donor PCM is kept separate until the planner places it. Bed and donor
+separation records are bound to the current source checksum, stem reads verify
+their own checksums and stereo PCM format, and save reuses the exact donor
+assets that were resolved before planning rather than re-querying a potentially
+different row. Saved vocal clips carry their exact local timing maps, so export
+cannot silently revert those clips to a BPM-only transform.
+
+Key sync is enabled only when both source and target keys are trusted and the
+planner actually chose a non-zero pitch move. This prevents Studio export from
+recomputing a different key decision (notably an unwanted shift for same/relative
+keys). Plans also disclose when a vocal clip start is not on a measured
+retained-bed structural boundary; beat/phrase timing is not presented as
+verse/chorus understanding.
+
+**Evidence:** API typecheck and the complete synthetic mashup-route acceptance
+passed, including source-checksum rejection, replaced-drum attribution,
+retained bass/pads, save, reopen, and WAV export. This synthetic pass is not
+evidence of real-song section accuracy or pleasant audio. A run against the
+existing pinned September-vocal / Queen-instrumental WAVs stopped before render:
+the persisted section worker produced no `verse` and `chorus` pair for the
+Queen source, which its current real-song acceptance still requires. This is a
+real form-recognition gap, not a reason to loosen the acceptance or infer those
+roles from generic boundaries. No stems were regenerated.
+
 ## Latest increment: post-swap stem changes enter section analysis
 
-When the mashup API builds a bed from retained and replacement stems, the
-source-clock sum for the requested selection supplies tempo, beat-grid, onset
-and energy evidence. Per-stem activity boundaries are contributed only by
-retained bed components on that bed clock; donor stems remain in their own
-source clock until the planner chooses an entry and time-warp. Combining donor
-events with bed events before that map exists would manufacture alignment.
-These boundaries are structural-change candidates, not verse/chorus labels,
-and the source-clock sum is not the final rendered audio. The renderer’s
-existing stretch-component contract is unchanged. A combined instrumental file
-has no trustworthy per-stem roles, so it uses only evidence measured from its
-mix.
+When the mashup API replaces a bed role, planning tempo, beat and section
+evidence is recomputed from the retained bed stems alone. Donor stems are kept
+on their own source clock, evaluated separately, and placed only after the
+planner chooses the entry and time-warp. The earlier request-time sum that added
+donor sample zero to bed sample zero was not the final rendered mix; using it
+for bed timing could manufacture false alignment. Per-stem activity boundaries
+from retained bed components remain structural-change candidates, not
+verse/chorus labels. The renderer’s component-stretch contract is unchanged. A
+combined instrumental file has no trustworthy per-stem roles, so it uses only
+evidence measured from its mix.
 
 The session-to-Studio live-swap path now loads the donor’s full
 checksum-current `SessionTrackAnalysis`, rather than assigning the narrower
