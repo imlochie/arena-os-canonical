@@ -75,7 +75,7 @@ partition contains two songs, so its interval is descriptive only.
 | Separation | Waveyard separation routes, local worker and `stem_assets` persistence | Versioned stem IDs and source/separation association | The eight historical stem WAVs are present locally and hash-verified; their origin/persistence association is not re-proven by this offline benchmark |
 | Source analysis | `lib/arena/src/lib/waveyard/worker-local/analysis-engine.ts` and `worker-local/stem-analysis.ts` | BPM/key confidence, beat/downbeat grids, section fingerprints, local HarmonyEvents | Chord labels still lack independent accuracy references |
 | Evidence loading | `lib/arena/src/lib/waveyard/studio/mashup-sources.ts` verifies current checksums and engine versions; `chooseStemForHarmony` selects instrumental/other/piano/guitar evidence | Current source-mix or selected non-vocal-stem harmony timeline; isolated vocal pitch/activity | It loads one preferred harmony stem, not a bass/drums/other evidence fusion with conflict reporting |
-| Automatic pairing | `lib/arena/src/lib/waveyard/types/automatic-remix.ts` uses passage-level onset/rhythm, chroma, beat-phase and trusted tempo; the API loads current-version, source-checksum-bound source-mix HarmonyEvents | Cross-song section pair selection, clip transform intent, and advisory chord-progression agreement used to break otherwise-equal passage ties | Progression comparison is explicitly advisory because named-chord accuracy has no independent reference; donor vocal melody is not yet compared against the target bed |
+| Automatic pairing | `lib/arena/src/lib/waveyard/types/automatic-remix.ts` uses passage-level onset/rhythm, chroma, beat-phase and trusted tempo; the API loads current-version, source-checksum-bound source-mix HarmonyEvents, isolated vocal notes and the selected non-vocal-stem chord timeline | Cross-song section pair selection, clip transform intent, advisory source-mix chord-progression context, and whole-arrangement donor-vocal vs retained-bed chord assessment using the exact BPM-derived source span | The initial passage gate still compares whole-source mix rhythm/chroma, although the donor instrumental is discarded; chord accuracy and perceptual quality remain unvalidated against references and listening |
 | Manual mashup planning | `planMashup` and `scoreVocalChordToneFit` in `lib/arena/src/lib/waveyard/studio/mashup.ts` | Section/entry ranking, trusted tempo/key transforms, optional placed-vocal vs bed-chord ranking cue | Chord-tone fit is a ranking cue when coverage exists, not a calibrated dissonance or harmonic-change acceptance gate |
 | Persistence and editing | `projects/[id]/automatic-remixes/route.ts`, remix session/track/clip records, and `StudioCore.tsx` | Persisted tracks, clips, provenance and user edits | No persisted post-render harmonic re-analysis or automatic rollback on a musical clash |
 | Rendering and playback | `renderMashupWithBus`/`renderMashup` in `studio/mashup.ts`, export workers/routes, and `SessionExperience.tsx` | Actual WSOLA/pitch-shifted PCM, mix bus, saved render and playback | Render quality and musical success require an actual listener; no listening acceptance is recorded |
@@ -93,10 +93,16 @@ rhythm, beat-phase and trusted tempo must support the pair. Successful evidence
 based plans and the renderer remain intact. The planner provenance version is
 now 5. Current source-mix chord timelines are compared over aligned section bins
 and affect passage tie-breaking only when enough named-chord coverage exists.
-They are labeled advisory because independent chord accuracy is unknown. The
-source analysis loader validates the existing harmony engine version and source
-checksum; no schema migration or detector-threshold change was needed. Donor
-vocal melody is still not compared against the target bed.
+They are labeled advisory because independent chord accuracy is unknown.
+Separately, the retained-vocal check compares isolated donor vocal notes with
+the anchor's checksum-current non-vocal-stem chord timeline across every planned
+section. Its time mapping uses the exact source span and linear BPM transform
+stored for playback/export; it refuses a section if that source span would cross
+the donor-section boundary. This verifies evidence/audio timing consistency, not
+chord-detector accuracy or perceptual fit. The source analysis loader validates
+the existing harmony engine version and source checksum; no schema migration or
+detector-threshold change was needed. Initial passage eligibility still relies
+on whole-mix rhythm/chroma, a separate role-specific gap.
 
 ## Production use path and evidence boundary
 

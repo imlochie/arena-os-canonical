@@ -3,10 +3,7 @@ import {
   isCurrentDesktopAnalysis,
 } from "../types/analysis-provenance";
 import { trustedAnalysisBpmFromBeatGrid } from "../types/analysis-confidence";
-import {
-  MAX_AUTOMATIC_TEMPO_RATIO,
-  MIN_AUTOMATIC_TEMPO_RATIO,
-} from "../types/tempo-adaptation";
+import { automaticTempoTransform } from "../types/tempo-adaptation";
 import {
   createPersistedClipTempoMap,
   donorClipTempoMap,
@@ -96,15 +93,12 @@ export function automaticRemixTempoMap(
   });
   if (sourceBpm === null) return { ok: false, reason: "Source BPM or trusted beat-grid evidence is insufficient for tempo sync." };
 
-  // Playback rate is target/source. A WSOLA map records output/source duration,
-  // so its slope is the inverse: source/target.
-  const baseStretchRatio = sourceBpm / input.sessionTempoBpm;
-  if (!Number.isFinite(baseStretchRatio)
-    || baseStretchRatio < MIN_AUTOMATIC_TEMPO_RATIO
-    || baseStretchRatio > MAX_AUTOMATIC_TEMPO_RATIO) {
+  const transform = automaticTempoTransform(sourceBpm, input.sessionTempoBpm);
+  if (!transform) {
     return { ok: false, reason: "The requested tempo ratio is outside the supported range." };
   }
-  const sourceSpanMs = clip.durationMs / baseStretchRatio;
+  const { baseStretchRatio } = transform;
+  const sourceSpanMs = clip.durationMs * transform.sourcePerTimelineRatio;
   const stemDurationMs = stem.durationSeconds * 1_000;
   if (!Number.isFinite(sourceSpanMs) || sourceSpanMs <= 0
     || clip.sourceOffsetMs + sourceSpanMs > stemDurationMs + 1) {

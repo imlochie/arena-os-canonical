@@ -30,6 +30,10 @@ import {
 } from "./analysis-confidence";
 import { measureStemGroove } from "./stem-groove";
 import {
+  automaticTempoSourceSpanMs,
+  automaticTempoTransform,
+} from "./tempo-adaptation";
+import {
   decideDonorDrumBed,
   type DrumBedDecision,
   type DrumPlacement,
@@ -301,27 +305,42 @@ function progressionContext(
     && source.analysis?.sourceChecksumSha256 === source.checksumSha256
     ? source.harmony.events : null;
   const anchorEvents = validFor(anchor)?.filter((event) => event.endMs > anchorSection.startMs && event.startMs < anchorSection.endMs) ?? null;
-  const donorEvents = validFor(donor)?.filter((event) => event.endMs > donorSection.startMs && event.startMs < donorSection.endMs) ?? null;
+  const durationA = anchorSection.endMs - anchorSection.startMs;
+  const donorBpm = trustedBpm(donor);
+  const anchorBpm = trustedBpm(anchor);
+  const donorSourceSpan = donorBpm !== null && anchorBpm !== null
+    ? automaticTempoSourceSpanMs(durationA, donorBpm, anchorBpm)
+    : null;
+  const donorSourceEnd = donorSourceSpan === null ? null : donorSection.startMs + donorSourceSpan;
+  const donorEvents = donorSourceEnd === null ? null
+    : validFor(donor)?.filter((event) => event.endMs > donorSection.startMs && event.startMs < donorSourceEnd) ?? null;
+  if (donorSourceEnd !== null && donorSourceEnd > donorSection.endMs + 1) return {
+    status: "unavailable" as const,
+    similarity: null,
+    detail: "The donor chord timeline does not cover the exact source window used by the tempo-synced clip.",
+  };
   if (!anchorEvents?.length || !donorEvents?.length) return {
     status: "unavailable" as const,
     similarity: null,
-    detail: "Current checksum-bound source-mix chord timelines are unavailable for one or both sections.",
+    detail: donorSourceSpan === null
+      ? "Trusted source and target BPM evidence is unavailable for mapping chord context onto the rendered clip."
+      : "Current checksum-bound source-mix chord timelines are unavailable for one or both rendered windows.",
   };
 
-  const durationA = anchorSection.endMs - anchorSection.startMs;
-  const durationB = donorSection.endMs - donorSection.startMs;
+  if (donorSourceSpan === null) return {
+    status: "unavailable" as const,
+    similarity: null,
+    detail: "Trusted source and target BPM evidence is unavailable for mapping chord context onto the rendered clip.",
+  };
   const bins = 48;
   let compared = 0;
   let matching = 0;
   for (let index = 0; index < bins; index += 1) {
     const fraction = (index + 0.5) / bins;
-    const eventAt = (events: HarmonyEvent[], section: AutomaticRemixSection, duration: number) => events.find((event) => {
-      const start = Math.max(event.startMs, section.startMs);
-      const end = Math.min(event.endMs, section.endMs);
-      return end > start && fraction >= (start - section.startMs) / duration && fraction < (end - section.startMs) / duration;
-    });
-    const left = eventAt(anchorEvents, anchorSection, durationA);
-    const right = eventAt(donorEvents, donorSection, durationB);
+    const eventAt = (events: HarmonyEvent[], timestampMs: number) =>
+      events.find((event) => event.startMs <= timestampMs && event.endMs > timestampMs);
+    const left = eventAt(anchorEvents, anchorSection.startMs + fraction * durationA);
+    const right = eventAt(donorEvents, donorSection.startMs + fraction * donorSourceSpan);
     if (!left?.root || left.quality === "unknown" || left.confidence < HARMONY_TEMPLATE_MIN_MARGIN
       || !right?.root || right.quality === "unknown" || right.confidence < HARMONY_TEMPLATE_MIN_MARGIN) continue;
     compared += 1;
@@ -390,16 +409,33 @@ export function assessRetainedHybridHarmony(input: {
   }
   const anchorDuration = anchorSection.endMs - anchorSection.startMs;
   const donorDuration = donorSection.endMs - donorSection.startMs;
-  if (anchorDuration <= 0 || donorDuration <= 0) {
-    return { status: "unavailable", reason: "The compared sections have no duration." };
+  const donorBpm = trustedBpm(donor);
+  const anchorBpm = trustedBpm(anchor);
+  const transform = donorBpm !== null && anchorBpm !== null
+    ? automaticTempoTransform(donorBpm, anchorBpm)
+    : null;
+  const donorSourceSpan = transform
+    ? anchorDuration * transform.sourcePerTimelineRatio
+    : null;
+  if (anchorDuration <= 0 || donorDuration <= 0 || donorSourceSpan === null || !transform) {
+    return {
+      status: "unavailable",
+      reason: donorSourceSpan === null
+        ? "Trusted source and target BPM evidence is unavailable for the actual vocal placement."
+        : "The compared sections have no duration.",
+    };
   }
-  const stretchRatio = anchorDuration / donorDuration;
+  if (donorSourceSpan > donorDuration + 1) {
+    return { status: "unavailable", reason: "The donor section does not contain the exact source span used by the tempo-synced clip." };
+  }
+  const donorSourceEnd = donorSection.startMs + donorSourceSpan;
+  const stretchRatio = transform.baseStretchRatio;
   const bedChords = bedChordsFromHarmonyEvents(anchor.bedHarmony.events);
   const placed: StemHarmonyNote[] = donor.vocalNotes
-    .filter((note) => note.startMs < donorSection.endMs && note.endMs > donorSection.startMs)
+    .filter((note) => note.startMs < donorSourceEnd && note.endMs > donorSection.startMs)
     .map((note) => {
       const from = Math.max(note.startMs, donorSection.startMs);
-      const to = Math.min(note.endMs, donorSection.endMs);
+      const to = Math.min(note.endMs, donorSourceEnd);
       return {
         startMs: Math.round(anchorSection.startMs + (from - donorSection.startMs) * stretchRatio),
         endMs: Math.round(anchorSection.startMs + (to - donorSection.startMs) * stretchRatio),
@@ -503,18 +539,37 @@ export function assessWholeHybridArrangement(input: {
     return { status: "unavailable", reason: `No isolated vocal notes are available for ${donor.originalFilename}.` };
   }
   const anchorSections = usableSections(anchor);
-  const donorSections = usableSections(donor);
+  const anchorBpm = trustedBpm(anchor);
+  const donorBpm = trustedBpm(donor);
   const sectionInputs: ArrangementSectionAssessmentInput[] = [];
   for (const [anchorSectionId, donorSection] of counterparts) {
     const anchorSection = anchorSections.find((section) => section.id === anchorSectionId);
     if (!anchorSection || !donorSection) continue;
+    const anchorDurationMs = anchorSection.endMs - anchorSection.startMs;
+    const donorDurationMs = donorSection.endMs - donorSection.startMs;
+    const transform = anchorBpm !== null && donorBpm !== null
+      ? automaticTempoTransform(donorBpm, anchorBpm)
+      : null;
+    const donorSourceSpan = transform
+      ? anchorDurationMs * transform.sourcePerTimelineRatio
+      : null;
+    if (donorSourceSpan === null || !transform || donorSourceSpan > donorDurationMs + 1) {
+      return {
+        status: "unavailable",
+        reason: "A selected donor passage does not contain the exact source span required by its tempo-synced clip.",
+      };
+    }
     sectionInputs.push({
       anchorSectionId,
       donorSectionId: donorSection.id,
       anchorStartMs: anchorSection.startMs,
       anchorEndMs: anchorSection.endMs,
       donorStartMs: donorSection.startMs,
-      donorEndMs: donorSection.endMs,
+      // The harmony evaluator receives the same donor time range as the
+      // persisted tempo map. Mapping the entire labeled section can shift
+      // sustained vocal notes onto different bed chords than the rendered clip.
+      donorEndMs: donorSection.startMs + donorSourceSpan,
+      timelinePerSourceRatio: transform.baseStretchRatio,
       notes: donor.vocalNotes,
       pitchShiftSemitones: semitones,
     });
@@ -592,8 +647,11 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
         // The persisted tempo map reads anchor-duration × (anchor BPM / donor
         // BPM) from the donor section. Do not let that source window cross the
         // selected section boundary and silently import the next musical part.
-        const exactTempoRatio = anchorBpm / candidateBpm;
-        const requiredDonorSpanMs = (anchorSection.endMs - anchorSection.startMs) * exactTempoRatio;
+        const requiredDonorSpanMs = automaticTempoSourceSpanMs(
+          anchorSection.endMs - anchorSection.startMs,
+          candidateBpm,
+          anchorBpm,
+        ) ?? Number.POSITIVE_INFINITY;
         const availableDonorSpanMs = donorSection.endMs - donorSection.startMs;
         if (requiredDonorSpanMs > availableDonorSpanMs + 1) {
           comparison = {

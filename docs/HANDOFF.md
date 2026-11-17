@@ -1,5 +1,33 @@
 # Arena handoff — read this first
 
+## Latest increment: harmony evaluation now follows the rendered tempo map
+
+The automatic hybrid's retained-vocal harmony checks previously mapped every
+note across the full labeled donor section, even when the saved WSOLA clip read a
+shorter BPM-derived source window. That could judge a vocal note against a bed
+chord at a different time from the rendered mix.
+
+The planner, advisory chord-progression comparison, retained-hybrid check and
+persisted tempo-map builder now use one shared bounded BPM transform. Harmony
+evaluation clips donor notes to the exact source span the audio clip will read,
+then places them on the anchor timeline with the same linear ratio. It also
+withholds judgment if that span crosses the selected donor-section boundary.
+
+**Verification:** The automatic-remix, passage-compatibility, harmonic-fit and
+persisted tempo-map suites passed 62 tests. The API-server TypeScript check and
+`git diff --check` passed. The automatic-remixes acceptance route passed against
+its isolated PostgreSQL fixture with FFmpeg explicitly configured; the separate
+drum-route test was skipped when run without that environment setting. The
+passing route exercises synthetic audio, not a real-song render. No real audio
+render or listening evaluation was performed, so this establishes timing
+consistency, not mix quality.
+
+One important gap remains: cross-song passage eligibility still compares
+source-mix rhythm/chroma fingerprints, even though a hybrid discards the donor's
+instrumental. The retained-vocal chord check now judges the material used, but
+the initial passage gate still needs role-specific evidence before Waveyard can
+claim that all of its matching evidence describes the resulting mashup.
+
 ## Latest increment: automatic hybrid applies bounded, section-contained tempo adaptation
 
 Automatic passage compatibility no longer treats every BPM difference over

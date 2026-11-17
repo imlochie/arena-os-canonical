@@ -1,6 +1,11 @@
 import { describe, it } from "node:test";
 import { expect } from "../../test-shim";
-import { AUTOMATIC_REMIX_ENGINE, buildAutomaticRemixPlan, type AutomaticRemixSource } from "../index";
+import {
+  AUTOMATIC_REMIX_ENGINE,
+  assessWholeHybridArrangement,
+  buildAutomaticRemixPlan,
+  type AutomaticRemixSource,
+} from "../index";
 
 type SourceOverrides = Omit<Partial<AutomaticRemixSource>, "analysis"> & {
   analysis?: Partial<NonNullable<AutomaticRemixSource["analysis"]>> | null;
@@ -266,6 +271,88 @@ describe("retained-stem harmonic selection", () => {
     midiNote: [60, 64, 67][index % 3]!,
     velocity: 100,
   }));
+
+  it("judges the whole hybrid at the same BPM-mapped times the saved clips will play", () => {
+    const anchor = source({
+      id: "tempo-anchor",
+      analysis: { bpm: 120, bpmConfidence: 0.9 },
+      sections: [{ id: "anchor-passage", sectionIndex: 0, startMs: 0, endMs: 8_000 }],
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony",
+        analysisEngineVersion: "1.0.0",
+        stemAssetId: "tempo-anchor-other",
+        stemType: "other",
+        stemChecksumSha256: "tempo-anchor-other-checksum",
+        sourceChecksumSha256: "tempo-anchor-checksum",
+        events: bedChords(0),
+      },
+    });
+    const donor = source({
+      id: "tempo-donor",
+      analysis: {
+        bpm: 100,
+        bpmConfidence: 0.9,
+        beatGridMs: Array.from({ length: 33 }, (_, index) => index * 600),
+      },
+      sections: [{ id: "donor-passage", sectionIndex: 0, startMs: 0, endMs: 10_000 }],
+      vocalNotes: [{ startMs: 4_800, endMs: 7_200, midiNote: 60, velocity: 100 }],
+    });
+
+    const result = assessWholeHybridArrangement({
+      anchor,
+      donor,
+      counterparts: new Map([["anchor-passage", donor.sections[0]!]]),
+    });
+
+    expect(result.status).toBe("measured");
+    if (result.status === "measured") {
+      const section = result.harmony.sections[0];
+      expect(section?.status).toBe("measured");
+      if (section?.status !== "measured") return;
+      // 8,000 ms at 120 BPM consumes 9,600 ms at 100 BPM. The saved WSOLA
+      // map therefore places this note at 4,000 ms, not at 3,840 ms (the
+      // incorrect whole-section 8,000/10,000 mapping).
+      expect(section.stretchRatio).toBe(8_000 / 9_600);
+      expect(section.assessment.relations[0]?.startMs).toBe(4_000);
+    }
+  });
+
+  it("does not judge a whole hybrid using donor audio beyond the selected section", () => {
+    const anchor = source({
+      id: "short-anchor",
+      analysis: { bpm: 120, bpmConfidence: 0.9 },
+      sections: [{ id: "anchor-passage", sectionIndex: 0, startMs: 0, endMs: 8_000 }],
+      bedHarmony: {
+        analysisEngine: "arena-js-stem-harmony",
+        analysisEngineVersion: "1.0.0",
+        stemAssetId: "short-anchor-other",
+        stemType: "other",
+        stemChecksumSha256: "short-anchor-other-checksum",
+        sourceChecksumSha256: "short-anchor-checksum",
+        events: bedChords(0),
+      },
+    });
+    const donor = source({
+      id: "short-donor",
+      analysis: {
+        bpm: 100,
+        bpmConfidence: 0.9,
+        beatGridMs: Array.from({ length: 33 }, (_, index) => index * 600),
+      },
+      sections: [{ id: "donor-passage", sectionIndex: 0, startMs: 0, endMs: 9_500 }],
+      vocalNotes: arpeggio,
+    });
+
+    const result = assessWholeHybridArrangement({
+      anchor,
+      donor,
+      counterparts: new Map([["anchor-passage", donor.sections[0]!]]),
+    });
+
+    expect(result).toMatchObject({ status: "unavailable" });
+    if (result.status === "unavailable")
+      expect(result.reason).toContain("exact source span required by its tempo-synced clip");
+  });
 
   it("prefers the donor vocal that fits the retained bed, not the one with more passage matches", () => {
     // Anchor bed is C major. Donor "fits" is a C arpeggio; donor "clashes" sits a

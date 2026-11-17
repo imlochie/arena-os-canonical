@@ -371,6 +371,8 @@ export type ArrangementSectionAssessmentInput = {
   /** Donor span that is mapped onto it. */
   donorStartMs: number;
   donorEndMs: number;
+  /** Exact WSOLA output-time / source-time slope when the clip already has one. */
+  timelinePerSourceRatio?: number;
   /** Notes of this donor section, in the donor's own timeline. */
   notes: readonly StemHarmonyNote[];
   /** Semitones applied by the arrangement's authorized key shift. */
@@ -464,7 +466,20 @@ export function assessWholeArrangementHarmony(input: {
       });
       continue;
     }
-    const stretchRatio = proposed / span;
+    const stretchRatio = section.timelinePerSourceRatio ?? proposed / span;
+    if (!Number.isFinite(stretchRatio) || stretchRatio <= 0
+      || Math.abs(span * stretchRatio - proposed) > 1) {
+      unjudgedSections += 1;
+      results.push({
+        status: "unavailable",
+        anchorSectionId: section.anchorSectionId,
+        donorSectionId: section.donorSectionId,
+        anchorStartMs: section.anchorStartMs,
+        anchorEndMs: section.anchorEndMs,
+        reason: "The supplied timing transform does not map the donor source window onto the planned section.",
+      });
+      continue;
+    }
     // Place this section's notes on the anchor timeline exactly as the renderer
     // will, then judge them against the bed chords under each one.
     const placed: StemHarmonyNote[] = section.notes
