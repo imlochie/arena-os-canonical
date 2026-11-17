@@ -211,7 +211,7 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
       await storage.putFile(sourceKey, chordPath, "audio/wav");
       const [source] = await dbModule.db.insert(schema.sourceAssets).values({
         projectId: project.id, originalFilename: input.filename, mimeType: "audio/wav", storageKey: sourceKey,
-        checksumSha256: checksum, durationSeconds: 8, sampleRate: RATE, channels: 1,
+        checksumSha256: checksum, durationSeconds: 8, sampleRate: RATE, channels: 2,
         codec: "pcm_s16le", fileSizeBytes: chordBytes.length,
       }).returning();
       const [separation] = await dbModule.db.insert(schema.processingJobs).values({
@@ -225,7 +225,7 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
           projectId: project.id, sourceAssetId: source.id, separationJobId: separation.id, stemType,
           engine: "test", model: "test-local", modelVersion: "1", storageKey: key,
           checksumSha256: sha256(bytes),
-          durationSeconds: 8, sampleRate: RATE, channels: 1, codec: "pcm_s16le", format: "wav",
+          durationSeconds: 8, sampleRate: RATE, channels: 2, codec: "pcm_s16le", format: "wav",
           fileSizeBytes: bytes.length,
         }).returning())[0]!;
       };
@@ -236,7 +236,11 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
       await writeFile(drumPath, drumBytes);
       const drumStem = await makeStem("drums", drumBytes, drumPath);
       const otherStem = await makeStem("other", chordBytes, chordPath);
-      const beatGrid = JSON.stringify(Array.from({ length: 33 }, (_, index) => Math.round(index * (60_000 / input.bpm))));
+      const beatPeriodMs = 60_000 / input.bpm;
+      const beatGrid = JSON.stringify(Array.from(
+        { length: Math.floor(8_000 / beatPeriodMs) + 1 },
+        (_, index) => Math.round(index * beatPeriodMs),
+      ));
       const [sourceAnalysis] = await dbModule.db.insert(schema.sourceAnalyses).values({
         projectId: project.id, sourceAssetId: source.id, status: "complete", stage: "complete", attempts: 1,
         idempotencyKey: `analysis:${source.id}`, analysisEngine: "arena-js-dsp", analysisEngineVersion: "1.4.0",
@@ -330,7 +334,7 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
     // offbeats only, so its measured attacks fill positions the bed leaves
     // empty. That is the layer case: keeping both adds something.
     const bed = await addSource({ filename: "bed.wav", bpm: 120, drum: { phases: [0] } });
-    const donor = await addSource({ filename: "donor.wav", bpm: 120, drum: { phases: [0.5] } });
+    const donor = await addSource({ filename: "donor.wav", bpm: 119.98, drum: { phases: [0.5] } });
 
     const planOnce = async (constraints: Record<string, unknown>) => {
       const request = new Request(`http://localhost/api/waveyard/projects/${project.id}/automatic-remixes`, {
@@ -382,6 +386,40 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
     const drumTracks = (await savedTracks()).filter((track) => track.stemType === "drums").map((track) => track.stemAssetId);
     assert.deepEqual([...drumTracks].sort(), [bed.drumStem.id, donor.drumStem.id].sort(),
       "layering must produce two real drum tracks in the saved plan");
+    const createdSessions = await dbModule.db.select().from(schema.remixSessions)
+      .where(eq(schema.remixSessions.projectId, project.id));
+    const latestSession = createdSessions.sort((left, right) =>
+      (right.createdAt?.getTime() ?? 0) - (left.createdAt?.getTime() ?? 0))[0]!;
+    const createdVersions = await dbModule.db.select().from(schema.remixVersions)
+      .where(eq(schema.remixVersions.remixSessionId, latestSession.id));
+    const snapshot = JSON.parse(createdVersions.at(-1)!.snapshot) as {
+      tracks: Array<{ id: string; clips: Array<{ id: string; stemAssetId: string; tempoSyncEnabled: boolean }> }>;
+      mashupPlan?: {
+        donorTempoStemIds?: string[];
+        clipTimingMaps?: Array<{
+          clipId: string;
+          remixTrackId: string;
+          stemAssetId: string;
+          baseStretchRatio: number;
+        }>;
+      };
+    };
+    const tempoSyncedClips = snapshot.tracks.flatMap((track) =>
+      track.clips.filter((clip) => clip.tempoSyncEnabled).map((clip) => ({ track, clip })),
+    );
+    assert.ok(tempoSyncedClips.length > 0, "the 110-to-120 BPM donor has a real tempo transform");
+    assert.deepEqual(snapshot.mashupPlan?.donorTempoStemIds, [donor.drumStem.id],
+      "the saved version marks the transformed donor as requiring its exact map");
+    assert.equal(snapshot.mashupPlan?.clipTimingMaps?.length, tempoSyncedClips.length,
+      "every tempo-synced clip has a persisted preview/export map");
+    for (const { track, clip } of tempoSyncedClips) {
+      const map = snapshot.mashupPlan!.clipTimingMaps!.find((candidate) => candidate.clipId === clip.id);
+      assert.ok(map, `tempo-synced clip ${clip.id} has a saved map`);
+      assert.equal(map!.remixTrackId, track.id);
+      assert.equal(map!.stemAssetId, donor.drumStem.id);
+      assert.ok(Math.abs(map!.baseStretchRatio - 119.98 / 120) < 0.001,
+        "the donor's playback, reopened preview and export share the same source-to-output ratio");
+    }
 
     // Stale engine evidence must not be silently trusted: an analysis row from a
     // different engine measured something else and must stop the decision.

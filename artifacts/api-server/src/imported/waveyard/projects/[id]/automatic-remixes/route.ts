@@ -69,6 +69,14 @@ import {
 } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import { chooseStemForHarmony } from "@workspace/arena/lib/waveyard/stem-harmony-analysis";
 import { placedVocalNotes } from "@workspace/arena/lib/waveyard/types/stem-harmonic-adapter";
+import { automaticRemixTempoMap } from "@workspace/arena/lib/waveyard/studio/automatic-remix-tempo-map";
+
+class AutomaticRemixTimingMapError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AutomaticRemixTimingMapError";
+  }
+}
 
 function parseBeatGrid(value: string | null) {
   if (!value) return null;
@@ -709,6 +717,53 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         beatSnapEnabled: clip.beatSnapEnabled,
       })));
       const insertedClips = clips.length ? await tx.insert(remixClips).values(clips).returning() : [];
+      const clipTimingMaps = insertedClips.flatMap((clip) => {
+        if (!clip.tempoSyncEnabled) return [];
+        const remixTrack = tracks.find((track) => track.id === clip.remixTrackId);
+        const stem = stemById.get(clip.stemAssetId);
+        const source = stem ? sourceById.get(stem.sourceAssetId) : undefined;
+        const analysis = source ? analysisBySource.get(source.id) : undefined;
+        const mapped = stem && source ? automaticRemixTempoMap({
+          clip: {
+            id: clip.id,
+            remixTrackId: clip.remixTrackId,
+            stemAssetId: clip.stemAssetId,
+            sourceOffsetMs: clip.sourceOffsetMs,
+            timelineStartMs: clip.timelineStartMs,
+            durationMs: clip.durationMs,
+            tempoSyncEnabled: clip.tempoSyncEnabled,
+          },
+          stem: {
+            id: stem.id,
+            sourceAssetId: stem.sourceAssetId,
+            checksumSha256: stem.checksumSha256,
+            durationSeconds: stem.durationSeconds,
+            channels: stem.channels,
+            format: stem.format,
+          },
+          source: { id: source.id, checksumSha256: source.checksumSha256 },
+          analysis: analysis ? {
+            status: analysis.status,
+            analysisEngine: analysis.analysisEngine,
+            analysisEngineVersion: analysis.analysisEngineVersion,
+            sourceChecksumSha256: analysis.sourceChecksumSha256,
+            bpm: analysis.bpm,
+            bpmConfidence: analysis.bpmConfidence,
+          } : null,
+          sessionTempoBpm: plan.plan.tempoBpm,
+        }) : { ok: false as const, reason: "The synced clip no longer resolves to its source audio." };
+        if (!mapped.ok) {
+          const title = source?.originalFilename ?? "A donor source";
+          throw new AutomaticRemixTimingMapError(
+            `${title} was selected for tempo sync, but Waveyard could not create an exact saved preview/export timing map: ${mapped.reason}`,
+          );
+        }
+        if (!remixTrack || mapped.map.remixTrackId !== remixTrack.id) {
+          throw new AutomaticRemixTimingMapError("A saved timing map does not match its remix track.");
+        }
+        return [mapped.map];
+      });
+      const donorTempoStemIds = [...new Set(clipTimingMaps.map((map) => map.stemAssetId))];
       await tx.insert(automaticRemixGenerations).values({
         remixSessionId: remix.id,
         engine: plan.plan.provenance.engine,
@@ -728,6 +783,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         gridDivision: remix.gridDivision,
         snapEnabled: remix.snapEnabled,
         targetKey: remix.targetKey,
+        mashupPlan: {
+          engine: plan.plan.provenance.engine,
+          engineVersion: plan.plan.provenance.engineVersion,
+          variant: plan.plan.provenance.variant,
+          masterBpm: plan.plan.tempoBpm,
+          bedTempoStemIds: [],
+          donorTempoStemIds,
+          clipTimingMaps,
+        },
         tracks: tracks.map((track) => ({ ...track, clips: insertedClips.filter((clip) => clip.remixTrackId === track.id) })),
         automation: [],
       };
@@ -742,6 +806,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return Response.json({ remix: result.remix, version: result.version, plan: { notices: plan.plan.notices, provenance: plan.plan.provenance, compatibility: plan.plan.compatibility ?? null } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
+    if (error instanceof AutomaticRemixTimingMapError)
+      return Response.json({ error: error.message }, { status: 409 });
     console.error("automatic remix creation failed", error);
     return Response.json({ error: "Could not build an automatic arrangement." }, { status: 500 });
   }

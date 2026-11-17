@@ -247,7 +247,7 @@ export function ArrangementInspector({
       <label><input aria-label="Tempo sync" type="checkbox" checked={clip.tempoSyncEnabled} onChange={(event) => update((item) => ({ ...item, tempoSyncEnabled: event.target.checked }))} /> {clip.tempoSyncEnabled ? "Sync to remix BPM" : "Off"}</label>
       {usableBpm
         ? (clip.tempoSyncEnabled
-          ? <p>Source {sourceBpm!.toFixed(2)} BPM → remix {remix.tempoBpm.toFixed(2)} BPM · ratio {tempoRatio!.toFixed(4)}. {localTempoMapActive ? "Studio preview and WAV export use the same persisted paired-grid WSOLA timing; global tempo is not applied twice." : "Global tempo sync is export-only; arrangement preview uses original audio."}</p>
+          ? <p>Source {sourceBpm!.toFixed(2)} BPM → remix {remix.tempoBpm.toFixed(2)} BPM · ratio {tempoRatio!.toFixed(4)}. {localTempoMapActive ? "Studio preview and WAV export use the same persisted WSOLA timing map; global tempo is not applied twice." : "Global tempo sync is export-only; arrangement preview uses original audio."}</p>
           : <p>Tempo sync is off; preview and export use the clip's original timing.</p>)
         : <p>{localTempoMapActive
           ? "Source BPM is unavailable, but the checksum-verified paired-grid timing map remains usable for preview and export."

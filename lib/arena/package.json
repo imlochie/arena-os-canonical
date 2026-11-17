@@ -437,6 +437,8 @@
     "./lib/waveyard/studio/mashup.test": "./src/lib/waveyard/studio/mashup.test.ts",
     "./lib/waveyard/studio/local-tempo-map": "./src/lib/waveyard/studio/local-tempo-map.ts",
     "./lib/waveyard/studio/local-tempo-map.test": "./src/lib/waveyard/studio/local-tempo-map.test.ts",
+    "./lib/waveyard/studio/automatic-remix-tempo-map": "./src/lib/waveyard/studio/automatic-remix-tempo-map.ts",
+    "./lib/waveyard/studio/automatic-remix-tempo-map.test": "./src/lib/waveyard/studio/automatic-remix-tempo-map.test.ts",
     "./lib/waveyard/studio/composed-bed-sections": "./src/lib/waveyard/studio/composed-bed-sections.ts",
     "./lib/waveyard/studio/composition-evidence": "./src/lib/waveyard/studio/composition-evidence.ts",
     "./lib/waveyard/studio/composed-bed-sections.test": "./src/lib/waveyard/studio/composed-bed-sections.test.ts",
