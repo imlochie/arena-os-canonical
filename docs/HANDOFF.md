@@ -12,6 +12,12 @@ a qualifying automatic window still leaves the current swap untouched and
 offers manual timing plus snaps to that donor's measured activity, voiced-phrase
 candidate, or section-boundary evidence.
 
+One-tap vocal donor selection now applies the highest-ranked still-valid
+measured entry candidate and persists its projected donor offset. It no longer
+merely checks that a match exists and then starts the donor at zero. If the
+candidate becomes stale while analysis is loading, it is rejected and the
+compare/manual path remains available.
+
 Load failures are distinguished from a genuine no-match result. These comparisons
 remain signal-evidence matches, not lyric transcription or proof of verse/chorus
 meaning; phrase starts may omit unvoiced consonants and section labels can be
@@ -19,8 +25,12 @@ provisional.
 
 **Verification:** The PostgreSQL-backed library-route test passed and confirmed
 that ordinary track detail remains small while explicit evidence requests return
-the persisted analysis envelope. Library, API-server, and Arena UI typechecks
-passed. No real-song candidate was auditioned.
+the persisted analysis envelope. The full persisted Waveyard service suite passed
+54 tests (6 real-worker/real-audio cases skipped); its session-swap test confirms
+the selected donor offset survives the session response and Studio handoff.
+Library, API-server, and Arena UI typechecks passed, and all 63 session-logic
+tests passed, including direct selection of the highest-ranked valid measured
+window and rejection after a tempo change. No real-song candidate was auditioned.
 
 **Still open:** Whole-track evidence does not guarantee a useful vocal phrase,
 semantic section correctness, or listenable mix. Real-song vocal entry,

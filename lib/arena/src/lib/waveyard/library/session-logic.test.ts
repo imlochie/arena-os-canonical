@@ -14,6 +14,7 @@ import {
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
   liveStemCandidateDonorEntryMs,
+  liveStemAutomaticEntryChoice,
   liveStemSectionOffsetSeconds,
   liveStemGrooveCorrection,
   liveStemTempoStretchRatio,
@@ -367,6 +368,13 @@ test("live stem entry alternatives expose distinct measured windows and their ev
   ));
   assert.equal(alternatives[0]?.donorEntryMs, 3_000);
   const first = alternatives[0]!;
+  assert.equal(
+    liveStemAutomaticEntryChoice(alternatives, 5, 1),
+    first,
+    "direct vocal selection must use the strongest measured window instead of starting at donor time zero",
+  );
+  assert.equal(liveStemAutomaticEntryChoice(alternatives, 5, 1.1), null,
+    "direct selection rejects candidates after a tempo change");
   assert.equal(liveStemCandidateDonorEntryMs(first, 5.5, 1), 3_500,
     "applying a reviewed choice follows the live clock within the same window");
   assert.equal(liveStemCandidateDonorEntryMs(first, 6, 1), null, "the window end is exclusive");

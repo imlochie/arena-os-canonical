@@ -67,6 +67,7 @@ import {
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
   liveStemCandidateDonorEntryMs,
+  liveStemAutomaticEntryChoice,
   resolveLiveStemDonorOffset,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
@@ -5311,7 +5312,23 @@ export default function SessionExperience({
         onResolvePreviewAsset={resolveLiveSwapPreviewAsset}
         onPauseForEntryReview={() => decksRef.current[activeDeck]?.transport.pause()}
         onChoose={async (donorId, donorEntryOffsetMs = null, entryCandidate) => {
-          if (entryCandidate) {
+          let selectedEntryCandidate = entryCandidate;
+          if (stemType === "vocals" && donorEntryOffsetMs === null && selectedEntryCandidate === undefined) {
+            const review = await getEntryCandidates(donorId);
+            const topCandidate = review.candidates[0];
+            selectedEntryCandidate = (topCandidate
+              ? liveStemAutomaticEntryChoice(
+                review.candidates,
+                decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+                topCandidate.stretchRatio,
+              )
+              : null) ?? undefined;
+            if (!selectedEntryCandidate) {
+              setStatus("No source-verified vocal entry match is available at this playhead. The current vocal stays active; compare measured windows or choose a manual start.");
+              return false;
+            }
+          }
+          if (selectedEntryCandidate) {
             const candidateTempo = candidates.find((candidate) => candidate.id === donorId);
             const donorAnalysis = donors.find((item) => item.track.id === donorId)?.analysis
               ?? libraryDonors.find((item) => item.id === donorId)?.analysis
@@ -5328,7 +5345,7 @@ export default function SessionExperience({
               donorBeatConfidence: selectedDonorTempo.beatConfidence,
             }) ?? 1;
             const exactEntryMs = liveStemCandidateDonorEntryMs(
-              entryCandidate,
+              selectedEntryCandidate,
               decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
               ratio,
             );
@@ -5337,15 +5354,6 @@ export default function SessionExperience({
               return false;
             }
             donorEntryOffsetMs = exactEntryMs;
-          }
-          if (
-            stemType === "vocals"
-            && donorEntryOffsetMs === null
-            && entryCandidate === undefined
-            && (await getEntryCandidates(donorId)).candidates.length === 0
-          ) {
-            setStatus("No source-verified vocal entry match is available at this playhead. The current vocal stays active; compare a measured window or set a manual donor start.");
-            return false;
           }
           if (stemType === "vocals") {
             setRecipientVocalHealth({

@@ -898,6 +898,19 @@ export function liveStemCandidateDonorEntryMs(
   return Math.min(candidate.donorWindowEndMs - 1, Math.max(candidate.donorWindowStartMs, Math.round(donorMs)));
 }
 
+/** Pick the highest-ranked still-valid entry candidate for a direct live vocal swap. */
+export function liveStemAutomaticEntryChoice(
+  candidates: readonly LiveStemSectionAlignmentCandidate[],
+  recipientPositionSeconds: number,
+  currentStretchRatio: number,
+): LiveStemSectionAlignmentCandidate | null {
+  for (const candidate of candidates) {
+    const donorEntryMs = liveStemCandidateDonorEntryMs(candidate, recipientPositionSeconds, currentStretchRatio);
+    if (donorEntryMs !== null) return candidate;
+  }
+  return null;
+}
+
 export function liveStemSectionAlignment(
   recipientSections: readonly LiveStemSection[] | null | undefined,
   donorSections: readonly LiveStemSection[] | null | undefined,
