@@ -397,7 +397,8 @@ export default function LiveStemSwapPicker({
     }
     setPreviewing(false);
   }, []);
-  const stageDonorForEntry = useCallback((donorId: string) => {
+  const stageDonorForEntry = useCallback((donorId: string, preserveManualEntry = false) => {
+    const preservedManualEntryMs = manualEntryMs;
     stopEntryPreview();
     const sequence = ++previewResolveSequenceRef.current;
     setEntryDonorId(donorId);
@@ -408,7 +409,7 @@ export default function LiveStemSwapPicker({
     setEntryCandidatesLoading(stemType === "vocals");
     setEntryCandidatesError(null);
     setSelectedEntryIndex(0);
-    setManualEntryMs(0);
+    setManualEntryMs(preserveManualEntry ? preservedManualEntryMs : 0);
     setPreviewAssetUrl(null);
     setPreviewAudioReady(false);
     setPreviewAssetState("loading");
@@ -430,7 +431,9 @@ export default function LiveStemSwapPicker({
         setEntryVocalActivityStartsMs(review.vocalActivityStartsMs);
         setEntryVoicedPhraseStartsMs(review.voicedPhraseStartsMs);
         setEntrySections(review.sections);
-        setManualEntryMs(review.candidates[0]?.donorEntryMs ?? 0);
+        setManualEntryMs(preserveManualEntry
+          ? preservedManualEntryMs
+          : review.candidates[0]?.donorEntryMs ?? 0);
         setEntryCandidatesError(null);
       } else {
         setEntryCandidatesError("Detailed donor evidence could not be loaded. The saved swap is unchanged.");
@@ -446,7 +449,7 @@ export default function LiveStemSwapPicker({
         setPreviewMessage("No verified entry match is available. Choose a manual start or snap to measured donor evidence.");
       }
     });
-  }, [onGetEntryCandidates, onResolvePreviewAsset, stemType, stopEntryPreview]);
+  }, [manualEntryMs, onGetEntryCandidates, onResolvePreviewAsset, stemType, stopEntryPreview]);
 
   const selectedAlignmentCandidate = entryCandidates[selectedEntryIndex] ?? null;
   const stagedDonor = candidates.find((candidate) => candidate.id === entryDonorId) ?? null;
@@ -534,8 +537,8 @@ export default function LiveStemSwapPicker({
     previewAudioRef.current?.pause();
   }, []);
 
-  const refreshEntryCandidates = () => {
-    if (entryDonorId !== null) stageDonorForEntry(entryDonorId);
+  const refreshEntryCandidates = (preserveManualEntry = true) => {
+    if (entryDonorId !== null) stageDonorForEntry(entryDonorId, preserveManualEntry);
   };
 
   const previewSelectedEntry = async () => {
@@ -588,6 +591,64 @@ export default function LiveStemSwapPicker({
       }
       setPreviewing(true);
       setPreviewMessage("Donor-only audition at half volume; not a rendered mashup or part of the recording. Browser pitch/time processing may differ from the applied mix.");
+      previewStopTimerRef.current = setTimeout(stopEntryPreview, Math.max(250, previewDurationMs + 200));
+    } catch {
+      if (previewPlaySequenceRef.current === playSequence && previewAudioRef.current === audio) {
+        setPreviewing(false);
+        setPreviewMessage("The browser blocked playback. Press audition again to retry.");
+      }
+    }
+  };
+  const previewManualEntry = async () => {
+    const audio = previewAudioRef.current;
+    if (currentPlaying) {
+      setPreviewMessage("Pause the mix before auditioning a manual donor start.");
+      return;
+    }
+    if (!audio || previewAssetState !== "ready" || !previewAudioReady) {
+      setPreviewMessage("The donor audio is not ready to audition yet.");
+      return;
+    }
+    const donorStartMs = boundedManualEntryMs;
+    const ratio = entryStretchRatio;
+    const donorRemainingMs = Math.max(0, audio.duration * 1_000 - donorStartMs);
+    const previewSourceSpanMs = Math.min(12_000 * sessionPlaybackRate, donorRemainingMs * ratio);
+    if (!Number.isFinite(ratio) || ratio <= 0 || previewSourceSpanMs <= 0) {
+      setPreviewMessage("The manual donor start is outside the available audio.");
+      return;
+    }
+    stopEntryPreview();
+    const playSequence = previewPlaySequenceRef.current;
+    const media = audio as HTMLAudioElement & {
+      preservesPitch?: boolean;
+      webkitPreservesPitch?: boolean;
+      mozPreservesPitch?: boolean;
+    };
+    audio.currentTime = donorStartMs / 1_000;
+    audio.playbackRate = sessionPlaybackRate / ratio;
+    if ("preservesPitch" in media) media.preservesPitch = true;
+    if ("webkitPreservesPitch" in media) media.webkitPreservesPitch = true;
+    if ("mozPreservesPitch" in media) media.mozPreservesPitch = true;
+    const previewDurationMs = previewSourceSpanMs / sessionPlaybackRate;
+    const stopAtSeconds = donorStartMs / 1_000 + previewSourceSpanMs / ratio / 1_000;
+    audio.ontimeupdate = () => {
+      if (audio.currentTime >= stopAtSeconds) stopEntryPreview();
+    };
+    audio.onended = () => {
+      setPreviewing(false);
+      if (previewStopTimerRef.current !== null) clearTimeout(previewStopTimerRef.current);
+      previewStopTimerRef.current = null;
+    };
+    try {
+      await audio.play();
+      if (previewPlaySequenceRef.current !== playSequence || previewAudioRef.current !== audio) {
+        if (previewAudioRef.current !== audio) audio.pause();
+        return;
+      }
+      setPreviewing(true);
+      setPreviewMessage(
+        `Manual donor-only audition from ${formatEntryTime(donorStartMs)} at the current tempo ratio. This is not a rendered mashup.`,
+      );
       previewStopTimerRef.current = setTimeout(stopEntryPreview, Math.max(250, previewDurationMs + 200));
     } catch {
       if (previewPlaySequenceRef.current === playSequence && previewAudioRef.current === audio) {
@@ -709,6 +770,7 @@ export default function LiveStemSwapPicker({
       setPreviewMessage(`No measured ${description.toLowerCase()} is available.`);
       return;
     }
+    stopEntryPreview();
     setManualEntryMs(nearest);
     setPreviewMessage(`Snapped to ${description.toLowerCase()} at ${formatEntryTime(nearest)}.`);
   };
@@ -956,7 +1018,7 @@ export default function LiveStemSwapPicker({
                   <strong>Compare vocal entry windows</strong>
                   <small>{stagedDonor.title} · selection is staged; the current swap stays unchanged until applied</small>
                 </div>
-                <button type="button" onClick={refreshEntryCandidates} disabled={busy || pending || entryCandidatesLoading}>
+                <button type="button" onClick={() => refreshEntryCandidates()} disabled={busy || pending || entryCandidatesLoading}>
                   Refresh
                 </button>
               </header>
@@ -1047,7 +1109,7 @@ export default function LiveStemSwapPicker({
                   ) : (
                     <button
                       type="button"
-                      disabled={!previewAudioReady || selectedAlignmentIsStale || busy || pending}
+                      disabled={!previewAudioReady || selectedAlignmentIsStale || currentPlaying || busy || pending}
                       onClick={() => { void previewSelectedEntry(); }}
                       data-testid="button-preview-entry-candidate"
                     >
@@ -1065,19 +1127,32 @@ export default function LiveStemSwapPicker({
               {manualEntryLimitMs !== null ? (
                 <>
                   <label className="wy-vocal-entry-time">
-                    <span>Manual donor start · no feature match</span>
+                    <span>Manual donor start or override</span>
                     <input
                       type="range"
                       min={0}
                       max={manualEntryLimitMs}
                       step={50}
                       value={boundedManualEntryMs}
-                      onChange={(event) => setManualEntryMs(Number(event.target.value))}
+                      onChange={(event) => {
+                        stopEntryPreview();
+                        setManualEntryMs(Number(event.target.value));
+                      }}
                       aria-label={`Manual donor start time for ${stagedDonor.title}`}
                       data-testid="staged-donor-entry-slider"
                     />
                     <output>{formatEntryTime(boundedManualEntryMs)}</output>
                   </label>
+                  <div className="wy-vocal-entry-actions">
+                    <button
+                      type="button"
+                      disabled={!previewAudioReady || currentPlaying || busy || pending}
+                      onClick={() => { void previewManualEntry(); }}
+                      data-testid="button-preview-manual-vocal-entry"
+                    >
+                      Audition manual start
+                    </button>
+                  </div>
                   <div className="wy-vocal-entry-snaps" aria-label="Snap manual donor start to measured evidence">
                     <button type="button" disabled={entryVocalActivityStartsMs?.length === 0 || entryVocalActivityStartsMs === null}
                       onClick={() => snapStagedDonorEntry(entryVocalActivityStartsMs, "vocal activity")}>

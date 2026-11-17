@@ -23,6 +23,12 @@ remain signal-evidence matches, not lyric transcription or proof of verse/chorus
 meaning; phrase starts may omit unvoiced consonants and section labels can be
 provisional.
 
+When automatic matching has no result, a manually selected or snapped donor
+start can now be auditioned for a bounded interval at the chosen tempo ratio.
+The preview requires the mix to be paused and is explicitly donor-only; it is
+not presented as a finished mashup. Refreshing or pausing for comparison keeps
+the user's manually selected donor time instead of resetting it.
+
 **Verification:** The PostgreSQL-backed library-route test passed and confirmed
 that ordinary track detail remains small while explicit evidence requests return
 the persisted analysis envelope. The full persisted Waveyard service suite passed
