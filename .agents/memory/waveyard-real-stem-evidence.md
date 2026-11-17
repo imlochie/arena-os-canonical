@@ -53,3 +53,16 @@ also produced different fit measurements; neither alone identifies the cause.
 **How to apply:** Keep source, bed and recombined controls distinct, preserve
 failed candidates outside the runtime, and require real-recording evidence
 before integration. Unknown accuracy must remain unknown without chord labels.
+
+When consuming persisted analysis evidence, validate the version constant for
+that analysis contract, not merely the shared engine name or a generic stem
+version. A specialized local analysis can reuse the engine identifier while
+carrying its own version.
+
+**Why:** The automatic-remix drum loader compared worker output version 1.1.0
+against the generic stem-analysis version 1.0.0. The worker had persisted
+current, checksum-bound events, but the route discarded them before planning.
+
+**How to apply:** Keep worker persistence checks and route-consumption checks
+paired in one database acceptance test. Verify that valid persisted evidence
+changes the plan, while stale engine versions remain unavailable.
