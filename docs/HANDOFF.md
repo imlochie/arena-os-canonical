@@ -1,5 +1,46 @@
 # Arena handoff — read this first
 
+## Latest increment: automatic hybrid applies bounded, section-contained tempo adaptation
+
+Automatic passage compatibility no longer treats every BPM difference over
+8% as an unconditional conflict. With current trusted tempo and beat evidence,
+tempo is reported as either an unmodified match, a bounded adaptation, or a
+conflict outside the shared 0.5×–2× automatic WSOLA range. The existing plan
+already writes tempo-sync clips and the route persists the corresponding
+source-to-output map; both the planner and map builder now use the same bound.
+
+Before accepting a matched passage, the planner also checks that the donor
+section contains the complete source span required by the selected anchor
+duration and BPM ratio. If stretching would read into the next section, the
+compatibility report explains the required and available durations and the
+candidate is withheld. Rhythm, key-corrected chroma, beat-phase and complete
+bar evidence remain independent requirements; this change does not weaken
+those gates or infer verse/chorus labels.
+
+**Verification:** The automatic-remix, passage-compatibility, and persisted
+tempo-map suites passed 41 tests, including a 120→100 BPM adapted plan, an
+insufficient donor-section rejection, and the shared 2× renderer limit. The
+workspace composite-library TypeScript build, API-server typecheck, and
+`git diff --check` passed. No database route test, real audio render, or
+listening evaluation was performed.
+
+A read-only check of the frozen
+`full-track-ground-truth-predictions-capture.json` against the user's rough
+section-change times found 2/6 September boundaries and 4/12 Queen boundaries
+within ±2 seconds using one-to-one matching. The captured detector produced 34
+and 25 segments respectively, while those rough maps describe 7 and 13 broad
+sections. These are preliminary boundary diagnostics, not a validated accuracy
+score: the supplied timestamps are approximate, this is not a blind review,
+and the existing owner-review record remains blocked pending independent
+adjudication. It does show why rhythmic/energy segments must not be presented
+as verse/chorus understanding.
+
+The previous six-track phrase report still showed no fully eligible pairs:
+its strongest candidates also failed rhythm and harmonic checks. This
+increment removes a tempo-only blocker when the independent checks already
+support a passage; it does not establish listenable arbitrary-song mashups or
+improve the current real-track candidate set by itself.
+
 ## Latest increment: donor timing and harmony use the same authorized transforms
 
 The automatic hybrid planner can now recover a donor tempo from the current

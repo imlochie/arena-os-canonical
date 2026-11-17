@@ -214,6 +214,26 @@ test("compatibility requires separate rhythm, chroma, beat-phase, tempo and beat
   assert.deepEqual(result.missingEvidence, ["donor vocal activity", "anchor non-vocal stem activity", "downbeat confidence"]);
 });
 
+test("trusted tempo differences are adaptable only inside the renderer's bounded range", () => {
+  const compareAt = (donorBpm: number) => comparePassageCompatibility({
+    anchorSectionId: "anchor-section",
+    donorSectionId: "donor-section",
+    anchor: fingerprint("a"),
+    donor: fingerprint("b"),
+    anchorBpm: 120,
+    donorBpm,
+    anchorBeatConfidence: 0.9,
+    donorBeatConfidence: 0.9,
+    anchorKeyTrusted: false,
+    donorKeyTrusted: false,
+  });
+
+  assert.equal(compareAt(60).dimensions.tempo.status, "adapted", "2× tempo difference is at the supported limit");
+  assert.equal(compareAt(240).dimensions.tempo.status, "adapted", "0.5× tempo difference is at the supported limit");
+  assert.equal(compareAt(59).dimensions.tempo.status, "conflict", "a transform beyond the shared renderer limit is refused");
+  assert.equal(compareAt(120).dimensions.tempo.status, "match");
+});
+
 test("different whole-bar durations compare normalized rhythm shape without claiming an exact phrase match", () => {
   const rhythmShape = (beats: number) => Array.from({ length: beats * 4 }, (_, index) => {
     const position = index / (beats * 4);
@@ -397,5 +417,27 @@ test("automatic hybrid reports tempo conflicts instead of hiding the donor", () 
   if (result.ok) return;
   assert.equal(result.reason, "no_compatible_hybrid_source");
   assert.equal(result.compatibility?.pairs[0]?.dimensions.tempo.status, "conflict");
-  assert.match(result.compatibility?.pairs[0]?.dimensions.tempo.detail ?? "", /100\.0 BPM/);
+  assert.match(result.compatibility?.pairs[0]?.dimensions.tempo.detail ?? "", /requires 9\.60 s of donor audio/);
+});
+
+test("automatic hybrid applies a bounded tempo adaptation when the complete donor section fits", () => {
+  const anchor = source("a", "sha-a", [
+    { id: "a-0", sectionIndex: 0, startMs: 0, endMs: 8_000, startBeatIndex: 0, endBeatIndex: 16, label: "section", labelConfidence: 0, structuralConfidence: 0.9, passageFingerprint: fingerprint("sha-a", 0, 16) },
+  ]);
+  const donor = source("b", "sha-b", [
+    { id: "b-0", sectionIndex: 0, startMs: 0, endMs: 9_600, startBeatIndex: 0, endBeatIndex: 16, label: "section", labelConfidence: 0, structuralConfidence: 0.9, passageFingerprint: fingerprint("sha-b", 0, 16) },
+  ]);
+  if (donor.analysis) donor.analysis.bpm = 100;
+
+  const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  const pair = result.plan.compatibility?.pairs.find((candidate) => candidate.eligible);
+  assert.equal(pair?.dimensions.tempo.status, "adapted");
+  assert.equal(pair?.tempoRatio, 1.2);
+  const donorVocal = result.plan.tracks.find((track) => track.stemAssetId === "b-vocals");
+  assert.equal(donorVocal?.clips[0]?.tempoSyncEnabled, true);
+  assert.equal(donorVocal?.clips[0]?.durationMs, 8_000);
+  assert.equal(donorVocal?.clips[0]?.sourceOffsetMs, 0);
 });

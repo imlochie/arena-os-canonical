@@ -575,7 +575,7 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
     const choices = donorSections.flatMap((donorSection) => {
       const donorFingerprint = donorSection.passageFingerprint;
       if (!donorFingerprint || usedDonorSections.has(donorSection.id)) return [];
-      const comparison = comparePassageCompatibility({
+      let comparison = comparePassageCompatibility({
         anchorSectionId: anchorSection.id,
         donorSectionId: donorSection.id,
         anchor: anchorFingerprint,
@@ -588,6 +588,28 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
         donorKeyTrusted: donorKey !== null,
         expectedKeyShift,
       });
+      if (comparison.eligible) {
+        // The persisted tempo map reads anchor-duration × (anchor BPM / donor
+        // BPM) from the donor section. Do not let that source window cross the
+        // selected section boundary and silently import the next musical part.
+        const exactTempoRatio = anchorBpm / candidateBpm;
+        const requiredDonorSpanMs = (anchorSection.endMs - anchorSection.startMs) * exactTempoRatio;
+        const availableDonorSpanMs = donorSection.endMs - donorSection.startMs;
+        if (requiredDonorSpanMs > availableDonorSpanMs + 1) {
+          comparison = {
+            ...comparison,
+            eligible: false,
+            dimensions: {
+              ...comparison.dimensions,
+              tempo: {
+                status: "conflict",
+                similarity: null,
+                detail: `The selected donor section is ${(availableDonorSpanMs / 1000).toFixed(2)} s, but matching the anchor's ${((anchorSection.endMs - anchorSection.startMs) / 1000).toFixed(2)} s at this tempo requires ${(requiredDonorSpanMs / 1000).toFixed(2)} s of donor audio. The stretch would cross the section boundary.`,
+              },
+            },
+          };
+        }
+      }
       const progression = progressionContext(anchor, anchorSection, candidate, donorSection, comparison.transpositionSemitones ?? 0);
       comparisons.push({
         ...comparison,
@@ -630,7 +652,7 @@ function passageHybridCounterparts(anchor: AutomaticRemixSource, candidate: Auto
       missingEvidence,
       note: fingerprintCount === 0
         ? "No current passage fingerprints were found. Re-run structural analysis; older section rows are not silently upgraded."
-        : "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. A match is an audition candidate, not a listening-quality claim.",
+        : "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. Adapted tempo is bounded and must fit inside the selected donor section. A match is an audition candidate, not a listening-quality claim.",
     } satisfies AutomaticRemixCompatibilityReport,
   };
 }
@@ -822,7 +844,7 @@ function combinedCompatibilityReport(reports: AutomaticRemixCompatibilityReport[
     eligiblePairs: reports.reduce((total, report) => total + report.eligiblePairs, 0),
     pairs,
     missingEvidence: [...new Set(reports.flatMap((report) => report.missingEvidence))],
-    note: "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. A match is an audition candidate, not a listening-quality claim.",
+    note: "Passage matches require independent onset, chroma, beat-phase, and trusted tempo evidence. Adapted tempo is bounded and must fit inside the selected donor section. A match is an audition candidate, not a listening-quality claim.",
   };
 }
 

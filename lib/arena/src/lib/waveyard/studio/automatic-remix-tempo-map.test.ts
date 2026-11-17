@@ -77,6 +77,37 @@ test("automatic tempo sync persists the source-to-output transform for the saved
   }), true);
 });
 
+test("automatic tempo maps accept the shared 2× bound and reject larger stretches", () => {
+  const atLimit = automaticRemixTempoMap(fixture({
+    clip: { ...fixture().clip, sourceOffsetMs: 0 },
+    stem: { ...fixture().stem, durationSeconds: 12 },
+    analysis: {
+      status: "complete",
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: "1.4.0",
+      sourceChecksumSha256: "a".repeat(64),
+      bpm: 200,
+      bpmConfidence: 0.9,
+    },
+    sessionTempoBpm: 100,
+  }));
+  assert.equal(atLimit.ok, true);
+
+  const beyondLimit = automaticRemixTempoMap(fixture({
+    analysis: {
+      status: "complete",
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: "1.4.0",
+      sourceChecksumSha256: "a".repeat(64),
+      bpm: 201,
+      bpmConfidence: 0.9,
+    },
+    sessionTempoBpm: 100,
+  }));
+  assert.equal(beyondLimit.ok, false);
+  if (!beyondLimit.ok) assert.match(beyondLimit.reason, /outside the supported range/);
+});
+
 test("persisted tempo map uses a stable current beat grid when raw BPM confidence is weak", () => {
   const beatGridMs = Array.from({ length: 41 }, (_, index) => Math.round(index * 60_000 / 110));
   const result = automaticRemixTempoMap(fixture({

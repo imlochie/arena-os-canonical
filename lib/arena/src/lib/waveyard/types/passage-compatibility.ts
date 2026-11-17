@@ -1,3 +1,8 @@
+import {
+  MAX_AUTOMATIC_TEMPO_RATIO,
+  MIN_AUTOMATIC_TEMPO_RATIO,
+} from "./tempo-adaptation";
+
 export const PASSAGE_FINGERPRINT_ENGINE = "waveyard-passage-fingerprint";
 export { measureStemGroove, compareStemGrooves, proposeGrooveEntryShift } from "./stem-groove";
 export const PASSAGE_FINGERPRINT_ENGINE_VERSION = "2.2.0";
@@ -59,7 +64,7 @@ export type PassageFingerprint = {
 };
 
 export type PassageCompatibilityDimension = {
-  status: "match" | "conflict" | "unavailable" | "context";
+  status: "match" | "adapted" | "conflict" | "unavailable" | "context";
   similarity: number | null;
   detail: string;
 };
@@ -428,8 +433,14 @@ export function comparePassageCompatibility(input: {
     && input.anchorBeatConfidence >= 0.5 && input.donorBeatConfidence >= 0.5;
   const tempo = !bpmEvidenceAvailable
     ? dimension("unavailable", null, "Trusted BPM and beat-confidence evidence is required for both tracks.")
-    : dimension(tempoRatio >= 0.92 && tempoRatio <= 1.08 ? "match" : "conflict", null,
-      `Tempo ratio ${tempoRatio.toFixed(3)} (${input.anchorBpm.toFixed(1)} / ${input.donorBpm.toFixed(1)} BPM); allowed range 0.92–1.08.`);
+    : tempoRatio >= 0.92 && tempoRatio <= 1.08
+      ? dimension("match", null,
+        `Tempo ratio ${tempoRatio.toFixed(3)} (${input.anchorBpm.toFixed(1)} / ${input.donorBpm.toFixed(1)} BPM); no material tempo adaptation is required.`)
+      : tempoRatio >= MIN_AUTOMATIC_TEMPO_RATIO && tempoRatio <= MAX_AUTOMATIC_TEMPO_RATIO
+        ? dimension("adapted", null,
+          `Tempo ratio ${tempoRatio.toFixed(3)} (${input.anchorBpm.toFixed(1)} / ${input.donorBpm.toFixed(1)} BPM); bounded tempo adaptation is required and supported within ${MIN_AUTOMATIC_TEMPO_RATIO.toFixed(1)}–${MAX_AUTOMATIC_TEMPO_RATIO.toFixed(1)}×.`)
+        : dimension("conflict", null,
+          `Tempo ratio ${tempoRatio.toFixed(3)} (${input.anchorBpm.toFixed(1)} / ${input.donorBpm.toFixed(1)} BPM); outside the supported ${MIN_AUTOMATIC_TEMPO_RATIO.toFixed(1)}–${MAX_AUTOMATIC_TEMPO_RATIO.toFixed(1)}× adaptation range.`);
   const validBarWindows = anchorBeats >= 8 && donorBeats >= 8
     && anchorBeats % 4 === 0 && donorBeats % 4 === 0;
   const phraseAlignment = !validBarWindows
@@ -532,7 +543,7 @@ export function comparePassageCompatibility(input: {
     ...(instruments.status === "unavailable" ? ["anchor non-vocal stem activity"] : []),
     ...(downbeat.status === "unavailable" ? ["downbeat confidence"] : []),
   ];
-  const eligible = tempo.status === "match" && phraseAlignment.status === "match"
+  const eligible = (tempo.status === "match" || tempo.status === "adapted") && phraseAlignment.status === "match"
     && rhythm.status === "match" && harmony.status === "match" && phase.status === "match";
   return {
     anchorSectionId: input.anchorSectionId,
