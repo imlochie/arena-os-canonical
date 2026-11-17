@@ -1,46 +1,53 @@
 # Arena handoff — read this first
 
-## Latest increment: separated accompaniment now informs form recurrence
+## Latest increment: rejected an unproven form-analysis weighting
 
-The persistent section-analysis worker already loaded checksum-current isolated
-bass, drums and other-stem activity to find arrangement changes, but verse/chorus
-recurrence compared only source and vocal pitch features. It now passes those
-verified per-bar RMS profiles into the existing beat-synchronous eight-bar form
-windows. Recurrence gains a small accompaniment-shape contribution when the same
-isolated role is measured in both windows. Vocal/source evidence and the existing
-alternation, energy and ambiguity checks still govern form labels; a repeated drum
-loop alone cannot create a verse or chorus. Missing, incomplete, or flat local
-stem profiles provide no recurrence evidence, and vocal activity is not double
-counted as an accompaniment stem.
+The isolated-accompaniment recurrence experiment was compared on full-length
+September and Another One Bites the Dust using their existing separated stems,
+vocal activity/phrase evidence, and source beat grids. It did not support keeping
+the proposed 12% confidence contribution:
 
-The section-analysis engine is now `1.13.0`, so old persisted labels are not
-mistaken for results from the expanded evidence model; current section analysis
-must be rerun before this signal participates in planning.
+| Track | Without experimental weighting | With experimental weighting |
+|---|---|---|
+| September | verse 17.845–50.805s; chorus 50.805–79.343s; verse 79.343–126.990s; chorus 126.990–142.176s | verse 15.975–50.805s; chorus 50.805–77.439s; verse 77.439–126.990s; chorus 126.990–142.176s |
+| Another One Bites the Dust | no inferred form | no inferred form |
 
-This follows a limited open-source review, not copied code or a new dependency.
-Librosa's recurrence matrix uses nearest-neighbor feature similarity while
-excluding temporally adjacent frames, and its recurrence-to-lag transform exposes
-repeated diagonal structures; this supports comparing separated, time-distant
-arrangement windows rather than treating the full mix as one feature. See
+The September change moved the first predicted entry farther from the owner's
+approximate first-verse start (~20s); it did not recover the later chorus,
+breakdown or outro. The Queen track still abstained. These single-listener
+comparisons are diagnostic, not an accuracy benchmark, but they show no consistent
+real-song improvement. The weighting has therefore been removed rather than
+preserved on the strength of a synthetic test. Section engine `1.14.0` marks
+results produced by the rejected `1.13.0` experiment stale so they cannot be
+mistaken for current decisions.
+
+**Verification:** 18 focused Node tests passed, including persisted section
+analysis and stale-provenance checks. `pnpm run typecheck:libs` and the API
+server typecheck passed. No audio was regenerated or re-separated.
+
+There is also a provenance caveat in older generated `form-provisional-v112`
+evidence: its vocal profile is from Another One Bites the Dust while the bed
+profile is from September. It is a cross-song comparison, not two independent
+same-track form evaluations, and must not be cited as proving either track's
+verse/chorus accuracy.
+
+**Research implication:** Librosa's recurrence matrix uses temporally separated
+nearest-neighbor feature similarity, and its recurrence-to-lag view highlights
+repeated patterns. That is a useful basis for investigating full-track
+self-similarity, but not evidence that activity recurrence means “chorus.” See
 [`librosa.segment`](https://github.com/librosa/librosa/blob/main/librosa/segment.py).
-WhisperX documents that raw ASR segment timestamps may be several seconds off
-and uses wav2vec2 forced alignment for word-level timing. Waveyard's current
-transcript utilities only consume timed text and annotate it; there is no local
-ASR/forced-alignment producer in this workflow, so they are not yet lyric
-evidence for mix selection. See
+WhisperX distinguishes rough ASR segment timing from forced word alignment.
+Waveyard's transcript utilities consume already-timed text; they do not produce
+transcripts, word timestamps, or lyric evidence for mix selection. See
 [`WhisperX`](https://github.com/m-bain/whisperX).
 
-**Verification:** The focused form suite passed 13 tests, and persisted section
-acceptance passed 5 tests, including a varied
-chorus melody corroborated by repeated isolated bass/drum activity and a negative
-case where a repeated drum loop alone still abstains. This changes existing
-section inference without a schema migration or audio-model download. No
-full-song listening evaluation or new real-track prediction capture was run;
-the semantic improvement remains unverified against human annotations.
-
-**Still open:** Local ASR and forced word alignment are absent, and vocal pairing
-still uses whole-mix onset rhythm/phase rather than isolated-vocal phrase timing.
-Real-song section accuracy and listenable mashup quality remain unproven.
+**Still open:** Full-track form detection is partial for September and unavailable
+for Another One Bites the Dust. Later verse/chorus boundaries, the user's
+breakdown/outro distinction, actual lyric/word timing, and independently
+annotated accuracy remain unproven. The next production improvement needs a
+signal that resolves this observed failure (for example, trustworthy lyric
+phrase recurrence or a validated full-track self-similarity representation),
+not another hand-picked confidence weight.
 
 ## Previous increment: hybrid matching uses evidence from the stems it keeps
 

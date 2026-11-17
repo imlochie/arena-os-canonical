@@ -90,16 +90,16 @@ current, checksum-bound events, but the route discarded them before planning.
 paired in one database acceptance test. Verify that valid persisted evidence
 changes the plan, while stale engine versions remain unavailable.
 
-For semantic form recurrence, current isolated accompaniment activity may
-corroborate repeated vocal/source patterns, but no individual instrument can
-label a verse or chorus by itself. Keep vocal/source recurrence and arrangement
-context as separate evidence channels; incomplete stem profiles are unavailable,
-not silent.
+Do not add a fixed accompaniment-similarity weight to semantic form recurrence
+without real-song evidence that it improves independent labels. A synthetic
+corroboration case passed, but full-track tests on September shifted an already
+closer boundary in the wrong direction, and Another One Bites the Dust still
+produced no form.
 
-**Why:** Section analysis already loaded checksum-current per-stem levels for
-arrangement boundaries while the form model ignored them. Feeding the same
-verified profiles into recurrence closes that evidence gap without treating a
-repeating drum loop as song-form ground truth.
+**Why:** Arrangement activity can recur independently of semantic form; passing
+a synthetic drum-loop test does not show that the signal improves verse/chorus
+recognition.
 
-**How to apply:** Use only source-bound profiles measured on the same saved beat
-grid, and retain the form model's existing abstention and ambiguity checks.
+**How to apply:** Evaluate changes against full-track human annotations and keep
+structural repetition separate from semantic labels until that evidence supports
+their connection.

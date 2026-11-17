@@ -41,8 +41,8 @@ test("automatic remix accepts only current local section-analysis provenance", (
     analysisEngineVersion: DESKTOP_SECTION_ENGINE_VERSION,
   };
   assert.equal(isCurrentDesktopSectionAnalysis(current), true);
-  assert.equal(isCurrentDesktopSectionAnalysis({ ...current, analysisEngineVersion: "1.12.0" }), false,
-    "persisted results from the previous evidence model must be reanalyzed");
+  assert.equal(isCurrentDesktopSectionAnalysis({ ...current, analysisEngineVersion: "1.13.0" }), false,
+    "persisted results from the rejected accompaniment-weighting experiment must be reanalyzed");
   assert.equal(isCurrentDesktopSectionAnalysis({ ...current, analysisEngineVersion: "1.2.0" }), false);
   assert.equal(isCurrentDesktopSectionAnalysis({ ...current, analysisEngine: "remote-worker" }), false);
 });

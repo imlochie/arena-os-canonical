@@ -6,8 +6,6 @@ export type FormWindow = {
   /** Time-ordered, track-centred vocal and original source pitch-class observations. */
   vocal: number[];
   backing: number[];
-  /** Per-bar activity from checksum-current, isolated accompaniment stems. */
-  stemActivity?: Readonly<Record<string, number[]>>;
   /** Beat-relative vocal activity and pitched articulation, not words/lyrics. */
   vocalPhraseTiming?: number[];
   vocalCoverage: number;
@@ -26,7 +24,6 @@ const WINDOW_BARS = 8;
 const MAX_BARS = 512;
 const MIN_REPEAT_SIMILARITY = 0.78;
 const PHRASE_RUN_CONFIDENCE = 0.6;
-const STEM_ACTIVITY_SIMILARITY_WEIGHT = 0.12;
 const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / Math.max(1, values.length);
 
 function cosine(a: readonly number[], b: readonly number[]): number | null {
@@ -38,36 +35,6 @@ function cosine(a: readonly number[], b: readonly number[]): number | null {
     bb += b[i]! ** 2;
   }
   return aa > 1e-8 && bb > 1e-8 ? dot / Math.sqrt(aa * bb) : null;
-}
-
-function activityShapeCorrelation(a: readonly number[], b: readonly number[]): number | null {
-  if (a.length < 4 || a.length !== b.length) return null;
-  const meanA = mean([...a]);
-  const meanB = mean([...b]);
-  let dot = 0, magnitudeA = 0, magnitudeB = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    const left = a[index]! - meanA;
-    const right = b[index]! - meanB;
-    dot += left * right;
-    magnitudeA += left * left;
-    magnitudeB += right * right;
-  }
-  const denominator = Math.sqrt(magnitudeA * magnitudeB);
-  return denominator > 1e-8 ? Math.max(-1, Math.min(1, dot / denominator)) : null;
-}
-
-function accompanimentRecurrenceSimilarity(a: FormWindow, b: FormWindow): number | null {
-  const sharedStemTypes = Object.keys(a.stemActivity ?? {})
-    .filter((stemType) => stemType !== "vocals" && stemType in (b.stemActivity ?? {}))
-    .sort();
-  const correlations = sharedStemTypes.flatMap((stemType) => {
-    const left = a.stemActivity?.[stemType];
-    const right = b.stemActivity?.[stemType];
-    if (!left?.every(Number.isFinite) || !right?.every(Number.isFinite)) return [];
-    const correlation = activityShapeCorrelation(left, right);
-    return correlation === null ? [] : [(correlation + 1) / 2];
-  });
-  return correlations.length ? mean(correlations) : null;
 }
 
 /**
@@ -91,17 +58,11 @@ export function inferFormFromWindows(windows: readonly FormWindow[]): FormPredic
     const music = cosine(a.backing, b.backing);
     if (voice === null || music === null) return -1;
     const phraseTiming = cosine(a.vocalPhraseTiming ?? [], b.vocalPhraseTiming ?? []);
-    const vocalAndSource = phraseTiming === null ? 0.7 * voice + 0.3 * music
-      : 0.55 * voice + 0.15 * phraseTiming + 0.3 * music;
-    const accompaniment = accompanimentRecurrenceSimilarity(a, b);
     // Older/unavailable vocal analysis remains a supported fallback. When
     // both windows have measured activity, their beat-relative timing is an
-    // additional, explicitly non-lexical recurrence signal. Checksum-current
-    // isolated accompaniment activity is a small corroborating channel: it
-    // cannot replace vocal/source evidence or independently create a form label.
-    return accompaniment === null ? vocalAndSource
-      : (1 - STEM_ACTIVITY_SIMILARITY_WEIGHT) * vocalAndSource
-        + STEM_ACTIVITY_SIMILARITY_WEIGHT * accompaniment;
+    // additional, explicitly non-lexical recurrence signal.
+    return phraseTiming === null ? 0.7 * voice + 0.3 * music
+      : 0.55 * voice + 0.15 * phraseTiming + 0.3 * music;
   };
   // Star groups are pairwise checked, not transitive similarity chains.
   type RoleGroup = { members: FormWindow[]; energy: number; recurrence: number };
@@ -239,10 +200,6 @@ export function measureFormWindows(
   beats: readonly number[],
   vocalPitchContinuityRuns: readonly { startMs: number; endMs: number; confidence: number }[] = [],
   vocalActivityIntervals: readonly { startMs: number; endMs: number; confidence: number }[] = [],
-  stemActivityProfiles: readonly {
-    stemType: string;
-    rmsDbByBar: readonly (number | null)[];
-  }[] = [],
 ): FormWindow[] {
   if (!beats.every((t, i) => Number.isFinite(t) && t >= 0 && (i === 0 || t > beats[i - 1]!))) return [];
   if (Math.abs(sourcePcm.length - vocalPcm.length) / ANALYSIS_PCM_RATE > 0.5) return [];
@@ -292,15 +249,6 @@ export function measureFormWindows(
   const binsPerWindow = WINDOW_BARS * 4 * binsPerBeat;
   const phraseActivityBins = new Float64Array(beatCount * binsPerBeat);
   const phraseOnsetBins = new Float64Array(beatCount * binsPerBeat);
-  const accompanimentByStem = new Map<string, number[]>();
-  for (const profile of stemActivityProfiles) {
-    if (profile.stemType === "vocals"
-      || accompanimentByStem.has(profile.stemType)
-      || profile.rmsDbByBar.length < bars) continue;
-    const levels = profile.rmsDbByBar.slice(0, bars);
-    if (levels.some((value) => value === null || !Number.isFinite(value))) continue;
-    accompanimentByStem.set(profile.stemType, levels as number[]);
-  }
   // Energy-qualified vocal activity retains unpitched syllables. Pitch runs
   // independently describe tonal articulation; neither is a lyric transcript.
   const coverageRuns = vocalActivityIntervals.length ? vocalActivityIntervals : vocalPitchContinuityRuns;
@@ -333,11 +281,8 @@ export function measureFormWindows(
   return Array.from({ length: bars - WINDOW_BARS + 1 }, (_, startBar) => {
     const window = centred.slice(startBar, startBar + WINDOW_BARS);
     const firstBin = startBar * 4 * binsPerBeat;
-    const stemActivity = Object.fromEntries([...accompanimentByStem.entries()]
-      .map(([stemType, levels]) => [stemType, levels.slice(startBar, startBar + WINDOW_BARS)]));
     return { startBar, vocal: window.flatMap(m => m.active ? m.vocal : m.vocal.map(() => 0)),
       backing: window.flatMap(m => m.backing),
-      ...(Object.keys(stemActivity).length ? { stemActivity } : {}),
       ...(coverageRuns.length || onsetRuns.length ? { vocalPhraseTiming: [
         ...phraseActivityBins.slice(firstBin, firstBin + binsPerWindow),
         ...phraseOnsetBins.slice(firstBin, firstBin + binsPerWindow),
