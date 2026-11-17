@@ -91,6 +91,49 @@ function compositionFixture(seconds: number): Float32Array {
   return out;
 }
 
+function composedWithAddedLayerFixture(): {
+  composition: Float32Array;
+  addedLayer: Float32Array;
+  layerEntryMs: number;
+} {
+  const rate = 44_100;
+  const seconds = 64;
+  const frames = seconds * rate;
+  const drums = new Float32Array(frames * 2);
+  const bass = new Float32Array(frames * 2);
+  const addedLayer = new Float32Array(frames * 2);
+  const beatFrames = Math.round(0.5 * rate);
+  const hitFrames = Math.round(0.12 * rate);
+  const layerEntryMs = 32_000;
+  const layerEntryFrame = Math.round(layerEntryMs * rate / 1000);
+  for (let frame = 0; frame < frames; frame += 1) {
+    const time = frame / rate;
+    const bassValue = Math.sin(2 * Math.PI * 70 * time) * 0.1
+      + Math.sin(2 * Math.PI * 110 * time) * 0.1;
+    bass[frame * 2] = bassValue;
+    bass[frame * 2 + 1] = bassValue;
+  }
+  for (let beat = 0; beat * beatFrames < frames; beat += 1) {
+    const start = beat * beatFrames;
+    for (let offset = 0; offset < hitFrames && start + offset < frames; offset += 1) {
+      const time = offset / rate;
+      const value = Math.sin(2 * Math.PI * 420 * time) * Math.exp(-28 * time) * 0.45;
+      drums[(start + offset) * 2] += value;
+      drums[(start + offset) * 2 + 1] += value;
+    }
+  }
+  for (let frame = layerEntryFrame; frame < frames; frame += 1) {
+    const time = frame / rate;
+    const value = Math.sin(2 * Math.PI * 330 * time) * 0.08;
+    addedLayer[frame * 2] = value;
+    addedLayer[frame * 2 + 1] = value;
+  }
+  const composition = new Float32Array(frames * 2);
+  for (let sample = 0; sample < composition.length; sample += 1)
+    composition[sample] = drums[sample]! + bass[sample]! + addedLayer[sample]!;
+  return { composition, addedLayer, layerEntryMs };
+}
+
 const track = corpusTrack(["ash.mp3", "bedroom-window-vast.mp3"]);
 const ready = track !== null && ffmpeg.length > 0 && existsSync(ffmpeg);
 
@@ -143,6 +186,19 @@ test(
     }
   },
 );
+
+test("post-swap section analysis consumes per-stem activity on the composed audio clock", () => {
+  const fixture = composedWithAddedLayerFixture();
+  const result = deriveSectionsForComposition(fixture.composition, {
+    sampleRate: 44_100,
+    stemPcms: [{ stemType: "other", pcm: fixture.addedLayer }],
+  });
+  assert.equal(result.ok, true, result.ok ? "" : result.reason);
+  if (!result.ok) return;
+  assert.ok(result.sections.some((section) => section.label === "stem-change"
+    && Math.abs(section.startMs - fixture.layerEntryMs) < 300),
+  "an independently measured layer entrance should become a section boundary on the same composition clock");
+});
 
 test("sections are never fabricated when the composed bed has no measurable grid", () => {
   // Digital silence: no beat grid, so no section boundaries may be invented.

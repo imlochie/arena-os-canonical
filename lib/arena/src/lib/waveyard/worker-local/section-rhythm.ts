@@ -28,6 +28,9 @@ export type StemActivityProfile = Pick<
   rmsDbByBar: (number | null)[];
 };
 
+/** Ephemeral per-stem levels used while analysing an in-memory composition. */
+export type StemActivityLevelProfile = Pick<StemActivityProfile, "stemType" | "rmsDbByBar">;
+
 export type PassageVocalActivityEvidence = {
   analysisId: string;
   stemAssetId: string;
@@ -227,13 +230,14 @@ function rmsToDb(squaredEnergy: number, sampleCount: number): number | null {
   return Number.isFinite(rms) ? Math.max(-120, 20 * Math.log10(Math.max(rms, 1e-6))) : null;
 }
 
-/** Measures each full bar from one decoded, source-provenance-matched stem. */
-export function buildStemActivityProfile(
+/** Measures each full bar from one decoded stem on the supplied beat clock. */
+export function buildStemActivityLevelProfile(
   pcm: Float32Array,
   beatGridMs: number[],
-  metadata: Pick<StemActivityProfile, "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256">,
-): StemActivityProfile | null {
-  if (!pcm.length || beatGridMs.length < 8 || beatGridMs.some((beat) => !Number.isFinite(beat) || beat < 0)) return null;
+  stemType: string,
+): StemActivityLevelProfile | null {
+  if (!pcm.length || !stemType || beatGridMs.length < 8
+    || beatGridMs.some((beat) => !Number.isFinite(beat) || beat < 0)) return null;
   const barCount = Math.floor(beatGridMs.length / 4);
   const rmsDbByBar: (number | null)[] = [];
   for (let bar = 0; bar < barCount; bar += 1) {
@@ -256,7 +260,17 @@ export function buildStemActivityProfile(
     }
     rmsDbByBar.push(rmsToDb(squaredEnergy, endSample - startSample));
   }
-  return { ...metadata, rmsDbByBar };
+  return { stemType, rmsDbByBar };
+}
+
+/** Adds immutable source provenance when per-stem analysis is persisted. */
+export function buildStemActivityProfile(
+  pcm: Float32Array,
+  beatGridMs: number[],
+  metadata: Pick<StemActivityProfile, "stemType" | "stemAssetId" | "separationJobId" | "stemChecksumSha256">,
+): StemActivityProfile | null {
+  const levels = buildStemActivityLevelProfile(pcm, beatGridMs, metadata.stemType);
+  return levels ? { ...metadata, rmsDbByBar: levels.rmsDbByBar } : null;
 }
 
 function meanRmsDb(values: readonly (number | null)[]): number | null {
@@ -273,7 +287,7 @@ function meanRmsDb(values: readonly (number | null)[]): number | null {
  * verse/chorus label or proof of cross-song compatibility.
  */
 export function detectStemActivityBoundaryChanges(
-  profiles: readonly StemActivityProfile[],
+  profiles: readonly StemActivityLevelProfile[],
 ): StemActivityBoundaryChange[] {
   const changes: StemActivityBoundaryChange[] = [];
   for (const profile of profiles) {

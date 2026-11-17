@@ -30,7 +30,11 @@
  */
 
 import { analysePcm, onsetEnvelope } from "../worker-local/analysis-engine";
-import { desktopSectionCandidates } from "../worker-local/section-rhythm";
+import {
+  buildStemActivityLevelProfile,
+  desktopSectionCandidates,
+  detectStemActivityBoundaryChanges,
+} from "../worker-local/section-rhythm";
 import type { SourceSection } from "../types/source-sections";
 import { downsampleToAnalysisPcm, type MashupSection } from "./mashup";
 
@@ -64,7 +68,11 @@ function toMashupSections(sections: readonly SourceSection[]): MashupSection[] {
  */
 export function deriveSectionsForComposition(
   stereo44k: Float32Array,
-  options: { sampleRate?: number } = {},
+  options: {
+    sampleRate?: number;
+    /** Separate components on the same source clock as the summed composition. */
+    stemPcms?: readonly { stemType: string; pcm: Float32Array }[];
+  } = {},
 ): ComposedSectionResult {
   const sampleRate = options.sampleRate ?? 44_100;
   if (stereo44k.length < 2) return { ok: false, reason: "The composed bed contains no audio to analyse." };
@@ -102,17 +110,21 @@ export function deriveSectionsForComposition(
     const measured = onsetEnvelope(mono);
     envelope = measured.envelope;
     frameMs = measured.frameMs;
+    const stemActivityProfiles = (options.stemPcms ?? []).flatMap((stem) => {
+      if (!stem || typeof stem.stemType !== "string" || !stem.stemType.trim()
+        || !(stem.pcm instanceof Float32Array) || stem.pcm.length < 2) return [];
+      const stemMono = downsampleToAnalysisPcm(stem.pcm);
+      const profile = buildStemActivityLevelProfile(stemMono, beatGridMs, stem.stemType);
+      return profile ? [profile] : [];
+    });
+    const stemActivityBoundaryChanges = detectStemActivityBoundaryChanges(stemActivityProfiles);
     candidates = desktopSectionCandidates(
       beatGridMs,
       envelope,
       frameMs,
       mono,
       [],
-      // Stems whose activity changed are not known for a summed composition:
-      // the swap may have removed or added percussion entirely. Passing none is
-      // the conservative choice — boundaries then come from bar alignment and
-      // onset novelty alone rather than a guessed stem attribution.
-      [],
+      stemActivityBoundaryChanges,
     );
   } catch (error) {
     return { ok: false, reason: `Section boundaries could not be derived for the composed bed: ${String(error)}` };

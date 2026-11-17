@@ -260,7 +260,14 @@ type BedSource = {
 };
 
 type BedLoadResult =
-  | { ok: true; pcm: Float32Array; info: BedSourceInfo; components: Float32Array[] }
+  | {
+    ok: true;
+    pcm: Float32Array;
+    info: BedSourceInfo;
+    components: Float32Array[];
+    /** Analysis-only component roles; deliberately separate from render components. */
+    analysisStemPcms: Array<{ stemType: string; pcm: Float32Array }>;
+  }
   | { ok: false; info: BedSourceInfo };
 
 /** Latest stem of a type for a source whose separation job completed, or null. */
@@ -909,7 +916,14 @@ async function loadInstrumentalBed(
         "The separated instrumental stem is not a valid 44.1 kHz stereo WAV. Re-run separation for the instrumental track.",
       );
     }
-    return { ok: true, pcm: mixInReplacingStems(pcm, replacingStems), components: [pcm], info };
+    return {
+      ok: true,
+      pcm: mixInReplacingStems(pcm, replacingStems),
+      components: [pcm],
+      // A combined instrumental has no trustworthy per-role channels.
+      analysisStemPcms: [],
+      info,
+    };
   }
 
   const decodedStems: InstrumentalBedStem[] = [];
@@ -946,6 +960,15 @@ async function loadInstrumentalBed(
     components: decodedStems
       .filter((stem) => new Set<string>(bed.includedStemTypes).has(stem.stemType))
       .map((stem) => stem.samples),
+    // Keep section analysis linked to the real channels in the resulting
+    // source-clock composition. This is separate from `components`, whose
+    // established contract is per-stem time-stretching during rendering.
+    analysisStemPcms: [
+      ...decodedStems
+        .filter((stem) => new Set<string>(bed.includedStemTypes).has(stem.stemType))
+        .map((stem) => ({ stemType: stem.stemType, pcm: stem.samples })),
+      ...[...replacingStems.entries()].map(([stemType, pcm]) => ({ stemType, pcm })),
+    ],
   };
 }
 
@@ -1016,6 +1039,7 @@ function bedProfileFromComposition(
   original: NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>>,
   compositionPcm: Float32Array,
   replacedStemTypes: readonly string[],
+  analysisStemPcms: readonly { stemType: string; pcm: Float32Array }[] = [],
 ): NonNullable<Awaited<ReturnType<typeof loadSourceProfile>>> {
   // No musical material changed: keep the existing analysis untouched.
   if (replacedStemTypes.length === 0) return original;
@@ -1041,7 +1065,10 @@ function bedProfileFromComposition(
   // leave the arrangement following percussion the swap removed — audible
   // replacement with a stale arrangement, which is the exact defect
   // composition-first planning exists to prevent.
-  const derivedSections = deriveSectionsForComposition(compositionPcm, { sampleRate: RENDER_SAMPLE_RATE });
+  const derivedSections = deriveSectionsForComposition(compositionPcm, {
+    sampleRate: RENDER_SAMPLE_RATE,
+    stemPcms: analysisStemPcms,
+  });
   // Missing replacement measurements remain unavailable. The planner must not
   // restore an old confident grid merely because the source file ID survives.
   const hasNewBeatGrid = Array.isArray(analysis.beatGridMs) && analysis.beatGridMs.length > 1;
@@ -1665,7 +1692,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             if (source) compositionPcm = mixInReplacingStems(source.pcm, resolved.donorStems);
           }
           if (compositionPcm) {
-            bed = bedProfileFromComposition(bed, compositionPcm, resolved.composition.layeredStemTypes);
+            bed = bedProfileFromComposition(
+              bed,
+              compositionPcm,
+              resolved.composition.layeredStemTypes,
+              composedBed?.ok ? composedBed.analysisStemPcms : [],
+            );
             plannedAgainstComposition = {
               replacedStemTypes: [...resolved.composition.replacedBedStemTypes],
               plannedBpm: bed.bpm,

@@ -1339,6 +1339,7 @@ export async function sendSessionToStudio(
   const transitionWarnings: NonNullable<StudioHandoffResult["transitionWarnings"]> = [];
   const handoffStorage = getStorage();
   const stemObjectAvailability = new Map<string, boolean>();
+  const donorAnalysisByTrack = new Map<string, Promise<SessionTrackAnalysis | null>>();
   let tempoSyncedClipCount = 0;
   let keySyncedClipCount = 0;
   const availableStemIds = async (stems: TrackStem[]): Promise<Set<string>> => {
@@ -1426,13 +1427,21 @@ export async function sendSessionToStudio(
         invalidSwapReason = `The saved ${swap.stemType} live-swap audio from “${donorDetail.title}” is missing from private storage. Restore or re-separate the donor in the Library, then reapply the swap.`;
         break;
       }
+      let donorAnalysis = donorAnalysisByTrack.get(donorDetail.id);
+      if (!donorAnalysis) {
+        donorAnalysis = sessionTrackAnalysis(ownerId, donorDetail.id);
+        donorAnalysisByTrack.set(donorDetail.id, donorAnalysis);
+      }
       replacements.set(swap.stemType, {
         stemId: donorStem.id,
         donorTitle: donorDetail.title,
         donorTrackId: donorDetail.id,
         durationSeconds: donorStem.durationSeconds,
         donorEntryOffsetMs: swap.donorEntryOffsetMs ?? 0,
-        analysis: donorDetail.analysis,
+        // `getTrack` only returns BPM/key. Use the checksum-validated session
+        // analysis so the donor's beat, section and vocal evidence survives the
+        // live-swap-to-Studio handoff rather than silently disappearing here.
+        analysis: await donorAnalysis,
       });
     }
     if (invalidSwapReason !== null) {
