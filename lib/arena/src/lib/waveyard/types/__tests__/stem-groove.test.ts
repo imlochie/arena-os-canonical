@@ -107,23 +107,21 @@ test("vocal performance comparison preserves offbeats rather than snapping them 
   assert.equal(transformed.preserveEntry, true);
 });
 
-test("melodic layer attacks participate without being classified as drums or notes", () => {
+test("melodic attacks only compare against a melodic phase reference", () => {
   const attacks = profile("other", [0.25, 0.75], 20);
   assert.equal(attacks.status, "measured");
   assert.equal(attacks.role, "other");
   if (attacks.status === "measured") assert.equal(attacks.swing, null);
-  const anchor = profile("drums", [0.25, 0.75]);
+  const anchor = profile("other", [0.25, 0.75]);
   assert.equal(proposeGrooveEntryShift(anchor, attacks, timeline).shiftMs, -20);
-  assert.equal(proposeGrooveEntryShift(profile("drums", [0]), attacks, timeline).shiftMs, 0,
-    "do not force a melodic offbeat pattern onto kick-like attacks");
 });
 
-test("a percussion proposal cannot override source-relative vocal delivery", () => {
+test("a same-role groove proposal cannot override source-relative vocal delivery", () => {
   const bass = measureStemGroove("bass", events([0, 0.5]).map((event) =>
     ({ ...event, timestampMs: event.timestampMs + 2000 })), grid.map((at) => at + 2000), 0.95);
-  const melodic = profile("other", [0, 0.5], 30);
+  const donorBass = profile("bass", [0, 0.5], 30);
   const vocals = source("vocals", {
-    beatGridMs: grid, beatConfidence: 0.95, stemGrooves: [melodic],
+    beatGridMs: grid, beatConfidence: 0.95, stemGrooves: [donorBass],
     vocalActivityIntervals: [250, 1250, 2250, 3250, 4250, 5250, 6250, 7250].map((startMs) =>
       ({ startMs, endMs: startMs + 150, confidence: 0.95 })),
   });
@@ -149,10 +147,10 @@ function source(role: "vocals" | "instrumental", overrides: Partial<MashupSource
 }
 
 test("planner moves the complete donor group, preserves source measurements, and leaves safe fallbacks", async () => {
-  // Bed events appear at 2s+; donor source starts at zero with a 20ms delay.
+  // Bed bass events appear at 2s+; donor bass starts at zero with a 20ms delay.
   const bedGroove = measureStemGroove("bass", events([0, 0.5]).map((event) =>
     ({ ...event, timestampMs: event.timestampMs + 2000 })), grid.map((at) => at + 2000), 0.95);
-  const donorGroove = profile("drums", [0, 0.5], 20);
+  const donorGroove = profile("bass", [0, 0.5], 20);
   const bed = source("instrumental", { stemGrooves: [bedGroove] });
   const vocals = source("vocals", { stemGrooves: [donorGroove] });
   const original = JSON.stringify({ vocals, bed });
@@ -164,13 +162,21 @@ test("planner moves the complete donor group, preserves source measurements, and
   assert.equal(adapted.plan.segments[0]!.mashupStartMs, baseline.plan.segments[0]!.mashupStartMs - 20);
   assert.equal(adapted.plan.segments[0]!.vocalsFromMs, baseline.plan.segments[0]!.vocalsFromMs);
   assert.equal(adapted.plan.vocalsStretchRatio, baseline.plan.vocalsStretchRatio);
-  const contrast = planMashup({ ...vocals, stemGrooves: [profile("drums", [0, 2 / 3])] }, bed, { strategy: "continuous" });
+  const crossRole = planMashup({ ...vocals, stemGrooves: [profile("drums", [0, 0.5], 20)] }, bed, { strategy: "continuous" });
+  assert.ok(crossRole.ok);
+  assert.equal(crossRole.plan.crossStemGroove?.appliedEntryShiftMs, 0,
+    "drum attacks must not move a donor group based on retained bass attacks");
+  const crossRoleComparison = crossRole.plan.crossStemGroove?.comparisons.find((pair) =>
+    pair.anchorRole === "bass" && pair.donorRole === "drums");
+  assert.equal(crossRoleComparison?.correction.shiftMs, 0);
+  assert.match(crossRoleComparison?.correction.reason ?? "", /Different stem roles/);
+  const contrast = planMashup({ ...vocals, stemGrooves: [profile("bass", [0, 2 / 3])] }, bed, { strategy: "continuous" });
   assert.ok(contrast.ok);
   assert.equal(contrast.plan.crossStemGroove?.appliedEntryShiftMs, 0);
   const conflict = planMashup({ ...vocals, stemGrooves: [donorGroove, profile("bass", [0, 0.5], -20)] }, bed, { strategy: "continuous" });
   assert.ok(conflict.ok);
   assert.equal(conflict.plan.crossStemGroove?.appliedEntryShiftMs, 0);
-  const boundary = planMashup({ ...vocals, durationMs: 14000, stemGrooves: [profile("drums", [0, 0.5], -20)] }, bed, { strategy: "continuous" });
+  const boundary = planMashup({ ...vocals, durationMs: 14000, stemGrooves: [profile("bass", [0, 0.5], -20)] }, bed, { strategy: "continuous" });
   assert.ok(boundary.ok);
   assert.equal(boundary.plan.crossStemGroove?.appliedEntryShiftMs, 0,
     "do not move a full-length phrase past the arrangement end");
@@ -188,8 +194,8 @@ test("planner moves the complete donor group, preserves source measurements, and
   const input = {
     vocals: new Float32Array(10000 / 1000 * rate * 2),
     bed: clicks(events([0, 0.5]).map((event) => ({ ...event, timestampMs: event.timestampMs + 2000 })), 16, 80),
-    stems: new Map([["donor_drums", clicks(events([0, 0.5], 20), 10, 600)]]),
-    layerStemTypes: ["drums"], sampleRate: rate, mix: { matchVocalLoudness: false, limit: false },
+    stems: new Map([["donor_bass", clicks(events([0, 0.5], 20), 10, 80)]]),
+    layerStemTypes: ["bass"], sampleRate: rate, mix: { matchVocalLoudness: false, limit: false },
   };
   const before = renderMashupWithBus(baseline.plan, input).pcm;
   const after = renderMashupWithBus(adapted.plan, input).pcm;

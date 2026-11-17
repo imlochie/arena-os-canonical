@@ -3137,20 +3137,35 @@ function applyCrossStemGroove(plan: MashupPlan, vocals: MashupSourceProfile, bed
     (vocals.stemGrooves ?? []).map((donor) => ({
       anchorRole: anchor.role, donorRole: donor.role,
       relationship: compareStemGrooves(anchor, donor),
-      correction: proposeGrooveEntryShift(anchor, donor, {
-        bedRatio: plan.bedStretchRatio ?? 1, donorRatio: plan.vocalsStretchRatio,
-        sourceOffsetMs: first?.vocalsFromMs ?? 0,
-        entryMs: first?.mashupStartMs ?? 0, endMs: plan.durationMs,
-      }),
+      correction: anchor.role === donor.role
+        ? proposeGrooveEntryShift(anchor, donor, {
+          bedRatio: plan.bedStretchRatio ?? 1, donorRatio: plan.vocalsStretchRatio,
+          sourceOffsetMs: first?.vocalsFromMs ?? 0,
+          entryMs: first?.mashupStartMs ?? 0, endMs: plan.durationMs,
+        })
+        : {
+          shiftMs: 0,
+          comparedOnsets: 0,
+          beforeErrorMs: null,
+          afterErrorMs: null,
+          reason: "Different stem roles are context, not authority for a common phase translation.",
+        },
     })));
+  // Cross-role relationships remain visible as context, but a drum onset is
+  // not a valid phase reference for a bass or melodic onset. Those parts
+  // intentionally occupy different places in a groove. Only a same-role
+  // comparison can authorize moving the complete donor group.
+  const phaseReferences = comparisons.filter((pair) => pair.anchorRole === pair.donorRole);
   const profiles = [bed, vocals].flatMap((source) => (source.stemGrooves ?? []).map((evidence) => ({
     sourceAssetId: source.sourceAssetId ?? null,
     sourceChecksumSha256: source.sourceChecksumSha256 ?? null,
     evidence: evidence.status === "measured" ? (({ onsets: _onsets, ...summary }) => summary)(evidence) : evidence,
   })));
-  const corrections = comparisons.filter((pair) => pair.correction.shiftMs !== 0);
+  const corrections = phaseReferences.filter((pair) => pair.correction.shiftMs !== 0);
   let shift = corrections.length ? Math.round(corrections.reduce((sum, pair) => sum + pair.correction.shiftMs, 0) / corrections.length) : 0;
-  let decision = "No stable, small common entry correction is justified. Preserve the current phrasing.";
+  let decision = phaseReferences.length === 0
+    ? "No same-role stem pair is available to justify an entry move; cross-role attacks are context only. Preserve the current phrasing."
+    : "No stable, small same-role entry correction is justified. Preserve the current phrasing.";
   if (plan.segments.some((segment) => segment.localTempoMap)) {
     shift = 0;
     decision = "Preserve accepted local timing maps; a constant-phase comparison cannot override a non-linear warp.";
@@ -3158,10 +3173,10 @@ function applyCrossStemGroove(plan: MashupPlan, vocals: MashupSourceProfile, bed
     shift = 0;
     decision = "Preserve the evidence-ranked passage entry; groove micro-positioning must be evaluated within that passage before moving it.";
   } else if (corrections.some((pair) => Math.abs(pair.correction.shiftMs - shift) > 8)
-    || comparisons.some((pair) => pair.relationship.relationship === "rhythmic-contrast"
+    || phaseReferences.some((pair) => pair.relationship.relationship === "rhythmic-contrast"
       || pair.relationship.relationship !== "unavailable" && pair.correction.shiftMs === 0 && shift !== 0)) {
     shift = 0;
-    decision = "Cross-stem evidence conflicts or shows rhythmic contrast; do not force a common correction.";
+    decision = "Same-role stem evidence conflicts or shows rhythmic contrast; do not force a common correction.";
   } else if (plan.segments.some((segment) => segment.mashupStartMs + shift < 0 || segment.mashupEndMs + shift > plan.durationMs)) {
     shift = 0;
     decision = "The proposed entry move would crop a phrase or cross the arrangement boundary.";
