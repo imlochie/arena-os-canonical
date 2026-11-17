@@ -96,6 +96,33 @@ function withDifferentSourceMixChroma(input: AutomaticRemixSource): AutomaticRem
   };
 }
 
+function withDifferentWholeMixRhythm(input: AutomaticRemixSource): AutomaticRemixSource {
+  return {
+    ...input,
+    sections: input.sections.map((section) => ({
+      ...section,
+      passageFingerprint: section.passageFingerprint ? {
+        ...section.passageFingerprint,
+        rhythm: {
+          status: "measured" as const,
+          method: "fixture: intentionally different whole-mix rhythm",
+          confidence: 0.95,
+          value: Array.from(
+            { length: (section.passageFingerprint.endBeatIndex - section.passageFingerprint.startBeatIndex) * 4 },
+            (_, index) => Number(index % 4 === 1),
+          ),
+        },
+        beatPhase: {
+          status: "measured" as const,
+          method: "fixture: intentionally different whole-mix beat phase",
+          confidence: 0.95,
+          value: { subdivisionProfile: [0.02, 0.9, 0.05, 0.03], beatPeriodMs: 500 },
+        },
+      } : null,
+    })),
+  };
+}
+
 function withRoles(input: AutomaticRemixSource, labels: string[] = ["verse", "chorus"]): AutomaticRemixSource {
   return {
     ...input,
@@ -274,7 +301,10 @@ describe("deterministic automatic remix arranger", () => {
       };
     };
     const anchor = withDrumEvidence(withFingerprints(source({ id: "drum-anchor" })));
-    const donor = withDrumEvidence(withDifferentSourceMixChroma(withFingerprints(source({ id: "drum-donor" }))));
+    const donor = withDrumEvidence(withDifferentWholeMixRhythm(withDifferentSourceMixChroma(withFingerprints(source({
+      id: "drum-donor",
+      analysis: { musicalKey: "D major" },
+    })))));
 
     const result = buildAutomaticRemixPlan([anchor, donor], {
       variant: "hybrid",
@@ -284,11 +314,16 @@ describe("deterministic automatic remix arranger", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.plan.tracks.find((track) => track.stemType === "drums")?.stemAssetId).toBe("drum-donor-drums");
+    const drumTrack = result.plan.tracks.find((track) => track.stemType === "drums");
+    expect(drumTrack?.stemAssetId).toBe("drum-donor-drums");
+    expect(drumTrack?.clips[0]?.keySyncEnabled).toBe(false);
     expect(result.plan.compatibility?.pairs.some((pair) =>
       pair.donorSourceName === donor.originalFilename
       && pair.eligible
       && pair.dimensions.harmony.status === "context"
+      && pair.dimensions.rhythm.status === "context"
+      && pair.dimensions.beatPhase.status === "context"
+      && pair.retainedStemDecision?.decision === "replace"
       && pair.dimensions.harmony.detail.includes("not a gate for a drum swap"))).toBe(true);
   });
 

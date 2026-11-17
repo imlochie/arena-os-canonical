@@ -58,11 +58,13 @@ For hybrid matching, use role-specific evidence from the stems the arrangement
 will actually retain. A donor's full-mix chroma includes backing that a vocal
 swap discards; it must not veto or rank the retained vocal against the anchor
 bed. Conversely, compare isolated vocal notes with retained-bed harmony when
-available, and use isolated drum transients for drum decisions. Whole-mix rhythm
-and beat-phase can remain structural context until reliable stem-level phrase
-alignment exists. Coarse vocal-activity windows identify activity and entry
-timing, not lyrics or words; reconcile them with pitch-note evidence rather than
-treating one detector's silence as definitive.
+available. Drum section choices require checksum-current isolated attacks on
+both beat grids; whole-mix rhythm/phase is context for that role, and only a
+measured `replace` or `layer` decision selects donor drums. Vocal section
+alignment still has the whole-mix rhythm/phase limitation until stem-level
+phrase alignment is supported. Coarse vocal-activity windows identify activity
+and entry timing, not lyrics or words; reconcile them with pitch-note evidence
+rather than treating one detector's silence as definitive.
 
 **Why:** The automatic hybrid compared complete source mixes even when it
 rendered only the anchor bed and donor vocal, and could select a passage whose

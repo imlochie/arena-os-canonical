@@ -466,10 +466,12 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
       drumsStemId: donor.drumStem.id,
     });
     assert.equal(stale.status, 201, `a stale drum analysis must not break the route: ${JSON.stringify(stale.body)}`);
-    const staleDecisions = ((stale.body.plan as { provenance?: Record<string, unknown> } | undefined)
-      ?.provenance?.drumBedDecisions) as Array<Record<string, unknown>> | undefined;
-    assert.equal(staleDecisions?.[0]?.outcome, "unavailable",
-      "evidence from a non-current engine must resolve to insufficient evidence");
+    const stalePairs = ((stale.body.plan as { compatibility?: { pairs?: Array<Record<string, unknown>> } } | undefined)
+      ?.compatibility?.pairs) ?? [];
+    assert.ok(stalePairs.some((pair) =>
+      (pair.retainedStemDecision as Record<string, unknown> | undefined)?.decision === "unavailable"
+      && String((pair.retainedStemDecision as Record<string, unknown>).reason).includes("checksum-current drum transient evidence")),
+    `evidence from a non-current engine must be reported as unavailable for the exact section pair: ${JSON.stringify(stale.body.plan)}`);
     assert.deepEqual((await savedTracks()).filter((track) => track.stemType === "drums").map((track) => track.stemAssetId),
       [bed.drumStem.id],
       "with no current donor drum evidence the bed must keep its own drums");

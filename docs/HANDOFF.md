@@ -10,9 +10,11 @@ source-mix chroma decision. A measured sustained clash refuses that passage;
 a measured fit only makes it an audition candidate, not a quality claim.
 
 For drums, source-mix chroma is context only: the donor harmony is not retained.
-The planner still requires trusted tempo, complete-bar length, onset rhythm and
-beat-phase evidence for section pairing; the subsequent drum decision must pass
-checksum-current isolated drum transients to retain, replace or layer.
+The planner still requires trusted tempo and complete-bar section alignment, but
+drum section pairing now uses checksum-current isolated attacks evaluated on
+the two saved beat grids; whole-mix rhythm and phase are report context only.
+The resulting drum decision must support replace or layer before a donor drum
+track is selected. Drum/percussion clips are not pitch-shifted to match key.
 
 When isolated vocal activity is measured, a candidate section with no activity
 inside the exact BPM-mapped donor audio window is rejected. Otherwise the report
@@ -22,6 +24,7 @@ the source-mix fallback is retained and the missing evidence is disclosed.
 
 Source-mix chord progression remains visible in the compatibility report but is
 not used to select passages whose donor backing is discarded.
+Planner provenance version 7 records this role-specific drum pairing behavior.
 
 **Verification:** The automatic-remix suite passed 27 tests, including a
 source-mix chroma mismatch with a retained-vocal harmonic fit, measured vocal

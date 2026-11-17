@@ -2,6 +2,7 @@ import {
   MAX_AUTOMATIC_TEMPO_RATIO,
   MIN_AUTOMATIC_TEMPO_RATIO,
 } from "./tempo-adaptation";
+import type { DrumBedDecision } from "./drum-bed-decision";
 
 export const PASSAGE_FINGERPRINT_ENGINE = "waveyard-passage-fingerprint";
 export { measureStemGroove, compareStemGrooves, proposeGrooveEntryShift } from "./stem-groove";
@@ -92,6 +93,8 @@ export type PassageCompatibility = {
     chordProgression?: PassageCompatibilityDimension;
   };
   missingEvidence: string[];
+  /** Actual isolated-drum decision for this section pair, when drums are retained. */
+  retainedStemDecision?: { role: "drums" } & DrumBedDecision;
 };
 
 export type AutomaticRemixCompatibilityPair = PassageCompatibility & {

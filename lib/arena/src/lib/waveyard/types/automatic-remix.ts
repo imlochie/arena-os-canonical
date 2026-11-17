@@ -41,7 +41,7 @@ import {
 import { DRUM_ANALYSIS_ENGINE, DRUM_ANALYSIS_ENGINE_VERSION, LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, drumAnalysisProvenanceReason } from "./drum-analysis";
 
 export const AUTOMATIC_REMIX_ENGINE = "waveyard-deterministic-arranger";
-export const AUTOMATIC_REMIX_ENGINE_VERSION = "6";
+export const AUTOMATIC_REMIX_ENGINE_VERSION = "7";
 export const AUTOMATIC_REMIX_VARIANTS = ["original", "hybrid"] as const;
 export type AutomaticRemixVariant = (typeof AUTOMATIC_REMIX_VARIANTS)[number];
 
@@ -616,19 +616,26 @@ export function assessWholeHybridArrangement(input: {
 
 type RetainedStemRole = "vocals" | "drums";
 
-function passageCompatibilityScore(pair: Pick<AutomaticRemixCompatibilityPair, "dimensions">) {
+function passageCompatibilityScore(pair: Pick<AutomaticRemixCompatibilityPair, "dimensions" | "retainedStemDecision">) {
   const measured = [
-    pair.dimensions.rhythm.similarity,
-    pair.dimensions.beatPhase.similarity,
+    ...(pair.dimensions.rhythm.status === "context" ? [] : [pair.dimensions.rhythm.similarity]),
+    ...(pair.dimensions.beatPhase.status === "context" ? [] : [pair.dimensions.beatPhase.similarity]),
     ...(pair.dimensions.harmony.status === "context" ? [] : [pair.dimensions.harmony.similarity]),
   ].filter((value): value is number => value !== null);
+  const drumMeasurements = "retainedStemDecision" in pair ? pair.retainedStemDecision?.measurements : null;
+  if (drumMeasurements && drumMeasurements.comparedOnsets > 0) {
+    const usefulAttacks = pair.retainedStemDecision?.decision === "layer"
+      ? drumMeasurements.complementaryOnsets
+      : drumMeasurements.sameStrokeOnsets;
+    measured.push(usefulAttacks / drumMeasurements.comparedOnsets);
+  }
   return measured.length ? Math.min(...measured) : -1;
 }
 
 /**
- * Whole-mix features can describe backing that a hybrid discards. Keep tempo,
- * phrase length, rhythm and beat phase as the structural pairing evidence, but
- * decide harmony from the material the requested hybrid actually retains.
+ * Whole-mix features can describe backing that a hybrid discards. Keep tempo
+ * and phrase length as structural safeguards, but judge each retained role from
+ * its own checksum-current evidence.
  */
 function applyRetainedRoleEvidence(input: {
   anchor: AutomaticRemixSource;
@@ -637,25 +644,51 @@ function applyRetainedRoleEvidence(input: {
   donorSection: AutomaticRemixSection;
   role: RetainedStemRole;
   comparison: ReturnType<typeof comparePassageCompatibility>;
+  drumDecision?: DrumBedDecision;
 }) {
   const { anchor, donor, anchorSection, donorSection, role } = input;
   const comparison = input.comparison;
-  const structuralMatch = (comparison.dimensions.tempo.status === "match"
+  const sectionTimingMatch = (comparison.dimensions.tempo.status === "match"
       || comparison.dimensions.tempo.status === "adapted")
-    && comparison.dimensions.phraseAlignment.status === "match"
+    && comparison.dimensions.phraseAlignment.status === "match";
+  const structuralMatch = sectionTimingMatch
     && comparison.dimensions.rhythm.status === "match"
     && comparison.dimensions.beatPhase.status === "match";
 
   if (role === "drums") {
+    const drumDecision = input.drumDecision ?? {
+      decision: "unavailable" as const,
+      reason: "No checksum-current isolated-drum comparison was available for this section pair.",
+      measurements: null,
+    };
+    const drumPairSupportsDonor = drumDecision.decision === "replace" || drumDecision.decision === "layer";
+    const roleDecision: AutomaticRemixCompatibilityPair["retainedStemDecision"] = {
+      role: "drums",
+      ...drumDecision,
+    };
     return {
       ...comparison,
-      eligible: structuralMatch,
+      eligible: sectionTimingMatch && drumPairSupportsDonor,
+      ...((drumDecision.decision === "unavailable") ? {
+        missingEvidence: [...new Set([...comparison.missingEvidence, drumDecision.reason])],
+      } : {}),
+      retainedStemDecision: roleDecision,
       dimensions: {
         ...comparison.dimensions,
+        rhythm: {
+          ...comparison.dimensions.rhythm,
+          status: "context" as const,
+          detail: `Whole-mix onset rhythm is not used to select this drum section. ${drumDecision.reason}`,
+        },
+        beatPhase: {
+          ...comparison.dimensions.beatPhase,
+          status: "context" as const,
+          detail: `Whole-mix beat phase is not used to select this drum section. The isolated attacks were evaluated on both saved beat grids. ${drumDecision.reason}`,
+        },
         harmony: {
           status: "context" as const,
           similarity: null,
-          detail: "Source-mix chroma is not a gate for a drum swap because the donor's harmony is discarded. Isolated drum transients decide retain/replace/layer after section pairing.",
+          detail: "Source-mix chroma is not a gate for a drum swap because the donor's harmony is discarded.",
         },
       },
     };
@@ -773,6 +806,7 @@ function passageHybridCounterparts(
   const usedDonorSections = new Set<string>();
   const matches = new Map<string, AutomaticRemixSection>();
   const comparisons: AutomaticRemixCompatibilityPair[] = [];
+  const drumEvaluator = retainedRole === "drums" ? createDrumBedEvaluator(anchor, candidate) : null;
   for (const anchorSection of anchorSections) {
     const anchorFingerprint = anchorSection.passageFingerprint;
     if (!anchorFingerprint) continue;
@@ -792,6 +826,18 @@ function passageHybridCounterparts(
         donorKeyTrusted: donorKey !== null,
         expectedKeyShift,
       });
+      const sectionTimingMatch = (comparison.dimensions.tempo.status === "match"
+          || comparison.dimensions.tempo.status === "adapted")
+        && comparison.dimensions.phraseAlignment.status === "match";
+      const drumDecision = retainedRole === "drums"
+        ? sectionTimingMatch && drumEvaluator
+          ? drumEvaluator(drumPlacementsFromCounterparts(anchor, new Map([[anchorSection.id, donorSection]])))
+          : {
+            decision: "unavailable" as const,
+            reason: "Trusted tempo and complete-bar section length did not authorize an isolated-drum comparison for this pair.",
+            measurements: null,
+          }
+        : undefined;
       comparison = applyRetainedRoleEvidence({
         anchor,
         donor: candidate,
@@ -799,6 +845,7 @@ function passageHybridCounterparts(
         donorSection,
         role: retainedRole,
         comparison,
+        ...(drumDecision ? { drumDecision } : {}),
       });
       if (comparison.eligible) {
         // The persisted tempo map reads anchor-duration × (anchor BPM / donor
@@ -868,7 +915,9 @@ function passageHybridCounterparts(
       missingEvidence,
       note: fingerprintCount === 0
         ? "No current passage fingerprints were found. Re-run structural analysis; older section rows are not silently upgraded."
-        : "Passage matching keeps trusted tempo, phrase length, onset rhythm, and beat phase. Vocal harmony uses isolated vocal notes against the retained bed when available; drum swaps defer to isolated drum transients. Whole-mix chroma is not a gate when that backing is discarded. Adapted tempo must fit inside the selected donor section; matches remain audition candidates, not listening-quality claims.",
+        : retainedRole === "drums"
+          ? "Drum passage selection keeps trusted tempo and phrase length, then requires checksum-current isolated drum attacks measured on both beat grids. Whole-mix rhythm, phase and chroma are context only. Adapted tempo must fit inside the donor section; a measured replace/layer result is an audition candidate, not a listening-quality claim."
+          : "Vocal passage matching keeps trusted tempo, phrase length, whole-mix onset rhythm and beat phase, then checks isolated vocal activity and vocal-note harmony against the retained bed when available. Whole-mix chroma is not a gate when that backing is discarded. Adapted tempo must fit inside the selected donor section; matches remain audition candidates, not listening-quality claims.",
     } satisfies AutomaticRemixCompatibilityReport,
   };
 }
@@ -905,15 +954,28 @@ function requestedStem(sources: AutomaticRemixSource[], stemId: string | undefin
  * stem at all is a different fact from a bed whose drums were not measured, and
  * both are reported as unavailable rather than as a preference.
  */
-function decideDrumBedForCandidate(input: {
-  anchor: AutomaticRemixSource;
-  donor: AutomaticRemixSource;
-  counterparts: ReadonlyMap<string, AutomaticRemixSection>;
-}): DrumBedDecision {
-  const { anchor, donor, counterparts } = input;
-  const verified = (source: AutomaticRemixSource, stemType: "drums" | "percussion") => {
-    const stem = source.stems.find((candidate) => candidate.stemType === stemType)
-      ?? source.stems.find((candidate) => candidate.stemType === "drums")
+function drumPlacementsFromCounterparts(
+  anchor: AutomaticRemixSource,
+  counterparts: ReadonlyMap<string, AutomaticRemixSection>,
+): DrumPlacement[] {
+  const placements: DrumPlacement[] = [];
+  for (const [anchorSectionId, donorSection] of counterparts) {
+    const anchorSection = usableSections(anchor).find((section) => section.id === anchorSectionId);
+    if (!anchorSection) continue;
+    placements.push({
+      anchorSectionId,
+      donorSectionId: donorSection.id,
+      durationMs: anchorSection.endMs - anchorSection.startMs,
+      anchorSourceStartMs: anchorSection.startMs,
+      donorSourceStartMs: donorSection.startMs,
+    });
+  }
+  return placements;
+}
+
+function createDrumBedEvaluator(anchor: AutomaticRemixSource, donor: AutomaticRemixSource) {
+  const verified = (source: AutomaticRemixSource) => {
+    const stem = source.stems.find((candidate) => candidate.stemType === "drums")
       ?? source.stems.find((candidate) => candidate.stemType === "percussion");
     if (!stem) return null;
     const evidence = source.drumEvidence;
@@ -923,10 +985,6 @@ function decideDrumBedForCandidate(input: {
       || (evidence.analysisEngine === LOCAL_DRUM_ANALYSIS_ENGINE
         && evidence.analysisEngineVersion === LOCAL_DRUM_ANALYSIS_ENGINE_VERSION);
     if (!supportedEngine) return null;
-    // The stem bytes this evidence was measured from must still be the stem's
-    // bytes. Comparing the evidence's checksum against itself would certify
-    // anything, so the stem record has to carry its own checksum for the claim
-    // to mean something.
     if (!stem.checksumSha256) return null;
     if (drumAnalysisProvenanceReason({
       sourceAssetId: source.id,
@@ -940,9 +998,6 @@ function decideDrumBedForCandidate(input: {
       analysisEngine: evidence.analysisEngine,
       analysisEngineVersion: evidence.analysisEngineVersion,
     }, {
-      // A local-worker row and a desktop-detector row are separate engines with
-      // separate version histories; judging one against the other's constant
-      // would reject every row the worker writes.
       engine: evidence.analysisEngine === DRUM_ANALYSIS_ENGINE
         ? DRUM_ANALYSIS_ENGINE : LOCAL_DRUM_ANALYSIS_ENGINE,
       version: evidence.analysisEngine === DRUM_ANALYSIS_ENGINE
@@ -950,46 +1005,45 @@ function decideDrumBedForCandidate(input: {
     })) return null;
     return { stem, evidence };
   };
-  const anchorPart = verified(anchor, "drums");
-  if (!anchorPart)
-    return {
+  const anchorPart = verified(anchor);
+  if (!anchorPart) {
+    return (_placements: readonly DrumPlacement[]): DrumBedDecision => ({
       decision: "unavailable",
       reason: `The bed ${anchor.originalFilename} has no checksum-current drum transient evidence, so its own rhythm section cannot be compared with the donor's.`,
       measurements: null,
-    };
-  const donorPart = verified(donor, "drums");
-  if (!donorPart)
-    return {
+    });
+  }
+  const donorPart = verified(donor);
+  if (!donorPart) {
+    return (_placements: readonly DrumPlacement[]): DrumBedDecision => ({
       decision: "unavailable",
       reason: `The donor ${donor.originalFilename} has no checksum-current drum transient evidence, so its drum part cannot be compared with the bed's.`,
       measurements: null,
-    };
+    });
+  }
   const anchorGrid = usableBeatGrid(anchor.analysis?.beatGridMs);
   const anchorBpm = trustedBpm(anchor);
   const donorBpm = trustedBpm(donor);
-  // The transform the clip plan will apply. When either tempo is untrusted the
-  // planner authorizes no stretch, so the ratio is 1 -- and the decision must
-  // judge the parts as they would actually be played, not as a hypothetical.
   const tempoRatio = anchorBpm && donorBpm ? anchorBpm / donorBpm : 1;
-  const placements: DrumPlacement[] = [];
-  for (const [anchorSectionId, donorSection] of counterparts) {
-    const anchorSection = usableSections(anchor).find((section) => section.id === anchorSectionId);
-    if (!anchorSection) continue;
-    placements.push({
-      anchorSectionId,
-      donorSectionId: donorSection.id,
-      durationMs: anchorSection.endMs - anchorSection.startMs,
-      anchorSourceStartMs: anchorSection.startMs,
-      donorSourceStartMs: donorSection.startMs,
-    });
-  }
-  return decideDonorDrumBed({
-    anchorGroove: measureStemGroove("drums", anchorPart.evidence.events, anchorGrid, anchor.analysis?.beatConfidence),
-    donorGroove: measureStemGroove("drums", donorPart.evidence.events, usableBeatGrid(donor.analysis?.beatGridMs), donor.analysis?.beatConfidence),
+  const anchorGroove = measureStemGroove("drums", anchorPart.evidence.events, anchorGrid, anchor.analysis?.beatConfidence);
+  const donorGroove = measureStemGroove("drums", donorPart.evidence.events, usableBeatGrid(donor.analysis?.beatGridMs), donor.analysis?.beatConfidence);
+  return (placements: readonly DrumPlacement[]): DrumBedDecision => decideDonorDrumBed({
+    anchorGroove,
+    donorGroove,
     anchorGrid,
     tempoRatio,
     placements,
   });
+}
+
+function decideDrumBedForCandidate(input: {
+  anchor: AutomaticRemixSource;
+  donor: AutomaticRemixSource;
+  counterparts: ReadonlyMap<string, AutomaticRemixSection>;
+}): DrumBedDecision {
+  return createDrumBedEvaluator(input.anchor, input.donor)(
+    drumPlacementsFromCounterparts(input.anchor, input.counterparts),
+  );
 }
 
 
@@ -1002,6 +1056,7 @@ function clipWindows(
   anchor: AutomaticRemixSource,
   targetBpm: number | null,
   counterparts?: ReadonlyMap<string, AutomaticRemixSection>,
+  stemType?: string,
 ) {
   const anchorSections = sourceCanStructure(anchor) ? usableSections(anchor) : [];
   const foreign = source.id !== anchor.id;
@@ -1012,7 +1067,10 @@ function clipWindows(
   const tempoSyncEnabled = foreign && ratio !== 1;
   const targetKey = trustedKey(anchor);
   const sourceKey = trustedKey(source);
-  const keySyncEnabled = foreign && Boolean(targetKey && sourceKey && semitoneShift(sourceKey, targetKey));
+  const keySyncEnabled = foreign
+    && stemType !== "drums"
+    && stemType !== "percussion"
+    && Boolean(targetKey && sourceKey && semitoneShift(sourceKey, targetKey));
   const beatSnapEnabled = sourceCanStructure(source);
   if (!anchorSections.length) return [{ timelineStartMs: 0, durationMs: source.durationMs, sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false }];
   let cursor = 0;
@@ -1059,7 +1117,7 @@ function combinedCompatibilityReport(reports: AutomaticRemixCompatibilityReport[
     eligiblePairs: reports.reduce((total, report) => total + report.eligiblePairs, 0),
     pairs,
     missingEvidence: [...new Set(reports.flatMap((report) => report.missingEvidence))],
-    note: "Passage matches use trusted tempo, phrase length, rhythm, and beat phase. Vocal harmony and drum decisions use retained-stem evidence when available; discarded source backing is not a compatibility gate. Matches are audition candidates, not listening-quality claims.",
+    note: "Passage selection keeps trusted tempo and phrase length. Vocal matches also use whole-mix rhythm/phase and retained vocal-to-bed evidence; drum matches require isolated attacks on both beat grids. Discarded backing is not a compatibility gate. Matches remain audition candidates, not listening-quality claims.",
   };
 }
 
@@ -1196,7 +1254,9 @@ export function buildAutomaticRemixPlan(
       if (passage) compatibilityBySource.set(candidate.source.id, passage.report);
       else compatibilityBySource.set(candidate.source.id, unavailablePassageReport(candidate.source));
       if (!counterparts) {
-        notices.push(`${candidate.source.originalFilename} was kept out of the hybrid because no section pair passed the measured tempo, rhythm, chroma, and beat-phase checks.`);
+        notices.push(candidate.stem.stemType === "drums"
+          ? `${candidate.source.originalFilename} was kept out of the hybrid because no section pair had current isolated-drum evidence supporting a replace or layer decision on both beat grids.`
+          : `${candidate.source.originalFilename} was kept out of the hybrid because no section pair passed the measured tempo, phrase-length, rhythm, beat-phase, and retained-vocal checks.`);
         continue;
       }
       if (candidate.stem.stemType === "vocals") {
@@ -1295,7 +1355,7 @@ export function buildAutomaticRemixPlan(
   const ordered = [...selected.values()].sort((left, right) => roleRank(left.stem) - roleRank(right.stem) || left.stem.id.localeCompare(right.stem.id));
   const tracks: AutomaticRemixTrackPlan[] = [];
   for (const [sortOrder, { source, stem }] of ordered.entries()) {
-    const clips = clipWindows(source, anchor, anchorBpm, counterpartsBySource.get(source.id));
+    const clips = clipWindows(source, anchor, anchorBpm, counterpartsBySource.get(source.id), stem.stemType);
     if (!clips) return { ok: false, reason: "unsafe_hybrid_alignment" };
     tracks.push({
       stemAssetId: stem.id,
