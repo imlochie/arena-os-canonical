@@ -213,6 +213,26 @@ test("preview segment budget includes retained windows and encoded range headroo
     assert.ok(estimate.estimatedPeakBytes > estimate.decodedBytes);
     assert.ok(estimate.estimatedPeakBytes < ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES);
   }
+  const withDspScratch = estimateArrangementPreviewSegmentMemory(
+    segments.map((segment, index) => ({
+      ...segment,
+      processingScratchBytes: (index + 1) * 2 * 1024 * 1024,
+    })),
+    assets,
+    48_000,
+    24 * 1024 * 1024,
+  );
+  assert.equal(withDspScratch.ok, true);
+  if (estimate.ok && withDspScratch.ok)
+    assert.equal(withDspScratch.estimatedPeakBytes - estimate.estimatedPeakBytes, 8 * 1024 * 1024);
+  assert.deepEqual(
+    estimateArrangementPreviewSegmentMemory(
+      [{ assetId: "v", durationMs: 1_000, encodedBytes: 1_000, processingScratchBytes: Number.NaN }],
+      assets,
+      48_000,
+    ),
+    { ok: false, reason: "missing-metadata", assetId: "v" },
+  );
   assert.deepEqual(
     estimateArrangementPreviewSegmentMemory(
       [{ assetId: "missing", durationMs: 4_000, encodedBytes: 1_000 }],

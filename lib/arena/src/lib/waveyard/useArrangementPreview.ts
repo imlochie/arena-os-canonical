@@ -21,14 +21,15 @@ import {
   pcm16WavSegmentRange,
   type Pcm16WavHeader,
 } from "./arrangement-preview-segments";
-import type { RemixTrackInput } from "./remix";
 import {
   makeLocalTempoMapWindow,
   renderLocalTempoMapRange,
 } from "./studio/local-tempo-map";
+import { pitchShiftPreviewStereoPcm } from "./arrangement-preview-audio";
+import type { ArrangementPreviewClip, ArrangementPreviewTrack } from "./arrangement-preview-key-sync";
 
-type PreviewClip = RemixTrackInput["clips"][number];
-type PreviewTrack = RemixTrackInput;
+type PreviewClip = ArrangementPreviewClip;
+type PreviewTrack = ArrangementPreviewTrack;
 type PreviewState = {
   masterVolume: number;
   loopStartMs: number;
@@ -255,65 +256,85 @@ export function useArrangementPreview(
     generation: number,
   ): Promise<ReadySegment | null> => {
     if (generation !== playbackGeneration.current) return null;
+    const keyShift = segment.clip.keySyncEnabled
+      ? segment.clip.previewKeyShiftSemitones
+      : 0;
+    if (segment.clip.keySyncEnabled
+      && (keyShift === null || keyShift === undefined || !Number.isInteger(keyShift) || Math.abs(keyShift) > 11)) {
+      throw new Error("Studio cannot preview key sync until this clip has current source-key analysis and a target key.");
+    }
     const header = await ensurePcmWavHeader(segment.assetId, generation);
     if (!header || generation !== playbackGeneration.current) return null;
+    if (keyShift && header.channels !== 2) {
+      throw new Error("Studio key-sync preview requires a stereo PCM16 WAV stem. Re-separate this stem before previewing.");
+    }
     const localMap = segment.clip.tempoSyncEnabled ? segment.clip.localTempoMap : undefined;
-    if (localMap && header.channels === 2) {
+    if (localMap) {
+      if (header.channels !== 2) {
+        throw new Error("Studio cannot apply this saved tempo map because the stem is not stereo PCM WAV.");
+      }
       const window = makeLocalTempoMapWindow(
         localMap,
         header.sampleRate,
         segment.clipElapsedMs,
         segment.durationMs,
       );
-      if (window) {
-        const sourceOffsetFrame = Math.round(segment.clip.sourceOffsetMs * header.sampleRate / 1_000)
-          + window.inputStartFrame;
-        const inputFrames = window.inputEndFrame - window.inputStartFrame;
-        const range = pcm16WavSegmentRange(
-          header,
-          sourceOffsetFrame * 1_000 / header.sampleRate,
-          inputFrames * 1_000 / header.sampleRate,
-        );
-        if (range && range.frameCount === inputFrames) {
-          const response = await fetch(`/api/assets/${segment.assetId}`, {
-            headers: { Range: `bytes=${range.byteStart}-${range.byteEnd}` },
-            cache: "no-store",
-          });
-          if (response.status === 206) {
-            const contentRange = parseHttpContentRange(response.headers.get("content-range"));
-            if (contentRange?.start === range.byteStart && contentRange.end === range.byteEnd) {
-              const encoded = await response.arrayBuffer();
-              if (encoded.byteLength === inputFrames * header.blockAlign) {
-                if (generation !== playbackGeneration.current) return null;
-                const source = new Float32Array(inputFrames * 2);
-                const view = new DataView(encoded);
-                for (let frame = 0; frame < inputFrames; frame += 1) {
-                  source[frame * 2] = view.getInt16(frame * header.blockAlign, true) / 32768;
-                  source[frame * 2 + 1] = view.getInt16(frame * header.blockAlign + 2, true) / 32768;
-                }
-                const rendered = renderLocalTempoMapRange(source, header.sampleRate, window);
-                if (rendered) {
-                  const frames = rendered.length / 2;
-                  const buffer = audio.createBuffer(2, frames, header.sampleRate);
-                  const left = buffer.getChannelData(0);
-                  const right = buffer.getChannelData(1);
-                  for (let frame = 0; frame < frames; frame += 1) {
-                    left[frame] = rendered[frame * 2]!;
-                    right[frame] = rendered[frame * 2 + 1]!;
-                  }
-                  const key = `segment:${generation}:${nextBufferKey.current++}`;
-                  buffers.current.set(key, buffer);
-                  return { ...segment, key, buffer, sourceOffsetMs: 0, durationMs: frames * 1_000 / header.sampleRate };
-                }
-              }
-            } else await response.body?.cancel();
-          } else {
-            await response.body?.cancel();
-          }
-        }
+      if (!window) throw new Error("Studio couldn't construct this clip's saved tempo-map preview window.");
+      const sourceOffsetFrame = Math.round(segment.clip.sourceOffsetMs * header.sampleRate / 1_000)
+        + window.inputStartFrame;
+      const inputFrames = window.inputEndFrame - window.inputStartFrame;
+      const range = pcm16WavSegmentRange(
+        header,
+        sourceOffsetFrame * 1_000 / header.sampleRate,
+        inputFrames * 1_000 / header.sampleRate,
+      );
+      if (!range || range.frameCount !== inputFrames) {
+        throw new Error("Studio couldn't read the exact source range required by this saved tempo map.");
       }
-      // A range/map mismatch is stale evidence, not a reason to block the
-      // arrangement. Continue through the ordinary continuous-placement path.
+      const response = await fetch(`/api/assets/${segment.assetId}`, {
+        headers: { Range: `bytes=${range.byteStart}-${range.byteEnd}` },
+        cache: "no-store",
+      });
+      if (generation !== playbackGeneration.current) {
+        await response.body?.cancel();
+        return null;
+      }
+      if (response.status !== 206) {
+        await response.body?.cancel();
+        throw new Error("Studio couldn't load the exact source range required by this saved tempo map.");
+      }
+      const contentRange = parseHttpContentRange(response.headers.get("content-range"));
+      if (contentRange?.start !== range.byteStart || contentRange.end !== range.byteEnd) {
+        await response.body?.cancel();
+        throw new Error("Studio received a source range that does not match this saved tempo map.");
+      }
+      const encoded = await response.arrayBuffer();
+      if (encoded.byteLength !== inputFrames * header.blockAlign) {
+        throw new Error("Studio received an incomplete source range for this saved tempo map.");
+      }
+      if (generation !== playbackGeneration.current) return null;
+      const source = new Float32Array(inputFrames * 2);
+      const view = new DataView(encoded);
+      for (let frame = 0; frame < inputFrames; frame += 1) {
+        source[frame * 2] = view.getInt16(frame * header.blockAlign, true) / 32768;
+        source[frame * 2 + 1] = view.getInt16(frame * header.blockAlign + 2, true) / 32768;
+      }
+      const rendered = renderLocalTempoMapRange(source, header.sampleRate, window);
+      if (!rendered) throw new Error("Studio couldn't render this clip's saved tempo map.");
+      const pitchAdjusted = keyShift
+        ? pitchShiftPreviewStereoPcm(rendered, keyShift, header.sampleRate)
+        : rendered;
+      const frames = pitchAdjusted.length / 2;
+      const buffer = audio.createBuffer(2, frames, header.sampleRate);
+      const left = buffer.getChannelData(0);
+      const right = buffer.getChannelData(1);
+      for (let frame = 0; frame < frames; frame += 1) {
+        left[frame] = pitchAdjusted[frame * 2]!;
+        right[frame] = pitchAdjusted[frame * 2 + 1]!;
+      }
+      const key = `segment:${generation}:${nextBufferKey.current++}`;
+      buffers.current.set(key, buffer);
+      return { ...segment, key, buffer, sourceOffsetMs: 0, durationMs: frames * 1_000 / header.sampleRate };
     }
     const range = pcm16WavSegmentRange(header, segment.sourceOffsetMs, segment.durationMs);
     if (!range) return null;
@@ -334,12 +355,23 @@ export function useArrangementPreview(
     }
     if (generation !== playbackGeneration.current) return null;
 
-    const buffer = audio.createBuffer(header.channels, range.frameCount, header.sampleRate);
     const view = new DataView(encoded);
+    let pitchAdjusted: Float32Array | null = null;
+    if (keyShift) {
+      const interleaved = new Float32Array(range.frameCount * 2);
+      for (let frame = 0; frame < range.frameCount; frame += 1) {
+        interleaved[frame * 2] = view.getInt16(frame * header.blockAlign, true) / 32768;
+        interleaved[frame * 2 + 1] = view.getInt16(frame * header.blockAlign + 2, true) / 32768;
+      }
+      pitchAdjusted = pitchShiftPreviewStereoPcm(interleaved, keyShift, header.sampleRate);
+    }
+    const buffer = audio.createBuffer(header.channels, range.frameCount, header.sampleRate);
     for (let channel = 0; channel < header.channels; channel += 1) {
       const output = buffer.getChannelData(channel);
       for (let frame = 0; frame < range.frameCount; frame += 1) {
-        output[frame] = view.getInt16(frame * header.blockAlign + channel * 2, true) / 32768;
+        output[frame] = pitchAdjusted
+          ? pitchAdjusted[frame * 2 + channel]!
+          : view.getInt16(frame * header.blockAlign + channel * 2, true) / 32768;
       }
     }
     const key = `segment:${generation}:${nextBufferKey.current++}`;
@@ -396,11 +428,27 @@ export function useArrangementPreview(
             plan.durationMs,
           )
         : null;
+      const keyShift = plan.clip.keySyncEnabled ? plan.clip.previewKeyShiftSemitones ?? 0 : 0;
+      const outputFloatBytes = Math.ceil(
+        plan.durationMs / 1_000 * Math.max(audio.sampleRate, asset.sampleRate)
+          * asset.channels * Float32Array.BYTES_PER_ELEMENT,
+      );
+      const inputFloatBytes = localWindow
+        ? Math.ceil((localWindow.inputEndFrame - localWindow.inputStartFrame)
+          * asset.channels * Float32Array.BYTES_PER_ELEMENT)
+        : outputFloatBytes;
+      // pitchShift currently keeps WSOLA windows, Float64 channel workspaces,
+      // sinc-resampling outputs and the final AudioBuffer live in one segment.
+      // Reserve a conservative scratch peak for that transform before decoding.
+      const processingScratchBytes = localWindow || keyShift !== 0
+        ? Math.max(inputFloatBytes, outputFloatBytes) * 32
+        : 0;
       if (localWindow) {
         return {
           assetId: plan.assetId,
           durationMs: plan.durationMs,
           encodedBytes: (localWindow.inputEndFrame - localWindow.inputStartFrame) * asset.channels * 2,
+          processingScratchBytes,
         };
       }
       const frames = Math.ceil(plan.durationMs * asset.sampleRate / 1_000);
@@ -408,6 +456,7 @@ export function useArrangementPreview(
         assetId: plan.assetId,
         durationMs: plan.durationMs,
         encodedBytes: frames * asset.channels * 2,
+        processingScratchBytes,
       };
     });
     const estimate = estimateArrangementPreviewSegmentMemory(
@@ -742,6 +791,24 @@ export function useArrangementPreview(
       [...supplementalAssets, ...(state.previewAssets ?? [])].map((asset) => [asset.id, asset]),
     );
     const metadata = [...metadataById.values()];
+    const keySyncClips = audibleTracks.flatMap((track) => track.clips)
+      .filter((clip) => clip.keySyncEnabled);
+    for (const clip of keySyncClips) {
+      const shift = clip.previewKeyShiftSemitones;
+      if (shift === null || shift === undefined || !Number.isInteger(shift) || Math.abs(shift) > 11) {
+        throw new Error("Studio cannot preview key sync until each enabled clip has current source-key analysis and a target key.");
+      }
+    }
+    const hasPreviewPitchShift = keySyncClips.some((clip) => clip.previewKeyShiftSemitones !== 0);
+    if (hasPreviewPitchShift) {
+      for (const clip of keySyncClips) {
+        if (clip.previewKeyShiftSemitones === 0) continue;
+        const asset = metadataById.get(clip.stemAssetId);
+        if (asset && (asset.channels !== 2 || !asset.codec || !/(pcm|wav)/i.test(asset.codec.trim()))) {
+          throw new Error("Studio key-sync preview requires stereo PCM16 WAV stems. Re-separate this stem before previewing.");
+        }
+      }
+    }
     const hasLocalTempoMap = audibleTracks.some((track) =>
       track.clips.some((clip) => clip.tempoSyncEnabled && clip.localTempoMap),
     );
@@ -762,7 +829,7 @@ export function useArrangementPreview(
         const codec = metadataById.get(assetId)?.codec;
         return typeof codec === "string" && Boolean(previewMimeTypeForCodec(codec));
       });
-      if (!hasLocalTempoMap && hasEncodedCodec && mediaCodecsKnown) {
+      if (!hasLocalTempoMap && !hasPreviewPitchShift && hasEncodedCodec && mediaCodecsKnown) {
         const endMs = Math.max(0, ...state.tracks.flatMap((track) =>
           track.clips.map((clip) => clip.timelineStartMs + clip.durationMs),
         ));
@@ -803,7 +870,7 @@ export function useArrangementPreview(
 
     }
 
-    if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES || hasLocalTempoMap) {
+    if (estimate.estimatedPeakBytes > ARRANGEMENT_PREVIEW_MEMORY_LIMIT_BYTES || hasLocalTempoMap || hasPreviewPitchShift) {
       segmentedMode.current = true;
       buffers.current.clear();
       const endMs = Math.max(0, ...state.tracks.flatMap((track) =>

@@ -62,6 +62,7 @@ import { VersionHistory } from "./studio/VersionHistory";
 import type { MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { useStemTransport } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { useArrangementPreview } from "@workspace/arena/lib/waveyard/useArrangementPreview";
+import { withArrangementPreviewKeySync } from "@workspace/arena/lib/waveyard/arrangement-preview-key-sync";
 import { snapTimelineMs, type GridDivision } from "@workspace/arena/lib/waveyard/timing";
 import { useReducedMotion } from "@workspace/arena/lib/waveyard/useReducedMotion";
 
@@ -222,6 +223,10 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       : null;
     return [stem.id, key] as const;
   })), [sourceById, stems]);
+  const prepareArrangementPreview = useCallback(
+    (state: Remix) => withArrangementPreviewKeySync(state, sourceKeyByStemId),
+    [sourceKeyByStemId],
+  );
   const sourceBeatByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
     const beatGrid = analysis?.status === "complete"
@@ -271,7 +276,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     play: async () => {
       if (!remix) return transport.play();
       transport.pause();
-      return arrangementPreview.play(remix, transport.position * 1000);
+      return arrangementPreview.play(prepareArrangementPreview(remix), transport.position * 1000);
     },
     pause: () => {
       if (remix) arrangementPreview.pause();
@@ -281,7 +286,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       if (remix && arrangementPreview.playing) arrangementPreview.pause();
       transport.seek(seconds);
     },
-  }), [arrangementPreview, observedTransportPlaying, remix, transport]);
+  }), [arrangementPreview, observedTransportPlaying, prepareArrangementPreview, remix, transport]);
   // Track labels are a presentation concern for old sessions too. This makes
   // them source-qualified without writing back to pre-existing records.
   const arrangementRemix = useMemo(() => remix && ({
@@ -661,7 +666,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     // This remains the source-stem inspection mixer. Arrangement tracks have independent controls in the timeline.
     const nextRemix = changeRemix((current) => ({ ...current, tracks: current.tracks.map((track) => track.stemAssetId === id ? { ...track, ...trackPatch } : track) }));
     if (patch.muted !== undefined && nextRemix && (arrangementPreview.playing || arrangementPreview.pending)) {
-      void arrangementPreview.play(nextRemix, transport.position * 1000);
+      void arrangementPreview.play(prepareArrangementPreview(nextRemix), transport.position * 1000);
     }
   };
   const requestSourceEvents = useCallback(async (sourceId: string) => {
@@ -880,9 +885,9 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     setRemix(next);
     queuePersist(next);
     if (arrangementPreview.playing || arrangementPreview.pending)
-      void arrangementPreview.play(next, transport.position * 1000);
+      void arrangementPreview.play(prepareArrangementPreview(next), transport.position * 1000);
     return null;
-  }, [arrangementPreview, persist, queuePersist, record, reset, transport.position]);
+  }, [arrangementPreview, persist, prepareArrangementPreview, queuePersist, record, reset, transport.position]);
   const undo = useCallback(() => {
     if (!remix) return;
     const prior = historyUndo(remix);
@@ -916,8 +921,8 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     if (!remix) return;
     if (arrangementPreview.playing || arrangementPreview.pending) { arrangementPreview.pause(); return; }
     transport.pause();
-    void arrangementPreview.play(remix, transport.position * 1000);
-  }, [arrangementPreview, remix, transport]);
+    void arrangementPreview.play(prepareArrangementPreview(remix), transport.position * 1000);
+  }, [arrangementPreview, prepareArrangementPreview, remix, transport]);
   const createVersion = async () => {
     if (!remix) return;
     const name = window.prompt("Name this remix version", `Version ${versions.length + 1}`)?.trim();

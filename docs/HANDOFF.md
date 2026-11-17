@@ -1,5 +1,27 @@
 # Arena handoff — read this first
 
+## Latest increment: key sync now changes Studio preview audio
+
+Studio preview now derives a per-clip semitone shift from the clip's trusted
+current source-key analysis and the remix target key. The instruction exists
+only in the preview state; it is not persisted into the arrangement or used as a
+substitute for export analysis. Key-shifted preview runs on bounded stereo
+PCM16-WAV segments and preserves each segment's duration. If a requested shift
+has no trusted source/target key or the asset is not supported stereo PCM WAV,
+preview fails visibly instead of playing unshifted audio. The segmented preview
+budget includes a conservative DSP-scratch reservation. A saved tempo map that
+cannot be rendered from its exact PCM range also fails visibly; preview no longer
+falls back to an unwarped segment.
+
+The browser preview and export use different pitch-processing implementations,
+but resolve the same semitone shift. They are not sample-identical. This change
+does not establish perceptual quality on real songs; the next acceptance should
+compare key-synced preview and export using a real separated track.
+
+**Verification:** full `pnpm run typecheck` passed. The key-shift, trusted-key
+mapping, preview-memory, track-selection, local-WSOLA and elastic-audio suites
+passed 35 tests. No real-song listening result has been collected.
+
 ## Latest increment: automatic tempo decisions are saved as audible clip maps
 
 Automatic remix clips selected for tempo sync now receive the same bounded,

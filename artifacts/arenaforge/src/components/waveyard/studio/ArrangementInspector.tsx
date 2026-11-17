@@ -256,8 +256,8 @@ export function ArrangementInspector({
     <fieldset className="key-sync"><legend>Key Sync</legend>
       <label><input aria-label="Key sync" type="checkbox" checked={clip.keySyncEnabled} onChange={(event) => update((item) => ({ ...item, keySyncEnabled: event.target.checked }))} /> {clip.keySyncEnabled ? "Sync to remix key" : "Off"}</label>
       {sourceKey && remix.targetKey && keyShift !== null
-        ? (clip.keySyncEnabled && <p>Source {sourceKey} → remix {remix.targetKey} · {keyShift >= 0 ? "+" : ""}{keyShift} semitones. Export-only; arrangement preview uses original audio.</p>)
-        : <p>{!sourceKey ? "Source key unavailable." : "Target remix key unavailable."} {clip.keySyncEnabled ? "Export will fail until complete key analysis and a target key are available." : "Key sync cannot be rendered until both are available."}</p>}
+        ? (clip.keySyncEnabled && <p>Source {sourceKey} → remix {remix.targetKey} · {keyShift >= 0 ? "+" : ""}{keyShift} semitones. Studio preview and WAV export both apply this clip's key shift.</p>)
+        : <p>{!sourceKey ? "Source key unavailable." : "Target remix key unavailable."} {clip.keySyncEnabled ? "Studio preview and export require complete source-key analysis and a target key." : "Key sync cannot be rendered until both are available."}</p>}
     </fieldset>
     <fieldset className="beat-snap"><legend>Beat Snap</legend>
       <label><input aria-label="Beat snap" type="checkbox" checked={clip.beatSnapEnabled} onChange={(event) => update((item) => {

@@ -38,6 +38,8 @@ export type ArrangementPreviewSegmentMemoryRequest = {
   durationMs: number;
   /** Bytes fetched for this PCM segment; only the largest is live during decode. */
   encodedBytes: number;
+  /** Peak temporary DSP workspace for one rendered segment. */
+  processingScratchBytes?: number;
 };
 
 /**
@@ -119,6 +121,7 @@ export function estimateArrangementPreviewSegmentMemory(
 
   let decodedBytes = retainedDecodedBytes;
   let largestEncodedFileBytes = 0;
+  let largestProcessingScratchBytes = 0;
   for (const segment of segments) {
     const asset = byId.get(segment.assetId);
     if (
@@ -132,7 +135,9 @@ export function estimateArrangementPreviewSegmentMemory(
       !Number.isFinite(segment.durationMs) ||
       segment.durationMs <= 0 ||
       !Number.isFinite(segment.encodedBytes) ||
-      segment.encodedBytes < 0
+      segment.encodedBytes < 0 ||
+      (segment.processingScratchBytes !== undefined
+        && (!Number.isSafeInteger(segment.processingScratchBytes) || segment.processingScratchBytes < 0))
     ) {
       return { ok: false, reason: "missing-metadata", assetId: segment.assetId };
     }
@@ -143,6 +148,7 @@ export function estimateArrangementPreviewSegmentMemory(
       FLOAT32_BYTES_PER_SAMPLE,
     );
     largestEncodedFileBytes = Math.max(largestEncodedFileBytes, segment.encodedBytes);
+    largestProcessingScratchBytes = Math.max(largestProcessingScratchBytes, segment.processingScratchBytes ?? 0);
   }
   if (!Number.isFinite(decodedBytes)) {
     return { ok: false, reason: "missing-metadata", assetId: segments[0]?.assetId ?? "unknown" };
@@ -151,7 +157,8 @@ export function estimateArrangementPreviewSegmentMemory(
     ok: true,
     decodedBytes,
     estimatedPeakBytes: Math.ceil(decodedBytes * ARRANGEMENT_PREVIEW_DECODE_HEADROOM_FACTOR)
-      + largestEncodedFileBytes,
+      + largestEncodedFileBytes
+      + largestProcessingScratchBytes,
   };
 }
 
