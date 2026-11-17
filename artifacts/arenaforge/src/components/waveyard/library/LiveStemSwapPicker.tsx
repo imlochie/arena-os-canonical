@@ -40,6 +40,7 @@ export interface LiveStemPreparationOption {
 
 export interface LiveStemEntryReviewEvidence {
   candidates: LiveStemSectionAlignmentCandidate[];
+  donorStemDurationMs: number | null;
   vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
   voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
   sections: Pick<SourceSection, "sectionIndex" | "startMs" | "label" | "labelConfidence">[] | null;
@@ -229,7 +230,10 @@ function VocalEntryTimeControl({
   }, [donorId, donorTitle, entryOffsetMs]);
 
   const snapTo = (points: readonly { startMs: number }[] | null | undefined, description: string) => {
-    const nearest = nearestEntryEvidenceMs(draftMs, points);
+    const validPoints = durationMs === null ? [] : (points ?? []).filter((point) =>
+      Number.isSafeInteger(point.startMs) && point.startMs >= 0 && point.startMs < durationMs,
+    );
+    const nearest = nearestEntryEvidenceMs(draftMs, validPoints);
     if (nearest === null) {
       setSnapMessage(`No measured ${description.toLowerCase()} is available.`);
       return;
@@ -238,9 +242,13 @@ function VocalEntryTimeControl({
     setSnapMessage(`Snapped to ${description.toLowerCase()} at ${formatEntryTime(nearest)}.`);
   };
 
-  const activityPoints = vocalActivityStartsMs ?? [];
-  const phrasePoints = voicedPhraseStartsMs ?? [];
-  const sectionPoints = sections ?? [];
+  const withinDonorStem = <T extends { startMs: number },>(points: readonly T[] | null) =>
+    durationMs === null ? [] : (points ?? []).filter((point) =>
+      Number.isSafeInteger(point.startMs) && point.startMs >= 0 && point.startMs < durationMs,
+    );
+  const activityPoints = withinDonorStem(vocalActivityStartsMs);
+  const phrasePoints = withinDonorStem(voicedPhraseStartsMs);
+  const sectionPoints = withinDonorStem(sections);
   const boundedDraftMs = durationMs === null ? Math.max(0, Math.round(draftMs))
     : Math.min(durationMs, Math.max(0, Math.round(draftMs)));
   const canApply = durationMs !== null && !disabled && entryOffsetMs !== boundedDraftMs;
@@ -371,6 +379,7 @@ export default function LiveStemSwapPicker({
   const previewStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [entryDonorId, setEntryDonorId] = useState<string | null>(null);
   const [entryCandidates, setEntryCandidates] = useState<LiveStemSectionAlignmentCandidate[]>([]);
+  const [entryDonorStemDurationMs, setEntryDonorStemDurationMs] = useState<number | null>(null);
   const [entryVocalActivityStartsMs, setEntryVocalActivityStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
   const [entryVoicedPhraseStartsMs, setEntryVoicedPhraseStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
   const [entrySections, setEntrySections] = useState<LiveStemEntryReviewEvidence["sections"]>(null);
@@ -403,6 +412,7 @@ export default function LiveStemSwapPicker({
     const sequence = ++previewResolveSequenceRef.current;
     setEntryDonorId(donorId);
     setEntryCandidates([]);
+    setEntryDonorStemDurationMs(null);
     setEntryVocalActivityStartsMs(null);
     setEntryVoicedPhraseStartsMs(null);
     setEntrySections(null);
@@ -417,6 +427,7 @@ export default function LiveStemSwapPicker({
     void Promise.allSettled([
       stemType === "vocals" ? onGetEntryCandidates(donorId) : Promise.resolve({
         candidates: [],
+        donorStemDurationMs: null,
         vocalActivityStartsMs: null,
         voicedPhraseStartsMs: null,
         sections: null,
@@ -428,6 +439,7 @@ export default function LiveStemSwapPicker({
       if (reviewResult.status === "fulfilled") {
         const review = reviewResult.value;
         setEntryCandidates(review.candidates);
+        setEntryDonorStemDurationMs(review.donorStemDurationMs);
         setEntryVocalActivityStartsMs(review.vocalActivityStartsMs);
         setEntryVoicedPhraseStartsMs(review.voicedPhraseStartsMs);
         setEntrySections(review.sections);
@@ -453,8 +465,15 @@ export default function LiveStemSwapPicker({
 
   const selectedAlignmentCandidate = entryCandidates[selectedEntryIndex] ?? null;
   const stagedDonor = candidates.find((candidate) => candidate.id === entryDonorId) ?? null;
-  const manualEntryLimitMs = stagedDonor?.durationSeconds != null && Number.isFinite(stagedDonor.durationSeconds)
-    && stagedDonor.durationSeconds > 0 ? Math.max(0, Math.floor(stagedDonor.durationSeconds * 1000) - 1) : null;
+  const donorStemDurationSeconds = entryDonorStemDurationMs === null
+    ? null
+    : entryDonorStemDurationMs / 1_000;
+  const manualEntryLimitMs = donorStemDurationSeconds !== null && Number.isFinite(donorStemDurationSeconds)
+    && donorStemDurationSeconds > 0 ? Math.max(0, Math.floor(donorStemDurationSeconds * 1000) - 1) : null;
+  const entryPointsWithinStem = <T extends { startMs: number },>(points: readonly T[] | null | undefined) =>
+    entryDonorStemDurationMs === null ? [] : (points ?? []).filter((point) =>
+      Number.isSafeInteger(point.startMs) && point.startMs >= 0 && point.startMs < entryDonorStemDurationMs,
+    );
   const boundedManualEntryMs = Number.isFinite(manualEntryMs)
     ? Math.min(manualEntryLimitMs ?? 0, Math.max(0, Math.round(manualEntryMs))) : 0;
   const entryTempoEvidence = stagedDonor === null ? null : {
@@ -485,7 +504,15 @@ export default function LiveStemSwapPicker({
     const audition = new Audio(previewAssetUrl);
     audition.preload = "auto";
     audition.volume = 0.5;
-    const onLoadedMetadata = () => setPreviewAudioReady(true);
+    const onLoadedMetadata = () => {
+      setPreviewAudioReady(true);
+      const actualDurationMs = Math.round(audition.duration * 1_000);
+      if (Number.isFinite(actualDurationMs) && actualDurationMs > 0) {
+        setEntryDonorStemDurationMs((knownDuration) =>
+          knownDuration === null ? actualDurationMs : Math.min(knownDuration, actualDurationMs),
+        );
+      }
+    };
     const onAudioError = () => {
       setPreviewAudioReady(false);
       setPreviewAssetState("unavailable");
@@ -765,7 +792,7 @@ export default function LiveStemSwapPicker({
     points: readonly { startMs: number }[] | null | undefined,
     description: string,
   ) => {
-    const nearest = nearestEntryEvidenceMs(boundedManualEntryMs, points);
+    const nearest = nearestEntryEvidenceMs(boundedManualEntryMs, entryPointsWithinStem(points));
     if (nearest === null) {
       setPreviewMessage(`No measured ${description.toLowerCase()} is available.`);
       return;
@@ -1090,8 +1117,8 @@ export default function LiveStemSwapPicker({
                 </div>
               ) : (
                 <p className="wy-vocal-entry-no-candidates" role="status">
-                  No source-verified rhythm/harmony window passed the current evidence gates at this playhead.
-                  {" "}That does not prove no usable passage exists; choose a manual vocal start rather than applying an unverified automatic entry.
+                  No automatic vocal entry is available at this playhead. That does not prove no usable passage exists;
+                  choose and audition a manual start instead of applying an unverified automatic entry.
                 </p>
               )}
               {selectedAlignmentCandidate && (
@@ -1154,15 +1181,15 @@ export default function LiveStemSwapPicker({
                     </button>
                   </div>
                   <div className="wy-vocal-entry-snaps" aria-label="Snap manual donor start to measured evidence">
-                    <button type="button" disabled={entryVocalActivityStartsMs?.length === 0 || entryVocalActivityStartsMs === null}
+                    <button type="button" disabled={entryPointsWithinStem(entryVocalActivityStartsMs).length === 0}
                       onClick={() => snapStagedDonorEntry(entryVocalActivityStartsMs, "vocal activity")}>
                       Snap to vocal activity
                     </button>
-                    <button type="button" disabled={entryVoicedPhraseStartsMs?.length === 0 || entryVoicedPhraseStartsMs === null}
+                    <button type="button" disabled={entryPointsWithinStem(entryVoicedPhraseStartsMs).length === 0}
                       onClick={() => snapStagedDonorEntry(entryVoicedPhraseStartsMs, "voiced phrase candidate")}>
                       Snap to voiced phrase
                     </button>
-                    <button type="button" disabled={entrySections?.length === 0 || entrySections === null}
+                    <button type="button" disabled={entryPointsWithinStem(entrySections).length === 0}
                       onClick={() => snapStagedDonorEntry(entrySections, "detected section boundary")}>
                       Snap to section
                     </button>
@@ -1171,6 +1198,12 @@ export default function LiveStemSwapPicker({
                     Phrase starts are pitch-continuity candidates, not lyric or word boundaries; section labels may be provisional.
                   </small>
                 </>
+              ) : !entryCandidatesLoading && entryCandidatesError === null ? (
+                <p className="wy-vocal-entry-no-candidates" role="status">
+                  {previewAssetState === "unavailable"
+                    ? "The separated vocal file length could not be verified, so entry offsets remain unavailable."
+                    : "Verifying the exact separated vocal length before enabling entry offsets."}
+                </p>
               ) : null}
               <div className="wy-vocal-entry-actions">
                 <button

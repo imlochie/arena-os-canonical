@@ -12,6 +12,11 @@ a qualifying automatic window still leaves the current swap untouched and
 offers manual timing plus snaps to that donor's measured activity, voiced-phrase
 candidate, or section-boundary evidence.
 
+Automatic comparison windows and manual/snap entry controls are bounded by the
+actual separated vocal stem duration, not just the source track duration. If
+that duration cannot be verified, automatic entries are withheld; the preview's
+decoded duration can further tighten the manual range.
+
 One-tap vocal donor selection now applies the highest-ranked still-valid
 measured entry candidate and persists its projected donor offset. It no longer
 merely checks that a match exists and then starts the donor at zero. If the

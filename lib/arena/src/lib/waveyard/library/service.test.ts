@@ -1304,6 +1304,8 @@ test("real stems change availability and what the player loads", async () => {
     detail!.stemAvailability.status === "separated" ? detail!.stemAvailability.stemTypes : [],
     ["bass", "drums", "other", "vocals"],
   );
+  assert.equal(detail!.stems.find((stem) => stem.stemType === "vocals")?.durationSeconds, 2,
+    "track detail exposes the duration stored for the exact separated vocal asset");
   assert.equal(detail!.playback.kind, "stems");
   assert.deepEqual(detail!.playback.assetIds, stemIds);
   const listed = await service.listTracks({ ownerId: OWNER });

@@ -547,6 +547,10 @@ function livePhraseSectionAlignmentCandidates(
       const donorWindowStartMs = beatBoundaryMs(donorGrid, donorWindow.startBeatIndex);
       const donorWindowEndMs = beatBoundaryMs(donorGrid, donorWindow.endBeatIndex);
       if (donorWindowStartMs === null || donorWindowEndMs === null || donorWindowEndMs <= donorWindowStartMs) continue;
+      if (evidence.donorStemDurationMs !== undefined && evidence.donorStemDurationMs !== null
+        && (!Number.isFinite(evidence.donorStemDurationMs)
+          || evidence.donorStemDurationMs <= 0
+          || donorWindowEndMs > evidence.donorStemDurationMs)) continue;
       const stretchedDonorDurationMs = (donorWindowEndMs - donorWindowStartMs) * stretchRatio;
       const durationSimilarity = Math.min(recipientDurationMs, stretchedDonorDurationMs)
         / Math.max(recipientDurationMs, stretchedDonorDurationMs);
@@ -841,6 +845,9 @@ export function liveStemSectionAlignmentCandidates(
     .filter((candidate) => comparableSectionLabel(candidate.label) === role
       && candidate.labelConfidence >= LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN
       && candidate.structuralConfidence >= LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN
+      && (evidence?.donorStemDurationMs === undefined || evidence.donorStemDurationMs === null
+        || (Number.isFinite(evidence.donorStemDurationMs) && evidence.donorStemDurationMs > 0
+          && candidate.endMs <= evidence.donorStemDurationMs))
       && Math.abs((candidate.endBeatIndex - candidate.startBeatIndex) - recipientBeatLength) <= 4)
     .sort((left, right) =>
       Math.abs(left.startBeatIndex / donorTrackEnd - recipientPhase)

@@ -279,6 +279,16 @@ test("live stem section mapping matches a confident role, not the same ordinal",
   ];
 
   assert.equal(liveStemSectionOffsetSeconds(recipient, donor, 12, 1), 12);
+  const stemBounded = liveStemSectionAlignmentCandidates(
+    recipient,
+    donor,
+    12,
+    1,
+    { donorStemDurationMs: 15_000 },
+  );
+  assert.equal(stemBounded.length, 1);
+  assert.equal(stemBounded[0]?.donorWindowEndMs, 12_000,
+    "trusted role matches are also limited to the separated vocal's recorded duration");
 });
 
 test("live stem section phase refuses weak, mismatched, or out-of-range maps", () => {
@@ -376,7 +386,7 @@ test("live stem entry alternatives expose distinct measured windows and their ev
   );
   assert.deepEqual(
     stemBoundedAlternatives.map((candidate) => candidate.donorWindowEndMs),
-    [8_000, 16_000],
+    [4_000, 12_000],
     "candidate windows that run beyond the actual separated vocal file are not offered",
   );
   assert.deepEqual(
@@ -385,7 +395,7 @@ test("live stem entry alternatives expose distinct measured windows and their ev
       [donor],
       5,
       1,
-      { ...evidence, donorStemDurationMs: 7_999 },
+      { ...evidence, donorStemDurationMs: 3_999 },
     ),
     [],
     "a donor file shorter than the measured window has no automatic entry",

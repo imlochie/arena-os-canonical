@@ -171,6 +171,19 @@ interface SessionTrackItem {
 }
 
 type SessionTrackAnalysis = NonNullable<SessionTrackItem["analysis"]>;
+type DonorEntryAnalysisEvidence = {
+  analysis: SessionTrackAnalysis | null;
+  vocalStemDurationMs: number | null;
+};
+
+function measuredVocalStemDurationMs(
+  stems: readonly { stemType: string; durationSeconds: number }[] | undefined,
+): number | null {
+  const seconds = stems?.find((stem) => stem.stemType === "vocals")?.durationSeconds;
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0
+    ? Math.round(seconds * 1_000)
+    : null;
+}
 
 interface SessionDetail {
   id: string;
@@ -1965,7 +1978,7 @@ export default function SessionExperience({
   const [sendingToStudio, setSendingToStudio] = useState(false);
   const studioHandoffInFlight = useRef(false);
   const liveSwapWarmupsRef = useRef(new Map<string, Promise<void>>());
-  const donorAnalysisRequestsRef = useRef(new Map<string, Promise<SessionTrackAnalysis | null>>());
+  const donorAnalysisRequestsRef = useRef(new Map<string, Promise<DonorEntryAnalysisEvidence>>());
   useEffect(() => {
     donorAnalysisRequestsRef.current.clear();
   }, [sessionId]);
@@ -5094,41 +5107,54 @@ export default function SessionExperience({
     ];
     const getEntryCandidates = async (donorId: string): Promise<LiveStemEntryReviewEvidence> => {
       const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
+      const swapDonor = session.swaps.find((item) => item.toTrackId === donorId)?.donorTrack;
       let donorAnalysis = sessionDonor?.analysis
-        ?? session.swaps.find((item) => item.toTrackId === donorId)?.donorTrack?.analysis
+        ?? swapDonor?.analysis
         ?? null;
+      let donorStemDurationMs = measuredVocalStemDurationMs(sessionDonor?.stems)
+        ?? measuredVocalStemDurationMs(swapDonor?.stems);
       // Library list summaries intentionally omit large checksum-bound window
-      // evidence. Load it only when a user asks to compare one donor.
-      if (donorAnalysis === null) {
+      // evidence and exact separated-file durations. Load both only when a user
+      // asks to compare one donor.
+      if (donorAnalysis === null || donorStemDurationMs === null) {
         let request = donorAnalysisRequestsRef.current.get(donorId);
         if (!request) {
           request = fetch(`/api/library/tracks/${encodeURIComponent(donorId)}?includeSessionAnalysis=true`, {
             cache: "no-store",
           }).then(async (response) => {
             if (!response.ok) throw new Error(`Donor analysis request failed (${response.status}).`);
-            const body = await response.json() as { sessionAnalysis?: unknown };
-            if (!body.sessionAnalysis || typeof body.sessionAnalysis !== "object") {
-              throw new Error("This donor has no current source-verified section analysis.");
-            }
-            return body.sessionAnalysis as SessionTrackAnalysis;
+            const body = await response.json() as {
+              sessionAnalysis?: unknown;
+              track?: { stems?: Array<{ stemType: string; durationSeconds: number }> };
+            };
+            return {
+              analysis: body.sessionAnalysis && typeof body.sessionAnalysis === "object"
+                ? body.sessionAnalysis as SessionTrackAnalysis
+                : null,
+              vocalStemDurationMs: measuredVocalStemDurationMs(body.track?.stems),
+            };
           });
           donorAnalysisRequestsRef.current.set(donorId, request);
         }
         try {
-          donorAnalysis = await request;
+          const loaded = await request;
+          donorAnalysis ??= loaded.analysis;
+          donorStemDurationMs ??= loaded.vocalStemDurationMs;
         } catch {
-          throw new Error("Could not load current, source-verified donor analysis.");
+          if (donorAnalysis === null) throw new Error("Could not load current, source-verified donor analysis.");
         } finally {
           if (donorAnalysisRequestsRef.current.get(donorId) === request) {
             donorAnalysisRequestsRef.current.delete(donorId);
           }
         }
       }
-      if (donorAnalysis === null || currentItem.analysis === null) return {
+      if (donorAnalysis === null) throw new Error("This donor has no current source-verified section analysis.");
+      if (currentItem.analysis === null) return {
         candidates: [],
-        vocalActivityStartsMs: donorAnalysis?.vocalActivityStartsMs ?? null,
-        voicedPhraseStartsMs: donorAnalysis?.voicedPhraseStartsMs ?? null,
-        sections: donorAnalysis?.sections ?? null,
+        donorStemDurationMs,
+        vocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
+        voicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
+        sections: donorAnalysis.sections,
       };
       const donorTempo = tempoForTrack(donorId, donorAnalysis, manualTempoCorrections);
       const candidateTempoEvidence = {
@@ -5142,24 +5168,27 @@ export default function SessionExperience({
         donorTempo.bpm,
         candidateTempoEvidence,
       ) ?? 1;
+      const candidateEvidence = {
+        ...candidateTempoEvidence,
+        donorStemDurationMs,
+        recipientBeatGridMs: currentItem.analysis.beatGridMs,
+        donorBeatGridMs: donorAnalysis.beatGridMs,
+        recipientBpm: recipientTempo.bpm,
+        donorBpm: donorTempo.bpm,
+        recipientKey: currentItem.analysis.musicalKey,
+        donorKey: donorAnalysis.musicalKey,
+        recipientKeyConfidence: currentItem.analysis.keyConfidence,
+        donorKeyConfidence: donorAnalysis.keyConfidence,
+      };
       return {
-        candidates: liveStemSectionAlignmentCandidates(
+        candidates: donorStemDurationMs === null ? [] : liveStemSectionAlignmentCandidates(
           currentItem.analysis.sections,
           donorAnalysis.sections,
           decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
           stretchRatio,
-          {
-            ...candidateTempoEvidence,
-            recipientBeatGridMs: currentItem.analysis.beatGridMs,
-            donorBeatGridMs: donorAnalysis.beatGridMs,
-            recipientBpm: recipientTempo.bpm,
-            donorBpm: donorTempo.bpm,
-            recipientKey: currentItem.analysis.musicalKey,
-            donorKey: donorAnalysis.musicalKey,
-            recipientKeyConfidence: currentItem.analysis.keyConfidence,
-            donorKeyConfidence: donorAnalysis.keyConfidence,
-          },
+          candidateEvidence,
         ),
+        donorStemDurationMs,
         vocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
         voicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
         sections: donorAnalysis.sections,
@@ -5171,9 +5200,11 @@ export default function SessionExperience({
       ?? selectedDonorLibraryTrack?.title
       ?? swap?.donorTrack?.title
       ?? null;
-    const selectedDonorDurationSeconds = selectedDonor?.track.durationSeconds
-      ?? swap?.donorTrack?.durationSeconds
-      ?? null;
+    const selectedDonorVocalDurationMs = measuredVocalStemDurationMs(selectedDonor?.stems)
+      ?? measuredVocalStemDurationMs(swap?.donorTrack?.stems);
+    const selectedDonorDurationSeconds = selectedDonorVocalDurationMs === null
+      ? null
+      : selectedDonorVocalDurationMs / 1_000;
     const selectedDonorSwapChoice = swap && selectedDonorTitle ? {
       id: swap.toTrackId,
       title: selectedDonorTitle,
