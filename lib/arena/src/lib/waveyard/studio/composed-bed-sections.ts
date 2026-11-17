@@ -63,10 +63,12 @@ function toMashupSections(sections: readonly SourceSection[]): MashupSection[] {
 /**
  * Re-derive sections for a composed bed from its actual PCM.
  *
- * `stereo44k` must be the composed (post-swap) mix at the render sample rate —
- * the same signal the listener hears and the same one the tempo/beat grid were
- * re-measured from. Optional component stems must use the same source clock;
- * their activity indicates structural changes, not semantic form.
+ * `stereo44k` is the selected post-swap PCM composite on its pre-render source
+ * clock, used to re-measure tempo/beat/section evidence before placement. It is
+ * not a measurement of the final time-stretched render. Optional component
+ * stems must share that bed source clock; donor events from another track must
+ * not be supplied until the planner's entry and time-warp map has translated
+ * them. Component activity indicates structural changes, not semantic form.
  */
 export function deriveSectionsForComposition(
   stereo44k: Float32Array,

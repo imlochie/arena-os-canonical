@@ -2,14 +2,17 @@
 
 ## Latest increment: post-swap stem changes enter section analysis
 
-When the mashup API builds a bed from retained and replacement stems, it now
-keeps those decoded components separately for analysis while leaving the
-renderer’s existing stretch-component contract unchanged. The summed
-post-swap PCM still supplies tempo, beat-grid, onset and energy evidence;
-bar-level activity changes from each available component are now added to that
-same section-candidate pass. A combined instrumental file has no trustworthy
-per-stem roles, so it continues to use only evidence measured from its mix.
-These are structural-change candidates, not verse/chorus labels.
+When the mashup API builds a bed from retained and replacement stems, the
+source-clock sum for the requested selection supplies tempo, beat-grid, onset
+and energy evidence. Per-stem activity boundaries are contributed only by
+retained bed components on that bed clock; donor stems remain in their own
+source clock until the planner chooses an entry and time-warp. Combining donor
+events with bed events before that map exists would manufacture alignment.
+These boundaries are structural-change candidates, not verse/chorus labels,
+and the source-clock sum is not the final rendered audio. The renderer’s
+existing stretch-component contract is unchanged. A combined instrumental file
+has no trustworthy per-stem roles, so it uses only evidence measured from its
+mix.
 
 The session-to-Studio live-swap path now loads the donor’s full
 checksum-current `SessionTrackAnalysis`, rather than assigning the narrower
@@ -31,6 +34,14 @@ verse/chorus accuracy, cross-song musical fit, or audible mix quality. The
 existing generated real-world stems are still available elsewhere under
 `generated-artifacts/waveyard-real-world-acceptance`; they have not been
 re-separated or altered by this increment.
+
+As a read-only check on those existing WAVs, the full-track section pass
+produced four additional `stem-change` candidates for September (at 7.8, 11.8,
+31.2 and 168.6 seconds) and seven for Another One Bites the Dust (37.0, 124.0,
+130.5, 145.8, 154.4, 180.7 and 198.3 seconds). These are measured activity
+changes, not verified verse/chorus boundaries; they have not been compared to
+independent annotations. Candidate counts show that component evidence changes
+the section map, not that the labels are musically correct.
 
 The separately gated persisted September-vocal/Queen-bed acceptance also ran
 against those pinned existing WAVs with FFmpeg explicitly configured. It passed

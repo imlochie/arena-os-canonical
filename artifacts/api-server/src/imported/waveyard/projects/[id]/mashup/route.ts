@@ -894,12 +894,11 @@ async function loadInstrumentalBed(
   /**
    * Donor stems that *replace* the omitted bed roles, keyed by stem type.
    *
-   * Omitting the bed's drums is only half a replacement: the composition the
-   * listener hears is `bed - drums + donor drums`. Analysing the bed with the
-   * drums merely removed measures a bed with NO percussion, which is why a
-   * completed swap was planning against a drumless bed and picking up a
-   * half-tempo reading. These are summed in so the analysis sees the actual
-   * resulting composition.
+    * For request-time source-clock analysis, omitting the bed drums alone would
+    * measure a bed with no percussion and can yield a half-tempo reading. These
+    * donor stems are included in the provisional sum. Their entry and time-warp
+    * are not known yet, so this is not the final aligned render and donor event
+    * times must not be treated as bed-clock events.
    */
   replacingStems: ReadonlyMap<string, Float32Array> = new Map(),
 ): Promise<BedLoadResult> {
@@ -960,25 +959,28 @@ async function loadInstrumentalBed(
     components: decodedStems
       .filter((stem) => new Set<string>(bed.includedStemTypes).has(stem.stemType))
       .map((stem) => stem.samples),
-    // Keep section analysis linked to the real channels in the resulting
-    // source-clock composition. This is separate from `components`, whose
-    // established contract is per-stem time-stretching during rendering.
+    // Keep per-stem section evidence on the bed's own source clock. Donor
+    // replacement PCM is summed into the request-time composition above, but its
+    // source time has not yet been mapped through the planner's chosen entry and
+    // time-stretch. Do not mislabel those donor events as bed-clock boundaries.
+    // `components` retains its separate render-stretch contract.
     analysisStemPcms: [
       ...decodedStems
         .filter((stem) => new Set<string>(bed.includedStemTypes).has(stem.stemType))
         .map((stem) => ({ stemType: stem.stemType, pcm: stem.samples })),
-      ...[...replacingStems.entries()].map(([stemType, pcm]) => ({ stemType, pcm })),
     ],
   };
 }
 
 /**
- * Sum the donor's replacing stems into the retained bed audio.
+ * Make a provisional source-clock sum of the donor's replacing stems with the
+ * retained bed audio. This is planning evidence, not final render placement.
  *
- * Sample-aligned addition of the first N frames, in place of the role the bed
+ * Sample-index addition of the first N frames, in place of the role the bed
  * gave up. A donor stem shorter than the bed contributes only where it actually
- * has audio — it is never looped or padded with duplicated material here,
- * because that would be inventing music the donor did not record.
+ * has audio — it is never looped or padded with duplicated material here.
+ * Donor source clocks are not mapped to a bed entry in this helper; that must
+ * happen only after a placement has been selected.
  */
 function mixInReplacingStems(
   bedPcm: Float32Array,
@@ -1673,9 +1675,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         compositionForPlan = resolved.composition;
         donorStemsForPlan = resolved.donorStems;
         if (resolved.composition.layeredStemTypes.length > 0) {
-          // Analyse the ACTUAL resulting composition, not the replacement stem in
-          // isolation: loadInstrumentalBed sums the retained stems and omits the
-          // replaced roles, which is precisely what the listener will hear.
+          // Analyse a source-clock composite of the selected stems. Retained bed
+          // components can contribute section boundaries on the bed clock;
+          // donor-specific event times stay in their own clock until the final
+          // entry/time-stretch map exists. This is not post-render listening QA.
           const composedBed = await loadInstrumentalBed(
             projectId,
             bedId,
