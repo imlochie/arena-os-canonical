@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { applyEvidenceStemRecommendations } from "@workspace/arena/lib/waveyard/studio/mashup-bed";
@@ -79,6 +79,18 @@ type RealMashupFixtureManifest = {
 
 function realFixturePath(value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(root, value);
+}
+
+function realRecordingKey(filename: string): string {
+  const normalized = path.basename(filename).toLowerCase();
+  if (/another[\s_-]+one[\s_-]+bites[\s_-]+the[\s_-]+dust/.test(normalized)) {
+    return "another-one-bites-the-dust";
+  }
+  if (/\bseptember\b/.test(normalized)) return "september";
+  return path.basename(filename, path.extname(filename))
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 function sourceAudioMetadata(filename: string) {
@@ -379,6 +391,8 @@ test(
   async (t) => {
   const accTrace = (step: string) => console.error(`ACCEPTANCE_PROGRESS ${step}`);
   accTrace("test:start");
+  assert.equal(realRecordingKey("0_another_one_bites_the_dust_1793860743093.mp3"), "another-one-bites-the-dust");
+  assert.equal(realRecordingKey("September.mp3"), "september");
   if (!postgresBinaries.initdb || !postgresBinaries.postgres || !postgresBinaries.pgCtl) {
     accTrace("test:skip-no-postgres");
     t.skip("PostgreSQL binaries are unavailable");
@@ -888,6 +902,50 @@ test(
         fileSizeBytes: wav.length,
       });
     }
+    if (realFixture) {
+      // The production separation flow queues local vocal analysis for every
+      // published vocal stem, then refreshes source sections when those
+      // timestamps complete. Mirror that dependency for the Queen bed too;
+      // otherwise this acceptance would ask the form classifier to infer
+      // repeated vocal roles without the vocal timing evidence it consumes.
+      const [bedVocalStem] = await dbModule.db.select().from(schema.stemAssets).where(and(
+        eq(schema.stemAssets.projectId, project.id),
+        eq(schema.stemAssets.sourceAssetId, bedSource.id),
+        eq(schema.stemAssets.stemType, "vocals"),
+      ));
+      assert.ok(bedVocalStem);
+      const [vocalAnalysisJob] = await dbModule.db.insert(schema.vocalAnalyses).values({
+        projectId: project.id,
+        sourceAssetId: bedSource.id,
+        stemAssetId: bedVocalStem.id,
+        status: "queued",
+        stage: "queued",
+        attempts: 0,
+        idempotencyKey: vocalAnalysisIdempotencyKey(
+          bedVocalStem.id,
+          LOCAL_VOCAL_ANALYSIS_ENGINE,
+          LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+        ),
+        analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+        sourceChecksumSha256: sha256(bedOriginal),
+        stemChecksumSha256: bedVocalStem.checksumSha256,
+      }).returning();
+      assert.ok(vocalAnalysisJob);
+      const { handleVocalAnalysisJob } = await import("@workspace/arena/lib/waveyard/worker-local/stem-analysis");
+      await handleVocalAnalysisJob({
+        vocalAnalysisId: vocalAnalysisJob.id,
+        projectId: project.id,
+        sourceAssetId: bedSource.id,
+        stemAssetId: bedVocalStem.id,
+        analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+        analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      }, { db: dbModule.db, storage });
+      const [completedBedVocalAnalysis] = await dbModule.db.select().from(schema.vocalAnalyses)
+        .where(eq(schema.vocalAnalyses.id, vocalAnalysisJob.id));
+      assert.equal(completedBedVocalAnalysis?.status, "complete",
+        "the bed's isolated vocal evidence must finish before semantic sections are evaluated");
+    }
 
     if (!realFixture) {
       for (const [source, checksum] of [
@@ -1214,9 +1272,16 @@ test(
         assert.equal(completed?.status, "complete",
           "full-track real audio should produce current persisted section fingerprints for the acceptance pair");
         assert.ok(rows.length > 0, "the section worker must persist real source sections");
-        if (sourceAssetId === bedSource.id) {
+        if (sourceAssetId === bedSource.id
+          && realRecordingKey(realFixture?.bed.filename ?? "") === "another-one-bites-the-dust") {
           assert.ok(rows.some(row => row.label === "verse") && rows.some(row => row.label === "chorus"),
-            "the real September separated-vocal analysis must persist both inferred semantic roles");
+            `the real ${realFixture?.bed.filename ?? "bed"} separated-vocal analysis must persist both inferred semantic roles; observed ${JSON.stringify(rows.map((row) => ({
+              label: row.label,
+              startMs: row.startMs,
+              endMs: row.endMs,
+              labelConfidence: row.labelConfidence,
+              structuralConfidence: row.structuralConfidence,
+            })))}`);
           assert.ok(rows.filter(row => ["verse", "chorus"].includes(row.label))
             .every(row => row.labelConfidence <= 0.7),
           "uncalibrated form hypotheses must not be published as high-confidence truth");
@@ -4668,6 +4733,75 @@ test(
         if (realFixture) {
           const capturedAt = new Date().toISOString();
           const passageEvaluations = planBody.plan?.passageSearch?.evaluations ?? [];
+          const vocalsKey = realRecordingKey(realFixture.vocals.filename);
+          const bedKey = realRecordingKey(realFixture.bed.filename);
+          assert.notEqual(vocalsKey, bedKey, "real fixture recordings must have distinct report identities");
+          const persistedVocalRuns = async (sourceAssetId: string, sourceChecksumSha256: string) => {
+            const [analysis] = await dbModule.db.select().from(schema.vocalAnalyses).where(and(
+              eq(schema.vocalAnalyses.projectId, project.id),
+              eq(schema.vocalAnalyses.sourceAssetId, sourceAssetId),
+              eq(schema.vocalAnalyses.status, "complete"),
+              eq(schema.vocalAnalyses.sourceChecksumSha256, sourceChecksumSha256),
+            )).orderBy(desc(schema.vocalAnalyses.createdAt)).limit(1);
+            return analysis ? dbModule.db.select({
+              startMs: schema.vocalPhrases.startMs,
+              endMs: schema.vocalPhrases.endMs,
+              confidence: schema.vocalPhrases.confidence,
+            }).from(schema.vocalPhrases)
+              .where(eq(schema.vocalPhrases.vocalAnalysisId, analysis.id))
+              .orderBy(schema.vocalPhrases.startMs) : [];
+          };
+          const vocalsChecksum = sha256(vocalsOriginal);
+          const bedChecksum = sha256(bedOriginal);
+          const [vocalsPitchRuns, bedPitchRuns] = await Promise.all([
+            persistedVocalRuns(vocalsSource.id, vocalsChecksum),
+            persistedVocalRuns(bedSource.id, bedChecksum),
+          ]);
+          const recording = (
+            filename: string,
+            sourceChecksumSha256: string,
+            durationSeconds: number,
+            pitchContinuityRuns: typeof vocalsPitchRuns,
+          ) => {
+            const sections = realSectionsBySourceChecksum[sourceChecksumSha256] ?? [];
+            return {
+              filename,
+              sourceSha256: sourceChecksumSha256,
+              sourceDurationMs: Math.round(durationSeconds * 1000),
+              pitchContinuityRuns,
+              sections,
+              sectionBoundaries: sections.slice(1).map((section) => section.startMs),
+              donorWindows: passageEvaluations
+                .filter((evaluation) => evaluation.vocalSourceSha256 === sourceChecksumSha256)
+                .map((evaluation) => ({
+                  vocalSourceSha256: evaluation.vocalSourceSha256,
+                  startMs: evaluation.donorStartMs,
+                  endMs: evaluation.donorEndMs,
+                  rankedBedCandidates: (evaluation.rankedBedCandidates ?? []).map((candidate) => ({
+                    rank: candidate.rank,
+                    bedSourceSha256: candidate.bedSourceSha256,
+                    bedStartMs: candidate.bedStartMs,
+                    bedEndMs: candidate.bedEndMs,
+                    relativeScore: candidate.relativeScore,
+                    selected: candidate.selected,
+                  })),
+                })),
+              measurementNote:
+                "Persisted isolated-vocal pitch-continuity runs; not words, syllables, or lyric meaning.",
+            };
+          };
+          const vocalsRecording = recording(
+            realFixture.vocals.filename,
+            vocalsChecksum,
+            realFixture.vocals.durationSeconds,
+            vocalsPitchRuns,
+          );
+          const bedRecording = recording(
+            realFixture.bed.filename,
+            bedChecksum,
+            realFixture.bed.durationSeconds,
+            bedPitchRuns,
+          );
           const predictionSnapshot = {
             schemaVersion: 2,
             producer: "Waveyard production mashup route",
@@ -4675,81 +4809,37 @@ test(
               process.env.WAVEYARD_MASHUP_PRODUCER_REVISION?.trim() || null,
             capturedAt,
             recordings: {
-              "another-one-bites-the-dust": {
-                sourceSha256: sha256(vocalsOriginal),
-                sourceDurationMs: Math.round(
-                  realFixture.vocals.durationSeconds * 1000,
-                ),
-                pitchContinuityRuns: realPitchContinuityRuns,
-                sections: realSectionsBySourceChecksum[sha256(vocalsOriginal)] ?? [],
-                sectionBoundaries: (
-                  realSectionsBySourceChecksum[sha256(vocalsOriginal)] ?? []
-                )
-                  .slice(1)
-                  .map((section) => section.startMs),
-                donorWindows: passageEvaluations.map((evaluation) => ({
-                  vocalSourceSha256: evaluation.vocalSourceSha256,
-                  startMs: evaluation.donorStartMs,
-                  endMs: evaluation.donorEndMs,
-                  rankedBedCandidates: (evaluation.rankedBedCandidates ?? []).map(
-                    (candidate) => ({
-                      rank: candidate.rank,
-                      bedSourceSha256: candidate.bedSourceSha256,
-                      bedStartMs: candidate.bedStartMs,
-                      bedEndMs: candidate.bedEndMs,
-                      relativeScore: candidate.relativeScore,
-                      selected: candidate.selected,
-                    }),
-                  ),
-                })),
-                measurementNote:
-                  "Full-track isolated-vocal pitch-continuity runs; not words, syllables, or lyric meaning.",
-              },
-              september: {
-                sourceSha256: sha256(bedOriginal),
-                sourceDurationMs: Math.round(
-                  realFixture.bed.durationSeconds * 1000,
-                ),
-                pitchContinuityRuns: [],
-                sections: realSectionsBySourceChecksum[sha256(bedOriginal)] ?? [],
-                sectionBoundaries: (
-                  realSectionsBySourceChecksum[sha256(bedOriginal)] ?? []
-                )
-                  .slice(1)
-                  .map((section) => section.startMs),
-                donorWindows: [],
-                measurementNote:
-                  "Section structure is captured from the original source. No isolated-vocal pitch-continuity analysis was run for this bed in this route direction.",
-              },
+              [vocalsKey]: vocalsRecording,
+              [bedKey]: bedRecording,
             },
             sectionLabelLimit:
               "Structural labels such as section, rhythm-repeat, and energy-change are not verse, chorus, bridge, or breakdown classifications.",
           };
           assert.equal(
-            predictionSnapshot.recordings["another-one-bites-the-dust"].sections.length,
+            predictionSnapshot.recordings[vocalsKey].sections.length,
             realSectionPassageEvidence?.vocals.sectionCount,
-            "the snapshot must export every persisted donor section",
+            "the snapshot must export every persisted vocal-source section under its actual filename",
           );
           assert.equal(
-            predictionSnapshot.recordings.september.sections.length,
+            predictionSnapshot.recordings[bedKey].sections.length,
             realSectionPassageEvidence?.bed.sectionCount,
-            "the snapshot must export every persisted bed section",
+            "the snapshot must export every persisted bed section under its actual filename",
           );
           assert.equal(
-            predictionSnapshot.recordings["another-one-bites-the-dust"].pitchContinuityRuns.length,
+            predictionSnapshot.recordings[vocalsKey].pitchContinuityRuns.length,
             realVocalVoicingEvidence?.count,
-            "the snapshot must export all full-track persisted pitch-continuity intervals",
+            "the snapshot must export all persisted pitch-continuity intervals for the vocal source",
           );
           assert.deepEqual(
-            predictionSnapshot.recordings["another-one-bites-the-dust"].sectionBoundaries,
-            predictionSnapshot.recordings["another-one-bites-the-dust"].sections
+            predictionSnapshot.recordings[vocalsKey].sectionBoundaries,
+            predictionSnapshot.recordings[vocalsKey].sections
               .slice(1)
               .map((section) => section.startMs),
-            "donor boundary timestamps must be the persisted starts of the next sections",
+            "vocal-source boundaries must be the persisted starts of the next sections",
           );
           assert.deepEqual(
-            predictionSnapshot.recordings.september.sectionBoundaries,
-            predictionSnapshot.recordings.september.sections
+            predictionSnapshot.recordings[bedKey].sectionBoundaries,
+            predictionSnapshot.recordings[bedKey].sections
               .slice(1)
               .map((section) => section.startMs),
             "bed boundary timestamps must be the persisted starts of the next sections",
@@ -4766,7 +4856,7 @@ test(
             );
           }
           assert.equal(
-            predictionSnapshot.recordings["another-one-bites-the-dust"].donorWindows.length,
+            predictionSnapshot.recordings[vocalsKey].donorWindows.length,
             planBody.plan?.passageSearch?.evaluatedDonorPassageCount,
             "the snapshot must retain every evaluated donor window, including those without candidates",
           );

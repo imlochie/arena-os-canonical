@@ -21,11 +21,14 @@ verse/chorus understanding.
 passed, including source-checksum rejection, replaced-drum attribution,
 retained bass/pads, save, reopen, and WAV export. This synthetic pass is not
 evidence of real-song section accuracy or pleasant audio. A run against the
-existing pinned September-vocal / Queen-instrumental WAVs stopped before render:
-the persisted section worker produced no `verse` and `chorus` pair for the
-Queen source, which its current real-song acceptance still requires. This is a
-real form-recognition gap, not a reason to loosen the acceptance or infer those
-roles from generic boundaries. No stems were regenerated.
+existing pinned September-vocal / Queen-instrumental WAVs still stops before
+render: the Queen source's persisted section worker produces no `verse` and
+`chorus` pair, even after its current isolated-vocal timing analysis completes.
+This confirms a real form-recognition gap rather than simply missing vocal
+timing evidence; it is not a reason to loosen the acceptance or infer those
+roles from generic boundaries. The real-fixture report now keys section and
+vocal evidence to each input filename, so reversing donor/bed direction cannot
+silently swap the song identities. No stems were regenerated.
 
 ## Latest increment: post-swap stem changes enter section analysis
 
