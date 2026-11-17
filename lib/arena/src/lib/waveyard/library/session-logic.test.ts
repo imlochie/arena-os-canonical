@@ -367,6 +367,29 @@ test("live stem entry alternatives expose distinct measured windows and their ev
     && candidate.donorBeatConfidence === 0.95,
   ));
   assert.equal(alternatives[0]?.donorEntryMs, 3_000);
+  const stemBoundedAlternatives = liveStemSectionAlignmentCandidates(
+    [recipient],
+    [donor],
+    5,
+    1,
+    { ...evidence, donorStemDurationMs: 16_000 },
+  );
+  assert.deepEqual(
+    stemBoundedAlternatives.map((candidate) => candidate.donorWindowEndMs),
+    [8_000, 16_000],
+    "candidate windows that run beyond the actual separated vocal file are not offered",
+  );
+  assert.deepEqual(
+    liveStemSectionAlignmentCandidates(
+      [recipient],
+      [donor],
+      5,
+      1,
+      { ...evidence, donorStemDurationMs: 7_999 },
+    ),
+    [],
+    "a donor file shorter than the measured window has no automatic entry",
+  );
   const first = alternatives[0]!;
   assert.equal(
     liveStemAutomaticEntryChoice(alternatives, 5, 1),

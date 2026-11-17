@@ -425,6 +425,7 @@ type LiveStemSection = Pick<
 type LiveStemSectionEvidence = LiveStemTempoEvidence & {
   recipientBeatGridMs?: unknown;
   donorBeatGridMs?: unknown;
+  donorStemDurationMs?: number | null;
   recipientBpm?: number | null;
   donorBpm?: number | null;
   recipientKey?: string | null;
@@ -810,8 +811,13 @@ export function liveStemSectionAlignmentCandidates(
   if (!recipient || recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return [];
   const anyFingerprint = [...recipientSections, ...donorSections]
     .some((section) => section.passageFingerprint !== undefined && section.passageFingerprint !== null);
+  const fitsDonorStem = (candidate: LiveStemSectionAlignmentCandidate) => {
+    const durationMs = evidence?.donorStemDurationMs;
+    return durationMs === undefined || durationMs === null
+      || (Number.isFinite(durationMs) && durationMs > 0 && candidate.donorWindowEndMs <= durationMs);
+  };
   if (anyFingerprint) {
-    return evidence
+    return (evidence
       ? livePhraseSectionAlignmentCandidates(
         recipientSections,
         donorSections,
@@ -821,7 +827,7 @@ export function liveStemSectionAlignmentCandidates(
         evidence,
         maxCandidates,
       )
-      : [];
+      : []).filter(fitsDonorStem);
   }
 
   const role = comparableSectionLabel(recipient.label);
@@ -871,7 +877,7 @@ export function liveStemSectionAlignmentCandidates(
       donorBeatConfidence: evidence?.donorBeatConfidence ?? null,
       transpositionSemitones: null,
     }];
-  });
+  }).filter(fitsDonorStem);
 }
 
 /** Re-project a reviewed window onto the live clock; never carry it across a
