@@ -445,7 +445,18 @@ export const GetLibraryTracksResponse = zod.object({
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
   "keyConfidence": zod.number().nullable(),
-  "musicalKey": zod.string().nullable()
+  "musicalKey": zod.string().nullable(),
+  "isolatedDrumTempo": zod.object({
+  "bpm": zod.number(),
+  "bpmConfidence": zod.number(),
+  "beatGridMs": zod.array(zod.number()),
+  "beatConfidence": zod.number(),
+  "stemAssetId": zod.string().uuid(),
+  "sourceChecksumSha256": zod.string(),
+  "stemChecksumSha256": zod.string(),
+  "analysisEngine": zod.string(),
+  "analysisEngineVersion": zod.string()
+}).nullish()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
 }))
@@ -904,7 +915,18 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
   "keyConfidence": zod.number().nullable(),
-  "musicalKey": zod.string().nullable()
+  "musicalKey": zod.string().nullable(),
+  "isolatedDrumTempo": zod.object({
+  "bpm": zod.number(),
+  "bpmConfidence": zod.number(),
+  "beatGridMs": zod.array(zod.number()),
+  "beatConfidence": zod.number(),
+  "stemAssetId": zod.string().uuid(),
+  "sourceChecksumSha256": zod.string(),
+  "stemChecksumSha256": zod.string(),
+  "analysisEngine": zod.string(),
+  "analysisEngineVersion": zod.string()
+}).nullish()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
 })).optional(),
@@ -946,7 +968,18 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
   "keyConfidence": zod.number().nullable(),
-  "musicalKey": zod.string().nullable()
+  "musicalKey": zod.string().nullable(),
+  "isolatedDrumTempo": zod.object({
+  "bpm": zod.number(),
+  "bpmConfidence": zod.number(),
+  "beatGridMs": zod.array(zod.number()),
+  "beatConfidence": zod.number(),
+  "stemAssetId": zod.string().uuid(),
+  "sourceChecksumSha256": zod.string(),
+  "stemChecksumSha256": zod.string(),
+  "analysisEngine": zod.string(),
+  "analysisEngineVersion": zod.string()
+}).nullish()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
 }),
@@ -1230,7 +1263,18 @@ export const StopLibraryAudioCaptureResponse = zod.object({
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
   "keyConfidence": zod.number().nullable(),
-  "musicalKey": zod.string().nullable()
+  "musicalKey": zod.string().nullable(),
+  "isolatedDrumTempo": zod.object({
+  "bpm": zod.number(),
+  "bpmConfidence": zod.number(),
+  "beatGridMs": zod.array(zod.number()),
+  "beatConfidence": zod.number(),
+  "stemAssetId": zod.string().uuid(),
+  "sourceChecksumSha256": zod.string(),
+  "stemChecksumSha256": zod.string(),
+  "analysisEngine": zod.string(),
+  "analysisEngineVersion": zod.string()
+}).nullish()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
 })).optional(),
@@ -1272,7 +1316,18 @@ export const StopLibraryAudioCaptureResponse = zod.object({
   "bpmConfidence": zod.number().nullable(),
   "beatConfidence": zod.number().nullable(),
   "keyConfidence": zod.number().nullable(),
-  "musicalKey": zod.string().nullable()
+  "musicalKey": zod.string().nullable(),
+  "isolatedDrumTempo": zod.object({
+  "bpm": zod.number(),
+  "bpmConfidence": zod.number(),
+  "beatGridMs": zod.array(zod.number()),
+  "beatConfidence": zod.number(),
+  "stemAssetId": zod.string().uuid(),
+  "sourceChecksumSha256": zod.string(),
+  "stemChecksumSha256": zod.string(),
+  "analysisEngine": zod.string(),
+  "analysisEngineVersion": zod.string()
+}).nullish()
 }).nullish(),
   "studioProjectId": zod.string().uuid()
 }),

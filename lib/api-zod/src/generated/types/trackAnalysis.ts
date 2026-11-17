@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { IsolatedDrumTempoEvidence } from './isolatedDrumTempoEvidence';
 
 /**
  * @nullable
@@ -21,4 +22,5 @@ export type TrackAnalysis = {
   keyConfidence: number | null;
   /** @nullable */
   musicalKey: string | null;
+  isolatedDrumTempo?: IsolatedDrumTempoEvidence | null;
 } | null;

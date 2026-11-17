@@ -28,7 +28,7 @@ import {
 } from "@workspace/arena/lib/waveyard/types/bass-analysis";
 import {
   classifiedDrumEvent, drumAnalysisProvenanceReason, LOCAL_DRUM_ANALYSIS_ENGINE,
-  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, normaliseDrumEvents,
+  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, normaliseDrumEvents, normaliseIsolatedDrumTempoEvidence,
 } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import {
   harmonyAnalysisProvenanceReason, LOCAL_HARMONY_ANALYSIS_ENGINE,
@@ -45,7 +45,19 @@ import {
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import { usableBeatGrid } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { provisionDesktopSectionAnalysis } from "./analysis";
-import { ANALYSIS_PCM_RATE, decodeMonoPcm, detectBassAttacks, detectBassPitchSegments, detectDrumTransients, detectHarmonyTimeline, detectVocalActivityIntervals, detectVocalPitchFrames } from "./analysis-engine";
+import {
+  ANALYSIS_PCM_RATE,
+  decodeMonoPcm,
+  detectBassAttacks,
+  detectBassPitchSegments,
+  detectDrumTransients,
+  detectHarmonyTimeline,
+  detectVocalActivityIntervals,
+  detectVocalPitchFrames,
+  estimateBeatGrid,
+  estimateTrackTempo,
+  onsetEnvelope,
+} from "./analysis-engine";
 
 type AnalysisDb = ReturnType<typeof drizzle>;
 type StemAnalysisDeps = {
@@ -118,6 +130,18 @@ export async function handleDrumAnalysisJob(payloadInput: Record<string, unknown
       const raw = detectDrumTransients(pcm);
       const events = normaliseDrumEvents(raw, Math.round(source.durationSeconds * 1000));
       if (events === null) throw new Error("The local DSP engine returned invalid drum events.");
+      const drumOnsets = onsetEnvelope(pcm);
+      const drumTempo = estimateTrackTempo(drumOnsets.envelope, drumOnsets.frameMs);
+      const drumBeatGrid = drumTempo.bpm === null
+        ? null
+        : estimateBeatGrid(drumOnsets.envelope, drumOnsets.frameMs, drumTempo.bpm);
+      const drumTempoEvidence = normaliseIsolatedDrumTempoEvidence({
+        bpm: drumTempo.bpm,
+        bpmConfidence: drumTempo.confidence,
+        beatGrid: drumBeatGrid?.beatGridMs,
+        beatConfidence: drumBeatGrid?.confidence,
+        durationMs: Math.round(Math.min(source.durationSeconds, stem.durationSeconds) * 1000),
+      });
       const [sourceTempo] = await database.select({ beatGrid: sourceAnalyses.beatGrid }).from(sourceAnalyses)
         .where(and(eq(sourceAnalyses.sourceAssetId, source.id), eq(sourceAnalyses.status, "complete"))).limit(1);
       const beatGrid = parseBeatGrid(sourceTempo?.beatGrid ?? null);
@@ -137,6 +161,10 @@ export async function handleDrumAnalysisJob(payloadInput: Record<string, unknown
         }));
         const [completed] = await tx.update(drumAnalyses).set({ status: "complete", stage: "complete", analysisEngine: LOCAL_DRUM_ANALYSIS_ENGINE,
           analysisEngineVersion: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION, errorCode: null, errorMessage: null,
+          bpm: drumTempoEvidence?.bpm ?? null,
+          bpmConfidence: drumTempoEvidence?.bpmConfidence ?? null,
+          beatGrid: drumTempoEvidence ? JSON.stringify(drumTempoEvidence.beatGridMs) : null,
+          beatConfidence: drumTempoEvidence?.beatConfidence ?? null,
           analyzedAt, completedAt: analyzedAt, updatedAt: analyzedAt,
         }).where(and(eq(drumAnalyses.id, job.id), eq(drumAnalyses.status, "processing"), eq(drumAnalyses.sourceChecksumSha256, job.sourceChecksumSha256), eq(drumAnalyses.stemChecksumSha256, job.stemChecksumSha256))).returning({ id: drumAnalyses.id });
         if (!completed) throw new Error("Drum analysis lost its active durable claim before completion.");

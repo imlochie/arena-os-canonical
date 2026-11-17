@@ -19,6 +19,8 @@ import {
   nearestEntryEvidenceMs,
   completeInstrumentalBedDonorTrackId,
   resolveLiveDrumTempoMaster,
+  selectLiveTempoAnalysis,
+  hasUsableLiveDrumTempoDonor,
 } from "./session-logic";
 import {
   PASSAGE_FINGERPRINT_ENGINE,
@@ -800,6 +802,86 @@ test("a drum donor becomes the live tempo master only with reliable paired tempo
   assert.equal(resolveLiveDrumTempoMaster(120, 60, confidentPair).master, "current-track");
   assert.equal(resolveLiveDrumTempoMaster(120, 90, confidentPair).master, "current-track");
   assert.equal(resolveLiveDrumTempoMaster(120, null, confidentPair).master, "current-track");
+});
+
+test("real separated-drum confidence can safely unlock September-to-Queen tempo adaptation", () => {
+  const grid = (bpm: number, count: number) =>
+    Array.from({ length: count }, (_, index) => Math.round(index * 60_000 / bpm));
+  // These measurements were obtained from the existing full-song separated
+  // WAVs, not generated test audio: September 126.048 BPM and Queen 109.957 BPM.
+  const september = selectLiveTempoAnalysis({
+    bpm: 126.048,
+    bpmConfidence: 0.697,
+    beatConfidence: 0.938,
+    beatGridMs: grid(126.048, 452),
+    isolatedDrumTempo: {
+      bpm: 126.048,
+      bpmConfidence: 0.891,
+      beatGridMs: grid(126.048, 452),
+      beatConfidence: 0.975,
+      stemAssetId: "september-drums",
+      sourceChecksumSha256: "a".repeat(64),
+      stemChecksumSha256: "b".repeat(64),
+      analysisEngine: "arena-js-stem-analysis",
+      analysisEngineVersion: "1.1.0",
+    },
+  });
+  const queen = selectLiveTempoAnalysis({
+    bpm: 109.957,
+    bpmConfidence: 0.426,
+    beatConfidence: 0.642,
+    beatGridMs: grid(109.957, 410),
+    isolatedDrumTempo: {
+      bpm: 109.957,
+      bpmConfidence: 0.737,
+      beatGridMs: grid(109.957, 410),
+      beatConfidence: 0.744,
+      stemAssetId: "queen-drums",
+      sourceChecksumSha256: "c".repeat(64),
+      stemChecksumSha256: "d".repeat(64),
+      analysisEngine: "arena-js-stem-analysis",
+      analysisEngineVersion: "1.1.0",
+    },
+  });
+
+  assert.equal(september.evidenceSource, "isolated-drums");
+  assert.equal(queen.evidenceSource, "isolated-drums",
+    "the stronger isolated drum evidence can replace the low-confidence full-mix BPM");
+  const resolved = resolveLiveDrumTempoMaster(september.bpm, queen.bpm, {
+    recipientBpmConfidence: september.bpmConfidence,
+    donorBpmConfidence: queen.bpmConfidence,
+    recipientBeatConfidence: september.beatConfidence,
+    donorBeatConfidence: queen.beatConfidence,
+  });
+  assert.equal(resolved.master, "donor-drums");
+  assert.ok(Math.abs(resolved.playbackRate - (109.957 / 126.048)) < 0.001);
+
+  const conflict = selectLiveTempoAnalysis({
+    bpm: 126,
+    bpmConfidence: 0.72,
+    beatConfidence: 0.7,
+    beatGridMs: grid(126, 16),
+    isolatedDrumTempo: {
+      bpm: 110,
+      bpmConfidence: 0.9,
+      beatGridMs: grid(110, 16),
+      beatConfidence: 0.9,
+      stemAssetId: "conflicting-drums",
+      sourceChecksumSha256: "e".repeat(64),
+      stemChecksumSha256: "f".repeat(64),
+      analysisEngine: "arena-js-stem-analysis",
+      analysisEngineVersion: "1.1.0",
+    },
+  });
+  assert.equal(conflict.evidenceSource, "full-mix",
+    "material disagreement between full mix and isolated drums remains unresolved");
+});
+
+test("only a present separated drum asset can become the live tempo master", () => {
+  assert.equal(hasUsableLiveDrumTempoDonor({ stemType: "drums", engine: "waveyard-four-stem-local" }), true);
+  assert.equal(hasUsableLiveDrumTempoDonor(null), false);
+  assert.equal(hasUsableLiveDrumTempoDonor({ stemType: "drums", engine: "passthrough-unseparated" }), false);
+  assert.equal(hasUsableLiveDrumTempoDonor({ stemType: "bass", engine: "waveyard-four-stem-local" }), false);
 });
 
 test("manual tempo corrections are range checked and can resolve an uncertain half-time reading", () => {

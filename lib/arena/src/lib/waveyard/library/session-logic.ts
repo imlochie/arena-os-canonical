@@ -26,6 +26,7 @@ import {
   type PassageRollingWindow,
 } from "../types/passage-compatibility";
 import type { SourceSection } from "../types/source-sections";
+import type { IsolatedDrumTempoEvidence } from "../types/drum-analysis";
 import { normalizePerformance, type PerformanceSettings } from "./performance";
 
 // ------------------------------------------------------------- transitions
@@ -194,6 +195,81 @@ export interface LiveStemTempoEvidence {
   donorBeatConfidence: number | null | undefined;
 }
 
+export type LiveTempoAnalysisInput = {
+  bpm: number | null;
+  bpmConfidence?: number | null;
+  beatConfidence?: number | null;
+  beatGridMs?: number[] | null;
+  isolatedDrumTempo?: IsolatedDrumTempoEvidence | null;
+};
+
+export type LiveTempoAnalysisSelection = {
+  bpm: number | null;
+  bpmConfidence: number | null;
+  beatConfidence: number | null;
+  beatGridMs: number[] | null;
+  evidenceSource: "full-mix" | "isolated-drums";
+};
+
+/**
+ * Prefer checksum-verified isolated-drum timing only when it independently
+ * measures a reliable tempo and grid and agrees with the full mix's tempo.
+ * A disagreement stays uncertain instead of letting one detector override
+ * another; this is evidence fusion, not semantic section recognition.
+ */
+export function selectLiveTempoAnalysis(input: LiveTempoAnalysisInput): LiveTempoAnalysisSelection {
+  const mixedBpm = typeof input.bpm === "number"
+    && Number.isFinite(input.bpm)
+    && input.bpm >= 40
+    && input.bpm <= 300
+    ? input.bpm
+    : null;
+  const mixed = {
+    bpm: mixedBpm,
+    bpmConfidence: input.bpmConfidence ?? null,
+    beatConfidence: input.beatConfidence ?? null,
+    beatGridMs: usableBeatGrid(input.beatGridMs),
+    evidenceSource: "full-mix" as const,
+  };
+  const isolated = input.isolatedDrumTempo;
+  if (
+    !isolated
+    || isolated.stemAssetId.trim() === ""
+    || isolated.sourceChecksumSha256.trim() === ""
+    || isolated.stemChecksumSha256.trim() === ""
+    || isolated.analysisEngine.trim() === ""
+    || isolated.analysisEngineVersion.trim() === ""
+    || !Number.isFinite(isolated.bpm) || isolated.bpm < 40 || isolated.bpm > 300
+    || !Number.isFinite(isolated.bpmConfidence) || isolated.bpmConfidence < LIVE_STEM_MIN_TEMPO_CONFIDENCE || isolated.bpmConfidence > 1
+    || !Number.isFinite(isolated.beatConfidence) || isolated.beatConfidence < LIVE_STEM_MIN_TEMPO_CONFIDENCE || isolated.beatConfidence > 1
+  ) return mixed;
+
+  const isolatedGrid = usableBeatGrid(isolated.beatGridMs);
+  if (!isolatedGrid || isolatedGrid.length < 4) return mixed;
+  const expectedIntervalMs = 60_000 / isolated.bpm;
+  const intervals = isolatedGrid.slice(1).map((beat, index) => beat - isolatedGrid[index]!);
+  const medianIntervalMs = [...intervals].sort((a, b) => a - b)[Math.floor(intervals.length / 2)]!;
+  if (Math.abs(medianIntervalMs - expectedIntervalMs) / expectedIntervalMs > 0.08) return mixed;
+
+  if (mixedBpm !== null) {
+    const disagreement = Math.abs(isolated.bpm - mixedBpm) / mixedBpm;
+    if (disagreement > 0.04) return mixed;
+    if (
+      typeof input.bpmConfidence === "number"
+      && Number.isFinite(input.bpmConfidence)
+      && input.bpmConfidence >= isolated.bpmConfidence
+    ) return mixed;
+  }
+
+  return {
+    bpm: isolated.bpm,
+    bpmConfidence: isolated.bpmConfidence,
+    beatConfidence: isolated.beatConfidence,
+    beatGridMs: isolatedGrid,
+    evidenceSource: "isolated-drums",
+  };
+}
+
 const LIVE_STEM_MIN_TEMPO_CONFIDENCE = 0.5;
 
 function hasConfidenceAtLeastHalf(confidence: number | null | undefined): boolean {
@@ -256,6 +332,16 @@ export function liveStemTempoStretchRatio(
 export type LiveDrumTempoMasterResolution =
   | { master: "donor-drums"; playbackRate: number; donorBpm: number; reason: string }
   | { master: "current-track"; playbackRate: 1; donorBpm: number | null; reason: string };
+
+/** Only an actually available separated drum asset can become the deck tempo master. */
+export function hasUsableLiveDrumTempoDonor(
+  stem: { stemType: string; engine?: string } | null,
+): boolean {
+  return stem !== null
+    && stem.stemType === "drums"
+    && typeof stem.engine === "string"
+    && stem.engine !== "passthrough-unseparated";
+}
 
 /**
  * A live drum replacement may become the tempo master only when both songs

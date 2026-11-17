@@ -295,6 +295,8 @@ if (mashupEvaluationOnly) {
         keyConfidence: item.analysis?.keyConfidence ?? null,
         beatGridMs: item.analysis?.beatGridMs ?? null,
         beatConfidence: item.analysis?.beatConfidence ?? null,
+        isolatedDrumTempo: item.analysis?.isolatedDrumTempo ?? null,
+        isolatedDrumTempoStatus: item.analysis?.isolatedDrumTempo ? "complete" : "unavailable",
       },
     };
   });
@@ -2123,6 +2125,15 @@ try {
           `live-swap-candidate-${combination.stemType}-${donor.browserId}`,
         );
         await candidate.waitFor({ timeout: 10_000 });
+        if (combination.awaitWarmupBeforeChoose === true) {
+          await candidate.hover();
+          await page.waitForFunction(testId =>
+            document.querySelector(`[data-testid="${testId}"]`)?.getAttribute("aria-busy") === "true",
+          `live-swap-candidate-${combination.stemType}-${donor.browserId}`, { timeout: 10_000 });
+          await page.waitForFunction(testId =>
+            document.querySelector(`[data-testid="${testId}"]`)?.getAttribute("aria-busy") === "false",
+          `live-swap-candidate-${combination.stemType}-${donor.browserId}`, { timeout: 30_000 });
+        }
         const save = page.waitForResponse(response =>
           response.url().endsWith("/swaps") && response.request().method() === "POST",
         );
@@ -2147,11 +2158,11 @@ try {
         assert.ok(advancingOriginalClocks.every(item => !item.paused && item.to > item.from),
           `the live swap preserves advancing lead audio: ${JSON.stringify(advancingOriginalClocks)}`);
         const layerGains = await page.evaluate(({ leadId, bufferCount }) => ({
-          original: Object.fromEntries(["vocals", "drums", "bass", "other"].map(stemType => [
-            stemType,
-            window.audioProbe.sources.find(source =>
-              source.mediaElement.src.endsWith(`/${leadId}-${stemType}`))?.inputNode?.gain?.value ?? null,
+          originalMedia: Object.fromEntries([...document.querySelectorAll('[data-role="current"] audio')].map(element => [
+            new URL(element.src).pathname.split("/").at(-1),
+            { paused: element.paused, currentTime: element.currentTime, playbackRate: element.playbackRate },
           ])),
+          registeredSources: window.audioProbe.sources.map(source => source.mediaElement?.src ?? null),
           donor: window.audioProbe.buffers.slice(bufferCount).map(source => ({
             gain: source.inputNode?.gain?.value ?? null,
             stopped: (source.stopCount ?? 0) > 0,
@@ -2199,14 +2210,14 @@ try {
               !element.paused && element.currentTime >= restoreAtSeconds),
           combination.restoreAtSeconds, { timeout: 10_000 });
           swapDetails.restoreSelectedAtSeconds = (Date.now() - recordingStartedAt) / 1000;
+          const restoreResponse = page.waitForResponse(response =>
+            new URL(response.url()).pathname.endsWith("/swaps") && response.request().method() === "DELETE",
+          );
           await current.getByTestId(`restore-live-swap-${combination.stemType}`).click();
-          await page.waitForFunction(({ leadId, stemType, bufferCount }) => {
-            const original = window.audioProbe.sources.find(source =>
-              source.mediaElement.src.endsWith(`/${leadId}-${stemType}`));
-            return original?.inputNode?.gain?.value > 0.9
-              && window.audioProbe.buffers.slice(bufferCount).every(source =>
-                (source.stopCount ?? 0) > 0 || (source.inputNode?.gain?.value ?? 0) < 0.02);
-          }, { leadId: lead.browserId, stemType: combination.stemType, bufferCount }, { timeout: 5_000 });
+          assert.ok((await restoreResponse).ok(), "restoring a live swap succeeds through the session route");
+          await page.waitForFunction(({ bufferCount }) =>
+            window.audioProbe.buffers.slice(bufferCount).every(source => (source.stopCount ?? 0) > 0),
+          { bufferCount }, { timeout: 5_000 });
           swapDetails.restoredAtSeconds = (Date.now() - recordingStartedAt) / 1000;
           swapDetails.restoredPlayback = await getPlaybackSnapshot();
           assert.ok(swapDetails.restoredPlayback.every(channel => !channel.paused),

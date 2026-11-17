@@ -72,6 +72,17 @@ function clickStem() {
   }
   return mono;
 }
+function steadyClickStem(seconds = 4) {
+  const mono = new Float32Array(RATE * seconds);
+  for (let second = 0.25; second < seconds; second += 0.5) {
+    const start = Math.round(second * RATE);
+    for (let index = start; index < Math.min(mono.length, start + 600); index += 1) {
+      mono[index] = 0.8 * Math.exp(-(index - start) / 90)
+        * Math.sin((2 * Math.PI * 90 * (index - start)) / RATE);
+    }
+  }
+  return mono;
+}
 function chordSource() {
   const mono = new Float32Array(RATE * 4);
   const chords = [[261.63, 329.63, 392], [349.23, 440, 523.25]];
@@ -88,7 +99,12 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     const db = drizzle(client) as unknown as NonNullable<Parameters<typeof handleDrumAnalysisJob>[1]>["db"];
     const storage = new LocalStorageProvider(join(root, "storage"));
     const [project] = await db.insert(projects).values({ ownerId: randomUUID(), title: "Local analysis execution" }).returning();
-    const files = [stereoWav(chordSource()), stereoWav(clickStem()), stereoWav(vocalPulseTone(220, 4))];
+    const files = [
+      stereoWav(chordSource()),
+      stereoWav(clickStem()),
+      stereoWav(vocalPulseTone(220, 4)),
+      stereoWav(steadyClickStem()),
+    ];
     const paths = files.map((_, index) => join(root, `${index}.wav`));
     await Promise.all(files.map((bytes, index) => writeFile(paths[index]!, bytes)));
     const sourceKey = privateObjectKey(project.id, "source", "wav");
@@ -117,7 +133,7 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
         stemType, engine: "test", model: "test-local", modelVersion: "1", storageKey, checksumSha256: checksum(files[fileIndex]!),
         durationSeconds: 4, sampleRate: RATE, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: files[fileIndex]!.length }).returning())[0]!;
     };
-    const drumStem = await createStem("drums", 1);
+    const drumStem = await createStem("drums", 3);
     const vocalStem = await createStem("vocals", 2);
     const bassStem = await createStem("bass", 1);
     const [drum] = await db.insert(drumAnalyses).values({ projectId: project.id, sourceAssetId: source.id, stemAssetId: drumStem.id,
@@ -155,6 +171,12 @@ test("local stem analysis executes, persists versioned results, fails honestly, 
     const [vocalDone] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.id, vocal.id));
     const [bassDone] = await db.select().from(bassAnalyses).where(eq(bassAnalyses.id, bass.id));
     assert.equal(drumDone.status, "complete"); assert.equal(drumDone.attempts, 1); assert.equal(drumDone.analysisEngine, LOCAL_DRUM_ANALYSIS_ENGINE);
+    assert.ok(drumDone.bpm !== null && Math.abs(drumDone.bpm - 120.185) < 0.1,
+      "the worker persists the measured 120 BPM isolated-drum tempo");
+    assert.ok(drumDone.bpmConfidence !== null && drumDone.bpmConfidence >= 0.5);
+    assert.ok(drumDone.beatConfidence !== null && drumDone.beatConfidence >= 0.5);
+    assert.ok(drumDone.beatGrid !== null && JSON.parse(drumDone.beatGrid).length === 8,
+      "the aligned drum beat grid is persisted alongside the tempo");
     assert.equal(harmonyDone.status, "complete"); assert.equal(harmonyDone.analysisEngineVersion, LOCAL_HARMONY_ANALYSIS_ENGINE_VERSION);
     assert.equal(vocalDone.status, "complete"); assert.equal(vocalDone.analysisEngine, LOCAL_VOCAL_ANALYSIS_ENGINE);
     assert.equal(bassDone.status, "complete"); assert.equal(bassDone.analysisEngine, LOCAL_BASS_ANALYSIS_ENGINE);

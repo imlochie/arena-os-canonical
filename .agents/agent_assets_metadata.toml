@@ -364,3 +364,31 @@ mtime_ms = 1794832276395
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/f81464a7-4fe9-4b76-a72a-66d6d05cd09e/436128db-8948-4d69-9394-05be80058dac"
 storage_version_token = "1794832295520963"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "Xc2URfvaAda2OUwOXhfjo"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/live-isolated-drum-tempo/september-drums-adapted-to-queen-swap.webm"
+type = "video"
+title = "September with Queen drums — warmed live swap"
+description = "Real existing separated stems played through Waveyard in Chromium. The donor was tempo-matched before selection; this capture demonstrates playback adaptation, not a claim about subjective mix quality."
+logical_id = "73139a91-7201-44a8-997c-6d53e1ad73db"
+content_hash = "sha256:da5ab44fe221e4b761c194a6d5dc01ad272ed5762664d507cbb6cb67b7d80585"
+size = 268639
+mtime_ms = 1794890715351
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/73139a91-7201-44a8-997c-6d53e1ad73db/0f59cafa-4ae9-4066-a7f3-a0a267332de9"
+storage_version_token = "1794891630910183"
+content_type = "video/webm"
+
+[[outputs]]
+id = "bI-PMlPCk9SPEj4_Qfta6"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/live-isolated-drum-tempo/immediate-click/september-drums-adapted-to-queen-swap.webm"
+type = "video"
+title = "September with Queen drums — immediate selection"
+description = "Same real-stem swap with no completed warm-up. This shows the current preparation delay before the adapted drums become audible."
+logical_id = "daa7f166-5ff6-4999-8c68-15d1fcd8f75b"
+content_hash = "sha256:7683cce1f6d26987297ec7569f8cf7ac3b99756159a6a5deb5361b839b4b063f"
+size = 257981
+mtime_ms = 1794891625611
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/daa7f166-5ff6-4999-8c68-15d1fcd8f75b/1b613c34-d30d-4d4d-b7ed-1ef04d77325c"
+storage_version_token = "1794891636669057"
+content_type = "video/webm"

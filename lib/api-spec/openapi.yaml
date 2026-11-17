@@ -1587,7 +1587,34 @@ components:
           type: ["number", "null"]
         musicalKey:
           type: ["string", "null"]
+        isolatedDrumTempo:
+          $ref: "#/components/schemas/IsolatedDrumTempoEvidence"
       required: [status, bpm, bpmConfidence, beatConfidence, keyConfidence, musicalKey]
+    IsolatedDrumTempoEvidence:
+      type: ["object", "null"]
+      properties:
+        bpm:
+          type: number
+        bpmConfidence:
+          type: number
+        beatGridMs:
+          type: array
+          items:
+            type: number
+        beatConfidence:
+          type: number
+        stemAssetId:
+          type: string
+          format: uuid
+        sourceChecksumSha256:
+          type: string
+        stemChecksumSha256:
+          type: string
+        analysisEngine:
+          type: string
+        analysisEngineVersion:
+          type: string
+      required: [bpm, bpmConfidence, beatGridMs, beatConfidence, stemAssetId, sourceChecksumSha256, stemChecksumSha256, analysisEngine, analysisEngineVersion]
     StemAvailability:
       oneOf:
         - type: object

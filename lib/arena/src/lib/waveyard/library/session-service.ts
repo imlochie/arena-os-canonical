@@ -33,6 +33,7 @@ import {
   listenSessionTracks,
   queueItems,
   projects,
+  drumAnalyses,
   remixClips,
   remixSessions,
   remixTracks,
@@ -63,6 +64,14 @@ import {
   LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
   vocalAnalysisProvenanceReason,
 } from "../types/vocal-analysis";
+import {
+  LOCAL_DRUM_ANALYSIS_ENGINE,
+  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+  drumAnalysisProvenanceReason,
+  normaliseIsolatedDrumTempoEvidence,
+  type IsolatedDrumTempoEvidence,
+} from "../types/drum-analysis";
+import { ensureLocalDrumTempoAnalysis } from "../drum-analysis";
 import {
   normalizeStemMix,
   parseStemMix,
@@ -1789,6 +1798,124 @@ export interface SessionTrackAnalysis {
   vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
   /** Pitch-continuity phrase candidates; unvoiced consonants and lyric boundaries are not guaranteed. */
   voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
+  /** Exact-current isolated drum timing; null when the stem evidence is absent or untrusted. */
+  isolatedDrumTempo: IsolatedDrumTempoEvidence | null;
+  isolatedDrumTempoStatus: "not_applicable" | "queued" | "processing" | "complete" | "failed" | "unavailable";
+}
+
+type DrumTempoState = Pick<SessionTrackAnalysis, "isolatedDrumTempo" | "isolatedDrumTempoStatus">;
+
+async function sessionDrumTempoState(
+  detail: TrackDetail,
+  source: { id: string; projectId: string; checksumSha256: string | null },
+): Promise<DrumTempoState> {
+  const drumStem = detail.stems.find((stem) =>
+    (stem.stemType === "drums" || stem.stemType === "percussion")
+    && stem.engine !== "passthrough-unseparated",
+  );
+  if (!drumStem || source.checksumSha256 === null) {
+    return { isolatedDrumTempo: null, isolatedDrumTempoStatus: "not_applicable" };
+  }
+  const [stem] = await db.select({
+    id: stemAssets.id,
+    projectId: stemAssets.projectId,
+    sourceAssetId: stemAssets.sourceAssetId,
+    stemType: stemAssets.stemType,
+    checksumSha256: stemAssets.checksumSha256,
+    durationSeconds: stemAssets.durationSeconds,
+  }).from(stemAssets).where(and(
+    eq(stemAssets.id, drumStem.id),
+    eq(stemAssets.sourceAssetId, source.id),
+    eq(stemAssets.projectId, source.projectId),
+  )).limit(1);
+  if (!stem || (stem.stemType !== "drums" && stem.stemType !== "percussion")) {
+    return { isolatedDrumTempo: null, isolatedDrumTempoStatus: "unavailable" };
+  }
+
+  const readCurrent = async (): Promise<DrumTempoState | null> => {
+    const [row] = await db.select({
+      id: drumAnalyses.id,
+      sourceAssetId: drumAnalyses.sourceAssetId,
+      stemAssetId: drumAnalyses.stemAssetId,
+      sourceChecksumSha256: drumAnalyses.sourceChecksumSha256,
+      stemChecksumSha256: drumAnalyses.stemChecksumSha256,
+      currentStemChecksumSha256: stemAssets.checksumSha256,
+      status: drumAnalyses.status,
+      analysisEngine: drumAnalyses.analysisEngine,
+      analysisEngineVersion: drumAnalyses.analysisEngineVersion,
+      bpm: drumAnalyses.bpm,
+      bpmConfidence: drumAnalyses.bpmConfidence,
+      beatGrid: drumAnalyses.beatGrid,
+      beatConfidence: drumAnalyses.beatConfidence,
+    }).from(drumAnalyses).innerJoin(stemAssets, eq(drumAnalyses.stemAssetId, stemAssets.id)).where(and(
+      eq(drumAnalyses.sourceAssetId, source.id),
+      eq(drumAnalyses.stemAssetId, stem.id),
+      eq(drumAnalyses.status, "complete"),
+      eq(drumAnalyses.analysisEngine, LOCAL_DRUM_ANALYSIS_ENGINE),
+      eq(drumAnalyses.analysisEngineVersion, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION),
+      eq(drumAnalyses.sourceChecksumSha256, source.checksumSha256!),
+      eq(stemAssets.sourceAssetId, source.id),
+      eq(stemAssets.checksumSha256, drumAnalyses.stemChecksumSha256),
+    )).limit(1);
+    if (!row) return null;
+    const staleReason = drumAnalysisProvenanceReason({
+      sourceAssetId: row.sourceAssetId,
+      expectedSourceAssetId: source.id,
+      stemAssetId: row.stemAssetId,
+      expectedStemAssetId: stem.id,
+      sourceChecksumSha256: row.sourceChecksumSha256,
+      expectedSourceChecksumSha256: source.checksumSha256!,
+      stemChecksumSha256: row.stemChecksumSha256,
+      expectedStemChecksumSha256: row.currentStemChecksumSha256,
+      analysisEngine: row.analysisEngine,
+      analysisEngineVersion: row.analysisEngineVersion,
+    }, { engine: LOCAL_DRUM_ANALYSIS_ENGINE, version: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION });
+    if (staleReason !== null) return null;
+    const parsedGrid = (() => {
+      if (row.beatGrid === null) return null;
+      try { return JSON.parse(row.beatGrid); } catch { return null; }
+    })();
+    const measured = normaliseIsolatedDrumTempoEvidence({
+      bpm: row.bpm,
+      bpmConfidence: row.bpmConfidence,
+      beatGrid: parsedGrid,
+      beatConfidence: row.beatConfidence,
+      durationMs: Math.round(Math.min(detail.durationSeconds, stem.durationSeconds) * 1000),
+    });
+    if (!measured) {
+      return { isolatedDrumTempo: null, isolatedDrumTempoStatus: "complete" } satisfies DrumTempoState;
+    }
+    return {
+      isolatedDrumTempo: {
+        ...measured,
+        stemAssetId: row.stemAssetId,
+        sourceChecksumSha256: row.sourceChecksumSha256,
+        stemChecksumSha256: row.stemChecksumSha256,
+        analysisEngine: row.analysisEngine,
+        analysisEngineVersion: row.analysisEngineVersion,
+      } satisfies IsolatedDrumTempoEvidence,
+      isolatedDrumTempoStatus: "complete",
+    };
+  };
+
+  const currentState = await readCurrent();
+  if (currentState) return currentState;
+
+  try {
+    const ensured = await ensureLocalDrumTempoAnalysis(
+      { id: source.id, projectId: source.projectId, checksumSha256: source.checksumSha256 },
+      stem,
+    );
+    const status = ensured.analysis?.status;
+    return {
+      isolatedDrumTempo: null,
+      isolatedDrumTempoStatus: status === "queued" || status === "preparing" || status === "processing"
+        ? status === "queued" ? "queued" : "processing"
+        : status === "failed" || status === "cancelled" ? "failed" : "unavailable",
+    };
+  } catch {
+    return { isolatedDrumTempo: null, isolatedDrumTempoStatus: "unavailable" };
+  }
 }
 
 export async function sessionTrackAnalysis(ownerId: string, trackId: string): Promise<SessionTrackAnalysis | null> {
@@ -1796,6 +1923,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
   if (detail === null) return null;
   const [sourceTrack] = await db
     .select({
+      projectId: sourceAssets.projectId,
       sourceAssetId: tracks.sourceAssetId,
       checksumSha256: sourceAssets.checksumSha256,
     })
@@ -1803,7 +1931,12 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     .leftJoin(sourceAssets, eq(sourceAssets.id, tracks.sourceAssetId))
     .where(eq(tracks.id, trackId))
     .limit(1);
-  if (sourceTrack === undefined || sourceTrack.sourceAssetId === null) return null;
+  if (sourceTrack === undefined || sourceTrack.sourceAssetId === null || sourceTrack.projectId === null) return null;
+  const drumTempoState = await sessionDrumTempoState(detail, {
+    id: sourceTrack.sourceAssetId,
+    projectId: sourceTrack.projectId,
+    checksumSha256: sourceTrack.checksumSha256,
+  });
   const [analysis] = await db
     .select({
       id: sourceAnalyses.id,
@@ -1835,6 +1968,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       sections: null,
       vocalActivityStartsMs: null,
       voicedPhraseStartsMs: null,
+      ...drumTempoState,
     };
   }
   const analysisMatchesSource = sourceTrack.checksumSha256 !== null
@@ -1852,6 +1986,7 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
       sections: null,
       vocalActivityStartsMs: null,
       voicedPhraseStartsMs: null,
+      ...drumTempoState,
     };
   }
   const analysisIsCurrent = isCurrentDesktopAnalysis(analysis);
@@ -2063,5 +2198,6 @@ export async function sessionTrackAnalysis(ownerId: string, trackId: string): Pr
     sections,
     vocalActivityStartsMs,
     voicedPhraseStartsMs,
+    ...drumTempoState,
   };
 }

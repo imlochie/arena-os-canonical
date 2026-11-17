@@ -1937,6 +1937,8 @@ test("session: a missing original can be restored without changing stems or sess
       sections: null,
       vocalActivityStartsMs: null,
       voicedPhraseStartsMs: null,
+      isolatedDrumTempo: null,
+      isolatedDrumTempoStatus: "unavailable",
     });
     const updatedTrack = await service.getTrack(OWNER, trackA.id);
     assert.equal(updatedTrack?.analysis?.bpm, null);
@@ -3422,10 +3424,46 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
   });
   const trackBDetail = await service.getTrack(OWNER, trackB.id);
   const donorVocalStem = trackBDetail?.stems.find((stem) => stem.stemType === "vocals");
+  const donorDrumStem = trackBDetail?.stems.find((stem) => stem.stemType === "drums");
   assert.ok(donorVocalStem, "the donor's isolated vocal asset is available");
+  assert.ok(donorDrumStem, "the donor's isolated drum asset is available");
   const [donorVocalStemRecord] = await db.db.select().from(schema.stemAssets)
     .where(eq(schema.stemAssets.id, donorVocalStem.id)).limit(1);
   assert.ok(donorVocalStemRecord);
+  const [donorDrumStemRecord] = await db.db.select().from(schema.stemAssets)
+    .where(eq(schema.stemAssets.id, donorDrumStem.id)).limit(1);
+  assert.ok(donorDrumStemRecord);
+  const [previousDrumTempoAnalysis] = await db.db.select().from(schema.drumAnalyses)
+    .where(eq(schema.drumAnalyses.stemAssetId, donorDrumStem.id)).limit(1);
+  const drumTempoAnalysisValues = {
+    projectId: trackB.studioProjectId,
+    sourceAssetId: sourceB,
+    stemAssetId: donorDrumStem.id,
+    status: "complete",
+    stage: "complete",
+    idempotencyKey: `session-drum-tempo:${donorDrumStem.id}`,
+    analysisEngine: "arena-js-stem-analysis",
+    analysisEngineVersion: "1.1.0",
+    sourceChecksumSha256: sourceAssetB.checksumSha256!,
+    stemChecksumSha256: donorDrumStemRecord.checksumSha256,
+    bpm: 109.957,
+    bpmConfidence: 0.737,
+    beatGrid: JSON.stringify([0, 545, 1_091, 1_636]),
+    beatConfidence: 0.744,
+  };
+  const [drumTempoAnalysisRow] = previousDrumTempoAnalysis
+    ? await db.db.update(schema.drumAnalyses).set(drumTempoAnalysisValues)
+      .where(eq(schema.drumAnalyses.id, previousDrumTempoAnalysis.id)).returning()
+    : await db.db.insert(schema.drumAnalyses).values(drumTempoAnalysisValues).returning();
+  assert.ok(drumTempoAnalysisRow);
+  t.after(async () => {
+    if (previousDrumTempoAnalysis) {
+      await db.db.update(schema.drumAnalyses).set(previousDrumTempoAnalysis)
+        .where(eq(schema.drumAnalyses.id, previousDrumTempoAnalysis.id));
+    } else {
+      await db.db.delete(schema.drumAnalyses).where(eq(schema.drumAnalyses.id, drumTempoAnalysisRow.id));
+    }
+  });
   await db.db.insert(schema.sourceAnalyses).values({
     projectId: trackB.studioProjectId,
     sourceAssetId: sourceB,
@@ -3507,6 +3545,27 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
     assert.equal(analysisA?.bpm, 128.5);
     assert.equal(analysisA?.musicalKey, "A minor");
     assert.equal(analysisB?.bpm, 129);
+    assert.equal(analysisB?.isolatedDrumTempoStatus, "complete");
+    assert.equal(analysisB?.isolatedDrumTempo?.bpm, 109.957,
+      "session analysis returns current-checksum isolated drum tempo evidence to live swap decisions");
+    assert.equal(analysisB?.isolatedDrumTempo?.beatConfidence, 0.744);
+    const libraryTrackB = await service.getTrack(OWNER, trackB.id);
+    assert.equal(libraryTrackB?.analysis?.isolatedDrumTempo?.stemAssetId, donorDrumStem.id,
+      "track detail carries the same exact stem evidence into donor preparation");
+    const librarySummaryB = (await service.listTracks({ ownerId: OWNER }))
+      .find((track) => track.id === trackB.id);
+    assert.equal(librarySummaryB?.analysis?.isolatedDrumTempo?.bpm, 109.957,
+      "library donor candidates use the same persisted isolated-drum tempo, not a separate heuristic");
+    await db.db.update(schema.drumAnalyses)
+      .set({ sourceChecksumSha256: "f".repeat(64) })
+      .where(eq(schema.drumAnalyses.stemAssetId, donorDrumStem.id));
+    const staleLibrarySummaryB = (await service.listTracks({ ownerId: OWNER }))
+      .find((track) => track.id === trackB.id);
+    assert.equal(staleLibrarySummaryB?.analysis?.isolatedDrumTempo, null,
+      "a donor with stale source provenance cannot influence picker tempo or preload");
+    await db.db.update(schema.drumAnalyses)
+      .set({ sourceChecksumSha256: sourceAssetB.checksumSha256 })
+      .where(eq(schema.drumAnalyses.stemAssetId, donorDrumStem.id));
     assert.deepEqual(analysisB?.downbeatGridMs, [0, 2000],
       "the session endpoint exposes persisted downbeats only on the current analysis beat grid");
     assert.equal(analysisB?.downbeatConfidence, 0.9);

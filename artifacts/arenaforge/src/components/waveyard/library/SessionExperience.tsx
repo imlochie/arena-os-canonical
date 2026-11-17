@@ -58,6 +58,7 @@ import {
   hasReliableLiveStemBeatEvidence,
   hasReliableLiveStemTempoEvidence,
   isHalfDoubleTempoPair,
+  hasUsableLiveDrumTempoDonor,
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
@@ -68,6 +69,7 @@ import {
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
   resolveLiveDrumTempoMaster,
+  selectLiveTempoAnalysis,
   nextSessionTrack,
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
@@ -125,6 +127,18 @@ function readStoredSessionMasterLevel(): number {
   }
 }
 
+type IsolatedDrumTempo = {
+  bpm: number;
+  bpmConfidence: number;
+  beatGridMs: number[];
+  beatConfidence: number;
+  stemAssetId: string;
+  sourceChecksumSha256: string;
+  stemChecksumSha256: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
 interface SessionTrackItem {
   id: string;
   position: number;
@@ -145,6 +159,8 @@ interface SessionTrackItem {
     musicalKey: string | null;
     beatGridMs: number[] | null;
     downbeatGridMs: number[] | null;
+    isolatedDrumTempo: IsolatedDrumTempo | null;
+    isolatedDrumTempoStatus: "not_applicable" | "queued" | "processing" | "complete" | "failed" | "unavailable";
     sections: SourceSection[] | null;
     vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
     voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
@@ -182,7 +198,13 @@ interface SessionDetail {
   updatedAt: string;
 }
 
-type TempoAnalysis = { bpm: number | null; bpmConfidence?: number | null } | null;
+type TempoAnalysis = {
+  bpm: number | null;
+  bpmConfidence?: number | null;
+  beatConfidence?: number | null;
+  beatGridMs?: number[] | null;
+  isolatedDrumTempo?: IsolatedDrumTempo | null;
+} | null;
 type ManualTempoCorrections = Record<string, number>;
 
 function readSessionTempoCorrections(sessionId: string): ManualTempoCorrections {
@@ -208,10 +230,23 @@ function tempoForTrack(
 ) {
   const correction = corrections[trackId];
   const corrected = correction !== undefined;
+  const selected = selectLiveTempoAnalysis({
+    bpm: analysis?.bpm ?? null,
+    bpmConfidence: analysis?.bpmConfidence ?? null,
+    beatConfidence: analysis?.beatConfidence ?? null,
+    beatGridMs: analysis?.beatGridMs ?? null,
+    isolatedDrumTempo: analysis?.isolatedDrumTempo ?? null,
+  });
+  const manualGridAgrees = !corrected || (
+    selected.bpm !== null && Math.abs(correction - selected.bpm) / selected.bpm <= 0.08
+  );
   return {
-    bpm: corrected ? correction : analysis?.bpm ?? null,
-    confidence: corrected ? 1 : analysis?.bpmConfidence ?? null,
-    automaticBpm: analysis?.bpm ?? null,
+    bpm: corrected ? correction : selected.bpm,
+    confidence: corrected ? 1 : selected.bpmConfidence,
+    beatConfidence: manualGridAgrees ? selected.beatConfidence : null,
+    beatGridMs: manualGridAgrees ? selected.beatGridMs : null,
+    evidenceSource: corrected ? "manual" as const : selected.evidenceSource,
+    automaticBpm: selected.bpm,
     corrected,
   };
 }
@@ -254,6 +289,7 @@ interface PendingLiveSwap {
     bpm?: number | null;
     bpmConfidence?: number | null;
     beatConfidence?: number | null;
+    analysis?: TempoAnalysis;
     donorEntryOffsetMs?: number | null;
   };
   previousSwap?: SessionDetail["swaps"][number];
@@ -380,7 +416,13 @@ function getPersistedSwapSetup(
     ?? library.find((track) => track.id === fullBedDonorTrackId)?.analysis
     ?? (currentTrackHasCompleteBed ? item.analysis : null);
   const vocalSwap = activeSwaps.find((swap) => swap.stemType === "vocals") ?? null;
-  const drumSwap = activeSwaps.find((swap) => swap.stemType === "drums") ?? null;
+  const drumSwapCandidate = activeSwaps.find((swap) => swap.stemType === "drums") ?? null;
+  const drumCandidateStem = drumSwapCandidate === null ? null : findDonorStem(drumSwapCandidate);
+  // A stale/missing/passthrough selection cannot retime the whole receiving
+  // deck. The verified donor audio must be the source of that decision.
+  const drumSwap = hasUsableLiveDrumTempoDonor(drumCandidateStem)
+    ? drumSwapCandidate
+    : null;
   const recipientTempo = tempoForTrack(item.track.id, item.analysis, tempoCorrections);
   const drumDonor = drumSwap === null
     ? null
@@ -393,8 +435,8 @@ function getPersistedSwapSetup(
   const tempoEvidence = {
     recipientBpmConfidence: recipientTempo.confidence,
     donorBpmConfidence: drumDonorTempo?.confidence,
-    recipientBeatConfidence: item.analysis?.beatConfidence,
-    donorBeatConfidence: drumDonorAnalysis?.beatConfidence,
+    recipientBeatConfidence: recipientTempo.beatConfidence,
+    donorBeatConfidence: drumDonorTempo?.beatConfidence,
   };
   const tempoMaster = drumSwap && drumDonorTempo
     ? resolveLiveDrumTempoMaster(recipientTempo.bpm, drumDonorTempo.bpm, tempoEvidence)
@@ -413,13 +455,18 @@ function getPersistedSwapSetup(
     ? drumDonorTempo?.confidence ?? null
     : recipientTempo.confidence;
   const donorTitle = drumDonor?.track.title ?? drumSwap?.donorTrack?.title ?? "Donor";
+  const tempoEvidenceNote = drumSwap && drumDonorTempo
+    ? `Timing evidence: receiving side from ${recipientTempo.evidenceSource === "isolated-drums" ? "its current separated drums" : "the full mix"}; donor from ${drumDonorTempo.evidenceSource === "isolated-drums" ? "its current separated drums" : "the full mix"}.`
+    : "";
   const tempoMasterStatus = tempoMaster?.master === "donor-drums" && masterWouldExceedPlaybackBounds
     ? `${donorTitle} drum tempo cannot safely become the mix master at the current speed setting; reduce the manual speed to stay within the playback engine's rate limits. The current track remains the tempo reference.`
     : tempoMaster?.master === "donor-drums"
-    ? `${donorTitle} drums set the mix tempo at ${Math.round(tempoMaster.donorBpm)} BPM. The receiving track and every donor layer follow this clock; ${tempoMaster.reason}`
+    ? `${donorTitle} drums set the mix tempo at ${Math.round(tempoMaster.donorBpm)} BPM. The receiving track and every donor layer follow this clock. ${tempoEvidenceNote} ${tempoMaster.reason}`
     : tempoMaster
-      ? `${donorTitle} drums do not safely set the mix tempo. ${tempoMaster.reason}`
-      : "Current track remains the tempo reference; a donor drum layer is not active.";
+      ? `${donorTitle} drums do not safely set the mix tempo. ${tempoEvidenceNote} ${tempoMaster.reason}`
+      : drumSwapCandidate !== null
+        ? "The saved drum donor is unavailable or not a separated drum stem, so it cannot retime the receiving mix."
+        : "Current track remains the tempo reference; a donor drum layer is not active.";
   let sourceKeyShiftSemitones: number | null = null;
   let keyMasterStatus = "Current track remains the key reference; a complete drums, bass and melody bed from one donor is needed to change it.";
   let keyReferenceKey: string | null = null;
@@ -463,8 +510,8 @@ function getPersistedSwapSetup(
     const pairTempoEvidence = {
       recipientBpmConfidence: recipientTempo.confidence,
       donorBpmConfidence: donorTempo.confidence,
-      recipientBeatConfidence: item.analysis?.beatConfidence,
-      donorBeatConfidence: donorAnalysis?.beatConfidence ?? libraryDonorAnalysis?.beatConfidence,
+      recipientBeatConfidence: recipientTempo.beatConfidence,
+      donorBeatConfidence: donorTempo.beatConfidence,
     };
     const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(pairTempoEvidence);
     const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, pairTempoEvidence);
@@ -481,14 +528,14 @@ function getPersistedSwapSetup(
       swap.atSeconds,
       ratio,
       {
-        recipientBeatGridMs: item.analysis?.beatGridMs,
-        donorBeatGridMs: donorAnalysis?.beatGridMs,
+        recipientBeatGridMs: recipientTempo.beatGridMs,
+        donorBeatGridMs: donorTempo.beatGridMs,
         recipientBpm: recipientTempo.bpm,
         donorBpm: donorTempo.bpm,
         recipientBpmConfidence: recipientTempo.confidence,
         donorBpmConfidence: donorTempo.confidence,
-        recipientBeatConfidence: item.analysis?.beatConfidence,
-        donorBeatConfidence: donorAnalysis?.beatConfidence,
+        recipientBeatConfidence: recipientTempo.beatConfidence,
+        donorBeatConfidence: donorTempo.beatConfidence,
         recipientKey: alignmentRecipientKey,
         donorKey: donorAnalysis?.musicalKey ?? null,
         recipientKeyConfidence: alignmentRecipientKeyConfidence,
@@ -497,8 +544,8 @@ function getPersistedSwapSetup(
     );
     const sectionOffset = sectionAlignment?.offsetSeconds ?? null;
     const beatOffset = ratio === null || !reliableBeatEvidence ? null : liveStemBeatOffsetSeconds(
-      item.analysis?.beatGridMs,
-      donorAnalysis?.beatGridMs,
+      recipientTempo.beatGridMs,
+      donorTempo.beatGridMs,
       ratio,
     );
     const explicitDonorEntryOffset = liveStemDonorEntryOffsetSeconds(
@@ -3631,19 +3678,25 @@ export default function SessionExperience({
       bpm?: number | null;
       bpmConfidence?: number | null;
       beatConfidence?: number | null;
+      analysis?: TempoAnalysis;
     }) => {
       if (session === null || currentItem === null) return Promise.resolve();
       const recipientStemId = currentItem.stems.find((stem) => stem.stemType === stemType)?.id;
       if (!recipientStemId) return Promise.resolve();
       const recipientTempo = tempoForTrack(currentItem.track.id, currentItem.analysis, manualTempoCorrections);
+      const donorTempo = tempoForTrack(donor.id, donor.analysis ?? {
+        bpm: donor.bpm ?? null,
+        bpmConfidence: donor.bpmConfidence,
+        beatConfidence: donor.beatConfidence,
+      }, manualTempoCorrections);
       const tempoStretchRatio = liveStemTempoStretchRatio(
         recipientTempo.bpm,
-        donor.bpm ?? null,
+        donorTempo.bpm,
         {
           recipientBpmConfidence: recipientTempo.confidence,
-          donorBpmConfidence: donor.bpmConfidence,
-          recipientBeatConfidence: currentItem.analysis?.beatConfidence,
-          donorBeatConfidence: donor.beatConfidence,
+          donorBpmConfidence: donorTempo.confidence,
+          recipientBeatConfidence: recipientTempo.beatConfidence,
+          donorBeatConfidence: donorTempo.beatConfidence,
         },
       ) ?? 1;
       const key = `${activeDeck}:${currentItem.id}:${stemType}:${donor.id}:${tempoStretchRatio.toFixed(6)}`;
@@ -3724,6 +3777,7 @@ export default function SessionExperience({
       bpm?: number | null;
       bpmConfidence?: number | null;
       beatConfidence?: number | null;
+      analysis?: TempoAnalysis;
     }, donorEntryOffsetMs: number | null = null) => {
       if (session === null || currentItem === null) return;
       const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
@@ -3765,6 +3819,7 @@ export default function SessionExperience({
           bpm: donor.bpm,
           bpmConfidence: donor.bpmConfidence,
           beatConfidence: donor.beatConfidence,
+          analysis: donor.analysis,
           donorEntryOffsetMs,
         },
         previousSwap,
@@ -4941,8 +4996,8 @@ export default function SessionExperience({
     const tempoEvidence = {
       recipientBpmConfidence: recipientTempo.confidence,
       donorBpmConfidence: selectedDonorTempo?.confidence,
-      recipientBeatConfidence: currentItem.analysis?.beatConfidence,
-      donorBeatConfidence: selectedDonorAnalysis?.beatConfidence,
+      recipientBeatConfidence: recipientTempo.beatConfidence,
+      donorBeatConfidence: selectedDonorTempo?.beatConfidence,
     };
     const reliableTempoEvidence = hasReliableLiveStemTempoEvidence(tempoEvidence);
     const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(tempoEvidence);
@@ -4980,7 +5035,7 @@ export default function SessionExperience({
           bpmConfidence: tempo.confidence,
           automaticBpm: tempo.automaticBpm,
           tempoCorrected: tempo.corrected,
-          beatConfidence: donor.analysis?.beatConfidence ?? null,
+          beatConfidence: tempo.beatConfidence,
           musicalKey: donor.analysis?.musicalKey ?? null,
           keyConfidence: donor.analysis?.keyConfidence ?? null,
           durationSeconds: donor.track.durationSeconds,
@@ -4997,7 +5052,7 @@ export default function SessionExperience({
           bpmConfidence: tempo.confidence,
           automaticBpm: tempo.automaticBpm,
           tempoCorrected: tempo.corrected,
-          beatConfidence: donor.analysis?.beatConfidence ?? null,
+          beatConfidence: tempo.beatConfidence,
           musicalKey: donor.analysis?.musicalKey ?? null,
           keyConfidence: donor.analysis?.keyConfidence ?? null,
           durationSeconds: donor.durationSeconds,
@@ -5169,6 +5224,7 @@ export default function SessionExperience({
               bpm: tempo?.bpm ?? donor.analysis?.bpm ?? null,
               bpmConfidence: tempo?.bpmConfidence ?? donor.analysis?.bpmConfidence ?? null,
               beatConfidence: donor.analysis?.beatConfidence ?? null,
+              analysis: donor.analysis,
             });
             return;
           }
@@ -5178,6 +5234,7 @@ export default function SessionExperience({
             bpm: tempo?.bpm ?? source.analysis?.bpm ?? null,
             bpmConfidence: tempo?.bpmConfidence ?? source.analysis?.bpmConfidence ?? null,
             beatConfidence: source.analysis?.beatConfidence ?? null,
+            analysis: source.analysis,
           });
         }}
         onPrefetch={(donorId) => prefetchLiveSwapAsset(stemType, donorId)}
@@ -5187,11 +5244,19 @@ export default function SessionExperience({
         onChoose={(donorId, donorEntryOffsetMs = null, entryCandidate) => {
           if (entryCandidate) {
             const candidateTempo = candidates.find((candidate) => candidate.id === donorId);
-            const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, candidateTempo?.bpm ?? null, {
+            const donorAnalysis = donors.find((item) => item.track.id === donorId)?.analysis
+              ?? libraryDonors.find((item) => item.id === donorId)?.analysis
+              ?? (candidateTempo ? {
+                bpm: candidateTempo.bpm,
+                bpmConfidence: candidateTempo.bpmConfidence,
+                beatConfidence: candidateTempo.beatConfidence,
+              } : null);
+            const selectedDonorTempo = tempoForTrack(donorId, donorAnalysis, manualTempoCorrections);
+            const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, selectedDonorTempo.bpm, {
               recipientBpmConfidence: recipientTempo.confidence,
-              donorBpmConfidence: candidateTempo?.bpmConfidence,
-              recipientBeatConfidence: currentItem.analysis?.beatConfidence,
-              donorBeatConfidence: candidateTempo?.beatConfidence,
+              donorBpmConfidence: selectedDonorTempo.confidence,
+              recipientBeatConfidence: recipientTempo.beatConfidence,
+              donorBeatConfidence: selectedDonorTempo.beatConfidence,
             }) ?? 1;
             const exactEntryMs = liveStemCandidateDonorEntryMs(
               entryCandidate,
@@ -5229,6 +5294,7 @@ export default function SessionExperience({
               bpm: tempo?.bpm ?? donor.analysis?.bpm ?? null,
               bpmConfidence: tempo?.bpmConfidence ?? donor.analysis?.bpmConfidence ?? null,
               beatConfidence: donor.analysis?.beatConfidence ?? null,
+              analysis: donor.analysis,
             }, donorEntryOffsetMs);
             return true;
           }
@@ -5240,6 +5306,7 @@ export default function SessionExperience({
               bpm: tempo?.bpm ?? source.analysis?.bpm ?? null,
               bpmConfidence: tempo?.bpmConfidence ?? source.analysis?.bpmConfidence ?? null,
               beatConfidence: source.analysis?.beatConfidence ?? null,
+              analysis: source.analysis,
             }, donorEntryOffsetMs);
             return true;
           }

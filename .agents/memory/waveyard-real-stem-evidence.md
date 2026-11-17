@@ -22,6 +22,27 @@ and separate component measurements, published/persisted workflow acceptance,
 reference-label accuracy and listening quality. Never lower confidence criteria
 just to turn an unavailable musical result into a reported success.
 
+Isolated drum tempo is useful when the full mix estimate is weak, but it is not
+an unconditional replacement for full-mix tempo. Require exact current source
+and drum-stem provenance, a duration-bounded beat grid whose interval agrees
+with its BPM, and credible confidence. If full-mix and isolated-drum BPM disagree
+materially, retain the full-mix result rather than choosing whichever is more
+convenient. Donor preview warming and committed swaps must derive their tempo
+ratio from the same selected evidence.
+
+**Why:** A real full-song pair showed that isolated drums can strengthen a weak
+mix estimate and safely drive the live deck clock, while a deliberately
+conflicting analysis fixture showed that blindly preferring the stem would
+produce a false tempo master. Preparing a donor at native tempo and recomputing
+the ratio only after selection also wastes the user's wait and defeats
+preparation.
+
+**How to apply:** Validate provenance and beat-grid consistency at the persisted
+boundary; share one tempo-selection function between candidate display,
+preparation, swap selection and the deck master. Keep measured preparation
+latency visible and distinguish a completed live audio-graph test from
+persisted-route or listening-quality evidence.
+
 Do not enable a replacement harmonic front end on controlled chord fixtures
 alone, or treat spectral reconstruction fit as chord accuracy.
 

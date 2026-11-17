@@ -43,6 +43,7 @@ export * from './getLibraryAudioCaptureOptionsMediaMetadata';
 export * from './getLibraryAudioCaptureOptionsParams';
 export * from './getLibraryTracksParams';
 export * from './healthStatus';
+export * from './isolatedDrumTempoEvidence';
 export * from './libraryAudioBackupPreflightResponse';
 export * from './libraryAudioCaptureApplication';
 export * from './libraryAudioCaptureDevice';

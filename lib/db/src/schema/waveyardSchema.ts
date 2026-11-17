@@ -393,6 +393,13 @@ export const drumAnalyses = pgTable("drum_analyses", {
   analysisEngineVersion: text("analysis_engine_version").notNull(),
   sourceChecksumSha256: text("source_checksum_sha256").notNull(),
   stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  // Isolated-drum tempo evidence is persisted with the same exact source/stem
+  // identity as its transient events. It can improve live timing only when the
+  // matching stem and both confidence measures are current and reliable.
+  bpm: real("bpm"),
+  bpmConfidence: real("bpm_confidence"),
+  beatGrid: text("beat_grid"),
+  beatConfidence: real("beat_confidence"),
   errorCode: text("error_code"),
   errorMessage: text("error_message"),
   startedAt: timestamp("started_at", { withTimezone: true }),

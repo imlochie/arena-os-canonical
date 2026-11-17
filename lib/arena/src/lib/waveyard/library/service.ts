@@ -34,6 +34,7 @@ import {
   PROCESSING_JOB_TERMINAL_STATUSES,
   processingJobs,
   projects,
+  drumAnalyses,
   queueItems,
   remixClips,
   remixSessions,
@@ -44,6 +45,12 @@ import {
   stemAssets,
   tracks,
 } from "@workspace/db/waveyardSchema";
+import {
+  LOCAL_DRUM_ANALYSIS_ENGINE,
+  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+  normaliseIsolatedDrumTempoEvidence,
+  type IsolatedDrumTempoEvidence,
+} from "../types/drum-analysis";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import {
   normalizeLabels,
@@ -104,6 +111,7 @@ export interface TrackAnalysis {
   beatConfidence: number | null;
   keyConfidence: number | null;
   musicalKey: string | null;
+  isolatedDrumTempo?: IsolatedDrumTempoEvidence | null;
 }
 
 export interface TrackDetail extends TrackSummary {
@@ -228,14 +236,82 @@ function parseStoredLabels(raw: string | null): string[] {
 
 async function summariesFor(rows: TrackRow[]): Promise<TrackSummary[]> {
   const sourceAssetIds = rows.map((row) => row.sourceAssetId);
-  const [availability, analyses] = await Promise.all([
+  const [availability, analyses, drumTempo] = await Promise.all([
     availabilityBySource(sourceAssetIds),
     analysisBySource(sourceAssetIds),
+    isolatedDrumTempoBySource(sourceAssetIds),
   ]);
   return rows.map((row) => ({
     ...toSummary(row, availability.get(row.sourceAssetId) ?? resolveStemAvailability({ stems: [] })),
-    analysis: analyses.get(row.sourceAssetId) ?? null,
+    analysis: analyses.has(row.sourceAssetId) || drumTempo.has(row.sourceAssetId)
+      ? {
+        status: analyses.get(row.sourceAssetId)?.status ?? "complete",
+        bpm: analyses.get(row.sourceAssetId)?.bpm ?? null,
+        bpmConfidence: analyses.get(row.sourceAssetId)?.bpmConfidence ?? null,
+        beatConfidence: analyses.get(row.sourceAssetId)?.beatConfidence ?? null,
+        keyConfidence: analyses.get(row.sourceAssetId)?.keyConfidence ?? null,
+        musicalKey: analyses.get(row.sourceAssetId)?.musicalKey ?? null,
+        isolatedDrumTempo: drumTempo.get(row.sourceAssetId) ?? null,
+      }
+      : null,
   }));
+}
+
+/** Only current, completed local drum estimates may influence live timing. */
+async function isolatedDrumTempoBySource(sourceAssetIds: string[]) {
+  const uniqueIds = [...new Set(sourceAssetIds)];
+  if (uniqueIds.length === 0) return new Map<string, IsolatedDrumTempoEvidence>();
+  const rows = await db.select({
+    sourceAssetId: drumAnalyses.sourceAssetId,
+    stemAssetId: drumAnalyses.stemAssetId,
+    sourceChecksumSha256: drumAnalyses.sourceChecksumSha256,
+    currentSourceChecksumSha256: sourceAssets.checksumSha256,
+    stemChecksumSha256: drumAnalyses.stemChecksumSha256,
+    currentStemChecksumSha256: stemAssets.checksumSha256,
+    sourceDurationSeconds: sourceAssets.durationSeconds,
+    stemDurationSeconds: stemAssets.durationSeconds,
+    bpm: drumAnalyses.bpm,
+    bpmConfidence: drumAnalyses.bpmConfidence,
+    beatGrid: drumAnalyses.beatGrid,
+    beatConfidence: drumAnalyses.beatConfidence,
+    analysisEngine: drumAnalyses.analysisEngine,
+    analysisEngineVersion: drumAnalyses.analysisEngineVersion,
+  }).from(drumAnalyses)
+    .innerJoin(sourceAssets, eq(sourceAssets.id, drumAnalyses.sourceAssetId))
+    .innerJoin(stemAssets, eq(stemAssets.id, drumAnalyses.stemAssetId))
+    .where(and(
+      inArray(drumAnalyses.sourceAssetId, uniqueIds),
+      eq(drumAnalyses.status, "complete"),
+      eq(drumAnalyses.analysisEngine, LOCAL_DRUM_ANALYSIS_ENGINE),
+      eq(drumAnalyses.analysisEngineVersion, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION),
+      eq(drumAnalyses.sourceChecksumSha256, sourceAssets.checksumSha256),
+      eq(drumAnalyses.stemChecksumSha256, stemAssets.checksumSha256),
+      eq(stemAssets.sourceAssetId, drumAnalyses.sourceAssetId),
+      eq(stemAssets.stemType, "drums"),
+    ));
+  const result = new Map<string, IsolatedDrumTempoEvidence>();
+  for (const row of rows) {
+    if (result.has(row.sourceAssetId) || row.beatGrid === null) continue;
+    let beatGrid: unknown;
+    try { beatGrid = JSON.parse(row.beatGrid); } catch { continue; }
+    const measured = normaliseIsolatedDrumTempoEvidence({
+      bpm: row.bpm,
+      bpmConfidence: row.bpmConfidence,
+      beatGrid,
+      beatConfidence: row.beatConfidence,
+      durationMs: Math.round(Math.min(row.sourceDurationSeconds, row.stemDurationSeconds) * 1000),
+    });
+    if (!measured) continue;
+    result.set(row.sourceAssetId, {
+      ...measured,
+      stemAssetId: row.stemAssetId,
+      sourceChecksumSha256: row.sourceChecksumSha256,
+      stemChecksumSha256: row.stemChecksumSha256,
+      analysisEngine: row.analysisEngine,
+      analysisEngineVersion: row.analysisEngineVersion,
+    });
+  }
+  return result;
 }
 
 async function analysisBySource(sourceAssetIds: string[]): Promise<Map<string, TrackAnalysis>> {
@@ -589,6 +665,7 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
     .from(sourceAnalyses)
     .where(eq(sourceAnalyses.sourceAssetId, row.sourceAssetId))
     .limit(1);
+  const isolatedDrumTempo = (await isolatedDrumTempoBySource([row.sourceAssetId])).get(row.sourceAssetId) ?? null;
 
   const [latestJob] = await db
     .select({
@@ -626,13 +703,16 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
       bitrate: source.bitrate,
     },
     stems: stemRows,
-    analysis: analysis === undefined ? null : {
-      status: analysis.sourceChecksumSha256 === source.checksumSha256 ? analysis.status : "stale",
-      bpm: analysis.sourceChecksumSha256 === source.checksumSha256 ? analysis.bpm : null,
-      bpmConfidence: analysis.sourceChecksumSha256 === source.checksumSha256 ? currentBpmConfidence(analysis) : null,
-      beatConfidence: analysis.sourceChecksumSha256 === source.checksumSha256 ? currentBeatConfidence(analysis) : null,
-      keyConfidence: analysis.sourceChecksumSha256 === source.checksumSha256 ? currentKeyConfidence(analysis) : null,
-      musicalKey: analysis.sourceChecksumSha256 === source.checksumSha256 ? analysis.musicalKey : null,
+    analysis: analysis === undefined && isolatedDrumTempo === null ? null : {
+      status: analysis === undefined
+        ? "complete"
+        : analysis.sourceChecksumSha256 === source.checksumSha256 ? analysis.status : "stale",
+      bpm: analysis?.sourceChecksumSha256 === source.checksumSha256 ? analysis.bpm : null,
+      bpmConfidence: analysis?.sourceChecksumSha256 === source.checksumSha256 ? currentBpmConfidence(analysis) : null,
+      beatConfidence: analysis?.sourceChecksumSha256 === source.checksumSha256 ? currentBeatConfidence(analysis) : null,
+      keyConfidence: analysis?.sourceChecksumSha256 === source.checksumSha256 ? currentKeyConfidence(analysis) : null,
+      musicalKey: analysis?.sourceChecksumSha256 === source.checksumSha256 ? analysis.musicalKey : null,
+      isolatedDrumTempo,
     },
     playback,
   };

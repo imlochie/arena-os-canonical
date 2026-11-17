@@ -1,5 +1,59 @@
 # Arena handoff — read this first
 
+## Latest increment: measured drum evidence now drives live tempo adaptation
+
+Waveyard now persists BPM and beat-grid evidence from the exact isolated drum
+stem, bound to both the source and drum-file checksums. The worker queues that
+analysis after separation. Session and library donor responses expose only
+completed, current, locally produced evidence; stale or malformed measurements
+cannot influence the picker. The OpenAPI client contract carries the optional
+evidence to library candidates as well as session tracks.
+
+The live planner applies one selection rule to the recipient, donor preview,
+preparation and committed swap: use the isolated drum estimate only when its
+confidence and beat grid are credible and it agrees with the full-mix BPM
+within 4%. If the two estimates materially disagree, keep the full-mix tempo.
+When a verified separated drum donor becomes master, the receiving deck's
+original stems follow its playback clock and the donor is stretched to that
+same tempo. Hovering or focusing a donor warms the correctly stretched audio;
+the picker visibly reports “Preparing tempo match…” while that work is active.
+
+**Real-audio evidence:** The existing full-length September and Queen separated
+WAVs were reused without re-separation. Their isolated drum estimates are
+126.048 BPM (confidence 0.891) and 109.957 BPM (0.737), respectively. On the
+real browser audio graph, selecting Queen drums over September requested and
+applied a 0.872342 ratio; the vocals, bass and other-layer media clocks all
+continued at that same rate. The donor was audible at gain 1, the restore
+request succeeded, the original clocks continued, and the temporary donor
+source stopped.
+
+There is a significant usability cost if the user selects immediately:
+selection-to-audible took 12.815 seconds (1.266 s download, 1.237 s decode,
+10.919 s tempo matching on a 39.3 MB stem). When the visible warm-up completed
+before selection, selection-to-audible fell to 0.497 seconds; tempo processing
+still took 11.171 seconds in the background. This makes early hover/focus
+preparation functional, not a reduction in the CPU cost. The browser run used
+fixture-backed session state with the exact real WAVs; the separate PostgreSQL
+test verifies checksum-bound persisted evidence through session and library
+responses. This does not yet prove a deployed HTTP-session workflow, Windows
+performance, physical-device behavior or pleasant listening quality.
+
+**Verification:** full `pnpm run typecheck` passed. The persisted library/session
+suite passed 54 tests (6 opt-in tests skipped); the isolated-drum, live-tempo,
+session-logic and local stem-analysis suites passed 68 tests. The live browser
+acceptance passed for both immediate and prewarmed selection. Captures:
+`generated-artifacts/waveyard-real-world-acceptance/live-isolated-drum-tempo/immediate-click/september-drums-adapted-to-queen-swap.webm`
+and
+`generated-artifacts/waveyard-real-world-acceptance/live-isolated-drum-tempo/september-drums-adapted-to-queen-swap.webm`
+(prewarmed). Review the delay and the audio itself before treating this as a
+quality-mix result.
+
+PR #32 was reviewed for reusable work. Its verified beat-grid and donor-refresh
+changes informed this path; unrelated channel-strip UI changes were not copied.
+The next engineering gap is reducing measured stretch cost and exercising the
+same donor through the real saved-session HTTP route. Independent listening is
+still needed before claiming the pairing sounds good.
+
 ## Latest increment: replacement planning stays source-correct through export
 
 The mashup route now plans against retained bed stems on the bed's own source

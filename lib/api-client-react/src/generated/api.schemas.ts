@@ -330,6 +330,21 @@ export type StemAvailability = {
 /**
  * @nullable
  */
+export type IsolatedDrumTempoEvidence = {
+  bpm: number;
+  bpmConfidence: number;
+  beatGridMs: number[];
+  beatConfidence: number;
+  stemAssetId: string;
+  sourceChecksumSha256: string;
+  stemChecksumSha256: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+} | null;
+
+/**
+ * @nullable
+ */
 export type TrackAnalysis = {
   status: string;
   /** @nullable */
@@ -342,6 +357,7 @@ export type TrackAnalysis = {
   keyConfidence: number | null;
   /** @nullable */
   musicalKey: string | null;
+  isolatedDrumTempo?: IsolatedDrumTempoEvidence | null;
 } | null;
 
 export interface LibraryTrackSummary {
