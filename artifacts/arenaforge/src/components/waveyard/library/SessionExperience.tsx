@@ -66,6 +66,7 @@ import {
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
   liveStemCandidateDonorEntryMs,
+  resolveLiveStemDonorOffset,
   nearestEntryEvidenceMs,
   normalizeManualTempoBpm,
   resolveLiveDrumTempoMaster,
@@ -185,6 +186,14 @@ interface SessionDetail {
     toStemAssetId: string | null;
     atSeconds: number;
     donorEntryOffsetMs: number | null;
+    grooveCorrection?: {
+      status: "measured" | "unavailable";
+      correctionMs: number;
+      comparedOnsets: number;
+      beforeErrorMs: number | null;
+      afterErrorMs: number | null;
+      reason: string;
+    } | null;
     createdAt: string;
     donorTrack?: {
       id: string;
@@ -349,6 +358,7 @@ function getPersistedSwapSetup(
   const tempoStretchRatios: Record<string, number> = {};
   const beatOffsets: Record<string, number> = {};
   const alignmentBases: Record<string, LiveStemSectionAlignmentBasis> = {};
+  const grooveCorrectionsMs: Record<string, number> = {};
   const keyCorrections: Record<string, number> = {};
   const keyMatchStatuses: Record<string, string> = {};
   if (session === null || item === null) {
@@ -357,6 +367,7 @@ function getPersistedSwapSetup(
       tempoStretchRatios,
       beatOffsets,
       alignmentBases,
+      grooveCorrectionsMs,
       keyCorrections,
       keyMatchStatuses,
       tempoMasterRate: 1,
@@ -553,10 +564,22 @@ function getPersistedSwapSetup(
       swap.atSeconds,
       ratio,
     );
-    const offset = explicitDonorEntryOffset ?? sectionOffset ?? beatOffset;
-    if (offset !== null) beatOffsets[swap.stemType] = offset;
-    if (sectionAlignment !== null && explicitDonorEntryOffset === null)
+    const offsetPlan = resolveLiveStemDonorOffset({
+      explicitOffsetSeconds: explicitDonorEntryOffset,
+      sectionOffsetSeconds: sectionOffset,
+      beatOffsetSeconds: beatOffset,
+      sameRoleGrooveCorrectionMs: swap.grooveCorrection?.status === "measured"
+        ? swap.grooveCorrection.correctionMs
+        : null,
+      manualTempoOverride: recipientTempo.corrected || donorTempo.corrected,
+    });
+    if (offsetPlan.offsetSeconds !== null) beatOffsets[swap.stemType] = offsetPlan.offsetSeconds;
+    if (offsetPlan.basis === "same-role-stem-groove") {
+      alignmentBases[swap.stemType] = "same-role-stem-groove";
+      grooveCorrectionsMs[swap.stemType] = swap.grooveCorrection!.correctionMs;
+    } else if (sectionAlignment !== null && explicitDonorEntryOffset === null) {
       alignmentBases[swap.stemType] = sectionAlignment.basis;
+    }
     const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
     const donorKeyConfidence = donor?.analysis?.keyConfidence ?? swap.donorTrack?.analysis?.keyConfidence
@@ -632,6 +655,7 @@ function getPersistedSwapSetup(
     tempoStretchRatios,
     beatOffsets,
     alignmentBases,
+    grooveCorrectionsMs,
     keyCorrections,
     keyMatchStatuses,
     tempoMasterRate,
@@ -5124,10 +5148,13 @@ export default function SessionExperience({
     const unsafeTempoGap = reliableTempoEvidence && recipientBpm !== null && selectedDonorBpm !== null
       && !halfDoubleTempo && liveStemTempoStretchRatio(recipientBpm, selectedDonorBpm) === null;
     const alignmentBasis = currentSwapSetup.alignmentBases[stemType];
+    const grooveCorrectionMs = currentSwapSetup.grooveCorrectionsMs[stemType];
     const alignmentDescription = alignmentBasis === "rhythm-harmony-phrase"
       ? "rhythm + harmony matched"
       : alignmentBasis === "trusted-section-role"
         ? "section role matched"
+        : alignmentBasis === "same-role-stem-groove"
+          ? `same-role stem groove ${grooveCorrectionMs! > 0 ? "+" : ""}${grooveCorrectionMs} ms`
         : "beat phase aligned";
     const tempoStatus = swap === undefined ? null
       : pendingSwap

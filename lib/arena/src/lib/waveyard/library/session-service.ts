@@ -34,6 +34,9 @@ import {
   queueItems,
   projects,
   drumAnalyses,
+  drumEvents,
+  bassAnalyses,
+  bassEvents,
   remixClips,
   remixSessions,
   remixTracks,
@@ -71,6 +74,16 @@ import {
   normaliseIsolatedDrumTempoEvidence,
   type IsolatedDrumTempoEvidence,
 } from "../types/drum-analysis";
+import {
+  LOCAL_BASS_ANALYSIS_ENGINE,
+  LOCAL_BASS_ANALYSIS_ENGINE_VERSION,
+  bassAnalysisProvenanceReason,
+} from "../types/bass-analysis";
+import {
+  measureStemGroove,
+  type GrooveOnset,
+  type StemGrooveEvidence,
+} from "../types/stem-groove";
 import { ensureLocalDrumTempoAnalysis } from "../drum-analysis";
 import {
   normalizeStemMix,
@@ -85,11 +98,15 @@ import {
   defaultTransitionConfig,
   hasReliableLiveStemBeatEvidence,
   hasReliableLiveStemTempoEvidence,
+  liveStemBeatOffsetSeconds,
+  liveStemGrooveCorrection,
   liveStemTempoStretchRatio,
   normalizeTransitionConfig,
   resolveLiveDrumTempoMaster,
+  selectLiveTempoAnalysis,
   validateStemSwap,
   type TransitionConfig,
+  type LiveStemGrooveCorrection,
 } from "./session-logic";
 import {
   normalizeSessionKeyMode,
@@ -228,6 +245,8 @@ export interface SessionSwapPayload {
   toStemAssetId: string | null;
   atSeconds: number;
   donorEntryOffsetMs: number | null;
+  /** Same-role persisted onset comparison for small live phase corrections. */
+  grooveCorrection: LiveStemGrooveCorrection | null;
   createdAt: string;
   donorTrack: { id: string; title: string; durationSeconds: number; stems: TrackStem[]; analysis: SessionTrackAnalysis | null } | null;
 }
@@ -257,6 +276,202 @@ async function loadSessionTracks(sessionId: string): Promise<SessionTrackRow[]> 
     .where(eq(listenSessionTracks.sessionId, sessionId))
     .orderBy(asc(listenSessionTracks.position));
   return rows;
+}
+
+function canonicalGrooveRole(stemType: string): "drums" | "bass" | null {
+  if (stemType === "drums" || stemType === "percussion") return "drums";
+  return stemType === "bass" ? "bass" : null;
+}
+
+async function currentStemGrooveEvidence(
+  detail: TrackDetail,
+  stemAssetId: string | null,
+  role: "drums" | "bass",
+  analysis: SessionTrackAnalysis | null,
+): Promise<StemGrooveEvidence> {
+  const unavailable = (reason: string): StemGrooveEvidence => ({ role, status: "unavailable", reason });
+  if (stemAssetId === null || analysis === null) return unavailable("The exact saved stem or track analysis is unavailable.");
+  const listedStem = detail.stems.find((stem) => stem.id === stemAssetId);
+  if (!listedStem || listedStem.engine === "passthrough-unseparated"
+    || canonicalGrooveRole(listedStem.stemType) !== role) {
+    return unavailable("The saved stem identity does not match this musical role.");
+  }
+  const [source] = await db.select({
+    id: sourceAssets.id,
+    projectId: sourceAssets.projectId,
+    checksumSha256: sourceAssets.checksumSha256,
+  }).from(sourceAssets).where(and(
+    eq(sourceAssets.id, detail.source.id),
+    eq(sourceAssets.projectId, detail.studioProjectId),
+  )).limit(1);
+  if (!source?.checksumSha256) return unavailable("The current source checksum is unavailable.");
+  const [stem] = await db.select({
+    id: stemAssets.id,
+    projectId: stemAssets.projectId,
+    sourceAssetId: stemAssets.sourceAssetId,
+    stemType: stemAssets.stemType,
+    checksumSha256: stemAssets.checksumSha256,
+  }).from(stemAssets).where(and(
+    eq(stemAssets.id, stemAssetId),
+    eq(stemAssets.sourceAssetId, source.id),
+    eq(stemAssets.projectId, source.projectId),
+  )).limit(1);
+  if (!stem || canonicalGrooveRole(stem.stemType) !== role) {
+    return unavailable("The exact stem row is missing or no longer belongs to the source.");
+  }
+
+  let events: GrooveOnset[];
+  if (role === "drums") {
+    const [row] = await db.select({
+      id: drumAnalyses.id,
+      projectId: drumAnalyses.projectId,
+      sourceAssetId: drumAnalyses.sourceAssetId,
+      stemAssetId: drumAnalyses.stemAssetId,
+      sourceChecksumSha256: drumAnalyses.sourceChecksumSha256,
+      stemChecksumSha256: drumAnalyses.stemChecksumSha256,
+      status: drumAnalyses.status,
+      analysisEngine: drumAnalyses.analysisEngine,
+      analysisEngineVersion: drumAnalyses.analysisEngineVersion,
+    }).from(drumAnalyses).where(and(
+      eq(drumAnalyses.sourceAssetId, source.id),
+      eq(drumAnalyses.stemAssetId, stem.id),
+      eq(drumAnalyses.status, "complete"),
+    )).limit(1);
+    if (!row) return unavailable("No completed drum-onset analysis exists for this exact stem.");
+    if (row.projectId !== source.projectId) return unavailable("Drum-onset analysis belongs to a different project.");
+    const staleReason = drumAnalysisProvenanceReason({
+      sourceAssetId: row.sourceAssetId,
+      expectedSourceAssetId: source.id,
+      stemAssetId: row.stemAssetId,
+      expectedStemAssetId: stem.id,
+      sourceChecksumSha256: row.sourceChecksumSha256,
+      expectedSourceChecksumSha256: source.checksumSha256,
+      stemChecksumSha256: row.stemChecksumSha256,
+      expectedStemChecksumSha256: stem.checksumSha256,
+      analysisEngine: row.analysisEngine,
+      analysisEngineVersion: row.analysisEngineVersion,
+    }, { engine: LOCAL_DRUM_ANALYSIS_ENGINE, version: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION });
+    if (staleReason !== null) return unavailable(`Drum-onset provenance is not current (${staleReason}).`);
+    const rows = await db.select({
+      timestampMs: drumEvents.timestampMs,
+      strength: drumEvents.strength,
+      confidence: drumEvents.confidence,
+    }).from(drumEvents).where(eq(drumEvents.drumAnalysisId, row.id))
+      .orderBy(asc(drumEvents.timestampMs)).limit(16_385);
+    if (rows.length > 16_384) return unavailable("Drum-onset evidence exceeds the safe analysis bound.");
+    events = rows;
+  } else {
+    const [row] = await db.select({
+      id: bassAnalyses.id,
+      projectId: bassAnalyses.projectId,
+      sourceAssetId: bassAnalyses.sourceAssetId,
+      stemAssetId: bassAnalyses.stemAssetId,
+      sourceChecksumSha256: bassAnalyses.sourceChecksumSha256,
+      stemChecksumSha256: bassAnalyses.stemChecksumSha256,
+      status: bassAnalyses.status,
+      analysisEngine: bassAnalyses.analysisEngine,
+      analysisEngineVersion: bassAnalyses.analysisEngineVersion,
+    }).from(bassAnalyses).where(and(
+      eq(bassAnalyses.sourceAssetId, source.id),
+      eq(bassAnalyses.stemAssetId, stem.id),
+      eq(bassAnalyses.status, "complete"),
+    )).limit(1);
+    if (!row) return unavailable("No completed bass-attack analysis exists for this exact stem.");
+    if (row.projectId !== source.projectId) return unavailable("Bass-attack analysis belongs to a different project.");
+    const staleReason = bassAnalysisProvenanceReason({
+      sourceAssetId: row.sourceAssetId,
+      expectedSourceAssetId: source.id,
+      stemAssetId: row.stemAssetId,
+      expectedStemAssetId: stem.id,
+      sourceChecksumSha256: row.sourceChecksumSha256,
+      expectedSourceChecksumSha256: source.checksumSha256,
+      stemChecksumSha256: row.stemChecksumSha256,
+      expectedStemChecksumSha256: stem.checksumSha256,
+      analysisEngine: row.analysisEngine,
+      analysisEngineVersion: row.analysisEngineVersion,
+    });
+    if (staleReason !== null) return unavailable(`Bass-attack provenance is not current (${staleReason}).`);
+    const rows = await db.select({
+      timestampMs: bassEvents.timestampMs,
+      strength: bassEvents.strength,
+      confidence: bassEvents.confidence,
+    }).from(bassEvents).where(eq(bassEvents.bassAnalysisId, row.id))
+      .orderBy(asc(bassEvents.timestampMs)).limit(16_385);
+    if (rows.length > 16_384) return unavailable("Bass-attack evidence exceeds the safe analysis bound.");
+    events = rows;
+  }
+
+  const isolatedDrumGrid = role === "drums" ? analysis.isolatedDrumTempo : null;
+  return measureStemGroove(
+    role,
+    events,
+    isolatedDrumGrid?.beatGridMs ?? analysis.beatGridMs,
+    isolatedDrumGrid?.beatConfidence ?? analysis.beatConfidence,
+  );
+}
+
+async function liveSwapGrooveCorrection(input: {
+  stemType: string;
+  recipient: TrackDetail | null;
+  recipientStemAssetId: string | null;
+  recipientAnalysis: SessionTrackAnalysis | null;
+  donor: TrackDetail | null;
+  donorStemAssetId: string | null;
+  donorAnalysis: SessionTrackAnalysis | null;
+  atSeconds: number;
+  evidenceCache: Map<string, Promise<StemGrooveEvidence>>;
+}): Promise<LiveStemGrooveCorrection | null> {
+  const role = canonicalGrooveRole(input.stemType);
+  if (role === null) return null;
+  const unavailable = (reason: string) => liveStemGrooveCorrection(
+    { role, status: "unavailable", reason },
+    { role, status: "unavailable", reason },
+    { bedRatio: 1, donorRatio: 1, sourceOffsetMs: 0, entryMs: 0, endMs: 1 },
+  );
+  if (!input.recipient || !input.donor || !input.recipientAnalysis || !input.donorAnalysis
+    || !Number.isFinite(input.atSeconds) || input.atSeconds < 0) {
+    return unavailable("The live swap does not have complete recipient and donor analysis.");
+  }
+  const getEvidence = (detail: TrackDetail, stemAssetId: string | null, analysis: SessionTrackAnalysis | null) => {
+    const key = `${detail.source.id}:${stemAssetId ?? "missing"}:${role}`;
+    let result = input.evidenceCache.get(key);
+    if (!result) {
+      result = currentStemGrooveEvidence(detail, stemAssetId, role, analysis);
+      input.evidenceCache.set(key, result);
+    }
+    return result;
+  };
+  const [recipientGroove, donorGroove] = await Promise.all([
+    getEvidence(input.recipient, input.recipientStemAssetId, input.recipientAnalysis),
+    getEvidence(input.donor, input.donorStemAssetId, input.donorAnalysis),
+  ]);
+  const selectTempo = (analysis: SessionTrackAnalysis) => selectLiveTempoAnalysis({
+    bpm: analysis.bpm,
+    bpmConfidence: analysis.bpmConfidence,
+    beatConfidence: analysis.beatConfidence,
+    beatGridMs: analysis.beatGridMs,
+    isolatedDrumTempo: analysis.isolatedDrumTempo,
+  });
+  const recipientTempo = selectTempo(input.recipientAnalysis);
+  const donorTempo = selectTempo(input.donorAnalysis);
+  const timingEvidence = {
+    recipientBpmConfidence: recipientTempo.bpmConfidence,
+    donorBpmConfidence: donorTempo.bpmConfidence,
+    recipientBeatConfidence: recipientTempo.beatConfidence,
+    donorBeatConfidence: donorTempo.beatConfidence,
+  };
+  const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, timingEvidence);
+  if (ratio === null) return unavailable("No reliable tempo transform supports a live groove comparison.");
+  const beatOffset = liveStemBeatOffsetSeconds(recipientTempo.beatGridMs, donorTempo.beatGridMs, ratio);
+  if (beatOffset === null) return unavailable("A reliable recipient-to-donor beat phase is unavailable.");
+  const entryMs = input.atSeconds * 1000;
+  return liveStemGrooveCorrection(recipientGroove, donorGroove, {
+    bedRatio: 1,
+    donorRatio: ratio,
+    sourceOffsetMs: entryMs + beatOffset * 1000,
+    entryMs,
+    endMs: entryMs + 16_000,
+  });
 }
 
 async function trackSummariesById(trackIds: string[]): Promise<Map<string, TrackSummary>> {
@@ -332,6 +547,7 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
     }
     return analysis;
   };
+  const grooveEvidenceCache = new Map<string, Promise<StemGrooveEvidence>>();
   return {
     id: session.id,
     name: session.name,
@@ -359,25 +575,43 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
         analysis: analyses.get(row.id) ?? null,
       };
     }),
-    swaps: await Promise.all(swapRows.map(async (row) => ({
-      id: row.id,
-      sessionTrackId: row.sessionTrackId,
-      stemType: row.stemType,
-      fromTrackId: row.fromTrackId,
-      toTrackId: row.toTrackId,
-      fromStemAssetId: row.fromStemAssetId,
-      toStemAssetId: row.toStemAssetId,
-      atSeconds: row.atSeconds,
-      donorEntryOffsetMs: row.donorEntryOffsetMs,
-      createdAt: row.createdAt.toISOString(),
-      donorTrack: details.has(row.toTrackId) ? {
-        id: row.toTrackId,
-        title: details.get(row.toTrackId)!.title,
-        durationSeconds: details.get(row.toTrackId)!.durationSeconds,
-        stems: details.get(row.toTrackId)!.stems,
-        analysis: await analysisForDonor(row.toTrackId),
-      } : null,
-    }))),
+    swaps: await Promise.all(swapRows.map(async (row) => {
+      const recipientRow = trackRows.find((track) => track.id === row.sessionTrackId);
+      const recipientDetail = recipientRow ? details.get(recipientRow.trackId) ?? null : null;
+      const recipientAnalysis = recipientRow ? analyses.get(recipientRow.id) ?? null : null;
+      const donorDetail = details.get(row.toTrackId) ?? null;
+      const donorAnalysis = donorDetail ? await analysisForDonor(row.toTrackId) : null;
+      return {
+        id: row.id,
+        sessionTrackId: row.sessionTrackId,
+        stemType: row.stemType,
+        fromTrackId: row.fromTrackId,
+        toTrackId: row.toTrackId,
+        fromStemAssetId: row.fromStemAssetId,
+        toStemAssetId: row.toStemAssetId,
+        atSeconds: row.atSeconds,
+        donorEntryOffsetMs: row.donorEntryOffsetMs,
+        grooveCorrection: await liveSwapGrooveCorrection({
+          stemType: row.stemType,
+          recipient: recipientDetail,
+          recipientStemAssetId: row.fromStemAssetId,
+          recipientAnalysis,
+          donor: donorDetail,
+          donorStemAssetId: row.toStemAssetId,
+          donorAnalysis,
+          atSeconds: row.atSeconds,
+          evidenceCache: grooveEvidenceCache,
+        }),
+        createdAt: row.createdAt.toISOString(),
+        donorTrack: donorDetail ? {
+          id: row.toTrackId,
+          title: donorDetail.title,
+          durationSeconds: donorDetail.durationSeconds,
+          stems: donorDetail.stems,
+          analysis: donorAnalysis,
+        } : null,
+      };
+    })),
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
   };

@@ -1,5 +1,31 @@
 # Arena handoff — read this first
 
+## Latest increment: live swaps use exact same-role stem timing evidence
+
+Listening-session swap payloads now expose a bounded groove-phase correction for
+drum/percussion and bass replacements only when both exact stem assets have
+completed, checksum-current, version-matched onset analyses. The comparison is
+same-role only; unrelated attacks cannot authorize a move. The correction is
+limited to 8–35 ms and requires confident evidence across at least eight beats
+with transformed pulse agreement. It is used only as a fallback after an
+explicit donor start and trusted section/phrase alignment; manual tempo overrides
+also disable it. The live status shows the actual signed correction when used.
+Missing, stale, weak, unsupported, or mismatched evidence leaves the existing
+beat fallback unchanged.
+
+**Verification:** Session logic passed 63 tests. The real PostgreSQL Waveyard
+service suite passed 54 tests with 6 environment-gated tests skipped, including
+a persisted session swap that applied a measured −20 ms same-role drum correction
+and rejected it after donor-stem checksum staleness. Arena UI and API-server
+typechecks passed. This acceptance fixture is synthetic and proves route,
+provenance, and offset behavior—not real-song timing or listening quality. No
+browser session or real-song live swap was auditioned.
+
+**Still open:** Persisted transient evidence currently covers drum/percussion and
+bass; vocals continue to use their separate phrase/activity evidence, and melodic
+layers do not yet get this live transient correction. Real-song correctness and
+whether the bounded phase nudge audibly improves a mashup remain unverified.
+
 ## Latest increment: rejected an unproven form-analysis weighting
 
 The isolated-accompaniment recurrence experiment was compared on full-length

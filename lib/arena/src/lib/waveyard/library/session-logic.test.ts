@@ -15,7 +15,9 @@ import {
   liveStemSectionAlignmentCandidates,
   liveStemCandidateDonorEntryMs,
   liveStemSectionOffsetSeconds,
+  liveStemGrooveCorrection,
   liveStemTempoStretchRatio,
+  resolveLiveStemDonorOffset,
   nearestEntryEvidenceMs,
   completeInstrumentalBedDonorTrackId,
   resolveLiveDrumTempoMaster,
@@ -29,6 +31,7 @@ import {
   type PassageRollingWindow,
 } from "../types/passage-compatibility";
 import type { SourceSection } from "../types/source-sections";
+import { measureStemGroove } from "../types/stem-groove";
 
 const testEvidence = <T>(value: T) => ({
   status: "measured" as const,
@@ -37,6 +40,80 @@ const testEvidence = <T>(value: T) => ({
   confidence: 0.95,
 });
 const testUnavailable = (reason: string) => ({ status: "unavailable" as const, reason });
+
+test("live groove correction uses measured same-role onsets and preserves unlike-role timing", () => {
+  const beatGridMs = Array.from({ length: 17 }, (_, index) => index * 500);
+  const recipient = measureStemGroove("drums", beatGridMs.slice(0, -1).map((timestampMs) => ({
+    timestampMs, strength: 1, confidence: 0.95,
+  })), beatGridMs, 0.95);
+  const donor = measureStemGroove("drums", beatGridMs.slice(0, -1).map((timestampMs) => ({
+    timestampMs: timestampMs + 20, strength: 1, confidence: 0.95,
+  })), beatGridMs, 0.95);
+  const timing = { bedRatio: 1, donorRatio: 1, sourceOffsetMs: 0, entryMs: 0, endMs: 8_000 };
+
+  const aligned = liveStemGrooveCorrection(recipient, donor, timing);
+  assert.equal(aligned.status, "measured");
+  if (aligned.status === "measured") {
+    assert.equal(aligned.correctionMs, -20);
+    assert.equal(aligned.comparedOnsets, 16);
+    assert.ok(aligned.afterErrorMs < aligned.beforeErrorMs);
+  }
+
+  const unlikeRole = liveStemGrooveCorrection(
+    measureStemGroove("bass", beatGridMs.slice(0, -1).map((timestampMs) => ({
+      timestampMs, strength: 1, confidence: 0.95,
+    })), beatGridMs, 0.95),
+    donor,
+    timing,
+  );
+  assert.equal(unlikeRole.status, "unavailable");
+  assert.equal(unlikeRole.correctionMs, 0);
+  assert.match(unlikeRole.reason, /matching stem roles/i);
+
+  const lowConfidence = liveStemGrooveCorrection(
+    measureStemGroove("drums", beatGridMs.slice(0, -1).map((timestampMs) => ({
+      timestampMs, strength: 1, confidence: 0.95,
+    })), beatGridMs, 0.65),
+    donor,
+    timing,
+  );
+  assert.equal(lowConfidence.status, "unavailable");
+  assert.equal(lowConfidence.correctionMs, 0);
+});
+
+test("live swap applies the measured groove nudge only as a bounded beat fallback", () => {
+  const base = {
+    explicitOffsetSeconds: null,
+    sectionOffsetSeconds: null,
+    beatOffsetSeconds: 0.125,
+    sameRoleGrooveCorrectionMs: -20,
+    manualTempoOverride: false,
+  };
+  assert.deepEqual(resolveLiveStemDonorOffset(base), {
+    offsetSeconds: 0.105,
+    basis: "same-role-stem-groove",
+  });
+  assert.deepEqual(resolveLiveStemDonorOffset({ ...base, sectionOffsetSeconds: 0.4 }), {
+    offsetSeconds: 0.4,
+    basis: "section",
+  });
+  assert.deepEqual(resolveLiveStemDonorOffset({ ...base, explicitOffsetSeconds: 1.2 }), {
+    offsetSeconds: 1.2,
+    basis: "explicit",
+  });
+  assert.deepEqual(resolveLiveStemDonorOffset({ ...base, manualTempoOverride: true }), {
+    offsetSeconds: 0.125,
+    basis: "beat",
+  });
+  assert.deepEqual(resolveLiveStemDonorOffset({ ...base, sameRoleGrooveCorrectionMs: 80 }), {
+    offsetSeconds: 0.125,
+    basis: "beat",
+  });
+  assert.deepEqual(resolveLiveStemDonorOffset({ ...base, beatOffsetSeconds: null }), {
+    offsetSeconds: null,
+    basis: "unavailable",
+  });
+});
 
 function testRhythm(pattern: 0 | 1 | 2): number[] {
   return Array.from({ length: 32 }, (_, index) => {

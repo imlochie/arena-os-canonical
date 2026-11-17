@@ -27,6 +27,10 @@ import {
 } from "../types/passage-compatibility";
 import type { SourceSection } from "../types/source-sections";
 import type { IsolatedDrumTempoEvidence } from "../types/drum-analysis";
+import {
+  proposeGrooveEntryShift,
+  type StemGrooveEvidence,
+} from "../types/stem-groove";
 import { normalizePerformance, type PerformanceSettings } from "./performance";
 
 // ------------------------------------------------------------- transitions
@@ -635,7 +639,97 @@ function livePhraseSectionAlignmentCandidates(
  * fingerprints; incomplete/conflicting fingerprint evidence returns null so
  * the caller can use verified beat-phase alignment.
  */
-export type LiveStemSectionAlignmentBasis = "rhythm-harmony-phrase" | "trusted-section-role";
+export type LiveStemSectionAlignmentBasis =
+  | "rhythm-harmony-phrase"
+  | "trusted-section-role"
+  | "same-role-stem-groove";
+
+export function resolveLiveStemDonorOffset(input: {
+  explicitOffsetSeconds: number | null;
+  sectionOffsetSeconds: number | null;
+  beatOffsetSeconds: number | null;
+  sameRoleGrooveCorrectionMs: number | null;
+  manualTempoOverride: boolean;
+}): { offsetSeconds: number | null; basis: "explicit" | "section" | "same-role-stem-groove" | "beat" | "unavailable" } {
+  if (input.explicitOffsetSeconds !== null) {
+    return { offsetSeconds: input.explicitOffsetSeconds, basis: "explicit" };
+  }
+  if (input.sectionOffsetSeconds !== null) {
+    return { offsetSeconds: input.sectionOffsetSeconds, basis: "section" };
+  }
+  if (input.beatOffsetSeconds === null) return { offsetSeconds: null, basis: "unavailable" };
+  const correctionMs = input.sameRoleGrooveCorrectionMs;
+  if (!input.manualTempoOverride && correctionMs !== null && Number.isFinite(correctionMs)
+    && Math.abs(correctionMs) >= 8 && Math.abs(correctionMs) <= 35) {
+    return {
+      offsetSeconds: input.beatOffsetSeconds + correctionMs / 1000,
+      basis: "same-role-stem-groove",
+    };
+  }
+  return { offsetSeconds: input.beatOffsetSeconds, basis: "beat" };
+}
+
+export type LiveStemGrooveCorrection =
+  | {
+      status: "measured";
+      correctionMs: number;
+      comparedOnsets: number;
+      beforeErrorMs: number;
+      afterErrorMs: number;
+      reason: string;
+    }
+  | {
+      status: "unavailable";
+      correctionMs: 0;
+      comparedOnsets: 0;
+      beforeErrorMs: null;
+      afterErrorMs: null;
+      reason: string;
+    };
+
+/**
+ * Apply one small live donor phase correction only when persisted onset
+ * evidence exists for the same stem role on both tracks. This is a common
+ * translation, never per-hit quantisation or a substitute for section labels.
+ */
+export function liveStemGrooveCorrection(
+  recipient: StemGrooveEvidence,
+  donor: StemGrooveEvidence,
+  timing: {
+    bedRatio: number;
+    donorRatio: number;
+    sourceOffsetMs: number;
+    entryMs: number;
+    endMs: number;
+  },
+): LiveStemGrooveCorrection {
+  const unavailable = (reason: string): LiveStemGrooveCorrection => ({
+    status: "unavailable",
+    correctionMs: 0,
+    comparedOnsets: 0,
+    beforeErrorMs: null,
+    afterErrorMs: null,
+    reason,
+  });
+  if (recipient.role !== donor.role) {
+    return unavailable("Only matching stem roles can authorize a live phase correction.");
+  }
+  if (recipient.status !== "measured") return unavailable(`Recipient ${recipient.role} evidence unavailable: ${recipient.reason}`);
+  if (donor.status !== "measured") return unavailable(`Donor ${donor.role} evidence unavailable: ${donor.reason}`);
+  if (Math.min(recipient.confidence, donor.confidence) < 0.8) {
+    return unavailable("Independent same-role stem timing confidence is below 0.8.");
+  }
+  const result = proposeGrooveEntryShift(recipient, donor, timing);
+  if (result.shiftMs === 0) return unavailable(result.reason);
+  return {
+    status: "measured",
+    correctionMs: result.shiftMs,
+    comparedOnsets: result.comparedOnsets,
+    beforeErrorMs: result.beforeErrorMs!,
+    afterErrorMs: result.afterErrorMs!,
+    reason: result.reason,
+  };
+}
 
 export type LiveStemSectionAlignmentCandidate = {
   offsetSeconds: number;

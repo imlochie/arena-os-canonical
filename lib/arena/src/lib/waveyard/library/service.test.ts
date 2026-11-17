@@ -26,6 +26,7 @@ import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { DESKTOP_ANALYSIS_ENGINE_VERSION } from "../types/analysis-provenance";
 import { LOCAL_VOCAL_ANALYSIS_ENGINE, LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION } from "../types/vocal-analysis";
+import { LOCAL_DRUM_ANALYSIS_ENGINE, LOCAL_DRUM_ANALYSIS_ENGINE_VERSION } from "../types/drum-analysis";
 import { getStorage } from "../storage";
 import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
 import { restoreVerifiedAudioBackupZip } from "./audio-restore";
@@ -3581,6 +3582,134 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
       "session analysis exposes only current-checksum vocal activity that ends inside the source and stem");
     assert.deepEqual(analysisB?.voicedPhraseStartsMs, [{ startMs: 1_100, confidence: 0.7 }],
       "pitch-continuity phrase starts remain distinct and source-bounded");
+
+    // Exercise the actual persisted session payload and live-swap offset with
+    // exact, current isolated-drum events. The synthetic 300 BPM grid keeps
+    // this a bounded timing-contract fixture, not a claim about song quality.
+    const drumGrid = Array.from({ length: 9 }, (_, index) => index * 200);
+    const drumGridJson = JSON.stringify(drumGrid);
+    for (const sourceAssetId of [sourceA, sourceB]) {
+      await db.db.update(schema.sourceAnalyses).set({
+        bpm: 300,
+        bpmConfidence: 0.8,
+        beatGrid: drumGridJson,
+        beatConfidence: 0.9,
+      }).where(eq(schema.sourceAnalyses.sourceAssetId, sourceAssetId));
+    }
+    await db.db.update(schema.drumAnalyses).set({
+      bpm: 300,
+      bpmConfidence: 0.95,
+      beatGrid: drumGridJson,
+      beatConfidence: 0.95,
+    }).where(eq(schema.drumAnalyses.id, drumTempoAnalysisRow.id));
+
+    const trackADetail = await service.getTrack(OWNER, trackA.id);
+    const recipientDrumStem = trackADetail?.stems.find((stem) => stem.stemType === "drums");
+    assert.ok(recipientDrumStem, "the recipient has an exact separated drum stem");
+    const [recipientDrumStemRecord] = await db.db.select().from(schema.stemAssets)
+      .where(eq(schema.stemAssets.id, recipientDrumStem.id)).limit(1);
+    assert.ok(recipientDrumStemRecord);
+    const [previousRecipientDrumAnalysis] = await db.db.select().from(schema.drumAnalyses)
+      .where(eq(schema.drumAnalyses.stemAssetId, recipientDrumStem.id)).limit(1);
+    const recipientDrumValues = {
+      projectId: trackA.studioProjectId,
+      sourceAssetId: sourceA,
+      stemAssetId: recipientDrumStem.id,
+      status: "complete",
+      stage: "complete",
+      idempotencyKey: `session-live-groove:${randomUUID()}`,
+      analysisEngine: LOCAL_DRUM_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: sourceAssetA.checksumSha256!,
+      stemChecksumSha256: recipientDrumStemRecord.checksumSha256,
+      bpm: 300,
+      bpmConfidence: 0.95,
+      beatGrid: drumGridJson,
+      beatConfidence: 0.95,
+    };
+    const [recipientDrumAnalysisRow] = previousRecipientDrumAnalysis
+      ? await db.db.update(schema.drumAnalyses).set(recipientDrumValues)
+        .where(eq(schema.drumAnalyses.id, previousRecipientDrumAnalysis.id)).returning()
+      : await db.db.insert(schema.drumAnalyses).values(recipientDrumValues).returning();
+    assert.ok(recipientDrumAnalysisRow);
+    const previousRecipientDrumEvents = await db.db.select().from(schema.drumEvents)
+      .where(eq(schema.drumEvents.drumAnalysisId, recipientDrumAnalysisRow.id));
+    const previousDonorDrumEvents = await db.db.select().from(schema.drumEvents)
+      .where(eq(schema.drumEvents.drumAnalysisId, drumTempoAnalysisRow.id));
+    await db.db.delete(schema.drumEvents)
+      .where(eq(schema.drumEvents.drumAnalysisId, recipientDrumAnalysisRow.id));
+    await db.db.delete(schema.drumEvents)
+      .where(eq(schema.drumEvents.drumAnalysisId, drumTempoAnalysisRow.id));
+    await db.db.insert(schema.drumEvents).values([
+      ...drumGrid.slice(0, -1).map((timestampMs, eventIndex) => ({
+        drumAnalysisId: recipientDrumAnalysisRow.id,
+        eventIndex,
+        timestampMs,
+        strength: 1,
+        confidence: 0.95,
+      })),
+      ...drumGrid.slice(0, -1).map((timestampMs, eventIndex) => ({
+        drumAnalysisId: drumTempoAnalysisRow.id,
+        eventIndex,
+        timestampMs: timestampMs + 20,
+        strength: 1,
+        confidence: 0.95,
+      })),
+    ]);
+    t.after(async () => {
+      await db.db.delete(schema.drumEvents)
+        .where(eq(schema.drumEvents.drumAnalysisId, recipientDrumAnalysisRow.id));
+      await db.db.delete(schema.drumEvents)
+        .where(eq(schema.drumEvents.drumAnalysisId, drumTempoAnalysisRow.id));
+      if (previousRecipientDrumEvents.length > 0) {
+        await db.db.insert(schema.drumEvents).values(previousRecipientDrumEvents);
+      }
+      if (previousDonorDrumEvents.length > 0) {
+        await db.db.insert(schema.drumEvents).values(previousDonorDrumEvents);
+      }
+      if (previousRecipientDrumAnalysis) {
+        await db.db.update(schema.drumAnalyses).set(previousRecipientDrumAnalysis)
+          .where(eq(schema.drumAnalyses.id, previousRecipientDrumAnalysis.id));
+      } else {
+        await db.db.delete(schema.drumAnalyses)
+          .where(eq(schema.drumAnalyses.id, recipientDrumAnalysisRow.id));
+      }
+    });
+
+    const grooveSession = await sessions.createSession(OWNER, "Persisted live groove correction");
+    try {
+      const withRecipient = await sessions.addTrackToSession({
+        ownerId: OWNER, sessionId: grooveSession.id, trackId: trackA.id,
+      });
+      const liveSwap = await sessions.recordStemSwap({
+        ownerId: OWNER,
+        sessionId: grooveSession.id,
+        sessionTrackId: withRecipient.tracks[0]!.id,
+        stemType: "drums",
+        toTrackId: trackB.id,
+        atSeconds: 0,
+      });
+      assert.deepEqual({
+        recipient: liveSwap.tracks[0]?.analysis?.isolatedDrumTempo?.beatConfidence,
+        donor: liveSwap.swaps[0]?.donorTrack?.analysis?.isolatedDrumTempo?.beatConfidence,
+      }, { recipient: 0.95, donor: 0.95 });
+      assert.equal(liveSwap.swaps[0]?.grooveCorrection?.status, "measured",
+        JSON.stringify(liveSwap.swaps[0]?.grooveCorrection));
+      assert.equal(liveSwap.swaps[0]?.grooveCorrection?.correctionMs, -20,
+        "the returned persisted swap uses exact same-role event evidence to correct its beat-grid phase");
+      assert.equal(liveSwap.swaps[0]?.grooveCorrection?.comparedOnsets, 8);
+      await db.db.update(schema.drumAnalyses).set({ stemChecksumSha256: "stale-stem-checksum" })
+        .where(eq(schema.drumAnalyses.id, drumTempoAnalysisRow.id));
+      const staleLiveSwap = await sessions.getSession(OWNER, grooveSession.id);
+      assert.equal(staleLiveSwap?.swaps[0]?.grooveCorrection?.status, "unavailable",
+        "stale donor stem evidence cannot continue steering a saved live swap");
+      assert.match(staleLiveSwap?.swaps[0]?.grooveCorrection?.reason ?? "", /provenance is not current/i);
+      await db.db.update(schema.drumAnalyses).set({
+        stemChecksumSha256: donorDrumStemRecord.checksumSha256,
+      }).where(eq(schema.drumAnalyses.id, drumTempoAnalysisRow.id));
+    } finally {
+      await sessions.deleteSession(OWNER, grooveSession.id);
+    }
 
     const session = await sessions.createSession(OWNER, "Persisted vocal entry");
     try {
