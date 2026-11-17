@@ -1,4 +1,4 @@
-import { isStaleDesktopAnalysis } from "./analysis-provenance";
+import { isCurrentDesktopAnalysis, isStaleDesktopAnalysis } from "./analysis-provenance";
 
 export const WAVEYARD_MIXING_CONFIDENCE_THRESHOLD = 0.5;
 const BPM_CONFIDENCE_WEIGHT = 0.55;
@@ -59,6 +59,70 @@ export function trustedAnalysisBpm(
     && bpm <= 300
     ? bpm
     : null;
+}
+
+/**
+ * Resolve tempo from the current desktop analyzer's beat grid when its BPM
+ * autocorrelation is weak but the separately measured grid-fit component is
+ * strong. The grid must also corroborate the analyzer's BPM candidate; neither
+ * signal is allowed to invent a tempo when the two disagree. The v1.4
+ * confidence formula is provenance-gated; other engines and versions cannot
+ * use this recovery path.
+ */
+export function trustedAnalysisBpmFromBeatGrid(input: {
+  bpm: number | null | undefined;
+  bpmConfidence: number | null | undefined;
+  beatConfidence: number | null | undefined;
+  beatGridMs: unknown;
+  analysisEngine: string | null | undefined;
+  analysisEngineVersion: string | null | undefined;
+  durationMs: number;
+}): number | null {
+  const direct = trustedAnalysisBpm(input.bpm, input.bpmConfidence);
+  if (direct !== null) return direct;
+  if (!isCurrentDesktopAnalysis({
+    analysisEngine: input.analysisEngine ?? null,
+    analysisEngineVersion: input.analysisEngineVersion ?? null,
+  })) return null;
+
+  const gridFitConfidence = recoverBeatGridAlignmentConfidence(input.bpmConfidence, input.beatConfidence);
+  if (gridFitConfidence === null || gridFitConfidence < 0.8
+    || !Number.isFinite(input.durationMs) || input.durationMs <= 0
+    || !Array.isArray(input.beatGridMs) || input.beatGridMs.length < 16 || input.beatGridMs.length > 100_000) {
+    return null;
+  }
+
+  const grid: number[] = [];
+  let previous = -1;
+  for (const beat of input.beatGridMs) {
+    if (typeof beat !== "number" || !Number.isSafeInteger(beat)
+      || beat < 0 || beat > input.durationMs || beat <= previous) return null;
+    grid.push(beat);
+    previous = beat;
+  }
+  if (grid.at(-1)! - grid[0]! < 15_000) return null;
+
+  const periods = grid.slice(1).map((beat, index) => beat - grid[index]!);
+  const sortedPeriods = [...periods].sort((left, right) => left - right);
+  const median = sortedPeriods.length % 2 === 1
+    ? sortedPeriods[Math.floor(sortedPeriods.length / 2)]!
+    : (sortedPeriods[sortedPeriods.length / 2 - 1]! + sortedPeriods[sortedPeriods.length / 2]!) / 2;
+  if (median < 250 || median > 1_500) return null;
+  const deviations = periods.map((period) => Math.abs(period - median)).sort((left, right) => left - right);
+  const medianDeviation = deviations.length % 2 === 1
+    ? deviations[Math.floor(deviations.length / 2)]!
+    : (deviations[deviations.length / 2 - 1]! + deviations[deviations.length / 2]!) / 2;
+  const relativeMad = medianDeviation / median;
+  const inlierFraction = periods.filter((period) => Math.abs(period - median) <= median * 0.25).length / periods.length;
+  if (relativeMad > 0.08 || inlierFraction < 0.9) return null;
+
+  const bpm = 60_000 / median;
+  const bpmCandidate = input.bpm;
+  if (bpm < 40 || bpm > 240
+    || typeof bpmCandidate !== "number" || !Number.isFinite(bpmCandidate)
+    || bpmCandidate < 40 || bpmCandidate > 300
+    || Math.abs(bpm - bpmCandidate) / bpmCandidate > 0.05) return null;
+  return bpm;
 }
 
 export function trustedAnalysisKey(

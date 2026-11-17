@@ -356,17 +356,20 @@ export function comparePassageWindowSimilarity(input: {
     )
     : null;
 
-  let bestShift: number | null = null;
-  let bestHarmony = -2;
-  if (usable(input.anchor.chroma) && usable(input.donor.chroma)) {
-    for (let shift = -2; shift <= 2; shift += 1) {
-      const score = shiftedChroma(input.anchor.chroma.value, input.donor.chroma.value, shift);
-      if (score !== null && score > bestHarmony) {
-        bestHarmony = score;
-        bestShift = shift;
-      }
-    }
-  }
+  const expectedShift = input.anchorKeyTrusted && input.donorKeyTrusted
+    && Number.isInteger(input.expectedKeyShift)
+    && input.expectedKeyShift! >= -5 && input.expectedKeyShift! <= 6
+    ? input.expectedKeyShift!
+    : 0;
+  // Compare after the only shift the mixer is authorized to apply. Searching
+  // arbitrary nearby shifts can reject a valid key change (or bless a shift the
+  // renderer will never make), so key evidence, not a local chroma maximum,
+  // chooses the transformation.
+  const harmonyScore = usable(input.anchor.chroma) && usable(input.donor.chroma)
+    ? shiftedChroma(input.anchor.chroma.value, input.donor.chroma.value, expectedShift)
+    : null;
+  const bestShift = harmonyScore === null ? null : expectedShift;
+  const bestHarmony = harmonyScore ?? -2;
   const harmonySimilarity = bestShift === null ? null : bestHarmony;
   return {
     rhythmSimilarity,
@@ -442,14 +445,20 @@ export function comparePassageCompatibility(input: {
     : dimension(rhythmScore >= PASSAGE_MATCH_SIMILARITY_THRESHOLD ? "match" : "conflict", rhythmScore,
       `Onset-pattern cosine ${rhythmScore.toFixed(3)}; required ≥ ${PASSAGE_MATCH_SIMILARITY_THRESHOLD.toFixed(2)}.`);
 
-  let bestShift = 0;
-  let bestHarmony = -2;
-  if (input.anchor.chroma.status === "measured" && input.donor.chroma.status === "measured") {
-    for (let shift = -2; shift <= 2; shift += 1) {
-      const score = shiftedChroma(input.anchor.chroma.value, input.donor.chroma.value, shift);
-      if (score !== null && score > bestHarmony) { bestHarmony = score; bestShift = shift; }
-    }
-  }
+  const expectedShift = input.anchorKeyTrusted && input.donorKeyTrusted
+    && Number.isInteger(input.expectedKeyShift)
+    && input.expectedKeyShift! >= -5 && input.expectedKeyShift! <= 6
+    ? input.expectedKeyShift!
+    : 0;
+  const chromaSimilarity = input.anchor.chroma.status === "measured" && input.donor.chroma.status === "measured"
+    ? shiftedChroma(input.anchor.chroma.value, input.donor.chroma.value, expectedShift)
+    : null;
+  const bestShift = chromaSimilarity === null ? 0 : expectedShift;
+  // Judge the chroma after the trusted-key transformation the renderer will
+  // apply. A best-of-±2 search was narrower than key sync and could reject
+  // legitimate transpositions while ranking transformations Waveyard would
+  // not actually perform.
+  const bestHarmony = chromaSimilarity ?? -2;
   const harmonyShiftAllowed = bestShift === 0 || (input.anchorKeyTrusted && input.donorKeyTrusted && bestShift === input.expectedKeyShift);
   const transpositionExplanation = input.anchorKeyTrusted && input.donorKeyTrusted
     ? `trusted key estimates ${harmonyShiftAllowed ? "authorize" : "do not authorize"} that shift`

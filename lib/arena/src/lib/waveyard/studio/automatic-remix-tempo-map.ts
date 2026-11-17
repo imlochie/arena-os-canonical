@@ -2,7 +2,7 @@ import {
   currentBpmConfidence,
   isCurrentDesktopAnalysis,
 } from "../types/analysis-provenance";
-import { trustedAnalysisBpm } from "../types/analysis-confidence";
+import { trustedAnalysisBpmFromBeatGrid } from "../types/analysis-confidence";
 import {
   createPersistedClipTempoMap,
   donorClipTempoMap,
@@ -40,6 +40,9 @@ export type AutomaticRemixTempoMapInput = {
     sourceChecksumSha256: string | null;
     bpm: number | null;
     bpmConfidence: number | null;
+    beatConfidence?: number | null;
+    beatGridMs?: unknown;
+    durationMs?: number;
   } | null;
   sessionTempoBpm: number;
 };
@@ -76,10 +79,18 @@ export function automaticRemixTempoMap(
   }
   if (!analysis || analysis.status !== "complete" || !isCurrentDesktopAnalysis(analysis)
     || analysis.sourceChecksumSha256 !== source.checksumSha256) {
-    return { ok: false, reason: "Current checksum-matched source BPM evidence is unavailable." };
+    return { ok: false, reason: "Current checksum-matched BPM evidence or beat-grid tempo evidence is unavailable." };
   }
-  const sourceBpm = trustedAnalysisBpm(analysis.bpm, currentBpmConfidence(analysis));
-  if (sourceBpm === null) return { ok: false, reason: "Source BPM confidence is insufficient for tempo sync." };
+  const sourceBpm = trustedAnalysisBpmFromBeatGrid({
+    bpm: analysis.bpm,
+    bpmConfidence: currentBpmConfidence(analysis),
+    beatConfidence: analysis.beatConfidence,
+    beatGridMs: analysis.beatGridMs,
+    analysisEngine: analysis.analysisEngine,
+    analysisEngineVersion: analysis.analysisEngineVersion,
+    durationMs: analysis.durationMs ?? 0,
+  });
+  if (sourceBpm === null) return { ok: false, reason: "Source BPM or trusted beat-grid evidence is insufficient for tempo sync." };
 
   // Playback rate is target/source. A WSOLA map records output/source duration,
   // so its slope is the inverse: source/target.

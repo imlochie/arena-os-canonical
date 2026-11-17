@@ -3,10 +3,12 @@ import test from "node:test";
 
 import {
   comparePassageCompatibility,
+  comparePassageWindowSimilarity,
   parsePassageFingerprint,
   PASSAGE_FINGERPRINT_ENGINE,
   PASSAGE_FINGERPRINT_ENGINE_VERSION,
   type PassageFingerprint,
+  type PassageRollingWindow,
 } from "../passage-compatibility";
 import { buildAutomaticRemixPlan, type AutomaticRemixSource } from "../automatic-remix";
 
@@ -228,6 +230,65 @@ test("different whole-bar durations compare normalized rhythm shape without clai
   assert.equal(result.dimensions.rhythm.status, "match");
   assert.ok((result.dimensions.rhythm.similarity ?? 0) > 0.99);
   assert.equal(result.eligible, false, "different durations remain a ranked comparison, not a core exact match");
+});
+
+test("trusted key sync transforms the full supported semitone range before passage ranking", () => {
+  const chromaFor = (pitchClass: number) => measured(Array.from(
+    { length: 48 },
+    (_, index) => index % 12 === pitchClass ? 1 : -1 / 11,
+  ));
+  const section = (id: string, checksum: string, chroma: ReturnType<typeof chromaFor>) => ({
+    id,
+    sectionIndex: 0,
+    startMs: 0,
+    endMs: 8_000,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    label: "section",
+    labelConfidence: 0,
+    structuralConfidence: 0.9,
+    passageFingerprint: fingerprint(checksum, 0, 16, { chroma }),
+  });
+  const anchor = source("a", "sha-a", [section("a-0", "sha-a", chromaFor(0))]);
+  const donor = source("b", "sha-b", [section("b-0", "sha-b", chromaFor(7))]);
+  donor.analysis = { ...donor.analysis!, musicalKey: "G major" };
+
+  const result = buildAutomaticRemixPlan([anchor, donor], { variant: "hybrid" });
+  assert.equal(result.ok, true, "a trusted +5 semitone correction should not be rejected by a ±2 search");
+  if (!result.ok) return;
+  const pair = result.plan.compatibility?.pairs[0];
+  assert.equal(pair?.transpositionSemitones, 5, "G major vocals are shifted up five semitones into C major");
+  assert.equal(pair?.dimensions.harmony.status, "match");
+  assert.ok((pair?.dimensions.harmony.similarity ?? 0) > 0.999);
+  assert.equal(result.plan.tracks.find((track) => track.stemType === "vocals")?.clips[0]?.keySyncEnabled, true);
+
+  const window = (chroma: ReturnType<typeof chromaFor>): PassageRollingWindow => ({
+    startBeatIndex: 0,
+    endBeatIndex: 8,
+    rhythm: measured(Array.from({ length: 32 }, (_, index) => index % 4 === 0 ? 1 : 0)),
+    chroma,
+    beatPhase: measured({ subdivisionProfile: [1, 0, 0, 0], beatPeriodMs: 500 }),
+  });
+  const local = comparePassageWindowSimilarity({
+    anchor: window(chromaFor(0)),
+    donor: window(chromaFor(7)),
+    anchorKeyTrusted: true,
+    donorKeyTrusted: true,
+    expectedKeyShift: 5,
+  });
+  assert.equal(local.transpositionSemitones, 5);
+  assert.equal(local.harmonicShiftAllowed, true);
+  assert.ok((local.harmonySimilarity ?? 0) > 0.999);
+
+  const untrusted = comparePassageWindowSimilarity({
+    anchor: window(chromaFor(0)),
+    donor: window(chromaFor(7)),
+    anchorKeyTrusted: false,
+    donorKeyTrusted: false,
+    expectedKeyShift: null,
+  });
+  assert.equal(untrusted.transpositionSemitones, 0);
+  assert.ok((untrusted.harmonySimilarity ?? 1) < 0.92, "untrusted keys must not authorize the transformation");
 });
 
 test("a rhythm-only recurrence is never enough when the chroma sequence conflicts", () => {

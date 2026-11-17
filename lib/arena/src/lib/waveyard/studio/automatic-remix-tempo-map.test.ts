@@ -77,6 +77,30 @@ test("automatic tempo sync persists the source-to-output transform for the saved
   }), true);
 });
 
+test("persisted tempo map uses a stable current beat grid when raw BPM confidence is weak", () => {
+  const beatGridMs = Array.from({ length: 41 }, (_, index) => Math.round(index * 60_000 / 110));
+  const result = automaticRemixTempoMap(fixture({
+    stem: { ...fixture().stem, durationSeconds: 10 },
+    analysis: {
+      status: "complete",
+      analysisEngine: "arena-js-dsp",
+      analysisEngineVersion: "1.4.0",
+      sourceChecksumSha256: "a".repeat(64),
+      bpm: 109.957,
+      bpmConfidence: 0.426,
+      beatConfidence: 0.642,
+      beatGridMs,
+      durationMs: 22_000,
+    },
+  }));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.ok(Math.abs(result.map.baseStretchRatio - 1.1) < 0.002);
+  assert.ok(Math.abs(result.map.points.at(-1)!.sourceMs - (5_000 / 1.1)) < 10);
+  assert.equal(result.map.sessionTempoBpm, 100);
+});
+
 test("automatic tempo sync refuses stale or mismatched source evidence", () => {
   const stale = fixture({
     analysis: {

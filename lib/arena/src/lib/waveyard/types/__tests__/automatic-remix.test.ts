@@ -134,6 +134,39 @@ describe("deterministic automatic remix arranger", () => {
     if (!result.ok) expect(result.compatibility?.missingEvidence.some((reason) => reason.includes("passage fingerprints"))).toBe(true);
   });
 
+  it("uses trusted beat-grid tempo for donor adaptation when raw BPM confidence is weak", () => {
+    const anchor = withFingerprints(source({
+      id: "a",
+      durationMs: 22_000,
+      analysis: { bpm: 110, bpmConfidence: 0.9 },
+    }));
+    const donor = withFingerprints(source({
+      id: "b",
+      durationMs: 22_000,
+      analysis: {
+        id: "b-analysis",
+        status: "complete",
+        sourceChecksumSha256: "b-checksum",
+        analysisEngine: "arena-js-dsp",
+        analysisEngineVersion: "1.4.0",
+        bpm: 109.957,
+        bpmConfidence: 0.426,
+        beatConfidence: 0.642,
+        beatGridMs: Array.from({ length: 41 }, (_, index) => Math.round(index * 60_000 / 110)),
+      },
+    }));
+
+    const result = buildAutomaticRemixPlan([anchor, donor], {
+      variant: "hybrid",
+      anchorSourceId: "a",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.tempoBpm).toBe(110);
+    expect(result.plan.tracks.some((track) => track.stemAssetId === "b-vocals"
+      && track.clips.some((clip) => clip.tempoSyncEnabled))).toBe(true);
+  });
+
   it("withholds a hybrid when passage evidence is unavailable", () => {
     const result = buildAutomaticRemixPlan([source({ id: "a" }), source({ id: "b" })], { variant: "hybrid" });
     expect(result).toMatchObject({ ok: false, reason: "hybrid_evidence_unavailable" });

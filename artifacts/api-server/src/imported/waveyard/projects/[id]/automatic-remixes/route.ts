@@ -461,6 +461,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           id: verifiedAnalysis.id,
           status: verifiedAnalysis.status,
           sourceChecksumSha256: verifiedAnalysis.sourceChecksumSha256,
+          analysisEngine: verifiedAnalysis.analysisEngine,
+          analysisEngineVersion: verifiedAnalysis.analysisEngineVersion,
           bpm: verifiedAnalysis.bpm,
           bpmConfidence: currentBpmConfidence(verifiedAnalysis),
           musicalKey: verifiedAnalysis.musicalKey,
@@ -747,6 +749,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             sourceChecksumSha256: analysis.sourceChecksumSha256,
             bpm: analysis.bpm,
             bpmConfidence: analysis.bpmConfidence,
+            beatConfidence: currentBeatConfidence(analysis),
+            beatGridMs: parseBeatGrid(analysis.beatGrid),
+            durationMs: source.durationSeconds * 1000,
           } : null,
           sessionTempoBpm: plan.plan.tempoBpm,
         }) : { ok: false as const, reason: "The synced clip no longer resolves to its source audio." };

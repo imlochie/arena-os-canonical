@@ -24,7 +24,7 @@ import {
   type PassageFingerprint,
 } from "./passage-compatibility";
 import {
-  trustedAnalysisBpm,
+  trustedAnalysisBpmFromBeatGrid,
   trustedAnalysisKey,
   WAVEYARD_MIXING_CONFIDENCE_THRESHOLD,
 } from "./analysis-confidence";
@@ -77,6 +77,8 @@ export type AutomaticRemixSource = {
     id: string;
     status: string;
     sourceChecksumSha256: string;
+    analysisEngine?: string | null;
+    analysisEngineVersion?: string | null;
     bpm: number | null;
     bpmConfidence: number | null;
     musicalKey: string | null;
@@ -271,7 +273,16 @@ function confidenceAtLeast(value: number | null | undefined, minimum: number): b
 }
 
 function trustedBpm(source: AutomaticRemixSource): number | null {
-  return trustedAnalysisBpm(source.analysis?.bpm, source.analysis?.bpmConfidence);
+  if (!source.analysis || !sourceHasVerifiedAnalysis(source)) return null;
+  return trustedAnalysisBpmFromBeatGrid({
+    bpm: source.analysis.bpm,
+    bpmConfidence: source.analysis.bpmConfidence,
+    beatConfidence: source.analysis.beatConfidence,
+    beatGridMs: source.analysis.beatGridMs,
+    analysisEngine: source.analysis.analysisEngine,
+    analysisEngineVersion: source.analysis.analysisEngineVersion,
+    durationMs: source.durationMs,
+  });
 }
 
 function trustedKey(source: AutomaticRemixSource): MusicalKey | null {

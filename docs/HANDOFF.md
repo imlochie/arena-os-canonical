@@ -1,5 +1,34 @@
 # Arena handoff — read this first
 
+## Latest increment: donor timing and harmony use the same authorized transforms
+
+The automatic hybrid planner can now recover a donor tempo from the current
+desktop analyzer's persisted beat grid when the raw BPM confidence is weak, but
+only when the grid spans at least 15 seconds, has a stable inter-beat period,
+and the v1.4 combined-confidence record supports a beat-grid fit of at least
+0.8. This uses the existing confidence formula and exact source checksum; it
+does not treat an unversioned or stale grid as evidence. The route passes the
+same verified grid and provenance to both planning and persisted WSOLA-map
+creation, so a chosen donor tempo cannot silently diverge between the plan and
+the saved clip transform.
+
+Passage chroma is now compared after the trusted key shift the renderer will
+actually apply, across its supported −5 to +6 semitone range. The previous
+±2-semitone search could reject a valid larger key move or score a nearby
+transposition that the renderer would not perform.
+
+**Verification:** `pnpm run typecheck` passed. The focused tempo-confidence,
+persisted-tempo-map, passage-compatibility and automatic-remix suites passed
+44 tests, including current-version/stale-version, unstable-grid, low-BPM
+confidence, saved-map and +5-semitone cases. The automatic-remixes PostgreSQL
+route acceptance passed against its synthetic audio fixture (one test); it
+does not specifically exercise the low-BPM grid-recovery case. The API health
+endpoint returned 200 after restart. No real-song listening test was performed.
+These changes improve evidence reuse and transform consistency, not a claim that
+arbitrary song pairs now produce pleasant mashups. The main Mashup Studio still
+has full-length fallback behavior; the separate Automatic Hybrid path can still
+abstain when its passage-compatibility evidence does not support a transformation.
+
 ## Latest increment: key sync now changes Studio preview audio
 
 Studio preview now derives a per-clip semitone shift from the clip's trusted
