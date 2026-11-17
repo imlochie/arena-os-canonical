@@ -1,5 +1,37 @@
 # Arena handoff — read this first
 
+## Latest increment: automatic tempo decisions are saved as audible clip maps
+
+Automatic remix clips selected for tempo sync now receive the same bounded,
+checksum-bound local WSOLA timing map consumed by Studio preview, reopen and WAV
+export. The route derives each donor's source span from its current source BPM
+and the chosen master BPM, then rejects the saved arrangement if source/stem
+identity, source checksums, current analysis provenance, stereo-WAV format or
+available audio duration cannot support that exact transform. Required donor
+stem IDs and per-clip maps are stored in the version snapshot so export will not
+silently fall back to a different BPM-only transform.
+
+This map is a constant source-to-output tempo ratio; it does not claim paired
+beat-grid fitting, phrase alignment, semantic verse/chorus understanding or a
+good-sounding mix. Automatic hybrid creation still rejects pairs whose passage
+evidence fails its current compatibility checks, so "any two songs" remix
+coverage remains unfinished.
+
+The automatic-remix loader also now accepts the local drum worker's own engine
+version instead of comparing it with the generic stem-analysis version. Before
+this correction, the worker had persisted valid checksum-bound drum events but
+the route discarded them, so the planner could not compare the donor against
+the bed. The database acceptance now verifies current engine/version and both
+checksums, measures complementary drum events, saves the hybrid, and checks that
+every tempo-synced donor stem is marked required and bound to its own map.
+
+**Verification:** full `pnpm run typecheck` passed. The automatic map's three
+focused tests, local WSOLA map tests and automatic-remix planner tests passed
+(24 total); both automatic-remix PostgreSQL route tests passed. The API server
+and web workflows restarted, and `/api/healthz` returned 200. These route fixtures
+use generated synthetic audio; no real-song listen or audio-quality improvement
+has been established by this increment.
+
 ## Latest increment: measured drum evidence now drives live tempo adaptation
 
 Waveyard now persists BPM and beat-grid evidence from the exact isolated drum

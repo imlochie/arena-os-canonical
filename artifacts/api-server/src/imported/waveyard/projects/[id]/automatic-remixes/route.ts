@@ -59,12 +59,10 @@ import {
   normaliseBassPitchSegments,
 } from "@workspace/arena/lib/waveyard/types/bass-analysis";
 import {
-  DESKTOP_STEM_ANALYSIS_ENGINE,
-  DESKTOP_STEM_ANALYSIS_ENGINE_VERSION,
-} from "@workspace/arena/lib/waveyard/types/analysis-provenance";
-import {
   DRUM_ANALYSIS_ENGINE,
   DRUM_ANALYSIS_ENGINE_VERSION,
+  LOCAL_DRUM_ANALYSIS_ENGINE,
+  LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
   drumAnalysisProvenanceReason,
 } from "@workspace/arena/lib/waveyard/types/drum-analysis";
 import { chooseStemForHarmony } from "@workspace/arena/lib/waveyard/stem-harmony-analysis";
@@ -254,8 +252,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (analysis.status !== "complete") continue;
       const engineMatches = (analysis.analysisEngine === DRUM_ANALYSIS_ENGINE
         && analysis.analysisEngineVersion === DRUM_ANALYSIS_ENGINE_VERSION)
-        || (analysis.analysisEngine === DESKTOP_STEM_ANALYSIS_ENGINE
-          && analysis.analysisEngineVersion === DESKTOP_STEM_ANALYSIS_ENGINE_VERSION);
+        || (analysis.analysisEngine === LOCAL_DRUM_ANALYSIS_ENGINE
+          && analysis.analysisEngineVersion === LOCAL_DRUM_ANALYSIS_ENGINE_VERSION);
       if (!engineMatches) continue;
       if (!currentDrumByStemId.has(analysis.stemAssetId))
         currentDrumByStemId.set(analysis.stemAssetId, { analysis, events: [] });
@@ -598,9 +596,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             // local row against the desktop constant would reject every row the
             // worker writes.
             engine: evidence.analysis.analysisEngine === DRUM_ANALYSIS_ENGINE
-              ? DRUM_ANALYSIS_ENGINE : DESKTOP_STEM_ANALYSIS_ENGINE,
+              ? DRUM_ANALYSIS_ENGINE : LOCAL_DRUM_ANALYSIS_ENGINE,
             version: evidence.analysis.analysisEngine === DRUM_ANALYSIS_ENGINE
-              ? DRUM_ANALYSIS_ENGINE_VERSION : DESKTOP_STEM_ANALYSIS_ENGINE_VERSION,
+              ? DRUM_ANALYSIS_ENGINE_VERSION : LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
           })) return {};
           const durationMs = source.durationSeconds * 1000;
           const events = evidence.events

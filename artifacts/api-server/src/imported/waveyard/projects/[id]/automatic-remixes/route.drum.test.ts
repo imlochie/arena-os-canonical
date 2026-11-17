@@ -325,6 +325,18 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
         const events = await dbModule.db.select().from(schema.drumEvents)
           .where(eq(schema.drumEvents.drumAnalysisId, drumJob.id));
         assert.ok(events.length > 0, `the worker must persist drum transients for ${input.filename}`);
+        const [completedDrumAnalysis] = await dbModule.db.select().from(schema.drumAnalyses)
+          .where(eq(schema.drumAnalyses.id, drumJob.id));
+        assert.equal(completedDrumAnalysis?.status, "complete",
+          `the persisted drum analysis must be complete for ${input.filename}`);
+        assert.equal(completedDrumAnalysis?.sourceChecksumSha256, checksum,
+          `the persisted drum analysis must retain the source checksum for ${input.filename}`);
+        assert.equal(completedDrumAnalysis?.stemChecksumSha256, drumStem.checksumSha256,
+          `the persisted drum analysis must retain the isolated stem checksum for ${input.filename}`);
+        assert.equal(completedDrumAnalysis?.analysisEngine, drumTypes.LOCAL_DRUM_ANALYSIS_ENGINE,
+          `the persisted drum analysis must retain its current engine for ${input.filename}`);
+        assert.equal(completedDrumAnalysis?.analysisEngineVersion, drumTypes.LOCAL_DRUM_ANALYSIS_ENGINE_VERSION,
+          `the persisted drum analysis must retain its current engine version for ${input.filename}`);
         drumAnalysisId = drumJob.id;
       }
       return { source, drumStem, vocalStem, drumAnalysisId };
@@ -407,16 +419,23 @@ test("the automatic-remixes route turns worker-produced drum transients into a d
     const tempoSyncedClips = snapshot.tracks.flatMap((track) =>
       track.clips.filter((clip) => clip.tempoSyncEnabled).map((clip) => ({ track, clip })),
     );
-    assert.ok(tempoSyncedClips.length > 0, "the 110-to-120 BPM donor has a real tempo transform");
-    assert.deepEqual(snapshot.mashupPlan?.donorTempoStemIds, [donor.drumStem.id],
-      "the saved version marks the transformed donor as requiring its exact map");
+    assert.ok(tempoSyncedClips.length > 0, "the 119.98-to-120 BPM donor has a real tempo transform");
+    assert.deepEqual(
+      [...(snapshot.mashupPlan?.donorTempoStemIds ?? [])].sort(),
+      [...new Set(tempoSyncedClips.map(({ clip }) => clip.stemAssetId))].sort(),
+      "the saved version marks every transformed donor stem as requiring its exact map",
+    );
     assert.equal(snapshot.mashupPlan?.clipTimingMaps?.length, tempoSyncedClips.length,
       "every tempo-synced clip has a persisted preview/export map");
     for (const { track, clip } of tempoSyncedClips) {
       const map = snapshot.mashupPlan!.clipTimingMaps!.find((candidate) => candidate.clipId === clip.id);
       assert.ok(map, `tempo-synced clip ${clip.id} has a saved map`);
       assert.equal(map!.remixTrackId, track.id);
-      assert.equal(map!.stemAssetId, donor.drumStem.id);
+      assert.equal(map!.stemAssetId, clip.stemAssetId);
+      assert.ok(
+        [donor.drumStem.id, donor.vocalStem.id].includes(map!.stemAssetId),
+        "only the selected source's real donor stems receive timing maps",
+      );
       assert.ok(Math.abs(map!.baseStretchRatio - 119.98 / 120) < 0.001,
         "the donor's playback, reopened preview and export share the same source-to-output ratio");
     }
