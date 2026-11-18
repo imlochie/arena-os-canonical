@@ -36,6 +36,8 @@ export type SourceSectionCandidate = Omit<SourceSection, "id" | "sectionIndex" |
 export function displaySourceSectionLabel(section: Pick<SourceSection, "sectionIndex" | "label" | "labelConfidence">): string {
   if ((section.label === "verse" || section.label === "chorus") && section.labelConfidence < 0.75)
     return `Inferred ${section.label} · unverified musical-form hypothesis`;
+  if (section.label === "breakdown-candidate")
+    return `Possible vocal/percussion-led breakdown · measured stem evidence, not a semantic verdict`;
   if (section.label === "section") return `Section ${section.sectionIndex + 1}`;
   const repeatedPattern = /^pattern-repeat-([a-z]+)$/i.exec(section.label);
   const repeatedRhythm = /^rhythm-repeat-([a-z]+)$/i.exec(section.label);

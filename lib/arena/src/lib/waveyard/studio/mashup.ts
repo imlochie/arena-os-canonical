@@ -1824,7 +1824,7 @@ type ArrangementFeatureScore = {
   evidence: string[];
 };
 
-function bedSectionRoleAt(
+export function bedSectionRoleAt(
   sections: MashupSection[],
   timeMs: number,
 ): MashupArrangementPlacement["bedSectionRole"] {
@@ -1833,6 +1833,10 @@ function bedSectionRoleAt(
     && timeMs >= candidate.startMs && timeMs < candidate.endMs);
   if (!section) return "unlabeled";
   const label = section.label.toLowerCase();
+  // A signal-level breakdown candidate is not a confirmed arrangement role.
+  // Keep it available as a passage boundary/fingerprint without letting the
+  // semantic-role score treat it as a known breakdown.
+  if (label === "breakdown-candidate") return "unlabeled";
   if (/intro/.test(label)) return "intro";
   if (/outro|fade/.test(label)) return "outro";
   if (/breakdown|break|instrumental|solo/.test(label)) return "breakdown";

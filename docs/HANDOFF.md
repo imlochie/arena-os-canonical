@@ -53,6 +53,42 @@ one. This does not prove subjective mix quality, vocal/section selection,
 saved-session reopening, Studio export equivalence, Windows or mobile playback,
 or reliable mashups for arbitrary songs.
 
+## Latest structural evidence: vocal/percussion-led drop candidates
+
+The local section engine now has a conservative `breakdown-candidate` signal
+path. It uses the already-persisted, source-checksum-matched vocal, drum, bass
+and other-stem activity profiles together with timed vocal-activity intervals.
+It requires an eight-bar context, sustained vocal activity, audible drums, and
+an at-least-8 dB reduction in bass or other accompaniment relative to both
+neighboring contexts. The event bounds are refined to bar boundaries; the
+section is presented as a *possible* vocal/percussion-led breakdown, not a
+semantic verdict. This produces a section range that downstream fingerprint
+and passage-matching code can consume. The automatic arrangement scorer keeps
+the event role-neutral until it is validated; it does not assume the candidate
+is a confirmed breakdown. It does not infer verse/chorus or prove that a
+cross-song pairing sounds good.
+
+**Existing real-stem probe:** the generated Queen separation plus the saved
+production beat grid produced one candidate at 139.2–158.8 seconds, supported
+by a 22.1 dB drop in the `other` stem while vocal activity and drums remained.
+The owner's approximate breakdown annotation is 144–162 seconds, so the
+candidate begins about 4.8 seconds early and ends about 3.2 seconds early.
+This is an arrangement-drop signal, not demonstrated section-boundary
+accuracy. September's existing real separation, using the same local analysis
+code to obtain a beat grid and vocal activity, produced no candidate for its
+annotated 140–172 second breakdown. That abstention may be appropriate if its
+stems lack this signature; it also shows the current detector is not a general
+breakdown recognizer.
+
+Synthetic tests cover role gating, weak-drop abstention, timing, persistence
+normalization, a PGlite section-worker run that stores the candidate beside
+all four source-matched stem fingerprints, and planner handling that preserves
+the candidate boundary without treating it as a confirmed role. They do not
+establish general accuracy or listener quality. The section engine version is now `1.15.0`;
+previously persisted sections must be reanalyzed before this signal appears.
+The local generated WAVs remain ignored and are neither regenerated nor
+committed.
+
 ## Branch reconciliation snapshot — 2026-11-18
 
 The active product branch remains `agent-a-waveyard-donor-stem-integrity`;

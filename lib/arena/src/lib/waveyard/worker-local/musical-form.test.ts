@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ANALYSIS_PCM_RATE } from "./analysis-engine";
-import { applyFormPredictions, inferFormFromWindows, measureFormWindows, type FormWindow } from "./musical-form";
+import {
+  applyBreakdownCandidates,
+  applyFormPredictions,
+  detectBreakdownCandidates,
+  inferFormFromWindows,
+  measureFormWindows,
+  type FormWindow,
+} from "./musical-form";
 import { displaySourceSectionLabel, normalizeSourceSections } from "../types/source-sections";
 
 const window = (startBar: number, role: "a" | "b" | "c", energyDb = -20): FormWindow => ({
@@ -128,6 +135,98 @@ test("provenance-checked vocal continuity timing strengthens repeated vocal-flow
 test("invalid/insufficient audio cannot produce form observations", () => {
   assert.deepEqual(measureFormWindows(new Float32Array(), new Float32Array(), []), []);
   assert.deepEqual(measureFormWindows(new Float32Array(100), new Float32Array(100), [0, 500, 400]), []);
+});
+
+test("a breakdown candidate requires active vocals and drums around a sustained accompaniment drop", () => {
+  const bars = 32;
+  const levels = (role: string) => Array.from({ length: bars }, (_, bar) => {
+    if (role === "other" && bar >= 8 && bar < 16) return -42;
+    return role === "bass" ? -50 : -24;
+  });
+  const profiles = ["vocals", "drums", "bass", "other"].map((stemType) => ({
+    stemType,
+    rmsDbByBar: levels(stemType),
+  }));
+  const beatGridMs = Array.from({ length: bars * 4 + 1 }, (_, beat) => beat * 500);
+  const activity = [{ startMs: 16_000, endMs: 32_000, confidence: 0.9 }];
+  const predicted = detectBreakdownCandidates({
+    profiles,
+    beatGridMs,
+    vocalActivityIntervals: activity,
+  });
+  assert.deepEqual(predicted.map((entry) => [
+    entry.startBar, entry.endBar, entry.accompanimentRole, entry.accompanimentDropDb,
+  ]), [[8, 16, "other", 18]]);
+
+  const resulting = applyBreakdownCandidates([{
+    startBeatIndex: 0,
+    endBeatIndex: bars * 4,
+    label: "section",
+    labelConfidence: 0,
+    structuralConfidence: 0.8,
+  }], predicted);
+  assert.deepEqual(resulting.map((entry) => [entry.startBeatIndex, entry.endBeatIndex, entry.label]), [
+    [0, 32, "section"], [32, 64, "breakdown-candidate"], [64, 128, "section"],
+  ]);
+  const withFormEvidence = applyFormPredictions(resulting, [
+    { startBar: 8, endBar: 16, label: "verse", strength: 0.7 },
+  ]);
+  assert.equal(withFormEvidence[1]!.label, "breakdown-candidate",
+    "a semantic-form hypothesis must not overwrite the explicit arrangement event");
+  const persistedShape = normalizeSourceSections(
+    withFormEvidence,
+    beatGridMs,
+    { analysisEngine: "arena-js-structure", analysisEngineVersion: "1.15.0", sourceChecksumSha256: "a".repeat(64) },
+    ({ startBeatIndex, endBeatIndex }) => `${startBeatIndex}-${endBeatIndex}`,
+    64_000,
+  );
+  assert.deepEqual(persistedShape.map((section) => section.label), [
+    "section", "breakdown-candidate", "section",
+  ]);
+  assert.equal(persistedShape[1]!.startMs, 16_000);
+  assert.equal(persistedShape[1]!.endMs, 32_000);
+  assert.match(displaySourceSectionLabel(persistedShape[1]!), /Possible vocal\/percussion-led breakdown/);
+});
+
+test("a dropout without maintained vocals or drums is not called a vocal/percussion breakdown", () => {
+  const bars = 32;
+  const profiles = ["vocals", "drums", "bass", "other"].map((stemType) => ({
+    stemType,
+    rmsDbByBar: Array.from({ length: bars }, (_, bar) => {
+      if (bar >= 8 && bar < 16 && (stemType === "other" || stemType === "drums")) return -48;
+      return stemType === "bass" ? -50 : -24;
+    }),
+  }));
+  const beatGridMs = Array.from({ length: bars * 4 + 1 }, (_, beat) => beat * 500);
+  assert.deepEqual(detectBreakdownCandidates({
+    profiles,
+    beatGridMs,
+    vocalActivityIntervals: [{ startMs: 16_000, endMs: 32_000, confidence: 0.9 }],
+  }), []);
+  assert.deepEqual(detectBreakdownCandidates({
+    profiles: profiles.map((profile) => ({
+      ...profile,
+      rmsDbByBar: profile.rmsDbByBar.map((level, bar) =>
+        profile.stemType === "drums" && bar >= 8 && bar < 16 ? -24 : level),
+    })),
+    beatGridMs,
+    vocalActivityIntervals: [],
+  }), []);
+});
+
+test("a small accompaniment dip is left as an unlabelled section", () => {
+  const bars = 32;
+  const profiles = ["vocals", "drums", "bass", "other"].map((stemType) => ({
+    stemType,
+    rmsDbByBar: Array.from({ length: bars }, (_, bar) =>
+      stemType === "other" && bar >= 8 && bar < 16 ? -31 : stemType === "bass" ? -50 : -24),
+  }));
+  const beatGridMs = Array.from({ length: bars * 4 + 1 }, (_, beat) => beat * 500);
+  assert.deepEqual(detectBreakdownCandidates({
+    profiles,
+    beatGridMs,
+    vocalActivityIntervals: [{ startMs: 16_000, endMs: 32_000, confidence: 0.9 }],
+  }), [], "a 7 dB accompaniment change does not cross the conservative evidence floor");
 });
 
 test("beat-relative vocal pitch-continuity runs are added as timing evidence", () => {

@@ -22,6 +22,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import type { StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
+import { displaySourceSectionLabel } from "../types/source-sections";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "../types/analysis-provenance";
 import { parsePassageFingerprint } from "../types/passage-compatibility";
 import {
@@ -146,13 +147,15 @@ function fixtureStorage(invalidKey?: string): StorageProvider {
 async function runSectionAnalysis(
   fixture: Awaited<ReturnType<typeof createFixture>>,
   storage = fixtureStorage(),
+  extraStemPcm: Readonly<Record<string, Float32Array>> = {},
 ) {
   const sourcePcm = signal(() => 0.08);
   const changedStemPcm = signal((bar) => bar < 4 ? 0.02 : 0.16);
   const vocalPcm = signal((bar) => bar % 2 === 0 ? 0.04 : 0.1);
   const decode = async (path: string) => {
     const key = await readFile(path, "utf8");
-    return key === "stem-key" ? changedStemPcm : key === "voice-key" ? vocalPcm : sourcePcm;
+    return extraStemPcm[key]
+      ?? (key === "stem-key" ? changedStemPcm : key === "voice-key" ? vocalPcm : sourcePcm);
   };
   await handleSectionAnalysisJob(fixture.payload as unknown as Record<string, unknown>, {
     db: fixture.database as unknown as NonNullable<Parameters<typeof handleSectionAnalysisJob>[1]>["db"],
@@ -160,6 +163,85 @@ async function runSectionAnalysis(
     decode,
   });
 }
+
+test("persisted section analysis carries a four-stem breakdown signature into section rows", async () => {
+  const fixture = await createFixture(true);
+  try {
+    const addStem = async (stemType: string, storageKey: string, checksum: string) => {
+      const [stem] = await fixture.database.insert(stemAssets).values({
+        projectId: fixture.source.projectId,
+        sourceAssetId: fixture.source.id,
+        separationJobId: fixture.stem.separationJobId,
+        stemType,
+        engine: "test",
+        model: "test-separation",
+        modelVersion: "test",
+        storageKey,
+        checksumSha256: checksum,
+        durationSeconds: 32,
+        sampleRate: 44_100,
+        channels: 2,
+        codec: "pcm_s16le",
+        format: "wav",
+        fileSizeBytes: ANALYSIS_PCM_RATE * 32 * 2,
+      }).returning();
+      return stem!;
+    };
+    const vocalStem = await addStem("vocals", "voice-key", "d".repeat(64));
+    await addStem("drums", "drum-key", "e".repeat(64));
+    await addStem("other", "other-key", "f".repeat(64));
+    const [vocalAnalysis] = await fixture.database.insert(vocalAnalyses).values({
+      projectId: fixture.source.projectId,
+      sourceAssetId: fixture.source.id,
+      stemAssetId: vocalStem.id,
+      status: "complete",
+      stage: "complete",
+      idempotencyKey: vocalAnalysisIdempotencyKey(
+        vocalStem.id,
+        LOCAL_VOCAL_ANALYSIS_ENGINE,
+        LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      ),
+      analysisEngine: LOCAL_VOCAL_ANALYSIS_ENGINE,
+      analysisEngineVersion: LOCAL_VOCAL_ANALYSIS_ENGINE_VERSION,
+      sourceChecksumSha256: fixture.source.checksumSha256,
+      stemChecksumSha256: vocalStem.checksumSha256,
+    }).returning();
+    await fixture.database.insert(vocalActivityIntervals).values([
+      { vocalAnalysisId: vocalAnalysis!.id, intervalIndex: 0, startMs: 8_000, endMs: 24_000, confidence: 0.9 },
+    ]);
+
+    await runSectionAnalysis(fixture, fixtureStorage(), {
+      "stem-key": signal(() => 0.08),
+      "voice-key": signal(() => 0.12),
+      "drum-key": signal(() => 0.12),
+      "other-key": signal((bar) => bar >= 4 && bar < 12 ? 0.015 : 0.2),
+    });
+    const sections = await fixture.database.select().from(sourceSections)
+      .where(eq(sourceSections.sourceAssetId, fixture.source.id))
+      .orderBy(sourceSections.sectionIndex);
+    const breakdownSections = sections.filter((section) => section.label === "breakdown-candidate");
+    const candidate = breakdownSections[0];
+    assert.ok(candidate, "the real section worker persists the evidence-backed arrangement event");
+    assert.equal(breakdownSections[0]!.startBeatIndex, 16);
+    assert.equal(breakdownSections.at(-1)!.endBeatIndex, 48);
+    assert.ok(breakdownSections.every((section, index) => index === 0
+      || breakdownSections[index - 1]!.endBeatIndex === section.startBeatIndex),
+    "the saved event bounds remain contiguous across internal structural boundaries");
+    assert.match(displaySourceSectionLabel(candidate), /Possible vocal\/percussion-led breakdown/);
+    const fingerprint = parsePassageFingerprint(candidate.passageFingerprint, {
+      sourceChecksumSha256: sourceChecksum,
+      startBeatIndex: candidate.startBeatIndex,
+      endBeatIndex: candidate.endBeatIndex,
+    });
+    assert.equal(fingerprint?.stemActivity.status, "measured");
+    if (fingerprint?.stemActivity.status === "measured") {
+      assert.deepEqual(fingerprint.stemActivity.value.map((entry) => entry.stemType).sort(),
+        ["bass", "drums", "other", "vocals"]);
+    }
+  } finally {
+    await fixture.client.close();
+  }
+});
 
 test("persisted section job uses only source-matched completed stems and records their boundary evidence", async () => {
   const fixture = await createFixture(true);

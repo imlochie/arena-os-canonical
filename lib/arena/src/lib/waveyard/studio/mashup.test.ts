@@ -44,6 +44,7 @@ test("donor timing preserves independent source lengths at a shared tempo", () =
 });
 
 import {
+  bedSectionRoleAt,
   compareMashupAlignmentCandidates,
   pitchMoveForKeys,
   planMashup,
@@ -1733,6 +1734,11 @@ test("plan: whole-body placement preserves phrase gaps instead of snapping fragm
   assert.equal(result.plan.segments.length, 1, "activity windows are not cut into separately relocated audio clips");
   assert.equal(result.plan.segments[0]!.vocalsFromMs, 250, "the padded vocal body stays intact");
   assert.equal(result.plan.segments[0]!.vocalsToMs, 11_750);
+});
+
+test("arrangement scoring keeps an unverified breakdown candidate role-neutral", () => {
+  assert.equal(bedSectionRoleAt([section("breakdown-candidate", 10_000, 20_000)], 15_000), "unlabeled");
+  assert.equal(bedSectionRoleAt([section("breakdown", 10_000, 20_000)], 15_000), "breakdown");
 });
 
 test("plan: full-track arrangement keeps the continuous overlay when no re-placement wins decisively", () => {

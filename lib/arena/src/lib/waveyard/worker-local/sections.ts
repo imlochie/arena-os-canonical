@@ -38,7 +38,13 @@ import {
 } from "@workspace/arena/lib/waveyard/types/vocal-analysis";
 import type { SourceSectionAnalysisJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_SECTION_ENGINE, DESKTOP_SECTION_ENGINE_VERSION } from "./analysis";
-import { applyFormPredictions, inferFormFromWindows, measureFormWindows } from "./musical-form";
+import {
+  applyBreakdownCandidates,
+  applyFormPredictions,
+  detectBreakdownCandidates,
+  inferFormFromWindows,
+  measureFormWindows,
+} from "./musical-form";
 import { ANALYSIS_PCM_RATE, decodeMonoPcm, onsetEnvelope } from "./analysis-engine";
 import {
   buildPassageFingerprint,
@@ -344,15 +350,21 @@ export async function handleSectionAnalysisJob(
       }, "processing");
       return;
     }
+    const breakdownCandidates = detectBreakdownCandidates({
+      profiles: stemActivity.profiles,
+      beatGridMs: beatGrid,
+      vocalActivityIntervals: stemActivity.vocalActivity?.activityIntervals ?? [],
+    });
+    const structurallyEnriched = applyBreakdownCandidates(candidates, breakdownCandidates);
     const formCandidates = stemActivity.vocalPcm
-      ? applyFormPredictions(candidates, inferFormFromWindows(measureFormWindows(
+      ? applyFormPredictions(structurallyEnriched, inferFormFromWindows(measureFormWindows(
         pcm,
         stemActivity.vocalPcm,
         beatGrid,
         stemActivity.vocalActivity?.pitchContinuityRuns ?? [],
         stemActivity.vocalActivity?.activityIntervals ?? [],
       )))
-      : candidates;
+      : structurallyEnriched;
     const fingerprintedCandidates = formCandidates.map((candidate) => ({
       ...candidate,
       passageFingerprint: buildPassageFingerprint({

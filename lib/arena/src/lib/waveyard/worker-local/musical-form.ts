@@ -1,5 +1,7 @@
 import type { SourceSectionCandidate } from "../types/source-sections";
+import type { PassageVocalRun } from "../types/passage-compatibility";
 import { ANALYSIS_PCM_RATE, chromaFromPcm } from "./analysis-engine";
+import type { StemActivityLevelProfile } from "./section-rhythm";
 
 export type FormWindow = {
   startBar: number;
@@ -18,13 +20,230 @@ export type FormPrediction = {
   /** Uncalibrated evidence strength, never a probability of correctness. */
   strength: number;
 };
+
+export type BreakdownCandidate = {
+  startBar: number;
+  endBar: number;
+  /** Measured accompaniment drop in dB; this is not a probability. */
+  accompanimentDropDb: number;
+  accompanimentRole: "bass" | "other";
+  /** Uncalibrated signal strength, never a probability of semantic correctness. */
+  evidenceStrength: number;
+};
 // Section-role evidence must outlast a short hook/phrase. Four-bar motifs can
 // be different parts of ONE verse; use eight-bar arrangements for form.
 const WINDOW_BARS = 8;
 const MAX_BARS = 512;
 const MIN_REPEAT_SIMILARITY = 0.78;
 const PHRASE_RUN_CONFIDENCE = 0.6;
+// A deliberately conservative initial evidence floor; it is not a trained or
+// corpus-calibrated semantic threshold.
+const MINIMUM_BREAKDOWN_DROP_DB = 8;
 const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / Math.max(1, values.length);
+
+function meanRmsDb(values: readonly (number | null)[]): number | null {
+  const valid = values.filter((value): value is number =>
+    typeof value === "number" && Number.isFinite(value) && value >= -120 && value <= 12);
+  if (valid.length < values.length * 0.75 || valid.length === 0) return null;
+  const power = valid.reduce((sum, value) => sum + 10 ** (value / 10), 0) / valid.length;
+  return 10 * Math.log10(Math.max(1e-12, power));
+}
+
+type TimeRange = { start: number; end: number };
+
+function mergeVocalActivity(intervals: readonly PassageVocalRun[]): TimeRange[] {
+  const sorted = intervals
+    .filter((interval) => interval.confidence >= 0.55
+      && interval.confidence <= 1
+      && Number.isFinite(interval.startMs) && interval.startMs >= 0
+      && Number.isFinite(interval.endMs)
+      && interval.endMs > interval.startMs)
+    .map((interval) => ({ start: interval.startMs, end: interval.endMs }))
+    .sort((left, right) => left.start - right.start);
+  const merged: TimeRange[] = [];
+  for (const range of sorted) {
+    const previous = merged.at(-1);
+    if (!previous || range.start > previous.end) merged.push(range);
+    else previous.end = Math.max(previous.end, range.end);
+  }
+  return merged;
+}
+
+function activityCoverage(
+  ranges: readonly TimeRange[],
+  startMs: number,
+  endMs: number,
+): number {
+  if (endMs <= startMs) return 0;
+  let low = 0;
+  let high = ranges.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (ranges[middle]!.end <= startMs) low = middle + 1;
+    else high = middle;
+  }
+  let covered = 0;
+  for (let index = low; index < ranges.length && ranges[index]!.start < endMs; index += 1) {
+    covered += Math.max(0, Math.min(endMs, ranges[index]!.end) - Math.max(startMs, ranges[index]!.start));
+  }
+  return covered / (endMs - startMs);
+}
+
+/**
+ * Finds only an eight-bar vocal/percussion-led arrangement-drop candidate.
+ * It requires measured, checksum-bound role profiles at the caller and
+ * independently timed vocal activity. A bass/other reduction must be present
+ * on both sides of the window while vocals and drums remain audible. This
+ * describes a signal configuration; it does not claim semantic form.
+ */
+export function detectBreakdownCandidates(input: {
+  profiles: readonly StemActivityLevelProfile[];
+  beatGridMs: readonly number[];
+  vocalActivityIntervals: readonly PassageVocalRun[];
+}): BreakdownCandidate[] {
+  const { profiles, beatGridMs, vocalActivityIntervals } = input;
+  if (profiles.length > 8 || vocalActivityIntervals.length > 10_000
+    || beatGridMs.length < 65
+    || beatGridMs.some((time, index) => !Number.isFinite(time) || time < 0
+      || (index > 0 && time <= beatGridMs[index - 1]!))) return [];
+  const byRole = new Map<string, StemActivityLevelProfile>();
+  for (const profile of profiles) {
+    if (byRole.has(profile.stemType) || profile.rmsDbByBar.length > 512
+      || profile.rmsDbByBar.some((value) => value !== null
+        && (typeof value !== "number" || !Number.isFinite(value)))) return [];
+    byRole.set(profile.stemType, profile);
+  }
+  const vocals = byRole.get("vocals");
+  const drums = byRole.get("drums");
+  const bass = byRole.get("bass");
+  const other = byRole.get("other");
+  const barCount = Math.floor((beatGridMs.length - 1) / 4);
+  if (!vocals || !drums || !bass || !other
+    || [vocals, drums, bass, other].some((profile) => profile.rmsDbByBar.length < barCount)
+    || barCount < 16) return [];
+  const activeVocalRanges = mergeVocalActivity(vocalActivityIntervals);
+
+  const candidates: BreakdownCandidate[] = [];
+  // Eight-bar evidence windows advance by four bars, with four-bar context
+  // on both sides. This catches a full arrangement drop without confusing a
+  // momentary drum fill or a single vocal pause for a section.
+  for (let startBar = 4; startBar + 12 <= barCount; startBar += 1) {
+    const endBar = startBar + 8;
+    const startMs = beatGridMs[startBar * 4]!;
+    const endMs = beatGridMs[endBar * 4]!;
+    if (endMs <= startMs) continue;
+    const vocalDb = meanRmsDb(vocals.rmsDbByBar.slice(startBar, endBar));
+    const drumDb = meanRmsDb(drums.rmsDbByBar.slice(startBar, endBar));
+    const beforeDrums = meanRmsDb(drums.rmsDbByBar.slice(startBar - 4, startBar));
+    const afterDrums = meanRmsDb(drums.rmsDbByBar.slice(endBar, endBar + 4));
+    const voiceCoverage = activityCoverage(activeVocalRanges, startMs, endMs);
+    if (vocalDb === null || vocalDb < -65 || drumDb === null || drumDb < -55
+      || beforeDrums === null || afterDrums === null
+      || drumDb < Math.min(beforeDrums, afterDrums) - 8
+      || voiceCoverage < 0.25) continue;
+
+    const accompanimentOptions = ([["bass", bass], ["other", other]] as const)
+      .map(([role, profile]) => {
+        const beforeDb = meanRmsDb(profile.rmsDbByBar.slice(startBar - 4, startBar));
+        const windowDb = meanRmsDb(profile.rmsDbByBar.slice(startBar, endBar));
+        const afterDb = meanRmsDb(profile.rmsDbByBar.slice(endBar, endBar + 4));
+        if (beforeDb === null || windowDb === null || afterDb === null
+          || beforeDb < -50 || afterDb < -50) return null;
+        const dropDb = Math.min(beforeDb - windowDb, afterDb - windowDb);
+        return dropDb >= MINIMUM_BREAKDOWN_DROP_DB
+          ? { role, dropDb, beforeDb, afterDb, profile } : null;
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+      .sort((left, right) => right.dropDb - left.dropDb);
+    const strongest = accompanimentOptions[0];
+    if (!strongest) continue;
+    const dropFloorDb = Math.min(strongest.beforeDb, strongest.afterDb) - 4.5;
+    const rolePresentAtBar = (bar: number) => {
+      const levelDb = strongest.profile.rmsDbByBar[bar];
+      const drumLevelDb = drums.rmsDbByBar[bar];
+      return typeof levelDb === "number" && levelDb <= dropFloorDb
+        && typeof drumLevelDb === "number" && drumLevelDb > -50;
+    };
+    let eventStartBar: number | null = null;
+    for (let bar = startBar; bar < endBar; bar += 1) {
+      if (!rolePresentAtBar(bar)) continue;
+      const barStartMs = beatGridMs[bar * 4]!;
+      const barEndMs = beatGridMs[(bar + 1) * 4]!;
+      if (activityCoverage(activeVocalRanges, barStartMs, barEndMs) >= 0.25) {
+        eventStartBar = bar;
+        break;
+      }
+    }
+    if (eventStartBar === null) continue;
+    let eventEndBar = endBar;
+    for (let bar = eventStartBar + 1; bar < Math.min(barCount, endBar + 4); bar += 1) {
+      if (!rolePresentAtBar(bar)) {
+        eventEndBar = bar;
+        break;
+      }
+    }
+    if (eventEndBar <= eventStartBar) continue;
+    candidates.push({
+      startBar: eventStartBar,
+      endBar: eventEndBar,
+      accompanimentDropDb: Number(strongest.dropDb.toFixed(2)),
+      accompanimentRole: strongest.role,
+      evidenceStrength: Number(Math.min(0.7, 0.4 + (strongest.dropDb - 4.5) / 20).toFixed(3)),
+    });
+  }
+
+  // Adjacent overlapping candidates are redundant evidence for the same drop.
+  // Keep the strongest rather than extending a label across unverified bars.
+  const selected: BreakdownCandidate[] = [];
+  for (const candidate of candidates.sort((a, b) =>
+    b.accompanimentDropDb - a.accompanimentDropDb || a.startBar - b.startBar)) {
+    if (selected.some((existing) => candidate.startBar < existing.endBar
+      && existing.startBar < candidate.endBar)) continue;
+    selected.push(candidate);
+  }
+  return selected.sort((a, b) => a.startBar - b.startBar);
+}
+
+/** Split persisted candidates only around directly measured drop windows. */
+export function applyBreakdownCandidates(
+  candidates: readonly SourceSectionCandidate[],
+  breakdowns: readonly BreakdownCandidate[],
+): SourceSectionCandidate[] {
+  if (!breakdowns.length) return candidates.slice();
+  const result: SourceSectionCandidate[] = [];
+  for (const candidate of candidates) {
+    const startBar = candidate.startBeatIndex / 4;
+    const endBar = candidate.endBeatIndex / 4;
+    const relevant = breakdowns.filter((drop) => drop.startBar < endBar && startBar < drop.endBar);
+    if (!relevant.length) {
+      result.push(candidate);
+      continue;
+    }
+    const boundaries = [...new Set([
+      candidate.startBeatIndex,
+      candidate.endBeatIndex,
+      ...relevant.flatMap((drop) => [
+        Math.max(candidate.startBeatIndex, drop.startBar * 4),
+        Math.min(candidate.endBeatIndex, drop.endBar * 4),
+      ]),
+    ])].sort((a, b) => a - b);
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const startBeatIndex = boundaries[index]!;
+      const endBeatIndex = boundaries[index + 1]!;
+      const start = startBeatIndex / 4;
+      const end = endBeatIndex / 4;
+      const drop = relevant.find((entry) => start >= entry.startBar && end <= entry.endBar);
+      result.push(drop ? {
+        ...candidate,
+        startBeatIndex,
+        endBeatIndex,
+        label: "breakdown-candidate",
+        labelConfidence: drop.evidenceStrength,
+      } : { ...candidate, startBeatIndex, endBeatIndex });
+    }
+  }
+  return result;
+}
 
 function cosine(a: readonly number[], b: readonly number[]): number | null {
   let dot = 0, aa = 0, bb = 0;
@@ -298,6 +517,9 @@ export function applyFormPredictions(
   predictions: readonly FormPrediction[],
 ): SourceSectionCandidate[] {
   return candidates.map(candidate => {
+    // Semantic-form hypotheses only annotate neutral regions. Never erase a
+    // directly measured arrangement event or another explicit candidate label.
+    if (candidate.label !== "section") return { ...candidate };
     const firstBar = candidate.startBeatIndex / 4, lastBar = candidate.endBeatIndex / 4;
     const covered = (label: "verse" | "chorus") => {
       const spans = predictions.filter(p => p.label === label)
