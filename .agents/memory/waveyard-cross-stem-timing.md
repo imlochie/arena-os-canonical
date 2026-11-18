@@ -15,6 +15,12 @@ A verified active drum donor may still define the shared tempo and bar clock for
 
 **How to apply:** Keep tempo-master authority separate from role-specific phase corrections. Use the active drum grid for live entry/section mapping only when its timing evidence is reliable; keep same-role onset analysis scoped to that role and leave placement unchanged when evidence is missing or incompatible.
 
+For vocal candidate ranking, use the vocal source actually audible at the playhead. After a saved donor swap begins, map that donor's checksum-current phrase/activity intervals from its saved entry point onto the session clock with the applied tempo transform. Never compare against the replaced original vocal; if the donor map is unavailable, leave vocal timing unmeasured and use the honest music-evidence fallback.
+
+**Why:** The original vocal's phrase rhythm is no longer the live performance after replacement, so ranking against it can confidently choose the wrong donor entry.
+
+**How to apply:** Test before and after persisted swap positions, with valid and missing donor entry maps; confirm later vocal selections use active-donor timing or visibly fall back without reusing stale source evidence.
+
 For automated activity gates, do not treat `AudioParam.value` as the effective gain after scheduling automation; it may remain at its intrinsic value while a ramp is active. Track the commanded target separately, and verify the signal downstream of the gate.
 
 **Why:** Reading the stale value made a real browser gate mute correctly but skip reopening on later activity, while unit mocks concealed the behavior.
