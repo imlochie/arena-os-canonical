@@ -1051,6 +1051,12 @@ export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
   atSeconds: real("at_seconds").notNull().default(0),
   /** Optional donor-clock vocal entry chosen from measured activity/phrase evidence. */
   donorEntryOffsetMs: integer("donor_entry_offset_ms"),
+  /**
+   * Exact currently-audible same-role layer used as the live groove reference.
+   * The original fromTrackId/fromStemAssetId remain the restore baseline.
+   */
+  grooveAnchorTrackId: uuid("groove_anchor_track_id").references(() => tracks.id, { onDelete: "set null" }),
+  grooveAnchorStemAssetId: uuid("groove_anchor_stem_asset_id").references(() => stemAssets.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("wy_listen_session_swaps_session_idx").on(table.sessionId, table.createdAt),

@@ -2021,6 +2021,8 @@ test("session: a missing original can be restored without changing stems or sess
 test("session stem swaps: distinct donors round-trip into Studio; impossible swaps refused honestly", async (t) => {
   let createdSessionId: string | null = null;
   let createdRemixSessionId: string | null = null;
+  let alternateDrumStemId: string | null = null;
+  let alternateProcessingJobId: string | null = null;
   t.after(async () => {
     if (createdSessionId !== null) await sessions.deleteSession(OWNER, createdSessionId).catch(() => undefined);
     if (createdRemixSessionId !== null) {
@@ -2028,6 +2030,12 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
         .from(schema.remixSessions).where(eq(schema.remixSessions.id, createdRemixSessionId)).limit(1);
       await db.db.delete(schema.remixSessions).where(eq(schema.remixSessions.id, createdRemixSessionId));
       if (remix) await db.db.delete(schema.projects).where(eq(schema.projects.id, remix.projectId));
+    }
+    if (alternateDrumStemId !== null) {
+      await db.db.delete(schema.stemAssets).where(eq(schema.stemAssets.id, alternateDrumStemId));
+    }
+    if (alternateProcessingJobId !== null) {
+      await db.db.delete(schema.processingJobs).where(eq(schema.processingJobs.id, alternateProcessingJobId));
     }
   });
   // Give track B two real stem types so both can be replaced independently.
@@ -2054,6 +2062,49 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
       fileSizeBytes: 100,
     });
   }
+  // A second exact asset on the same donor track proves that replacement
+  // lineage follows the audible stem identity, not merely a track-level label.
+  const sourceA = sourceIdByTrackId.get(trackA.id)!;
+  const [jobA] = await db.db.select().from(schema.processingJobs)
+    .where(eq(schema.processingJobs.sourceAssetId, sourceA)).limit(1);
+  const [alternateJob] = await db.db.insert(schema.processingJobs).values({
+    projectId: trackA.studioProjectId,
+    sourceAssetId: sourceA,
+    type: jobA.type,
+    status: "complete",
+    priority: jobA.priority,
+    attempts: jobA.attempts,
+    stage: "complete",
+    idempotencyKey: `test:alternate-drum:${randomUUID()}`,
+    model: jobA.model,
+    requestedDevice: jobA.requestedDevice,
+    resolvedDevice: jobA.resolvedDevice,
+    metadata: "{}",
+    completedAt: new Date(),
+  }).returning({ id: schema.processingJobs.id });
+  alternateProcessingJobId = alternateJob.id;
+  const alternateDrumStorageKey = `test/a-drums-alternate-${randomUUID()}.wav`;
+  await getStorage().putFile(alternateDrumStorageKey, path.join(root!, "aphex.wav"), "audio/wav");
+  const [alternateDrumStem] = await db.db.insert(schema.stemAssets).values({
+    projectId: trackA.studioProjectId,
+    sourceAssetId: sourceA,
+    separationJobId: alternateJob.id,
+    stemType: "drums",
+    engine: "demucs",
+    model: "htdemucs",
+    modelVersion: "test-alternate",
+    storageKey: alternateDrumStorageKey,
+    checksumSha256: `checksum-a-drums-alternate-${randomUUID()}`,
+    durationSeconds: 2,
+    sampleRate: 44100,
+    channels: 1,
+    codec: "wav",
+    format: "wav",
+    fileSizeBytes: 100,
+  }).returning({ id: schema.stemAssets.id });
+  alternateDrumStemId = alternateDrumStem.id;
+  const originalDonorDrum = (await service.getTrack(OWNER, trackA.id))!.stems
+    .find((stem) => stem.stemType === "drums" && stem.id !== alternateDrumStem.id)!;
 
   const created = await sessions.createSession(OWNER, "Swap set");
   createdSessionId = created.id;
@@ -2066,6 +2117,7 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     sessionTrackId: sessionTrackB,
     stemType: "drums",
     toTrackId: trackA.id, // A has real drums (inserted earlier)
+    toStemAssetId: originalDonorDrum.id,
     atSeconds: 12.5,
   });
   assert.equal(swapped.swaps.length, 1);
@@ -2087,11 +2139,14 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     detail.tracks[0].stems.find((stem) => stem.stemType === "drums")?.id,
     "the original stem asset is pinned",
   );
+  assert.equal(swap.grooveAnchorTrackId, trackB.id,
+    "the first live replacement compares against the current original layer");
+  assert.equal(swap.grooveAnchorStemAssetId, swap.fromStemAssetId);
   assert.equal(swap.donorTrack?.id, trackA.id, "restored swap includes the donor track");
   assert.ok(swap.donorTrack?.stems.some((stem) => stem.stemType === "drums"), "restored donor includes the real replacement stem");
   assert.equal(
     swap.toStemAssetId,
-    swap.donorTrack?.stems.find((stem) => stem.stemType === "drums")?.id,
+    originalDonorDrum.id,
     "the exact donor stem asset is pinned",
   );
   const swappedWithVocals = await sessions.recordStemSwap({
@@ -2166,11 +2221,19 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
   );
   const replaced = await sessions.recordStemSwap({
     ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
-    stemType: "drums", toTrackId: trackA.id, atSeconds: 18,
+    stemType: "drums", toTrackId: trackA.id, toStemAssetId: alternateDrumStem.id, atSeconds: 18,
   });
   assert.equal(replaced.swaps.length, 2, "one active donor per stem after repeated live selections");
   assert.equal(replaced.swaps.find((entry) => entry.stemType === "drums")?.atSeconds, 18);
   const previousDrums = replaced.swaps.find((entry) => entry.stemType === "drums")!;
+  assert.equal(previousDrums.fromTrackId, trackB.id,
+    "the original restore baseline remains distinct from the live comparison anchor");
+  assert.equal(previousDrums.grooveAnchorTrackId, trackA.id,
+    "a later replacement is evaluated against the currently audible donor, not stale original audio");
+  assert.equal(previousDrums.toStemAssetId, alternateDrumStem.id,
+    "the replacement pins the newly selected exact donor asset");
+  assert.equal(previousDrums.grooveAnchorStemAssetId, originalDonorDrum.id,
+    "the comparison anchor is the exact previously audible donor stem");
   const failedReplacement = await sessions.recordStemSwap({
     ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
     stemType: "drums", toTrackId: trackB.id, atSeconds: 19,
@@ -2181,12 +2244,17 @@ test("session stem swaps: distinct donors round-trip into Studio; impossible swa
     stemType: "drums", toTrackId: previousDrums.toTrackId,
     toStemAssetId: previousDrums.toStemAssetId, atSeconds: previousDrums.atSeconds,
     expectedSwapId: failedSwapId,
+    grooveAnchorTrackId: previousDrums.grooveAnchorTrackId,
+    grooveAnchorStemAssetId: previousDrums.grooveAnchorStemAssetId,
   };
   const recovered = await sessions.recordStemSwap(rollback);
   const recoveredDrums = recovered.swaps.find((entry) => entry.stemType === "drums")!;
   assert.equal(recoveredDrums.toTrackId, previousDrums.toTrackId, "restore the audible donor, not the original stem");
   assert.equal(recoveredDrums.toStemAssetId, previousDrums.toStemAssetId, "restore its exact saved audio asset");
   assert.equal(recoveredDrums.atSeconds, previousDrums.atSeconds);
+  assert.equal(recoveredDrums.grooveAnchorTrackId, previousDrums.grooveAnchorTrackId,
+    "a guarded failed-swap recovery restores the previous audible comparison context");
+  assert.equal(recoveredDrums.grooveAnchorStemAssetId, previousDrums.grooveAnchorStemAssetId);
   assert.deepEqual(recovered.swaps.find((entry) => entry.stemType === "vocals"),
     replaced.swaps.find((entry) => entry.stemType === "vocals"), "restoration leaves the other donor unchanged");
   const repeated = await sessions.recordStemSwap(rollback);

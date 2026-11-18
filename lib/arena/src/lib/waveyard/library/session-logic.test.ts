@@ -10,6 +10,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   liveStemBeatOffsetSeconds,
+  liveStemDownbeatOffsetSeconds,
+  projectLiveStemGridToCommonClock,
+  projectLiveStemSectionsToCommonClock,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
@@ -105,6 +108,15 @@ test("live swap applies the measured groove nudge only as a bounded beat fallbac
   assert.deepEqual(resolveLiveStemDonorOffset({ ...base, manualTempoOverride: true }), {
     offsetSeconds: 0.125,
     basis: "beat",
+  });
+  assert.deepEqual(resolveLiveStemDonorOffset({
+    ...base,
+    beatOffsetSeconds: 0.5,
+    beatOffsetBasis: "downbeat",
+    sameRoleGrooveCorrectionMs: null,
+  }), {
+    offsetSeconds: 0.5,
+    basis: "downbeat",
   });
   assert.deepEqual(resolveLiveStemDonorOffset({ ...base, sameRoleGrooveCorrectionMs: 80 }), {
     offsetSeconds: 0.125,
@@ -249,6 +261,48 @@ test("live stem phase projects measured donor beats into tempo-stretched recipie
   }
   assert.equal(liveStemBeatOffsetSeconds(null, [0, 500], 1), null);
   assert.equal(liveStemBeatOffsetSeconds([0, 500], [0, 500], NaN), null);
+});
+
+test("live stem phase uses measured bar downbeats when beat-grid origins differ mid-bar", () => {
+  const recipientBeats = [0, 500, 1_000, 1_500, 2_000, 2_500];
+  const donorBeats = [0, 500, 1_000, 1_500, 2_000, 2_500];
+  const recipientDownbeats = [0, 2_000, 4_000];
+  const donorDownbeats = [1_000, 3_000, 5_000];
+  const ratio = 1;
+  const beatOriginOffset = liveStemBeatOffsetSeconds(recipientBeats, donorBeats, ratio);
+  const barOriginOffset = liveStemDownbeatOffsetSeconds(recipientDownbeats, donorDownbeats, ratio);
+
+  assert.equal(beatOriginOffset, 0, "first-beat alignment would preserve a mid-bar mismatch");
+  assert.equal(barOriginOffset, 1, "downbeat alignment places the donor's first bar on the bed's bar");
+  assert.equal(liveStemDownbeatOffsetSeconds([0, 2_000], [1_000], ratio), null);
+  assert.equal(liveStemDownbeatOffsetSeconds([0, 2_000], [2_000, 1_000], ratio), null);
+  assert.equal(liveStemDownbeatOffsetSeconds([0, 2_000], [1_000, 3_000], 0), null);
+});
+
+test("active drum clock projects its measured grid and sections into the shared playback timeline", () => {
+  const activeDrumClock = projectLiveStemGridToCommonClock([250, 750, 1_250], 1.1);
+  assert.deepEqual(activeDrumClock, [275, 825, 1_375]);
+  assert.deepEqual(projectLiveStemGridToCommonClock([0, 500, 1_000], 0), null);
+  assert.equal(
+    liveStemBeatOffsetSeconds(activeDrumClock, [0, 500, 1_000], 1.1),
+    -0.275,
+    "incoming layers align to the active drum donor's transformed clock, not the stale original beat zero",
+  );
+  const sections = [{
+    sectionIndex: 0,
+    startMs: 0,
+    endMs: 8_000,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    label: "verse",
+    labelConfidence: 0.9,
+    structuralConfidence: 0.85,
+  }];
+  assert.deepEqual(projectLiveStemSectionsToCommonClock(sections, 0.9), [{
+    ...sections[0],
+    endMs: 7_200,
+  }]);
+  assert.equal(projectLiveStemSectionsToCommonClock(sections, Number.NaN), null);
 });
 
 test("live stem section phase aligns corresponding, structurally compatible sections", () => {

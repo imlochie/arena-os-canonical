@@ -37,6 +37,8 @@ const swapSchema = z.object({
   donorEntryOffsetMs: z.number().int().min(0).max(86_400_000).nullable().optional(),
   expectedSwapId: z.string().uuid().optional(),
   toStemAssetId: z.string().uuid().nullable().optional(),
+  grooveAnchorTrackId: z.string().uuid().nullable().optional(),
+  grooveAnchorStemAssetId: z.string().uuid().nullable().optional(),
 });
 
 /** POST /api/library/sessions/[id]/swaps — record a REAL stem swap (validated

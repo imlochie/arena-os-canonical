@@ -64,6 +64,8 @@ import {
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
   liveStemDownbeatOffsetSeconds,
+  projectLiveStemGridToCommonClock,
+  projectLiveStemSectionsToCommonClock,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
@@ -204,6 +206,8 @@ interface SessionDetail {
     toStemAssetId: string | null;
     atSeconds: number;
     donorEntryOffsetMs: number | null;
+    grooveAnchorTrackId?: string | null;
+    grooveAnchorStemAssetId?: string | null;
     grooveCorrection?: {
       status: "measured" | "unavailable";
       correctionMs: number;
@@ -391,6 +395,11 @@ function getPersistedSwapSetup(
       tempoMasterRate: 1,
       tempoMasterBpm: null,
       tempoMasterConfidence: null,
+      rhythmClockBeatGridMs: null,
+      rhythmClockBeatConfidence: null,
+      rhythmClockDownbeatGridMs: null,
+      rhythmClockDownbeatConfidence: null,
+      rhythmClockSections: null,
       tempoMasterStatus: "Current track remains the tempo reference.",
       keyMasterStatus: "Current track remains the key reference.",
       keyReferenceKey: null,
@@ -456,11 +465,11 @@ function getPersistedSwapSetup(
   const drumDonor = drumSwap === null
     ? null
     : session.tracks.find((track) => track.track.id === drumSwap.toTrackId) ?? null;
-  const drumDonorAnalysis = drumDonor?.analysis ?? drumSwap?.donorTrack?.analysis
-    ?? library.find((track) => track.id === drumSwap?.toTrackId)?.analysis ?? null;
+  const drumDonorAnalysis = drumDonor?.analysis ?? drumSwap?.donorTrack?.analysis ?? null;
+  const drumDonorSummaryAnalysis = library.find((track) => track.id === drumSwap?.toTrackId)?.analysis ?? null;
   const drumDonorTempo = drumSwap === null
     ? null
-    : tempoForTrack(drumSwap.toTrackId, drumDonorAnalysis, tempoCorrections);
+    : tempoForTrack(drumSwap.toTrackId, drumDonorAnalysis ?? drumDonorSummaryAnalysis, tempoCorrections);
   const tempoEvidence = {
     recipientBpmConfidence: recipientTempo.confidence,
     donorBpmConfidence: drumDonorTempo?.confidence,
@@ -477,6 +486,32 @@ function getPersistedSwapSetup(
   const tempoMasterRate = tempoMaster?.master === "donor-drums" && !masterWouldExceedPlaybackBounds
     ? tempoMaster.playbackRate
     : 1;
+  const drumTempoMasterActive = tempoMaster?.master === "donor-drums" && !masterWouldExceedPlaybackBounds;
+  const rhythmClockStretchRatio = drumTempoMasterActive ? tempoMasterRate : 1;
+  const drumRhythmIsolated = drumDonorTempo?.evidenceSource === "isolated-drums";
+  const rhythmClockSourceBeatGrid = drumRhythmIsolated
+    ? drumDonorTempo?.beatGridMs
+    : drumDonorAnalysis?.beatGridMs ?? drumDonorTempo?.beatGridMs;
+  const rhythmClockBeatGridMs = drumTempoMasterActive
+    ? projectLiveStemGridToCommonClock(
+      rhythmClockSourceBeatGrid,
+      rhythmClockStretchRatio,
+    )
+    : recipientTempo.beatGridMs;
+  const rhythmClockBeatConfidence = drumTempoMasterActive
+    ? drumRhythmIsolated
+      ? drumDonorTempo?.beatConfidence ?? null
+      : drumDonorAnalysis?.beatConfidence ?? drumDonorTempo?.beatConfidence ?? null
+    : recipientTempo.beatConfidence;
+  const rhythmClockDownbeatGridMs = drumTempoMasterActive && !drumRhythmIsolated
+    ? projectLiveStemGridToCommonClock(drumDonorAnalysis?.downbeatGridMs, rhythmClockStretchRatio)
+    : drumTempoMasterActive ? null : item.analysis?.downbeatGridMs ?? null;
+  const rhythmClockDownbeatConfidence = drumTempoMasterActive && !drumRhythmIsolated
+    ? drumDonorAnalysis?.downbeatConfidence ?? null
+    : drumTempoMasterActive ? null : item.analysis?.downbeatConfidence ?? null;
+  const rhythmClockSections = drumTempoMasterActive && !drumRhythmIsolated
+    ? projectLiveStemSectionsToCommonClock(drumDonorAnalysis?.sections, rhythmClockStretchRatio)
+    : drumTempoMasterActive ? null : item.analysis?.sections ?? null;
   const tempoMasterBpm = tempoMaster?.master === "donor-drums" && !masterWouldExceedPlaybackBounds
     ? tempoMaster.donorBpm
     : recipientTempo.bpm;
@@ -534,15 +569,21 @@ function getPersistedSwapSetup(
 
     const libraryDonorAnalysis = library.find((track) => track.id === swap.toTrackId)?.analysis ?? null;
     const donorTrackId = swap.toTrackId;
-    const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? libraryDonorAnalysis;
-    const donorTempo = tempoForTrack(donorTrackId, donorAnalysis, tempoCorrections);
+    // Only the full session analysis carries phrase/section/downbeat grids.
+    // Library summaries may still supply BPM, but must not be treated as
+    // structural evidence for live alignment.
+    const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? null;
+    const donorTempo = tempoForTrack(donorTrackId, donorAnalysis ?? libraryDonorAnalysis, tempoCorrections);
     const pairTempoEvidence = {
       recipientBpmConfidence: recipientTempo.confidence,
       donorBpmConfidence: donorTempo.confidence,
       recipientBeatConfidence: recipientTempo.beatConfidence,
       donorBeatConfidence: donorTempo.beatConfidence,
     };
-    const reliableBeatEvidence = hasReliableLiveStemBeatEvidence(pairTempoEvidence);
+    const reliableBeatEvidence = hasReliableLiveStemBeatEvidence({
+      ...pairTempoEvidence,
+      recipientBeatConfidence: rhythmClockBeatConfidence,
+    }) && rhythmClockBeatGridMs !== null;
     const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, donorTempo.bpm, pairTempoEvidence);
     if (ratio !== null) tempoStretchRatios[swap.stemType] = ratio;
     const alignmentRecipientKey = fullBedDonorTrackId !== null
@@ -552,18 +593,18 @@ function getPersistedSwapSetup(
       ? bedKeyAnalysis?.keyConfidence
       : hasInstrumentalSwap ? null : item.analysis?.keyConfidence;
     const sectionAlignment = ratio === null ? null : liveStemSectionAlignment(
-      item.analysis?.sections,
+      rhythmClockSections,
       donorAnalysis?.sections,
       swap.atSeconds,
       ratio,
       {
-        recipientBeatGridMs: recipientTempo.beatGridMs,
+        recipientBeatGridMs: rhythmClockBeatGridMs,
         donorBeatGridMs: donorTempo.beatGridMs,
         recipientBpm: recipientTempo.bpm,
         donorBpm: donorTempo.bpm,
         recipientBpmConfidence: recipientTempo.confidence,
         donorBpmConfidence: donorTempo.confidence,
-        recipientBeatConfidence: recipientTempo.beatConfidence,
+        recipientBeatConfidence: rhythmClockBeatConfidence,
         donorBeatConfidence: donorTempo.beatConfidence,
         recipientKey: alignmentRecipientKey,
         donorKey: donorAnalysis?.musicalKey ?? null,
@@ -573,16 +614,17 @@ function getPersistedSwapSetup(
     );
     const sectionOffset = sectionAlignment?.offsetSeconds ?? null;
     const beatOffset = ratio === null || !reliableBeatEvidence ? null : liveStemBeatOffsetSeconds(
-      recipientTempo.beatGridMs,
+      rhythmClockBeatGridMs,
       donorTempo.beatGridMs,
       ratio,
     );
     const downbeatEvidenceReliable = ratio !== null
-      && hasReliableSessionDownbeatEvidence(item.analysis?.downbeatConfidence, item.analysis?.downbeatGridMs)
+      && rhythmClockDownbeatGridMs !== null
+      && hasReliableSessionDownbeatEvidence(rhythmClockDownbeatConfidence, rhythmClockDownbeatGridMs)
       && hasReliableSessionDownbeatEvidence(donorAnalysis?.downbeatConfidence, donorAnalysis?.downbeatGridMs);
     const downbeatOffset = downbeatEvidenceReliable
       ? liveStemDownbeatOffsetSeconds(
-        item.analysis?.downbeatGridMs,
+        rhythmClockDownbeatGridMs,
         donorAnalysis?.downbeatGridMs,
         ratio!,
       )
@@ -699,6 +741,11 @@ function getPersistedSwapSetup(
     tempoMasterRate,
     tempoMasterBpm,
     tempoMasterConfidence,
+    rhythmClockBeatGridMs,
+    rhythmClockBeatConfidence,
+    rhythmClockDownbeatGridMs,
+    rhythmClockDownbeatConfidence,
+    rhythmClockSections,
     tempoMasterStatus,
     keyMasterStatus,
     keyReferenceKey,
@@ -4095,6 +4142,8 @@ export default function SessionExperience({
               toStemAssetId: previousSwap.toStemAssetId,
               atSeconds: previousSwap.atSeconds,
               expectedSwapId: persistedSwapId,
+              grooveAnchorTrackId: previousSwap.grooveAnchorTrackId,
+              grooveAnchorStemAssetId: previousSwap.grooveAnchorStemAssetId,
             }),
           }, scope)
           : await mutate(`/api/library/sessions/${currentSession.id}/swaps?swapId=${persistedSwapId}`, { method: "DELETE" },
@@ -5189,7 +5238,7 @@ export default function SessionExperience({
       const candidateTempoEvidence = {
         recipientBpmConfidence: recipientTempo.confidence,
         donorBpmConfidence: donorTempo.confidence,
-        recipientBeatConfidence: currentItem.analysis.beatConfidence,
+        recipientBeatConfidence: currentSwapSetup.rhythmClockBeatConfidence,
         donorBeatConfidence: donorAnalysis.beatConfidence,
       };
       const stretchRatio = liveStemTempoStretchRatio(
@@ -5200,7 +5249,7 @@ export default function SessionExperience({
       const candidateEvidence = {
         ...candidateTempoEvidence,
         donorStemDurationMs,
-        recipientBeatGridMs: currentItem.analysis.beatGridMs,
+        recipientBeatGridMs: currentSwapSetup.rhythmClockBeatGridMs,
         donorBeatGridMs: donorAnalysis.beatGridMs,
         recipientVocalActivityStartsMs: currentItem.analysis.vocalActivityStartsMs,
         donorVocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
@@ -5215,7 +5264,7 @@ export default function SessionExperience({
       };
       return {
         candidates: donorStemDurationMs === null ? [] : liveStemSectionAlignmentCandidates(
-          currentItem.analysis.sections,
+          currentSwapSetup.rhythmClockSections,
           donorAnalysis.sections,
           decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
           stretchRatio,
@@ -5262,6 +5311,8 @@ export default function SessionExperience({
         ? "section role matched"
         : alignmentBasis === "same-role-stem-groove"
           ? `same-role stem groove ${grooveCorrectionMs! > 0 ? "+" : ""}${grooveCorrectionMs} ms`
+        : alignmentBasis === "downbeat-phase"
+          ? "bar downbeat aligned"
         : "beat phase aligned";
     const tempoStatus = swap === undefined ? null
       : pendingSwap

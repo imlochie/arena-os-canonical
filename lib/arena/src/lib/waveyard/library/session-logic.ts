@@ -445,6 +445,36 @@ type LiveStemSection = Pick<
   | "label" | "labelConfidence" | "structuralConfidence"
 > & Partial<Pick<SourceSection, "sourceChecksumSha256" | "passageFingerprint">>;
 
+/** Project measured event times into the common pre-master playback clock. */
+export function projectLiveStemGridToCommonClock(grid: unknown, stretchRatio: number): number[] | null {
+  const parsed = usableBeatGrid(grid);
+  if (!parsed || !Number.isFinite(stretchRatio) || stretchRatio <= 0) return null;
+  const projected = parsed.map((time) => Math.round(time * stretchRatio));
+  return projected.every((time, index) =>
+    Number.isSafeInteger(time) && time >= 0 && (index === 0 || time > projected[index - 1]!),
+  ) ? projected : null;
+}
+
+/** Rebase section boundaries alongside their beat grid before live matching. */
+export function projectLiveStemSectionsToCommonClock(
+  sections: readonly LiveStemSection[] | null | undefined,
+  stretchRatio: number,
+): LiveStemSection[] | null {
+  if (!Array.isArray(sections) || sections.length === 0
+    || !Number.isFinite(stretchRatio) || stretchRatio <= 0) return null;
+  const projected = sections.map((section) => ({
+    ...section,
+    startMs: Math.round(section.startMs * stretchRatio),
+    endMs: Math.round(section.endMs * stretchRatio),
+  }));
+  if (projected.some((section, index) => !Number.isSafeInteger(section.startMs)
+    || !Number.isSafeInteger(section.endMs)
+    || section.startMs < 0
+    || section.endMs <= section.startMs
+    || (index > 0 && section.startMs < projected[index - 1]!.endMs))) return null;
+  return projected;
+}
+
 type LiveStemSectionEvidence = LiveStemTempoEvidence & {
   recipientBeatGridMs?: unknown;
   donorBeatGridMs?: unknown;

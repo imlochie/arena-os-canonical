@@ -1,5 +1,39 @@
 # Arena handoff — read this first
 
+## New live adaptation model: active rhythm clock and donor lineage
+
+Live swaps now distinguish the **restore source** from the **currently audible
+same-role comparison source**. Migration `0031_live_swap_groove_anchor.sql`
+persists the exact previous donor track and stem as the next groove anchor,
+while `fromTrackId` / `fromStemAssetId` remain pinned to the original session
+stem for restore and Studio handoff. A guarded rollback carries the prior
+anchor forward; a missing or mismatched anchor is not silently substituted.
+Legacy rows without an anchor continue to use their original source.
+
+When a verified, separated drum donor becomes the tempo master, its measured
+beat grid is projected into the shared pre-master clock using the same
+stretch ratio applied to the donor audio. Live entry and section matching for
+other donors now use that active clock, rather than stale beat zero from the
+untouched receiving track. If the drum tempo comes from an isolated grid with
+no matching structural evidence, the clock is used for beat placement only;
+Waveyard does not combine it with section fingerprints from a different grid.
+Same-role groove corrections remain bounded and separate from this shared
+clock, so bass/vocal phrasing is not quantized to unlike drum attacks.
+
+**Verification:** `session-logic.test.ts` passes 66 tests, including projection
+of active drum beats/sections and refusal of invalid grids. The persisted
+session-swap integration path passes its four relevant database tests,
+including migration 0031, repeated same-role replacement, original-source
+preservation and guarded rollback. `pnpm run typecheck` passes for libraries,
+API, web app and scripts.
+
+**Limit:** This is verified timing-decision and persistence behavior, not proof
+of subjective mix quality. No real-song browser render has yet exercised a
+vocal or bass donor after changing the active drum master; the existing
+full-song browser evidence covers one real drum swap and drum-break response.
+Do not claim this closes the arbitrary-song mashup or section-recognition
+acceptance gate.
+
 ## Latest real-browser check: tempo and recipient drum breaks adapt together
 
 The full-length separated September and Another One Bites the Dust stems now

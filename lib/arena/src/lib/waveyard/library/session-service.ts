@@ -245,6 +245,8 @@ export interface SessionSwapPayload {
   toStemAssetId: string | null;
   atSeconds: number;
   donorEntryOffsetMs: number | null;
+  grooveAnchorTrackId: string | null;
+  grooveAnchorStemAssetId: string | null;
   /** Same-role persisted onset comparison for small live phase corrections. */
   grooveCorrection: LiveStemGrooveCorrection | null;
   createdAt: string;
@@ -523,10 +525,14 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
     .orderBy(asc(listenSessionSwaps.createdAt));
   // A live donor can be any track in the owner's library, not just a queued
   // session track. Include only the stem identities needed to restore audio.
-  for (const donorId of new Set(swapRows.map((row) => row.toTrackId))) {
-    if (!details.has(donorId)) {
-      const donor = await getTrack(session.ownerId, donorId);
-      if (donor) details.set(donorId, donor);
+  const referencedTrackIds = new Set(swapRows.flatMap((row) => [
+    row.toTrackId,
+    row.grooveAnchorTrackId ?? row.fromTrackId,
+  ]));
+  for (const referencedTrackId of referencedTrackIds) {
+    if (!details.has(referencedTrackId)) {
+      const referenced = await getTrack(session.ownerId, referencedTrackId);
+      if (referenced) details.set(referencedTrackId, referenced);
     }
   }
   const sourceAvailability = new Map<string, boolean>();
@@ -579,6 +585,12 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
       const recipientRow = trackRows.find((track) => track.id === row.sessionTrackId);
       const recipientDetail = recipientRow ? details.get(recipientRow.trackId) ?? null : null;
       const recipientAnalysis = recipientRow ? analyses.get(recipientRow.id) ?? null : null;
+      const grooveAnchorTrackId = row.grooveAnchorTrackId ?? row.fromTrackId;
+      const grooveAnchorStemAssetId = row.grooveAnchorStemAssetId ?? row.fromStemAssetId;
+      const grooveAnchorDetail = details.get(grooveAnchorTrackId) ?? null;
+      const grooveAnchorAnalysis = grooveAnchorTrackId === row.fromTrackId
+        ? recipientAnalysis
+        : await analysisForDonor(grooveAnchorTrackId);
       const donorDetail = details.get(row.toTrackId) ?? null;
       const donorAnalysis = donorDetail ? await analysisForDonor(row.toTrackId) : null;
       return {
@@ -591,11 +603,13 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
         toStemAssetId: row.toStemAssetId,
         atSeconds: row.atSeconds,
         donorEntryOffsetMs: row.donorEntryOffsetMs,
+        grooveAnchorTrackId: row.grooveAnchorTrackId,
+        grooveAnchorStemAssetId: row.grooveAnchorStemAssetId,
         grooveCorrection: await liveSwapGrooveCorrection({
           stemType: row.stemType,
-          recipient: recipientDetail,
-          recipientStemAssetId: row.fromStemAssetId,
-          recipientAnalysis,
+          recipient: grooveAnchorDetail ?? recipientDetail,
+          recipientStemAssetId: grooveAnchorStemAssetId,
+          recipientAnalysis: grooveAnchorAnalysis,
           donor: donorDetail,
           donorStemAssetId: row.toStemAssetId,
           donorAnalysis,
@@ -1274,6 +1288,9 @@ export async function recordStemSwap(input: {
   donorEntryOffsetMs?: number | null;
   expectedSwapId?: string;
   toStemAssetId?: string | null;
+  /** Restored only when a failed pending swap returns to the prior audible donor. */
+  grooveAnchorTrackId?: string | null;
+  grooveAnchorStemAssetId?: string | null;
 }): Promise<SessionDetailPayload> {
   await ownedSession(input.ownerId, input.sessionId);
 
@@ -1317,20 +1334,42 @@ export async function recordStemSwap(input: {
       throw new StemSwapRefusedError("The selected vocal entry point is outside the donor track.");
     }
   }
+  let restoredGrooveAnchor: { trackId: string; stemAssetId: string } | null = null;
+  if (input.grooveAnchorTrackId != null || input.grooveAnchorStemAssetId != null) {
+    if (!input.expectedSwapId || !input.grooveAnchorTrackId || !input.grooveAnchorStemAssetId) {
+      throw new StemSwapRefusedError("A groove anchor can only be restored as a complete guarded swap reference.");
+    }
+    const anchorTrack = await getTrack(input.ownerId, input.grooveAnchorTrackId);
+    const anchorStem = anchorTrack?.stems.find((stem) =>
+      stem.id === input.grooveAnchorStemAssetId
+      && stem.stemType === input.stemType
+      && stem.engine !== "passthrough-unseparated",
+    );
+    if (!anchorStem) {
+      throw new StemSwapRefusedError("The guarded restore groove anchor is no longer available at its recorded version.");
+    }
+    restoredGrooveAnchor = { trackId: anchorTrack!.id, stemAssetId: anchorStem.id };
+  }
 
   await db.transaction(async (tx) => {
     // All selections for a session serialize here, including guarded restores.
     // A failed B must never restore A over a newer explicit selection C.
     await tx.select({ id: listenSessions.id }).from(listenSessions)
       .where(eq(listenSessions.id, input.sessionId)).for("update");
-    if (input.expectedSwapId) {
-      const [current] = await tx.select({ id: listenSessionSwaps.id }).from(listenSessionSwaps).where(and(
-        eq(listenSessionSwaps.sessionId, input.sessionId),
-        eq(listenSessionSwaps.sessionTrackId, input.sessionTrackId),
-        eq(listenSessionSwaps.stemType, input.stemType),
-      )).orderBy(desc(listenSessionSwaps.createdAt)).limit(1);
-      if (current?.id !== input.expectedSwapId) return;
-    }
+    const [current] = await tx.select({
+      id: listenSessionSwaps.id,
+      toTrackId: listenSessionSwaps.toTrackId,
+      toStemAssetId: listenSessionSwaps.toStemAssetId,
+    }).from(listenSessionSwaps).where(and(
+      eq(listenSessionSwaps.sessionId, input.sessionId),
+      eq(listenSessionSwaps.sessionTrackId, input.sessionTrackId),
+      eq(listenSessionSwaps.stemType, input.stemType),
+    )).orderBy(desc(listenSessionSwaps.createdAt)).limit(1);
+    if (input.expectedSwapId && current?.id !== input.expectedSwapId) return;
+    const grooveAnchorTrackId = restoredGrooveAnchor?.trackId
+      ?? (input.expectedSwapId ? sessionTrack.trackId : current?.toStemAssetId ? current.toTrackId : sessionTrack.trackId);
+    const grooveAnchorStemAssetId = restoredGrooveAnchor?.stemAssetId
+      ?? (input.expectedSwapId ? currentStem.id : current?.toStemAssetId ?? currentStem.id);
     // A stem has one current donor. Repeated live selections must not leave
     // shadow swaps that reappear when the user restores Original.
     await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, input.sessionId));
@@ -1349,6 +1388,8 @@ export async function recordStemSwap(input: {
       toStemAssetId: donorStem.id,
       atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
       donorEntryOffsetMs: input.donorEntryOffsetMs ?? null,
+      grooveAnchorTrackId,
+      grooveAnchorStemAssetId,
     });
   });
   await touchSession(input.sessionId);
