@@ -32,6 +32,16 @@ export type PassageStemActivity = {
   }[];
 };
 
+/** Beat-by-beat level shape from one isolated, provenance-bound stem. */
+export type PassageRollingStemActivity = {
+  stemType: string;
+  stemAssetId: string;
+  separationJobId: string;
+  stemChecksumSha256: string;
+  /** Linear RMS relative to this role's loudest beat in the window, from 0 to 1. */
+  relativeRmsByBeat: number[];
+};
+
 /** Local measured signatures used to compare phrase-sized windows inside longer passages. */
 export type PassageRollingWindow = {
   startBeatIndex: number;
@@ -39,6 +49,8 @@ export type PassageRollingWindow = {
   rhythm: PassageEvidence<number[]>;
   chroma: PassageEvidence<number[]>;
   beatPhase: PassageEvidence<{ subdivisionProfile: number[]; beatPeriodMs: number }>;
+  /** Optional for older fingerprints; when present, aligned to the same local beat window. */
+  stemActivityByRole?: PassageEvidence<PassageRollingStemActivity[]>;
 };
 
 export type PassageEvidence<T> =
@@ -180,13 +192,43 @@ export function parsePassageFingerprint(
             ? { subdivisionProfile: profile, beatPeriodMs: phaseValue.beatPeriodMs }
             : null;
         });
-        if (!rhythm || !chroma || !phase) return null;
+        const stemActivityByRole = item.stemActivityByRole === undefined
+          ? undefined
+          : parseEvidence(item.stemActivityByRole, (activity) => {
+            if (!Array.isArray(activity) || activity.length > 8) return null;
+            const roles = new Set<string>();
+            const parsed: PassageRollingStemActivity[] = [];
+            for (const rawRole of activity) {
+              if (!rawRole || typeof rawRole !== "object" || Array.isArray(rawRole)) return null;
+              const role = rawRole as Record<string, unknown>;
+              if (typeof role.stemType !== "string" || role.stemType.length < 1 || role.stemType.length > 128
+                || roles.has(role.stemType)
+                || typeof role.stemAssetId !== "string" || role.stemAssetId.length < 1 || role.stemAssetId.length > 128
+                || typeof role.separationJobId !== "string" || role.separationJobId.length < 1 || role.separationJobId.length > 128
+                || typeof role.stemChecksumSha256 !== "string" || !/^[a-f\d]{64}$/i.test(role.stemChecksumSha256)
+                || !Array.isArray(role.relativeRmsByBeat) || role.relativeRmsByBeat.length !== beats
+                || !role.relativeRmsByBeat.every((sample) => typeof sample === "number"
+                  && Number.isFinite(sample) && sample >= 0 && sample <= 1)
+                || Math.max(...role.relativeRmsByBeat as number[]) < 0.99) return null;
+              roles.add(role.stemType);
+              parsed.push({
+                stemType: role.stemType,
+                stemAssetId: role.stemAssetId,
+                separationJobId: role.separationJobId,
+                stemChecksumSha256: role.stemChecksumSha256,
+                relativeRmsByBeat: role.relativeRmsByBeat as number[],
+              });
+            }
+            return parsed;
+          });
+        if (!rhythm || !chroma || !phase || (item.stemActivityByRole !== undefined && !stemActivityByRole)) return null;
         windows.push({
           startBeatIndex: item.startBeatIndex as number,
           endBeatIndex: item.endBeatIndex as number,
           rhythm,
           chroma,
           beatPhase: phase,
+          ...(stemActivityByRole ? { stemActivityByRole } : {}),
         });
         previousStart = item.startBeatIndex as number;
       }
