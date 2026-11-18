@@ -721,12 +721,17 @@ function compareVocalOnsetTiming(input: {
   let recipientIndex = 0;
   let donorIndex = 0;
   let matchedEvents = 0;
+  let matchedConfidenceMass = 0;
   while (recipientIndex < recipientTimes.length && donorIndex < sortedDonorOutputTimes.length) {
     const recipientTime = recipientTimes[recipientIndex]!;
     const donorTime = sortedDonorOutputTimes[donorIndex]!;
     const deltaMs = recipientTime - donorTime;
     if (Math.abs(deltaMs) <= timingToleranceMs) {
       matchedEvents += 1;
+      matchedConfidenceMass += Math.min(
+        recipientOnsets[recipientIndex]!.confidence,
+        donorOnsets[donorIndex]!.confidence,
+      );
       recipientIndex += 1;
       donorIndex += 1;
     } else if (deltaMs < 0) {
@@ -735,8 +740,13 @@ function compareVocalOnsetTiming(input: {
       donorIndex += 1;
     }
   }
+  const recipientConfidenceMass = recipientOnsets.reduce((total, onset) => total + onset.confidence, 0);
+  const donorConfidenceMass = donorOnsets.reduce((total, onset) => total + onset.confidence, 0);
+  const totalConfidenceMass = recipientConfidenceMass + donorConfidenceMass;
   return {
-    vocalTimingSimilarity: 2 * matchedEvents / (recipientOnsets.length + donorOnsets.length),
+    vocalTimingSimilarity: totalConfidenceMass > 0
+      ? Math.max(0, Math.min(1, 2 * matchedConfidenceMass / totalConfidenceMass))
+      : null,
     vocalTimingMatchedEvents: matchedEvents,
     vocalTimingRecipientEventCount: recipientOnsets.length,
     vocalTimingDonorEventCount: donorOnsets.length,
@@ -882,10 +892,17 @@ function livePhraseSectionAlignmentCandidates(
         recipientVoicedPhraseStartsMs: evidence.recipientVoicedPhraseStartsMs,
         donorVoicedPhraseStartsMs: evidence.donorVoicedPhraseStartsMs,
       });
-      const rankingScore = vocalTiming.vocalTimingSimilarity === null
-        ? score
-        : score * (1 - LIVE_VOCAL_TIMING_RANK_WEIGHT)
-          + vocalTiming.vocalTimingSimilarity * LIVE_VOCAL_TIMING_RANK_WEIGHT;
+      // Vocal replacement is a lead-performance decision: once a candidate
+      // already passes the musical-window, duration, tempo and harmonic checks,
+      // paired vocal timing ranks first. Other role swaps keep the established
+      // blended context rank instead of letting voice evidence dominate drums
+      // or instrumental decisions.
+      const rankingScore = evidence.stemType === "vocals" && vocalTiming.vocalTimingSimilarity !== null
+        ? vocalTiming.vocalTimingSimilarity
+        : vocalTiming.vocalTimingSimilarity === null
+          ? score
+          : score * (1 - LIVE_VOCAL_TIMING_RANK_WEIGHT)
+            + vocalTiming.vocalTimingSimilarity * LIVE_VOCAL_TIMING_RANK_WEIGHT;
       const roleActivitySimilarity = sameRoleActivitySimilarity(
         recipientWindow,
         donorWindow,

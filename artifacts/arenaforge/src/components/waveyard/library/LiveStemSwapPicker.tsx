@@ -1115,8 +1115,10 @@ export default function LiveStemSwapPicker({
                         {" · "}measurement {formatEvidencePercent(candidate.harmonyMeasurementConfidence)}
                       </span>
                       {candidate.vocalTimingSimilarity !== null && (
-                        <span>
-                          Vocal {candidate.vocalTimingBasis === "voiced-phrase" ? "phrase" : "activity"} timing agreement{" "}
+                        <span title={stemType === "vocals"
+                          ? "Confidence-weighted voiced-run timing is the primary vocal-entry rank after the candidate passes measured music, duration, beat and harmony checks. This is not lyric transcription."
+                          : "Confidence-weighted vocal timing is contextual evidence for this non-vocal layer; it does not override that stem's own music and activity match."}>
+                          Vocal {candidate.vocalTimingBasis === "voiced-phrase" ? "phrase" : "activity"} timing agreement (confidence-weighted){" "}
                           {formatEvidencePercent(candidate.vocalTimingSimilarity)}
                           {" · "}{candidate.vocalTimingMatchedEvents} aligned of{" "}
                           {candidate.vocalTimingRecipientEventCount} recipient /{" "}

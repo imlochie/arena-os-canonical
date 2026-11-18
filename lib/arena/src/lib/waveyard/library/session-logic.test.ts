@@ -588,6 +588,71 @@ test("same-role stem activity resolves otherwise-equal live swap windows without
     "missing role intent leaves the established candidate ordering evidence untouched");
 });
 
+test("vocal replacements rank confident vocal timing ahead of small music-score differences", () => {
+  const checksum = "a".repeat(64);
+  const recipient = testLongSourceSection(checksum, [
+    testRollingWindow(0, 0),
+  ]);
+  const slightlyDifferentDonorWindow: PassageRollingWindow = {
+    ...testRollingWindow(8, 0),
+    rhythm: testEvidence(testRhythm(0).map((value) => value === 0 ? 0.177 : value)),
+    chroma: testEvidence(testChroma().map((value) => value === 0 ? 0.127 : value)),
+  };
+  const donor = testLongSourceSection("b".repeat(64), [
+    testRollingWindow(0, 0),
+    slightlyDifferentDonorWindow,
+  ]);
+  const recipientBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const donorBeatGridMs = Array.from({ length: 49 }, (_, index) => index * 500);
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs,
+    donorBeatGridMs,
+    stemType: "vocals",
+    recipientVoicedPhraseStartsMs: [
+      { startMs: 500, confidence: 0.9 },
+      { startMs: 1_500, confidence: 0.9 },
+      { startMs: 2_500, confidence: 0.9 },
+      { startMs: 3_500, confidence: 0.9 },
+    ],
+    donorVoicedPhraseStartsMs: [
+      { startMs: 500, confidence: 0.9 },
+      { startMs: 1_500, confidence: 0.9 },
+      { startMs: 2_500, confidence: 0.9 },
+      { startMs: 3_900, confidence: 0.9 },
+      { startMs: 4_500, confidence: 0.9 },
+      { startMs: 5_500, confidence: 0.9 },
+      { startMs: 6_500, confidence: 0.9 },
+      { startMs: 7_500, confidence: 0.9 },
+      { startMs: 7_900, confidence: 0.7 },
+    ],
+  });
+
+  const candidates = liveStemSectionAlignmentCandidates([recipient], [donor], 1, 1, evidence);
+  assert.equal(candidates.length, 2);
+  assert.ok((candidates[0]?.rhythmSimilarity ?? 1) < (candidates[1]?.rhythmSimilarity ?? 0),
+    "the later donor window has a slightly weaker but still eligible music fingerprint");
+  assert.equal(candidates[0]?.donorWindowStartMs, 4_000,
+    "a vocal donor with the stronger voice-run timing match ranks first after music eligibility gates pass");
+  assert.ok(Math.abs((candidates[0]?.vocalTimingSimilarity ?? 0) - (7.2 / 7.9)) < 1e-9,
+    `confidence-weighted event matching gives the low-confidence unmatched onset less influence: ${
+      JSON.stringify(candidates.map((candidate) => ({
+        start: candidate.donorWindowStartMs,
+        similarity: candidate.vocalTimingSimilarity,
+        count: candidate.vocalTimingDonorEventCount,
+      })))
+    }`);
+
+  const withoutVocalEvidence = liveStemSectionAlignmentCandidates(
+    [recipient],
+    [donor],
+    1,
+    1,
+    { ...evidence, recipientVoicedPhraseStartsMs: undefined, donorVoicedPhraseStartsMs: undefined },
+  );
+  assert.equal(withoutVocalEvidence[0]?.donorWindowStartMs, 0,
+    "without paired vocal timing, the established musical score remains the ranking basis");
+});
+
 test("live vocal alternatives rank beat-mapped phrase timing without replacing music evidence", () => {
   const checksum = "a".repeat(64);
   const recipient = testLongSourceSection(checksum, [

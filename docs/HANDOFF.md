@@ -3194,6 +3194,7 @@ remain unproven; this is a focused upgrade, not completion of the entire brief.
   real PCM decoder and persisted worker path. It is not semantic accuracy or
   listener-rated quality. The recorded audio and stem artifacts are local,
   ignored files; no production database was changed.
+
   A separate full-length DSP pass over the existing separated vocal WAVs
   measured 7,186 pitch frames / 75 continuity runs for *September* and 7,438
   frames / 89 runs for *Another One Bites the Dust*. The first detected run
@@ -3208,6 +3209,29 @@ remain unproven; this is a focused upgrade, not completion of the entire brief.
   analysis → automatic arrangement → export → save/reopen and listen. Do not
   tune thresholds or call this lyric, verse/chorus, or mashup-quality
   recognition until those evaluations exist.
+
+## Current vocal increment — prioritize the lead after musical eligibility
+
+For a vocal replacement, confidently matched voiced-run timing now ranks ahead
+of small differences in the already-qualified rhythm/harmony score. Candidate
+windows still have to pass the existing measured music, duration, beat and
+harmonic checks first; vocal timing cannot make an otherwise unsuitable window
+eligible. Other stem roles keep their music-first ranking, with vocal timing
+only as supporting context.
+
+The one-to-one event match now weights each matched start by the lower of the
+two detector confidences, so one weak event has less influence than a strong
+one. If paired vocal timing is unavailable, the prior music-based ordering is
+preserved. The visible evidence calls this timing, not lyric transcription:
+these signal-derived voiced runs do not establish words or verse/chorus labels.
+
+**Verification:** tests confirm the vocal entry match wins over a slightly
+stronger rhythm/harmony candidate only after both candidates pass the musical
+eligibility checks; an unmatched lower-confidence onset has proportional
+influence; and absent vocal evidence preserves the previous ranking. The full
+session-logic suite passes (70/70), workspace typecheck passes, and the Arena
+preview restarts. This is candidate-selection evidence, not proof of a
+better-sounding real-song mix.
 
 ## Current implementation — relative-duration vocal-layer candidates
 
