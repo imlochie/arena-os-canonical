@@ -4,6 +4,9 @@ export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
 export const LIVE_STEM_MIN_DONOR_RMS_DBFS = -55;
 export const LIVE_STEM_RECIPIENT_VOCAL_QUIET_RMS = 0.001;
 export const LIVE_STEM_RECIPIENT_BED_ACTIVE_RMS = 0.01;
+export const LIVE_DRUM_REST_HOLD_SECONDS = 0.45;
+export const LIVE_DRUM_REST_MIN_RMS = 0.001;
+export const LIVE_DRUM_REST_RELATIVE_RMS = 0.08;
 export const SESSION_PLAYBACK_RATE_MIN = 0.8;
 export const SESSION_PLAYBACK_RATE_MAX = 1.2;
 
@@ -126,6 +129,7 @@ type Channel = {
   source: MediaElementAudioSourceNode;
   inputGain: GainNode;
   gain: GainNode;
+  sourceAnalyser?: AnalyserNode;
 };
 type Layer = {
   url: string;
@@ -138,6 +142,13 @@ type Layer = {
   duration: number;
   sampleRate: number;
   input: GainNode;
+  activityGate: GainNode | null;
+  preserveRecipientDrumRests: boolean;
+  quietSince: number | null;
+  referenceRms: number;
+  lastActivityTime: number | null;
+  lastRecipientPosition: number | null;
+  activityScratch: Float32Array<ArrayBuffer>;
   source: AudioBufferSourceNode | AudioWorkletNode | null;
   sourceMode: "buffer" | "worklet" | null;
   timing: PreparedAudio | null;
@@ -171,6 +182,8 @@ export type LiveStemSwapOptions = {
   snapRequested?: boolean;
   /** Absolute AudioContext time for the measured receiving-track boundary. */
   activationTime?: number | null;
+  /** Follow sustained breaks in the exact receiving drum stem when it is replaced. */
+  preserveRecipientDrumRests?: boolean;
 };
 
 type PreparedStem = {
@@ -350,6 +363,65 @@ export class LiveStemLayers {
     }
   }
 
+  /**
+   * A muted recipient drum stem remains connected to a pre-fader analyser.
+   * If it is genuinely quiet for a sustained interval, duck the donor while
+   * preserving ordinary short gaps between hits. This is deliberately a
+   * coarse rest-following control, not semantic section recognition.
+   */
+  updateRecipientDrumRests() {
+    if (this.disposed) return;
+    const now = this.context().currentTime;
+    for (const [id, layer] of this.layers) {
+      if (!layer.preserveRecipientDrumRests) continue;
+      const channel = this.channel(id);
+      const media = channel?.source.mediaElement;
+      const analyser = channel?.sourceAnalyser;
+      if (!media || !analyser || media.paused || media.ended) {
+        layer.quietSince = null;
+        layer.lastActivityTime = null;
+        layer.lastRecipientPosition = null;
+        layer.referenceRms = 0;
+        this.setActivityGate(layer, 1);
+        continue;
+      }
+
+      const elapsed = layer.lastActivityTime === null ? 0 : Math.max(0, now - layer.lastActivityTime);
+      const expectedPosition = layer.lastRecipientPosition === null
+        ? media.currentTime
+        : layer.lastRecipientPosition + elapsed * Math.max(0.01, media.playbackRate || this.playbackRate);
+      if (Math.abs(media.currentTime - expectedPosition) > 0.2 || elapsed > 0.5) {
+        layer.quietSince = null;
+        this.setActivityGate(layer, 1);
+      }
+      layer.lastActivityTime = now;
+      layer.lastRecipientPosition = media.currentTime;
+
+      analyser.getFloatTimeDomainData(layer.activityScratch);
+      let sumSquares = 0;
+      for (const sample of layer.activityScratch) sumSquares += sample * sample;
+      const rms = Math.sqrt(sumSquares / Math.max(1, layer.activityScratch.length));
+      layer.referenceRms = Math.max(rms, layer.referenceRms * Math.exp(-elapsed / 12));
+      const quietThreshold = Math.max(LIVE_DRUM_REST_MIN_RMS, layer.referenceRms * LIVE_DRUM_REST_RELATIVE_RMS);
+      if (rms < quietThreshold) {
+        layer.quietSince ??= now;
+        if (now - layer.quietSince >= LIVE_DRUM_REST_HOLD_SECONDS) this.setActivityGate(layer, 0);
+      } else if (rms >= quietThreshold * 1.5) {
+        layer.quietSince = null;
+        this.setActivityGate(layer, 1);
+      }
+    }
+  }
+
+  private setActivityGate(layer: Layer, value: 0 | 1) {
+    if (!layer.activityGate || Math.abs(layer.activityGate.gain.value - value) < 0.001) return;
+    const now = layer.activityGate.context.currentTime;
+    const gain = layer.activityGate.gain;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(value, now + 0.04);
+  }
+
   async setPitchPreserving(enabled: boolean) {
     if (this.disposed) return;
     if (this.pitchPreserving === enabled) return;
@@ -392,7 +464,7 @@ export class LiveStemLayers {
         : 0;
       const nextInput = context.createGain();
       nextInput.gain.value = 0;
-      nextInput.connect(layer.keyShiftNode ?? channel.gain);
+      nextInput.connect(layer.keyShiftNode ?? layer.activityGate ?? channel.gain);
       let nextSource: AudioWorkletNode;
       try {
         nextSource = await this.createWorkletSource(
@@ -635,6 +707,7 @@ export class LiveStemLayers {
 
   private disconnectLayer(layer: Layer) {
     layer.input.disconnect();
+    layer.activityGate?.disconnect();
     if (layer.keyShiftNode) {
       layer.keyShiftNode.port.postMessage({ type: "dispose" });
       layer.keyShiftNode.port.close();
@@ -1202,10 +1275,13 @@ export class LiveStemLayers {
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
       activationChannel = channel;
       const input = ctx.createGain();
+      const activityGate = options.preserveRecipientDrumRests === true ? ctx.createGain() : null;
       replacementInput = input;
+      if (activityGate) activityGate.gain.value = 1;
       input.gain.value = 0;
-      input.connect(replacementKeyNode ?? channel.gain);
-      replacementKeyNode?.connect(channel.gain);
+      input.connect(replacementKeyNode ?? activityGate ?? channel.gain);
+      replacementKeyNode?.connect(activityGate ?? channel.gain);
+      activityGate?.connect(channel.gain);
       const layer: Layer = {
         url,
         tempoStretchRatio,
@@ -1217,6 +1293,13 @@ export class LiveStemLayers {
         duration: prepared.buffer.duration,
         sampleRate: prepared.buffer.sampleRate,
         input,
+        activityGate,
+        preserveRecipientDrumRests: options.preserveRecipientDrumRests === true,
+        quietSince: null,
+        referenceRms: 0,
+        lastActivityTime: null,
+        lastRecipientPosition: null,
+        activityScratch: new Float32Array(channel.sourceAnalyser?.fftSize ?? 2048),
         source: null,
         sourceMode: null,
         timing: prepared,
@@ -1321,7 +1404,14 @@ export class LiveStemLayers {
   }
 
   pause() {
-    for (const layer of [...this.layers.values(), ...this.retired]) this.pauseLayer(layer);
+    for (const layer of [...this.layers.values(), ...this.retired]) {
+      this.pauseLayer(layer);
+      layer.quietSince = null;
+      layer.lastActivityTime = null;
+      layer.lastRecipientPosition = null;
+      layer.referenceRms = 0;
+      this.setActivityGate(layer, 1);
+    }
   }
 
   remove(id: string) {

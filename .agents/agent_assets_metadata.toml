@@ -406,3 +406,17 @@ mtime_ms = 1794968290851
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/3ead76ac-76ad-46c9-a953-943a9761f0b9/8e423c62-8112-420b-96b4-c1fec601e968"
 storage_version_token = "1794968408184021"
 content_type = "audio/wav"
+
+[[outputs]]
+id = "cx4uuY7SfE4EEnlaUVXwH"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/full-song-live-captures-rerun-f6c20be-tempo-r5/swapped-output-16s-20s-break-preserved-r6.wav"
+type = "audio"
+title = "20-second swap sample with September’s drum break"
+description = "Real browser-rendered September stems with tempo-matched Queen drums. The donor drums duck during the measured September break near the verse entry, then resume. Technical acceptance sample only—not a subjective mix-quality verdict."
+logical_id = "fc2caac1-cb34-4906-b9e4-965860a59a39"
+content_hash = "sha256:b2fcb1544acd43b855bcf411808ca9b42418946a4ef505b3e3e3cd74ce70922b"
+size = 3527198
+mtime_ms = 1794969481895
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/fc2caac1-cb34-4906-b9e4-965860a59a39/6a61f62c-d626-48cd-9d89-c1e71b1a668a"
+storage_version_token = "1794969538585322"
+content_type = "audio/wav"

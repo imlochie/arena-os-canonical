@@ -1,6 +1,6 @@
 # Arena handoff — read this first
 
-## Latest real-browser check: cross-tempo drum swap changes rendered audio
+## Latest real-browser check: tempo and recipient drum breaks adapt together
 
 The full-length separated September and Another One Bites the Dust stems now
 complete a real browser live-drum swap and restore in Waveyard's `SessionExperience`
@@ -20,27 +20,36 @@ to 1, and kept the clocks aligned.
 
 This is stronger than checking the UI setting: a 20-second segment of the
 recorded, swapped browser output was re-analyzed by the same DSP and measured
-at 109.957 BPM (confidence 0.595; beat confidence 0.777; 38 beat events across
-19.98 seconds). The source mix is 126.048 BPM, so the rendered segment follows
-the donor tempo as intended.
+at 109.957 BPM (confidence 0.552; beat confidence 0.754; about 20 seconds).
+The source mix is 126.048 BPM, so the rendered segment follows the donor tempo.
 
-**Swap preparation:** The 39,279,560-byte donor took about 681 ms to download,
-1,733 ms to decode, and 10,021 ms to tempo-match. Once warmed, selection-to-
-audible time was about 346 ms. The quick switch therefore depends on preparing
-the audio first; it is not a 346 ms cold-start result.
+The same real September drum WAV has an internal 0.85-second low-energy break
+at 19.20–20.05s. A live recipient-activity gate now follows that break when
+replacement drums are installed: it waits 450ms to avoid muting short gaps,
+then ducks the donor. The browser acceptance test measured donor gain 0.004
+inside the break and 1.0 after the September drums resumed. A full-song scan at
+an absolute -42 dBFS threshold found two shorter 0.40s quiet gaps that remain
+below the 450ms hold and therefore do not trigger the gate.
+
+**Swap preparation:** The 39,279,560-byte donor took about 834 ms to download,
+1,530 ms to decode, and 11,040 ms to tempo-match. Once warmed, selection-to-
+audible time was about 347 ms. The quick switch therefore depends on preparing
+the audio first; it is not a 347 ms cold-start result.
 
 **Evidence:** `scripts/waveyard-live-stems.mjs --mashup-evaluation-only` with
 the local ignored manifest
 `generated-artifacts/waveyard-real-world-acceptance/full-song-live-manifest-tempo-r5.json`.
-The 38.96-second browser render and its 20-second measured slice are in
+The latest 38.60-second browser render and its 20-second measured slice are in
 `generated-artifacts/waveyard-real-world-acceptance/full-song-live-captures-rerun-f6c20be-tempo-r5/`.
 Generated audio and analysis are local-only and not committed.
 
 **Limit:** The session API is fixture-backed. This proves one cross-tempo live
-drum swap and restored transport using these real stems; it does not prove
-subjective mix quality, vocal/section selection, saved-session reopening,
-Studio export equivalence, Windows or mobile playback, or reliable mashups
-for arbitrary songs.
+drum swap, one sustained-break response and restored transport using these
+real stems. The 450ms gate is not yet validated across genres or different drum
+separation levels; it reacts during a detected break rather than predicting
+one. This does not prove subjective mix quality, vocal/section selection,
+saved-session reopening, Studio export equivalence, Windows or mobile playback,
+or reliable mashups for arbitrary songs.
 
 ## Latest increment: live vocal candidates include paired phrase-timing evidence
 

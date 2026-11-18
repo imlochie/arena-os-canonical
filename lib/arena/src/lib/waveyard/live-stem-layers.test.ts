@@ -115,7 +115,7 @@ function fixture(
     },
   };
   const channels = new Map(channelIds.map(id => {
-    const media = Object.assign(new EventTarget(), { currentTime: 7, paused: false, ended: false });
+    const media = Object.assign(new EventTarget(), { currentTime: 7, playbackRate: 1, paused: false, ended: false });
     return [id, {
       source: { mediaElement: media },
       inputGain: context.createGain(),
@@ -142,6 +142,47 @@ function fixture(
     get decodeCount() { return decodeCount; },
   };
 }
+
+test("a sustained quiet recipient drum interval ducks only the donor and resumes on the next attack", async () => {
+  const f = fixture(undefined, undefined, undefined, ["vocals", "drums"]);
+  const drumMedia = f.channels.get("drums")!.source.mediaElement as unknown as { currentTime: number };
+  globalThis.fetch = mock.fn(async () => response()) as unknown as typeof fetch;
+  const channel = f.channels.get("drums")! as unknown as {
+    sourceAnalyser: { fftSize: number; getFloatTimeDomainData(samples: Float32Array): void };
+  };
+  let rms = 0.1;
+  channel.sourceAnalyser = {
+    fftSize: 2048,
+    getFloatTimeDomainData(samples) { samples.fill(rms); },
+  };
+
+  await f.layers.replace("drums", "/donor-drums", 1, undefined, 0, 0, {
+    preserveRecipientDrumRests: true,
+  });
+  const activityGate = f.gains.at(-1)!;
+  f.layers.updateRecipientDrumRests();
+  assert.equal(activityGate.gain.value, 1, "the donor stays full level while the recipient has drum activity");
+
+  rms = 0.0001;
+  f.context.currentTime += 0.2;
+  drumMedia.currentTime += 0.2;
+  f.layers.updateRecipientDrumRests();
+  f.context.currentTime += 0.3;
+  drumMedia.currentTime += 0.3;
+  f.layers.updateRecipientDrumRests();
+  assert.equal(activityGate.gain.value, 1, "short gaps do not stutter the donor");
+
+  f.context.currentTime += 0.2;
+  drumMedia.currentTime += 0.2;
+  f.layers.updateRecipientDrumRests();
+  assert.equal(activityGate.gain.value, 0, "a sustained drum break ducks the donor");
+
+  rms = 0.1;
+  f.context.currentTime += 0.02;
+  drumMedia.currentTime += 0.02;
+  f.layers.updateRecipientDrumRests();
+  assert.equal(activityGate.gain.value, 1, "the donor returns when recipient drum activity resumes");
+});
 
 function response(ok = true) {
   return { ok, status: ok ? 200 : 503, arrayBuffer: async () => new ArrayBuffer(4) } as Response;

@@ -2110,6 +2110,7 @@ try {
       { timeout: 10_000 });
 
       let swapDetails = null;
+      let recipientDrumRestEvidence = null;
       const recordingStartedAt = Date.now();
       const captureStartedAt = Date.now();
       if (version === "swap") {
@@ -2191,6 +2192,7 @@ try {
           registeredSources: window.audioProbe.sources.map(source => source.mediaElement?.src ?? null),
           donor: window.audioProbe.buffers.slice(bufferCount).map(source => ({
             gain: source.inputNode?.gain?.value ?? null,
+            recipientRestGain: source.inputNode?.nextNode instanceof GainNode ? source.inputNode.nextNode.gain.value : null,
             playbackRate: source.playbackRate?.value ?? null,
             stopped: (source.stopCount ?? 0) > 0,
           })),
@@ -2213,6 +2215,46 @@ try {
               && Math.abs(item.playbackRate - combination.expectedWholeDeckPlaybackRate) < 0.02),
           `the donor layer follows the same playback-rate master: ${JSON.stringify(layerGains)}`);
         }
+        if (typeof combination.expectedRecipientRestStartSeconds === "number"
+          && typeof combination.expectedRecipientRestEndSeconds === "number") {
+          await page.waitForFunction(({ startSeconds, endSeconds }) => {
+            const drums = [...document.querySelectorAll('[data-role="current"] audio')]
+              .find(element => new URL(element.src).pathname.endsWith("-drums"));
+            return drums !== undefined
+              && drums.currentTime >= startSeconds + 0.55
+              && drums.currentTime < endSeconds - 0.08;
+          }, {
+            startSeconds: combination.expectedRecipientRestStartSeconds,
+            endSeconds: combination.expectedRecipientRestEndSeconds,
+          }, { timeout: 10_000 });
+          const restGateDuringBreak = await page.evaluate(() => {
+            const donor = window.audioProbe.buffers.at(-1);
+            const gate = donor?.inputNode?.nextNode instanceof GainNode ? donor.inputNode.nextNode : null;
+            return gate?.gain?.value ?? null;
+          });
+          assert.ok(typeof restGateDuringBreak === "number" && restGateDuringBreak < 0.08,
+            `a sustained recipient drum break mutes the donor for the remainder of the gap: ${restGateDuringBreak}`);
+          await page.waitForFunction(endSeconds => {
+            const drums = [...document.querySelectorAll('[data-role="current"] audio')]
+              .find(element => new URL(element.src).pathname.endsWith("-drums"));
+            return drums !== undefined && drums.currentTime >= endSeconds + 0.15;
+          }, combination.expectedRecipientRestEndSeconds, { timeout: 10_000 });
+          const restGateAfterBreak = await page.evaluate(() => {
+            const donor = window.audioProbe.buffers.at(-1);
+            const gate = donor?.inputNode?.nextNode instanceof GainNode ? donor.inputNode.nextNode : null;
+            return gate?.gain?.value ?? null;
+          });
+          assert.ok(typeof restGateAfterBreak === "number" && restGateAfterBreak > 0.92,
+            `the donor resumes after the recipient drum break: ${restGateAfterBreak}`);
+          recipientDrumRestEvidence = {
+            sourceIntervalSeconds: [
+              combination.expectedRecipientRestStartSeconds,
+              combination.expectedRecipientRestEndSeconds,
+            ],
+            donorGainDuringBreak: restGateDuringBreak,
+            donorGainAfterBreak: restGateAfterBreak,
+          };
+        }
         const timing = await page.evaluate(index => window.liveStemTimings[index] ?? null, timingCount);
         swapDetails = {
           donorTrackId: combination.donorTrackId,
@@ -2222,6 +2264,7 @@ try {
           selectedAtSeconds,
           layerGains,
           timing,
+          recipientDrumRest: recipientDrumRestEvidence,
           requestedTempoStretchRatio: combination.requestedTempoStretchRatio ?? null,
           expectedTempoStretchRatio: combination.expectedTempoStretchRatio ?? null,
           tempoMatchApplied: typeof timing?.tempoMatchMs === "number" && timing.tempoMatchMs > 0,

@@ -1083,6 +1083,7 @@ export function useStemTransport(
         )
           element.currentTime = current;
       }
+      liveLayers.current?.updateRecipientDrumRests();
       if (now - lastUiUpdate.current > 100) {
         lastUiUpdate.current = now;
         setPosition(current);

@@ -1119,6 +1119,7 @@ function SessionDeck({
         {
           snapRequested: donor !== null && plan.requested,
           activationTime: plan.activationTime,
+          preserveRecipientDrumRests: donor !== null && (stemType === "drums" || stemType === "percussion"),
         },
       ).then((installed) => {
         if (!stale && installed !== false && donor !== null && item !== null) {
