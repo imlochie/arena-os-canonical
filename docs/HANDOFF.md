@@ -115,21 +115,44 @@ accuracy from a synthetic test.
 
 ## Reference-prompt review and manual vocal-section fallback
 
-The ten supplied engineering prompts contain useful principles, but their
-example code and fixed thresholds are not implementation specifications for
-this repository. Transferable guidance:
+The ten supplied engineering prompts are guidance, not a drop-in design. Their
+most important correction is the **host-relative contract**:
 
-* Keep expensive analysis/preparation outside the real-time audio callback.
-  Separate measured stem/source evidence, planning, and playback execution.
-* Evaluate a stem swap in its actual host context: beat phase, vocal phrase
-  timing, harmonic fit, masking/audibility, splice integrity, and the retained
-  stems all matter. A transition between two whole songs is a different
-  problem from replacing one stem while the host continues.
-* Verify the rendered audio at multiple levels: deterministic failures such as
-  clipping/clicks, measured structural fit, then listening evaluation. Numeric
-  thresholds need labeled real examples; generic perceptual models cannot
-  decide whether a mashup feels musically right.
-* Human control belongs in the product, not just in a final QA step.
+* An **in-place stem swap** keeps the host playing. Only the selected stem is
+  replaced; its source entry, beat phase, phrase shape, harmony, and audibility
+  must fit the host's retained stems. A two-song transition or crossfade is a
+  different operation and must not be used as evidence that in-place swapping
+  works.
+* A **full-length mashup/arrangement** may recompose multiple layers over the
+  whole timeline. It shares source analyses and render-verification evidence
+  with live swapping, but it is not constrained to keep three host stems
+  untouched. Both are required product paths.
+* BPM equality is not enough: the source must be mapped onto the host's actual
+  beat/downbeat phase, and drums must be judged by groove/rest-pattern
+  compatibility, not tempo alone. For vocals, retain pickup timing and
+  phrase-boundary evidence; blindly snapping the first audible syllable to a
+  downbeat can damage the performance.
+* Assess the incoming layer against the **host's retained arrangement**:
+  local harmonic movement, expected vocal gaps/activity, masking by the
+  un-replaced stems, and splice quality can all make a numerically aligned swap
+  sound wrong. Use transformed audio—not just a planned semitone value—to
+  verify harmonic adaptation.
+* Keep the pipeline split: perform separation and expensive evidence analysis
+  ahead of playback; the live audio path schedules prepared material and
+  applies bounded gain/transport changes. Verify rendered output with
+  deterministic defect checks, musical-fit evidence, and listening—not just
+  successful API calls.
+* Keep manual controls in the product. The user can identify a source phrase,
+  reject a proposed cue, and later move or edit an accepted result.
+
+The attached prompts also prescribe particular libraries, exact BPM/key
+thresholds, fixed 20/20 calibration counts, CLAP/Audiobox gates, and blanket
+pair rejection. None of those numbers or model scores is validated for this
+repo's audio and acceptance set, and blanket rejection conflicts with the
+goal of transforming difficult pairs into usable arrangements. Do not adopt
+them unchanged. Calibrate any future threshold on labeled real renders and
+retain human listening; general audio-language similarity cannot certify that
+a specific vocal fits a specific groove or chord progression.
 
 Do **not** copy the prompts' assumed Demucs/librosa stack, exact-key hard gate,
 absolute vocal-energy threshold, fixed BPM/stretch limits, “next downbeat”
@@ -139,12 +162,45 @@ transforms, live timing, or arbitrary-pair adaptation. In particular, exact
 key matching as a rejection gate conflicts with Waveyard's goal of trying
 bounded transformations; a quality model must not replace listening.
 
-The manual vocal-section fallback is now implemented as described above. Keep
-the distinction between human-marked ranges and generated structural events:
-manual labels provide trusted source boundaries and role notes, but do not
-prove that a target backing passage is compatible. The selected storage model
-is private-session sync; only marker IDs, labels, source times, and checksum
-provenance are stored, never audio bytes or transcript text.
+The manual vocal-section fallback is now implemented as described above. It
+provides source-relative human boundaries and sends a selected range through
+the existing meeting-point planner; accepted recommendations use the normal
+editable-clip path. It is **not yet proof** that the planner checks the host's
+per-bar vocal-slot shape, protects every pickup, compares local chord
+trajectories, measures masking against every retained stem, or verifies a
+rendered swap. Keep human markers separate from generated structure: a manual
+label provides a trusted source range and role note, not proof of target
+compatibility.
+
+The selected storage model is private-session sync; only marker IDs, labels,
+source times, revision, and checksum provenance are stored, never audio bytes
+or transcript text. This is existing session-backend persistence, not a new
+direct-device QR or end-to-end-encrypted transport.
+
+### Requirements carried forward from the attached prompts
+
+The next implementation should connect the existing evidence to the music
+operation, rather than add disconnected labels or a generic transition scorer:
+
+1. In a real host session, compare a user-marked (or later automatically found)
+   vocal range with host beats/downbeats, phrase gaps, retained vocal-slot
+   activity, local harmonic evidence, and audibility. Preserve the source
+   pickup; propose cue alternatives and state which evidence supports each.
+2. For drum changes, compare beat-relative kick/snare/onset patterns and
+   deliberate rests, not just BPM/phase. A compatible phase can still place
+   continuous donor drums over a host breakdown.
+3. For bass and melodic layers, compare their timing and pitch/chord evidence
+   to the other active host stems. If an adaptation is applied, reanalyze the
+   transformed result; do not report the requested transform as proof it
+   worked.
+4. Render the actual swap or arrangement, check splice/clipping/silence and
+   the musical evidence that motivated it, then audition the result. Any
+   perceptual model or numeric gate must be calibrated against human-labeled
+   Waveyard results and reported as a measurement, not truth.
+5. Carry the exact selected range and transformations through preview,
+   acceptance, later edits, save/reopen, and export. If evidence is incomplete,
+   keep the manual/editable route available and explain the limitation rather
+   than silently claiming a validated match.
 
 ## Previous increment: faster full-length matching and exact drum-analysis lineage
 
