@@ -416,6 +416,29 @@ export function liveStemBeatOffsetSeconds(
   return (donor[0] * stretchRatio - recipient[0]) / 1000;
 }
 
+/**
+ * Prefer the first measured bar downbeat when a live donor has to fall back
+ * from structural matching. Beat-zero alignment can otherwise put an incoming
+ * vocal or instrument on the wrong bar when either beat grid starts mid-bar.
+ * Confidence gating belongs to the caller; this helper validates the grids.
+ */
+export function liveStemDownbeatOffsetSeconds(
+  recipientDownbeats: unknown,
+  donorDownbeats: unknown,
+  stretchRatio: number,
+): number | null {
+  const validDownbeats = (value: unknown): number[] | null => {
+    if (!Array.isArray(value) || value.length < 2
+      || value.some((time) => !Number.isSafeInteger(time) || time < 0)
+      || value.some((time, index) => index > 0 && time <= value[index - 1])) return null;
+    return value as number[];
+  };
+  const recipient = validDownbeats(recipientDownbeats);
+  const donor = validDownbeats(donorDownbeats);
+  if (!recipient || !donor || !Number.isFinite(stretchRatio) || stretchRatio <= 0) return null;
+  return (donor[0]! * stretchRatio - recipient[0]!) / 1000;
+}
+
 type LiveStemSection = Pick<
   SourceSection,
   | "sectionIndex" | "startMs" | "endMs" | "startBeatIndex" | "endBeatIndex"
@@ -818,9 +841,10 @@ export function resolveLiveStemDonorOffset(input: {
   explicitOffsetSeconds: number | null;
   sectionOffsetSeconds: number | null;
   beatOffsetSeconds: number | null;
+  beatOffsetBasis?: "beat" | "downbeat";
   sameRoleGrooveCorrectionMs: number | null;
   manualTempoOverride: boolean;
-}): { offsetSeconds: number | null; basis: "explicit" | "section" | "same-role-stem-groove" | "beat" | "unavailable" } {
+}): { offsetSeconds: number | null; basis: "explicit" | "section" | "same-role-stem-groove" | "beat" | "downbeat" | "unavailable" } {
   if (input.explicitOffsetSeconds !== null) {
     return { offsetSeconds: input.explicitOffsetSeconds, basis: "explicit" };
   }
@@ -836,7 +860,7 @@ export function resolveLiveStemDonorOffset(input: {
       basis: "same-role-stem-groove",
     };
   }
-  return { offsetSeconds: input.beatOffsetSeconds, basis: "beat" };
+  return { offsetSeconds: input.beatOffsetSeconds, basis: input.beatOffsetBasis ?? "beat" };
 }
 
 export type LiveStemGrooveCorrection =

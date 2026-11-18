@@ -63,6 +63,7 @@ import {
   keyCompatibilityEvidence,
   liveStemTempoStretchRatio,
   liveStemBeatOffsetSeconds,
+  liveStemDownbeatOffsetSeconds,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
@@ -374,7 +375,7 @@ function getPersistedSwapSetup(
   const swaps: Record<string, string> = {};
   const tempoStretchRatios: Record<string, number> = {};
   const beatOffsets: Record<string, number> = {};
-  const alignmentBases: Record<string, LiveStemSectionAlignmentBasis> = {};
+  const alignmentBases: Record<string, LiveStemSectionAlignmentBasis | "downbeat-phase"> = {};
   const grooveCorrectionsMs: Record<string, number> = {};
   const keyCorrections: Record<string, number> = {};
   const keyMatchStatuses: Record<string, string> = {};
@@ -532,9 +533,9 @@ function getPersistedSwapSetup(
     if (donorStem) swaps[swap.stemType] = donorStem.id;
 
     const libraryDonorAnalysis = library.find((track) => track.id === swap.toTrackId)?.analysis ?? null;
-    const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? null;
     const donorTrackId = swap.toTrackId;
-    const donorTempo = tempoForTrack(donorTrackId, donorAnalysis ?? libraryDonorAnalysis, tempoCorrections);
+    const donorAnalysis = donor?.analysis ?? swap.donorTrack?.analysis ?? libraryDonorAnalysis;
+    const donorTempo = tempoForTrack(donorTrackId, donorAnalysis, tempoCorrections);
     const pairTempoEvidence = {
       recipientBpmConfidence: recipientTempo.confidence,
       donorBpmConfidence: donorTempo.confidence,
@@ -576,16 +577,34 @@ function getPersistedSwapSetup(
       donorTempo.beatGridMs,
       ratio,
     );
+    const downbeatEvidenceReliable = ratio !== null
+      && hasReliableSessionDownbeatEvidence(item.analysis?.downbeatConfidence, item.analysis?.downbeatGridMs)
+      && hasReliableSessionDownbeatEvidence(donorAnalysis?.downbeatConfidence, donorAnalysis?.downbeatGridMs);
+    const downbeatOffset = downbeatEvidenceReliable
+      ? liveStemDownbeatOffsetSeconds(
+        item.analysis?.downbeatGridMs,
+        donorAnalysis?.downbeatGridMs,
+        ratio!,
+      )
+      : null;
     const explicitDonorEntryOffset = liveStemDonorEntryOffsetSeconds(
       swap.donorEntryOffsetMs,
       swap.atSeconds,
       ratio,
     );
+    // The service's small same-role correction was measured from beat-zero
+    // alignment. Do not reuse it after changing the phase anchor to a bar
+    // downbeat; that would apply evidence measured for a different placement.
+    const useDownbeatPhase = downbeatOffset !== null
+      && swap.grooveCorrection?.status !== "measured"
+      && sectionOffset === null
+      && explicitDonorEntryOffset === null;
     const offsetPlan = resolveLiveStemDonorOffset({
       explicitOffsetSeconds: explicitDonorEntryOffset,
       sectionOffsetSeconds: sectionOffset,
-      beatOffsetSeconds: beatOffset,
-      sameRoleGrooveCorrectionMs: swap.grooveCorrection?.status === "measured"
+      beatOffsetSeconds: useDownbeatPhase ? downbeatOffset : beatOffset,
+      beatOffsetBasis: useDownbeatPhase ? "downbeat" : "beat",
+      sameRoleGrooveCorrectionMs: !useDownbeatPhase && swap.grooveCorrection?.status === "measured"
         ? swap.grooveCorrection.correctionMs
         : null,
       manualTempoOverride: recipientTempo.corrected || donorTempo.corrected,
@@ -596,6 +615,8 @@ function getPersistedSwapSetup(
       grooveCorrectionsMs[swap.stemType] = swap.grooveCorrection!.correctionMs;
     } else if (sectionAlignment !== null && explicitDonorEntryOffset === null) {
       alignmentBases[swap.stemType] = sectionAlignment.basis;
+    } else if (offsetPlan.basis === "downbeat") {
+      alignmentBases[swap.stemType] = "downbeat-phase";
     }
     const donorKey = donor?.analysis?.musicalKey ?? swap.donorTrack?.analysis?.musicalKey
       ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.musicalKey;
