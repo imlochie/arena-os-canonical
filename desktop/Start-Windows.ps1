@@ -61,6 +61,7 @@ if ($Action -eq "Build") {
   $reportPath = Join-Path $root "generated-artifacts\windows-build-space.json"
   Remove-Item $sampleFile -Force -ErrorAction SilentlyContinue
   Remove-Item $phaseLog -Force -ErrorAction SilentlyContinue
+  [IO.File]::WriteAllText($sampleFile, "", [Text.UTF8Encoding]::new($false))
   ConvertTo-Json -InputObject @($spaceReport.locations) -Depth 5 |
     Set-Content -LiteralPath $initialFile -Encoding UTF8
   [IO.File]::WriteAllText($phaseLog, "", [Text.UTF8Encoding]::new($false))
@@ -87,11 +88,9 @@ if ($Action -eq "Build") {
       try { $phaseLines = @(Get-Content -LiteralPath $phasePath -ErrorAction Stop) } catch {}
       if ($phaseLines.Count -gt $phaseLineCount) {
         for ($i = $phaseLineCount; $i -lt $phaseLines.Count; $i++) {
-          try {
-            $event = $phaseLines[$i] | ConvertFrom-Json
-            $activePhase = [string]$event.phase
-            Save-Snapshot $samplePath $activePhase $true
-          } catch {}
+          try { $event = $phaseLines[$i] | ConvertFrom-Json } catch { continue }
+          $activePhase = [string]$event.phase
+          Save-Snapshot $samplePath $activePhase $true
         }
         $phaseLineCount = $phaseLines.Count
       }
@@ -137,7 +136,12 @@ if ($Action -eq "Build") {
     }
     throw
   } finally {
+    $measurementIncomplete = $false
     if ($monitor) {
+      if ($monitor.State -ne "Running") {
+        $measurementIncomplete = $true
+        Write-Warning ("Disk-space monitoring stopped unexpectedly (state: {0}). Valid samples will be kept, but peak usage may be understated." -f $monitor.State)
+      }
       Stop-Job $monitor -ErrorAction SilentlyContinue
       Receive-Job $monitor -ErrorAction SilentlyContinue | Out-Null
       Remove-Job $monitor -Force -ErrorAction SilentlyContinue
@@ -147,11 +151,20 @@ if ($Action -eq "Build") {
     if (Test-Path $sampleFile) {
       $measurementDir = Join-Path $root "generated-artifacts"
       New-Item -ItemType Directory -Path $measurementDir -Force | Out-Null
-      & node (Join-Path $PSScriptRoot "build-space-measurement.mjs") `
-        $initialFile $sampleFile $reportPath `
-        ([string]$spaceReport.minimumFreeGiB) ([string]$spaceReport.configuredMinimumGiB)
+      $measurementArguments = @(
+        $initialFile,
+        $sampleFile,
+        $reportPath,
+        [string]$spaceReport.minimumFreeGiB,
+        [string]$spaceReport.configuredMinimumGiB
+      )
+      if ($measurementIncomplete) { $measurementArguments += "--incomplete-monitor" }
+      & node (Join-Path $PSScriptRoot "build-space-measurement.mjs") @measurementArguments
       if ($LASTEXITCODE -eq 0 -and (Test-Path $reportPath)) {
         $summary = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        foreach ($warning in $summary.measurementWarnings) {
+          Write-Warning $warning
+        }
         foreach ($location in $summary.locations) {
           if ($location.failedSampleCount -gt 0) {
             Write-Warning ("{0}: {1} disk-space samples failed; peak usage may be understated." -f $location.label, $location.failedSampleCount)

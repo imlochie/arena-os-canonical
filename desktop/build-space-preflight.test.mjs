@@ -478,6 +478,12 @@ test("the Windows installer fails closed before installing dependencies", async 
   assert.match(script, /ConvertTo-Json -InputObject @\(\$spaceReport.locations\) -Depth 5/);
   assert.match(script, /Start-Job -ArgumentList @\(\$initialFile,/);
   assert.match(script, /& \$nodeExecutable \$measurementScript "--sample" \$initialPath/);
+  assert.match(script, /if \(\$LASTEXITCODE -ne 0\) \{ throw "Could not sample the preflight storage paths\."/);
+  assert.match(script, /\$monitor\.State -ne "Running"/);
+  assert.match(script, /--incomplete-monitor/);
+  assert.match(script, /Save-Snapshot \$samplePath \$activePhase \$true/);
+  assert.match(script, /\[IO\.File\]::WriteAllText\(\$sampleFile, ""/);
+  assert.match(script, /measurementWarnings/);
   assert.doesNotMatch(script, /GetPathRoot|DriveInfo/);
   assert.match(script, /failedSampleCount -gt 0/);
   assert.doesNotMatch(script, /Read-Host "To continue anyway/);
@@ -631,9 +637,27 @@ test("measurement reports phase and peak data without private machine paths", ()
   });
   const serialized = JSON.stringify(report);
   assert.equal(report.measuredPeakConsumptionGiB, 11);
+  assert.equal(report.measurementStatus, "complete");
+  assert.deepEqual(report.measurementWarnings, []);
   assert.equal(report.locations[0].peakPhase, "staging-ready");
   assert.equal(report.phases[0].name, "chromium-ready");
   assert.doesNotMatch(serialized, /Private Name|C:\\\\Users|inspectionError|checkedPath/);
+});
+
+test("an interrupted monitor report preserves successful samples and marks coverage incomplete", () => {
+  const report = summarizeBuildSpaceMeasurement({
+    initialLocations: [{ label: "workspace", availableBytes: 8 * GiB }],
+    samples: [{
+      phase: "dependencies-installed",
+      checkpoint: false,
+      locations: [{ label: "workspace", freeBytes: 5 * GiB }],
+    }],
+    measurementIncomplete: true,
+  });
+  assert.equal(report.sampleCount, 1);
+  assert.equal(report.measuredPeakConsumptionGiB, 3);
+  assert.equal(report.measurementStatus, "incomplete");
+  assert.match(report.measurementWarnings[0], /monitoring stopped.*peak usage may be understated/i);
 });
 
 test("a retry report compares post-cleanup free space with the next build baseline", () => {
@@ -721,6 +745,58 @@ test("measurement CLI accepts PowerShell UTF-8 input and writes a sanitized repo
     assert.equal(report.measuredPeakConsumptionGiB, 1);
     assert.equal(report.phases[0].name, "postgresql-ready");
     assert.doesNotMatch(JSON.stringify(report), /Private Name|inspectionError|checkedPath/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("measurement CLI preserves a valid sample when the monitor exits afterward", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-space-incomplete-"));
+  const initialPath = path.join(root, "initial.json");
+  const samplesPath = path.join(root, "samples.jsonl");
+  const reportPath = path.join(root, "report.json");
+  const scriptPath = fileURLToPath(new URL("./build-space-measurement.mjs", import.meta.url));
+  try {
+    await writeFile(initialPath, JSON.stringify([{
+      label: "workspace",
+      availableBytes: 8 * GiB,
+    }]));
+    await writeFile(samplesPath, `${JSON.stringify({
+      phase: "dependencies-installed",
+      checkpoint: false,
+      locations: [{ label: "workspace", freeBytes: 5 * GiB }],
+    })}\n`);
+    const result = spawnSync(process.execPath, [
+      scriptPath,
+      initialPath,
+      samplesPath,
+      reportPath,
+      "20",
+      "20",
+      "--incomplete-monitor",
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    assert.equal(report.sampleCount, 1);
+    assert.equal(report.measuredPeakConsumptionGiB, 3);
+    assert.equal(report.measurementStatus, "incomplete");
+    assert.match(report.measurementWarnings[0], /monitoring stopped.*peak usage may be understated/i);
+
+    await writeFile(samplesPath, "");
+    const noSamplesResult = spawnSync(process.execPath, [
+      scriptPath,
+      initialPath,
+      samplesPath,
+      reportPath,
+      "20",
+      "20",
+      "--incomplete-monitor",
+    ], { encoding: "utf8" });
+    assert.equal(noSamplesResult.status, 0, noSamplesResult.stderr);
+    const noSamplesReport = JSON.parse(await readFile(reportPath, "utf8"));
+    assert.equal(noSamplesReport.measurementStatus, "incomplete");
+    assert.equal(noSamplesReport.sampleCount, 0);
+    assert.equal(noSamplesReport.measuredPeakConsumptionGiB, null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

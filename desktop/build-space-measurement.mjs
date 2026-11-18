@@ -40,6 +40,7 @@ export function summarizeBuildSpaceMeasurement({
   minimumFreeGiB,
   configuredMinimumGiB,
   sampleIntervalSeconds = 2,
+  measurementIncomplete = false,
 }) {
   const locations = initialLocations
     .filter(({ label, availableBytes }) => label && Number.isFinite(availableBytes))
@@ -123,6 +124,10 @@ export function summarizeBuildSpaceMeasurement({
     minimumFreeGiB,
     configuredMinimumGiB,
     sampleIntervalSeconds,
+    measurementStatus: measurementIncomplete ? "incomplete" : "complete",
+    measurementWarnings: measurementIncomplete
+      ? ["Disk monitoring stopped before the build finished; peak usage may be understated."]
+      : [],
     sampleCount: samples.filter((sample) => sample.checkpoint !== true).length,
     measuredPeakConsumptionGiB,
     unavailableLocations: initialLocations
@@ -142,7 +147,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       );
       console.log(JSON.stringify(sampleBuildSpace(initialLocations)));
     } else {
-      const [initialPath, samplesPath, reportPath, minimumFree, configuredMinimum] = process.argv.slice(2);
+      const [
+        initialPath,
+        samplesPath,
+        reportPath,
+        minimumFree,
+        configuredMinimum,
+        incompleteFlag,
+      ] = process.argv.slice(2);
       if (!initialPath || !samplesPath || !reportPath) {
         throw new Error("Supply initial, samples, and report file paths.");
       }
@@ -163,6 +175,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         previousReport,
         minimumFreeGiB: Number(minimumFree),
         configuredMinimumGiB: Number(configuredMinimum),
+        measurementIncomplete: incompleteFlag === "--incomplete-monitor",
       });
       writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
       console.log(JSON.stringify({
