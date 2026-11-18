@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,6 +40,8 @@ test("converts and fully verifies a local audio file without changing its origin
   try {
     const source = join(directory, "original.wav");
     const output = join(directory, "converted.flac");
+    const sourcePcm = join(directory, "source.pcm");
+    const convertedPcm = join(directory, "converted.pcm");
     await execTool("ffmpeg", [
       "-v", "error",
       "-nostdin",
@@ -62,6 +64,35 @@ test("converts and fully verifies a local audio file without changing its origin
     assert.equal(verified.durationSeconds, convertedMetadata.durationSeconds);
     assert.equal(verified.checksumSha256, await checksumFile(output));
     assert.equal(verified.warnings.length, 0);
+
+    for (const [input, rawOutput] of [[source, sourcePcm], [output, convertedPcm]]) {
+      await execTool("ffmpeg", [
+        "-v", "error",
+        "-nostdin",
+        "-i", input,
+        "-map", "0:a:0",
+        "-c:a", "pcm_s16le",
+        "-f", "s16le",
+        rawOutput,
+      ]);
+    }
+    const [sourceSamples, convertedSamples] = await Promise.all([
+      readFile(sourcePcm),
+      readFile(convertedPcm),
+    ]);
+    const bytesPerFrame = convertedMetadata.channels * 2;
+    assert.equal(sourceSamples.length % bytesPerFrame, 0);
+    assert.equal(convertedSamples.length % bytesPerFrame, 0);
+    assert.equal(
+      convertedSamples.length / bytesPerFrame,
+      sourceSamples.length / bytesPerFrame,
+      "rounded duration metadata must not hide a missing or extra decoded PCM frame",
+    );
+    assert.deepEqual(
+      convertedSamples,
+      sourceSamples,
+      "FLAC conversion must reproduce the original decoded PCM exactly",
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
