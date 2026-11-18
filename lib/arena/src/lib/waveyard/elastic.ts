@@ -185,16 +185,21 @@ export function timeStretch(
   const wsum = new Float64Array(bufLen);
 
   /** Similarity of candidate start p with the natural continuation. */
-  const score = (p: number, natural: number): number => {
+  const score = (p: number, natural: number, sampleStride = 2): number => {
     let xy = 0;
     let yy = 1e-9;
-    for (let i = 0; i < hop; i += 2) {
+    let samples = 0;
+    for (let i = 0; i < hop; i += sampleStride) {
       const a = g(natural + i);
       const b = g(p + i);
       xy += a * b;
       yy += b * b;
+      samples += 1;
     }
-    return xy / Math.sqrt(yy);
+    // Keep coarse and full-resolution scores comparable: otherwise the
+    // coarsely sampled winner can dominate the refinement merely because its
+    // score contains fewer summed samples.
+    return xy / Math.sqrt(yy * Math.max(1, samples));
   };
   const nominalInputFrameAt = (outputFrame: number): number => {
     if (!mapping) return Math.round(outputFrame / r);
@@ -246,15 +251,22 @@ export function timeStretch(
       const hi = nominal + (transient ? 0 : tol);
       let best = Math.max(nominal, 0);
       let bestS = -Infinity;
-      for (let p = lo; p <= hi; p += 4) {
-        const s = score(p, natural);
+      // A full-resolution WSOLA search for every hop is prohibitively costly
+      // on multi-minute vocal stems. Search a coarse grid with a decimated
+      // guide first, then recover sample-level precision around its best
+      // candidate. The final local search preserves the old alignment
+      // resolution while reducing the expensive wide search by several times.
+      const coarseStep = Math.max(8, Math.round(sr / 12_000 / 2) * 2);
+      const coarseStride = Math.max(4, Math.round(sr / 12_000 / 2) * 2);
+      for (let p = lo; p <= hi; p += coarseStep) {
+        const s = score(p, natural, coarseStride);
         if (s > bestS) {
           bestS = s;
           best = p;
         }
       }
-      const rlo = Math.max(best - 3, lo);
-      const rhi = Math.min(best + 3, hi);
+      const rlo = Math.max(best - coarseStep, lo);
+      const rhi = Math.min(best + coarseStep, hi);
       for (let p = rlo; p <= rhi; p += 1) {
         const s = score(p, natural);
         if (s > bestS) {

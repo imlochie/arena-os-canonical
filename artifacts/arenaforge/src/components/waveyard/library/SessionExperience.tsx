@@ -52,6 +52,7 @@ import {
   automaticCueTiming,
   automaticTransitionCue,
   beatAlignedTransitionStart,
+  bindIsolatedDrumTempoToStem,
   compatibilityEvidence,
   completeInstrumentalBedDonorTrackId,
   crossfadeCancel,
@@ -467,9 +468,16 @@ function getPersistedSwapSetup(
     : session.tracks.find((track) => track.track.id === drumSwap.toTrackId) ?? null;
   const drumDonorAnalysis = drumDonor?.analysis ?? drumSwap?.donorTrack?.analysis ?? null;
   const drumDonorSummaryAnalysis = library.find((track) => track.id === drumSwap?.toTrackId)?.analysis ?? null;
+  const drumDonorAnalysisForSelectedStem = drumDonorAnalysis ?? drumDonorSummaryAnalysis;
+  const boundDrumDonorAnalysis = drumDonorAnalysisForSelectedStem === null
+    ? null
+    : bindIsolatedDrumTempoToStem(
+      drumDonorAnalysisForSelectedStem,
+      drumCandidateStem?.id ?? null,
+    );
   const drumDonorTempo = drumSwap === null
     ? null
-    : tempoForTrack(drumSwap.toTrackId, drumDonorAnalysis ?? drumDonorSummaryAnalysis, tempoCorrections);
+    : tempoForTrack(drumSwap.toTrackId, boundDrumDonorAnalysis ?? undefined, tempoCorrections);
   const tempoEvidence = {
     recipientBpmConfidence: recipientTempo.confidence,
     donorBpmConfidence: drumDonorTempo?.confidence,

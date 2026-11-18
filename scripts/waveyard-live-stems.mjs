@@ -295,6 +295,9 @@ if (mashupEvaluationOnly) {
         keyConfidence: item.analysis?.keyConfidence ?? null,
         beatGridMs: item.analysis?.beatGridMs ?? null,
         beatConfidence: item.analysis?.beatConfidence ?? null,
+        downbeatGridMs: item.analysis?.downbeatGridMs ?? null,
+        downbeatConfidence: item.analysis?.downbeatConfidence ?? null,
+        sections: item.analysis?.sections ?? null,
         isolatedDrumTempo: item.analysis?.isolatedDrumTempo ?? null,
         isolatedDrumTempoStatus: item.analysis?.isolatedDrumTempo ? "complete" : "unavailable",
       },
@@ -1224,6 +1227,16 @@ try {
     stems: externalStemKeys,
     analysis: null,
   } } }));
+  if (mashupEvaluationOnly) {
+    await context.route("**/api/library/tracks/b**", route => {
+      const donor = tracks.find(item => item.id === "b");
+      return route.fulfill({ json: { track: {
+        id: "b",
+        stems: donor?.stems ?? [],
+        analysis: donor?.analysis ?? null,
+      } } });
+    });
+  }
   await context.route("**/api/library/tracks/c", route => {
     const donor = tracks.find(item => item.id === "c");
     return route.fulfill({ json: { track: {
@@ -2086,7 +2099,27 @@ try {
       const donorMetadata = trackById.get(combination.donorTrackId);
       session.currentSessionTrackId = lead.browserId;
       session.positionSeconds = 0;
-      session.swaps = [];
+      session.swaps = version === "swap"
+        ? (combination.preloadedSwaps ?? []).map((preloaded, index) => {
+          const preloadedDonor = trackById.get(preloaded.donorTrackId);
+          const donorStem = preloadedDonor?.stems?.[preloaded.stemType];
+          const receivingStem = lead.stems?.[preloaded.stemType];
+          if (!preloadedDonor || !donorStem?.path || !receivingStem?.path) {
+            throw new Error(`Invalid preloaded donor in ${combination.id}: ${JSON.stringify(preloaded)}`);
+          }
+          return {
+            id: `preloaded-${combination.id}-${index}`,
+            sessionTrackId: lead.browserId,
+            stemType: preloaded.stemType,
+            fromTrackId: lead.browserId,
+            fromStemAssetId: `${lead.browserId}-${preloaded.stemType}`,
+            toTrackId: preloadedDonor.browserId,
+            toStemAssetId: `${preloadedDonor.browserId}-${preloaded.stemType}`,
+            atSeconds: preloaded.atSeconds ?? 0,
+            donorEntryOffsetMs: null,
+          };
+        })
+        : [];
       session.keyMatchMode = combination.keyMatchMode === "camelot"
         && lead.analysis?.musicalKey && donorMetadata?.analysis?.musicalKey
         ? "camelot"
@@ -2194,6 +2227,9 @@ try {
             gain: source.inputNode?.gain?.value ?? null,
             recipientRestGain: source.inputNode?.nextNode instanceof GainNode ? source.inputNode.nextNode.gain.value : null,
             playbackRate: source.playbackRate?.value ?? null,
+            startedOffset: source.startedOffset ?? null,
+            recipientTimeAtStart: source.recipientTimeAtStart ?? null,
+            duration: source.buffer?.duration ?? null,
             stopped: (source.stopCount ?? 0) > 0,
           })),
         }), { leadId: lead.browserId, bufferCount });
@@ -2285,6 +2321,25 @@ try {
           assert.equal(timing?.tempoStretchRatio, 1,
             `an incompatible live swap must report its native tempo ratio: ${JSON.stringify(swapDetails)}`);
         }
+        if (typeof combination.expectedBeatOffsetSeconds === "number") {
+          assert.ok(Math.abs((timing?.beatOffsetSeconds ?? Number.NaN) - combination.expectedBeatOffsetSeconds) < 0.02,
+            `the live donor reports the measured phase against the active rhythm clock: ${JSON.stringify(timing)}`);
+          const source = layerGains.donor[0];
+          assert.ok(source && typeof source.startedOffset === "number"
+            && typeof source.recipientTimeAtStart === "number"
+            && typeof source.duration === "number" && source.duration > 0,
+          `the browser audio graph exposes the actual donor start point: ${JSON.stringify(source)}`);
+          const actualPhase = ((source.startedOffset - source.recipientTimeAtStart) % source.duration + source.duration)
+            % source.duration;
+          const expectedPhase = ((combination.expectedBeatOffsetSeconds % source.duration) + source.duration)
+            % source.duration;
+          const phaseError = Math.min(
+            Math.abs(actualPhase - expectedPhase),
+            source.duration - Math.abs(actualPhase - expectedPhase),
+          );
+          assert.ok(phaseError < 0.04,
+            `the rendered donor starts at the measured rhythm-clock phase (error ${phaseError.toFixed(3)}s): ${JSON.stringify(source)}`);
+        }
         if (typeof combination.restoreAtSeconds === "number") {
           const restoreClock = (await getPlaybackSnapshot()).find(item => !item.paused);
           const remainingSeconds = restoreClock
@@ -2352,7 +2407,7 @@ try {
       const baseline = await capture(combination, "baseline");
       const swapped = await capture(combination, "swap");
       captures.push({ id: combination.id, leadTrackId: combination.leadTrackId, donorTrackId: combination.donorTrackId,
-        stemType: combination.stemType, baseline, swapped });
+        stemType: combination.stemType, preloadedSwaps: combination.preloadedSwaps ?? [], baseline, swapped });
     }
     const report = {
       schemaVersion: 1,

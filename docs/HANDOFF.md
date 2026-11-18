@@ -1,5 +1,39 @@
 # Arena handoff — read this first
 
+## Latest increment: faster full-length matching and exact drum-analysis lineage
+
+The offline WSOLA search now checks a decimated coarse grid, then refines the
+winning overlap to sample-level resolution. On the existing 222.67-second
+Another One Bites the Dust vocal WAV at 48 kHz and the measured 0.872342 tempo
+ratio, three alternating warmed runs had medians of 6,878 ms before and 6,319
+ms after (8.1% faster); an initial single run showed a larger, non-repeatable
+gain. Output frame counts matched and sampled checks found no non-finite
+audio. Treat this as a modest CPU improvement, not a stable latency guarantee
+or listening-quality claim. The existing pitch, transient, timing-map and
+determinism tests still pass.
+
+Isolated-drum tempo evidence is now used only when its `stemAssetId` matches
+the exact currently selected drum asset. Replacing a drum file can no longer
+leave its predecessor's timing in control of the session. The live timing
+event also reports the actual applied beat offset, and the browser runner can
+seed an already-swapped drum layer before checking a later donor.
+
+**Real browser result and remaining blocker:** the existing full-length
+September/Queen fixture applied the Queen drum master at rate `0.872342` and
+reported a `0s` donor beat offset. In that same run, the follow-up Queen vocal
+choice was staged, not applied: the fixture has no source-verified vocal-entry
+match at the playhead, so the UI correctly kept the current vocal rather than
+guessing. Its simplified manifest also omits full section and vocal-onset
+evidence. This does not prove the songs cannot be matched; it means this
+fixture cannot yet prove an automatic vocal entry. Do not report a successful
+drum-then-vocal mashup or verse/chorus recognition from this run.
+
+**Verification:** 66 session-logic tests, 133 live-stem tests, 14 elastic-audio
+tests, and full workspace typecheck pass. The real browser check validates the
+active drum clock, but vocal-entry selection remains an explicit acceptance
+gap; real-world timing does not establish a listenable or semantically aligned
+mix.
+
 ## New live adaptation model: active rhythm clock and donor lineage
 
 Live swaps now distinguish the **restore source** from the **currently audible

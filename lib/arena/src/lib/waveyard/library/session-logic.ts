@@ -216,6 +216,24 @@ export type LiveTempoAnalysisSelection = {
 };
 
 /**
+ * Keep isolated-drum timing only when it describes the exact stem asset that
+ * is selected in the live mix. A track can have replacement stem versions;
+ * track identity alone is not enough to reuse their timing analysis.
+ */
+export function bindIsolatedDrumTempoToStem<T extends LiveTempoAnalysisInput>(
+  analysis: T,
+  selectedStemAssetId: string | null | undefined,
+): Omit<T, "isolatedDrumTempo"> & { isolatedDrumTempo: IsolatedDrumTempoEvidence | null } {
+  const evidence = analysis.isolatedDrumTempo;
+  return {
+    ...analysis,
+    isolatedDrumTempo: evidence && selectedStemAssetId && evidence.stemAssetId === selectedStemAssetId
+      ? evidence
+      : null,
+  };
+}
+
+/**
  * Prefer checksum-verified isolated-drum timing only when it independently
  * measures a reliable tempo and grid and agrees with the full mix's tempo.
  * A disagreement stays uncertain instead of letting one detector override

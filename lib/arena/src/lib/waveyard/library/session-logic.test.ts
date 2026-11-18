@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  bindIsolatedDrumTempoToStem,
   liveStemBeatOffsetSeconds,
   liveStemDownbeatOffsetSeconds,
   projectLiveStemGridToCommonClock,
@@ -1093,7 +1094,7 @@ test("real separated-drum confidence can safely unlock September-to-Queen tempo 
       analysisEngineVersion: "1.1.0",
     },
   });
-  const queen = selectLiveTempoAnalysis({
+  const queenInput = {
     bpm: 109.957,
     bpmConfidence: 0.426,
     beatConfidence: 0.642,
@@ -1109,11 +1110,27 @@ test("real separated-drum confidence can safely unlock September-to-Queen tempo 
       analysisEngine: "arena-js-stem-analysis",
       analysisEngineVersion: "1.1.0",
     },
-  });
+  };
+  const queen = selectLiveTempoAnalysis(queenInput);
 
   assert.equal(september.evidenceSource, "isolated-drums");
   assert.equal(queen.evidenceSource, "isolated-drums",
     "the stronger isolated drum evidence can replace the low-confidence full-mix BPM");
+  assert.equal(
+    selectLiveTempoAnalysis(bindIsolatedDrumTempoToStem(queenInput, "queen-drums")).evidenceSource,
+    "isolated-drums",
+    "the measured timing remains usable for the exact separated drum asset",
+  );
+  assert.equal(
+    selectLiveTempoAnalysis(bindIsolatedDrumTempoToStem(queenInput, "queen-drums-v2")).evidenceSource,
+    "full-mix",
+    "a replacement drum asset cannot inherit another version's timing evidence",
+  );
+  assert.equal(
+    selectLiveTempoAnalysis(bindIsolatedDrumTempoToStem(queenInput, null)).evidenceSource,
+    "full-mix",
+    "unknown selected stem identity does not authorize isolated-drum evidence",
+  );
   const resolved = resolveLiveDrumTempoMaster(september.bpm, queen.bpm, {
     recipientBpmConfidence: september.bpmConfidence,
     donorBpmConfidence: queen.bpmConfidence,

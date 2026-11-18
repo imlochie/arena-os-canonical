@@ -169,6 +169,8 @@ export type LiveStemTiming = {
   decodeMs: number;
   tempoMatchMs: number;
   tempoStretchRatio: number;
+  /** Offset used to align the donor against the receiving layer's playback clock. */
+  beatOffsetSeconds: number;
   transferBytes: number;
 };
 
@@ -844,6 +846,7 @@ export class LiveStemLayers {
       decodeMs: timing.decodeMs,
       tempoMatchMs: timing.tempoMatchMs,
       tempoStretchRatio: layer.tempoStretchRatio,
+      beatOffsetSeconds: layer.beatOffsetSeconds,
       transferBytes: timing.transferBytes,
     });
     layer.timing = null;

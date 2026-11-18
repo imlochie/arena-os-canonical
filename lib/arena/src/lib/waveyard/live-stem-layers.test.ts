@@ -1199,6 +1199,7 @@ test("live swap timings separate download, decode, and tempo matching for native
     await native.layers.replace("vocals", "/native", 1);
     assert.equal(nativeTimings.length, 1);
     assert.equal(nativeTimings[0].tempoStretchRatio, 1);
+    assert.equal(nativeTimings[0].beatOffsetSeconds, 0);
     assert.equal(nativeTimings[0].tempoMatchMs, 0, "native-tempo donors skip the tempo-matching stage");
     assert.ok(nativeTimings[0].downloadMs >= 0);
     assert.ok(nativeTimings[0].decodeMs >= 0);
@@ -1221,9 +1222,11 @@ test("live swap timings separate download, decode, and tempo matching for native
   try {
     const selectedAt = performance.now();
     await matched.layers.preload("/matched", 0.8, selectedAt);
-    await matched.layers.replace("vocals", "/matched", 0.8);
+    await matched.layers.replace("vocals", "/matched", 0.8, undefined, 0.125);
     assert.equal(matchedTimings.length, 1);
     assert.equal(matchedTimings[0].tempoStretchRatio, 0.8);
+    assert.equal(matchedTimings[0].beatOffsetSeconds, 0.125,
+      "the audible timing report includes the same beat phase supplied to the audio graph");
     assert.ok(matchedTimings[0].downloadMs >= 0);
     assert.ok(matchedTimings[0].decodeMs >= 0);
     assert.ok(matchedTimings[0].tempoMatchMs > 0);
