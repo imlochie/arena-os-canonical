@@ -31,10 +31,12 @@ inside the break and 1.0 after the September drums resumed. A full-song scan at
 an absolute -42 dBFS threshold found two shorter 0.40s quiet gaps that remain
 below the 450ms hold and therefore do not trigger the gate.
 
-**Swap preparation:** The 39,279,560-byte donor took about 834 ms to download,
-1,530 ms to decode, and 11,040 ms to tempo-match. Once warmed, selection-to-
-audible time was about 347 ms. The quick switch therefore depends on preparing
-the audio first; it is not a 347 ms cold-start result.
+**Swap preparation:** In the latest r5 browser trace, the 39,279,560-byte donor
+took about 933 ms to download, 1,720 ms to decode, and 10,324 ms to tempo-match;
+selection-to-audible measured about 1,056 ms. An earlier run measured 347 ms,
+so these captures do not establish a stable warm or cold latency. Treat the
+quick-switch result as variable until repeated controlled measurements explain
+the difference.
 
 **Evidence:** `scripts/waveyard-live-stems.mjs --mashup-evaluation-only` with
 the local ignored manifest
@@ -50,6 +52,58 @@ separation levels; it reacts during a detected break rather than predicting
 one. This does not prove subjective mix quality, vocal/section selection,
 saved-session reopening, Studio export equivalence, Windows or mobile playback,
 or reliable mashups for arbitrary songs.
+
+## Branch reconciliation snapshot — 2026-11-18
+
+The active product branch remains `agent-a-waveyard-donor-stem-integrity`;
+neither `main` nor another agent's branch was checked out or reset. The current
+branch is pushed through `509cd57a` and matches its GitHub tracking ref.
+
+* `origin/v0/stem-mixer-channel-strips`: its focused channel-strip UI commit was
+  integrated as `509cd57a`. The branch's later session-analysis/null-confidence
+  changes were not copied because the current code already resolves current
+  session analysis and null-safely gates confidence. Targeted browser and
+  session-logic checks passed after the UI integration.
+* `origin/jules-2321982355158174303-7f554415`: its older donor-role interface is
+  superseded by the current Mashup Studio's per-stem retain/replace/layer
+  decisions, donor-asset resolution and persistence. Current mashup route tests
+  cover saved compositions and reopening/export paths; the old UI patch was not
+  cherry-picked.
+* `origin/product/converter-waveyard-flow`: its old `src/` implementation is
+  not a safe code transplant, but its real conversion→ZIP→player→session
+  reopen→Studio export acceptance scenario remains a useful standard. The
+  current architecture has conversion UI/routes and engine tests, but no
+  equivalent single current-route acceptance run was found during this pass.
+  This is an open verification gap, not a claim that conversion is broken.
+* `origin/arena/ed2f88f7-arena-os-canonical`: not integrated. Its experimental
+  changes lower section-confidence gates and broaden tempo/section heuristics
+  without stronger evidence. They would weaken current fail-closed behavior.
+* `origin/v0/full-length-mashup-fallback`, `origin/v0/independent-waveyard-eval`,
+  `origin/arena/840f2d22-arena-os-canonical`, `origin/arena/669984d8-arena-os-canonical`,
+  and `agent-b-waveyard-donor-stem-tests` are already reachable in the current
+  branch; their full-length fallback, evaluation, Studio, and donor-integrity
+  work is not missing from this line.
+* The October memory-ownership experiment remains on its benchmark branch.
+  Its own design says no performance win is established without a complete
+  controlled 45-cell comparison. The current app instead has bounded streaming
+  preview and memory-budget tests; do not transplant the experiment wholesale.
+* Several older local-only `subrepl-*` refs and `replit-agent` are still present
+  in this workspace; their tip commits are not reachable from any fetched
+  GitHub ref. The Waveyard
+  recovery, retry, worker isolation, upload-idempotency and session-handoff
+  commits inspected there are represented by newer current implementations
+  and regression coverage (including `worker-local/separation.test.ts`,
+  `library/service.test.ts`, `scripts/waveyard-live-stems.mjs`, and
+  `scripts/waveyard-automation-persistence.test.ts`). The refs were not deleted
+  or merged as stale snapshots. Their original commit identities are not
+  individually pushed; the corresponding current product behavior is.
+
+This is a prioritised reconciliation, not a claim that every historical commit
+across all 89 local/remote refs has been reviewed line by line. Large legacy
+`src/`-layout branches still require a path-by-path comparison before any
+remaining code is considered for import. The only workspace edit outside the
+committed branch is an uncommitted `.replit` Python-module addition; it was not
+made as part of this work and remains untouched for its owner to review.
 
 ## Latest increment: live vocal candidates include paired phrase-timing evidence
 
