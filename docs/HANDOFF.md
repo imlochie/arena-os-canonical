@@ -78,7 +78,13 @@ accuracy. September's existing real separation, using the same local analysis
 code to obtain a beat grid and vocal activity, produced no candidate for its
 annotated 140–172 second breakdown. That abstention may be appropriate if its
 stems lack this signature; it also shows the current detector is not a general
-breakdown recognizer.
+breakdown recognizer. The reason is visible in the separated audio: mean role
+levels for 132–140s → 140–172s → 172–180s are vocals −21.3 → −23.2 → −22.4
+dBFS, drums −26.3 → −26.2 → −26.7 dBFS, bass −47.7 → −45.0 → −45.3 dBFS,
+and other −30.1 → −28.9 → −31.0 dBFS. The annotated interval does not have a
+large accompaniment-energy dropout; if the listener's breakdown label is
+correct, its distinguishing evidence is likely in spectral/timbral or rhythmic
+activity, not whole-stem RMS. Do not lower the RMS threshold to force a match.
 
 Synthetic tests cover role gating, weak-drop abstention, timing, persistence
 normalization, a PGlite section-worker run that stores the candidate beside
