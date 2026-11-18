@@ -392,3 +392,17 @@ mtime_ms = 1794891625611
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/daa7f166-5ff6-4999-8c68-15d1fcd8f75b/1b613c34-d30d-4d4d-b7ed-1ef04d77325c"
 storage_version_token = "1794891636669057"
 content_type = "video/webm"
+
+[[outputs]]
+id = "tEV2HN5WIlaqxPEAePzMm"
+uri = "file://generated-artifacts/waveyard-real-world-acceptance/full-song-live-captures-rerun-f6c20be-tempo-r5/swapped-output-16s-20s.wav"
+type = "audio"
+title = "20-second live tempo-adapted drum swap"
+description = "A real browser-rendered segment of September with Another One Bites the Dust drums. Waveyard measured the rendered segment at 109.957 BPM after aligning the full mix to the donor drums. This is technical evidence, not a subjective quality verdict or a finished mashup."
+logical_id = "3ead76ac-76ad-46c9-a953-943a9761f0b9"
+content_hash = "sha256:1bd7f324f48b76772947b3ece81ef4316d49315c2c99a9c9a41cd159cd0ae954"
+size = 3524022
+mtime_ms = 1794968290851
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/3ead76ac-76ad-46c9-a953-943a9761f0b9/8e423c62-8112-420b-96b4-c1fec601e968"
+storage_version_token = "1794968408184021"
+content_type = "audio/wav"
