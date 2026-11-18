@@ -1,5 +1,47 @@
 # Arena handoff — read this first
 
+## Latest real-browser check: cross-tempo drum swap changes rendered audio
+
+The full-length separated September and Another One Bites the Dust stems now
+complete a real browser live-drum swap and restore in Waveyard's `SessionExperience`
+on Linux Chromium 155. The acceptance runner now measures the outgoing media
+input gate—the gain that the swap actually ramps down—instead of mistakenly
+reading the downstream channel fader.
+
+Waveyard's production DSP analyzer measured the exact separated drum WAVs:
+September 126.048 BPM (confidence 0.891; beat confidence 0.929) and Queen
+109.957 BPM (0.737; 0.740). Their source assets and drum files are paired by
+the checksums in the local run manifest. In the browser, selecting Queen drums
+applied the measured 0.872342 tempo ratio to all four original September stems
+and the donor layer. The original drum input gate reached 0, the donor reached
+gain 1, and the other three original input gates stayed at 1. The test then
+restored the September drum layer, returned all four original playback rates
+to 1, and kept the clocks aligned.
+
+This is stronger than checking the UI setting: a 20-second segment of the
+recorded, swapped browser output was re-analyzed by the same DSP and measured
+at 109.957 BPM (confidence 0.595; beat confidence 0.777; 38 beat events across
+19.98 seconds). The source mix is 126.048 BPM, so the rendered segment follows
+the donor tempo as intended.
+
+**Swap preparation:** The 39,279,560-byte donor took about 681 ms to download,
+1,733 ms to decode, and 10,021 ms to tempo-match. Once warmed, selection-to-
+audible time was about 346 ms. The quick switch therefore depends on preparing
+the audio first; it is not a 346 ms cold-start result.
+
+**Evidence:** `scripts/waveyard-live-stems.mjs --mashup-evaluation-only` with
+the local ignored manifest
+`generated-artifacts/waveyard-real-world-acceptance/full-song-live-manifest-tempo-r5.json`.
+The 38.96-second browser render and its 20-second measured slice are in
+`generated-artifacts/waveyard-real-world-acceptance/full-song-live-captures-rerun-f6c20be-tempo-r5/`.
+Generated audio and analysis are local-only and not committed.
+
+**Limit:** The session API is fixture-backed. This proves one cross-tempo live
+drum swap and restored transport using these real stems; it does not prove
+subjective mix quality, vocal/section selection, saved-session reopening,
+Studio export equivalence, Windows or mobile playback, or reliable mashups
+for arbitrary songs.
+
 ## Latest increment: live vocal candidates include paired phrase-timing evidence
 
 Live vocal-entry candidates now compare checksum-current vocal phrase starts

@@ -2075,6 +2075,7 @@ try {
         source: new URL(element.src).pathname.split("/").at(-1),
         currentTime: element.currentTime,
         paused: element.paused,
+        playbackRate: element.playbackRate,
       })),
     );
     const capture = async (combination, version) => {
@@ -2151,7 +2152,13 @@ try {
           .filter(item => item.source.startsWith(`${lead.browserId}-`) && !item.source.endsWith(`-${combination.stemType}`))
           .map(before => {
             const after = afterSwap.find(item => item.source === before.source);
-            return after ? { source: before.source, from: before.currentTime, to: after.currentTime, paused: after.paused } : null;
+            return after ? {
+              source: before.source,
+              from: before.currentTime,
+              to: after.currentTime,
+              paused: after.paused,
+              playbackRate: after.playbackRate,
+            } : null;
           })
           .filter(Boolean);
         assert.ok(advancingOriginalClocks.length > 0, "unreplaced lead stems remain present during the swap");
@@ -2165,8 +2172,17 @@ try {
               const stemType = assetId.slice(leadId.length + 1);
               const source = window.audioProbe.sources.find(entry => entry.mediaElement === element);
               const inputGain = source?.probeConnections?.find(node => node instanceof GainNode);
-              const stemGain = inputGain?.nextNode instanceof GainNode ? inputGain.nextNode : inputGain;
-              return [[stemType, stemGain?.gain?.value ?? null]];
+              return [[stemType, inputGain?.gain?.value ?? null]];
+            })),
+          originalOutputFaders: Object.fromEntries([...document.querySelectorAll('[data-role="current"] audio')]
+            .flatMap(element => {
+              const assetId = new URL(element.src).pathname.split("/").at(-1) ?? "";
+              if (!assetId.startsWith(`${leadId}-`)) return [];
+              const stemType = assetId.slice(leadId.length + 1);
+              const source = window.audioProbe.sources.find(entry => entry.mediaElement === element);
+              const inputGain = source?.probeConnections?.find(node => node instanceof GainNode);
+              const outputFader = inputGain?.nextNode instanceof GainNode ? inputGain.nextNode : null;
+              return [[stemType, outputFader?.gain?.value ?? null]];
             })),
           originalMedia: Object.fromEntries([...document.querySelectorAll('[data-role="current"] audio')].map(element => [
             new URL(element.src).pathname.split("/").at(-1),
@@ -2175,15 +2191,27 @@ try {
           registeredSources: window.audioProbe.sources.map(source => source.mediaElement?.src ?? null),
           donor: window.audioProbe.buffers.slice(bufferCount).map(source => ({
             gain: source.inputNode?.gain?.value ?? null,
+            playbackRate: source.playbackRate?.value ?? null,
             stopped: (source.stopCount ?? 0) > 0,
           })),
         }), { leadId: lead.browserId, bufferCount });
         if (combination.verifyLayerIdentity === true) {
           assert.ok(layerGains.original[combination.stemType] < 0.02,
-            `the outgoing ${combination.stemType} must be muted, not layered under its donor`);
+            `the outgoing ${combination.stemType} input gate must be muted, not layered under its donor: ${JSON.stringify(layerGains)}`);
           assert.ok(types.filter(type => type !== combination.stemType)
             .every(type => layerGains.original[type] > 0.9),
-          `all three non-swapped lead channels stay audible: ${JSON.stringify(layerGains)}`);
+          `all three non-swapped lead inputs stay audible: ${JSON.stringify(layerGains)}`);
+        }
+        if (typeof combination.expectedWholeDeckPlaybackRate === "number") {
+          const mediaRates = Object.values(layerGains.originalMedia).map(item => item.playbackRate);
+          assert.ok(mediaRates.length === types.length
+            && mediaRates.every(rate => Math.abs(rate - combination.expectedWholeDeckPlaybackRate) < 0.02),
+          `all original stems follow the evidence-backed donor tempo master: ${JSON.stringify(layerGains)}`);
+          assert.ok(layerGains.donor.length > 0
+            && layerGains.donor.every(item =>
+              item.playbackRate !== null
+              && Math.abs(item.playbackRate - combination.expectedWholeDeckPlaybackRate) < 0.02),
+          `the donor layer follows the same playback-rate master: ${JSON.stringify(layerGains)}`);
         }
         const timing = await page.evaluate(index => window.liveStemTimings[index] ?? null, timingCount);
         swapDetails = {
@@ -2215,10 +2243,16 @@ try {
             `an incompatible live swap must report its native tempo ratio: ${JSON.stringify(swapDetails)}`);
         }
         if (typeof combination.restoreAtSeconds === "number") {
+          const restoreClock = (await getPlaybackSnapshot()).find(item => !item.paused);
+          const remainingSeconds = restoreClock
+            ? Math.max(0, combination.restoreAtSeconds - restoreClock.currentTime)
+              / Math.max(0.01, restoreClock.playbackRate)
+            : 0;
+          const restoreTimeoutMs = Math.min(120_000, Math.max(10_000, Math.ceil((remainingSeconds + 5) * 1000)));
           await page.waitForFunction(restoreAtSeconds =>
             [...document.querySelectorAll('[data-role="current"] audio')].some(element =>
               !element.paused && element.currentTime >= restoreAtSeconds),
-          combination.restoreAtSeconds, { timeout: 10_000 });
+          combination.restoreAtSeconds, { timeout: restoreTimeoutMs });
           swapDetails.restoreSelectedAtSeconds = (Date.now() - recordingStartedAt) / 1000;
           const restoreResponse = page.waitForResponse(response =>
             new URL(response.url()).pathname.endsWith("/swaps") && response.request().method() === "DELETE",
@@ -2230,6 +2264,12 @@ try {
           { bufferCount }, { timeout: 5_000 });
           swapDetails.restoredAtSeconds = (Date.now() - recordingStartedAt) / 1000;
           swapDetails.restoredPlayback = await getPlaybackSnapshot();
+          if (typeof combination.expectedRestoredPlaybackRate === "number") {
+            assert.ok(swapDetails.restoredPlayback.length === types.length
+              && swapDetails.restoredPlayback.every(item =>
+                Math.abs(item.playbackRate - combination.expectedRestoredPlaybackRate) < 0.02),
+            `restoring the donor returns every original stem to the expected playback rate: ${JSON.stringify(swapDetails.restoredPlayback)}`);
+          }
           assert.ok(swapDetails.restoredPlayback.every(channel => !channel.paused),
             "restoring the original stem must leave every lead channel playing");
         }
