@@ -75,8 +75,9 @@ branch is pushed through `509cd57a` and matches its GitHub tracking ref.
   current architecture has conversion UI/routes and engine tests, but no
   equivalent single current-route acceptance run was found during this pass.
   The exact decoded-sample/frame check for FLAC has now been carried into the
-  current engine test; the full persisted route-to-export scenario remains an
-  open verification gap, not a claim that conversion is broken.
+  current engine test using a generated one-second WAV fixture; the full
+  persisted route-to-export scenario remains an open verification gap, not a
+  claim that conversion is broken.
 * `origin/arena/ed2f88f7-arena-os-canonical`: not integrated. Its experimental
   changes lower section-confidence gates and broaden tempo/section heuristics
   without stronger evidence. They would weaken current fail-closed behavior.
