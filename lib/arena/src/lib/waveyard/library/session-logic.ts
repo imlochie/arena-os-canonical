@@ -756,7 +756,6 @@ function livePhraseSectionAlignmentCandidates(
     const donorWindows = measuredRollingWindows(donorSection);
     if (!donorWindows) continue;
     for (const donorWindow of donorWindows) {
-      if (donorSection.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) continue;
       if (donorWindow.rhythm.status !== "measured" || donorWindow.chroma.status !== "measured") continue;
       const donorWindowStartMs = beatBoundaryMs(donorGrid, donorWindow.startBeatIndex);
       const donorWindowEndMs = beatBoundaryMs(donorGrid, donorWindow.endBeatIndex);
@@ -1054,9 +1053,9 @@ export function liveStemSectionAlignmentCandidates(
   const recipient = recipientSections.find((section) =>
     recipientMs >= section.startMs && recipientMs < section.endMs,
   );
-  if (!recipient || recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return [];
   const anyFingerprint = [...recipientSections, ...donorSections]
     .some((section) => section.passageFingerprint !== undefined && section.passageFingerprint !== null);
+  if (!recipient) return [];
   const fitsDonorStem = (candidate: LiveStemSectionAlignmentCandidate) => {
     const durationMs = evidence?.donorStemDurationMs;
     return durationMs === undefined || durationMs === null
@@ -1075,6 +1074,7 @@ export function liveStemSectionAlignmentCandidates(
       )
       : []).filter(fitsDonorStem);
   }
+  if (recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return [];
 
   const role = comparableSectionLabel(recipient.label);
   if (!role || recipient.labelConfidence < LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN) return [];

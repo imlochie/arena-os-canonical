@@ -609,8 +609,41 @@ test("one weak section elsewhere does not block a confident live phrase match", 
   assert.equal(
     liveStemSectionAlignment(recipientSections, donorSections, 10, ratio, evidence),
     null,
-    "a weak section at the current recipient position must still use the safe fallback",
+    "a weak section with no measured local windows must still use the safe fallback",
   );
+});
+
+test("strong local windows can align inside weakly classified sections", () => {
+  const recipient = {
+    ...testLongSourceSection("a".repeat(64), [
+      testRollingWindow(0, 0),
+      testRollingWindow(4, 1),
+      testRollingWindow(8, 2),
+    ]),
+    labelConfidence: 0.2,
+    structuralConfidence: 0.25,
+  };
+  const donor = {
+    ...testLongSourceSection("b".repeat(64), [
+      testRollingWindow(0, 0),
+      testRollingWindow(4, 1),
+      testRollingWindow(8, 2),
+    ]),
+    labelConfidence: 0.1,
+    structuralConfidence: 0.2,
+  };
+  const evidence = testLiveStemEvidence({
+    recipientBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+    donorBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
+  });
+
+  const match = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence)[0];
+  assert.ok(match, "measured local beat/chroma evidence should remain usable without a confident section label");
+  assert.equal(match.basis, "rhythm-harmony-phrase");
+  assert.equal(match.recipientBoundaryConfidence, 0.25);
+  assert.equal(match.donorBoundaryConfidence, 0.2);
+  assert.equal(match.rhythmMeasurementConfidence, 0.95);
+  assert.equal(match.harmonyMeasurementConfidence, 0.95);
 });
 
 test("strong local phrase evidence can align at native pace when global BPM confidence is weak", () => {

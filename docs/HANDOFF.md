@@ -18,6 +18,15 @@ leave its predecessor's timing in control of the session. The live timing
 event also reports the actual applied beat offset, and the browser runner can
 seed an already-swapped drum layer before checking a later donor.
 
+Checksum-current local rhythm/chroma windows can now support a live match even
+when their containing section has low semantic/boundary confidence. The
+candidate still carries that low boundary confidence, while the local features
+must independently meet their measurement-confidence, similarity, duration,
+harmonic and beat-grid checks. Without measured fingerprints, the older
+section-role fallback still requires a trusted section label and boundary.
+This separates “these two local audio windows match” from “the song section
+was confidently named.”
+
 **Real browser result and remaining blocker:** the existing full-length
 September/Queen fixture applied the Queen drum master at rate `0.872342` and
 reported a `0s` donor beat offset. In that same run, the follow-up Queen vocal
