@@ -1,11 +1,12 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
-import { asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   remixClips,
   remixSessions,
   remixTracks,
+  manualVocalSectionSets,
   sourceAnalyses,
   sourceAssets,
   sourceSectionAnalyses,
@@ -15,6 +16,7 @@ import {
   vocalPhrases,
 } from "@workspace/db/waveyardSchema";
 import { discoverMusicalMeetingPoints, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
+import { manualVocalSectionSchema, usableBeatGrid } from "@workspace/arena/lib/waveyard/types";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
 
@@ -63,31 +65,63 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
   const source = sourceById.get(selectedStem.sourceAssetId);
   const sourceAnalysis = source ? analysisBySource.get(source.id) : null;
   const sourceSectionAnalysis = source ? sectionAnalysisBySource.get(source.id) : null;
-  const selectedSection = source && sourceAnalysis && sourceSectionAnalysis
+  const automaticSection = source && sourceAnalysis && sourceSectionAnalysis
     ? (sectionsBySource.get(source.id) ?? []).find((section) => section.id === sectionId
       && section.sourceAnalysisId === sourceAnalysis.id && section.sourceSectionAnalysisId === sourceSectionAnalysis.id
       && section.sourceChecksumSha256 === source.checksumSha256)
     : null;
+  let manualSection: ReturnType<typeof manualVocalSectionSchema.parse> | null = null;
+  let manualSetCurrent = false;
+  if (!automaticSection && source && selectedStem?.stemType === "vocals") {
+    const [set] = await db.select().from(manualVocalSectionSets).where(and(
+      eq(manualVocalSectionSets.remixSessionId, remix.id),
+      eq(manualVocalSectionSets.stemAssetId, selectedStem.id),
+    )).limit(1);
+    if (set && set.projectId === remix.projectId && set.sourceAssetId === source.id
+      && set.sourceChecksumSha256 === source.checksumSha256
+      && set.stemChecksumSha256 === (selectedStem.checksumSha256 ?? "")) {
+      const rawSections = Array.isArray(set.sections) ? set.sections : [];
+      const parsed = rawSections.map((item) => manualVocalSectionSchema.safeParse(item));
+      manualSection = parsed.find((item) => item.success && item.data.id === sectionId)?.data ?? null;
+      manualSetCurrent = manualSection !== null;
+    }
+  }
+  const selectedSection = automaticSection ?? manualSection;
   if (!source || !sourceAnalysis || sourceAnalysis.status !== "complete" || sourceAnalysis.sourceChecksumSha256 !== source.checksumSha256
-    || !sourceSectionAnalysis || sourceSectionAnalysis.status !== "complete" || sourceSectionAnalysis.sourceAnalysisId !== sourceAnalysis.id
-    || sourceSectionAnalysis.sourceChecksumSha256 !== source.checksumSha256 || !selectedSection) return null;
+    || !selectedSection
+    || (!automaticSection && !manualSetCurrent)
+    || (automaticSection && (!sourceSectionAnalysis || sourceSectionAnalysis.status !== "complete"
+      || sourceSectionAnalysis.sourceAnalysisId !== sourceAnalysis.id
+      || sourceSectionAnalysis.sourceChecksumSha256 !== source.checksumSha256))) return null;
   const phraseEvidence = phrasesRows
     .filter((row) => row.vocal_analyses.stemAssetId === selectedStem.id && row.vocal_analyses.status === "complete"
       && row.vocal_analyses.sourceAssetId === source.id && row.vocal_analyses.sourceChecksumSha256 === source.checksumSha256
       && row.vocal_analyses.stemChecksumSha256 === selectedStem.checksumSha256)
     .map((row) => row.vocal_phrases);
   const phraseTolerance = Math.max(100, 60_000 / Math.max(40, sourceAnalysis.bpm ?? 120) / 4);
+  const beatGrid = usableBeatGrid(parsedBeatGrid(sourceAnalysis.beatGrid)) ?? [];
+  const nearestBeatIndex = (timestampMs: number) => {
+    let nearestIndex = 0;
+    for (let index = 1; index < beatGrid.length; index += 1) {
+      if (Math.abs(beatGrid[index] - timestampMs) < Math.abs(beatGrid[nearestIndex] - timestampMs)) nearestIndex = index;
+    }
+    return nearestIndex;
+  };
+  const isManualSection = !automaticSection;
+  const startBeatIndex = automaticSection ? automaticSection.startBeatIndex : nearestBeatIndex(selectedSection.startMs);
+  const endBeatIndex = automaticSection ? automaticSection.endBeatIndex : nearestBeatIndex(selectedSection.endMs);
   const sourceInput = {
     sourceAssetId: source.id,
     stemAssetId: selectedStem.id,
     sourceChecksumSha256: source.checksumSha256,
     sectionId: selectedSection.id,
-    startBeatIndex: selectedSection.startBeatIndex,
-    endBeatIndex: selectedSection.endBeatIndex,
+    startBeatIndex,
+    endBeatIndex,
     startMs: selectedSection.startMs,
     endMs: selectedSection.endMs,
     phraseBoundaryStart: selectedStem.stemType === "vocals" && phraseEvidence.some((phrase) => closeTo(phrase.startMs, selectedSection.startMs, phraseTolerance)),
     phraseBoundaryEnd: selectedStem.stemType === "vocals" && phraseEvidence.some((phrase) => closeTo(phrase.endMs, selectedSection.endMs, phraseTolerance)),
+    sectionEvidence: isManualSection ? "manual" as const : "detected" as const,
     analysis: {
       status: sourceAnalysis.status,
       sourceChecksumSha256: sourceAnalysis.sourceChecksumSha256,

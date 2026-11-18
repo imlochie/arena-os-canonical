@@ -683,6 +683,25 @@ export const remixSessions = pgTable("remix_sessions", {
   ...timestamps,
 }, (table) => [index("remix_sessions_project_id_idx").on(table.projectId), index("remix_sessions_owner_id_idx").on(table.ownerId)]);
 
+// User-authored vocal ranges are separate from detector sections: they may
+// overlap, carry semantic labels, and are private to the remix session.
+// Checksums bind each annotation set to the exact source and separated stem.
+export const manualVocalSectionSets = pgTable("manual_vocal_section_sets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  revision: integer("revision").notNull().default(1),
+  sections: jsonb("sections").$type<unknown[]>().notNull().default(sql`'[]'::jsonb`),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("manual_vocal_section_sets_session_stem_unique").on(table.remixSessionId, table.stemAssetId),
+  index("manual_vocal_section_sets_source_idx").on(table.sourceAssetId),
+]);
+
 // Source acquisition is provenance over a normal SourceAsset. It is never used
 // as audio identity: checksums remain the source-analysis/version identity.
 export const sourceAcquisitions = pgTable("source_acquisitions", {

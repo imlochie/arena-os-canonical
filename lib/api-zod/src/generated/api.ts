@@ -9,6 +9,96 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary Read vocal section markers from a private Studio session
+ */
+export const GetManualVocalSectionsParams = zod.object({
+  "id": zod.coerce.string().uuid(),
+  "sourceAssetId": zod.coerce.string().uuid(),
+  "stemAssetId": zod.coerce.string().uuid()
+})
+
+export const getManualVocalSectionsResponseRevisionMin = 0;
+
+export const getManualVocalSectionsResponseSectionsItemTitleMax = 80;
+
+export const getManualVocalSectionsResponseSectionsItemStartMsMin = 0;
+
+
+
+
+export const GetManualVocalSectionsResponse = zod.object({
+  "revision": zod.number().int().min(getManualVocalSectionsResponseRevisionMin),
+  "sections": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "label": zod.enum(['intro', 'verse', 'pre-chorus', 'chorus', 'bridge', 'breakdown', 'outro', 'custom']),
+  "title": zod.string().max(getManualVocalSectionsResponseSectionsItemTitleMax),
+  "startMs": zod.number().int().min(getManualVocalSectionsResponseSectionsItemStartMsMin),
+  "endMs": zod.number().int().min(1)
+})),
+  "stale": zod.boolean(),
+  "sourceChecksumSha256": zod.string().optional(),
+  "stemChecksumSha256": zod.string().optional()
+})
+
+
+/**
+ * @summary Replace private session vocal markers with optimistic revision checking
+ */
+export const SaveManualVocalSectionsParams = zod.object({
+  "id": zod.coerce.string().uuid(),
+  "sourceAssetId": zod.coerce.string().uuid(),
+  "stemAssetId": zod.coerce.string().uuid()
+})
+
+export const saveManualVocalSectionsBodyExpectedRevisionMin = 0;
+
+export const saveManualVocalSectionsBodyConfirmCurrentAudioDefault = false;
+export const saveManualVocalSectionsBodySectionsItemTitleMax = 80;
+
+export const saveManualVocalSectionsBodySectionsItemStartMsMin = 0;
+
+
+export const saveManualVocalSectionsBodySectionsMax = 128;
+
+
+
+export const SaveManualVocalSectionsBody = zod.object({
+  "expectedRevision": zod.number().int().min(saveManualVocalSectionsBodyExpectedRevisionMin),
+  "confirmCurrentAudio": zod.boolean().default(saveManualVocalSectionsBodyConfirmCurrentAudioDefault),
+  "sections": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "label": zod.enum(['intro', 'verse', 'pre-chorus', 'chorus', 'bridge', 'breakdown', 'outro', 'custom']),
+  "title": zod.string().max(saveManualVocalSectionsBodySectionsItemTitleMax),
+  "startMs": zod.number().int().min(saveManualVocalSectionsBodySectionsItemStartMsMin),
+  "endMs": zod.number().int().min(1)
+})).max(saveManualVocalSectionsBodySectionsMax)
+})
+
+export const saveManualVocalSectionsResponseRevisionMin = 0;
+
+export const saveManualVocalSectionsResponseSectionsItemTitleMax = 80;
+
+export const saveManualVocalSectionsResponseSectionsItemStartMsMin = 0;
+
+
+
+
+export const SaveManualVocalSectionsResponse = zod.object({
+  "revision": zod.number().int().min(saveManualVocalSectionsResponseRevisionMin),
+  "sections": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "label": zod.enum(['intro', 'verse', 'pre-chorus', 'chorus', 'bridge', 'breakdown', 'outro', 'custom']),
+  "title": zod.string().max(saveManualVocalSectionsResponseSectionsItemTitleMax),
+  "startMs": zod.number().int().min(saveManualVocalSectionsResponseSectionsItemStartMsMin),
+  "endMs": zod.number().int().min(1)
+})),
+  "stale": zod.boolean(),
+  "sourceChecksumSha256": zod.string().optional(),
+  "stemChecksumSha256": zod.string().optional()
+})
+
+
+/**
  * @summary Move a session entry, optionally within playlist-only slots
  */
 export const ReorderListeningSessionParams = zod.object({

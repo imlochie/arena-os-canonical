@@ -5,6 +5,48 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export type ManualVocalSectionLabel = typeof ManualVocalSectionLabel[keyof typeof ManualVocalSectionLabel];
+
+
+export const ManualVocalSectionLabel = {
+  intro: 'intro',
+  verse: 'verse',
+  'pre-chorus': 'pre-chorus',
+  chorus: 'chorus',
+  bridge: 'bridge',
+  breakdown: 'breakdown',
+  outro: 'outro',
+  custom: 'custom',
+} as const;
+
+export interface ManualVocalSection {
+  id: string;
+  label: ManualVocalSectionLabel;
+  /** @maxLength 80 */
+  title: string;
+  /** @minimum 0 */
+  startMs: number;
+  /** @minimum 1 */
+  endMs: number;
+}
+
+export interface ManualVocalSectionSet {
+  /** @minimum 0 */
+  revision: number;
+  sections: ManualVocalSection[];
+  stale: boolean;
+  sourceChecksumSha256?: string;
+  stemChecksumSha256?: string;
+}
+
+export interface ManualVocalSectionSetInput {
+  /** @minimum 0 */
+  expectedRevision: number;
+  confirmCurrentAudio?: boolean;
+  /** @maxItems 128 */
+  sections: ManualVocalSection[];
+}
+
 export interface ListeningSessionOrderInput {
   sessionTrackId: string;
   /** @minimum 0 */
@@ -863,6 +905,8 @@ export interface SeparationCancellationResponse {
   stage: string;
   message?: string;
 }
+
+export type SaveManualVocalSections409 = { [key: string]: unknown };
 
 export type ReorderListeningSession200 = { [key: string]: unknown };
 

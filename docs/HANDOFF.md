@@ -1,6 +1,38 @@
 # Arena handoff — read this first
 
-## Latest increment: full live-donor preparation, entry, and rest-response verification
+## Latest increment: private, editable vocal-section fallback
+
+Studio now lets the user listen to a separated vocal stem and mark named source
+ranges (intro, verse, pre-chorus, chorus, bridge, breakdown, outro, or custom),
+even when automated section analysis is absent. Markers are saved inside the
+selected private remix session, not mixed into detected section records or
+browser-only transcript storage. Each set is bound to the source and stem
+checksums and has an optimistic revision, so stale audio and conflicting edits
+from another device cannot be silently accepted. Audio bytes and transcript
+text are not copied into the marker record.
+
+The existing “Find where this fits” planner now accepts a current user-marked
+vocal range without requiring detector-generated sections. It still evaluates
+the available beat grid, tempo, key, phrase evidence, target arrangement window,
+and range duration; a human “chorus” label is not represented as detector
+confidence or a compatibility guarantee. Accepting a recommendation creates an
+ordinary arrangement clip, which can be moved or edited. Reopening the same
+private session reloads the markers; returning to the app refreshes them, and a
+stale revision requires an explicit reload before overwriting another device's
+changes.
+
+The manual path is deliberately retained after automatic section recognition
+improves. It is a practical authoring fallback, not proof that automatic
+verse/chorus recognition or arbitrary-song mix quality is solved.
+
+**Verification:** the development database accepted the additive marker-set
+table. The database-backed API acceptance test saved and reopened a vocal
+range, found a placement despite there being no detected source sections,
+created a normal editable clip, rejected an outdated checksum without
+confirmation, and accepted an explicitly rechecked range. Focused placement and
+marker-validation tests pass; API and web-app typechecks pass.
+
+## Previous increment: full live-donor preparation, entry, and rest-response verification
 
 The existing full-length September/Queen browser fixture now proves several
 connected live-swap behaviors on Linux Chromium 155, using the checksum-verified
@@ -107,23 +139,12 @@ transforms, live timing, or arbitrary-pair adaptation. In particular, exact
 key matching as a rejection gate conflicts with Waveyard's goal of trying
 bounded transformations; a quality model must not replace listening.
 
-The current Studio can inspect detected sections, but it has no persistent
-user-defined vocal section ranges that the placement planner consumes. Live
-swapping already permits a manual donor start and snaps to activity, voiced
-pitch runs, or detected boundaries; that is a timestamp control, not manual
-section authoring. The appropriate fallback is an optional vocal-stem editor:
-let the user mark and label ranges (intro, verse, chorus, pre-chorus, bridge,
-breakdown, outro, or custom), revise them, and feed those ranges into the
-existing passage/fit planner as human evidence. Keep manual annotations
-separate from detected sections and retain the same playback, audition, save,
-reopen, and later clip-edit path. A user-selected “chorus” must not bypass
-timing, harmony, audibility, or target-fit checks. Keep the manual path even
-after automatic form inference improves.
-
-Before implementing persistence, choose whether these manual annotations stay
-on one device or sync with the user's private Waveyard sessions. Their audio
-and transcript data should remain local unless the chosen private-sync design
-explicitly requires otherwise.
+The manual vocal-section fallback is now implemented as described above. Keep
+the distinction between human-marked ranges and generated structural events:
+manual labels provide trusted source boundaries and role notes, but do not
+prove that a target backing passage is compatible. The selected storage model
+is private-session sync; only marker IDs, labels, source times, and checksum
+provenance are stored, never audio bytes or transcript text.
 
 ## Previous increment: faster full-length matching and exact drum-analysis lineage
 

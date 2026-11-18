@@ -1,5 +1,6 @@
 export const importedRoutes = [
   { path: "/arcade/development", methods: ["POST"], load: () => import("./imported/arcade/development/route.ts") },
+  { path: "/remixes/:id/manual-vocal-sections/:sourceAssetId/:stemAssetId", methods: ["GET","PUT"], load: () => import("./imported/remixes/[id]/manual-vocal-sections/route.ts") },
   { path: "/arcade/mods/repository/review", methods: ["POST"], load: () => import("./imported/arcade/mods/repository/review/route.ts") },
   { path: "/waveyard/projects/:id/arrangement-layers/:layerId/midi", methods: ["GET","POST"], load: () => import("./imported/waveyard/projects/[id]/arrangement-layers/[layerId]/midi/route.ts") },
   { path: "/waveyard/projects/:id/publication/audit", methods: ["GET"], load: () => import("./imported/waveyard/projects/[id]/publication/audit/route.ts") },

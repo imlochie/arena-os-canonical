@@ -31,6 +31,17 @@ describe("Musical Meeting Points", () => {
     expect(result[0]?.reasons).toContain("bar count differs from the current window");
   });
 
+  it("keeps manual section labels distinct from detected section evidence", () => {
+    const result = discoverMusicalMeetingPoints({
+      source: { ...source, sectionEvidence: "manual" },
+      targets: [target()],
+      remixBpm: 120,
+      targetKey: "C major",
+    });
+    expect(result[0]).toMatchObject({ state: "ready", sectionAligned: false });
+    expect(result[0]?.reasons).toContain("source range and role were marked by the user; the fit remains an analysis recommendation");
+  });
+
   it("uses existing tempo and key systems only when their analyses are available", () => {
     const result = discoverMusicalMeetingPoints({ source, targets: [target()], remixBpm: 96, targetKey: "F# minor" });
     expect(result[0]).toMatchObject({ tempoRatio: 0.8, tempoSyncEnabled: true, keyShiftSemitones: 4, keySyncEnabled: true });

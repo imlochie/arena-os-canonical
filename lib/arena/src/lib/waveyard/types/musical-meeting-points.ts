@@ -25,6 +25,8 @@ export type MeetingPointSourceRegion = {
   endMs: number;
   phraseBoundaryStart: boolean;
   phraseBoundaryEnd: boolean;
+  /** Manual labels are human evidence, not detector output. */
+  sectionEvidence?: "detected" | "manual" | null;
   analysis: MeetingPointAnalysis | null;
 };
 
@@ -95,7 +97,8 @@ export function discoverMusicalMeetingPoints(input: {
     .map((target) => {
       const targetAnalysis = verifiedAnalysis(target.analysis, target.sourceChecksumSha256);
       const equalBars = bars !== null && target.barCount !== null && bars === target.barCount;
-      const sectionAligned = Boolean(input.source.sectionId && target.sectionId);
+      const sectionAligned = input.source.sectionEvidence !== "manual"
+        && Boolean(input.source.sectionId && target.sectionId);
       const phraseAligned = input.source.phraseBoundaryStart && input.source.phraseBoundaryEnd;
       const sourceWindowFits = input.source.startMs + Math.round(target.durationMs * ratio) <= input.source.endMs;
       const keyShift = sourceKey && projectKey ? semitoneShift(sourceKey, projectKey) : null;
@@ -112,6 +115,7 @@ export function discoverMusicalMeetingPoints(input: {
       else reasons.push("key relationship is unavailable; no key shift will be applied");
       if (phraseAligned) reasons.push("source region begins and ends on vocal phrase boundaries");
       if (sectionAligned) reasons.push("both sides use detected section boundaries");
+      if (input.source.sectionEvidence === "manual") reasons.push("source range and role were marked by the user; the fit remains an analysis recommendation");
       if (!sourceWindowFits) reasons.push("source section is shorter than this timeline window");
       if (!targetAnalysis) reasons.push("target source analysis is unavailable");
       const state: MusicalMeetingPointState = equalBars && target.beatAligned && sourceWindowFits && Boolean(projectKey && sourceKey) && Boolean(targetAnalysis)

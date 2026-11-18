@@ -55,12 +55,15 @@ import type {
   LibraryTrackListResponse,
   LibraryTrackSeparationStartResponse,
   ListeningSessionOrderInput,
+  ManualVocalSectionSet,
+  ManualVocalSectionSetInput,
   ReorderListeningSession200,
   ReorderListeningSession409,
   ReorderSavedQueue200,
   ReorderSavedQueue409,
   ReviewArcadeModRepository200,
   RunArcadeDevelopment200,
+  SaveManualVocalSections409,
   SavedQueueOrderInput,
   SearchArcadeCatalog200,
   SeparationCancellationResponse
@@ -92,6 +95,186 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getGetManualVocalSectionsUrl = (id: string,
+    sourceAssetId: string,
+    stemAssetId: string,) => {
+
+
+
+
+  return `/api/remixes/${id}/manual-vocal-sections/${sourceAssetId}/${stemAssetId}`
+}
+
+/**
+ * @summary Read vocal section markers from a private Studio session
+ */
+export const getManualVocalSections = async (id: string,
+    sourceAssetId: string,
+    stemAssetId: string, options?: Parameters<typeof customFetch>[1]): Promise<ManualVocalSectionSet> => {
+
+  return customFetch<ManualVocalSectionSet>(getGetManualVocalSectionsUrl(id,sourceAssetId,stemAssetId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetManualVocalSectionsQueryKey = (id: string,
+    sourceAssetId: string,
+    stemAssetId: string,) => {
+    return [
+    `/api/remixes/${id}/manual-vocal-sections/${sourceAssetId}/${stemAssetId}`
+    ] as const;
+    }
+
+
+export const getGetManualVocalSectionsQueryOptions = <TData = Awaited<ReturnType<typeof getManualVocalSections>>, TError = ErrorType<unknown>>(id: string,
+    sourceAssetId: string,
+    stemAssetId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getManualVocalSections>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetManualVocalSectionsQueryKey(id,sourceAssetId,stemAssetId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getManualVocalSections>>> = ({ signal }) => getManualVocalSections(id,sourceAssetId,stemAssetId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined && sourceAssetId !== null && sourceAssetId !== undefined && stemAssetId !== null && stemAssetId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getManualVocalSections>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetManualVocalSectionsQueryResult = NonNullable<Awaited<ReturnType<typeof getManualVocalSections>>>
+export type GetManualVocalSectionsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Read vocal section markers from a private Studio session
+ */
+
+export function useGetManualVocalSections<TData = Awaited<ReturnType<typeof getManualVocalSections>>, TError = ErrorType<unknown>>(
+ id: string,
+    sourceAssetId: string,
+    stemAssetId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getManualVocalSections>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetManualVocalSectionsQueryOptions(id,sourceAssetId,stemAssetId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getSaveManualVocalSectionsUrl = (id: string,
+    sourceAssetId: string,
+    stemAssetId: string,) => {
+
+
+
+
+  return `/api/remixes/${id}/manual-vocal-sections/${sourceAssetId}/${stemAssetId}`
+}
+
+/**
+ * @summary Replace private session vocal markers with optimistic revision checking
+ */
+export const saveManualVocalSections = async (id: string,
+    sourceAssetId: string,
+    stemAssetId: string,
+    manualVocalSectionSetInput: ManualVocalSectionSetInput, options?: Parameters<typeof customFetch>[1]): Promise<ManualVocalSectionSet> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<ManualVocalSectionSet>(getSaveManualVocalSectionsUrl(id,sourceAssetId,stemAssetId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(manualVocalSectionSetInput)
+  }
+);}
+
+
+
+
+
+export const getSaveManualVocalSectionsMutationKey = () => ['saveManualVocalSections'] as const;
+
+export const getSaveManualVocalSectionsMutationOptions = <TError = ErrorType<SaveManualVocalSections409>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveManualVocalSections>>, TError,SaveManualVocalSectionsMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof saveManualVocalSections>>, TError,SaveManualVocalSectionsMutationVariables, TContext> => {
+
+const mutationKey = getSaveManualVocalSectionsMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof saveManualVocalSections>>, SaveManualVocalSectionsMutationVariables> = (props) => {
+          const {id,sourceAssetId,stemAssetId,data} = props ?? {};
+
+          return  saveManualVocalSections(id,sourceAssetId,stemAssetId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SaveManualVocalSectionsMutationResult = NonNullable<Awaited<ReturnType<typeof saveManualVocalSections>>>
+    export type SaveManualVocalSectionsMutationBody = BodyType<ManualVocalSectionSetInput>
+    export type SaveManualVocalSectionsMutationError = ErrorType<SaveManualVocalSections409>
+    export type SaveManualVocalSectionsMutationVariables = {id: string;sourceAssetId: string;stemAssetId: string;data: BodyType<ManualVocalSectionSetInput>}
+
+    /**
+ * @summary Replace private session vocal markers with optimistic revision checking
+ */
+export const useSaveManualVocalSections = <TError = ErrorType<SaveManualVocalSections409>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveManualVocalSections>>, TError,SaveManualVocalSectionsMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof saveManualVocalSections>>,
+        TError,
+        SaveManualVocalSectionsMutationVariables,
+        TContext
+      > => {
+      return useMutation(getSaveManualVocalSectionsMutationOptions(options));
+    }
 
 export const getReorderListeningSessionUrl = (id: string,) => {
 

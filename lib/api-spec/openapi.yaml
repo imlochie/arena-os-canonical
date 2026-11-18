@@ -13,6 +13,63 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /remixes/{id}/manual-vocal-sections/{sourceAssetId}/{stemAssetId}:
+    get:
+      operationId: getManualVocalSections
+      tags: [waveyard]
+      summary: Read vocal section markers from a private Studio session
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: sourceAssetId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: stemAssetId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Human-authored, source-checksum-bound markers and sync revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManualVocalSectionSet" }
+    put:
+      operationId: saveManualVocalSections
+      tags: [waveyard]
+      summary: Replace private session vocal markers with optimistic revision checking
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: sourceAssetId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: stemAssetId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManualVocalSectionSetInput" }
+      responses:
+        "200":
+          description: Saved section markers with next sync revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManualVocalSectionSet" }
+        "409":
+          description: Another device saved first or source audio changed
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
   /library/sessions/{id}/tracks:
     patch:
       operationId: reorderListeningSession
@@ -785,6 +842,40 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
 components:
   schemas:
+    ManualVocalSection:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        label:
+          type: string
+          enum: [intro, verse, pre-chorus, chorus, bridge, breakdown, outro, custom]
+        title: { type: string, maxLength: 80 }
+        startMs: { type: integer, minimum: 0 }
+        endMs: { type: integer, minimum: 1 }
+      required: [id, label, title, startMs, endMs]
+    ManualVocalSectionSet:
+      type: object
+      properties:
+        revision: { type: integer, minimum: 0 }
+        sections:
+          type: array
+          items: { $ref: "#/components/schemas/ManualVocalSection" }
+        stale: { type: boolean }
+        sourceChecksumSha256: { type: string }
+        stemChecksumSha256: { type: string }
+      required: [revision, sections, stale]
+    ManualVocalSectionSetInput:
+      type: object
+      additionalProperties: false
+      properties:
+        expectedRevision: { type: integer, minimum: 0 }
+        confirmCurrentAudio: { type: boolean, default: false }
+        sections:
+          type: array
+          maxItems: 128
+          items: { $ref: "#/components/schemas/ManualVocalSection" }
+      required: [expectedRevision, sections]
     ListeningSessionOrderInput:
       type: object
       required: [sessionTrackId, position]

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { displaySourceSectionLabel } from "@workspace/arena/lib/waveyard/types/source-sections";
+import { ManualVocalSectionEditor } from "./ManualVocalSectionEditor";
 import { LocalVocalTranscript } from "./LocalVocalTranscript";
 import type { Source, SourceSection, Stem } from "./types";
 
@@ -17,16 +18,20 @@ function sourceTime(milliseconds: number) {
 export function SourceSectionMap({
   source,
   vocalStem,
+  remixId,
   onUseForSlice,
   onArrangementAction,
   onFindMeetingPoints,
+  onFindManualVocalSection,
   onRequestEvents,
 }: {
   source: Source;
   vocalStem: Stem | null;
+  remixId?: string | null;
   onUseForSlice: (section: SourceSection) => void;
   onArrangementAction?: (section: SourceSection, action: ArrangementAction, repetitions: number) => Promise<string | null>;
   onFindMeetingPoints?: (section: SourceSection) => Promise<string | null>;
+  onFindManualVocalSection?: (sectionId: string, stemAssetId: string) => Promise<string | null>;
   onRequestEvents?: () => Promise<string | null>;
 }) {
   const sections = source.sections ?? [];
@@ -67,7 +72,14 @@ export function SourceSectionMap({
     {source.eventAnalysis && <small>Engine {source.eventAnalysis.analysisEngine} {source.eventAnalysis.analysisEngineVersion}</small>}
   </section>;
   const transcriptPanel = <LocalVocalTranscript source={source} stem={vocalStem} sections={sections} />;
-  if (source.sectionAnalysis?.status !== "complete" || !sections.length) return <>{transcriptPanel}{eventPanel}</>;
+  const manualSectionPanel = <ManualVocalSectionEditor
+    source={source}
+    vocalStem={vocalStem}
+    remixId={remixId ?? null}
+    onFindWhereFits={onFindManualVocalSection}
+  />;
+  if (source.sectionAnalysis?.status !== "complete" || !sections.length)
+    return <>{manualSectionPanel}{transcriptPanel}{eventPanel}</>;
   const selected = sections.find((section) => section.id === selectedId) ?? null;
   const durationMs = Math.max(1, Math.round(source.durationSeconds * 1000));
   const label = selected ? displaySourceSectionLabel(selected) : "";
@@ -142,7 +154,8 @@ export function SourceSectionMap({
       </div>
       {actionMessage && <p className="notice" role="status">{actionMessage}</p>}
     </div> : <p className="notice">Select a marker to inspect it, prefill Slice, or deliberately add it to the arrangement.</p>}
-     {transcriptPanel}
-     {eventPanel}
+      {manualSectionPanel}
+      {transcriptPanel}
+      {eventPanel}
   </section>;
 }

@@ -21,6 +21,7 @@ export * from "./stem-harmony-analysis";
 export * from "./midi";
 export * from "./automatic-remix";
 export * from "./musical-meeting-points";
+export * from "./manual-vocal-sections";
 export * from "./arrangement-extensions";
 export * from "./multi-source-placement";
 export * from "./source-acquisition";

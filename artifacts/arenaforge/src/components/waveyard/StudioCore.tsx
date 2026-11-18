@@ -784,11 +784,11 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
       setBuildingAutomaticRemix(null);
     }
   };
-  const findMeetingPoints = async (section: SourceSection) => {
-    if (!remix || !selected) return "Create or open an arrangement before asking where this material fits.";
-    setMeetingMessage(null); setMeetingPoints([]); setMeetingContext({ stemAssetId: selected.id, sourceSectionId: section.id });
+  const findMeetingPointsForStem = async (sourceSectionId: string, stemAssetId: string) => {
+    if (!remix) return "Create or open an arrangement before asking where this material fits.";
+    setMeetingMessage(null); setMeetingPoints([]); setMeetingContext({ stemAssetId, sourceSectionId });
     const response = await fetch(`/api/remixes/${remix.id}/meeting-points`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stemAssetId: selected.id, sourceSectionId: section.id }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stemAssetId, sourceSectionId }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setMeetingMessage(body.error ?? "Could not find verified placement recommendations."); return body.error ?? "Could not find verified placement recommendations."; }
@@ -796,6 +796,10 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     setMeetingPoints(points);
     setMeetingMessage(points.length ? `${points.length} descriptive placement recommendation${points.length === 1 ? "" : "s"} found.` : "No conservative placement is available for this selected region yet.");
     return null;
+  };
+  const findMeetingPoints = async (section: SourceSection) => {
+    if (!selected) return "Select a source stem before asking where this material fits.";
+    return findMeetingPointsForStem(section.id, selected.id);
   };
   const acceptMeetingPoint = async (point: MusicalMeetingPoint) => {
     if (!remix || !meetingContext) return;
@@ -1418,7 +1422,7 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     </>}
     {studioTab === "analyze" && <>
       {source?.linkedFromLibrary && <p className="notice">Linked library audio. Mix and arrange it here; source analysis stays with the original project.</p>}
-      {source && !source.linkedFromLibrary && <SourceSectionMap source={source} vocalStem={stems.filter((stem) => stem.sourceAssetId === source.id && stem.stemType === "vocals").at(-1) ?? null} onUseForSlice={(section) => { setStudioTab("edit"); setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
+      {source && !source.linkedFromLibrary && <SourceSectionMap source={source} remixId={remix?.id ?? null} vocalStem={stems.filter((stem) => stem.sourceAssetId === source.id && stem.stemType === "vocals").at(-1) ?? null} onUseForSlice={(section) => { setStudioTab("edit"); setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onFindManualVocalSection={findMeetingPointsForStem} onRequestEvents={() => requestSourceEvents(source.id)} />}
       <MeetingPointsPanel points={meetingPoints} busyId={acceptingMeetingPoint} message={meetingMessage} onAccept={async (point) => { setStudioTab("edit"); await acceptMeetingPoint(point); }} />
       {source && !source.linkedFromLibrary && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
       {source && !source.linkedFromLibrary && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
