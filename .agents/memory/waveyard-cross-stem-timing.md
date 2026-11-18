@@ -14,3 +14,9 @@ A verified active drum donor may still define the shared tempo and bar clock for
 **Why:** Bass and vocal placement must respond to the rhythm the listener currently hears, not a stale clock from the untouched source, without forcing every attack onto the drum transient.
 
 **How to apply:** Keep tempo-master authority separate from role-specific phase corrections. Use the active drum grid for live entry/section mapping only when its timing evidence is reliable; keep same-role onset analysis scoped to that role and leave placement unchanged when evidence is missing or incompatible.
+
+For automated activity gates, do not treat `AudioParam.value` as the effective gain after scheduling automation; it may remain at its intrinsic value while a ramp is active. Track the commanded target separately, and verify the signal downstream of the gate.
+
+**Why:** Reading the stale value made a real browser gate mute correctly but skip reopening on later activity, while unit mocks concealed the behavior.
+
+**How to apply:** When adding automated fades, ducks, or other conditional gain changes, test a close-and-reopen cycle with browser audio and measure output after the gate, not only the parameter value.

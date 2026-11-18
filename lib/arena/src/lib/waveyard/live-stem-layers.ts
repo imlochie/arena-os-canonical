@@ -143,6 +143,7 @@ type Layer = {
   sampleRate: number;
   input: GainNode;
   activityGate: GainNode | null;
+  activityGateTarget: 0 | 1;
   preserveRecipientDrumRests: boolean;
   quietSince: number | null;
   referenceRms: number;
@@ -161,14 +162,18 @@ type PreparedAudio = {
   decodeMs: number;
   tempoMatchMs: number;
   transferBytes: number;
+  reusedPreparedBuffer: boolean;
 };
 
 export type LiveStemTiming = {
+  assetUrl: string;
   selectionToAudibleMs: number;
+  /** Preparation work may have completed during candidate hover, before selection. */
   downloadMs: number;
   decodeMs: number;
   tempoMatchMs: number;
   tempoStretchRatio: number;
+  reusedPreparedBuffer: boolean;
   /** Offset used to align the donor against the receiving layer's playback clock. */
   beatOffsetSeconds: number;
   transferBytes: number;
@@ -416,12 +421,19 @@ export class LiveStemLayers {
   }
 
   private setActivityGate(layer: Layer, value: 0 | 1) {
-    if (!layer.activityGate || Math.abs(layer.activityGate.gain.value - value) < 0.001) return;
+    if (!layer.activityGate || layer.activityGateTarget === value) return;
     const now = layer.activityGate.context.currentTime;
     const gain = layer.activityGate.gain;
-    gain.cancelScheduledValues(now);
-    gain.setValueAtTime(gain.value, now);
+    if (typeof gain.cancelAndHoldAtTime === "function") {
+      gain.cancelAndHoldAtTime(now);
+    } else {
+      gain.cancelScheduledValues(now);
+      // AudioParam.value reports its intrinsic value, not necessarily the
+      // value of an active automation ramp. Track the last target ourselves.
+      gain.setValueAtTime(layer.activityGateTarget, now);
+    }
     gain.linearRampToValueAtTime(value, now + 0.04);
+    layer.activityGateTarget = value;
   }
 
   async setPitchPreserving(enabled: boolean) {
@@ -841,11 +853,13 @@ export class LiveStemLayers {
     const timing = layer.timing;
     if (!timing) return;
     this.onTiming?.({
+      assetUrl: layer.url,
       selectionToAudibleMs: Math.max(0, performance.now() - timing.selectedAt),
       downloadMs: timing.downloadMs,
       decodeMs: timing.decodeMs,
       tempoMatchMs: timing.tempoMatchMs,
       tempoStretchRatio: layer.tempoStretchRatio,
+      reusedPreparedBuffer: timing.reusedPreparedBuffer,
       beatOffsetSeconds: layer.beatOffsetSeconds,
       transferBytes: timing.transferBytes,
     });
@@ -1043,6 +1057,7 @@ export class LiveStemLayers {
       decodeMs: 0,
       tempoMatchMs: 0,
       transferBytes: 0,
+      reusedPreparedBuffer: true,
     };
   }
 
@@ -1103,6 +1118,7 @@ export class LiveStemLayers {
       decodeMs,
       tempoMatchMs,
       transferBytes,
+      reusedPreparedBuffer: false,
     };
   }
 
@@ -1150,8 +1166,8 @@ export class LiveStemLayers {
     const key = this.preparedKey(url, tempoStretchRatio);
     const prepared = this.prepared.get(key);
     if (!prepared) {
-      return this.getRecentBuffer(key, selectedAt) ??
-        this.prepareBuffer(url, tempoStretchRatio, signal, selectedAt);
+      const recent = this.getRecentBuffer(key, selectedAt);
+      return recent ?? this.prepareBuffer(url, tempoStretchRatio, signal, selectedAt);
     }
 
     // A live replacement now owns the warm operation. Cancelling that swap
@@ -1161,7 +1177,7 @@ export class LiveStemLayers {
     signal.addEventListener("abort", abortPrepared, { once: true });
     if (signal.aborted) abortPrepared();
     try {
-      return { ...await prepared.promise, selectedAt };
+      return { ...await prepared.promise, selectedAt, reusedPreparedBuffer: true };
     } finally {
       signal.removeEventListener("abort", abortPrepared);
     }
@@ -1261,7 +1277,7 @@ export class LiveStemLayers {
       const prepared = await Promise.race([
         retainedBuffer ? Promise.resolve({
           buffer: retainedBuffer, selectedAt, downloadMs: 0, decodeMs: 0,
-          tempoMatchMs: 0, transferBytes: 0,
+          tempoMatchMs: 0, transferBytes: 0, reusedPreparedBuffer: true,
         }) : this.getPreparedBuffer(url, tempoStretchRatio, operation.controller.signal, selectedAt),
         deadline,
       ]);
@@ -1297,6 +1313,7 @@ export class LiveStemLayers {
         sampleRate: prepared.buffer.sampleRate,
         input,
         activityGate,
+        activityGateTarget: 1,
         preserveRecipientDrumRests: options.preserveRecipientDrumRests === true,
         quietSince: null,
         referenceRms: 0,

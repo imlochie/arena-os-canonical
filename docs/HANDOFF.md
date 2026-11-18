@@ -1,6 +1,87 @@
 # Arena handoff — read this first
 
-## Latest increment: faster full-length matching and exact drum-analysis lineage
+## Latest increment: full live-donor preparation, entry, and rest-response verification
+
+The existing full-length September/Queen browser fixture now proves several
+connected live-swap behaviors on Linux Chromium 155, using the checksum-verified
+separated WAVs already in the acceptance artifacts:
+
+* Queen's measured isolated-drum tempo (109.957 BPM) drives the actual shared
+  playback rate at `0.872342` across the remaining September stems and donor.
+* Hover warming and live replacement now use the same canonical donor asset URL
+  and tempo key. The regression test checks the timing event for the selected
+  donor asset and confirms its tempo-matched buffer was reused, instead of
+  accidentally reading a concurrent drum timing event.
+* Once preparation has finished, the donor drum and vocal layers become
+  audible in about 0.7–1.3 seconds after application in this run. The
+  pitch-preserving tempo match itself still costs roughly 9.5–11 seconds, so
+  this is evidence that warming hides that work when completed—not a claim
+  that an unwarmed swap is instant.
+* The real low-drum passage at 19.2–20.05 seconds was evaluated from audio
+  entering and leaving the donor's activity gate. Post-gate donor RMS fell
+  below 8% of pre-gate RMS across multiple samples in the break, then recovered
+  when source activity resumed.
+  This fixes an AudioParam-state bug: `.value` can remain at its intrinsic
+  value while automation is running, so the gate now tracks its commanded
+  target rather than using `.value` as the state.
+* The staged vocal path snapped to an actual measured donor vocal phrase,
+  persisted its precise timestamp, and the browser's transformed donor buffer
+  began within 81 ms of that timestamp after applying the tempo ratio.
+
+**Verification:** web-app typecheck passes; 201 focused session-logic and
+live-stem tests pass. The real browser runner passes both the isolated-drum
+tempo/rest/restore case and the manual voiced-phrase case. This confirms
+playback plumbing and timing for this particular real pair; it is not a
+subjective listening-quality or stem-separation result.
+
+**Still unproven:** automatic verse/chorus/bridge recognition, reliable
+automatic entry selection, clean separation, harmonic/key adaptation, and
+listenable quality across arbitrary song pairs. The vocal test uses a human-
+reviewable manual phrase snap when no confident automatic match is available.
+Do not call Waveyard's mashup quality or musical understanding complete.
+
+## Current whole-track form result: the real evidence still does not separate roles
+
+The current `1.16.0` section/form calculations were replayed against the exact
+checksum-pinned September and Queen recordings and all eight existing separated
+stems. This was a local full-track signal replay, not a database-publication
+test. The provisional one-listener labels in
+`scripts/fixtures/waveyard-ground-truth/owner-form-notes-v1.json` were used only
+as an approximate comparison:
+
+* **September:** exact-overlap verse/chorus accuracy was **36.4%** over the
+  listener-labelled verse/chorus time, with **28.4% claimed coverage**.
+  Verse precision/recall were 0.614/0.346; chorus precision/recall were
+  0.846/0.383. No timestamp tolerance is applied, so these numbers are not
+  calibrated accuracy.
+* **Another One Bites the Dust:** **zero** verse/chorus predictions, against
+  88 seconds of owner-labelled verse/chorus. This is a real miss, not a pass.
+* Queen's mixed-source beat grid has confidence **0.000**, while the exact
+  checksum-current drum stem yields **109.957 BPM / 0.744 beat confidence**;
+  the BPM estimates agree. A local experiment using the drum grid in the
+  current form pass still returned no Queen form hypothesis. Better beat-grid
+  selection alone therefore does not solve this classification failure.
+* In the Queen windows nearest the listener's annotations, the repeated chorus
+  pair scored **0.644** and a repeated verse pair scored **0.627**. Their
+  backing-chroma similarities were both about **0.99**, while vocal-chroma
+  similarity was only 0.425 versus 0.372 and beat-relative vocal timing was
+  0.751 versus 0.831. The current recurrence threshold is 0.78 with a 0.05
+  competitor margin, so abstention is correct: available signals do not
+  reliably distinguish the chorus from the verse.
+
+The local on-device transcript already finds repeated lyric phrases as
+time-stamped hook evidence, but that transcript remains in browser storage and
+annotated timing notes; the backend section worker does not consume it. This is
+the clearest missing evidence connection to investigate. Keep lyric repeats
+source/stem-checksum-bound and explicitly provisional; recurrence alone must
+not assert “chorus,” especially when a hook also returns in a bridge or outro.
+Do not relax the similarity threshold to force a label. The next useful
+increment is to connect local repeated-phrase evidence to an inspectable,
+privacy-preserving passage/entry recommendation, then validate on the same
+full-track references and actual downstream mix—not to declare section
+accuracy from a synthetic test.
+
+## Previous increment: faster full-length matching and exact drum-analysis lineage
 
 The offline WSOLA search now checks a decimated coarse grid, then refines the
 winning overlap to sample-level resolution. On the existing 222.67-second
@@ -18,16 +99,13 @@ leave its predecessor's timing in control of the session. The live timing
 event also reports the actual applied beat offset, and the browser runner can
 seed an already-swapped drum layer before checking a later donor.
 
-Checksum-current local rhythm/chroma windows can now support a live match even
-when their containing section has low semantic/boundary confidence. The
-candidate still carries that low boundary confidence, while the local features
-must independently meet their measurement-confidence, similarity, duration,
-harmonic and beat-grid checks. Without measured fingerprints, the older
-section-role fallback still requires a trusted section label and boundary.
-This separates “these two local audio windows match” from “the song section
-was confidently named.”
+Local rhythm/chroma windows are still gated by adequate confidence in both the
+active recipient section and each donor section. A weak boundary must not be
+overridden by a strong-looking local fingerprint; the next acceptance run
+needs correctly persisted current-version sections and vocal timing evidence,
+not a relaxed confidence threshold.
 
-**Real browser result and remaining blocker:** the existing full-length
+**Earlier browser result and remaining blocker:** that earlier full-length
 September/Queen fixture applied the Queen drum master at rate `0.872342` and
 reported a `0s` donor beat offset. In that same run, the follow-up Queen vocal
 choice was staged, not applied: the fixture has no source-verified vocal-entry
@@ -70,14 +148,13 @@ including migration 0031, repeated same-role replacement, original-source
 preservation and guarded rollback. `pnpm run typecheck` passes for libraries,
 API, web app and scripts.
 
-**Limit:** This is verified timing-decision and persistence behavior, not proof
-of subjective mix quality. No real-song browser render has yet exercised a
-vocal or bass donor after changing the active drum master; the existing
-full-song browser evidence covers one real drum swap and drum-break response.
-Do not claim this closes the arbitrary-song mashup or section-recognition
-acceptance gate.
+**Limit at that earlier checkpoint:** the result was timing-decision and
+persistence evidence, not proof of subjective mix quality. A later browser
+run now also exercises a manually phrase-snapped vocal donor after the drum
+master change; it still does not prove automatic section or entry recognition
+or a listenable mashup.
 
-## Latest real-browser check: tempo and recipient drum breaks adapt together
+## Earlier real-browser check: tempo and recipient drum breaks adapt together
 
 The full-length separated September and Another One Bites the Dust stems now
 complete a real browser live-drum swap and restore in Waveyard's `SessionExperience`

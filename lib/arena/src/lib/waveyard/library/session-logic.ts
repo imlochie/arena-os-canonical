@@ -457,7 +457,7 @@ export function liveStemDownbeatOffsetSeconds(
   return (donor[0]! * stretchRatio - recipient[0]!) / 1000;
 }
 
-type LiveStemSection = Pick<
+export type LiveStemSection = Pick<
   SourceSection,
   | "sectionIndex" | "startMs" | "endMs" | "startBeatIndex" | "endBeatIndex"
   | "label" | "labelConfidence" | "structuralConfidence"
@@ -491,6 +491,60 @@ export function projectLiveStemSectionsToCommonClock(
     || section.endMs <= section.startMs
     || (index > 0 && section.startMs < projected[index - 1]!.endMs))) return null;
   return projected;
+}
+
+export type LiveStemSectionClockMode = "recipient" | "active-drum" | "isolated-drum";
+export type LiveStemSectionClockBasis = "recipient-structure" | "active-drum-structure";
+export type LiveStemSectionClock = {
+  beatGridMs: number[] | null;
+  beatConfidence: number | null;
+  sections: LiveStemSection[] | null;
+  basis: LiveStemSectionClockBasis;
+};
+
+/**
+ * Keep musical structure attached to the beat grid that produced it.
+ *
+ * Section and phrase positions stay on the receiving media's source clock.
+ * When full-drum structure is available, project its independent grid and
+ * sections into that clock. An isolated-drum tempo estimate can set the
+ * audible playback rate but carries no form map, so retain the recipient's
+ * source-clock grid and sections without rescaling or pairing their
+ * fingerprints with the drum-only grid.
+ */
+export function resolveLiveStemSectionClock(input: {
+  mode: LiveStemSectionClockMode;
+  stretchRatio: number;
+  recipientBeatGridMs: unknown;
+  recipientBeatConfidence: number | null;
+  recipientSections: readonly LiveStemSection[] | null | undefined;
+  activeDrumBeatGridMs: unknown;
+  activeDrumBeatConfidence: number | null;
+  activeDrumSections: readonly LiveStemSection[] | null | undefined;
+}): LiveStemSectionClock {
+  const activeDrumStructure = input.mode === "active-drum";
+  const grid = !activeDrumStructure
+    ? input.recipientBeatGridMs
+    : input.activeDrumBeatGridMs;
+  const sections = !activeDrumStructure
+    ? input.recipientSections
+    : input.activeDrumSections;
+  const beatConfidence = !activeDrumStructure
+    ? input.recipientBeatConfidence
+    : input.activeDrumBeatConfidence;
+  const projectedRatio = activeDrumStructure ? input.stretchRatio : 1;
+  const basis: LiveStemSectionClockBasis = activeDrumStructure
+    ? "active-drum-structure"
+    : "recipient-structure";
+
+  return {
+    beatGridMs: projectLiveStemGridToCommonClock(grid, projectedRatio),
+    beatConfidence: typeof beatConfidence === "number" && Number.isFinite(beatConfidence)
+      ? beatConfidence
+      : null,
+    sections: projectLiveStemSectionsToCommonClock(sections, projectedRatio),
+    basis,
+  };
 }
 
 type LiveStemSectionEvidence = LiveStemTempoEvidence & {
@@ -756,6 +810,7 @@ function livePhraseSectionAlignmentCandidates(
     const donorWindows = measuredRollingWindows(donorSection);
     if (!donorWindows) continue;
     for (const donorWindow of donorWindows) {
+      if (donorSection.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) continue;
       if (donorWindow.rhythm.status !== "measured" || donorWindow.chroma.status !== "measured") continue;
       const donorWindowStartMs = beatBoundaryMs(donorGrid, donorWindow.startBeatIndex);
       const donorWindowEndMs = beatBoundaryMs(donorGrid, donorWindow.endBeatIndex);
@@ -1053,9 +1108,9 @@ export function liveStemSectionAlignmentCandidates(
   const recipient = recipientSections.find((section) =>
     recipientMs >= section.startMs && recipientMs < section.endMs,
   );
+  if (!recipient || recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return [];
   const anyFingerprint = [...recipientSections, ...donorSections]
     .some((section) => section.passageFingerprint !== undefined && section.passageFingerprint !== null);
-  if (!recipient) return [];
   const fitsDonorStem = (candidate: LiveStemSectionAlignmentCandidate) => {
     const durationMs = evidence?.donorStemDurationMs;
     return durationMs === undefined || durationMs === null
@@ -1074,8 +1129,6 @@ export function liveStemSectionAlignmentCandidates(
       )
       : []).filter(fitsDonorStem);
   }
-  if (recipient.structuralConfidence < LIVE_STEM_SECTION_BOUNDARY_CONFIDENCE_MIN) return [];
-
   const role = comparableSectionLabel(recipient.label);
   if (!role || recipient.labelConfidence < LIVE_STEM_SECTION_ROLE_CONFIDENCE_MIN) return [];
   const recipientBeatLength = recipient.endBeatIndex - recipient.startBeatIndex;

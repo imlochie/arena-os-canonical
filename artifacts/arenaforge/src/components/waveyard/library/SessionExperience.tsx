@@ -66,7 +66,7 @@ import {
   liveStemBeatOffsetSeconds,
   liveStemDownbeatOffsetSeconds,
   projectLiveStemGridToCommonClock,
-  projectLiveStemSectionsToCommonClock,
+  resolveLiveStemSectionClock,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
@@ -187,6 +187,25 @@ function measuredVocalStemDurationMs(
   return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0
     ? Math.round(seconds * 1_000)
     : null;
+}
+
+function liveStemAssetUrl(stemIdOrUrl: string): string {
+  if (stemIdOrUrl.startsWith("/api/assets/")) {
+    return `/api/assets/${stemIdOrUrl.replace(/^(?:\/api\/assets\/)+/, "")}`;
+  }
+  return `/api/assets/${encodeURIComponent(stemIdOrUrl)}`;
+}
+
+function liveStemAssetId(stemIdOrUrl: string): string {
+  return stemIdOrUrl.replace(/^(?:\/api\/assets\/)+/, "");
+}
+
+function needsDetailedDonorEntryAnalysis(analysis: SessionTrackAnalysis | null): boolean {
+  if (analysis === null
+    || !Array.isArray(analysis.vocalActivityStartsMs)
+    || !Array.isArray(analysis.voicedPhraseStartsMs)
+    || !Array.isArray(analysis.sections)) return true;
+  return analysis.sections.some((section) => section.passageFingerprint == null);
 }
 
 interface SessionDetail {
@@ -400,7 +419,12 @@ function getPersistedSwapSetup(
       rhythmClockBeatConfidence: null,
       rhythmClockDownbeatGridMs: null,
       rhythmClockDownbeatConfidence: null,
-      rhythmClockSections: null,
+      sectionClock: {
+        beatGridMs: null,
+        beatConfidence: null,
+        sections: null,
+        basis: "recipient-structure",
+      },
       tempoMasterStatus: "Current track remains the tempo reference.",
       keyMasterStatus: "Current track remains the key reference.",
       keyReferenceKey: null,
@@ -517,9 +541,16 @@ function getPersistedSwapSetup(
   const rhythmClockDownbeatConfidence = drumTempoMasterActive && !drumRhythmIsolated
     ? drumDonorAnalysis?.downbeatConfidence ?? null
     : drumTempoMasterActive ? null : item.analysis?.downbeatConfidence ?? null;
-  const rhythmClockSections = drumTempoMasterActive && !drumRhythmIsolated
-    ? projectLiveStemSectionsToCommonClock(drumDonorAnalysis?.sections, rhythmClockStretchRatio)
-    : drumTempoMasterActive ? null : item.analysis?.sections ?? null;
+  const sectionClock = resolveLiveStemSectionClock({
+    mode: !drumTempoMasterActive ? "recipient" : drumRhythmIsolated ? "isolated-drum" : "active-drum",
+    stretchRatio: rhythmClockStretchRatio,
+    recipientBeatGridMs: item.analysis?.beatGridMs,
+    recipientBeatConfidence: item.analysis?.beatConfidence ?? null,
+    recipientSections: item.analysis?.sections,
+    activeDrumBeatGridMs: rhythmClockSourceBeatGrid,
+    activeDrumBeatConfidence: drumDonorTempo?.beatConfidence ?? null,
+    activeDrumSections: drumDonorAnalysis?.sections,
+  });
   const tempoMasterBpm = tempoMaster?.master === "donor-drums" && !masterWouldExceedPlaybackBounds
     ? tempoMaster.donorBpm
     : recipientTempo.bpm;
@@ -601,18 +632,18 @@ function getPersistedSwapSetup(
       ? bedKeyAnalysis?.keyConfidence
       : hasInstrumentalSwap ? null : item.analysis?.keyConfidence;
     const sectionAlignment = ratio === null ? null : liveStemSectionAlignment(
-      rhythmClockSections,
+      sectionClock.sections,
       donorAnalysis?.sections,
       swap.atSeconds,
       ratio,
       {
-        recipientBeatGridMs: rhythmClockBeatGridMs,
+        recipientBeatGridMs: sectionClock.beatGridMs,
         donorBeatGridMs: donorTempo.beatGridMs,
         recipientBpm: recipientTempo.bpm,
         donorBpm: donorTempo.bpm,
         recipientBpmConfidence: recipientTempo.confidence,
         donorBpmConfidence: donorTempo.confidence,
-        recipientBeatConfidence: rhythmClockBeatConfidence,
+        recipientBeatConfidence: sectionClock.beatConfidence,
         donorBeatConfidence: donorTempo.beatConfidence,
         recipientKey: alignmentRecipientKey,
         donorKey: donorAnalysis?.musicalKey ?? null,
@@ -753,7 +784,7 @@ function getPersistedSwapSetup(
     rhythmClockBeatConfidence,
     rhythmClockDownbeatGridMs,
     rhythmClockDownbeatConfidence,
-    rhythmClockSections,
+    sectionClock,
     tempoMasterStatus,
     keyMasterStatus,
     keyReferenceKey,
@@ -1187,7 +1218,7 @@ function SessionDeck({
       const stemType = stemTypeByAsset.get(id) ?? "source";
       return transport.replaceStem(
         id,
-        donor ? `/api/assets/${donor}` : null,
+        donor ? liveStemAssetUrl(donor) : null,
         tempoStretchRatio,
         selectedAt ?? undefined,
         beatOffset,
@@ -3842,14 +3873,40 @@ export default function SessionExperience({
       let warming!: Promise<void>;
       warming = (async () => {
         let donorStem = donor.stems?.find((stem) => stem.stemType === stemType);
-        if (!donorStem) {
-          const response = await fetch(`/api/library/tracks/${donor.id}`, { cache: "no-store" });
+        let donorAnalysis = donor.analysis;
+        if (!donorStem || needsDetailedDonorEntryAnalysis(donorAnalysis as SessionTrackAnalysis | null ?? null)) {
+          const response = await fetch(
+            `/api/library/tracks/${encodeURIComponent(donor.id)}?includeSessionAnalysis=true`,
+            { cache: "no-store" },
+          );
           if (!response.ok) return;
-          const body = await response.json() as { track?: { stems?: SessionTrackItem["stems"] } };
-          donorStem = body.track?.stems?.find((stem) => stem.stemType === stemType);
+          const body = await response.json() as {
+            sessionAnalysis?: unknown;
+            track?: { stems?: SessionTrackItem["stems"] };
+          };
+          donorStem ??= body.track?.stems?.find((stem) => stem.stemType === stemType);
+          if (body.sessionAnalysis && typeof body.sessionAnalysis === "object") {
+            donorAnalysis = body.sessionAnalysis as SessionTrackAnalysis;
+          }
         }
         if (!donorStem) return;
-        await decksRef.current[activeDeck]?.preloadStem(recipientStemId, donorStem.id, tempoStretchRatio, selectedAt);
+        const selectedDonorTempo = tempoForTrack(donor.id, donorAnalysis, manualTempoCorrections);
+        const preparationRatio = liveStemTempoStretchRatio(
+          recipientTempo.bpm,
+          selectedDonorTempo.bpm,
+          {
+            recipientBpmConfidence: recipientTempo.confidence,
+            donorBpmConfidence: selectedDonorTempo.confidence,
+            recipientBeatConfidence: recipientTempo.beatConfidence,
+            donorBeatConfidence: selectedDonorTempo.beatConfidence,
+          },
+        ) ?? 1;
+        await decksRef.current[activeDeck]?.preloadStem(
+          recipientStemId,
+          liveStemAssetId(donorStem.id),
+          preparationRatio,
+          selectedAt,
+        );
       })().catch(() => {
         // Warming is optional; the normal selection path still fetches and reports failures.
       }).finally(() => {
@@ -3871,7 +3928,7 @@ export default function SessionExperience({
       const body = await response.json() as { track?: { stems?: SessionTrackItem["stems"] } };
       donorStem = body.track?.stems?.find((stem) => stem.stemType === stemType);
     }
-    return donorStem?.id ? `/api/assets/${encodeURIComponent(donorStem.id)}` : null;
+    return donorStem?.id ? liveStemAssetUrl(donorStem.id) : null;
   }, []);
 
   const prefetchLiveSwapAsset = useCallback((stemType: string, donorId: string) => {
@@ -3879,7 +3936,7 @@ export default function SessionExperience({
     const sessionDonor = session.tracks.find((item) => item.track.id === donorId);
     const existingStem = sessionDonor?.stems.find((stem) => stem.stemType === stemType);
     const prefetch = (stemId: string) => {
-      void decksRef.current[activeDeck]?.preloadStemAsset(`/api/assets/${stemId}`).catch(() => undefined);
+      void decksRef.current[activeDeck]?.preloadStemAsset(liveStemAssetUrl(stemId)).catch(() => undefined);
     };
     if (existingStem) {
       prefetch(existingStem.id);
@@ -3969,7 +4026,9 @@ export default function SessionExperience({
             sessionTrackId: currentItem.id,
             stemType,
             toTrackId: donor.id,
-            atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
+            atSeconds: decksRef.current[activeDeck]?.transport.currentPosition()
+              ?? decksRef.current[activeDeck]?.transport.position
+              ?? 0,
             donorEntryOffsetMs,
           }),
         }, scope);
@@ -5202,7 +5261,7 @@ export default function SessionExperience({
       // Library list summaries intentionally omit large checksum-bound window
       // evidence and exact separated-file durations. Load both only when a user
       // asks to compare one donor.
-      if (donorAnalysis === null || donorStemDurationMs === null) {
+      if (needsDetailedDonorEntryAnalysis(donorAnalysis) || donorStemDurationMs === null) {
         let request = donorAnalysisRequestsRef.current.get(donorId);
         if (!request) {
           request = fetch(`/api/library/tracks/${encodeURIComponent(donorId)}?includeSessionAnalysis=true`, {
@@ -5224,7 +5283,7 @@ export default function SessionExperience({
         }
         try {
           const loaded = await request;
-          donorAnalysis ??= loaded.analysis;
+          donorAnalysis = loaded.analysis ?? donorAnalysis;
           donorStemDurationMs ??= loaded.vocalStemDurationMs;
         } catch {
           if (donorAnalysis === null) throw new Error("Could not load current, source-verified donor analysis.");
@@ -5235,18 +5294,37 @@ export default function SessionExperience({
         }
       }
       if (donorAnalysis === null) throw new Error("This donor has no current source-verified section analysis.");
+      const currentPositionSeconds = Math.max(
+        0,
+        decksRef.current[activeDeck]?.transport.currentPosition()
+          ?? decksRef.current[activeDeck]?.transport.position
+          ?? positions[activeDeck],
+      );
       if (currentItem.analysis === null) return {
         candidates: [],
         donorStemDurationMs,
+        suggestedManualEntryMs: donorStemDurationMs === null
+          ? null
+          : Math.min(donorStemDurationMs - 1, Math.round(currentPositionSeconds * 1_000)),
         vocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
         voicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
         sections: donorAnalysis.sections,
       };
       const donorTempo = tempoForTrack(donorId, donorAnalysis, manualTempoCorrections);
+      const candidateRecipientKey = currentSwapSetup.fullBedDonorTrackId !== null
+        ? currentSwapSetup.keyReferenceKey
+        : currentSwapSetup.hasInstrumentalSwap
+          ? null
+          : shiftMusicalKey(currentItem.analysis.musicalKey, currentSwapSetup.sourceKeyShiftSemitones ?? 0);
+      const candidateRecipientKeyConfidence = currentSwapSetup.fullBedDonorTrackId !== null
+        ? currentSwapSetup.keyReferenceConfidence
+        : currentSwapSetup.hasInstrumentalSwap
+          ? null
+          : currentItem.analysis.keyConfidence;
       const candidateTempoEvidence = {
         recipientBpmConfidence: recipientTempo.confidence,
         donorBpmConfidence: donorTempo.confidence,
-        recipientBeatConfidence: currentSwapSetup.rhythmClockBeatConfidence,
+        recipientBeatConfidence: currentSwapSetup.sectionClock.beatConfidence,
         donorBeatConfidence: donorAnalysis.beatConfidence,
       };
       const stretchRatio = liveStemTempoStretchRatio(
@@ -5254,10 +5332,16 @@ export default function SessionExperience({
         donorTempo.bpm,
         candidateTempoEvidence,
       ) ?? 1;
+      const suggestedManualEntryMs = donorStemDurationMs === null
+        ? null
+        : Math.min(
+          donorStemDurationMs - 1,
+          Math.max(0, Math.round((currentPositionSeconds * 1_000) / stretchRatio)),
+        );
       const candidateEvidence = {
         ...candidateTempoEvidence,
         donorStemDurationMs,
-        recipientBeatGridMs: currentSwapSetup.rhythmClockBeatGridMs,
+        recipientBeatGridMs: currentSwapSetup.sectionClock.beatGridMs,
         donorBeatGridMs: donorAnalysis.beatGridMs,
         recipientVocalActivityStartsMs: currentItem.analysis.vocalActivityStartsMs,
         donorVocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
@@ -5265,20 +5349,21 @@ export default function SessionExperience({
         donorVoicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
         recipientBpm: recipientTempo.bpm,
         donorBpm: donorTempo.bpm,
-        recipientKey: currentItem.analysis.musicalKey,
+        recipientKey: candidateRecipientKey,
         donorKey: donorAnalysis.musicalKey,
-        recipientKeyConfidence: currentItem.analysis.keyConfidence,
+        recipientKeyConfidence: candidateRecipientKeyConfidence,
         donorKeyConfidence: donorAnalysis.keyConfidence,
       };
       return {
         candidates: donorStemDurationMs === null ? [] : liveStemSectionAlignmentCandidates(
-          currentSwapSetup.rhythmClockSections,
+          currentSwapSetup.sectionClock.sections,
           donorAnalysis.sections,
-          decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+          currentPositionSeconds,
           stretchRatio,
           candidateEvidence,
         ),
         donorStemDurationMs,
+        suggestedManualEntryMs,
         vocalActivityStartsMs: donorAnalysis.vocalActivityStartsMs,
         voicedPhraseStartsMs: donorAnalysis.voicedPhraseStartsMs,
         sections: donorAnalysis.sections,
@@ -5371,10 +5456,11 @@ export default function SessionExperience({
         currentTrackId={currentItem.track.id}
         currentTrackTitle={currentItem.track.title}
         currentBpm={recipientTempo.bpm}
+        mixMasterBpm={currentSwapSetup.tempoMasterBpm}
         currentAutomaticBpm={recipientTempo.automaticBpm}
         currentTempoCorrected={recipientTempo.corrected}
         currentBpmConfidence={recipientTempo.confidence}
-        currentBeatConfidence={currentItem.analysis?.beatConfidence ?? null}
+        currentBeatConfidence={currentSwapSetup.sectionClock.beatConfidence}
         currentKey={currentSwapSetup.fullBedDonorTrackId !== null
           ? currentSwapSetup.keyReferenceKey
           : currentSwapSetup.hasInstrumentalSwap ? null : currentItem.analysis?.musicalKey ?? null}
@@ -5442,7 +5528,9 @@ export default function SessionExperience({
             selectedEntryCandidate = (topCandidate
               ? liveStemAutomaticEntryChoice(
                 review.candidates,
-                decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+                decksRef.current[activeDeck]?.transport.currentPosition()
+                  ?? decksRef.current[activeDeck]?.transport.position
+                  ?? positions[activeDeck],
                 topCandidate.stretchRatio,
               )
               : null) ?? undefined;
@@ -5464,12 +5552,14 @@ export default function SessionExperience({
             const ratio = liveStemTempoStretchRatio(recipientTempo.bpm, selectedDonorTempo.bpm, {
               recipientBpmConfidence: recipientTempo.confidence,
               donorBpmConfidence: selectedDonorTempo.confidence,
-              recipientBeatConfidence: recipientTempo.beatConfidence,
-              donorBeatConfidence: selectedDonorTempo.beatConfidence,
+              recipientBeatConfidence: currentSwapSetup.sectionClock.beatConfidence,
+              donorBeatConfidence: donorAnalysis?.beatConfidence,
             }) ?? 1;
             const exactEntryMs = liveStemCandidateDonorEntryMs(
               selectedEntryCandidate,
-              decksRef.current[activeDeck]?.transport.position ?? positions[activeDeck],
+              decksRef.current[activeDeck]?.transport.currentPosition()
+                ?? decksRef.current[activeDeck]?.transport.position
+                ?? positions[activeDeck],
               ratio,
             );
             if (exactEntryMs === null) {

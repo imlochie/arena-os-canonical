@@ -14,6 +14,7 @@ import {
   liveStemDownbeatOffsetSeconds,
   projectLiveStemGridToCommonClock,
   projectLiveStemSectionsToCommonClock,
+  resolveLiveStemSectionClock,
   liveStemDonorEntryOffsetSeconds,
   liveStemSectionAlignment,
   liveStemSectionAlignmentCandidates,
@@ -304,6 +305,66 @@ test("active drum clock projects its measured grid and sections into the shared 
     endMs: 7_200,
   }]);
   assert.equal(projectLiveStemSectionsToCommonClock(sections, Number.NaN), null);
+});
+
+test("isolated drum tempo keeps recipient sections in source time while its beat grid remains separate", () => {
+  const recipientSections = [{
+    sectionIndex: 0,
+    startMs: 500,
+    endMs: 4_500,
+    startBeatIndex: 1,
+    endBeatIndex: 9,
+    label: "section",
+    labelConfidence: 0.4,
+    structuralConfidence: 0.8,
+  }];
+  const clock = resolveLiveStemSectionClock({
+    mode: "isolated-drum",
+    stretchRatio: 0.9,
+    recipientBeatGridMs: [500, 1_000, 1_500, 2_000],
+    recipientBeatConfidence: 0.72,
+    recipientSections,
+    activeDrumBeatGridMs: [0, 550, 1_100, 1_650],
+    activeDrumBeatConfidence: 0.96,
+    activeDrumSections: null,
+  });
+
+  assert.equal(clock.basis, "recipient-structure");
+  assert.deepEqual(clock.beatGridMs, [500, 1_000, 1_500, 2_000]);
+  assert.equal(clock.beatConfidence, 0.72, "confidence must describe the grid carrying the section fingerprints");
+  assert.deepEqual(clock.sections, [{
+    ...recipientSections[0],
+    startMs: 500,
+    endMs: 4_500,
+  }]);
+});
+
+test("full-track drum structure is used only with its own measured grid", () => {
+  const drumSections = [{
+    sectionIndex: 0,
+    startMs: 0,
+    endMs: 8_000,
+    startBeatIndex: 0,
+    endBeatIndex: 16,
+    label: "verse",
+    labelConfidence: 0.9,
+    structuralConfidence: 0.85,
+  }];
+  const clock = resolveLiveStemSectionClock({
+    mode: "active-drum",
+    stretchRatio: 0.8,
+    recipientBeatGridMs: [100, 600, 1_100],
+    recipientBeatConfidence: 0.7,
+    recipientSections: drumSections,
+    activeDrumBeatGridMs: [200, 700, 1_200],
+    activeDrumBeatConfidence: 0.88,
+    activeDrumSections: drumSections,
+  });
+
+  assert.equal(clock.basis, "active-drum-structure");
+  assert.deepEqual(clock.beatGridMs, [160, 560, 960]);
+  assert.equal(clock.beatConfidence, 0.88);
+  assert.deepEqual(clock.sections?.[0], { ...drumSections[0], endMs: 6_400 });
 });
 
 test("live stem section phase aligns corresponding, structurally compatible sections", () => {
@@ -609,41 +670,8 @@ test("one weak section elsewhere does not block a confident live phrase match", 
   assert.equal(
     liveStemSectionAlignment(recipientSections, donorSections, 10, ratio, evidence),
     null,
-    "a weak section with no measured local windows must still use the safe fallback",
+    "a weak active section must remain ineligible even when other sections have fingerprints",
   );
-});
-
-test("strong local windows can align inside weakly classified sections", () => {
-  const recipient = {
-    ...testLongSourceSection("a".repeat(64), [
-      testRollingWindow(0, 0),
-      testRollingWindow(4, 1),
-      testRollingWindow(8, 2),
-    ]),
-    labelConfidence: 0.2,
-    structuralConfidence: 0.25,
-  };
-  const donor = {
-    ...testLongSourceSection("b".repeat(64), [
-      testRollingWindow(0, 0),
-      testRollingWindow(4, 1),
-      testRollingWindow(8, 2),
-    ]),
-    labelConfidence: 0.1,
-    structuralConfidence: 0.2,
-  };
-  const evidence = testLiveStemEvidence({
-    recipientBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
-    donorBeatGridMs: Array.from({ length: 49 }, (_, index) => index * 500),
-  });
-
-  const match = liveStemSectionAlignmentCandidates([recipient], [donor], 5, 1, evidence)[0];
-  assert.ok(match, "measured local beat/chroma evidence should remain usable without a confident section label");
-  assert.equal(match.basis, "rhythm-harmony-phrase");
-  assert.equal(match.recipientBoundaryConfidence, 0.25);
-  assert.equal(match.donorBoundaryConfidence, 0.2);
-  assert.equal(match.rhythmMeasurementConfidence, 0.95);
-  assert.equal(match.harmonyMeasurementConfidence, 0.95);
 });
 
 test("strong local phrase evidence can align at native pace when global BPM confidence is weak", () => {

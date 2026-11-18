@@ -41,6 +41,7 @@ export interface LiveStemPreparationOption {
 export interface LiveStemEntryReviewEvidence {
   candidates: LiveStemSectionAlignmentCandidate[];
   donorStemDurationMs: number | null;
+  suggestedManualEntryMs?: number | null;
   vocalActivityStartsMs: { startMs: number; confidence: number }[] | null;
   voicedPhraseStartsMs: { startMs: number; confidence: number }[] | null;
   sections: Pick<SourceSection, "sectionIndex" | "startMs" | "label" | "labelConfidence">[] | null;
@@ -51,6 +52,7 @@ interface LiveStemSwapPickerProps {
   currentTrackId: string;
   currentTrackTitle: string;
   currentBpm: number | null;
+  mixMasterBpm: number | null;
   currentAutomaticBpm: number | null;
   currentTempoCorrected: boolean;
   currentBpmConfidence: number | null;
@@ -326,6 +328,7 @@ export default function LiveStemSwapPicker({
   currentTrackId,
   currentTrackTitle,
   currentBpm,
+  mixMasterBpm,
   currentAutomaticBpm,
   currentTempoCorrected,
   currentBpmConfidence,
@@ -380,6 +383,7 @@ export default function LiveStemSwapPicker({
   const [entryDonorId, setEntryDonorId] = useState<string | null>(null);
   const [entryCandidates, setEntryCandidates] = useState<LiveStemSectionAlignmentCandidate[]>([]);
   const [entryDonorStemDurationMs, setEntryDonorStemDurationMs] = useState<number | null>(null);
+  const [suggestedManualEntryMs, setSuggestedManualEntryMs] = useState<number | null>(null);
   const [entryVocalActivityStartsMs, setEntryVocalActivityStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
   const [entryVoicedPhraseStartsMs, setEntryVoicedPhraseStartsMs] = useState<{ startMs: number; confidence: number }[] | null>(null);
   const [entrySections, setEntrySections] = useState<LiveStemEntryReviewEvidence["sections"]>(null);
@@ -413,6 +417,7 @@ export default function LiveStemSwapPicker({
     setEntryDonorId(donorId);
     setEntryCandidates([]);
     setEntryDonorStemDurationMs(null);
+    setSuggestedManualEntryMs(null);
     setEntryVocalActivityStartsMs(null);
     setEntryVoicedPhraseStartsMs(null);
     setEntrySections(null);
@@ -428,6 +433,7 @@ export default function LiveStemSwapPicker({
       stemType === "vocals" ? onGetEntryCandidates(donorId) : Promise.resolve({
         candidates: [],
         donorStemDurationMs: null,
+        suggestedManualEntryMs: null,
         vocalActivityStartsMs: null,
         voicedPhraseStartsMs: null,
         sections: null,
@@ -440,12 +446,13 @@ export default function LiveStemSwapPicker({
         const review = reviewResult.value;
         setEntryCandidates(review.candidates);
         setEntryDonorStemDurationMs(review.donorStemDurationMs);
+        setSuggestedManualEntryMs(review.suggestedManualEntryMs ?? null);
         setEntryVocalActivityStartsMs(review.vocalActivityStartsMs);
         setEntryVoicedPhraseStartsMs(review.voicedPhraseStartsMs);
         setEntrySections(review.sections);
         setManualEntryMs(preserveManualEntry
           ? preservedManualEntryMs
-          : review.candidates[0]?.donorEntryMs ?? 0);
+          : review.candidates[0]?.donorEntryMs ?? review.suggestedManualEntryMs ?? 0);
         setEntryCandidatesError(null);
       } else {
         setEntryCandidatesError("Detailed donor evidence could not be loaded. The saved swap is unchanged.");
@@ -464,6 +471,7 @@ export default function LiveStemSwapPicker({
   }, [manualEntryMs, onGetEntryCandidates, onResolvePreviewAsset, stemType, stopEntryPreview]);
 
   const selectedAlignmentCandidate = entryCandidates[selectedEntryIndex] ?? null;
+  const reviewSuggestedEntryAvailable = suggestedManualEntryMs !== null;
   const stagedDonor = candidates.find((candidate) => candidate.id === entryDonorId) ?? null;
   const donorStemDurationSeconds = entryDonorStemDurationMs === null
     ? null
@@ -1002,6 +1010,12 @@ export default function LiveStemSwapPicker({
             confidence={currentTempoCorrected ? 1 : currentBpmConfidence}
             onApply={onTempoCorrection}
           />
+          {mixMasterBpm !== null && currentBpm !== null && Math.abs(mixMasterBpm - currentBpm) > 0.5 && (
+            <p className="wy-swap-tempo-master-note" data-testid="live-swap-tempo-master-note">
+              Drum master: {Math.round(mixMasterBpm)} BPM. Incoming layers align to the track clock
+              ({Math.round(currentBpm)} BPM), then the whole mix follows the drum tempo.
+            </p>
+          )}
           {sourceCount > 4 && (
             <label className="wy-swap-search">
               <span className="visually-hidden">Search separated sources</span>
@@ -1056,7 +1070,7 @@ export default function LiveStemSwapPicker({
                 <button type="button" className="wy-vocal-entry-compare" onClick={() => {
                   stopEntryPreview();
                   onPauseForEntryReview();
-                  refreshEntryCandidates();
+                  refreshEntryCandidates(false);
                 }} data-testid="button-pause-entry-review">
                   Pause mix to compare entries
                 </button>
@@ -1179,6 +1193,12 @@ export default function LiveStemSwapPicker({
                     />
                     <output>{formatEntryTime(boundedManualEntryMs)}</output>
                   </label>
+                  {selectedAlignmentCandidate === null && reviewSuggestedEntryAvailable && (
+                    <small className="wy-vocal-entry-evidence" role="note">
+                      Starting point maps the current playhead into donor time; it is not a verified musical match.
+                      Snap to a measured phrase and audition before applying.
+                    </small>
+                  )}
                   <div className="wy-vocal-entry-actions">
                     <button
                       type="button"

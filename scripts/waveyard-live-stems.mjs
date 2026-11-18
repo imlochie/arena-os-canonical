@@ -262,16 +262,49 @@ function downsampleFixtureWav(data, sampleRate = 8000) {
   return converted;
 }
 const assets = new Map();
+const detailedAnalysisByTrackId = new Map();
 let tracks;
 if (mashupEvaluationOnly) {
+  const wavDurationSeconds = (data, description) => {
+    if (data.length < 12 || data.toString("ascii", 0, 4) !== "RIFF"
+      || data.toString("ascii", 8, 12) !== "WAVE") {
+      throw new Error(`Mashup evidence is not a RIFF/WAVE file: ${description}`);
+    }
+    let offset = 12;
+    let byteRate = null;
+    let dataBytes = null;
+    while (offset + 8 <= data.length) {
+      const chunkId = data.toString("ascii", offset, offset + 4);
+      const chunkSize = data.readUInt32LE(offset + 4);
+      const chunkStart = offset + 8;
+      if (chunkStart + chunkSize > data.length) {
+        throw new Error(`Mashup WAV chunk exceeds its file: ${description}`);
+      }
+      if (chunkId === "fmt " && chunkSize >= 12) byteRate = data.readUInt32LE(chunkStart + 8);
+      if (chunkId === "data") dataBytes = chunkSize;
+      if (byteRate !== null && dataBytes !== null) break;
+      offset = chunkStart + chunkSize + (chunkSize & 1);
+    }
+    if (!byteRate || dataBytes === null || dataBytes <= 0) {
+      throw new Error(`Mashup WAV has no measurable PCM duration: ${description}`);
+    }
+    return dataBytes / byteRate;
+  };
   tracks = mashupManifest.tracks.map((item, index) => {
     const id = String.fromCharCode(97 + index);
+    detailedAnalysisByTrackId.set(id, item.analysis ?? null);
     const stems = types.map(stemType => {
       const key = `${id}-${stemType}`;
       const assetPath = item.stems?.[stemType]?.path;
       if (!assetPath) throw new Error(`Mashup manifest is missing ${item.id}.${stemType}.path`);
-      assets.set(key, readFileSync(resolve(dirname(resolve(mashupManifestPath)), assetPath)));
-      return { id: key, stemType, engine: "waveyard-four-stem-local" };
+      const audio = readFileSync(resolve(dirname(resolve(mashupManifestPath)), assetPath));
+      assets.set(key, audio);
+      return {
+        id: key,
+        stemType,
+        engine: "waveyard-four-stem-local",
+        durationSeconds: wavDurationSeconds(audio, `${item.id}.${stemType}`),
+      };
     });
     return {
       id,
@@ -1230,11 +1263,14 @@ try {
   if (mashupEvaluationOnly) {
     await context.route("**/api/library/tracks/b**", route => {
       const donor = tracks.find(item => item.id === "b");
-      return route.fulfill({ json: { track: {
-        id: "b",
-        stems: donor?.stems ?? [],
-        analysis: donor?.analysis ?? null,
-      } } });
+      return route.fulfill({ json: {
+        track: {
+          id: "b",
+          stems: donor?.stems ?? [],
+          analysis: donor?.analysis ?? null,
+        },
+        sessionAnalysis: detailedAnalysisByTrackId.get("b") ?? null,
+      } });
     });
   }
   await context.route("**/api/library/tracks/c", route => {
@@ -2098,7 +2134,12 @@ try {
       if (version === "swap" && !donor) throw new Error(`Unknown donor track ${combination.donorTrackId}`);
       const donorMetadata = trackById.get(combination.donorTrackId);
       session.currentSessionTrackId = lead.browserId;
-      session.positionSeconds = 0;
+      const startPositionSeconds = combination.startPositionSeconds ?? 0;
+      if (!Number.isFinite(startPositionSeconds) || startPositionSeconds < 0
+        || startPositionSeconds >= (lead.excerpt?.durationSeconds ?? 0)) {
+        throw new Error(`Invalid startPositionSeconds for ${combination.id}: ${startPositionSeconds}`);
+      }
+      session.positionSeconds = startPositionSeconds;
       session.swaps = version === "swap"
         ? (combination.preloadedSwaps ?? []).map((preloaded, index) => {
           const preloadedDonor = trackById.get(preloaded.donorTrackId);
@@ -2137,9 +2178,10 @@ try {
         window.audioProbe.contexts.some(context => context.__waveyardCaptureDestination),
       null, { timeout: 10_000 });
       await page.evaluate(() => window.audioProbe.startRenderedCapture());
-      await page.waitForFunction(() =>
+      await page.waitForFunction(start =>
         [...document.querySelectorAll('[data-role="current"] audio')].some(element =>
-          !element.paused && element.currentTime > 0.1),
+          !element.paused && element.currentTime > start + 0.1),
+      startPositionSeconds,
       { timeout: 10_000 });
 
       let swapDetails = null;
@@ -2169,12 +2211,84 @@ try {
             document.querySelector(`[data-testid="${testId}"]`)?.getAttribute("aria-busy") === "false",
           `live-swap-candidate-${combination.stemType}-${donor.browserId}`, { timeout: 30_000 });
         }
-        const save = page.waitForResponse(response =>
+        const waitForSwapSave = () => page.waitForResponse(response =>
           response.url().endsWith("/swaps") && response.request().method() === "POST",
-        );
+        { timeout: 30_000 });
+        const save = waitForSwapSave().catch(() => null);
+        const stagedReview = current.getByTestId("staged-donor-entry-slider");
+        const stage = stagedReview.waitFor({ state: "visible", timeout: 30_000 })
+          .then(() => true).catch(() => false);
         const selectedAtSeconds = (Date.now() - recordingStartedAt) / 1000;
         await candidate.click();
-        await save;
+        const selectionOutcome = await Promise.race([
+          save.then(response => response === null ? "timeout" : "saved"),
+          stage.then(staged => staged ? "staged" : "timeout"),
+        ]);
+        let manualVocalEntry = null;
+        if (selectionOutcome === "staged" && combination.manualVocalEntrySnap === "voiced-phrase") {
+          const pauseForReview = current.getByTestId("button-pause-entry-review");
+          await pauseForReview.waitFor({ timeout: 10_000 });
+          await pauseForReview.click();
+          await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')]
+            .every(audio => audio.paused), null, { timeout: 10_000 });
+          await current.getByTestId("staged-donor-entry-slider").waitFor();
+          await current.getByText("Loading this donor’s source-verified section and vocal evidence…")
+            .waitFor({ state: "detached", timeout: 15_000 }).catch(() => {});
+          const snap = current.getByRole("button", { name: "Snap to voiced phrase" });
+          await snap.waitFor({ timeout: 10_000 });
+          assert.equal(await snap.isEnabled(), true, "the real donor transcript analysis exposes a measured phrase snap");
+          const suggestedEntryMs = Number(await stagedReview.inputValue());
+          const recipientPositionSeconds = await page.evaluate(() => {
+            const audio = [...document.querySelectorAll('[data-role="current"] audio')]
+              .find(element => new URL(element.src).pathname.endsWith("-drums"));
+            return audio?.currentTime ?? null;
+          });
+          assert.ok(typeof recipientPositionSeconds === "number" && recipientPositionSeconds > 0,
+            "the suggested donor entry is anchored to the actual playing recipient clock");
+          const mappedPositionMs = Math.round(recipientPositionSeconds * 1_000
+            / (combination.expectedTempoStretchRatio ?? 1));
+          assert.ok(Math.abs(suggestedEntryMs - mappedPositionMs) < 2_000,
+            `the manual suggestion maps the recipient playhead through the donor stretch ratio: suggested=${suggestedEntryMs} mapped=${mappedPositionMs}`);
+          await snap.click();
+          const snappedEntryMs = Number(await stagedReview.inputValue());
+          const phraseStarts = donorMetadata.analysis?.voicedPhraseStartsMs ?? [];
+          assert.ok(phraseStarts.length > 0, "the real donor has measured vocal phrase boundaries");
+          const expectedPhrase = phraseStarts.reduce((nearest, point) =>
+            Math.abs(point.startMs - suggestedEntryMs) < Math.abs(nearest.startMs - suggestedEntryMs) ? point : nearest,
+          );
+          assert.ok(Math.abs(snappedEntryMs - expectedPhrase.startMs) <= 25,
+            "the slider position is within half a control step of the nearest measured vocal phrase");
+          const manualApply = current.getByTestId("button-apply-manual-entry");
+          await manualApply.waitFor({ timeout: 10_000 });
+          assert.equal(await manualApply.isEnabled(), true, "the verified donor duration enables manual phrase entry");
+          const manualSave = waitForSwapSave();
+          await manualApply.click();
+          await manualSave;
+          const persistedEntryMs = session.swaps.find(swap =>
+            swap.sessionTrackId === lead.browserId && swap.stemType === "vocals",
+          )?.donorEntryOffsetMs;
+          assert.equal(persistedEntryMs, expectedPhrase.startMs,
+            "the saved live swap preserves the exact measured vocal phrase timestamp, not the slider's rounded display value");
+          manualVocalEntry = {
+            snap: "voiced-phrase",
+            suggestedEntryMs,
+            snappedEntryMs,
+            persistedEntryMs,
+            recipientPositionSeconds,
+            phraseConfidence: expectedPhrase.confidence,
+          };
+        } else if (selectionOutcome !== "saved") {
+          throw new Error(`Vocal swap did not save or open measured entry review: ${selectionOutcome}`);
+        }
+        if (manualVocalEntry !== null) {
+          await page.getByTestId("session-play").click();
+          await page.waitForFunction(leadId => {
+            const originals = [...document.querySelectorAll('[data-role="current"] audio')]
+              .filter(element => new URL(element.src).pathname.split("/").at(-1)?.startsWith(`${leadId}-`)
+                && !new URL(element.src).pathname.endsWith("-vocals"));
+            return originals.length > 0 && originals.every(audio => !audio.paused);
+          }, lead.browserId, { timeout: 10_000 });
+        }
         await page.waitForFunction(({ bufferCount, stemType }) => {
           const audibleDonor = window.audioProbe.buffers.slice(bufferCount)
             .some(node => node.inputNode?.gain?.value > 0.03 && node.buffer?.duration > 0);
@@ -2218,6 +2332,29 @@ try {
               const outputFader = inputGain?.nextNode instanceof GainNode ? inputGain.nextNode : null;
               return [[stemType, outputFader?.gain?.value ?? null]];
             })),
+          postGateRms: Object.fromEntries([...document.querySelectorAll('[data-role="current"] audio')]
+            .flatMap(element => {
+              const assetId = new URL(element.src).pathname.split("/").at(-1) ?? "";
+              if (!assetId.startsWith(`${leadId}-`)) return [];
+              const stemType = assetId.slice(leadId.length + 1);
+              const source = window.audioProbe.sources.find(entry => entry.mediaElement === element);
+              const gate = source?.probeConnections?.find(node => node instanceof GainNode);
+              if (!gate) return [[stemType, null]];
+              const analyser = gate.context.createAnalyser();
+              analyser.fftSize = 2048;
+              const silentSink = gate.context.createGain();
+              silentSink.gain.value = 0;
+              gate.connect(analyser);
+              analyser.connect(silentSink);
+              silentSink.connect(gate.context.destination);
+              const samples = new Float32Array(analyser.fftSize);
+              analyser.getFloatTimeDomainData(samples);
+              const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+              gate.disconnect(analyser);
+              analyser.disconnect();
+              silentSink.disconnect();
+              return [[stemType, rms]];
+            })),
           originalMedia: Object.fromEntries([...document.querySelectorAll('[data-role="current"] audio')].map(element => [
             new URL(element.src).pathname.split("/").at(-1),
             { paused: element.paused, currentTime: element.currentTime, playbackRate: element.playbackRate },
@@ -2234,11 +2371,13 @@ try {
           })),
         }), { leadId: lead.browserId, bufferCount });
         if (combination.verifyLayerIdentity === true) {
-          assert.ok(layerGains.original[combination.stemType] < 0.02,
-            `the outgoing ${combination.stemType} input gate must be muted, not layered under its donor: ${JSON.stringify(layerGains)}`);
-          assert.ok(types.filter(type => type !== combination.stemType)
-            .every(type => layerGains.original[type] > 0.9),
-          `all three non-swapped lead inputs stay audible: ${JSON.stringify(layerGains)}`);
+          const replacedTypes = new Set([
+            combination.stemType,
+            ...(combination.preloadedSwaps ?? []).map(swap => swap.stemType),
+          ]);
+          assert.ok([...replacedTypes].every(type => layerGains.postGateRms[type] !== null
+            && layerGains.postGateRms[type] < 0.00001),
+          `replaced source stems carry no signal after their live-swap gate: ${JSON.stringify(layerGains.postGateRms)}`);
         }
         if (typeof combination.expectedWholeDeckPlaybackRate === "number") {
           const mediaRates = Object.values(layerGains.originalMedia).map(item => item.playbackRate);
@@ -2253,48 +2392,188 @@ try {
         }
         if (typeof combination.expectedRecipientRestStartSeconds === "number"
           && typeof combination.expectedRecipientRestEndSeconds === "number") {
-          await page.waitForFunction(({ startSeconds, endSeconds }) => {
+          const restApproachSeconds = Math.max(
+            0,
+            Math.round((combination.expectedRecipientRestStartSeconds - 0.65) * 2) / 2,
+          );
+          await current.getByTestId("seek-deck-0").fill(String(restApproachSeconds));
+          await page.waitForFunction(({ seekSeconds, restStart }) => {
             const drums = [...document.querySelectorAll('[data-role="current"] audio')]
               .find(element => new URL(element.src).pathname.endsWith("-drums"));
             return drums !== undefined
-              && drums.currentTime >= startSeconds + 0.55
-              && drums.currentTime < endSeconds - 0.08;
+              && drums.currentTime >= seekSeconds
+              && drums.currentTime < restStart + 0.15;
+          }, {
+            seekSeconds: restApproachSeconds,
+            restStart: combination.expectedRecipientRestStartSeconds,
+          }, { timeout: 5_000, polling: 25 });
+          const recipientDrumClock = afterSwap.find(item =>
+            item.source === `${lead.browserId}-drums`);
+          const untilRestSeconds = Math.max(
+            0,
+            combination.expectedRecipientRestStartSeconds + 0.2
+              - (recipientDrumClock?.currentTime ?? 0),
+          );
+          const restWaitTimeoutMs = Math.min(
+            120_000,
+            Math.max(
+              10_000,
+              Math.ceil(untilRestSeconds / Math.max(recipientDrumClock?.playbackRate ?? 1, 0.05) * 1_000 + 5_000),
+            ),
+          );
+          console.log(`MASHUP_REST_WAIT ${combination.id} clock=${recipientDrumClock?.currentTime ?? "unavailable"} rate=${recipientDrumClock?.playbackRate ?? "unavailable"} timeoutMs=${restWaitTimeoutMs}`);
+          try {
+            await page.waitForFunction(({ startSeconds, endSeconds }) => {
+              const drums = [...document.querySelectorAll('[data-role="current"] audio')]
+                .find(element => new URL(element.src).pathname.endsWith("-drums"));
+              return drums !== undefined
+                && drums.currentTime >= startSeconds + 0.2
+                && drums.currentTime < endSeconds - 0.08;
+            }, {
+              startSeconds: combination.expectedRecipientRestStartSeconds,
+              endSeconds: combination.expectedRecipientRestEndSeconds,
+            }, { timeout: restWaitTimeoutMs, polling: 25 });
+          } catch (error) {
+            const clock = await page.evaluate(() => {
+              const drums = [...document.querySelectorAll('[data-role="current"] audio')]
+                .find(element => new URL(element.src).pathname.endsWith("-drums"));
+              return drums ? {
+                currentTime: drums.currentTime,
+                paused: drums.paused,
+                readyState: drums.readyState,
+                playbackRate: drums.playbackRate,
+              } : null;
+            });
+            console.log(`MASHUP_REST_TIMEOUT ${combination.id} ${JSON.stringify(clock)}`);
+            throw error;
+          }
+          const restDiagnostics = await page.evaluate(async ({ startSeconds, endSeconds }) => {
+            const drums = [...document.querySelectorAll('[data-role="current"] audio')]
+              .find(element => new URL(element.src).pathname.endsWith("-drums"));
+            const source = window.audioProbe.sources.find(item => item.mediaElement === drums);
+            const donor = window.audioProbe.buffers.at(-1);
+            const input = donor?.inputNode instanceof GainNode ? donor.inputNode : null;
+            const gate = input?.nextNode instanceof GainNode ? input.nextNode : null;
+            if (donor) {
+              donor.__waveyardProbeInput = input;
+              donor.__waveyardProbeGate = gate;
+            }
+            const tap = (node) => {
+              if (!node) return null;
+              const analyser = node.context.createAnalyser();
+              analyser.fftSize = 2048;
+              const silentSink = node.context.createGain();
+              silentSink.gain.value = 0;
+              node.connect(analyser);
+              analyser.connect(silentSink);
+              silentSink.connect(node.context.destination);
+              return { analyser, silentSink };
+            };
+            const beforeTap = tap(input);
+            const afterTap = tap(gate);
+            const rms = analyser => {
+              if (!analyser) return null;
+              const samples = new Float32Array(analyser.fftSize);
+              analyser.getFloatTimeDomainData(samples);
+              return Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+            };
+            const restSamples = [];
+            while (drums && drums.currentTime < endSeconds - 0.04) {
+              restSamples.push({
+                recipientTime: drums.currentTime,
+                before: rms(beforeTap?.analyser),
+                after: rms(afterTap?.analyser),
+              });
+              await new Promise(resolve => setTimeout(resolve, 35));
+            }
+            for (const tapNodes of [beforeTap, afterTap]) {
+              tapNodes?.analyser.disconnect();
+              tapNodes?.silentSink.disconnect();
+            }
+            return {
+              recipientDrumTime: drums?.currentTime ?? null,
+              recipientDrumRate: drums?.playbackRate ?? null,
+              restSamples: restSamples.filter(sample => sample.recipientTime >= startSeconds),
+              donorInputAvailable: input !== null,
+              donorGateAvailable: gate !== null,
+            };
           }, {
             startSeconds: combination.expectedRecipientRestStartSeconds,
             endSeconds: combination.expectedRecipientRestEndSeconds,
-          }, { timeout: 10_000 });
-          const restGateDuringBreak = await page.evaluate(() => {
-            const donor = window.audioProbe.buffers.at(-1);
-            const gate = donor?.inputNode?.nextNode instanceof GainNode ? donor.inputNode.nextNode : null;
-            return gate?.gain?.value ?? null;
           });
-          assert.ok(typeof restGateDuringBreak === "number" && restGateDuringBreak < 0.08,
-            `a sustained recipient drum break mutes the donor for the remainder of the gap: ${restGateDuringBreak}`);
+          console.log(`MASHUP_REST_SAMPLE ${combination.id} ${JSON.stringify(restDiagnostics)}`);
+          const gatedRestSamples = restDiagnostics.restSamples.filter(sample =>
+            sample.before > 0.0002 && sample.after < sample.before * 0.08,
+          );
+          assert.ok(gatedRestSamples.length >= 2,
+            `the donor output must be audibly ducked across at least two samples within the real low-drum passage: ${JSON.stringify(restDiagnostics)}`);
           await page.waitForFunction(endSeconds => {
             const drums = [...document.querySelectorAll('[data-role="current"] audio')]
               .find(element => new URL(element.src).pathname.endsWith("-drums"));
-            return drums !== undefined && drums.currentTime >= endSeconds + 0.15;
+            return drums !== undefined && drums.currentTime >= endSeconds + 0.3;
           }, combination.expectedRecipientRestEndSeconds, { timeout: 10_000 });
-          const restGateAfterBreak = await page.evaluate(() => {
+          const afterBreak = await page.evaluate(async () => {
             const donor = window.audioProbe.buffers.at(-1);
-            const gate = donor?.inputNode?.nextNode instanceof GainNode ? donor.inputNode.nextNode : null;
-            return gate?.gain?.value ?? null;
+            const input = donor?.__waveyardProbeInput ?? null;
+            const gate = donor?.__waveyardProbeGate ?? null;
+            const tap = (node) => {
+              if (!node) return null;
+              const analyser = node.context.createAnalyser();
+              analyser.fftSize = 2048;
+              const silentSink = node.context.createGain();
+              silentSink.gain.value = 0;
+              node.connect(analyser);
+              analyser.connect(silentSink);
+              silentSink.connect(node.context.destination);
+              return { analyser, silentSink };
+            };
+            const beforeTap = tap(input);
+            const afterTap = tap(gate);
+            const rms = analyser => {
+              if (!analyser) return null;
+              const samples = new Float32Array(analyser.fftSize);
+              analyser.getFloatTimeDomainData(samples);
+              return Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+            };
+            let result = null;
+            const current = () => [...document.querySelectorAll('[data-role="current"] audio')]
+              .find(element => new URL(element.src).pathname.endsWith("-drums"));
+            const deadline = performance.now() + 1_500;
+            while (performance.now() < deadline) {
+              const before = rms(beforeTap?.analyser);
+              const after = rms(afterTap?.analyser);
+              result = { recipientTime: current()?.currentTime ?? null, before, after };
+              if (before > 0.0002 && after > before * 0.7) break;
+              await new Promise(resolve => setTimeout(resolve, 35));
+            }
+            for (const tapNodes of [beforeTap, afterTap]) {
+              tapNodes?.analyser.disconnect();
+              tapNodes?.silentSink.disconnect();
+            }
+            return result;
           });
-          assert.ok(typeof restGateAfterBreak === "number" && restGateAfterBreak > 0.92,
-            `the donor resumes after the recipient drum break: ${restGateAfterBreak}`);
+          assert.ok((afterBreak.before ?? 0) > 0.0002
+            && (afterBreak.after ?? 0) > (afterBreak.before ?? 0) * 0.7,
+          `the donor audio should recover after the source break: ${JSON.stringify(afterBreak)}`);
           recipientDrumRestEvidence = {
             sourceIntervalSeconds: [
               combination.expectedRecipientRestStartSeconds,
               combination.expectedRecipientRestEndSeconds,
             ],
-            donorGainDuringBreak: restGateDuringBreak,
-            donorGainAfterBreak: restGateAfterBreak,
+            donorOutputRmsDuringBreak: gatedRestSamples.map(sample => sample.after),
+            donorInputRmsAfterBreak: afterBreak.before,
+            donorOutputRmsAfterBreak: afterBreak.after,
           };
         }
-        const timing = await page.evaluate(index => window.liveStemTimings[index] ?? null, timingCount);
+        const expectedDonorAssetUrl = `/api/assets/${donor.browserId}-${combination.stemType}`;
+        const timing = await page.evaluate(({ index, assetUrl }) =>
+          window.liveStemTimings.slice(index).find(entry => entry.assetUrl === assetUrl) ?? null,
+        { index: timingCount, assetUrl: expectedDonorAssetUrl });
         swapDetails = {
           donorTrackId: combination.donorTrackId,
           stemType: combination.stemType,
+          selectionMethod: manualVocalEntry?.snap ?? (selectionOutcome === "saved" ? "direct-live-choice" : null),
+          manualVocalEntry,
           keyMatchMode: session.keyMatchMode,
           advancingOriginalClocks,
           selectedAtSeconds,
@@ -2303,11 +2582,40 @@ try {
           recipientDrumRest: recipientDrumRestEvidence,
           requestedTempoStretchRatio: combination.requestedTempoStretchRatio ?? null,
           expectedTempoStretchRatio: combination.expectedTempoStretchRatio ?? null,
-          tempoMatchApplied: typeof timing?.tempoMatchMs === "number" && timing.tempoMatchMs > 0,
+          tempoMatchApplied: typeof timing?.tempoStretchRatio === "number"
+            && Math.abs(timing.tempoStretchRatio - 1) >= 0.001,
         };
+        if (manualVocalEntry !== null && typeof manualVocalEntry.persistedEntryMs === "number") {
+          const expectedBufferOffsetSeconds = manualVocalEntry.persistedEntryMs / 1_000
+            * (timing?.tempoStretchRatio ?? 1);
+          const liveDonorSources = layerGains.donor.filter(source =>
+            source.stopped === false && typeof source.startedOffset === "number",
+          );
+          assert.ok(liveDonorSources.length > 0, "the chosen phrase has an active donor buffer source");
+          const closestStart = liveDonorSources.reduce((best, source) =>
+            Math.abs(source.startedOffset - expectedBufferOffsetSeconds)
+              < Math.abs(best.startedOffset - expectedBufferOffsetSeconds) ? source : best,
+          );
+          const startErrorSeconds = Math.abs(closestStart.startedOffset - expectedBufferOffsetSeconds);
+          assert.ok(startErrorSeconds <= 0.15,
+            `the actual tempo-stretched vocal buffer must begin at the persisted measured phrase (expected ${expectedBufferOffsetSeconds.toFixed(3)}s, error ${startErrorSeconds.toFixed(3)}s): ${JSON.stringify(liveDonorSources)}`);
+          Object.assign(manualVocalEntry, {
+            expectedTempoMatchedBufferStartSeconds: expectedBufferOffsetSeconds,
+            actualTempoMatchedBufferStartSeconds: closestStart.startedOffset,
+            startErrorSeconds,
+          });
+        }
         if (swapDetails.expectedTempoStretchRatio !== null) {
           assert.ok(Math.abs((timing?.tempoStretchRatio ?? 0) - swapDetails.expectedTempoStretchRatio) < 0.02,
             `the swap applies the expected BPM ratio: ${JSON.stringify(swapDetails)}`);
+          if (combination.awaitWarmupBeforeChoose === true) {
+            assert.equal(timing?.assetUrl, expectedDonorAssetUrl,
+              `the measured timing belongs to the selected donor, not another concurrent stem: ${JSON.stringify(timing)}`);
+            assert.equal(timing?.reusedPreparedBuffer, true,
+              `the selected donor buffer must be marked as prepared before application: ${JSON.stringify(timing)}`);
+            assert.ok((timing?.selectionToAudibleMs ?? Infinity) < 3_000,
+              `the warmed donor should become audible within three seconds of applying the selection: ${JSON.stringify(timing)}`);
+          }
           if (Math.abs(swapDetails.expectedTempoStretchRatio - 1) < 0.001) {
             assert.equal(swapDetails.tempoMatchApplied, false,
               `native-pace half/double locks must not invoke an extreme time stretch: ${JSON.stringify(swapDetails)}`);

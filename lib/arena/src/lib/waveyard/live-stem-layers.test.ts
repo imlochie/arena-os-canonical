@@ -177,10 +177,21 @@ test("a sustained quiet recipient drum interval ducks only the donor and resumes
   f.layers.updateRecipientDrumRests();
   assert.equal(activityGate.gain.value, 0, "a sustained drum break ducks the donor");
 
+  // Browser AudioParam.value can keep exposing its intrinsic value (1) while
+  // automation has ramped the effective gain to zero.
+  Object.defineProperty(activityGate.gain, "value", {
+    configurable: true,
+    get: () => 1,
+    set: () => undefined,
+  });
+  const resumeAutomationStart = activityGate.automation.length;
   rms = 0.1;
   f.context.currentTime += 0.02;
   drumMedia.currentTime += 0.02;
   f.layers.updateRecipientDrumRests();
+  assert.ok(activityGate.automation.slice(resumeAutomationStart).some(
+    event => event.type === "ramp" && event.value === 1,
+  ), "the donor resumes even when AudioParam.value does not reflect the prior automation");
   assert.equal(activityGate.gain.value, 1, "the donor returns when recipient drum activity resumes");
 });
 
@@ -1008,7 +1019,11 @@ test("idle compressed donor bytes expire after reuse without affecting another a
 
 test("a warmed donor's audible timing starts when the user selects it, not when warming began", async () => {
   const f = fixture(undefined, timing => timings.push(timing));
-  const timings: Array<{ selectionToAudibleMs: number }> = [];
+  const timings: Array<{
+    assetUrl: string;
+    selectionToAudibleMs: number;
+    reusedPreparedBuffer: boolean;
+  }> = [];
   globalThis.fetch = async () => response();
   try {
     await f.layers.preload("/donor");
@@ -1016,6 +1031,8 @@ test("a warmed donor's audible timing starts when the user selects it, not when 
     const selectedAt = performance.now();
     await f.layers.replace("vocals", "/donor", 1, selectedAt);
     assert.equal(timings.length, 1);
+    assert.equal(timings[0].assetUrl, "/donor");
+    assert.equal(timings[0].reusedPreparedBuffer, true);
     assert.ok(
       timings[0].selectionToAudibleMs <= performance.now() - selectedAt + 10,
       "pre-selection warm time must not inflate the selection-to-audible measurement",
